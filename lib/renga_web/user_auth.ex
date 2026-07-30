@@ -20,6 +20,7 @@ defmodule RengaWeb.UserAuth do
     max_age: @max_cookie_age_in_days * 24 * 60 * 60,
     same_site: "Lax"
   ]
+  @current_organization_key :current_organization_id
 
   # How old the session token should be before a new one is issued. When a request is made
   # with a session token older than this value, then a new session token will be created
@@ -72,11 +73,48 @@ defmodule RengaWeb.UserAuth do
     with {token, conn} <- ensure_user_token(conn),
          {user, token_inserted_at} <- Accounts.get_user_by_session_token(token) do
       conn
-      |> assign(:current_scope, Scope.for_user(user))
+      |> assign(
+        :current_scope,
+        Accounts.scope_for_user(user, get_session(conn, @current_organization_key))
+      )
       |> maybe_reissue_user_session_token(user, token_inserted_at)
     else
       nil -> assign(conn, :current_scope, Scope.for_user(nil))
     end
+  end
+
+  @doc """
+  Stores the current organization in the session and refreshes `current_scope`.
+  """
+  def put_current_organization(conn, organization_id) when is_binary(organization_id) do
+    with %Scope{user: %Accounts.User{} = user} <- conn.assigns[:current_scope],
+         %Scope{organization_id: ^organization_id} = scope <-
+           Accounts.scope_for_user(user, organization_id) do
+      conn
+      |> put_session(@current_organization_key, organization_id)
+      |> assign(:current_scope, scope)
+    else
+      _ -> conn
+    end
+  end
+
+  def put_current_organization(conn, %{id: organization_id}) when is_binary(organization_id) do
+    put_current_organization(conn, organization_id)
+  end
+
+  @doc """
+  Clears the selected organization from the session and refreshes `current_scope`.
+  """
+  def clear_current_organization(conn) do
+    scope =
+      case conn.assigns[:current_scope] do
+        %Scope{user: %Accounts.User{} = user} -> Scope.for_user(user)
+        _ -> nil
+      end
+
+    conn
+    |> delete_session(@current_organization_key)
+    |> assign(:current_scope, scope)
   end
 
   defp ensure_user_token(conn) do
@@ -256,7 +294,7 @@ defmodule RengaWeb.UserAuth do
           Accounts.get_user_by_session_token(user_token)
         end || {nil, nil}
 
-      Scope.for_user(user)
+      Accounts.scope_for_user(user, session[to_string(@current_organization_key)])
     end)
   end
 

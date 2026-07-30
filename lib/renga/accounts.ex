@@ -8,6 +8,9 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Accounts.User
+  alias Renga.Accounts.UserNotifier
+  alias Renga.Accounts.UserToken
   alias Renga.Repo
 
   @doc """
@@ -85,7 +88,51 @@ defmodule Renga.Accounts do
     |> Repo.update()
   end
 
-  alias Renga.Accounts.{User, UserToken, UserNotifier}
+  def list_user_organization_memberships(%User{} = user) do
+    OrganizationMembership
+    |> join(:inner, [membership], organization in assoc(membership, :organization))
+    |> where([membership, organization], membership.user_id == ^user.id)
+    |> where([membership, organization], membership.status == "active")
+    |> where([membership, organization], organization.status == "active")
+    |> preload([membership, organization], organization: organization)
+    |> order_by([membership, organization], asc: organization.name)
+    |> Repo.all()
+  end
+
+  def get_user_organization_membership(%User{} = user, organization_id)
+      when is_binary(organization_id) do
+    OrganizationMembership
+    |> join(:inner, [membership], organization in assoc(membership, :organization))
+    |> where([membership, organization], membership.user_id == ^user.id)
+    |> where([membership, organization], membership.organization_id == ^organization_id)
+    |> where([membership, organization], membership.status == "active")
+    |> where([membership, organization], organization.status == "active")
+    |> preload([membership, organization], organization: organization)
+    |> Repo.one()
+  end
+
+  def get_user_organization_membership(%User{}, _organization_id), do: nil
+
+  def scope_for_user(user, organization_id \\ nil)
+
+  def scope_for_user(%User{} = user, organization_id) do
+    membership =
+      case organization_id do
+        nil -> user |> list_user_organization_memberships() |> List.first()
+        "" -> user |> list_user_organization_memberships() |> List.first()
+        organization_id -> get_user_organization_membership(user, organization_id)
+      end
+
+    case membership do
+      %OrganizationMembership{organization: %Organization{} = organization} ->
+        Scope.for_membership(user, organization, membership)
+
+      _ ->
+        Scope.for_user(user)
+    end
+  end
+
+  def scope_for_user(nil, _organization_id), do: Scope.for_user(nil)
 
   ## Database getters
 

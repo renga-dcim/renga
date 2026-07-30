@@ -184,6 +184,112 @@ defmodule Renga.AccountsTest do
     end
   end
 
+  describe "user organization scope" do
+    setup do
+      user = user_fixture()
+
+      {:ok, organization} =
+        Accounts.create_organization(%{
+          name: "Acme Operations",
+          slug: "acme-ops-#{System.unique_integer([:positive])}"
+        })
+
+      {:ok, other_organization} =
+        Accounts.create_organization(%{
+          name: "Beta Operations",
+          slug: "beta-ops-#{System.unique_integer([:positive])}"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        other_organization: other_organization
+      }
+    end
+
+    test "list_user_organization_memberships/1 returns active memberships with organizations", %{
+      user: user,
+      organization: organization,
+      other_organization: other_organization
+    } do
+      {:ok, membership} =
+        Accounts.create_organization_membership(organization, %{
+          user_id: user.id,
+          role: "owner"
+        })
+
+      {:ok, _disabled_membership} =
+        Accounts.create_organization_membership(other_organization, %{
+          user_id: user.id,
+          status: "disabled"
+        })
+
+      assert [loaded_membership] = Accounts.list_user_organization_memberships(user)
+      assert loaded_membership.id == membership.id
+      assert loaded_membership.organization.id == organization.id
+    end
+
+    test "get_user_organization_membership/2 enforces membership and active status", %{
+      user: user,
+      organization: organization,
+      other_organization: other_organization
+    } do
+      {:ok, membership} =
+        Accounts.create_organization_membership(organization, %{
+          user_id: user.id,
+          role: "admin"
+        })
+
+      assert loaded_membership = Accounts.get_user_organization_membership(user, organization.id)
+      assert loaded_membership.id == membership.id
+      assert loaded_membership.organization.id == organization.id
+
+      refute Accounts.get_user_organization_membership(user, other_organization.id)
+    end
+
+    test "scope_for_user/2 uses requested organization membership", %{
+      user: user,
+      organization: organization,
+      other_organization: other_organization
+    } do
+      {:ok, _membership} =
+        Accounts.create_organization_membership(organization, %{
+          user_id: user.id,
+          role: "member"
+        })
+
+      {:ok, membership} =
+        Accounts.create_organization_membership(other_organization, %{
+          user_id: user.id,
+          role: "owner"
+        })
+
+      scope = Accounts.scope_for_user(user, other_organization.id)
+
+      assert scope.user.id == user.id
+      assert scope.organization_id == other_organization.id
+      assert scope.membership_id == membership.id
+      assert scope.roles == ["owner"]
+    end
+
+    test "scope_for_user/2 falls back to user-only scope for invalid organization", %{
+      user: user,
+      organization: organization
+    } do
+      {:ok, _membership} =
+        Accounts.create_organization_membership(organization, %{
+          user_id: user.id
+        })
+
+      scope = Accounts.scope_for_user(user, Ecto.UUID.generate())
+
+      assert scope.user.id == user.id
+      assert scope.organization_id == nil
+      assert scope.membership_id == nil
+      assert scope.roles == []
+    end
+  end
+
   alias Renga.Accounts.{User, UserToken}
 
   describe "get_user_by_email/1" do
