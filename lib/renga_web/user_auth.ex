@@ -1,4 +1,8 @@
 defmodule RengaWeb.UserAuth do
+  @moduledoc """
+  Authentication plugs and LiveView mount hooks for user sessions.
+  """
+
   use RengaWeb, :verified_routes
 
   import Plug.Conn

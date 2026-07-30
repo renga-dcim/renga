@@ -1,4 +1,8 @@
 defmodule Renga.Accounts.UserNotifier do
+  @moduledoc """
+  Delivers account authentication and settings emails.
+  """
+
   import Swoosh.Email
 
   alias Renga.Mailer
