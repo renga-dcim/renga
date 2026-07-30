@@ -2,8 +2,7 @@ defmodule Renga.Accounts.OrganizationMembership do
   @moduledoc """
   Connects an application user to an organization.
 
-  The user table is not part of this phase yet, so `user_id` is intentionally a
-  scalar tenant membership key until the authenticated user model lands.
+  Connects the generated authenticated user model to an organization.
   """
 
   use Ecto.Schema
@@ -11,6 +10,7 @@ defmodule Renga.Accounts.OrganizationMembership do
   import Ecto.Changeset
 
   alias Renga.Accounts.Organization
+  alias Renga.Accounts.User
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -19,12 +19,12 @@ defmodule Renga.Accounts.OrganizationMembership do
   @timestamps_opts [type: :utc_datetime]
 
   schema "organization_memberships" do
-    field :user_id, :binary_id
     field :role, :string, default: "member"
     field :status, :string, default: "active"
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
+    belongs_to :user, User
 
     timestamps()
   end
