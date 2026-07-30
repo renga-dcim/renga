@@ -1,0 +1,164 @@
+#+title: DCIM Host Agent MVP
+#+status: Draft
+
+* Objective
+
+Build the smallest useful Renga DCIM loop:
+
+1. Create an organization-scoped source for a host agent.
+2. Run a Rust service agent on a Debian/Ubuntu host.
+3. Collect host inventory facts.
+4. POST observations to Renga.
+5. Reconcile observations into canonical inventory.
+6. Show active/stale resources and their provenance in the UI.
+
+This MVP proves the core product model before adding switch polling, VM lifecycle automation, live terminal sessions, osquery-compatible endpoints, or placement decisions.
+
+* Scope
+
+** In Scope
+
+- Organization-scoped multi-tenancy.
+- Inventory foundation for host-agent observations.
+- Explicit resource identity records separate from resource fields.
+- Raw observation storage.
+- Source registration and token-based source authentication.
+- Rust agent daemon under =agent/=.
+- Debian/Ubuntu packaging path with systemd.
+- HTTP POST observation ingestion.
+- Check-ins and freshness/staleness tracking.
+- Basic operational LiveView UI.
+- Field-level manual override data model, even if the first UI for overrides is minimal.
+
+** Out Of Scope
+
+- Live terminal sessions.
+- VM creation, start, stop, migration, or placement.
+- Phoenix Channels control acceleration.
+- Switch collectors.
+- gNMI/OpenConfig, SNMP, and LLDP implementation.
+- Cloud-hypervisor support.
+- Osquery-compatible endpoints.
+- Billing, SSO, per-tenant databases, and advanced SaaS tenancy features.
+
+* Design Decisions
+
+- Agent lives in this repository under =agent/=.
+- Agent is Rust and daemon-first.
+- Normal inventory transport is HTTP POST.
+- =--once= and =--dry-run= exist for development, troubleshooting, smoke tests, and packaging validation.
+- Persisted jobs and Phoenix Channels are planned later; they are not needed for the first inventory loop.
+- Tenant boundary is =organization_id= in a single database.
+- Agent tokens are scoped to one organization and one source.
+- Resource identity is modeled as observed identifier facts.
+- Resource fields are the canonical current view.
+- Manual edits are explicit field-level overrides that preserve observed facts.
+
+* Milestones
+
+** 1. Organization And Source Foundation
+
+- [ ] Add accounts schemas for =Organization= and =OrganizationMembership=.
+- [ ] Add current organization scope helpers for controllers, LiveViews, and contexts.
+- [ ] Add =Source= schema with =organization_id=, =kind=, =name=, =status=, =token_hash=, =capabilities=, =last_seen_at=, and =metadata=.
+- [ ] Add source token generation, hashing, rotation, and revocation.
+- [ ] Add organization-scoped source context tests.
+
+** 2. Inventory Data Model
+
+- [ ] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
+- [ ] Add =ResourceIdentifier= schema for observed identity facts.
+- [ ] Add =Interface= and =Address= schemas for first-class network inventory.
+- [ ] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
+- [ ] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
+- [ ] Add =ResourceOverride= schema for field-level manual overrides.
+- [ ] Add uniqueness constraints scoped by =organization_id= where appropriate.
+- [ ] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
+
+** 3. Observation Ingestion API
+
+- [ ] Add JSON routes under =/api= for agent check-ins and observations.
+- [ ] Add bearer-token authentication plug for sources.
+- [ ] Implement =POST /api/agent/checkins=.
+- [ ] Implement =POST /api/observations= for one host resource per request.
+- [ ] Store accepted raw observations before reconciliation.
+- [ ] Add idempotency using a source-provided observation ID or request digest.
+- [ ] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
+- [ ] Return structured acceptance and validation responses.
+- [ ] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
+
+** 4. Reconciliation MVP
+
+- [ ] Match resources by strong identifiers first: serial number, DMI UUID, machine ID, then MAC address set.
+- [ ] Treat hostname and FQDN as weak matching signals.
+- [ ] Upsert canonical resource fields from observations.
+- [ ] Preserve observed identifiers with source, confidence, first seen, and last seen timestamps.
+- [ ] Upsert interfaces and addresses from host observations.
+- [ ] Record field conflicts when observed values disagree with canonical or overridden values.
+- [ ] Write change events for discovery, update, conflict, and stale transitions.
+- [ ] Add reconciliation tests for duplicate identifiers, hostname changes, weak matches, and conflicting observations.
+
+** 5. Rust Agent Service MVP
+
+- [ ] Create =agent/= Rust workspace.
+- [ ] Add daemon entrypoint with config loading and structured logging.
+- [ ] Add systemd unit files for Debian/Ubuntu proof-of-concept installs.
+- [ ] Add config file and environment variable support for Renga URL, token, source ID, and intervals.
+- [ ] Implement internal scheduler for inventory collection, check-ins, and config refresh.
+- [ ] Implement =--once= mode.
+- [ ] Implement =--dry-run= JSON output mode.
+- [ ] Collect hostname, FQDN, OS, kernel, architecture, machine ID, DMI UUID, serial number, vendor, and model.
+- [ ] Collect CPU, memory, disks, filesystems, NICs, MAC addresses, and IP addresses.
+- [ ] Detect basic virtualization hints: bare metal, VM guest, container host.
+- [ ] POST observations and check-ins with retry and backoff.
+- [ ] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
+
+** 6. Operational UI MVP
+
+- [ ] Add authenticated, organization-scoped LiveView routes.
+- [ ] Add inventory dashboard with active, stale, and unknown resource counts.
+- [ ] Add resource list with kind, hostname, vendor/model, status, source, and last seen.
+- [ ] Add resource detail view with canonical fields, identifiers, interfaces, addresses, source provenance, and recent change events.
+- [ ] Add source list with status, last seen, kind, and capabilities.
+- [ ] Add stale resource filter.
+- [ ] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
+- [ ] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
+
+** 7. Packaging And Smoke Test
+
+- [ ] Build a raw Linux agent binary or tarball for development.
+- [ ] Build an initial Debian/Ubuntu =.deb= package.
+- [ ] Install the agent on a local or test Debian/Ubuntu host.
+- [ ] Register a source in Renga and configure the agent token.
+- [ ] Run =renga-agent --once --dry-run= and inspect JSON.
+- [ ] Run =renga-agent --once= and verify Renga receives the observation.
+- [ ] Enable the systemd service and verify periodic check-ins.
+- [ ] Verify the resource appears in the dashboard with source provenance and freshness state.
+
+* Acceptance Criteria
+
+- [ ] A new organization can create or receive a host-agent source with a scoped token.
+- [ ] A Rust service agent can run on Debian/Ubuntu under systemd.
+- [ ] The agent can collect host facts and POST a valid observation.
+- [ ] Renga stores the raw observation and reconciles it into canonical inventory.
+- [ ] Resource identifiers are preserved separately from canonical fields.
+- [ ] Repeated observations are idempotent.
+- [ ] Stale resources are visible after their source misses the expected interval.
+- [ ] The UI shows resources, sources, identifiers, interfaces, addresses, change events, and freshness.
+- [ ] Tenant isolation tests prevent cross-organization access.
+- [ ] =mix precommit= passes.
+
+* Verification
+
+- Run =./scripts/check-plan-status.sh= to validate plan metadata and checklist status.
+- Run =mix precommit= after implementation changes.
+
+* Follow-Up Plans
+
+- Durable jobs and agent capabilities.
+- Phoenix Channels control acceleration.
+- Renga-native operational live queries.
+- Libvirt/KVM read-only VM inventory.
+- Cloud-hypervisor inventory support.
+- Switch collectors using SNMP/LLDP and gNMI/OpenConfig.
+- Osquery-compatible endpoint integration.
