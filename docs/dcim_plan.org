@@ -1,0 +1,589 @@
+#+title: Renga DCIM Plan
+
+* Goal
+
+Build Renga into a DCIM system that keeps a live, queryable inventory of physical hosts, network switches, virtual machines, and related resources by syncing from deployed agents and infrastructure integrations.
+
+The system should answer:
+
+- What resources exist right now?
+- Where are they located?
+- What changed recently?
+- Which source reported each fact?
+- Which records are stale, missing, duplicated, or conflicting?
+
+* Product Principles
+
+- Inventory is observed first, manually corrected second.
+- Every fact has provenance: source, observed time, confidence, and raw evidence when useful.
+- Syncs are idempotent and safe to retry.
+- The central app reconciles state; agents only report observations.
+- Stale data is visible instead of silently trusted.
+- The first UI should be operational, dense, and searchable, not a marketing surface.
+- Basic inventory sync must keep working even when the future control channel is unavailable.
+- Powerful agent features must be gated by explicit capabilities, policy, and audit logs.
+
+* Current Direction
+
+- Start with host agents.
+- Write the agent in Rust.
+- Use HTTP POST for periodic inventory observations.
+- Add a persistent control channel later for live terminal, pushed jobs, scheduling, and streaming command/query results.
+- Keep switch polling and VM provider syncers in the architecture as future source types.
+- Model Renga as both a live inventory system and, eventually, an automation control plane.
+- Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
+- Diverge from NetBox by making agents, observations, reconciliation, freshness, jobs, capabilities, and desired-vs-observed state first-class.
+
+* System Shape
+
+Renga is the central Phoenix application. It owns identity, inventory records, reconciliation, audit history, and the web UI.
+
+External collectors report observations:
+
+- Host agents installed on bare-metal servers or VM guests.
+- Network collectors that poll switches through SNMP, LLDP, CDP, RESTCONF, NETCONF, or vendor APIs.
+- Virtualization/cloud syncers for platforms such as Proxmox, vSphere, libvirt, Kubernetes, or cloud APIs.
+- Optional out-of-band hardware syncers for Redfish/IPMI/BMC data.
+
+Initial implementation should keep collectors simple and push observations to the Phoenix API over HTTPS. Long-running polling, reconciliation, and stale detection should live centrally.
+
+The agent transport should be hybrid:
+
+- HTTP POST for durable inventory observations.
+- HTTP GET/POST for check-ins and config.
+- WebSocket or Phoenix Channels later for pushed jobs, live query sessions, terminal sessions, scheduling coordination, and streaming output.
+
+The observation payload and reconciliation pipeline should be transport-independent. A host agent, switch poller, VM provider syncer, or future WebSocket-connected agent should all emit the same internal concept: an observation from a source at a point in time.
+
+* Core Domains
+
+** Inventory
+
+Canonical resources:
+
+- Sites, rooms, rows, racks, rack positions.
+- Devices: servers, switches, appliances, chassis, PDUs.
+- Compute instances: VMs, containers, Kubernetes nodes, hypervisor guests.
+- Network interfaces, MAC addresses, IP addresses, VLANs, links, and switch ports.
+- Storage devices, disks, volumes, filesystems.
+- Hardware components: CPUs, memory modules, NICs, PSUs, fans, GPUs, firmware.
+
+NetBox-inspired domain boundaries to preserve:
+
+- DCIM: sites, locations, racks, devices, modules, inventory items, cables, power.
+- IPAM: prefixes, IP ranges, IP addresses, VLANs, VRFs.
+- Virtualization: clusters, hypervisors, VMs, virtual interfaces, virtual disks.
+- Tenancy: customer, team, project, business unit, or environment ownership.
+- Extensibility: tags, custom fields, webhooks, exports, event rules, object permissions.
+
+** Observability Of Inventory
+
+Operational metadata:
+
+- Source identity.
+- Last seen timestamp.
+- First seen timestamp.
+- Last changed timestamp.
+- Sync run ID.
+- Confidence level.
+- Raw observation payload, retained with size limits.
+- Field-level conflicts.
+
+** Change History
+
+Track resource changes as events:
+
+- Resource discovered.
+- Resource updated.
+- Resource disappeared or became stale.
+- Manual override added or removed.
+- Source conflict detected.
+- Agent registered, rotated, disabled, or deleted.
+
+* Data Model Draft
+
+Start with these Ecto schemas:
+
+- =Renga.Inventory.Site=
+- =Renga.Inventory.Rack=
+- =Renga.Inventory.Resource=
+- =Renga.Inventory.ResourceIdentifier=
+- =Renga.Inventory.Interface=
+- =Renga.Inventory.Address=
+- =Renga.Inventory.Prefix=
+- =Renga.Inventory.Vlan=
+- =Renga.Inventory.Vrf=
+- =Renga.Inventory.Link=
+- =Renga.Inventory.Component=
+- =Renga.Inventory.Observation=
+- =Renga.Inventory.Source=
+- =Renga.Inventory.SyncRun=
+- =Renga.Inventory.ChangeEvent=
+- =Renga.Inventory.Job=
+- =Renga.Inventory.JobEvent=
+- =Renga.Inventory.Capability=
+
+Recommended resource fields:
+
+- =kind=: =server=, =switch=, =vm=, =container=, =pdu=, =storage=, =unknown=.
+- =external_id=: stable ID from the reporting source when available.
+- =serial_number=
+- =asset_tag=
+- =hostname=
+- =fqdn=
+- =vendor=
+- =model=
+- =status=: =active=, =inactive=, =stale=, =retired=, =unknown=.
+- =site_id=
+- =rack_id=
+- =rack_u=
+- =metadata=: JSONB for source-specific attributes.
+- =last_seen_at=
+
+Resource identity should not depend on one field. Store observed identifiers separately:
+
+- =kind=: =hostname=, =fqdn=, =machine_id=, =dmi_uuid=, =serial_number=, =mac_address=, =provider_instance_id=, =bmc_address=.
+- =value=
+- =source_id=
+- =confidence=
+- =first_seen_at=
+- =last_seen_at=
+
+This lets reconciliation improve over time without baking weak assumptions into the canonical resource row.
+
+** Resource Fields Vs Resource Identity
+
+Resource fields are the canonical attributes Renga currently believes describe the resource. These are the values the UI usually shows.
+
+Example resource fields:
+
+- =kind=: =server=
+- =hostname=: =compute-01=
+- =vendor=: =Dell=
+- =model=: =PowerEdge R760=
+- =status=: =active=
+- =site_id=: =iad-1=
+- =rack_id=: =rack-12=
+- =last_seen_at=: =2026-07-30T10:00:00Z=
+
+Resource identity is the evidence Renga uses to decide whether a new observation refers to an existing resource or a new one.
+
+Example identity facts:
+
+- =serial_number=: =ABC123=
+- =dmi_uuid=: =4c4c4544-...=
+- =machine_id=: =9f3c...=
+- =fqdn=: =compute-01.example.net=
+- =mac_address=: =00:11:22:33:44:55=
+- =provider_instance_id=: =vm-104=
+
+The distinction:
+
+- Resource fields answer: what do we know about this thing?
+- Resource identity answers: is this the same thing as something we already know?
+
+The split matters because names, IPs, and MAC addresses can change, move, or conflict. A VM may be seen by both a host agent and a hypervisor API. A server may report weak identity data before a later source reports a serial number or DMI UUID.
+
+The canonical resource row should stay easy to read and query. The identifier rows should preserve the observed matching signals with source, confidence, and first/last seen timestamps.
+
+** Reconciliation And Audit, Not Full Event Sourcing
+
+This model is similar to event sourcing, but Renga should not start as a fully event-sourced system.
+
+Full event sourcing would make the ordered event stream the authoritative source of state, with resource tables rebuilt as projections. That can be powerful, but it adds complexity around event schema versioning, replay logic, projection rebuilds, ordering, ad hoc repair, and testing.
+
+Start with a simpler model:
+
+- =resources=: canonical current view.
+- =resource_identifiers=: observed identity facts used for matching.
+- =observations=: raw reported payloads.
+- =change_events=: audit/history of meaningful changes.
+
+The write path should be:
+
+1. Store the raw observation.
+2. Reconcile it into canonical resources, interfaces, addresses, and related tables.
+3. Write change events for meaningful discoveries, updates, conflicts, stale transitions, and manual edits.
+
+This gives Renga provenance, conflict detection, stale detection, debugging history, and a possible replay path later without making every normal read depend on event replay.
+
+Recommended source fields:
+
+- =kind=: =host_agent=, =switch_poller=, =vm_provider=, =bmc=, =manual=.
+- =name=
+- =status=
+- =token_hash=
+- =last_seen_at=
+- =capabilities=
+- =metadata=
+
+Use explicit tables for high-value inventory relationships, and JSONB only for less-common source-specific details.
+
+Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. IP addresses should attach to interfaces. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
+
+Keep observed state separate from desired state:
+
+- Observed state is what agents, switch pollers, BMCs, and providers report.
+- Desired state is what Renga wants to create, place, change, or retire.
+- Jobs move the world toward desired state; later observations confirm what actually happened.
+
+* Agent And Collector Model
+
+** Host Agent
+
+The host agent reports:
+
+- Hostname and FQDN.
+- Machine ID, DMI UUID, serial number, vendor, model.
+- CPU, memory, disks, filesystems, NICs.
+- IP and MAC addresses.
+- OS name, version, kernel.
+- Virtualization hints: bare metal, VM guest, container host.
+- Optional BMC address if discoverable.
+
+The agent should not decide whether it is a duplicate of another record. It sends stable identifiers and lets Renga reconcile.
+
+The host agent should be implemented in Rust and structured around modules:
+
+- =agent-core=: identity, config, auth, scheduler, transports, local observation queue.
+- =collectors=: host facts, network interfaces, disks, filesystems, packages, processes, virtualization hints.
+- =control=: job runner, leases, result reporting, streaming output.
+- =query=: safe osquery-style live queries over predefined tables.
+- =virtualization=: libvirt/KVM, cloud-hypervisor, and related local hypervisor integrations.
+
+The first Rust agent should be intentionally boring:
+
+- Runs as a daemon/service from the beginning.
+- Uses an internal scheduler for periodic inventory collection, check-ins, and config refresh.
+- Ships with a systemd unit for Linux proof of concept deployments.
+- Supports =--once= only as a development and troubleshooting mode.
+- Supports =--dry-run= to print the JSON observation.
+- Collects host facts.
+- Posts the observation.
+- Does not support remote shell or VM placement yet.
+
+Agents should advertise capabilities, for example:
+
+#+begin_src json
+{
+  "capabilities": [
+    "host.inventory",
+    "host.query",
+    "vm.libvirt.read",
+    "vm.libvirt.manage"
+  ]
+}
+#+end_src
+
+Agent roles should be explicit:
+
+- =observer=: can report inventory.
+- =query_runner=: can answer approved live queries.
+- =executor=: can perform controlled jobs.
+- =hypervisor=: can manage local VMs.
+- =terminal=: can open interactive terminal sessions.
+
+** Switch Collector
+
+The switch collector reports:
+
+- Device identity, model, OS, serial number.
+- Interfaces and admin/oper state.
+- MAC address tables.
+- LLDP/CDP neighbors.
+- VLAN membership.
+- Port descriptions.
+
+This can initially run as a central poller instead of software deployed to switches.
+
+** VM Provider Sync
+
+Provider syncers report:
+
+- VM identity and lifecycle state.
+- Hypervisor or cluster placement.
+- vCPU, memory, disks, NICs.
+- Guest hostname and tools status when available.
+- Relationship to host resource.
+
+* Ingestion API
+
+Initial endpoints:
+
+- =POST /api/agent/register=
+- =POST /api/observations=
+- =POST /api/sync_runs/:id/complete=
+- =GET /api/agent/config=
+- =POST /api/agent/checkins=
+
+Observation payload shape:
+
+#+begin_src json
+{
+  "source": {
+    "kind": "host_agent",
+    "source_id": "host-agent-01"
+  },
+  "observed_at": "2026-07-29T12:00:00Z",
+  "resources": [
+    {
+      "kind": "server",
+      "identifiers": {
+        "hostname": "compute-01",
+        "serial_number": "ABC123",
+        "machine_id": "..."
+      },
+      "attributes": {
+        "vendor": "Dell Inc.",
+        "model": "PowerEdge R760"
+      },
+      "interfaces": [],
+      "components": []
+    }
+  ]
+}
+#+end_src
+
+API requirements:
+
+- Authenticate each source with a bearer token.
+- Store every accepted observation.
+- Process observations idempotently with a source-provided observation ID or request digest.
+- Return per-resource acceptance and validation errors.
+- Avoid accepting client-controlled canonical IDs.
+
+* Control Plane
+
+Control-plane features should be layered on after basic inventory sync works. The durable abstraction should be a persisted job, not the WebSocket itself.
+
+Suggested job fields:
+
+- =kind=: =collect_inventory=, =run_query=, =vm_create=, =vm_start=, =vm_stop=, =terminal_session=.
+- =status=: =queued=, =leased=, =running=, =succeeded=, =failed=, =expired=, =cancelled=.
+- =target_source_id=
+- =requested_by=
+- =params=
+- =result=
+- =error=
+- =expires_at=
+- =inserted_at=
+- =started_at=
+- =completed_at=
+
+Job rules:
+
+- Jobs are persisted before delivery.
+- Agents lease jobs before running them.
+- Jobs expire if not leased or completed in time.
+- Agents reject jobs outside their advertised and locally enabled capabilities.
+- Every state transition becomes a job event.
+- WebSocket delivery is an optimization; jobs must survive disconnects and restarts.
+
+Future control endpoints:
+
+- =GET /api/agent/jobs=
+- =POST /api/agent/jobs/:id/lease=
+- =POST /api/agent/jobs/:id/events=
+- =POST /api/agent/jobs/:id/complete=
+- =GET /api/agent/socket_config=
+- =WebSocket /agent/socket=
+
+** Live Terminal
+
+Live terminal is useful but high risk. It should not be enabled by default.
+
+Prerequisites before implementation:
+
+- Strong user authentication and RBAC.
+- Agent-side allow/deny configuration.
+- Per-session leases with short expiration.
+- Full audit trail.
+- Session recording or command logging.
+- Clear policy for which users can reach which sources.
+
+** Live Queries
+
+For osquery-style live information, start with read-only typed queries over predefined tables instead of arbitrary shell execution.
+
+Example table names:
+
+- =interfaces=
+- =addresses=
+- =mounts=
+- =disks=
+- =processes=
+- =packages=
+- =vms=
+
+The server can expose a SQL-like or table/filter query interface later, but the Rust agent should map requests onto known collectors and return typed results.
+
+** VM Placement
+
+VM placement turns Renga from inventory into automation. Treat placement as desired state plus controlled jobs.
+
+Placement needs:
+
+- Host capacity model.
+- Reserved vs used resources.
+- Overcommit policy.
+- Storage pool availability.
+- Network attachment options.
+- Maintenance/drain state.
+- Anti-affinity and placement constraints eventually.
+- Cleanup behavior if a create/start/migrate job fails.
+
+Start with libvirt/KVM or cloud-hypervisor on a single host before generalizing to clusters.
+
+* Reconciliation Rules
+
+Canonical resource matching should prefer stable hardware identifiers:
+
+1. BMC or chassis serial number.
+2. DMI product UUID plus source type.
+3. Cloud or VM provider instance ID.
+4. Switch serial number.
+5. MAC address sets.
+6. Hostname/FQDN as a weak signal only.
+
+When sources disagree:
+
+- Keep the canonical record stable.
+- Record field-level conflict details.
+- Prefer source types by configurable priority.
+- Preserve manual overrides separately from observed facts.
+
+* Freshness And Lifecycle
+
+Suggested lifecycle:
+
+- =active=: observed within expected interval.
+- =stale=: not observed after grace period.
+- =missing=: source reports a prior resource absent from a full sync.
+- =retired=: manually retired or removed by policy.
+
+Each source should define:
+
+- Expected sync interval.
+- Stale-after duration.
+- Whether syncs are full snapshots or partial observations.
+
+* Phoenix Implementation Slices
+
+** Slice 1: Inventory Foundation
+
+- Add =Renga.Inventory= context.
+- Add migrations and schemas for sources, resources, resource identifiers, interfaces, addresses, observations, sync runs, and change events.
+- Add basic CRUD functions in the context.
+- Add tests for creation, uniqueness, and lifecycle transitions.
+
+** Slice 2: Ingestion API
+
+- Add JSON API routes under =/api=.
+- Add source token authentication plug.
+- Accept host-agent observation payloads.
+- Store raw observations.
+- Upsert canonical resources with simple matching rules.
+- Add tests for auth, idempotency, validation, and upsert behavior.
+
+** Slice 3: Rust Host Agent MVP
+
+- Create a Rust agent workspace outside the Phoenix app or under a dedicated top-level =agent/= directory.
+- Implement daemon lifecycle, config loading, identity, auth, internal scheduling, host inventory collection, dry-run output, check-ins, and POST transport.
+- Add systemd unit files for development/proof-of-concept deployment.
+- Package for Linux first.
+- Leave remote command execution, terminal sessions, and VM placement out of the first agent cut.
+
+** Slice 4: Operational UI
+
+- Replace the generated home page with a LiveView inventory dashboard.
+- Add resource list, resource detail, source list, stale-resource filters, and recent change events.
+- Use LiveView streams for lists that update.
+- Add key DOM IDs for tests.
+
+** Slice 5: Durable Jobs And Agent Capabilities
+
+- Add persisted jobs and job events.
+- Add source capabilities.
+- Add polling-based job lease endpoints.
+- Add safe read-only live query jobs.
+- Add audit events for job lifecycle changes.
+
+** Slice 6: Optional WebSocket Control Channel
+
+- Add Phoenix Channel or socket endpoint for connected agents.
+- Use it to notify agents about queued jobs and stream job output.
+- Keep polling endpoints as fallback.
+
+** Slice 7: Switch And VM Syncers
+
+- Add a central collector process for switch polling.
+- Add provider-specific sync behavior behind a common behaviour module.
+- Start with one provider or switch platform before generalizing.
+
+* Security
+
+- Agent tokens must be generated centrally and stored hashed.
+- Tokens should be scoped to one source.
+- Tokens should be rotatable and revocable.
+- Avoid shared fleet-wide tokens.
+- TLS is mandatory outside local development.
+- Observation payloads should have size limits.
+- Raw payload retention should be capped by age and count.
+- Manual edits should be audited.
+- API should reject unknown source kinds unless explicitly enabled.
+- Capabilities should be enforced on both the server and the agent.
+- Live terminal and executor capabilities should require explicit opt-in.
+
+* Testing Strategy
+
+- Context tests for resource matching and lifecycle transitions.
+- Controller tests for API auth and validation.
+- LiveView tests for key dashboard and detail selectors.
+- Fixture payloads for host, switch, and VM observations.
+- Reconciliation tests that cover duplicate and conflicting identifiers.
+
+* Open Decisions
+
+- Should the Rust agent live in this repository under =agent/=, or in a separate repository?
+- Which Linux distribution should be the first packaging target?
+- Which virtualization environment matters first?
+- Which switch vendors or protocols matter first?
+- Do we need multi-tenant organization boundaries from day one?
+- Should manual inventory edits override observations field-by-field or only annotate them?
+- Should live queries integrate actual osquery later, or remain a Renga-owned query model?
+- Should the first control-plane transport be polling-only, Phoenix Channels, or both?
+
+* Recommended MVP
+
+Build the host-agent path first:
+
+1. Manual source creation with generated token.
+2. =POST /api/observations= for host facts.
+3. Canonical server and interface records.
+4. Resource identifiers for machine ID, DMI UUID, serial number, hostnames, and MAC addresses.
+5. Stale detection based on =last_seen_at=.
+6. Rust service agent with internal scheduling, check-ins, =--once=, =--dry-run=, config, auth, and POST transport.
+7. Inventory dashboard showing active and stale resources.
+8. Resource detail view showing observed facts, source, identifiers, and last sync.
+
+This creates the smallest useful loop: deploy an agent, report a host, update inventory, and see freshness in the UI.
+
+* NetBox Ideas To Adopt
+
+Adopt:
+
+- Clear domain separation across DCIM, IPAM, virtualization, and tenancy.
+- Interfaces as first-class records.
+- IP addresses assigned to interfaces.
+- Prefixes, VLANs, and VRFs as real IPAM records.
+- Manufacturer, platform, and hardware type concepts.
+- Tags and custom fields.
+- Change logging.
+- Webhooks or event rules later.
+- Tenant assignment later, even if not day one.
+
+Do not copy blindly:
+
+- NetBox is primarily a system of record. Renga should be live observed inventory plus automation.
+- Renga needs source provenance, raw observations, reconciliation, freshness, job leases, agent capabilities, and control-plane audit trails as core concepts.
+- Renga should not require manual modeling before it can discover useful facts from hosts.
