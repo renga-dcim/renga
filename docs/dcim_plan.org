@@ -37,7 +37,7 @@ The system should answer:
 - Keep switch polling and VM provider syncers in the architecture as future source types.
 - Build SaaS-ready organization-scoped multi-tenancy from day one.
 - Represent manual inventory edits as explicit field-level overrides that preserve observed facts.
-- Use a Renga-owned typed live query model first; keep osquery as an optional future integration.
+- Use Renga-native typed operational queries in the agent, and treat osquery as a separate optional endpoint integration for broad host inspection.
 - Model Renga as both a live inventory system and, eventually, an automation control plane.
 - Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
 - Diverge from NetBox by making agents, observations, reconciliation, freshness, jobs, capabilities, and desired-vs-observed state first-class.
@@ -299,7 +299,7 @@ The host agent should be implemented in Rust and structured around modules:
 - =agent-core=: identity, config, auth, scheduler, transports, local observation queue.
 - =collectors=: host facts, network interfaces, disks, filesystems, packages, processes, virtualization hints.
 - =control=: job runner, leases, result reporting, streaming output.
-- =query=: safe osquery-style live queries over predefined tables.
+- =query=: safe Renga-native operational queries over predefined typed tables.
 - =virtualization=: libvirt/KVM first, cloud-hypervisor soon after, and related local hypervisor integrations.
 
 The first Rust agent should be intentionally boring:
@@ -467,33 +467,58 @@ Prerequisites before implementation:
 
 ** Live Queries
 
-For osquery-style live information, start with read-only typed queries over predefined tables instead of arbitrary shell execution.
+The Renga agent should support native typed operational queries, not try to become a full osquery replacement.
 
-Example table names:
+Renga-native query examples:
 
 - =interfaces=
 - =addresses=
-- =mounts=
 - =disks=
-- =processes=
-- =packages=
+- =mounts=
+- =hardware_summary=
+- =agent_status=
 - =vms=
+- =libvirt_domains=
+- =cloud_hypervisor_vms=
+- =capacity=
 
-The server can expose a SQL-like or table/filter query interface later, but the Rust agent should map requests onto known collectors and return typed results.
+These queries should be read-only, collector-backed, typed, and directly useful for DCIM, hypervisor state, capacity planning, and automation decisions. They should map cleanly into Renga resources, jobs, and observations.
 
-Live query direction:
+Do not allow arbitrary shell execution through the query interface.
 
-- First model: Renga-owned typed tables.
-- Execution: read-only collector-backed queries.
-- Optional later integration: osquery as a separately advertised agent capability.
-- Do not allow arbitrary shell execution through the query interface.
-
-Potential capability names:
+Potential Renga-native capability names:
 
 - =host.query.basic=
-- =host.query.processes=
-- =host.query.packages=
-- =host.query.osquery=
+- =host.query.inventory=
+- =host.query.capacity=
+- =vm.query.libvirt=
+- =vm.query.cloud_hypervisor=
+
+*** Osquery Integration
+
+Osquery should be treated as a separate optional integration for broad endpoint inspection, security, and compliance use cases.
+
+The preferred later integration is to implement osquery-compatible remote HTTP endpoints in Renga so existing =osqueryd= deployments can enroll, fetch config, receive distributed queries, and post results.
+
+Potential osquery endpoints:
+
+- =POST /osquery/enroll=
+- =POST /osquery/config=
+- =POST /osquery/log=
+- =POST /osquery/distributed/read=
+- =POST /osquery/distributed/write=
+
+Use osquery for broad endpoint tables such as:
+
+- =processes=
+- =packages=
+- =users=
+- =listening_ports=
+- =kernel_modules=
+- =file_events=
+- security/compliance packs
+
+The Renga agent remains the primary inventory, control, and automation agent. Osquery remains an optional companion for hosts where =osqueryd= is installed and configured.
 
 ** VM Placement
 
