@@ -27,9 +27,17 @@ The system should answer:
 
 - Start with host agents.
 - Write the agent in Rust.
+- Keep the Rust agent in this repository under =agent/= while the protocol and product shape are still evolving.
+- Target Debian/Ubuntu first for agent packaging, with systemd service units and =.deb= packages.
+- Target libvirt/KVM first for virtualization support, with cloud-hypervisor support following soon after.
+- Use a protocol-first switch strategy: SNMP/LLDP for broad compatibility and gNMI/OpenConfig as a first-class modern collector path.
 - Use HTTP POST for periodic inventory observations.
 - Add a persistent control channel later for live terminal, pushed jobs, scheduling, and streaming command/query results.
+- Use persisted jobs with polling as the required control-plane path and Phoenix Channels as the low-latency acceleration path.
 - Keep switch polling and VM provider syncers in the architecture as future source types.
+- Build SaaS-ready organization-scoped multi-tenancy from day one.
+- Represent manual inventory edits as explicit field-level overrides that preserve observed facts.
+- Use a Renga-owned typed live query model first; keep osquery as an optional future integration.
 - Model Renga as both a live inventory system and, eventually, an automation control plane.
 - Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
 - Diverge from NetBox by making agents, observations, reconciliation, freshness, jobs, capabilities, and desired-vs-observed state first-class.
@@ -122,6 +130,29 @@ Start with these Ecto schemas:
 - =Renga.Inventory.Job=
 - =Renga.Inventory.JobEvent=
 - =Renga.Inventory.Capability=
+- =Renga.Inventory.ResourceOverride=
+- =Renga.Accounts.Organization=
+- =Renga.Accounts.OrganizationMembership=
+
+Core tenant boundary:
+
+- The MVP should use a single database with organization-scoped multi-tenancy.
+- User-facing inventory, sources, observations, jobs, sites, racks, interfaces, IPAM records, and change events should carry =organization_id=.
+- Agent tokens should be scoped to one organization.
+- Jobs and control-plane sessions should be scoped to one organization.
+- Unique constraints for user inventory should usually be organization-scoped.
+- All user-facing queries should be scoped by the current organization.
+- Phoenix LiveViews should carry current organization scope the same way authenticated user scope is carried.
+
+Defer advanced tenancy features:
+
+- Billing.
+- Tenant-specific branding.
+- Cross-organization sharing.
+- Enterprise SSO.
+- Per-tenant encryption keys.
+- Database-per-tenant architecture.
+- Region and data residency controls.
 
 Recommended resource fields:
 
@@ -227,6 +258,26 @@ Keep observed state separate from desired state:
 - Desired state is what Renga wants to create, place, change, or retire.
 - Jobs move the world toward desired state; later observations confirm what actually happened.
 
+Manual edits should be field-level override records, not silent mutation of observed facts.
+
+Suggested override fields:
+
+- =organization_id=
+- =resource_id=
+- =field=
+- =value=
+- =reason=
+- =created_by_user_id=
+- =inserted_at=
+
+Override rules:
+
+- Manual override wins in canonical display.
+- Observations are still stored.
+- Conflicts between observed and overridden values remain visible.
+- Overrides are field-scoped, auditable, and removable.
+- Some fields may be manual-only from the start, such as rack position, owner, lifecycle intent, and notes.
+
 * Agent And Collector Model
 
 ** Host Agent
@@ -249,7 +300,7 @@ The host agent should be implemented in Rust and structured around modules:
 - =collectors=: host facts, network interfaces, disks, filesystems, packages, processes, virtualization hints.
 - =control=: job runner, leases, result reporting, streaming output.
 - =query=: safe osquery-style live queries over predefined tables.
-- =virtualization=: libvirt/KVM, cloud-hypervisor, and related local hypervisor integrations.
+- =virtualization=: libvirt/KVM first, cloud-hypervisor soon after, and related local hypervisor integrations.
 
 The first Rust agent should be intentionally boring:
 
@@ -294,7 +345,16 @@ The switch collector reports:
 - VLAN membership.
 - Port descriptions.
 
-This can initially run as a central poller instead of software deployed to switches.
+This can initially run as a central collector instead of software deployed to switches.
+
+Switch support should be protocol-first:
+
+- Baseline compatibility path: SNMP plus LLDP read-only polling.
+- Modern path: gNMI/OpenConfig read-only collection.
+- Initial data: switch identity, interfaces, interface state, and LLDP neighbors.
+- Later data: MAC address tables, VLAN details, streaming telemetry, and vendor-specific extensions.
+
+If a target fleet supports gNMI/OpenConfig cleanly, prioritize that path. Keep SNMP/LLDP as the compatibility baseline for older or mixed environments.
 
 ** VM Provider Sync
 
@@ -377,7 +437,11 @@ Job rules:
 - Jobs expire if not leased or completed in time.
 - Agents reject jobs outside their advertised and locally enabled capabilities.
 - Every state transition becomes a job event.
-- WebSocket delivery is an optimization; jobs must survive disconnects and restarts.
+- Polling job lease endpoints are the required transport.
+- Phoenix Channels/WebSocket delivery is an acceleration path for connected agents.
+- Jobs must survive disconnects and restarts.
+- Agents fall back to polling when the socket is disconnected.
+- Inventory observations continue to use HTTP POST.
 
 Future control endpoints:
 
@@ -417,6 +481,20 @@ Example table names:
 
 The server can expose a SQL-like or table/filter query interface later, but the Rust agent should map requests onto known collectors and return typed results.
 
+Live query direction:
+
+- First model: Renga-owned typed tables.
+- Execution: read-only collector-backed queries.
+- Optional later integration: osquery as a separately advertised agent capability.
+- Do not allow arbitrary shell execution through the query interface.
+
+Potential capability names:
+
+- =host.query.basic=
+- =host.query.processes=
+- =host.query.packages=
+- =host.query.osquery=
+
 ** VM Placement
 
 VM placement turns Renga from inventory into automation. Treat placement as desired state plus controlled jobs.
@@ -432,7 +510,7 @@ Placement needs:
 - Anti-affinity and placement constraints eventually.
 - Cleanup behavior if a create/start/migrate job fails.
 
-Start with libvirt/KVM or cloud-hypervisor on a single host before generalizing to clusters.
+Start with libvirt/KVM on a single host before generalizing to clusters. Add cloud-hypervisor support soon after the libvirt path proves the job, capability, and inventory model.
 
 * Reconciliation Rules
 
@@ -487,10 +565,11 @@ Each source should define:
 
 ** Slice 3: Rust Host Agent MVP
 
-- Create a Rust agent workspace outside the Phoenix app or under a dedicated top-level =agent/= directory.
+- Create a Rust agent workspace under a dedicated top-level =agent/= directory.
 - Implement daemon lifecycle, config loading, identity, auth, internal scheduling, host inventory collection, dry-run output, check-ins, and POST transport.
 - Add systemd unit files for development/proof-of-concept deployment.
-- Package for Linux first.
+- Package Debian/Ubuntu first with =.deb= artifacts.
+- Provide a raw static binary or tarball artifact for development and non-Debian testing.
 - Leave remote command execution, terminal sessions, and VM placement out of the first agent cut.
 
 ** Slice 4: Operational UI
@@ -508,17 +587,19 @@ Each source should define:
 - Add safe read-only live query jobs.
 - Add audit events for job lifecycle changes.
 
-** Slice 6: Optional WebSocket Control Channel
+** Slice 6: Phoenix Channels Control Acceleration
 
 - Add Phoenix Channel or socket endpoint for connected agents.
 - Use it to notify agents about queued jobs and stream job output.
-- Keep polling endpoints as fallback.
+- Keep polling endpoints as the required fallback and correctness path.
 
 ** Slice 7: Switch And VM Syncers
 
 - Add a central collector process for switch polling.
 - Add provider-specific sync behavior behind a common behaviour module.
-- Start with one provider or switch platform before generalizing.
+- Start VM sync with libvirt/KVM read-only inventory.
+- Add cloud-hypervisor support soon after libvirt/KVM.
+- Start switch sync with SNMP/LLDP and gNMI/OpenConfig read-only collection.
 
 * Security
 
@@ -541,17 +622,6 @@ Each source should define:
 - LiveView tests for key dashboard and detail selectors.
 - Fixture payloads for host, switch, and VM observations.
 - Reconciliation tests that cover duplicate and conflicting identifiers.
-
-* Open Decisions
-
-- Should the Rust agent live in this repository under =agent/=, or in a separate repository?
-- Which Linux distribution should be the first packaging target?
-- Which virtualization environment matters first?
-- Which switch vendors or protocols matter first?
-- Do we need multi-tenant organization boundaries from day one?
-- Should manual inventory edits override observations field-by-field or only annotate them?
-- Should live queries integrate actual osquery later, or remain a Renga-owned query model?
-- Should the first control-plane transport be polling-only, Phoenix Channels, or both?
 
 * Recommended MVP
 
