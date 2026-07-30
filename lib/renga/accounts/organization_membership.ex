@@ -37,6 +37,7 @@ defmodule Renga.Accounts.OrganizationMembership do
     |> validate_inclusion(:role, @roles)
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
+    |> assoc_constraint(:user)
     |> unique_constraint([:organization_id, :user_id])
   end
 

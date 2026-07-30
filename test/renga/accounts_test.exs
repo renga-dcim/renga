@@ -89,6 +89,15 @@ defmodule Renga.AccountsTest do
       assert %{user_id: [_]} = errors_on(changeset)
     end
 
+    test "membership user id must reference an existing user", %{organization: organization} do
+      assert {:error, changeset} =
+               Accounts.create_organization_membership(organization, %{
+                 user_id: Ecto.UUID.generate()
+               })
+
+      assert %{user: ["does not exist"]} = errors_on(changeset)
+    end
+
     test "list_organization_memberships/1 is scoped by organization", %{
       organization: organization,
       other_organization: other_organization
