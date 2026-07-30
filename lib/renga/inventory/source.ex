@@ -1,0 +1,60 @@
+defmodule Renga.Inventory.Source do
+  @moduledoc """
+  A source is an organization-scoped producer of inventory observations.
+  """
+
+  use Ecto.Schema
+
+  import Ecto.Changeset
+
+  alias Renga.Accounts.Organization
+
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+  @kinds ~w(host_agent switch_poller vm_provider bmc manual)
+  @statuses ~w(active revoked disabled)
+  @timestamps_opts [type: :utc_datetime]
+
+  schema "sources" do
+    field :kind, :string
+    field :name, :string
+    field :status, :string, default: "active"
+    field :token_hash, :binary
+    field :capabilities, {:array, :string}, default: []
+    field :last_seen_at, :utc_datetime
+    field :metadata, :map, default: %{}
+
+    belongs_to :organization, Organization
+
+    timestamps()
+  end
+
+  def changeset(source, attrs) do
+    source
+    |> cast(attrs, [:kind, :name, :status, :capabilities, :last_seen_at, :metadata],
+      empty_values: []
+    )
+    |> validate_required([:organization_id, :kind, :name, :status])
+    |> validate_inclusion(:kind, @kinds)
+    |> validate_inclusion(:status, @statuses)
+    |> validate_capabilities()
+    |> assoc_constraint(:organization)
+    |> unique_constraint([:organization_id, :name])
+  end
+
+  defp validate_capabilities(changeset) do
+    validate_change(changeset, :capabilities, fn :capabilities, capabilities ->
+      if Enum.all?(capabilities, &valid_capability?/1) do
+        []
+      else
+        [capabilities: "must contain only non-empty strings"]
+      end
+    end)
+  end
+
+  defp valid_capability?(capability) when is_binary(capability) do
+    String.trim(capability) != ""
+  end
+
+  defp valid_capability?(_capability), do: false
+end

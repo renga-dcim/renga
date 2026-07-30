@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict hgFrbPzNzwNo475d5t1WcC3qsKMsWAgPGrMFhSWoGXUwsTJhLBxHmiSsWq5wR0z
+\restrict M5e78s0pQXCjg41Ye2dXsbP4RXzw2zeMqL9Ux6yGPAFmMLocYO47bNLvKa7sH6a
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -65,6 +65,25 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: sources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sources (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    token_hash bytea,
+    capabilities character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    last_seen_at timestamp(0) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
 -- Name: organization_memberships organization_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -86,6 +105,14 @@ ALTER TABLE ONLY public.organizations
 
 ALTER TABLE ONLY public.schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- Name: sources sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sources
+    ADD CONSTRAINT sources_pkey PRIMARY KEY (id);
 
 
 --
@@ -124,6 +151,34 @@ CREATE INDEX organizations_status_index ON public.organizations USING btree (sta
 
 
 --
+-- Name: sources_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sources_organization_id_kind_index ON public.sources USING btree (organization_id, kind);
+
+
+--
+-- Name: sources_organization_id_last_seen_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sources_organization_id_last_seen_at_index ON public.sources USING btree (organization_id, last_seen_at);
+
+
+--
+-- Name: sources_organization_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sources_organization_id_name_index ON public.sources USING btree (organization_id, name);
+
+
+--
+-- Name: sources_organization_id_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sources_organization_id_status_index ON public.sources USING btree (organization_id, status);
+
+
+--
 -- Name: organization_memberships organization_memberships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -132,9 +187,18 @@ ALTER TABLE ONLY public.organization_memberships
 
 
 --
+-- Name: sources sources_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sources
+    ADD CONSTRAINT sources_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict hgFrbPzNzwNo475d5t1WcC3qsKMsWAgPGrMFhSWoGXUwsTJhLBxHmiSsWq5wR0z
+\unrestrict M5e78s0pQXCjg41Ye2dXsbP4RXzw2zeMqL9Ux6yGPAFmMLocYO47bNLvKa7sH6a
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
+INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
