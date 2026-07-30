@@ -1,0 +1,145 @@
+---
+name: elixir
+
+"on":
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  MIX_ENV: test
+  DATABASE_USER: postgres
+  DATABASE_PASSWORD: postgres
+  DATABASE_HOST: localhost
+  DATABASE_PORT: 5432
+  DATABASE_TEST_NAME: textbin_test
+
+  OTP_VERSION: "28.5"
+  ELIXIR_VERSION: "1.20"
+
+jobs:
+  lint:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-lint-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            mix-lint-${{ runner.os }}-
+            mix-${{ runner.os }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Linter
+        run: mix credo
+
+  format:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-format-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            mix-format-${{ runner.os }}-
+            mix-${{ runner.os }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+  test:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: textbin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d textbin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-test-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            mix-test-${{ runner.os }}-
+            mix-${{ runner.os }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile --warnings-as-errors
+
+      - name: Check unused dependencies
+        run: mix deps.unlock --check-unused
+
+      - name: Run tests
+        run: mix test
