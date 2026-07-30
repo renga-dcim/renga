@@ -9,7 +9,11 @@ import Config
 
 config :renga,
   ecto_repos: [Renga.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime, binary_id: true]
+
+config :renga, Renga.Repo,
+  migration_primary_key: [name: :id, type: :binary_id],
+  migration_foreign_key: [type: :binary_id]
 
 # Configures the endpoint
 config :renga, RengaWeb.Endpoint,
