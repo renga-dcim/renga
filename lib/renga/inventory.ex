@@ -1,6 +1,9 @@
 defmodule Renga.Inventory do
   @moduledoc """
   Inventory source and resource management.
+
+  The inventory context owns organization-scoped sources now and will absorb
+  observations, reconciliation, and freshness state in later phases.
   """
 
   import Ecto.Query, warn: false
@@ -9,6 +12,12 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Source
   alias Renga.Repo
 
+  @source_token_prefix "renga_src_"
+  @source_token_bytes 32
+
+  @doc """
+  Lists sources visible inside the caller's organization scope.
+  """
   def list_sources(%Scope{organization_id: organization_id}) do
     Source
     |> where([source], source.organization_id == ^organization_id)
@@ -16,25 +25,121 @@ defmodule Renga.Inventory do
     |> Repo.all()
   end
 
+  @doc """
+  Fetches a source only when it belongs to the caller's organization scope.
+  """
   def get_source!(%Scope{organization_id: organization_id}, id) do
     Source
     |> where([source], source.organization_id == ^organization_id)
     |> Repo.get!(id)
   end
 
+  @doc """
+  Creates a source without issuing a token.
+
+  Use this for manual/non-agent sources or setup flows that will rotate a token
+  separately.
+  """
   def create_source(%Scope{organization_id: organization_id}, attrs) do
     %Source{organization_id: organization_id}
     |> Source.changeset(attrs)
     |> Repo.insert()
   end
 
+  @doc """
+  Creates a source and returns its one-time plaintext token.
+
+  The database stores only the token hash; callers must show or persist the
+  returned token immediately because it cannot be reconstructed later.
+  """
+  def create_source_with_token(%Scope{organization_id: organization_id}, attrs) do
+    token = generate_source_token()
+
+    result =
+      %Source{organization_id: organization_id}
+      |> Source.changeset(attrs)
+      |> Ecto.Changeset.put_change(:token_hash, hash_source_token(token))
+      |> Repo.insert()
+
+    case result do
+      {:ok, source} -> {:ok, {source, token}}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc """
+  Updates source metadata while keeping token lifecycle separate.
+  """
   def update_source(%Source{} = source, attrs) do
     source
     |> Source.changeset(attrs)
     |> Repo.update()
   end
 
+  @doc """
+  Builds a source changeset for UI/API validation.
+  """
   def change_source(%Source{} = source, attrs \\ %{}) do
     Source.changeset(source, attrs)
   end
+
+  @doc """
+  Replaces a source token and returns the new one-time plaintext value.
+  """
+  def rotate_source_token(%Scope{} = scope, source_id) do
+    source = get_source!(scope, source_id)
+    token = generate_source_token()
+
+    result =
+      source
+      |> Source.token_changeset(hash_source_token(token))
+      |> Repo.update()
+
+    case result do
+      {:ok, source} -> {:ok, {source, token}}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc """
+  Revokes source token authentication without deleting source provenance.
+  """
+  def revoke_source_token(%Scope{} = scope, source_id) do
+    scope
+    |> get_source!(source_id)
+    |> Source.revoke_changeset()
+    |> Repo.update()
+  end
+
+  @doc """
+  Authenticates a bearer token from an inventory source.
+
+  A valid token identifies one active source and its organization. User auth is
+  deliberately separate from source auth because agents are not humans.
+  """
+  def authenticate_source_token(@source_token_prefix <> _rest = token) do
+    token_hash = hash_source_token(token)
+
+    Source
+    |> join(:inner, [source], organization in assoc(source, :organization))
+    |> where([source], source.token_hash == ^token_hash)
+    |> where([source, organization], source.status == "active")
+    |> where([source, organization], organization.status == "active")
+    |> Repo.one()
+    |> case do
+      %Source{} = source -> {:ok, source}
+      nil -> :error
+    end
+  end
+
+  def authenticate_source_token(_token), do: :error
+
+  defp generate_source_token do
+    @source_token_prefix <>
+      Base.url_encode64(:crypto.strong_rand_bytes(@source_token_bytes), padding: false)
+  end
+
+  # SHA-256 is sufficient here because source tokens are high-entropy random
+  # secrets, unlike user passwords that need slow Argon2 hashing.
+  defp hash_source_token(token), do: :crypto.hash(:sha256, token)
 end

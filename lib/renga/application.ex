@@ -1,7 +1,10 @@
 defmodule Renga.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
-  @moduledoc false
+  @moduledoc """
+  Starts the core OTP tree for the Phoenix application.
+
+  Long-running inventory workers and agent schedulers should be added here only
+  when they need supervision for the whole application lifetime.
+  """
 
   use Application
 
@@ -12,20 +15,14 @@ defmodule Renga.Application do
       Renga.Repo,
       {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Renga.PubSub},
-      # Start a worker by calling: Renga.Worker.start_link(arg)
-      # {Renga.Worker, arg},
-      # Start to serve requests, typically the last entry
+      # Keep the endpoint last so infrastructure dependencies are ready first.
       RengaWeb.Endpoint
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Renga.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
-  # Tell Phoenix to update the endpoint configuration
-  # whenever the application is updated.
   @impl true
   def config_change(changed, _new, removed) do
     RengaWeb.Endpoint.config_change(changed, removed)

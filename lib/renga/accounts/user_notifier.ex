@@ -1,6 +1,9 @@
 defmodule Renga.Accounts.UserNotifier do
   @moduledoc """
   Delivers account authentication and settings emails.
+
+  This module owns email wording for auth flows so account contexts can request
+  delivery without depending on Swoosh message construction details.
   """
 
   import Swoosh.Email

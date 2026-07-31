@@ -1,8 +1,10 @@
 defmodule Renga.Accounts.OrganizationMembership do
   @moduledoc """
-  Connects an application user to an organization.
-
   Connects the generated authenticated user model to an organization.
+
+  Memberships are where user identity becomes tenant authorization. Roles are
+  intentionally simple for the MVP, but the row is the future place to hang
+  tenant-specific RBAC and audit metadata.
   """
 
   use Ecto.Schema

@@ -39,6 +39,9 @@ defmodule Renga.Accounts.Scope do
 
   @doc """
   Creates a scope for an organization.
+
+  This is useful for source-authenticated API requests and system tasks that
+  operate inside a tenant without a human user.
   """
   def new(%Organization{} = organization, attrs \\ %{}) when is_map(attrs) do
     %__MODULE__{
@@ -52,6 +55,9 @@ defmodule Renga.Accounts.Scope do
 
   @doc """
   Creates a scope for a user and organization membership.
+
+  Web requests should prefer this shape after organization selection so context
+  calls have both the human actor and the tenant boundary available.
   """
   def for_membership(
         %User{} = user,

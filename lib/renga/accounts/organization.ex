@@ -1,6 +1,9 @@
 defmodule Renga.Accounts.Organization do
   @moduledoc """
   An organization is the primary tenant boundary in Renga.
+
+  Inventory, sources, future jobs, and UI queries should all carry this id so
+  multi-tenant isolation is explicit in database constraints and context calls.
   """
 
   use Ecto.Schema

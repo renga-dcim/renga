@@ -155,6 +155,40 @@ defmodule RengaWeb.UserAuthTest do
       assert get_session(conn, :user_token) == user_token
     end
 
+    test "loads current organization from session", %{conn: conn, user: user} do
+      organization = organization_fixture()
+      membership = organization_membership_fixture(user, organization, %{role: "owner"})
+      user_token = Accounts.generate_user_session_token(user)
+
+      conn =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:current_organization_id, organization.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.user.id == user.id
+      assert conn.assigns.current_scope.organization_id == organization.id
+      assert conn.assigns.current_scope.membership_id == membership.id
+      assert conn.assigns.current_scope.roles == ["owner"]
+    end
+
+    test "ignores current organization session value without membership", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+      user_token = Accounts.generate_user_session_token(user)
+
+      conn =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:current_organization_id, organization.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.user.id == user.id
+      assert conn.assigns.current_scope.organization_id == nil
+    end
+
     test "authenticates user from cookies", %{conn: conn, user: user} do
       logged_in_conn =
         conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
@@ -208,6 +242,81 @@ defmodule RengaWeb.UserAuthTest do
       assert new_signed_token != signed_token
       assert max_age == @remember_me_cookie_max_age
     end
+
+    test "preserves current organization when reissuing a session token", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+      membership = organization_membership_fixture(user, organization, %{role: "owner"})
+      user_token = Accounts.generate_user_session_token(user)
+
+      offset_user_token(user_token, -10, :day)
+
+      conn =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:current_organization_id, organization.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.organization_id == organization.id
+      assert conn.assigns.current_scope.membership_id == membership.id
+      assert get_session(conn, :current_organization_id) == organization.id
+      assert get_session(conn, :user_token) != user_token
+    end
+  end
+
+  describe "current organization helpers" do
+    test "put_current_organization/2 stores a valid organization selection", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+      membership = organization_membership_fixture(user, organization, %{role: "admin"})
+
+      conn =
+        conn
+        |> assign(:current_scope, Scope.for_user(user))
+        |> UserAuth.put_current_organization(organization.id)
+
+      assert get_session(conn, :current_organization_id) == organization.id
+      assert conn.assigns.current_scope.organization_id == organization.id
+      assert conn.assigns.current_scope.membership_id == membership.id
+      assert conn.assigns.current_scope.roles == ["admin"]
+    end
+
+    test "put_current_organization/2 ignores organizations outside the current user", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+
+      conn =
+        conn
+        |> assign(:current_scope, Scope.for_user(user))
+        |> UserAuth.put_current_organization(organization.id)
+
+      assert get_session(conn, :current_organization_id) == nil
+      assert conn.assigns.current_scope == Scope.for_user(user)
+    end
+
+    test "clear_current_organization/1 removes the selected organization", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+      organization_membership_fixture(user, organization)
+
+      conn =
+        conn
+        |> assign(:current_scope, Accounts.scope_for_user(user, organization.id))
+        |> put_session(:current_organization_id, organization.id)
+        |> UserAuth.clear_current_organization()
+
+      assert get_session(conn, :current_organization_id) == nil
+      assert conn.assigns.current_scope.user.id == user.id
+      assert conn.assigns.current_scope.organization_id == nil
+    end
   end
 
   describe "on_mount :mount_current_scope" do
@@ -223,6 +332,25 @@ defmodule RengaWeb.UserAuthTest do
         UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
 
       assert updated_socket.assigns.current_scope.user.id == user.id
+    end
+
+    test "assigns current organization from session", %{conn: conn, user: user} do
+      organization = organization_fixture()
+      organization_membership_fixture(user, organization, %{role: "owner"})
+      user_token = Accounts.generate_user_session_token(user)
+
+      session =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:current_organization_id, organization.id)
+        |> get_session()
+
+      {:cont, updated_socket} =
+        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
+
+      assert updated_socket.assigns.current_scope.user.id == user.id
+      assert updated_socket.assigns.current_scope.organization_id == organization.id
+      assert updated_socket.assigns.current_scope.roles == ["owner"]
     end
 
     test "assigns nil to current_scope assign if there isn't a valid user_token", %{conn: conn} do
@@ -386,5 +514,26 @@ defmodule RengaWeb.UserAuthTest do
         topic: "users_sessions:dG9rZW4y"
       }
     end
+  end
+
+  defp organization_fixture(attrs \\ %{}) do
+    name = Map.get(attrs, :name, "Acme Operations")
+    slug = Map.get(attrs, :slug, "acme-ops-#{System.unique_integer([:positive])}")
+
+    {:ok, organization} =
+      Accounts.create_organization(
+        Map.merge(%{name: name, slug: slug}, Map.drop(attrs, [:name, :slug]))
+      )
+
+    organization
+  end
+
+  defp organization_membership_fixture(user, organization, attrs \\ %{}) do
+    attrs =
+      attrs
+      |> Map.put(:user_id, user.id)
+
+    {:ok, membership} = Accounts.create_organization_membership(organization, attrs)
+    membership
   end
 end
