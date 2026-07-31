@@ -19,10 +19,10 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :mtu, :integer
       add :speed_mbps, :integer
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :utc_datetime
-      add :last_seen_at, :utc_datetime
+      add :first_seen_at, :"timestamp(3)"
+      add :last_seen_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:interfaces, [:organization_id, :resource_id])
@@ -47,10 +47,10 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :address, :inet, null: false
       add :scope, :string
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :utc_datetime
-      add :last_seen_at, :utc_datetime
+      add :first_seen_at, :"timestamp(3)"
+      add :last_seen_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:addresses, [:organization_id, :resource_id])

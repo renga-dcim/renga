@@ -20,7 +20,7 @@ defmodule Renga.Inventory.ChangeEvent do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @kinds ~w(discovered updated conflict stale manual_override override_removed)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do
     field :kind, :string
@@ -28,7 +28,7 @@ defmodule Renga.Inventory.ChangeEvent do
     field :old_value, :map
     field :new_value, :map
     field :metadata, :map, default: %{}
-    field :occurred_at, :utc_datetime
+    field :occurred_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :resource, Resource

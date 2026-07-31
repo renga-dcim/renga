@@ -18,14 +18,14 @@ defmodule Renga.Inventory.ResourceIdentifier do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "resource_identifiers" do
     field :kind, :string
     field :value, :string
     field :confidence, :integer, default: 100
-    field :first_seen_at, :utc_datetime
-    field :last_seen_at, :utc_datetime
+    field :first_seen_at, :utc_datetime_usec
+    field :last_seen_at, :utc_datetime_usec
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization

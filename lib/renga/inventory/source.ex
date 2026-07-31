@@ -24,7 +24,7 @@ defmodule Renga.Inventory.Source do
   @foreign_key_type :binary_id
   @kinds ~w(host_agent switch_poller vm_provider bmc manual)
   @statuses ~w(active revoked disabled)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "sources" do
     field :kind, :string
@@ -32,7 +32,7 @@ defmodule Renga.Inventory.Source do
     field :status, :string, default: "active"
     field :token_hash, :binary
     field :capabilities, {:array, :string}, default: []
-    field :last_seen_at, :utc_datetime
+    field :last_seen_at, :utc_datetime_usec
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization

@@ -237,7 +237,7 @@ defmodule Renga.InventoryTest do
     end
 
     test "create_resource/2 creates an organization-scoped canonical resource", %{scope: scope} do
-      now = DateTime.utc_now(:second)
+      now = Renga.Time.utc_now_ms()
 
       assert {:ok, %Resource{} = resource} =
                Inventory.create_resource(scope, %{
@@ -358,7 +358,7 @@ defmodule Renga.InventoryTest do
       resource: resource,
       source: source
     } do
-      now = DateTime.utc_now(:second)
+      now = Renga.Time.utc_now_ms()
 
       assert {:ok, %ResourceIdentifier{} = identifier} =
                Inventory.create_resource_identifier(scope, resource.id, %{
@@ -646,7 +646,7 @@ defmodule Renga.InventoryTest do
       physical_interface: physical_interface,
       bond_interface: bond_interface
     } do
-      now = DateTime.utc_now(:second)
+      now = Renga.Time.utc_now_ms()
 
       assert {:ok, %InterfaceRelationship{} = relationship} =
                Inventory.create_interface_relationship(
@@ -1037,6 +1037,9 @@ defmodule Renga.InventoryTest do
       assert observation.observation_id == "host-agent:compute-01"
       assert is_binary(observation.payload_digest)
       refute Map.has_key?(observation, :updated_at)
+
+      {:ok, <<uuid_unix_ms::48, _rest::binary>>} = Ecto.UUID.dump(observation.id)
+      assert observation.inserted_at == Renga.Time.from_unix_ms!(uuid_unix_ms)
     end
 
     test "list_observations/2 is scoped by organization", %{
@@ -1273,7 +1276,7 @@ defmodule Renga.InventoryTest do
       scope: scope,
       resource: resource
     } do
-      stale_at = DateTime.utc_now(:second)
+      stale_at = Renga.Time.utc_now_ms()
 
       assert {:ok, stale_resource} = Inventory.mark_resource_stale(scope, resource.id, stale_at)
 

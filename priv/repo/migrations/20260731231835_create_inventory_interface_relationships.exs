@@ -17,10 +17,10 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfaceRelationships do
       add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :utc_datetime
-      add :last_seen_at, :utc_datetime
+      add :first_seen_at, :"timestamp(3)"
+      add :last_seen_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:interface_relationships, [:organization_id, :source_interface_id],

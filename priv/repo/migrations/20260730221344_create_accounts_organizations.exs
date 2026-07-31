@@ -9,7 +9,7 @@ defmodule Renga.Repo.Migrations.CreateAccountsOrganizations do
       add :status, :string, null: false, default: "active"
       add :settings, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create unique_index(:organizations, [:slug])
@@ -26,7 +26,7 @@ defmodule Renga.Repo.Migrations.CreateAccountsOrganizations do
       add :status, :string, null: false, default: "active"
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create unique_index(:organization_memberships, [:organization_id, :user_id])

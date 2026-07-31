@@ -19,12 +19,12 @@ defmodule Renga.Inventory.SyncRun do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(running succeeded failed partial)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "sync_runs" do
     field :status, :string, default: "running"
-    field :started_at, :utc_datetime
-    field :completed_at, :utc_datetime
+    field :started_at, :utc_datetime_usec
+    field :completed_at, :utc_datetime_usec
     field :resource_count, :integer, default: 0
     field :error_count, :integer, default: 0
     field :metadata, :map, default: %{}

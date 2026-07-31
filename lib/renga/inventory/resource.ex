@@ -23,7 +23,7 @@ defmodule Renga.Inventory.Resource do
   @foreign_key_type :binary_id
   @kinds ~w(server switch vm container pdu storage unknown)
   @statuses ~w(active inactive stale retired unknown)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "resources" do
     field :kind, :string
@@ -36,10 +36,10 @@ defmodule Renga.Inventory.Resource do
     field :model, :string
     field :status, :string, default: "unknown"
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime
-    field :last_seen_at, :utc_datetime
-    field :last_changed_at, :utc_datetime
-    field :stale_at, :utc_datetime
+    field :first_seen_at, :utc_datetime_usec
+    field :last_seen_at, :utc_datetime_usec
+    field :last_changed_at, :utc_datetime_usec
+    field :stale_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     has_many :addresses, Address

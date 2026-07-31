@@ -19,13 +19,16 @@ defmodule Renga.Accounts.User do
     field :email, :string
     field :password, :string, virtual: true, redact: true
     field :hashed_password, :string, redact: true
-    field :confirmed_at, :utc_datetime
-    field :authenticated_at, :utc_datetime, virtual: true
+    field :confirmed_at, :utc_datetime_usec
+    field :authenticated_at, :utc_datetime_usec, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
     has_many :created_resource_overrides, ResourceOverride, foreign_key: :created_by_user_id
 
-    timestamps(type: :utc_datetime)
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {Renga.Time, :utc_now_ms, []}
+    )
   end
 
   @doc """
@@ -124,7 +127,7 @@ defmodule Renga.Accounts.User do
   Confirms the account by setting `confirmed_at`.
   """
   def confirm_changeset(user) do
-    now = DateTime.utc_now(:second)
+    now = Renga.Time.utc_now_ms()
     change(user, confirmed_at: now)
   end
 

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict cDhknTUnjmz2aimVHMzb0giPMM0CeI36oPk5U4cgvDqgKEsTmPQgnE9bu0L4vgt
+\restrict Chn8324NjpAx0HCr5uIFpGKlSwRMsOhmp4yKWhYLQVgbI1QmCcJfzbIud6HjZie
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -51,10 +51,10 @@ CREATE TABLE public.addresses (
     address inet NOT NULL,
     scope character varying(255),
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    first_seen_at timestamp(0) without time zone,
-    last_seen_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    first_seen_at timestamp(3) without time zone,
+    last_seen_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -74,9 +74,9 @@ CREATE TABLE public.change_events (
     old_value jsonb,
     new_value jsonb,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    occurred_at timestamp(0) without time zone NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    occurred_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -92,10 +92,10 @@ CREATE TABLE public.interface_relationships (
     source_id uuid,
     kind character varying(255) NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    first_seen_at timestamp(0) without time zone,
-    last_seen_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    first_seen_at timestamp(3) without time zone,
+    last_seen_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -115,10 +115,10 @@ CREATE TABLE public.interfaces (
     mtu integer,
     speed_mbps integer,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    first_seen_at timestamp(0) without time zone,
-    last_seen_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    first_seen_at timestamp(3) without time zone,
+    last_seen_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -133,13 +133,13 @@ CREATE TABLE public.observations (
     sync_run_id uuid,
     resource_id uuid,
     observation_id character varying(255),
-    observed_at timestamp(0) without time zone NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
     status character varying(255) DEFAULT 'accepted'::character varying NOT NULL,
     payload_digest bytea NOT NULL,
     payload jsonb NOT NULL,
     errors jsonb DEFAULT '{}'::jsonb NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -154,8 +154,8 @@ CREATE TABLE public.organization_memberships (
     role character varying(255) DEFAULT 'member'::character varying NOT NULL,
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -169,8 +169,8 @@ CREATE TABLE public.organizations (
     slug character varying(255) NOT NULL,
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     settings jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -186,11 +186,11 @@ CREATE TABLE public.resource_identifiers (
     kind character varying(255) NOT NULL,
     value character varying(255) NOT NULL,
     confidence integer DEFAULT 100 NOT NULL,
-    first_seen_at timestamp(0) without time zone,
-    last_seen_at timestamp(0) without time zone,
+    first_seen_at timestamp(3) without time zone,
+    last_seen_at timestamp(3) without time zone,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -206,8 +206,8 @@ CREATE TABLE public.resource_overrides (
     value jsonb NOT NULL,
     reason character varying(255),
     created_by_user_id uuid,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -228,12 +228,12 @@ CREATE TABLE public.resources (
     model character varying(255),
     status character varying(255) DEFAULT 'unknown'::character varying NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    first_seen_at timestamp(0) without time zone,
-    last_seen_at timestamp(0) without time zone,
-    last_changed_at timestamp(0) without time zone,
-    stale_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    first_seen_at timestamp(3) without time zone,
+    last_seen_at timestamp(3) without time zone,
+    last_changed_at timestamp(3) without time zone,
+    stale_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -259,10 +259,10 @@ CREATE TABLE public.sources (
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     token_hash bytea,
     capabilities character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
-    last_seen_at timestamp(0) without time zone,
+    last_seen_at timestamp(3) without time zone,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -275,13 +275,13 @@ CREATE TABLE public.sync_runs (
     organization_id uuid NOT NULL,
     source_id uuid,
     status character varying(255) DEFAULT 'running'::character varying NOT NULL,
-    started_at timestamp(0) without time zone NOT NULL,
-    completed_at timestamp(0) without time zone,
+    started_at timestamp(3) without time zone NOT NULL,
+    completed_at timestamp(3) without time zone,
     resource_count integer DEFAULT 0 NOT NULL,
     error_count integer DEFAULT 0 NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -293,9 +293,9 @@ CREATE TABLE public.users (
     id uuid NOT NULL,
     email public.citext NOT NULL,
     hashed_password character varying(255),
-    confirmed_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    confirmed_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -309,8 +309,8 @@ CREATE TABLE public.users_tokens (
     token bytea NOT NULL,
     context character varying(255) NOT NULL,
     sent_to character varying(255),
-    authenticated_at timestamp(0) without time zone,
-    inserted_at timestamp(0) without time zone NOT NULL
+    authenticated_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -1094,7 +1094,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict cDhknTUnjmz2aimVHMzb0giPMM0CeI36oPk5U4cgvDqgKEsTmPQgnE9bu0L4vgt
+\unrestrict Chn8324NjpAx0HCr5uIFpGKlSwRMsOhmp4yKWhYLQVgbI1QmCcJfzbIud6HjZie
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

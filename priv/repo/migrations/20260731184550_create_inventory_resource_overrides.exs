@@ -16,7 +16,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourceOverrides do
       add :reason, :string
       add :created_by_user_id, references(:users, on_delete: :nilify_all, type: :binary_id)
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:resource_overrides, [:organization_id, :resource_id])

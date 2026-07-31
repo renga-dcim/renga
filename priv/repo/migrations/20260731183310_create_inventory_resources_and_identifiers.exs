@@ -18,12 +18,12 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :model, :string
       add :status, :string, null: false, default: "unknown"
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :utc_datetime
-      add :last_seen_at, :utc_datetime
-      add :last_changed_at, :utc_datetime
-      add :stale_at, :utc_datetime
+      add :first_seen_at, :"timestamp(3)"
+      add :last_seen_at, :"timestamp(3)"
+      add :last_changed_at, :"timestamp(3)"
+      add :stale_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:resources, [:organization_id, :kind])
@@ -57,11 +57,11 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :kind, :string, null: false
       add :value, :string, null: false
       add :confidence, :integer, null: false, default: 100
-      add :first_seen_at, :utc_datetime
-      add :last_seen_at, :utc_datetime
+      add :first_seen_at, :"timestamp(3)"
+      add :last_seen_at, :"timestamp(3)"
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:resource_identifiers, [:organization_id, :resource_id])

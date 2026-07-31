@@ -8,9 +8,9 @@ defmodule Renga.Repo.Migrations.CreateUsersAuthTables do
       add :id, :binary_id, primary_key: true
       add :email, :citext, null: false
       add :hashed_password, :string
-      add :confirmed_at, :utc_datetime
+      add :confirmed_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create unique_index(:users, [:email])
@@ -21,9 +21,9 @@ defmodule Renga.Repo.Migrations.CreateUsersAuthTables do
       add :token, :binary, null: false
       add :context, :string, null: false
       add :sent_to, :string
-      add :authenticated_at, :utc_datetime
+      add :authenticated_at, :"timestamp(3)"
 
-      timestamps(type: :utc_datetime, updated_at: false)
+      timestamps(type: :"timestamp(3)", updated_at: false)
     end
 
     create index(:users_tokens, [:user_id])

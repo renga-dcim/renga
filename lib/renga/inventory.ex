@@ -363,7 +363,7 @@ defmodule Renga.Inventory do
 
     attrs =
       attrs
-      |> Map.put_new(:started_at, DateTime.utc_now(:second))
+      |> Map.put_new(:started_at, Renga.Time.utc_now_ms())
 
     %SyncRun{
       organization_id: organization_id,
@@ -441,7 +441,11 @@ defmodule Renga.Inventory do
   Staleness is a canonical resource state, while the companion change event
   keeps a durable explanation for later timelines.
   """
-  def mark_resource_stale(%Scope{} = scope, resource_id, stale_at \\ DateTime.utc_now(:second)) do
+  def mark_resource_stale(
+        %Scope{} = scope,
+        resource_id,
+        stale_at \\ Renga.Time.utc_now_ms()
+      ) do
     resource = get_resource!(scope, resource_id)
 
     resource
@@ -499,7 +503,7 @@ defmodule Renga.Inventory do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
 
     attrs
-    |> Map.put_new(:observed_at, DateTime.utc_now(:second))
+    |> Map.put_new(:observed_at, Renga.Time.utc_now_ms())
     |> Map.put_new(:payload_digest, digest_payload(payload))
     |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
     |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
@@ -507,7 +511,7 @@ defmodule Renga.Inventory do
 
   defp normalize_change_event_attrs(scope, attrs) do
     attrs
-    |> Map.put_new(:occurred_at, DateTime.utc_now(:second))
+    |> Map.put_new(:occurred_at, Renga.Time.utc_now_ms())
     |> normalize_scoped_assoc(scope, :source_id, &get_source!/2)
     |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
     |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)

@@ -10,13 +10,13 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
 
       add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :status, :string, null: false, default: "running"
-      add :started_at, :utc_datetime, null: false
-      add :completed_at, :utc_datetime
+      add :started_at, :"timestamp(3)", null: false
+      add :completed_at, :"timestamp(3)"
       add :resource_count, :integer, null: false, default: 0
       add :error_count, :integer, null: false, default: 0
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:sync_runs, [:organization_id, :source_id])
@@ -33,14 +33,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :sync_run_id, references(:sync_runs, on_delete: :nilify_all, type: :binary_id)
       add :resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
       add :observation_id, :string
-      add :observed_at, :utc_datetime, null: false
+      add :observed_at, :"timestamp(3)", null: false
       add :status, :string, null: false, default: "accepted"
       add :payload_digest, :binary, null: false
       add :payload, :map, null: false
       add :errors, :map, null: false, default: %{}
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime, updated_at: false)
+      timestamps(type: :"timestamp(3)", updated_at: false)
     end
 
     create index(:observations, [:organization_id, :source_id])
@@ -71,9 +71,9 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :old_value, :map
       add :new_value, :map
       add :metadata, :map, null: false, default: %{}
-      add :occurred_at, :utc_datetime, null: false
+      add :occurred_at, :"timestamp(3)", null: false
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create index(:change_events, [:organization_id, :resource_id])

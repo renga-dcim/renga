@@ -41,6 +41,7 @@ The system should answer:
 - Model Renga as both a live inventory system and, eventually, an automation control plane.
 - Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
 - Diverge from NetBox by making agents, observations, reconciliation, freshness, jobs, capabilities, and desired-vs-observed state first-class.
+- Store application timestamps at millisecond precision. Immutable observation rows should derive =inserted_at= from the millisecond timestamp encoded in their UUIDv7 primary key.
 
 * System Shape
 

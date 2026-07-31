@@ -20,13 +20,13 @@ defmodule Renga.Inventory.InterfaceRelationship do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @kinds ~w(parent lower_device lag_member bridge_member bridged peer vrf_member backed_by)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "interface_relationships" do
     field :kind, :string
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime
-    field :last_seen_at, :utc_datetime
+    field :first_seen_at, :utc_datetime_usec
+    field :last_seen_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source_interface, Interface

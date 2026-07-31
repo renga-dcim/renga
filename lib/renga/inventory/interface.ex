@@ -22,7 +22,7 @@ defmodule Renga.Inventory.Interface do
   @foreign_key_type :binary_id
   @kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @statuses ~w(up down dormant not_present unknown)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "interfaces" do
     field :name, :string
@@ -32,8 +32,8 @@ defmodule Renga.Inventory.Interface do
     field :mtu, :integer
     field :speed_mbps, :integer
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime
-    field :last_seen_at, :utc_datetime
+    field :first_seen_at, :utc_datetime_usec
+    field :last_seen_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :resource, Resource

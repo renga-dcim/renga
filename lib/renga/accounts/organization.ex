@@ -23,7 +23,7 @@ defmodule Renga.Accounts.Organization do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(active disabled)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "organizations" do
     field :name, :string
