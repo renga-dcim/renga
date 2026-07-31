@@ -1,9 +1,8 @@
 defmodule Renga do
   @moduledoc """
-  Renga keeps the contexts that define your domain
-  and business logic.
+  Renga keeps the contexts that define the DCIM domain and business logic.
 
-  Contexts are also responsible for managing your data, regardless
-  if it comes from the database, an external API or others.
+  Contexts own the boundaries between user identity, organization tenancy,
+  inventory sources, and the persistence layer so web/API code stays thin.
   """
 end

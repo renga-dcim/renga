@@ -15,37 +15,62 @@ defmodule Renga.Accounts do
 
   @doc """
   Builds a scope for context calls that must be organization-bound.
+
+  Use this when background jobs, API authentication, or tests already know the
+  organization and need to call organization-scoped contexts without a browser
+  session.
   """
   def scope_for(%Organization{} = organization, attrs \\ %{}) do
     Scope.new(organization, attrs)
   end
 
+  @doc """
+  Lists organizations for administrative workflows.
+  """
   def list_organizations do
     Repo.all(from organization in Organization, order_by: [asc: organization.name])
   end
 
+  @doc """
+  Fetches an organization by id when the caller has already handled scoping.
+  """
   def get_organization!(id), do: Repo.get!(Organization, id)
 
+  @doc """
+  Fetches an organization by slug for future tenant selection flows.
+  """
   def get_organization_by_slug(slug) when is_binary(slug) do
     Repo.get_by(Organization, slug: slug)
   end
 
+  @doc """
+  Creates an organization, the root tenant boundary for inventory data.
+  """
   def create_organization(attrs) do
     %Organization{}
     |> Organization.changeset(attrs)
     |> Repo.insert()
   end
 
+  @doc """
+  Updates organization metadata without changing membership or inventory scope.
+  """
   def update_organization(%Organization{} = organization, attrs) do
     organization
     |> Organization.changeset(attrs)
     |> Repo.update()
   end
 
+  @doc """
+  Builds an organization changeset for forms and validations.
+  """
   def change_organization(%Organization{} = organization, attrs \\ %{}) do
     Organization.changeset(organization, attrs)
   end
 
+  @doc """
+  Lists memberships inside one organization boundary.
+  """
   def list_organization_memberships(%Organization{} = organization) do
     list_organization_memberships(scope_for(organization))
   end
@@ -57,12 +82,18 @@ defmodule Renga.Accounts do
     |> Repo.all()
   end
 
+  @doc """
+  Fetches a membership only when it belongs to the caller's organization scope.
+  """
   def get_organization_membership!(%Scope{organization_id: organization_id}, id) do
     OrganizationMembership
     |> where([membership], membership.organization_id == ^organization_id)
     |> Repo.get!(id)
   end
 
+  @doc """
+  Finds a user's membership in one organization for authorization decisions.
+  """
   def get_membership_for_user(%Organization{} = organization, user_id) do
     get_membership_for_user(scope_for(organization), user_id)
   end
@@ -72,6 +103,12 @@ defmodule Renga.Accounts do
     Repo.get_by(OrganizationMembership, organization_id: organization_id, user_id: user_id)
   end
 
+  @doc """
+  Adds a user to an organization.
+
+  The organization id is set by the trusted argument, not caller attrs, so a
+  form/API caller cannot smuggle membership into another tenant.
+  """
   def create_organization_membership(%Organization{} = organization, attrs) do
     create_organization_membership(scope_for(organization), attrs)
   end
@@ -82,12 +119,18 @@ defmodule Renga.Accounts do
     |> Repo.insert()
   end
 
+  @doc """
+  Updates membership role/status while preserving its organization and user ids.
+  """
   def update_organization_membership(%OrganizationMembership{} = membership, attrs) do
     membership
     |> OrganizationMembership.changeset(attrs)
     |> Repo.update()
   end
 
+  @doc """
+  Lists active organization memberships a signed-in user can select.
+  """
   def list_user_organization_memberships(%User{} = user) do
     OrganizationMembership
     |> join(:inner, [membership], organization in assoc(membership, :organization))
@@ -99,6 +142,9 @@ defmodule Renga.Accounts do
     |> Repo.all()
   end
 
+  @doc """
+  Returns the active membership only if the user can access the organization.
+  """
   def get_user_organization_membership(%User{} = user, organization_id)
       when is_binary(organization_id) do
     OrganizationMembership
@@ -113,6 +159,12 @@ defmodule Renga.Accounts do
 
   def get_user_organization_membership(%User{}, _organization_id), do: nil
 
+  @doc """
+  Builds the request scope from the signed-in user and selected organization.
+
+  An invalid or absent organization id intentionally falls back to user-only
+  scope instead of granting access to a tenant.
+  """
   def scope_for_user(user, organization_id \\ nil)
 
   def scope_for_user(%User{} = user, organization_id) when organization_id in [nil, ""] do

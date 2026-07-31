@@ -1,4 +1,11 @@
 defmodule Renga.Accounts.User do
+  @moduledoc """
+  Human user account used by generated Phoenix authentication.
+
+  Tenant access is intentionally not stored directly on the user. Organization
+  membership rows decide which tenant a user can act within.
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -7,6 +14,7 @@ defmodule Renga.Accounts.User do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "users" do
+    # Passwords stay virtual/redacted so only Argon2 hashes reach persistence.
     field :email, :string
     field :password, :string, virtual: true, redact: true
     field :hashed_password, :string, redact: true
@@ -101,8 +109,8 @@ defmodule Renga.Accounts.User do
 
     if hash_password? && password && changeset.valid? do
       changeset
-      # Hashing could be done with `Ecto.Changeset.prepare_changes/2`, but that
-      # would keep the database transaction open longer and hurt performance.
+      # Hash outside prepare_changes to avoid holding a database transaction
+      # open during Argon2's intentionally expensive work.
       |> put_change(:hashed_password, Argon2.hash_pwd_salt(password))
       |> delete_change(:password)
     else

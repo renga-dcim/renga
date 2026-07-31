@@ -1,6 +1,10 @@
 defmodule Renga.Inventory.Source do
   @moduledoc """
   A source is an organization-scoped producer of inventory observations.
+
+  Sources are the provenance anchor for host agents, switch collectors, VM
+  syncers, and future integrations. Resource facts should point back to the
+  source that reported them.
   """
 
   use Ecto.Schema
@@ -42,12 +46,21 @@ defmodule Renga.Inventory.Source do
     |> unique_constraint([:organization_id, :name])
   end
 
+  @doc """
+  Changes only the token authentication material for a source.
+
+  Keeping this separate from the public changeset prevents caller-controlled
+  attrs from setting token hashes directly.
+  """
   def token_changeset(source, token_hash) when is_binary(token_hash) do
     source
     |> change(token_hash: token_hash, status: "active")
     |> unique_constraint(:token_hash)
   end
 
+  @doc """
+  Disables token authentication while retaining the source row for provenance.
+  """
   def revoke_changeset(source) do
     change(source, token_hash: nil, status: "revoked")
   end

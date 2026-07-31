@@ -1,4 +1,12 @@
 defmodule Renga.Accounts.UserToken do
+  @moduledoc """
+  Session and email-token persistence for user authentication.
+
+  Session tokens are stored directly because they are already protected by the
+  signed session/cookie transport. Email-delivered tokens are stored hashed so a
+  database read cannot become an account takeover token.
+  """
+
   use Ecto.Schema
   import Ecto.Query
   alias Renga.Accounts.UserToken
@@ -6,8 +14,7 @@ defmodule Renga.Accounts.UserToken do
   @hash_algorithm :sha256
   @rand_size 32
 
-  # It is very important to keep the magic link token expiry short,
-  # since someone with access to the email may take over the account.
+  # Keep magic links short-lived because email inbox access can become account access.
   @magic_link_validity_in_minutes 15
   @change_email_validity_in_days 7
   @session_validity_in_days 14
