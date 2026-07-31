@@ -10,10 +10,13 @@ defmodule Renga.Inventory do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
+  alias Renga.Inventory.SyncRun
   alias Renga.Repo
 
   @source_token_prefix "renga_src_"
@@ -280,6 +283,108 @@ defmodule Renga.Inventory do
     |> Repo.insert()
   end
 
+  @doc """
+  Lists sync runs visible inside the caller's organization scope.
+  """
+  def list_sync_runs(%Scope{organization_id: organization_id}) do
+    SyncRun
+    |> where([sync_run], sync_run.organization_id == ^organization_id)
+    |> order_by([sync_run], desc: sync_run.started_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Fetches a sync run only when it belongs to the caller's organization scope.
+  """
+  def get_sync_run!(%Scope{organization_id: organization_id}, id) do
+    SyncRun
+    |> where([sync_run], sync_run.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  @doc """
+  Creates an ingestion run for a scoped source.
+
+  `started_at` defaults here so callers can open a run without each source
+  adapter repeating timestamp boilerplate.
+  """
+  def create_sync_run(%Scope{organization_id: organization_id} = scope, source_id, attrs \\ %{}) do
+    source = get_source!(scope, source_id)
+
+    attrs =
+      attrs
+      |> Map.put_new(:started_at, DateTime.utc_now(:second))
+
+    %SyncRun{
+      organization_id: organization_id,
+      source_id: source.id
+    }
+    |> SyncRun.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists raw observations for a scoped resource, newest first.
+  """
+  def list_observations(%Scope{organization_id: organization_id}, resource_id) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.resource_id == ^resource_id)
+    |> order_by([observation], desc: observation.observed_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Stores one raw source payload.
+
+  The payload digest is computed when absent so duplicate submissions can be
+  rejected without requiring every collector to pre-hash its own payload.
+  """
+  def create_observation(%Scope{organization_id: organization_id} = scope, source_id, attrs) do
+    source = get_source!(scope, source_id)
+    attrs = normalize_observation_attrs(scope, attrs)
+
+    %Observation{
+      organization_id: organization_id,
+      source_id: source.id,
+      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),
+      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id")
+    }
+    |> Observation.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists audit events for a scoped resource, newest first.
+  """
+  def list_change_events(%Scope{organization_id: organization_id}, resource_id) do
+    ChangeEvent
+    |> where([event], event.organization_id == ^organization_id)
+    |> where([event], event.resource_id == ^resource_id)
+    |> order_by([event], desc: event.occurred_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Records a resource or observation state transition.
+
+  Optional linked ids are resolved through the caller scope before insertion so
+  audit trails cannot silently join rows from another organization.
+  """
+  def create_change_event(%Scope{organization_id: organization_id} = scope, attrs) do
+    attrs = normalize_change_event_attrs(scope, attrs)
+
+    %ChangeEvent{
+      organization_id: organization_id,
+      source_id: Map.get(attrs, :source_id) || Map.get(attrs, "source_id"),
+      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id"),
+      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),
+      observation_id: Map.get(attrs, :observation_id) || Map.get(attrs, "observation_id")
+    }
+    |> ChangeEvent.changeset(attrs)
+    |> Repo.insert()
+  end
+
   defp generate_source_token do
     @source_token_prefix <>
       Base.url_encode64(:crypto.strong_rand_bytes(@source_token_bytes), padding: false)
@@ -288,4 +393,48 @@ defmodule Renga.Inventory do
   # SHA-256 is sufficient here because source tokens are high-entropy random
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
+
+  defp normalize_observation_attrs(scope, attrs) do
+    payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
+
+    attrs
+    |> Map.put_new(:observed_at, DateTime.utc_now(:second))
+    |> Map.put_new(:payload_digest, digest_payload(payload))
+    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
+    |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
+  end
+
+  defp normalize_change_event_attrs(scope, attrs) do
+    attrs
+    |> Map.put_new(:occurred_at, DateTime.utc_now(:second))
+    |> normalize_scoped_assoc(scope, :source_id, &get_source!/2)
+    |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
+    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
+    |> normalize_scoped_assoc(scope, :observation_id, &get_observation!/2)
+  end
+
+  defp normalize_scoped_assoc(attrs, scope, field, fetch_fun) do
+    value = Map.get(attrs, field) || Map.get(attrs, Atom.to_string(field))
+
+    if is_nil(value) do
+      attrs
+    else
+      record = fetch_fun.(scope, value)
+      Map.put(attrs, field, record.id)
+    end
+  end
+
+  defp get_observation!(%Scope{organization_id: organization_id}, id) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp digest_payload(nil), do: digest_payload(%{})
+
+  defp digest_payload(payload) do
+    payload
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+  end
 end

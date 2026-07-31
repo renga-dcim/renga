@@ -13,8 +13,11 @@ defmodule Renga.Inventory.Source do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Address
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.SyncRun
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -33,8 +36,11 @@ defmodule Renga.Inventory.Source do
 
     belongs_to :organization, Organization
     has_many :addresses, Address
+    has_many :change_events, ChangeEvent
     has_many :interfaces, Interface
+    has_many :observations, Observation
     has_many :resource_identifiers, ResourceIdentifier
+    has_many :sync_runs, SyncRun
 
     timestamps()
   end

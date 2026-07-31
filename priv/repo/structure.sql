@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict lakOkSB4S2f4UaT7t4k2sCeLbb3ABaBUc09cHb9raBR7KaVyUUd217rqSjeBhuT
+\restrict BY0O7lWjkJRNPdGiLPvaFNPDpK0ZhjihPZEtupXCR8Ii3UObCJ5CHeZ0Lyk0Kvw
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -60,6 +60,28 @@ CREATE TABLE public.addresses (
 
 
 --
+-- Name: change_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.change_events (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid,
+    source_id uuid,
+    sync_run_id uuid,
+    observation_id uuid,
+    kind character varying(255) NOT NULL,
+    field character varying(255),
+    old_value jsonb,
+    new_value jsonb,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    occurred_at timestamp(0) without time zone NOT NULL,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
 -- Name: interfaces; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -77,6 +99,28 @@ CREATE TABLE public.interfaces (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     first_seen_at timestamp(0) without time zone,
     last_seen_at timestamp(0) without time zone,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
+-- Name: observations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.observations (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid,
+    sync_run_id uuid,
+    resource_id uuid,
+    observation_id character varying(255),
+    observed_at timestamp(0) without time zone NOT NULL,
+    status character varying(255) DEFAULT 'accepted'::character varying NOT NULL,
+    payload_digest bytea NOT NULL,
+    payload jsonb NOT NULL,
+    errors jsonb DEFAULT '{}'::jsonb NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(0) without time zone NOT NULL,
     updated_at timestamp(0) without time zone NOT NULL
 );
@@ -189,6 +233,25 @@ CREATE TABLE public.sources (
 
 
 --
+-- Name: sync_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sync_runs (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid,
+    status character varying(255) DEFAULT 'running'::character varying NOT NULL,
+    started_at timestamp(0) without time zone NOT NULL,
+    completed_at timestamp(0) without time zone,
+    resource_count integer DEFAULT 0 NOT NULL,
+    error_count integer DEFAULT 0 NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
 -- Name: users; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -226,11 +289,27 @@ ALTER TABLE ONLY public.addresses
 
 
 --
+-- Name: change_events change_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: interfaces interfaces_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interfaces
     ADD CONSTRAINT interfaces_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: observations observations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_pkey PRIMARY KEY (id);
 
 
 --
@@ -282,6 +361,14 @@ ALTER TABLE ONLY public.sources
 
 
 --
+-- Name: sync_runs sync_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -326,6 +413,41 @@ CREATE INDEX addresses_organization_id_source_id_index ON public.addresses USING
 
 
 --
+-- Name: change_events_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_organization_id_kind_index ON public.change_events USING btree (organization_id, kind);
+
+
+--
+-- Name: change_events_organization_id_occurred_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_organization_id_occurred_at_index ON public.change_events USING btree (organization_id, occurred_at);
+
+
+--
+-- Name: change_events_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_organization_id_resource_id_index ON public.change_events USING btree (organization_id, resource_id);
+
+
+--
+-- Name: change_events_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_organization_id_source_id_index ON public.change_events USING btree (organization_id, source_id);
+
+
+--
+-- Name: change_events_organization_id_sync_run_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_organization_id_sync_run_id_index ON public.change_events USING btree (organization_id, sync_run_id);
+
+
+--
 -- Name: interfaces_organization_id_mac_address_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -351,6 +473,48 @@ CREATE UNIQUE INDEX interfaces_organization_id_resource_id_name_index ON public.
 --
 
 CREATE INDEX interfaces_organization_id_source_id_index ON public.interfaces USING btree (organization_id, source_id);
+
+
+--
+-- Name: observations_organization_id_observed_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX observations_organization_id_observed_at_index ON public.observations USING btree (organization_id, observed_at);
+
+
+--
+-- Name: observations_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX observations_organization_id_resource_id_index ON public.observations USING btree (organization_id, resource_id);
+
+
+--
+-- Name: observations_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX observations_organization_id_source_id_index ON public.observations USING btree (organization_id, source_id);
+
+
+--
+-- Name: observations_organization_id_source_id_observation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX observations_organization_id_source_id_observation_id_index ON public.observations USING btree (organization_id, source_id, observation_id) WHERE ((source_id IS NOT NULL) AND (observation_id IS NOT NULL));
+
+
+--
+-- Name: observations_organization_id_source_id_payload_digest_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX observations_organization_id_source_id_payload_digest_index ON public.observations USING btree (organization_id, source_id, payload_digest) WHERE (source_id IS NOT NULL);
+
+
+--
+-- Name: observations_organization_id_sync_run_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX observations_organization_id_sync_run_id_index ON public.observations USING btree (organization_id, sync_run_id);
 
 
 --
@@ -515,6 +679,27 @@ CREATE UNIQUE INDEX sources_token_hash_index ON public.sources USING btree (toke
 
 
 --
+-- Name: sync_runs_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sync_runs_organization_id_source_id_index ON public.sync_runs USING btree (organization_id, source_id);
+
+
+--
+-- Name: sync_runs_organization_id_started_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sync_runs_organization_id_started_at_index ON public.sync_runs USING btree (organization_id, started_at);
+
+
+--
+-- Name: sync_runs_organization_id_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sync_runs_organization_id_status_index ON public.sync_runs USING btree (organization_id, status);
+
+
+--
 -- Name: users_email_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -568,6 +753,46 @@ ALTER TABLE ONLY public.addresses
 
 
 --
+-- Name: change_events change_events_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_events change_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: change_events change_events_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_events change_events_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_events change_events_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
+
+
+--
 -- Name: interfaces interfaces_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -589,6 +814,38 @@ ALTER TABLE ONLY public.interfaces
 
 ALTER TABLE ONLY public.interfaces
     ADD CONSTRAINT interfaces_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: observations observations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: observations observations_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: observations observations_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: observations observations_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
 
 
 --
@@ -648,6 +905,22 @@ ALTER TABLE ONLY public.sources
 
 
 --
+-- Name: sync_runs sync_runs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sync_runs sync_runs_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sync_runs
+    ADD CONSTRAINT sync_runs_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
 -- Name: users_tokens users_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -659,7 +932,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict lakOkSB4S2f4UaT7t4k2sCeLbb3ABaBUc09cHb9raBR7KaVyUUd217rqSjeBhuT
+\unrestrict BY0O7lWjkJRNPdGiLPvaFNPDpK0ZhjihPZEtupXCR8Ii3UObCJ5CHeZ0Lyk0Kvw
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -668,3 +941,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260730223000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730224000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183310);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
+INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);

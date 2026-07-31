@@ -13,7 +13,9 @@ defmodule Renga.Inventory.Resource do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Address
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceIdentifier
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -40,8 +42,10 @@ defmodule Renga.Inventory.Resource do
 
     belongs_to :organization, Organization
     has_many :addresses, Address
+    has_many :change_events, ChangeEvent
     has_many :identifiers, ResourceIdentifier
     has_many :interfaces, Interface
+    has_many :observations, Observation
 
     timestamps()
   end

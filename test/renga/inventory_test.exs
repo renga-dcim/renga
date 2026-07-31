@@ -4,10 +4,13 @@ defmodule Renga.InventoryTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Address
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
+  alias Renga.Inventory.SyncRun
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
@@ -640,6 +643,237 @@ defmodule Renga.InventoryTest do
                Inventory.create_address(scope, interface.id, %{
                  kind: "bogus",
                  address: "2001:db8::1"
+               })
+
+      assert %{kind: ["is invalid"]} = errors_on(changeset)
+    end
+  end
+
+  describe "sync runs" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      contexts
+      |> Map.put(:source, source)
+    end
+
+    test "create_sync_run/3 creates a scoped ingest batch", %{scope: scope, source: source} do
+      assert {:ok, %SyncRun{} = sync_run} =
+               Inventory.create_sync_run(scope, source.id, %{
+                 status: "running",
+                 resource_count: 2,
+                 metadata: %{"collector" => "host-agent"}
+               })
+
+      assert sync_run.organization_id == scope.organization_id
+      assert sync_run.source_id == source.id
+      assert sync_run.status == "running"
+      assert sync_run.resource_count == 2
+      assert %DateTime{} = sync_run.started_at
+    end
+
+    test "list_sync_runs/1 and get_sync_run!/2 are scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      source: source
+    } do
+      {:ok, sync_run} = Inventory.create_sync_run(scope, source.id)
+
+      assert Inventory.list_sync_runs(scope) == [sync_run]
+      assert Inventory.get_sync_run!(scope, sync_run.id).id == sync_run.id
+      assert Inventory.list_sync_runs(other_scope) == []
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.get_sync_run!(other_scope, sync_run.id)
+      end
+    end
+
+    test "create_sync_run/3 enforces source organization scope", %{
+      other_scope: other_scope,
+      source: source
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_sync_run(other_scope, source.id)
+      end
+    end
+  end
+
+  describe "observations and change events" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      {:ok, sync_run} = Inventory.create_sync_run(contexts.scope, source.id)
+
+      contexts
+      |> Map.put(:resource, resource)
+      |> Map.put(:source, source)
+      |> Map.put(:sync_run, sync_run)
+    end
+
+    test "create_observation/3 stores raw payloads with a computed digest", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      sync_run: sync_run
+    } do
+      assert {:ok, %Observation{} = observation} =
+               Inventory.create_observation(scope, source.id, %{
+                 resource_id: resource.id,
+                 sync_run_id: sync_run.id,
+                 observation_id: " host-agent:compute-01 ",
+                 payload: %{"hostname" => "compute-01", "serial" => "ABC123"}
+               })
+
+      assert observation.organization_id == scope.organization_id
+      assert observation.source_id == source.id
+      assert observation.resource_id == resource.id
+      assert observation.sync_run_id == sync_run.id
+      assert observation.observation_id == "host-agent:compute-01"
+      assert is_binary(observation.payload_digest)
+    end
+
+    test "list_observations/2 is scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      resource: resource,
+      source: source
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          resource_id: resource.id,
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert Inventory.list_observations(scope, resource.id) == [observation]
+      assert Inventory.list_observations(other_scope, resource.id) == []
+    end
+
+    test "observations are unique by source observation id and payload digest", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      attrs = %{
+        resource_id: resource.id,
+        observation_id: "host-agent:compute-01",
+        payload: %{"hostname" => "compute-01"}
+      }
+
+      assert {:ok, _observation} = Inventory.create_observation(scope, source.id, attrs)
+
+      assert {:error, changeset} =
+               Inventory.create_observation(scope, source.id, %{
+                 attrs
+                 | payload: %{"hostname" => "compute-01-updated"}
+               })
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Inventory.create_observation(scope, source.id, %{
+                 resource_id: resource.id,
+                 payload: %{"hostname" => "compute-01"}
+               })
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "create_observation/3 enforces linked resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource,
+      source: source
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_observation(other_scope, source.id, %{
+          resource_id: resource.id,
+          payload: %{"hostname" => "compute-01"}
+        })
+      end
+    end
+
+    test "create_change_event/2 records scoped audit entries", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      sync_run: sync_run
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          resource_id: resource.id,
+          sync_run_id: sync_run.id,
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert {:ok, %ChangeEvent{} = change_event} =
+               Inventory.create_change_event(scope, %{
+                 resource_id: resource.id,
+                 source_id: source.id,
+                 sync_run_id: sync_run.id,
+                 observation_id: observation.id,
+                 kind: "updated",
+                 field: " status ",
+                 old_value: %{"value" => "unknown"},
+                 new_value: %{"value" => "active"}
+               })
+
+      assert change_event.organization_id == scope.organization_id
+      assert change_event.resource_id == resource.id
+      assert change_event.source_id == source.id
+      assert change_event.sync_run_id == sync_run.id
+      assert change_event.observation_id == observation.id
+      assert change_event.field == "status"
+      assert %DateTime{} = change_event.occurred_at
+    end
+
+    test "list_change_events/2 is scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      resource: resource
+    } do
+      {:ok, change_event} =
+        Inventory.create_change_event(scope, %{
+          resource_id: resource.id,
+          kind: "discovered"
+        })
+
+      assert Inventory.list_change_events(scope, resource.id) == [change_event]
+      assert Inventory.list_change_events(other_scope, resource.id) == []
+    end
+
+    test "create_change_event/2 enforces linked resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_change_event(other_scope, %{
+          resource_id: resource.id,
+          kind: "discovered"
+        })
+      end
+    end
+
+    test "change event validations reject unsupported kinds", %{scope: scope} do
+      assert {:error, changeset} =
+               Inventory.create_change_event(scope, %{
+                 kind: "unsupported"
                })
 
       assert %{kind: ["is invalid"]} = errors_on(changeset)
