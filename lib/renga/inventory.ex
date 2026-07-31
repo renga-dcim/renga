@@ -12,6 +12,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
@@ -287,6 +288,48 @@ defmodule Renga.Inventory do
       source_id: source_id_from_attrs(attrs)
     }
     |> Address.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists relationships touching a scoped interface.
+  """
+  def list_interface_relationships(%Scope{organization_id: organization_id}, interface_id) do
+    InterfaceRelationship
+    |> where([relationship], relationship.organization_id == ^organization_id)
+    |> where(
+      [relationship],
+      relationship.source_interface_id == ^interface_id or
+        relationship.target_interface_id == ^interface_id
+    )
+    |> order_by([relationship], asc: relationship.kind, asc: relationship.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates a directed relationship between two scoped interfaces.
+
+  The relationship source and target must both belong to the caller's
+  organization. Optional `source_id` is provenance for the collector that
+  observed the relationship.
+  """
+  def create_interface_relationship(
+        %Scope{organization_id: organization_id} = scope,
+        source_interface_id,
+        target_interface_id,
+        attrs
+      ) do
+    source_interface = get_interface!(scope, source_interface_id)
+    target_interface = get_interface!(scope, target_interface_id)
+    attrs = normalize_source_attrs(scope, attrs)
+
+    %InterfaceRelationship{
+      organization_id: organization_id,
+      source_interface_id: source_interface.id,
+      target_interface_id: target_interface.id,
+      source_id: source_id_from_attrs(attrs)
+    }
+    |> InterfaceRelationship.changeset(attrs)
     |> Repo.insert()
   end
 

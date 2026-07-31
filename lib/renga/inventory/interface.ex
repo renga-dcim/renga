@@ -13,6 +13,7 @@ defmodule Renga.Inventory.Interface do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Address
+  alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
   alias Renga.Types.MacAddress
@@ -38,6 +39,8 @@ defmodule Renga.Inventory.Interface do
     belongs_to :resource, Resource
     belongs_to :source, Source
     has_many :addresses, Address
+    has_many :outgoing_relationships, InterfaceRelationship, foreign_key: :source_interface_id
+    has_many :incoming_relationships, InterfaceRelationship, foreign_key: :target_interface_id
 
     timestamps()
   end

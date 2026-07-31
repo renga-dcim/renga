@@ -6,6 +6,7 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
@@ -574,6 +575,216 @@ defmodule Renga.InventoryTest do
                mtu: ["must be greater than 0"],
                speed_mbps: ["must be greater than 0"]
              } = errors_on(changeset)
+    end
+  end
+
+  describe "interface relationships" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, other_resource} =
+        Inventory.create_resource(contexts.other_scope, %{
+          kind: "server",
+          hostname: "other-compute-01"
+        })
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      {:ok, other_source} =
+        Inventory.create_source(contexts.other_scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      {:ok, physical_interface} =
+        Inventory.create_interface(contexts.scope, resource.id, %{
+          name: "ens1f0np0",
+          kind: "ethernet"
+        })
+
+      {:ok, bond_interface} =
+        Inventory.create_interface(contexts.scope, resource.id, %{
+          name: "bond0",
+          kind: "bond"
+        })
+
+      {:ok, bridge_interface} =
+        Inventory.create_interface(contexts.scope, resource.id, %{
+          name: "br0",
+          kind: "bridge"
+        })
+
+      {:ok, other_interface} =
+        Inventory.create_interface(contexts.other_scope, other_resource.id, %{
+          name: "ens1f0np0",
+          kind: "ethernet"
+        })
+
+      contexts
+      |> Map.put(:resource, resource)
+      |> Map.put(:source, source)
+      |> Map.put(:other_source, other_source)
+      |> Map.put(:physical_interface, physical_interface)
+      |> Map.put(:bond_interface, bond_interface)
+      |> Map.put(:bridge_interface, bridge_interface)
+      |> Map.put(:other_interface, other_interface)
+    end
+
+    test "create_interface_relationship/4 stores directed topology facts", %{
+      scope: scope,
+      source: source,
+      physical_interface: physical_interface,
+      bond_interface: bond_interface
+    } do
+      now = DateTime.utc_now(:second)
+
+      assert {:ok, %InterfaceRelationship{} = relationship} =
+               Inventory.create_interface_relationship(
+                 scope,
+                 physical_interface.id,
+                 bond_interface.id,
+                 %{
+                   source_id: source.id,
+                   kind: "lag_member",
+                   metadata: %{"operational" => "enslaved"},
+                   first_seen_at: now,
+                   last_seen_at: now
+                 }
+               )
+
+      assert relationship.organization_id == scope.organization_id
+      assert relationship.source_interface_id == physical_interface.id
+      assert relationship.target_interface_id == bond_interface.id
+      assert relationship.source_id == source.id
+      assert relationship.kind == "lag_member"
+      assert relationship.metadata == %{"operational" => "enslaved"}
+    end
+
+    test "list_interface_relationships/2 returns relationships touching an interface", %{
+      scope: scope,
+      physical_interface: physical_interface,
+      bond_interface: bond_interface,
+      bridge_interface: bridge_interface
+    } do
+      {:ok, lag_relationship} =
+        Inventory.create_interface_relationship(
+          scope,
+          physical_interface.id,
+          bond_interface.id,
+          %{kind: "lag_member"}
+        )
+
+      {:ok, bridge_relationship} =
+        Inventory.create_interface_relationship(
+          scope,
+          bond_interface.id,
+          bridge_interface.id,
+          %{kind: "bridge_member"}
+        )
+
+      assert Inventory.list_interface_relationships(scope, bond_interface.id) == [
+               bridge_relationship,
+               lag_relationship
+             ]
+    end
+
+    test "create_interface_relationship/4 enforces source and target organization scope", %{
+      scope: scope,
+      physical_interface: physical_interface,
+      other_interface: other_interface
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface_relationship(
+          scope,
+          physical_interface.id,
+          other_interface.id,
+          %{
+            kind: "peer"
+          }
+        )
+      end
+    end
+
+    test "create_interface_relationship/4 enforces provenance source organization scope", %{
+      scope: scope,
+      other_source: other_source,
+      physical_interface: physical_interface,
+      bond_interface: bond_interface
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface_relationship(
+          scope,
+          physical_interface.id,
+          bond_interface.id,
+          %{
+            source_id: other_source.id,
+            kind: "lag_member"
+          }
+        )
+      end
+    end
+
+    test "interface relationship uniqueness is scoped by source target and kind", %{
+      scope: scope,
+      physical_interface: physical_interface,
+      bond_interface: bond_interface
+    } do
+      attrs = %{kind: "lag_member"}
+
+      assert {:ok, _relationship} =
+               Inventory.create_interface_relationship(
+                 scope,
+                 physical_interface.id,
+                 bond_interface.id,
+                 attrs
+               )
+
+      assert {:error, changeset} =
+               Inventory.create_interface_relationship(
+                 scope,
+                 physical_interface.id,
+                 bond_interface.id,
+                 attrs
+               )
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "interface relationship validations reject unsupported kinds and self links", %{
+      scope: scope,
+      physical_interface: physical_interface,
+      bond_interface: bond_interface
+    } do
+      assert {:error, changeset} =
+               Inventory.create_interface_relationship(
+                 scope,
+                 physical_interface.id,
+                 bond_interface.id,
+                 %{kind: "unsupported"}
+               )
+
+      assert %{kind: ["is invalid"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Inventory.create_interface_relationship(
+                 scope,
+                 physical_interface.id,
+                 physical_interface.id,
+                 %{kind: "peer"}
+               )
+
+      assert %{target_interface_id: ["must be different from source interface"]} =
+               errors_on(changeset)
     end
   end
 

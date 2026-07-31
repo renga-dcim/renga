@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict TPHlgPwoBwAoFOQrH8YtkFVdoSXRcE4WUgOKDqELNE916kx47d0EhI0eXWLlJKH
+\restrict dVwcNlOsZH05HGevpGlcQhHjXZ2zKkTA4NDmAmd70q4gBD3gpmig72hvLnpKlvN
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -75,6 +75,25 @@ CREATE TABLE public.change_events (
     new_value jsonb,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     occurred_at timestamp(0) without time zone NOT NULL,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
+-- Name: interface_relationships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_relationships (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_interface_id uuid NOT NULL,
+    target_interface_id uuid NOT NULL,
+    source_id uuid,
+    kind character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    first_seen_at timestamp(0) without time zone,
+    last_seen_at timestamp(0) without time zone,
     inserted_at timestamp(0) without time zone NOT NULL,
     updated_at timestamp(0) without time zone NOT NULL
 );
@@ -313,6 +332,14 @@ ALTER TABLE ONLY public.change_events
 
 
 --
+-- Name: interface_relationships interface_relationships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_relationships
+    ADD CONSTRAINT interface_relationships_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: interfaces interfaces_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -469,6 +496,41 @@ CREATE INDEX change_events_organization_id_source_id_index ON public.change_even
 --
 
 CREATE INDEX change_events_organization_id_sync_run_id_index ON public.change_events USING btree (organization_id, sync_run_id);
+
+
+--
+-- Name: interface_relationships_org_source_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_relationships_org_source_interface_index ON public.interface_relationships USING btree (organization_id, source_interface_id);
+
+
+--
+-- Name: interface_relationships_org_target_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_relationships_org_target_interface_index ON public.interface_relationships USING btree (organization_id, target_interface_id);
+
+
+--
+-- Name: interface_relationships_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_relationships_organization_id_kind_index ON public.interface_relationships USING btree (organization_id, kind);
+
+
+--
+-- Name: interface_relationships_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_relationships_organization_id_source_id_index ON public.interface_relationships USING btree (organization_id, source_id);
+
+
+--
+-- Name: interface_relationships_source_target_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_relationships_source_target_kind_index ON public.interface_relationships USING btree (organization_id, source_interface_id, target_interface_id, kind);
 
 
 --
@@ -838,6 +900,38 @@ ALTER TABLE ONLY public.change_events
 
 
 --
+-- Name: interface_relationships interface_relationships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_relationships
+    ADD CONSTRAINT interface_relationships_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_relationships interface_relationships_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_relationships
+    ADD CONSTRAINT interface_relationships_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: interface_relationships interface_relationships_source_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_relationships
+    ADD CONSTRAINT interface_relationships_source_interface_id_fkey FOREIGN KEY (source_interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_relationships interface_relationships_target_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_relationships
+    ADD CONSTRAINT interface_relationships_target_interface_id_fkey FOREIGN KEY (target_interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
+
+
+--
 -- Name: interfaces interfaces_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1001,7 +1095,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict TPHlgPwoBwAoFOQrH8YtkFVdoSXRcE4WUgOKDqELNE916kx47d0EhI0eXWLlJKH
+\unrestrict dVwcNlOsZH05HGevpGlcQhHjXZ2zKkTA4NDmAmd70q4gBD3gpmig72hvLnpKlvN
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -1012,3 +1106,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260731183310);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);
+INSERT INTO public."schema_migrations" (version) VALUES (20260731231835);

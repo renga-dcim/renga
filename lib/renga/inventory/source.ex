@@ -15,6 +15,7 @@ defmodule Renga.Inventory.Source do
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.SyncRun
@@ -38,6 +39,7 @@ defmodule Renga.Inventory.Source do
     has_many :addresses, Address
     has_many :change_events, ChangeEvent
     has_many :interfaces, Interface
+    has_many :interface_relationships, InterfaceRelationship
     has_many :observations, Observation
     has_many :resource_identifiers, ResourceIdentifier
     has_many :sync_runs, SyncRun
