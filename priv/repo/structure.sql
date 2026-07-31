@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 74N5CBpHmzSzffeQGu7tlRmDpYg3w3uGz5qeFJoHlE1pJLH05da7i6757TzT1zG
+\restrict a8is3vAyMpjH2eqiQMKd0ZKRPY83xuQheWBFVchLQjAYh2SfmpR8G4N1T6Yxbv7
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -238,6 +238,13 @@ CREATE INDEX sources_organization_id_status_index ON public.sources USING btree 
 
 
 --
+-- Name: sources_token_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sources_token_hash_index ON public.sources USING btree (token_hash) WHERE (token_hash IS NOT NULL);
+
+
+--
 -- Name: users_email_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -294,9 +301,10 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 74N5CBpHmzSzffeQGu7tlRmDpYg3w3uGz5qeFJoHlE1pJLH05da7i6757TzT1zG
+\unrestrict a8is3vAyMpjH2eqiQMKd0ZKRPY83xuQheWBFVchLQjAYh2SfmpR8G4N1T6Yxbv7
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222922);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730223000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260730224000);

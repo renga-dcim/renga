@@ -42,6 +42,16 @@ defmodule Renga.Inventory.Source do
     |> unique_constraint([:organization_id, :name])
   end
 
+  def token_changeset(source, token_hash) when is_binary(token_hash) do
+    source
+    |> change(token_hash: token_hash, status: "active")
+    |> unique_constraint(:token_hash)
+  end
+
+  def revoke_changeset(source) do
+    change(source, token_hash: nil, status: "revoked")
+  end
+
   defp validate_capabilities(changeset) do
     validate_change(changeset, :capabilities, fn :capabilities, capabilities ->
       if Enum.all?(capabilities, &valid_capability?/1) do
