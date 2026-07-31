@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict BY0O7lWjkJRNPdGiLPvaFNPDpK0ZhjihPZEtupXCR8Ii3UObCJ5CHeZ0Lyk0Kvw
+\restrict Fdte5on7mpjgdYDpTmSCymhEyotM2sDU3Qm8d6DhVFErtuQsONpWgk49OZzbYwG
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -178,6 +178,23 @@ CREATE TABLE public.resource_identifiers (
 
 
 --
+-- Name: resource_overrides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_overrides (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    field character varying(255) NOT NULL,
+    value jsonb NOT NULL,
+    reason character varying(255),
+    created_by_user_id uuid,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
 -- Name: resources; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -334,6 +351,14 @@ ALTER TABLE ONLY public.organizations
 
 ALTER TABLE ONLY public.resource_identifiers
     ADD CONSTRAINT resource_identifiers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_overrides resource_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_overrides
+    ADD CONSTRAINT resource_overrides_pkey PRIMARY KEY (id);
 
 
 --
@@ -585,6 +610,27 @@ CREATE UNIQUE INDEX resource_identifiers_organization_id_source_id_kind_value_in
 --
 
 CREATE UNIQUE INDEX resource_identifiers_resource_kind_value_index ON public.resource_identifiers USING btree (organization_id, resource_id, kind, value);
+
+
+--
+-- Name: resource_overrides_organization_id_created_by_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_overrides_organization_id_created_by_user_id_index ON public.resource_overrides USING btree (organization_id, created_by_user_id);
+
+
+--
+-- Name: resource_overrides_organization_id_resource_id_field_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_overrides_organization_id_resource_id_field_index ON public.resource_overrides USING btree (organization_id, resource_id, field);
+
+
+--
+-- Name: resource_overrides_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_overrides_organization_id_resource_id_index ON public.resource_overrides USING btree (organization_id, resource_id);
 
 
 --
@@ -889,6 +935,30 @@ ALTER TABLE ONLY public.resource_identifiers
 
 
 --
+-- Name: resource_overrides resource_overrides_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_overrides
+    ADD CONSTRAINT resource_overrides_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: resource_overrides resource_overrides_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_overrides
+    ADD CONSTRAINT resource_overrides_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_overrides resource_overrides_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_overrides
+    ADD CONSTRAINT resource_overrides_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
 -- Name: resources resources_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -932,7 +1002,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict BY0O7lWjkJRNPdGiLPvaFNPDpK0ZhjihPZEtupXCR8Ii3UObCJ5CHeZ0Lyk0Kvw
+\unrestrict Fdte5on7mpjgdYDpTmSCymhEyotM2sDU3Qm8d6DhVFErtuQsONpWgk49OZzbYwG
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -942,3 +1012,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260730224000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183310);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);
+INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);

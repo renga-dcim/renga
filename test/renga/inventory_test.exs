@@ -9,6 +9,7 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceOverride
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
 
@@ -877,6 +878,129 @@ defmodule Renga.InventoryTest do
                })
 
       assert %{kind: ["is invalid"]} = errors_on(changeset)
+    end
+  end
+
+  describe "resource overrides and freshness" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01",
+          status: "active"
+        })
+
+      contexts
+      |> Map.put(:resource, resource)
+    end
+
+    test "create_resource_override/3 stores scoped manual overrides with actor attribution", %{
+      scope: scope,
+      resource: resource
+    } do
+      {:ok, user} =
+        Accounts.register_user(%{
+          email: "operator#{System.unique_integer()}@example.com"
+        })
+
+      scope = %{scope | user: user}
+
+      assert {:ok, %ResourceOverride{} = override} =
+               Inventory.create_resource_override(scope, resource.id, %{
+                 field: " hostname ",
+                 value: %{"value" => "manual-compute-01"},
+                 reason: " vendor feed is stale ",
+                 created_by_user_id: Ecto.UUID.generate()
+               })
+
+      assert override.organization_id == scope.organization_id
+      assert override.resource_id == resource.id
+      assert override.created_by_user_id == user.id
+      assert override.field == "hostname"
+      assert override.reason == "vendor feed is stale"
+      assert override.value == %{"value" => "manual-compute-01"}
+    end
+
+    test "list_resource_overrides/2 is scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      resource: resource
+    } do
+      {:ok, override} =
+        Inventory.create_resource_override(scope, resource.id, %{
+          field: "status",
+          value: %{"value" => "maintenance"}
+        })
+
+      assert Inventory.list_resource_overrides(scope, resource.id) == [override]
+      assert Inventory.list_resource_overrides(other_scope, resource.id) == []
+    end
+
+    test "create_resource_override/3 enforces resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_resource_override(other_scope, resource.id, %{
+          field: "status",
+          value: %{"value" => "maintenance"}
+        })
+      end
+    end
+
+    test "resource override uniqueness is scoped by resource field", %{
+      scope: scope,
+      resource: resource
+    } do
+      attrs = %{
+        field: "status",
+        value: %{"value" => "maintenance"}
+      }
+
+      assert {:ok, _override} = Inventory.create_resource_override(scope, resource.id, attrs)
+      assert {:error, changeset} = Inventory.create_resource_override(scope, resource.id, attrs)
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "resource override validations reject missing values", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:error, changeset} =
+               Inventory.create_resource_override(scope, resource.id, %{
+                 field: "",
+                 value: nil
+               })
+
+      assert %{
+               field: ["can't be blank"],
+               value: ["can't be blank"]
+             } = errors_on(changeset)
+    end
+
+    test "mark_resource_stale/3 records a scoped freshness transition", %{
+      scope: scope,
+      resource: resource
+    } do
+      stale_at = DateTime.utc_now(:second)
+
+      assert {:ok, stale_resource} = Inventory.mark_resource_stale(scope, resource.id, stale_at)
+
+      assert stale_resource.status == "stale"
+      assert stale_resource.stale_at == stale_at
+      assert stale_resource.last_changed_at == stale_at
+    end
+
+    test "mark_resource_stale/3 enforces resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.mark_resource_stale(other_scope, resource.id)
+      end
     end
   end
 end

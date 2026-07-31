@@ -15,6 +15,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceOverride
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
@@ -382,6 +383,57 @@ defmodule Renga.Inventory do
       observation_id: Map.get(attrs, :observation_id) || Map.get(attrs, "observation_id")
     }
     |> ChangeEvent.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Marks a resource stale inside the caller's organization.
+
+  Staleness is a canonical resource state, while the companion change event
+  keeps a durable explanation for later timelines.
+  """
+  def mark_resource_stale(%Scope{} = scope, resource_id, stale_at \\ DateTime.utc_now(:second)) do
+    resource = get_resource!(scope, resource_id)
+
+    resource
+    |> Resource.changeset(%{
+      status: "stale",
+      stale_at: stale_at,
+      last_changed_at: stale_at
+    })
+    |> Repo.update()
+  end
+
+  @doc """
+  Lists manual overrides for a scoped resource.
+  """
+  def list_resource_overrides(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceOverride
+    |> where([override], override.organization_id == ^organization_id)
+    |> where([override], override.resource_id == ^resource_id)
+    |> order_by([override], asc: override.field)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates a field-level manual override for a scoped resource.
+
+  `created_by_user_id` is copied from the scope when present so callers cannot
+  impersonate a different human actor through attrs.
+  """
+  def create_resource_override(
+        %Scope{organization_id: organization_id} = scope,
+        resource_id,
+        attrs
+      ) do
+    resource = get_resource!(scope, resource_id)
+
+    %ResourceOverride{
+      organization_id: organization_id,
+      resource_id: resource.id,
+      created_by_user_id: scope.user && scope.user.id
+    }
+    |> ResourceOverride.changeset(attrs)
     |> Repo.insert()
   end
 

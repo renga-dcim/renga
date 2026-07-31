@@ -17,6 +17,7 @@ defmodule Renga.Inventory.Resource do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceOverride
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -46,6 +47,7 @@ defmodule Renga.Inventory.Resource do
     has_many :identifiers, ResourceIdentifier
     has_many :interfaces, Interface
     has_many :observations, Observation
+    has_many :overrides, ResourceOverride
 
     timestamps()
   end

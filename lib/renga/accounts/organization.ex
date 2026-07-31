@@ -16,6 +16,7 @@ defmodule Renga.Accounts.Organization do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceOverride
   alias Renga.Inventory.SyncRun
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -34,6 +35,7 @@ defmodule Renga.Accounts.Organization do
     has_many :change_events, ChangeEvent
     has_many :interfaces, Interface
     has_many :observations, Observation
+    has_many :resource_overrides, ResourceOverride
     has_many :resources, Resource
     has_many :sync_runs, SyncRun
 

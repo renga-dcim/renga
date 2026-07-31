@@ -1,0 +1,26 @@
+defmodule Renga.Repo.Migrations.CreateInventoryResourceOverrides do
+  use Ecto.Migration
+
+  def change do
+    create table(:resource_overrides, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :field, :string, null: false
+      add :value, :map, null: false
+      add :reason, :string
+      add :created_by_user_id, references(:users, on_delete: :nilify_all, type: :binary_id)
+
+      timestamps(type: :utc_datetime)
+    end
+
+    create index(:resource_overrides, [:organization_id, :resource_id])
+    create index(:resource_overrides, [:organization_id, :created_by_user_id])
+    create unique_index(:resource_overrides, [:organization_id, :resource_id, :field])
+  end
+end

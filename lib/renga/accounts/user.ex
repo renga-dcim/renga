@@ -10,6 +10,7 @@ defmodule Renga.Accounts.User do
   import Ecto.Changeset
 
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Inventory.ResourceOverride
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -22,6 +23,7 @@ defmodule Renga.Accounts.User do
     field :authenticated_at, :utc_datetime, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
+    has_many :created_resource_overrides, ResourceOverride, foreign_key: :created_by_user_id
 
     timestamps(type: :utc_datetime)
   end
