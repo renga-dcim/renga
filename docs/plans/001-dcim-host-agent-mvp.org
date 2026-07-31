@@ -59,9 +59,9 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 ** 1. Organization And Source Foundation
 
 - [X] Add accounts schemas for =Organization= and =OrganizationMembership=.
-- [ ] Add current organization scope helpers for controllers, LiveViews, and contexts.
+- [X] Add current organization scope helpers for controllers, LiveViews, and contexts.
 - [X] Add =Source= schema with =organization_id=, =kind=, =name=, =status=, =token_hash=, =capabilities=, =last_seen_at=, and =metadata=.
-- [ ] Add source token generation, hashing, rotation, and revocation.
+- [X] Add source token generation, hashing, rotation, and revocation.
 - [X] Add organization-scoped source context tests.
 
 ** 2. Inventory Data Model
