@@ -9,6 +9,8 @@ defmodule Renga.Inventory do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
   alias Renga.Repo
 
@@ -133,6 +135,85 @@ defmodule Renga.Inventory do
   end
 
   def authenticate_source_token(_token), do: :error
+
+  @doc """
+  Lists canonical resources visible inside the caller's organization scope.
+  """
+  def list_resources(%Scope{organization_id: organization_id}) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> order_by([resource], asc: resource.hostname, asc: resource.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Fetches a resource only when it belongs to the caller's organization scope.
+  """
+  def get_resource!(%Scope{organization_id: organization_id}, id) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  @doc """
+  Creates a canonical resource within the caller's organization.
+
+  `organization_id` is assigned from the trusted scope so callers cannot create
+  resources in another tenant by passing forged attrs.
+  """
+  def create_resource(%Scope{organization_id: organization_id}, attrs) do
+    %Resource{organization_id: organization_id}
+    |> Resource.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Updates canonical resource fields without changing its tenant.
+  """
+  def update_resource(%Resource{} = resource, attrs) do
+    resource
+    |> Resource.changeset(attrs)
+    |> Repo.update()
+  end
+
+  @doc """
+  Builds a resource changeset for UI/API validation.
+  """
+  def change_resource(%Resource{} = resource, attrs \\ %{}) do
+    Resource.changeset(resource, attrs)
+  end
+
+  @doc """
+  Lists observed identifiers for a resource in the caller's organization.
+  """
+  def list_resource_identifiers(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceIdentifier
+    |> where([identifier], identifier.organization_id == ^organization_id)
+    |> where([identifier], identifier.resource_id == ^resource_id)
+    |> order_by([identifier], asc: identifier.kind, asc: identifier.value)
+    |> Repo.all()
+  end
+
+  @doc """
+  Adds observed identity evidence to a resource.
+
+  The organization id is copied from the caller scope and the resource must be
+  fetched through the same scope before this function is called.
+  """
+  def create_resource_identifier(
+        %Scope{organization_id: organization_id} = scope,
+        resource_id,
+        attrs
+      ) do
+    resource = get_resource!(scope, resource_id)
+
+    %ResourceIdentifier{
+      organization_id: organization_id,
+      resource_id: resource.id
+    }
+    |> ResourceIdentifier.changeset(attrs)
+    |> Repo.insert()
+  end
 
   defp generate_source_token do
     @source_token_prefix <>

@@ -3,26 +3,34 @@ defmodule Renga.InventoryTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
+
+  defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+
+  defp scoped_organizations do
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Acme Operations",
+        slug: unique_slug("acme-ops")
+      })
+
+    {:ok, other_organization} =
+      Accounts.create_organization(%{
+        name: "Beta Operations",
+        slug: unique_slug("beta-ops")
+      })
+
+    %{
+      scope: Accounts.scope_for(organization),
+      other_scope: Accounts.scope_for(other_organization)
+    }
+  end
 
   describe "sources" do
     setup do
-      {:ok, organization} =
-        Accounts.create_organization(%{
-          name: "Acme Operations",
-          slug: "acme-ops"
-        })
-
-      {:ok, other_organization} =
-        Accounts.create_organization(%{
-          name: "Beta Operations",
-          slug: "beta-ops"
-        })
-
-      %{
-        scope: Accounts.scope_for(organization),
-        other_scope: Accounts.scope_for(other_organization)
-      }
+      scoped_organizations()
     end
 
     test "create_source/2 creates an organization-scoped source", %{scope: scope} do
@@ -213,6 +221,208 @@ defmodule Renga.InventoryTest do
     test "authenticate_source_token/1 rejects malformed tokens" do
       assert Inventory.authenticate_source_token("not-a-source-token") == :error
       assert Inventory.authenticate_source_token(nil) == :error
+    end
+  end
+
+  describe "resources" do
+    setup do
+      scoped_organizations()
+    end
+
+    test "create_resource/2 creates an organization-scoped canonical resource", %{scope: scope} do
+      now = DateTime.utc_now(:second)
+
+      assert {:ok, %Resource{} = resource} =
+               Inventory.create_resource(scope, %{
+                 kind: "server",
+                 hostname: "compute-01",
+                 fqdn: "compute-01.example.net",
+                 vendor: "Dell Inc.",
+                 model: "PowerEdge R760",
+                 status: "active",
+                 metadata: %{"rack_hint" => "rack-12"},
+                 first_seen_at: now,
+                 last_seen_at: now
+               })
+
+      assert {:ok, _uuid} = Ecto.UUID.cast(resource.id)
+      assert resource.organization_id == scope.organization_id
+      assert resource.hostname == "compute-01"
+      assert resource.status == "active"
+      assert resource.metadata == %{"rack_hint" => "rack-12"}
+    end
+
+    test "list_resources/1 and get_resource!/2 are scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, _other_resource} =
+        Inventory.create_resource(other_scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      assert Inventory.list_resources(scope) == [resource]
+      assert Inventory.get_resource!(scope, resource.id).id == resource.id
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.get_resource!(other_scope, resource.id)
+      end
+    end
+
+    test "create_resource/2 validates kind and status", %{scope: scope} do
+      assert {:error, changeset} =
+               Inventory.create_resource(scope, %{
+                 kind: "unknown-kind",
+                 status: "missing"
+               })
+
+      assert %{
+               kind: ["is invalid"],
+               status: ["is invalid"]
+             } = errors_on(changeset)
+    end
+
+    test "resource uniqueness constraints are organization-scoped", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      attrs = %{
+        kind: "server",
+        hostname: "compute-01",
+        serial_number: "ABC123"
+      }
+
+      assert {:ok, _resource} = Inventory.create_resource(scope, attrs)
+      assert {:ok, _resource} = Inventory.create_resource(other_scope, attrs)
+
+      assert {:error, changeset} = Inventory.create_resource(scope, attrs)
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "programmatic organization id is not cast from attrs", %{scope: scope} do
+      assert {:ok, resource} =
+               Inventory.create_resource(scope, %{
+                 organization_id: Ecto.UUID.generate(),
+                 kind: "server",
+                 hostname: "compute-01"
+               })
+
+      assert resource.organization_id == scope.organization_id
+    end
+  end
+
+  describe "resource identifiers" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      contexts
+      |> Map.put(:resource, resource)
+      |> Map.put(:source, source)
+    end
+
+    test "create_resource_identifier/3 stores observed identity facts", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      now = DateTime.utc_now(:second)
+
+      assert {:ok, %ResourceIdentifier{} = identifier} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 source_id: source.id,
+                 kind: "machine_id",
+                 value: " 9f3c ",
+                 confidence: 95,
+                 first_seen_at: now,
+                 last_seen_at: now
+               })
+
+      assert identifier.organization_id == scope.organization_id
+      assert identifier.resource_id == resource.id
+      assert identifier.source_id == source.id
+      assert identifier.value == "9f3c"
+      assert identifier.confidence == 95
+    end
+
+    test "list_resource_identifiers/2 is scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      resource: resource
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "hostname",
+          value: "compute-01"
+        })
+
+      assert Inventory.list_resource_identifiers(scope, resource.id) == [identifier]
+      assert Inventory.list_resource_identifiers(other_scope, resource.id) == []
+    end
+
+    test "create_resource_identifier/3 enforces resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_resource_identifier(other_scope, resource.id, %{
+          kind: "hostname",
+          value: "compute-01"
+        })
+      end
+    end
+
+    test "identifier uniqueness is scoped by source kind and value", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      attrs = %{
+        source_id: source.id,
+        kind: "serial_number",
+        value: "ABC123"
+      }
+
+      assert {:ok, _identifier} = Inventory.create_resource_identifier(scope, resource.id, attrs)
+      assert {:error, changeset} = Inventory.create_resource_identifier(scope, resource.id, attrs)
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "identifier validations reject unsupported kinds and confidence outside range", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:error, changeset} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "unsupported",
+                 value: "",
+                 confidence: 101
+               })
+
+      assert %{
+               kind: ["is invalid"],
+               value: ["can't be blank"],
+               confidence: ["must be less than or equal to 100"]
+             } = errors_on(changeset)
     end
   end
 end
