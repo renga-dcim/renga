@@ -195,6 +195,21 @@ defmodule Renga.InventoryTest do
       assert Inventory.authenticate_source_token(token) == :error
     end
 
+    test "authenticate_source_token/1 rejects tokens for disabled organizations", %{scope: scope} do
+      {:ok, {_source, token}} =
+        Inventory.create_source_with_token(scope, %{
+          kind: "host_agent",
+          name: "iad-1-host-agent"
+        })
+
+      organization = Accounts.get_organization!(scope.organization_id)
+
+      assert {:ok, _organization} =
+               Accounts.update_organization(organization, %{status: "disabled"})
+
+      assert Inventory.authenticate_source_token(token) == :error
+    end
+
     test "authenticate_source_token/1 rejects malformed tokens" do
       assert Inventory.authenticate_source_token("not-a-source-token") == :error
       assert Inventory.authenticate_source_token(nil) == :error

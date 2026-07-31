@@ -136,11 +136,22 @@ defmodule RengaWeb.UserAuth do
     token_age = DateTime.diff(DateTime.utc_now(:second), token_inserted_at, :day)
 
     if token_age >= @session_reissue_age_in_days do
-      create_or_extend_session(conn, user, %{})
+      current_organization_id = get_session(conn, @current_organization_key)
+
+      conn
+      |> create_or_extend_session(user, %{})
+      |> maybe_put_current_organization_session(current_organization_id)
     else
       conn
     end
   end
+
+  defp maybe_put_current_organization_session(conn, organization_id)
+       when is_binary(organization_id) do
+    put_session(conn, @current_organization_key, organization_id)
+  end
+
+  defp maybe_put_current_organization_session(conn, _organization_id), do: conn
 
   # This function is the one responsible for creating session tokens
   # and storing them safely in the session and cookies. It may be called

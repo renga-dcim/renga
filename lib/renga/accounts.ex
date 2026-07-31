@@ -115,13 +115,12 @@ defmodule Renga.Accounts do
 
   def scope_for_user(user, organization_id \\ nil)
 
+  def scope_for_user(%User{} = user, organization_id) when organization_id in [nil, ""] do
+    Scope.for_user(user)
+  end
+
   def scope_for_user(%User{} = user, organization_id) do
-    membership =
-      case organization_id do
-        nil -> user |> list_user_organization_memberships() |> List.first()
-        "" -> user |> list_user_organization_memberships() |> List.first()
-        organization_id -> get_user_organization_membership(user, organization_id)
-      end
+    membership = get_user_organization_membership(user, organization_id)
 
     case membership do
       %OrganizationMembership{organization: %Organization{} = organization} ->

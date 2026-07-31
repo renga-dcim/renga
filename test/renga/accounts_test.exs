@@ -288,6 +288,26 @@ defmodule Renga.AccountsTest do
       assert scope.membership_id == nil
       assert scope.roles == []
     end
+
+    test "scope_for_user/2 returns user-only scope without an explicit organization", %{
+      user: user,
+      organization: organization
+    } do
+      {:ok, _membership} =
+        Accounts.create_organization_membership(organization, %{
+          user_id: user.id,
+          role: "owner"
+        })
+
+      for organization_id <- [nil, ""] do
+        scope = Accounts.scope_for_user(user, organization_id)
+
+        assert scope.user.id == user.id
+        assert scope.organization_id == nil
+        assert scope.membership_id == nil
+        assert scope.roles == []
+      end
+    end
   end
 
   alias Renga.Accounts.{User, UserToken}

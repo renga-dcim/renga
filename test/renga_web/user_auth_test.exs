@@ -242,6 +242,28 @@ defmodule RengaWeb.UserAuthTest do
       assert new_signed_token != signed_token
       assert max_age == @remember_me_cookie_max_age
     end
+
+    test "preserves current organization when reissuing a session token", %{
+      conn: conn,
+      user: user
+    } do
+      organization = organization_fixture()
+      membership = organization_membership_fixture(user, organization, %{role: "owner"})
+      user_token = Accounts.generate_user_session_token(user)
+
+      offset_user_token(user_token, -10, :day)
+
+      conn =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:current_organization_id, organization.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.organization_id == organization.id
+      assert conn.assigns.current_scope.membership_id == membership.id
+      assert get_session(conn, :current_organization_id) == organization.id
+      assert get_session(conn, :user_token) != user_token
+    end
   end
 
   describe "current organization helpers" do

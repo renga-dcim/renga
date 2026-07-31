@@ -82,8 +82,10 @@ defmodule Renga.Inventory do
     token_hash = hash_source_token(token)
 
     Source
+    |> join(:inner, [source], organization in assoc(source, :organization))
     |> where([source], source.token_hash == ^token_hash)
-    |> where([source], source.status == "active")
+    |> where([source, organization], source.status == "active")
+    |> where([source, organization], organization.status == "active")
     |> Repo.one()
     |> case do
       %Source{} = source -> {:ok, source}
