@@ -619,8 +619,7 @@ defmodule Renga.InventoryTest do
                Inventory.create_address(scope, interface.id, %{
                  source_id: source.id,
                  kind: "ipv4",
-                 address: " 192.0.2.10 ",
-                 prefix_length: 24,
+                 address: " 192.0.2.10/24 ",
                  scope: "global"
                })
 
@@ -628,7 +627,7 @@ defmodule Renga.InventoryTest do
       assert address.resource_id == resource.id
       assert address.interface_id == interface.id
       assert address.source_id == source.id
-      assert address.address == "192.0.2.10"
+      assert address.address == %Postgrex.INET{address: {192, 0, 2, 10}, netmask: 24}
     end
 
     test "list_addresses/2 is scoped by organization", %{
@@ -639,8 +638,7 @@ defmodule Renga.InventoryTest do
       {:ok, address} =
         Inventory.create_address(scope, interface.id, %{
           kind: "ipv4",
-          address: "192.0.2.10",
-          prefix_length: 24
+          address: "192.0.2.10/24"
         })
 
       assert Inventory.list_addresses(scope, interface.id) == [address]
@@ -676,8 +674,7 @@ defmodule Renga.InventoryTest do
     test "addresses are unique per interface", %{scope: scope, interface: interface} do
       attrs = %{
         kind: "ipv4",
-        address: "192.0.2.10",
-        prefix_length: 24
+        address: "192.0.2.10/24"
       }
 
       assert {:ok, _address} = Inventory.create_address(scope, interface.id, attrs)
@@ -686,21 +683,35 @@ defmodule Renga.InventoryTest do
       assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
     end
 
-    test "address validations enforce kind and prefix range", %{
+    test "address validations enforce kind and native inet parsing", %{
       scope: scope,
       interface: interface
     } do
       assert {:error, changeset} =
                Inventory.create_address(scope, interface.id, %{
                  kind: "ipv4",
-                 address: "",
-                 prefix_length: 33
+                 address: ""
                })
 
       assert %{
-               address: ["can't be blank"],
-               prefix_length: ["must be less than or equal to 32"]
+               address: ["can't be blank"]
              } = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Inventory.create_address(scope, interface.id, %{
+                 kind: "ipv4",
+                 address: "2001:db8::1/64"
+               })
+
+      assert %{address: ["does not match kind"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Inventory.create_address(scope, interface.id, %{
+                 kind: "ipv6",
+                 address: "2001:db8::1/129"
+               })
+
+      assert %{address: ["is invalid"]} = errors_on(changeset)
 
       assert {:error, changeset} =
                Inventory.create_address(scope, interface.id, %{

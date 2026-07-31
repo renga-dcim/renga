@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Fdte5on7mpjgdYDpTmSCymhEyotM2sDU3Qm8d6DhVFErtuQsONpWgk49OZzbYwG
+\restrict TcApGIocwf3DrJzyzQSJdlmuZHHsCoOq0EuGunSrP3LeIvPS37fVdSWp27crjpE
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -48,8 +48,7 @@ CREATE TABLE public.addresses (
     interface_id uuid NOT NULL,
     source_id uuid,
     kind character varying(255) NOT NULL,
-    address character varying(255) NOT NULL,
-    prefix_length integer,
+    address inet NOT NULL,
     scope character varying(255),
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     first_seen_at timestamp(0) without time zone,
@@ -410,10 +409,10 @@ ALTER TABLE ONLY public.users_tokens
 
 
 --
--- Name: addresses_organization_id_interface_id_address_prefix_length_in; Type: INDEX; Schema: public; Owner: -
+-- Name: addresses_organization_id_interface_id_address_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX addresses_organization_id_interface_id_address_prefix_length_in ON public.addresses USING btree (organization_id, interface_id, address, prefix_length);
+CREATE UNIQUE INDEX addresses_organization_id_interface_id_address_index ON public.addresses USING btree (organization_id, interface_id, address);
 
 
 --
@@ -1002,7 +1001,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Fdte5on7mpjgdYDpTmSCymhEyotM2sDU3Qm8d6DhVFErtuQsONpWgk49OZzbYwG
+\unrestrict TcApGIocwf3DrJzyzQSJdlmuZHHsCoOq0EuGunSrP3LeIvPS37fVdSWp27crjpE
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

@@ -44,8 +44,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
 
       add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
-      add :address, :string, null: false
-      add :prefix_length, :integer
+      add :address, :inet, null: false
       add :scope, :string
       add :metadata, :map, null: false, default: %{}
       add :first_seen_at, :utc_datetime
@@ -57,9 +56,6 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
     create index(:addresses, [:organization_id, :resource_id])
     create index(:addresses, [:organization_id, :interface_id])
     create index(:addresses, [:organization_id, :source_id])
-
-    create unique_index(:addresses, [:organization_id, :interface_id, :address, :prefix_length],
-             name: :addresses_organization_id_interface_id_address_prefix_length_in
-           )
+    create unique_index(:addresses, [:organization_id, :interface_id, :address])
   end
 end

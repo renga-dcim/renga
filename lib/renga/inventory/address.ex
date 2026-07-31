@@ -14,6 +14,7 @@ defmodule Renga.Inventory.Address do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
+  alias Renga.Types.Inet
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -22,8 +23,7 @@ defmodule Renga.Inventory.Address do
 
   schema "addresses" do
     field :kind, :string
-    field :address, :string
-    field :prefix_length, :integer
+    field :address, Inet
     field :scope, :string
     field :metadata, :map, default: %{}
     field :first_seen_at, :utc_datetime
@@ -42,46 +42,33 @@ defmodule Renga.Inventory.Address do
     |> cast(attrs, [
       :kind,
       :address,
-      :prefix_length,
       :scope,
       :metadata,
       :first_seen_at,
       :last_seen_at
     ])
-    |> update_change(:address, &trim_address/1)
     |> validate_required([:organization_id, :resource_id, :interface_id, :kind, :address])
     |> validate_inclusion(:kind, @kinds)
-    |> validate_prefix_length()
+    |> validate_kind_matches_address()
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource)
     |> assoc_constraint(:interface)
     |> assoc_constraint(:source)
-    |> unique_constraint([:organization_id, :interface_id, :address, :prefix_length],
-      name: :addresses_organization_id_interface_id_address_prefix_length_in
-    )
+    |> unique_constraint([:organization_id, :interface_id, :address])
   end
 
-  defp validate_prefix_length(changeset) do
-    kind = Ecto.Changeset.get_field(changeset, :kind)
+  defp validate_kind_matches_address(changeset) do
+    kind = get_field(changeset, :kind)
+    address = get_field(changeset, :address)
 
-    case kind do
-      "ipv4" ->
-        validate_number(changeset, :prefix_length,
-          greater_than_or_equal_to: 0,
-          less_than_or_equal_to: 32
-        )
-
-      "ipv6" ->
-        validate_number(changeset, :prefix_length,
-          greater_than_or_equal_to: 0,
-          less_than_or_equal_to: 128
-        )
-
-      _ ->
-        changeset
+    if address_family(address) in [nil, kind] do
+      changeset
+    else
+      add_error(changeset, :address, "does not match kind")
     end
   end
 
-  defp trim_address(value) when is_binary(value), do: String.trim(value)
-  defp trim_address(value), do: value
+  defp address_family(%Postgrex.INET{address: {_, _, _, _}}), do: "ipv4"
+  defp address_family(%Postgrex.INET{address: {_, _, _, _, _, _, _, _}}), do: "ipv6"
+  defp address_family(_address), do: nil
 end
