@@ -66,14 +66,14 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 
 ** 2. Inventory Data Model
 
-- [ ] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
-- [ ] Add =ResourceIdentifier= schema for observed identity facts.
-- [ ] Add =Interface= and =Address= schemas for first-class network inventory.
-- [ ] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
-- [ ] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
-- [ ] Add =ResourceOverride= schema for field-level manual overrides.
-- [ ] Add uniqueness constraints scoped by =organization_id= where appropriate.
-- [ ] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
+- [X] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
+- [X] Add =ResourceIdentifier= schema for observed identity facts.
+- [X] Add =Interface= and =Address= schemas for first-class network inventory.
+- [X] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
+- [X] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
+- [X] Add =ResourceOverride= schema for field-level manual overrides.
+- [X] Add uniqueness constraints scoped by =organization_id= where appropriate.
+- [X] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
 
 ** 3. Observation Ingestion API
 
