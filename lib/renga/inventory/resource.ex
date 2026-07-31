@@ -12,6 +12,8 @@ defmodule Renga.Inventory.Resource do
   import Ecto.Changeset
 
   alias Renga.Accounts.Organization
+  alias Renga.Inventory.Address
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.ResourceIdentifier
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -37,7 +39,9 @@ defmodule Renga.Inventory.Resource do
     field :stale_at, :utc_datetime
 
     belongs_to :organization, Organization
+    has_many :addresses, Address
     has_many :identifiers, ResourceIdentifier
+    has_many :interfaces, Interface
 
     timestamps()
   end

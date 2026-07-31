@@ -3,6 +3,8 @@ defmodule Renga.InventoryTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.Address
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
@@ -423,6 +425,224 @@ defmodule Renga.InventoryTest do
                value: ["can't be blank"],
                confidence: ["must be less than or equal to 100"]
              } = errors_on(changeset)
+    end
+  end
+
+  describe "interfaces" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      contexts
+      |> Map.put(:resource, resource)
+      |> Map.put(:source, source)
+    end
+
+    test "create_interface/3 creates a scoped resource interface", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      assert {:ok, %Interface{} = interface} =
+               Inventory.create_interface(scope, resource.id, %{
+                 source_id: source.id,
+                 name: " eth0 ",
+                 mac_address: " AA:BB:CC:DD:EE:FF ",
+                 kind: "ethernet",
+                 status: "up",
+                 mtu: 1500,
+                 speed_mbps: 10_000
+               })
+
+      assert interface.organization_id == scope.organization_id
+      assert interface.resource_id == resource.id
+      assert interface.source_id == source.id
+      assert interface.name == "eth0"
+      assert interface.mac_address == "aa:bb:cc:dd:ee:ff"
+    end
+
+    test "list_interfaces/2 and get_interface!/2 are scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      resource: resource
+    } do
+      {:ok, interface} =
+        Inventory.create_interface(scope, resource.id, %{
+          name: "eth0"
+        })
+
+      assert Inventory.list_interfaces(scope, resource.id) == [interface]
+      assert Inventory.get_interface!(scope, interface.id).id == interface.id
+
+      assert Inventory.list_interfaces(other_scope, resource.id) == []
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.get_interface!(other_scope, interface.id)
+      end
+    end
+
+    test "create_interface/3 enforces resource organization scope", %{
+      other_scope: other_scope,
+      resource: resource
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface(other_scope, resource.id, %{name: "eth0"})
+      end
+    end
+
+    test "interface names are unique per resource", %{scope: scope, resource: resource} do
+      attrs = %{name: "eth0"}
+
+      assert {:ok, _interface} = Inventory.create_interface(scope, resource.id, attrs)
+      assert {:error, changeset} = Inventory.create_interface(scope, resource.id, attrs)
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "interface validations reject unsupported values", %{scope: scope, resource: resource} do
+      assert {:error, changeset} =
+               Inventory.create_interface(scope, resource.id, %{
+                 name: "",
+                 kind: "unsupported",
+                 status: "missing",
+                 mtu: 0,
+                 speed_mbps: 0
+               })
+
+      assert %{
+               name: ["can't be blank"],
+               kind: ["is invalid"],
+               status: ["is invalid"],
+               mtu: ["must be greater than 0"],
+               speed_mbps: ["must be greater than 0"]
+             } = errors_on(changeset)
+    end
+  end
+
+  describe "addresses" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{
+          kind: "server",
+          hostname: "compute-01"
+        })
+
+      {:ok, interface} =
+        Inventory.create_interface(contexts.scope, resource.id, %{
+          name: "eth0"
+        })
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      contexts
+      |> Map.put(:resource, resource)
+      |> Map.put(:interface, interface)
+      |> Map.put(:source, source)
+    end
+
+    test "create_address/3 creates a scoped interface address", %{
+      scope: scope,
+      resource: resource,
+      interface: interface,
+      source: source
+    } do
+      assert {:ok, %Address{} = address} =
+               Inventory.create_address(scope, interface.id, %{
+                 source_id: source.id,
+                 kind: "ipv4",
+                 address: " 192.0.2.10 ",
+                 prefix_length: 24,
+                 scope: "global"
+               })
+
+      assert address.organization_id == scope.organization_id
+      assert address.resource_id == resource.id
+      assert address.interface_id == interface.id
+      assert address.source_id == source.id
+      assert address.address == "192.0.2.10"
+    end
+
+    test "list_addresses/2 is scoped by organization", %{
+      scope: scope,
+      other_scope: other_scope,
+      interface: interface
+    } do
+      {:ok, address} =
+        Inventory.create_address(scope, interface.id, %{
+          kind: "ipv4",
+          address: "192.0.2.10",
+          prefix_length: 24
+        })
+
+      assert Inventory.list_addresses(scope, interface.id) == [address]
+      assert Inventory.list_addresses(other_scope, interface.id) == []
+    end
+
+    test "create_address/3 enforces interface organization scope", %{
+      other_scope: other_scope,
+      interface: interface
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_address(other_scope, interface.id, %{
+          kind: "ipv4",
+          address: "192.0.2.10"
+        })
+      end
+    end
+
+    test "addresses are unique per interface", %{scope: scope, interface: interface} do
+      attrs = %{
+        kind: "ipv4",
+        address: "192.0.2.10",
+        prefix_length: 24
+      }
+
+      assert {:ok, _address} = Inventory.create_address(scope, interface.id, attrs)
+      assert {:error, changeset} = Inventory.create_address(scope, interface.id, attrs)
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "address validations enforce kind and prefix range", %{
+      scope: scope,
+      interface: interface
+    } do
+      assert {:error, changeset} =
+               Inventory.create_address(scope, interface.id, %{
+                 kind: "ipv4",
+                 address: "",
+                 prefix_length: 33
+               })
+
+      assert %{
+               address: ["can't be blank"],
+               prefix_length: ["must be less than or equal to 32"]
+             } = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Inventory.create_address(scope, interface.id, %{
+                 kind: "bogus",
+                 address: "2001:db8::1"
+               })
+
+      assert %{kind: ["is invalid"]} = errors_on(changeset)
     end
   end
 end

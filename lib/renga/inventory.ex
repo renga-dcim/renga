@@ -9,6 +9,8 @@ defmodule Renga.Inventory do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Inventory.Address
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
@@ -212,6 +214,69 @@ defmodule Renga.Inventory do
       resource_id: resource.id
     }
     |> ResourceIdentifier.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists interfaces for a resource in the caller's organization scope.
+  """
+  def list_interfaces(%Scope{organization_id: organization_id}, resource_id) do
+    Interface
+    |> where([interface], interface.organization_id == ^organization_id)
+    |> where([interface], interface.resource_id == ^resource_id)
+    |> order_by([interface], asc: interface.name)
+    |> Repo.all()
+  end
+
+  @doc """
+  Fetches an interface only when it belongs to the caller's organization scope.
+  """
+  def get_interface!(%Scope{organization_id: organization_id}, id) do
+    Interface
+    |> where([interface], interface.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  @doc """
+  Creates an interface under a scoped resource.
+  """
+  def create_interface(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+
+    %Interface{
+      organization_id: organization_id,
+      resource_id: resource.id
+    }
+    |> Interface.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists addresses for a resource interface in the caller's organization scope.
+  """
+  def list_addresses(%Scope{organization_id: organization_id}, interface_id) do
+    Address
+    |> where([address], address.organization_id == ^organization_id)
+    |> where([address], address.interface_id == ^interface_id)
+    |> order_by([address], asc: address.address)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates an address under a scoped interface.
+
+  `resource_id` is copied from the interface to keep resource-level address
+  queries cheap and consistently organization-scoped.
+  """
+  def create_address(%Scope{organization_id: organization_id} = scope, interface_id, attrs) do
+    interface = get_interface!(scope, interface_id)
+
+    %Address{
+      organization_id: organization_id,
+      resource_id: interface.resource_id,
+      interface_id: interface.id
+    }
+    |> Address.changeset(attrs)
     |> Repo.insert()
   end
 

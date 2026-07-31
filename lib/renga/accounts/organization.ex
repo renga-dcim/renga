@@ -11,6 +11,8 @@ defmodule Renga.Accounts.Organization do
   import Ecto.Changeset
 
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Inventory.Address
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -25,6 +27,8 @@ defmodule Renga.Accounts.Organization do
     field :settings, :map, default: %{}
 
     has_many :memberships, OrganizationMembership
+    has_many :addresses, Address
+    has_many :interfaces, Interface
     has_many :resources, Resource
 
     timestamps()

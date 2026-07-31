@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 8bi1sxBqpbBNuvNVshBxMgjwRoqXmom7HonrYHRAxbg8c8RoblWVCYY7KRf2gHs
+\restrict lakOkSB4S2f4UaT7t4k2sCeLbb3ABaBUc09cHb9raBR7KaVyUUd217rqSjeBhuT
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -36,6 +36,51 @@ COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: addresses; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.addresses (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    source_id uuid,
+    kind character varying(255) NOT NULL,
+    address character varying(255) NOT NULL,
+    prefix_length integer,
+    scope character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    first_seen_at timestamp(0) without time zone,
+    last_seen_at timestamp(0) without time zone,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
+
+--
+-- Name: interfaces; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interfaces (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    source_id uuid,
+    name character varying(255) NOT NULL,
+    mac_address character varying(255),
+    kind character varying(255) DEFAULT 'ethernet'::character varying NOT NULL,
+    status character varying(255) DEFAULT 'unknown'::character varying NOT NULL,
+    mtu integer,
+    speed_mbps integer,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    first_seen_at timestamp(0) without time zone,
+    last_seen_at timestamp(0) without time zone,
+    inserted_at timestamp(0) without time zone NOT NULL,
+    updated_at timestamp(0) without time zone NOT NULL
+);
+
 
 --
 -- Name: organization_memberships; Type: TABLE; Schema: public; Owner: -
@@ -173,6 +218,22 @@ CREATE TABLE public.users_tokens (
 
 
 --
+-- Name: addresses addresses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addresses
+    ADD CONSTRAINT addresses_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interfaces interfaces_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interfaces
+    ADD CONSTRAINT interfaces_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: organization_memberships organization_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -234,6 +295,62 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.users_tokens
     ADD CONSTRAINT users_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: addresses_organization_id_interface_id_address_prefix_length_in; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX addresses_organization_id_interface_id_address_prefix_length_in ON public.addresses USING btree (organization_id, interface_id, address, prefix_length);
+
+
+--
+-- Name: addresses_organization_id_interface_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX addresses_organization_id_interface_id_index ON public.addresses USING btree (organization_id, interface_id);
+
+
+--
+-- Name: addresses_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX addresses_organization_id_resource_id_index ON public.addresses USING btree (organization_id, resource_id);
+
+
+--
+-- Name: addresses_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX addresses_organization_id_source_id_index ON public.addresses USING btree (organization_id, source_id);
+
+
+--
+-- Name: interfaces_organization_id_mac_address_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interfaces_organization_id_mac_address_index ON public.interfaces USING btree (organization_id, mac_address);
+
+
+--
+-- Name: interfaces_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interfaces_organization_id_resource_id_index ON public.interfaces USING btree (organization_id, resource_id);
+
+
+--
+-- Name: interfaces_organization_id_resource_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interfaces_organization_id_resource_id_name_index ON public.interfaces USING btree (organization_id, resource_id, name);
+
+
+--
+-- Name: interfaces_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interfaces_organization_id_source_id_index ON public.interfaces USING btree (organization_id, source_id);
 
 
 --
@@ -419,6 +536,62 @@ CREATE INDEX users_tokens_user_id_index ON public.users_tokens USING btree (user
 
 
 --
+-- Name: addresses addresses_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addresses
+    ADD CONSTRAINT addresses_interface_id_fkey FOREIGN KEY (interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
+
+
+--
+-- Name: addresses addresses_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addresses
+    ADD CONSTRAINT addresses_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: addresses addresses_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addresses
+    ADD CONSTRAINT addresses_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: addresses addresses_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addresses
+    ADD CONSTRAINT addresses_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: interfaces interfaces_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interfaces
+    ADD CONSTRAINT interfaces_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interfaces interfaces_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interfaces
+    ADD CONSTRAINT interfaces_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interfaces interfaces_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interfaces
+    ADD CONSTRAINT interfaces_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
+
+
+--
 -- Name: organization_memberships organization_memberships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -486,7 +659,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 8bi1sxBqpbBNuvNVshBxMgjwRoqXmom7HonrYHRAxbg8c8RoblWVCYY7KRf2gHs
+\unrestrict lakOkSB4S2f4UaT7t4k2sCeLbb3ABaBUc09cHb9raBR7KaVyUUd217rqSjeBhuT
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -494,3 +667,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260730222922);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730223000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730224000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183310);
+INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
