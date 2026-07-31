@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict TcApGIocwf3DrJzyzQSJdlmuZHHsCoOq0EuGunSrP3LeIvPS37fVdSWp27crjpE
+\restrict TPHlgPwoBwAoFOQrH8YtkFVdoSXRcE4WUgOKDqELNE916kx47d0EhI0eXWLlJKH
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -90,7 +90,7 @@ CREATE TABLE public.interfaces (
     resource_id uuid NOT NULL,
     source_id uuid,
     name character varying(255) NOT NULL,
-    mac_address character varying(255),
+    mac_address macaddr,
     kind character varying(255) DEFAULT 'ethernet'::character varying NOT NULL,
     status character varying(255) DEFAULT 'unknown'::character varying NOT NULL,
     mtu integer,
@@ -1001,7 +1001,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict TcApGIocwf3DrJzyzQSJdlmuZHHsCoOq0EuGunSrP3LeIvPS37fVdSWp27crjpE
+\unrestrict TPHlgPwoBwAoFOQrH8YtkFVdoSXRcE4WUgOKDqELNE916kx47d0EhI0eXWLlJKH
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

@@ -13,7 +13,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
 
       add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :name, :string, null: false
-      add :mac_address, :string
+      add :mac_address, :macaddr
       add :kind, :string, null: false, default: "ethernet"
       add :status, :string, null: false, default: "unknown"
       add :mtu, :integer

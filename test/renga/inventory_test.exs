@@ -501,7 +501,7 @@ defmodule Renga.InventoryTest do
       assert interface.resource_id == resource.id
       assert interface.source_id == source.id
       assert interface.name == "eth0"
-      assert interface.mac_address == "aa:bb:cc:dd:ee:ff"
+      assert interface.mac_address == %Postgrex.MACADDR{address: {170, 187, 204, 221, 238, 255}}
     end
 
     test "list_interfaces/2 and get_interface!/2 are scoped by organization", %{
@@ -559,6 +559,7 @@ defmodule Renga.InventoryTest do
       assert {:error, changeset} =
                Inventory.create_interface(scope, resource.id, %{
                  name: "",
+                 mac_address: "not-a-mac",
                  kind: "unsupported",
                  status: "missing",
                  mtu: 0,
@@ -567,6 +568,7 @@ defmodule Renga.InventoryTest do
 
       assert %{
                name: ["can't be blank"],
+               mac_address: ["is invalid"],
                kind: ["is invalid"],
                status: ["is invalid"],
                mtu: ["must be greater than 0"],

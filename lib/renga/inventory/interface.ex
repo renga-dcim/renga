@@ -15,6 +15,7 @@ defmodule Renga.Inventory.Interface do
   alias Renga.Inventory.Address
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
+  alias Renga.Types.MacAddress
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -24,7 +25,7 @@ defmodule Renga.Inventory.Interface do
 
   schema "interfaces" do
     field :name, :string
-    field :mac_address, :string
+    field :mac_address, MacAddress
     field :kind, :string, default: "ethernet"
     field :status, :string, default: "unknown"
     field :mtu, :integer
@@ -55,7 +56,6 @@ defmodule Renga.Inventory.Interface do
       :last_seen_at
     ])
     |> update_change(:name, &String.trim/1)
-    |> update_change(:mac_address, &normalize_mac_address/1)
     |> validate_required([:organization_id, :resource_id, :name, :kind, :status])
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
@@ -65,13 +65,5 @@ defmodule Renga.Inventory.Interface do
     |> assoc_constraint(:resource)
     |> assoc_constraint(:source)
     |> unique_constraint([:organization_id, :resource_id, :name])
-  end
-
-  defp normalize_mac_address(nil), do: nil
-
-  defp normalize_mac_address(mac_address) when is_binary(mac_address) do
-    mac_address
-    |> String.trim()
-    |> String.downcase()
   end
 end

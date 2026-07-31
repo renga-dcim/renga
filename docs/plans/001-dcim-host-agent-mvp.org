@@ -68,7 +68,7 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 
 - [X] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
 - [X] Add =ResourceIdentifier= schema for observed identity facts.
-- [X] Add =Interface= and =Address= schemas for first-class network inventory, storing interface assignments as PostgreSQL =inet= values.
+- [X] Add =Interface= and =Address= schemas for first-class network inventory, storing MAC addresses as PostgreSQL =macaddr= and interface IP assignments as PostgreSQL =inet= values.
 - [X] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
 - [X] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
 - [X] Add =ResourceOverride= schema for field-level manual overrides.
@@ -76,8 +76,9 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 - [X] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
 
 IPAM prefixes/subnets should be modeled separately from observed interface
-addresses when IPAM lands. Use PostgreSQL =cidr= for managed prefix records and
-PostgreSQL =inet= for assigned or observed interface addresses.
+addresses when IPAM lands. Use PostgreSQL =cidr= for managed prefix records,
+PostgreSQL =inet= for assigned or observed interface IP addresses, and
+PostgreSQL =macaddr= for first-class interface MAC addresses.
 
 ** 3. Observation Ingestion API
 

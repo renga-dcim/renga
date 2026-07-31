@@ -250,7 +250,7 @@ Recommended source fields:
 
 Use explicit tables for high-value inventory relationships, and JSONB only for less-common source-specific details.
 
-Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. Observed interface IP assignments should attach to interfaces and use PostgreSQL =inet=. Managed IPAM prefixes/subnets should be separate records and use PostgreSQL =cidr=. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
+Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. Interface MAC addresses should use PostgreSQL =macaddr=. Observed interface IP assignments should attach to interfaces and use PostgreSQL =inet=. Managed IPAM prefixes/subnets should be separate records and use PostgreSQL =cidr=. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
 
 Keep observed state separate from desired state:
 
@@ -575,7 +575,7 @@ Each source should define:
 ** Slice 1: Inventory Foundation
 
 - Add =Renga.Inventory= context.
-- Add migrations and schemas for sources, resources, resource identifiers, interfaces, addresses, observations, sync runs, and change events. Store interface addresses as PostgreSQL =inet= and reserve PostgreSQL =cidr= for future IPAM prefix/subnet records.
+- Add migrations and schemas for sources, resources, resource identifiers, interfaces, addresses, observations, sync runs, and change events. Store interface MAC addresses as PostgreSQL =macaddr=, store interface IP addresses as PostgreSQL =inet=, and reserve PostgreSQL =cidr= for future IPAM prefix/subnet records.
 - Add basic CRUD functions in the context.
 - Add tests for creation, uniqueness, and lifecycle transitions.
 
