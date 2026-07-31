@@ -16,7 +16,7 @@ defmodule Renga.Inventory.Observation do
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
 
-  @primary_key {:id, :binary_id, autogenerate: true}
+  @primary_key {:id, Ecto.UUID, autogenerate: [version: 7, precision: :monotonic]}
   @foreign_key_type :binary_id
   @statuses ~w(accepted rejected reconciled failed)
   @timestamps_opts [type: :utc_datetime]
@@ -36,7 +36,7 @@ defmodule Renga.Inventory.Observation do
     belongs_to :resource, Resource
     has_many :change_events, ChangeEvent
 
-    timestamps()
+    timestamps(updated_at: false)
   end
 
   def changeset(observation, attrs) do

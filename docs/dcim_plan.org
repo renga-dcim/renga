@@ -259,6 +259,11 @@ Keep observed state separate from desired state:
 - Desired state is what Renga wants to create, place, change, or retire.
 - Jobs move the world toward desired state; later observations confirm what actually happened.
 
+Observation rows should be immutable append-only records. Their primary keys
+should be UUIDv7 so row identity carries useful creation-time ordering. Keep
+=observed_at= for the source-reported event time and =inserted_at= for storage
+time; do not add =updated_at= to observations.
+
 Manual edits should be field-level override records, not silent mutation of observed facts.
 
 Suggested override fields:

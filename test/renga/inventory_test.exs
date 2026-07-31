@@ -1033,8 +1033,10 @@ defmodule Renga.InventoryTest do
       assert observation.source_id == source.id
       assert observation.resource_id == resource.id
       assert observation.sync_run_id == sync_run.id
+      assert String.at(observation.id, 14) == "7"
       assert observation.observation_id == "host-agent:compute-01"
       assert is_binary(observation.payload_digest)
+      refute Map.has_key?(observation, :updated_at)
     end
 
     test "list_observations/2 is scoped by organization", %{

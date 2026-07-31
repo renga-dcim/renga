@@ -40,7 +40,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :errors, :map, null: false, default: %{}
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :utc_datetime, updated_at: false)
     end
 
     create index(:observations, [:organization_id, :source_id])

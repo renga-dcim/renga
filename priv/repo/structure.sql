@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict dVwcNlOsZH05HGevpGlcQhHjXZ2zKkTA4NDmAmd70q4gBD3gpmig72hvLnpKlvN
+\restrict cDhknTUnjmz2aimVHMzb0giPMM0CeI36oPk5U4cgvDqgKEsTmPQgnE9bu0L4vgt
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -139,8 +139,7 @@ CREATE TABLE public.observations (
     payload jsonb NOT NULL,
     errors jsonb DEFAULT '{}'::jsonb NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inserted_at timestamp(0) without time zone NOT NULL,
-    updated_at timestamp(0) without time zone NOT NULL
+    inserted_at timestamp(0) without time zone NOT NULL
 );
 
 
@@ -1095,7 +1094,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict dVwcNlOsZH05HGevpGlcQhHjXZ2zKkTA4NDmAmd70q4gBD3gpmig72hvLnpKlvN
+\unrestrict cDhknTUnjmz2aimVHMzb0giPMM0CeI36oPk5U4cgvDqgKEsTmPQgnE9bu0L4vgt
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

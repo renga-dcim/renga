@@ -86,6 +86,10 @@ parent field. This keeps Linux host relationships such as bond members, bridge
 members, veth peers, VLAN lower devices, and VRF membership compatible with
 future libvirt and cloud-hypervisor virtual interface backing links.
 
+Observation rows are immutable append-only records. Use UUIDv7 primary keys for
+time-sortable row identity and keep =observed_at= plus =inserted_at= timestamps;
+do not store an =updated_at= timestamp on observations.
+
 ** 3. Observation Ingestion API
 
 - [ ] Add JSON routes under =/api= for agent check-ins and observations.
