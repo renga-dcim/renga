@@ -340,9 +340,16 @@ defmodule Renga.InventoryTest do
           name: "compute-01-agent"
         })
 
+      {:ok, other_source} =
+        Inventory.create_source(contexts.other_scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
       contexts
       |> Map.put(:resource, resource)
       |> Map.put(:source, source)
+      |> Map.put(:other_source, other_source)
     end
 
     test "create_resource_identifier/3 stores observed identity facts", %{
@@ -390,6 +397,20 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_resource_identifier(other_scope, resource.id, %{
+          kind: "hostname",
+          value: "compute-01"
+        })
+      end
+    end
+
+    test "create_resource_identifier/3 enforces source organization scope", %{
+      scope: scope,
+      resource: resource,
+      other_source: other_source
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          source_id: other_source.id,
           kind: "hostname",
           value: "compute-01"
         })
@@ -448,9 +469,16 @@ defmodule Renga.InventoryTest do
           name: "compute-01-agent"
         })
 
+      {:ok, other_source} =
+        Inventory.create_source(contexts.other_scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
       contexts
       |> Map.put(:resource, resource)
       |> Map.put(:source, source)
+      |> Map.put(:other_source, other_source)
     end
 
     test "create_interface/3 creates a scoped resource interface", %{
@@ -505,6 +533,19 @@ defmodule Renga.InventoryTest do
       end
     end
 
+    test "create_interface/3 enforces source organization scope", %{
+      scope: scope,
+      resource: resource,
+      other_source: other_source
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface(scope, resource.id, %{
+          source_id: other_source.id,
+          name: "eth0"
+        })
+      end
+    end
+
     test "interface names are unique per resource", %{scope: scope, resource: resource} do
       attrs = %{name: "eth0"}
 
@@ -555,10 +596,17 @@ defmodule Renga.InventoryTest do
           name: "compute-01-agent"
         })
 
+      {:ok, other_source} =
+        Inventory.create_source(contexts.other_scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
       contexts
       |> Map.put(:resource, resource)
       |> Map.put(:interface, interface)
       |> Map.put(:source, source)
+      |> Map.put(:other_source, other_source)
     end
 
     test "create_address/3 creates a scoped interface address", %{
@@ -605,6 +653,20 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_address(other_scope, interface.id, %{
+          kind: "ipv4",
+          address: "192.0.2.10"
+        })
+      end
+    end
+
+    test "create_address/3 enforces source organization scope", %{
+      scope: scope,
+      interface: interface,
+      other_source: other_source
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_address(scope, interface.id, %{
+          source_id: other_source.id,
           kind: "ipv4",
           address: "192.0.2.10"
         })

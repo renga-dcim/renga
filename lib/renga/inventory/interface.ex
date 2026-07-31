@@ -44,7 +44,6 @@ defmodule Renga.Inventory.Interface do
   def changeset(interface, attrs) do
     interface
     |> cast(attrs, [
-      :source_id,
       :name,
       :mac_address,
       :kind,

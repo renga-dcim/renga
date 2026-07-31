@@ -212,10 +212,12 @@ defmodule Renga.Inventory do
         attrs
       ) do
     resource = get_resource!(scope, resource_id)
+    attrs = normalize_source_attrs(scope, attrs)
 
     %ResourceIdentifier{
       organization_id: organization_id,
-      resource_id: resource.id
+      resource_id: resource.id,
+      source_id: source_id_from_attrs(attrs)
     }
     |> ResourceIdentifier.changeset(attrs)
     |> Repo.insert()
@@ -246,10 +248,12 @@ defmodule Renga.Inventory do
   """
   def create_interface(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
     resource = get_resource!(scope, resource_id)
+    attrs = normalize_source_attrs(scope, attrs)
 
     %Interface{
       organization_id: organization_id,
-      resource_id: resource.id
+      resource_id: resource.id,
+      source_id: source_id_from_attrs(attrs)
     }
     |> Interface.changeset(attrs)
     |> Repo.insert()
@@ -274,11 +278,13 @@ defmodule Renga.Inventory do
   """
   def create_address(%Scope{organization_id: organization_id} = scope, interface_id, attrs) do
     interface = get_interface!(scope, interface_id)
+    attrs = normalize_source_attrs(scope, attrs)
 
     %Address{
       organization_id: organization_id,
       resource_id: interface.resource_id,
-      interface_id: interface.id
+      interface_id: interface.id,
+      source_id: source_id_from_attrs(attrs)
     }
     |> Address.changeset(attrs)
     |> Repo.insert()
@@ -464,6 +470,12 @@ defmodule Renga.Inventory do
     |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
     |> normalize_scoped_assoc(scope, :observation_id, &get_observation!/2)
   end
+
+  defp normalize_source_attrs(scope, attrs) do
+    normalize_scoped_assoc(attrs, scope, :source_id, &get_source!/2)
+  end
+
+  defp source_id_from_attrs(attrs), do: Map.get(attrs, :source_id) || Map.get(attrs, "source_id")
 
   defp normalize_scoped_assoc(attrs, scope, field, fetch_fun) do
     value = Map.get(attrs, field) || Map.get(attrs, Atom.to_string(field))

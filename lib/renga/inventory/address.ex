@@ -40,7 +40,6 @@ defmodule Renga.Inventory.Address do
   def changeset(address, attrs) do
     address
     |> cast(attrs, [
-      :source_id,
       :kind,
       :address,
       :prefix_length,

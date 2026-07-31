@@ -38,7 +38,6 @@ defmodule Renga.Inventory.ResourceIdentifier do
   def changeset(identifier, attrs) do
     identifier
     |> cast(attrs, [
-      :source_id,
       :kind,
       :value,
       :confidence,
