@@ -94,15 +94,15 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 
 ** 3. Observation Ingestion API
 
-- [ ] Add JSON routes under =/api= for agent check-ins and observations.
-- [ ] Add bearer-token authentication plug for sources.
-- [ ] Implement =POST /api/agent/checkins=.
-- [ ] Implement =POST /api/observations= for one host resource per request.
-- [ ] Store accepted raw observations before reconciliation.
-- [ ] Add idempotency using a source-provided observation ID or request digest.
-- [ ] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
-- [ ] Return structured acceptance and validation responses.
-- [ ] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
+- [X] Add JSON routes under =/api= for agent check-ins and observations.
+- [X] Add bearer-token authentication plug for sources.
+- [X] Implement =POST /api/agent/checkins=.
+- [X] Implement =POST /api/observations= for one host resource per request.
+- [X] Store accepted raw observations before reconciliation.
+- [X] Add idempotency using a source-provided observation ID or request digest.
+- [X] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
+- [X] Return structured acceptance and validation responses.
+- [X] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
 
 ** 4. Reconciliation MVP
 
