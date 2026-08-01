@@ -134,6 +134,7 @@ defmodule Renga.Inventory do
     |> where([source], source.token_hash == ^token_hash)
     |> where([source, organization], source.status == "active")
     |> where([source, organization], organization.status == "active")
+    |> preload([source, organization], organization: organization)
     |> Repo.one()
     |> case do
       %Source{} = source -> {:ok, source}
@@ -142,6 +143,28 @@ defmodule Renga.Inventory do
   end
 
   def authenticate_source_token(_token), do: :error
+
+  @doc """
+  Records that a source contacted Renga.
+
+  The freshness timestamp is server-generated so client clock skew cannot make
+  an agent appear fresher than the API actually observed.
+  """
+  def record_source_check_in(%Scope{} = scope, source_id, attrs \\ %{}) do
+    source = get_source!(scope, source_id)
+    capabilities = Map.get(attrs, :capabilities) || Map.get(attrs, "capabilities")
+    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata")
+
+    attrs =
+      %{}
+      |> maybe_put(:capabilities, capabilities)
+      |> maybe_put(:metadata, merge_metadata(source.metadata, metadata))
+      |> Map.put(:last_seen_at, Renga.Time.utc_now_ms())
+
+    source
+    |> Source.changeset(attrs)
+    |> Repo.update()
+  end
 
   @doc """
   Lists canonical resources visible inside the caller's organization scope.
@@ -498,6 +521,15 @@ defmodule Renga.Inventory do
   # SHA-256 is sufficient here because source tokens are high-entropy random
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
+
+  defp maybe_put(attrs, _key, nil), do: attrs
+  defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
+
+  defp merge_metadata(_current_metadata, nil), do: nil
+
+  defp merge_metadata(current_metadata, metadata) when is_map(metadata) do
+    Map.merge(current_metadata || %{}, metadata)
+  end
 
   defp normalize_observation_attrs(scope, attrs) do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
