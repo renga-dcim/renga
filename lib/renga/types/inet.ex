@@ -36,9 +36,8 @@ defmodule Renga.Types.Inet do
         parse_address(address, nil)
 
       [address, netmask] ->
-        with {netmask, ""} <- Integer.parse(netmask) do
-          parse_address(address, netmask)
-        else
+        case Integer.parse(netmask) do
+          {netmask, ""} -> parse_address(address, netmask)
           _invalid -> :error
         end
     end
