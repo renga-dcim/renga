@@ -377,11 +377,11 @@ Provider syncers report:
 
 Initial endpoints:
 
-- =POST /api/agent/register=
-- =POST /api/observations=
-- =POST /api/sync_runs/:id/complete=
-- =GET /api/agent/config=
-- =POST /api/agent/checkins=
+- =POST /api/v1/agent/register=
+- =POST /api/v1/observations=
+- =POST /api/v1/sync_runs/:id/complete=
+- =GET /api/v1/agent/config=
+- =POST /api/v1/agent/checkins=
 
 Observation payload shape:
 
@@ -452,11 +452,11 @@ Job rules:
 
 Future control endpoints:
 
-- =GET /api/agent/jobs=
-- =POST /api/agent/jobs/:id/lease=
-- =POST /api/agent/jobs/:id/events=
-- =POST /api/agent/jobs/:id/complete=
-- =GET /api/agent/socket_config=
+- =GET /api/v1/agent/jobs=
+- =POST /api/v1/agent/jobs/:id/lease=
+- =POST /api/v1/agent/jobs/:id/events=
+- =POST /api/v1/agent/jobs/:id/complete=
+- =GET /api/v1/agent/socket_config=
 - =WebSocket /agent/socket=
 
 ** Live Terminal
@@ -660,7 +660,7 @@ Each source should define:
 Build the host-agent path first:
 
 1. Manual source creation with generated token.
-2. =POST /api/observations= for host facts.
+2. =POST /api/v1/observations= for host facts.
 3. Canonical server and interface records.
 4. Resource identifiers for machine ID, DMI UUID, serial number, hostnames, and MAC addresses.
 5. Stale detection based on =last_seen_at=.

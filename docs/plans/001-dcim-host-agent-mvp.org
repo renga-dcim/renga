@@ -96,8 +96,8 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 
 - [X] Add JSON routes under =/api= for agent check-ins and observations.
 - [X] Add bearer-token authentication plug for sources.
-- [X] Implement =POST /api/agent/checkins=.
-- [X] Implement =POST /api/observations= for one host resource per request.
+- [X] Implement =POST /api/v1/agent/checkins=.
+- [X] Implement =POST /api/v1/observations= for one host resource per request.
 - [X] Store accepted raw observations before reconciliation.
 - [X] Add idempotency using a source-provided observation ID or request digest.
 - [X] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.

@@ -29,9 +29,9 @@ defmodule RengaWeb.Api.AgentControllerTest do
     put_req_header(conn, "authorization", "Bearer #{token}")
   end
 
-  describe "POST /api/agent/checkins" do
+  describe "POST /api/v1/agent/checkins" do
     test "requires a valid source bearer token", %{conn: conn} do
-      conn = post(conn, ~p"/api/agent/checkins", %{})
+      conn = post(conn, ~p"/api/v1/agent/checkins", %{})
 
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
     end
@@ -42,7 +42,7 @@ defmodule RengaWeb.Api.AgentControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/agent/checkins", %{
+        |> post(~p"/api/v1/agent/checkins", %{
           "source" => %{"kind" => "host_agent", "source_id" => source.name},
           "capabilities" => ["host.inventory"],
           "metadata" => %{"agent_version" => "0.1.0"}
@@ -72,7 +72,7 @@ defmodule RengaWeb.Api.AgentControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/agent/checkins", %{
+        |> post(~p"/api/v1/agent/checkins", %{
           "source" => %{"kind" => source.kind, "source_id" => "other-agent"}
         })
 
@@ -88,7 +88,7 @@ defmodule RengaWeb.Api.AgentControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/agent/checkins", %{})
+        |> post(~p"/api/v1/agent/checkins", %{})
 
       assert %{"errors" => [%{"path" => "source.kind", "message" => "must be host_agent"}]} =
                json_response(conn, 403)

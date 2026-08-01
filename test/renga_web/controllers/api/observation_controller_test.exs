@@ -67,9 +67,9 @@ defmodule RengaWeb.Api.ObservationControllerTest do
     )
   end
 
-  describe "POST /api/observations" do
+  describe "POST /api/v1/observations" do
     test "requires a valid source bearer token", %{conn: conn} do
-      conn = post(conn, ~p"/api/observations", %{})
+      conn = post(conn, ~p"/api/v1/observations", %{})
 
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
     end
@@ -81,7 +81,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/observations", payload)
+        |> post(~p"/api/v1/observations", payload)
 
       assert %{
                "status" => "accepted",
@@ -111,14 +111,14 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       first_conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/observations", payload)
+        |> post(~p"/api/v1/observations", payload)
 
       assert %{"observation" => %{"id" => observation_id}} = json_response(first_conn, 202)
 
       retry_conn =
         build_conn()
         |> authorize(token)
-        |> post(~p"/api/observations", payload)
+        |> post(~p"/api/v1/observations", payload)
 
       assert %{
                "status" => "accepted",
@@ -133,7 +133,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
 
       conn
       |> authorize(token)
-      |> post(~p"/api/observations", payload)
+      |> post(~p"/api/v1/observations", payload)
       |> json_response(202)
 
       changed_payload =
@@ -142,7 +142,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       conflict_conn =
         build_conn()
         |> authorize(token)
-        |> post(~p"/api/observations", changed_payload)
+        |> post(~p"/api/v1/observations", changed_payload)
 
       assert %{
                "status" => "rejected",
@@ -158,7 +158,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
 
       conn
       |> authorize(token)
-      |> post(~p"/api/observations", payload)
+      |> post(~p"/api/v1/observations", payload)
       |> json_response(202)
 
       other_payload =
@@ -167,7 +167,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       other_conn =
         build_conn()
         |> authorize(other_token)
-        |> post(~p"/api/observations", other_payload)
+        |> post(~p"/api/v1/observations", other_payload)
 
       assert %{"status" => "accepted", "duplicate" => false} = json_response(other_conn, 202)
     end
@@ -193,7 +193,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/observations", payload)
+        |> post(~p"/api/v1/observations", payload)
 
       assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
 
@@ -215,7 +215,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       conn =
         conn
         |> authorize(token)
-        |> post(~p"/api/observations", payload)
+        |> post(~p"/api/v1/observations", payload)
 
       assert %{
                "status" => "rejected",
