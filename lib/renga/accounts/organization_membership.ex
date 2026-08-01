@@ -18,7 +18,7 @@ defmodule Renga.Accounts.OrganizationMembership do
   @foreign_key_type :binary_id
   @roles ~w(owner admin member viewer)
   @statuses ~w(active disabled)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "organization_memberships" do
     field :role, :string, default: "member"

@@ -25,10 +25,14 @@ defmodule Renga.Accounts.UserToken do
     field :token, :binary
     field :context, :string
     field :sent_to, :string
-    field :authenticated_at, :utc_datetime
+    field :authenticated_at, :utc_datetime_usec
     belongs_to :user, Renga.Accounts.User
 
-    timestamps(type: :utc_datetime, updated_at: false)
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {Renga.Time, :utc_now_ms, []},
+      updated_at: false
+    )
   end
 
   @doc """
@@ -52,7 +56,7 @@ defmodule Renga.Accounts.UserToken do
   """
   def build_session_token(user) do
     token = :crypto.strong_rand_bytes(@rand_size)
-    dt = user.authenticated_at || DateTime.utc_now(:second)
+    dt = user.authenticated_at || Renga.Time.utc_now_ms()
     {token, %UserToken{token: token, context: "session", user_id: user.id, authenticated_at: dt}}
   end
 

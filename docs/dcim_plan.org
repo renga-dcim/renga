@@ -41,6 +41,7 @@ The system should answer:
 - Model Renga as both a live inventory system and, eventually, an automation control plane.
 - Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
 - Diverge from NetBox by making agents, observations, reconciliation, freshness, jobs, capabilities, and desired-vs-observed state first-class.
+- Store application timestamps at millisecond precision. Immutable observation rows should derive =inserted_at= from the millisecond timestamp encoded in their UUIDv7 primary key.
 
 * System Shape
 
@@ -117,6 +118,7 @@ Start with these Ecto schemas:
 - =Renga.Inventory.Resource=
 - =Renga.Inventory.ResourceIdentifier=
 - =Renga.Inventory.Interface=
+- =Renga.Inventory.InterfaceRelationship=
 - =Renga.Inventory.Address=
 - =Renga.Inventory.Prefix=
 - =Renga.Inventory.Vlan=
@@ -250,13 +252,18 @@ Recommended source fields:
 
 Use explicit tables for high-value inventory relationships, and JSONB only for less-common source-specific details.
 
-Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. IP addresses should attach to interfaces. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
+Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. Interface MAC addresses should use PostgreSQL =macaddr=. Observed interface IP assignments should attach to interfaces and use PostgreSQL =inet=. Managed IPAM prefixes/subnets should be separate records and use PostgreSQL =cidr=. Directed interface relationship rows should capture bond membership, bridge membership, lower-device stacking, veth peers, VRF membership, and virtual interface backing links. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
 
 Keep observed state separate from desired state:
 
 - Observed state is what agents, switch pollers, BMCs, and providers report.
 - Desired state is what Renga wants to create, place, change, or retire.
 - Jobs move the world toward desired state; later observations confirm what actually happened.
+
+Observation rows should be immutable append-only records. Their primary keys
+should be UUIDv7 so row identity carries useful creation-time ordering. Keep
+=observed_at= for the source-reported event time and =inserted_at= for storage
+time; do not add =updated_at= to observations.
 
 Manual edits should be field-level override records, not silent mutation of observed facts.
 
@@ -575,7 +582,7 @@ Each source should define:
 ** Slice 1: Inventory Foundation
 
 - Add =Renga.Inventory= context.
-- Add migrations and schemas for sources, resources, resource identifiers, interfaces, addresses, observations, sync runs, and change events.
+- Add migrations and schemas for sources, resources, resource identifiers, interfaces, interface relationships, addresses, observations, sync runs, and change events. Store interface MAC addresses as PostgreSQL =macaddr=, store interface IP addresses as PostgreSQL =inet=, and reserve PostgreSQL =cidr= for future IPAM prefix/subnet records.
 - Add basic CRUD functions in the context.
 - Add tests for creation, uniqueness, and lifecycle transitions.
 

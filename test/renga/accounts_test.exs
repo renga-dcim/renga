@@ -580,7 +580,7 @@ defmodule Renga.AccountsTest do
     end
 
     test "duplicates the authenticated_at of given user in new token", %{user: user} do
-      user = %{user | authenticated_at: DateTime.add(DateTime.utc_now(:second), -3600)}
+      user = %{user | authenticated_at: DateTime.add(Renga.Time.utc_now_ms(), -3600)}
       token = Accounts.generate_user_session_token(user)
       assert user_token = Repo.get_by(UserToken, token: token)
       assert user_token.authenticated_at == user.authenticated_at

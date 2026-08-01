@@ -13,10 +13,10 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
       add :status, :string, null: false, default: "active"
       add :token_hash, :binary
       add :capabilities, {:array, :string}, null: false, default: []
-      add :last_seen_at, :utc_datetime
+      add :last_seen_at, :"timestamp(3)"
       add :metadata, :map, null: false, default: %{}
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :"timestamp(3)")
     end
 
     create unique_index(:sources, [:organization_id, :name])

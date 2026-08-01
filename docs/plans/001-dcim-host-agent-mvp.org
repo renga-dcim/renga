@@ -66,14 +66,31 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 
 ** 2. Inventory Data Model
 
-- [ ] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
-- [ ] Add =ResourceIdentifier= schema for observed identity facts.
-- [ ] Add =Interface= and =Address= schemas for first-class network inventory.
-- [ ] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
-- [ ] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
-- [ ] Add =ResourceOverride= schema for field-level manual overrides.
-- [ ] Add uniqueness constraints scoped by =organization_id= where appropriate.
-- [ ] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
+- [X] Add =Resource= schema with organization scope, kind, canonical fields, status, metadata, and freshness timestamps.
+- [X] Add =ResourceIdentifier= schema for observed identity facts.
+- [X] Add =Interface= and =Address= schemas for first-class network inventory, storing MAC addresses as PostgreSQL =macaddr= and interface IP assignments as PostgreSQL =inet= values.
+- [X] Add =InterfaceRelationship= schema for directed bond, bridge, peer, lower-device, VRF, and virtual backing relationships.
+- [X] Add =Observation= and =SyncRun= schemas for raw payload storage and ingestion tracking.
+- [X] Add =ChangeEvent= schema for resource discoveries, updates, conflicts, stale transitions, and manual edits.
+- [X] Add =ResourceOverride= schema for field-level manual overrides.
+- [X] Add uniqueness constraints scoped by =organization_id= where appropriate.
+- [X] Add context tests for identifiers, resource creation, overrides, and freshness transitions.
+
+IPAM prefixes/subnets should be modeled separately from observed interface
+addresses when IPAM lands. Use PostgreSQL =cidr= for managed prefix records,
+PostgreSQL =inet= for assigned or observed interface IP addresses, and
+PostgreSQL =macaddr= for first-class interface MAC addresses.
+
+Interface topology should use directed relationship rows instead of one generic
+parent field. This keeps Linux host relationships such as bond members, bridge
+members, veth peers, VLAN lower devices, and VRF membership compatible with
+future libvirt and cloud-hypervisor virtual interface backing links.
+
+Observation rows are immutable append-only records. Use UUIDv7 primary keys for
+time-sortable row identity and keep =observed_at= plus =inserted_at= timestamps;
+do not store an =updated_at= timestamp on observations. Store timestamps at
+millisecond precision across all tables. Observation =inserted_at= values should
+match the millisecond timestamp encoded in their UUIDv7 primary key.
 
 ** 3. Observation Ingestion API
 
@@ -100,7 +117,7 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 
 ** 5. Rust Agent Service MVP
 
-- [ ] Create =agent/= Rust workspace.
+- [X] Create =agent/= Rust workspace.
 - [ ] Add daemon entrypoint with config loading and structured logging.
 - [ ] Add systemd unit files for Debian/Ubuntu proof-of-concept installs.
 - [ ] Add config file and environment variable support for Renga URL, token, source ID, and intervals.

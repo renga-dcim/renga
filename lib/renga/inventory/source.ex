@@ -12,12 +12,19 @@ defmodule Renga.Inventory.Source do
   import Ecto.Changeset
 
   alias Renga.Accounts.Organization
+  alias Renga.Inventory.Address
+  alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.Observation
+  alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.SyncRun
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @kinds ~w(host_agent switch_poller vm_provider bmc manual)
   @statuses ~w(active revoked disabled)
-  @timestamps_opts [type: :utc_datetime]
+  @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "sources" do
     field :kind, :string
@@ -25,10 +32,17 @@ defmodule Renga.Inventory.Source do
     field :status, :string, default: "active"
     field :token_hash, :binary
     field :capabilities, {:array, :string}, default: []
-    field :last_seen_at, :utc_datetime
+    field :last_seen_at, :utc_datetime_usec
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
+    has_many :addresses, Address
+    has_many :change_events, ChangeEvent
+    has_many :interfaces, Interface
+    has_many :interface_relationships, InterfaceRelationship
+    has_many :observations, Observation
+    has_many :resource_identifiers, ResourceIdentifier
+    has_many :sync_runs, SyncRun
 
     timestamps()
   end
