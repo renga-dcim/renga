@@ -31,6 +31,7 @@ defmodule RengaWeb.Router do
     pipe_through [:api, :source_api]
 
     post "/agent/checkins", AgentController, :check_in
+    post "/observations", ObservationController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

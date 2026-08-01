@@ -428,6 +428,28 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Stores one raw source payload with idempotent duplicate handling.
+
+  A source-provided observation id protects agent retry loops from creating
+  duplicates. When that id is absent, the payload digest provides the same
+  retry behavior for byte-equivalent JSON payloads decoded by Phoenix.
+  """
+  def accept_observation(%Scope{} = scope, source_id, attrs) do
+    source = get_source!(scope, source_id)
+    attrs = normalize_observation_attrs(scope, attrs)
+    observation_id = Map.get(attrs, :observation_id) || Map.get(attrs, "observation_id")
+    payload_digest = Map.get(attrs, :payload_digest) || Map.get(attrs, "payload_digest")
+
+    case find_idempotent_observation(scope, source.id, observation_id, payload_digest) do
+      %Observation{} = observation ->
+        idempotent_observation_result(observation, payload_digest)
+
+      nil ->
+        insert_idempotent_observation(scope, source.id, attrs, observation_id, payload_digest)
+    end
+  end
+
+  @doc """
   Lists audit events for a scoped resource, newest first.
   """
   def list_change_events(%Scope{organization_id: organization_id}, resource_id) do
@@ -539,6 +561,76 @@ defmodule Renga.Inventory do
     |> Map.put_new(:payload_digest, digest_payload(payload))
     |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
     |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
+  end
+
+  defp insert_idempotent_observation(scope, source_id, attrs, observation_id, payload_digest) do
+    case create_observation(scope, source_id, attrs) do
+      {:ok, observation} ->
+        {:ok, observation, :created}
+
+      {:error, changeset} ->
+        case find_idempotent_observation(scope, source_id, observation_id, payload_digest) do
+          %Observation{} = observation ->
+            idempotent_observation_result(observation, payload_digest)
+
+          nil ->
+            {:error, changeset}
+        end
+    end
+  end
+
+  defp idempotent_observation_result(%Observation{} = observation, payload_digest) do
+    if observation.payload_digest == payload_digest do
+      {:ok, observation, :duplicate}
+    else
+      {:error, :idempotency_conflict, observation}
+    end
+  end
+
+  defp find_idempotent_observation(_scope, _source_id, nil, nil), do: nil
+
+  defp find_idempotent_observation(
+         %Scope{organization_id: organization_id},
+         source_id,
+         nil,
+         digest
+       ) do
+    Repo.get_by(Observation,
+      organization_id: organization_id,
+      source_id: source_id,
+      payload_digest: digest
+    )
+  end
+
+  defp find_idempotent_observation(
+         %Scope{organization_id: organization_id},
+         source_id,
+         observation_id,
+         nil
+       ) do
+    Repo.get_by(Observation,
+      organization_id: organization_id,
+      source_id: source_id,
+      observation_id: observation_id
+    )
+  end
+
+  defp find_idempotent_observation(
+         %Scope{organization_id: organization_id},
+         source_id,
+         observation_id,
+         digest
+       ) do
+    Repo.get_by(Observation,
+      organization_id: organization_id,
+      source_id: source_id,
+      observation_id: observation_id
+    ) ||
+      Repo.get_by(Observation,
+        organization_id: organization_id,
+        source_id: source_id,
+        payload_digest: digest
+      )
   end
 
   defp normalize_change_event_attrs(scope, attrs) do
