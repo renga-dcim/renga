@@ -17,16 +17,22 @@ defmodule RengaWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :source_api do
+    plug RengaWeb.SourceAuth
+  end
+
   scope "/", RengaWeb do
     pipe_through :browser
 
     get "/", PageController, :home
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", RengaWeb do
-  #   pipe_through :api
-  # end
+  scope "/api/v1", RengaWeb.Api do
+    pipe_through [:api, :source_api]
+
+    post "/agent/checkins", AgentController, :check_in
+    post "/observations", ObservationController, :create
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:renga, :dev_routes) do
