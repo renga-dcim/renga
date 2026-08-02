@@ -1,10 +1,11 @@
 defmodule Renga.Inventory.Resource do
   @moduledoc """
-  Canonical current inventory record for something Renga knows about.
+  Organization-scoped envelope for an independently addressable object.
 
-  Resource fields are the current view used for UI and queries. Observed
-  matching evidence belongs in `ResourceIdentifier` so reconciliation can
-  improve without losing provenance.
+  The envelope carries desired state and control-plane metadata. Stable domain
+  facts belong in typed projections such as `Renga.Inventory.Host` and
+  `Renga.Inventory.Interface`; source evidence and raw observations remain
+  separate so canonical state never loses provenance.
   """
 
   use Ecto.Schema
@@ -14,40 +15,42 @@ defmodule Renga.Inventory.Resource do
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceRevision
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(server switch vm container pdu storage unknown)
-  @statuses ~w(active inactive stale retired unknown)
+  @kinds ~w(server switch vm container pdu storage prefix vlan vrf unknown)
+  @lifecycle_states ~w(active inactive retired unknown)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "resources" do
     field :kind, :string
-    field :external_id, :string
-    field :serial_number, :string
-    field :asset_tag, :string
-    field :hostname, :string
-    field :fqdn, :string
-    field :vendor, :string
-    field :model, :string
-    field :status, :string, default: "unknown"
-    field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime_usec
-    field :last_seen_at, :utc_datetime_usec
-    field :last_changed_at, :utc_datetime_usec
-    field :stale_at, :utc_datetime_usec
+    field :name, :string
+    field :display_name, :string
+    field :lifecycle_state, :string, default: "unknown"
+    field :spec, :map, default: %{}
+    field :generation, :integer, default: 1
+    field :resource_version, :integer
+    field :labels, :map, default: %{}
+    field :annotations, :map, default: %{}
+    field :deletion_requested_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
+    has_one :host, Host
     has_many :addresses, Address
     has_many :change_events, ChangeEvent
+    has_many :conditions, ResourceCondition
     has_many :identifiers, ResourceIdentifier
     has_many :interfaces, Interface
     has_many :observations, Observation
     has_many :overrides, ResourceOverride
+    has_many :revisions, ResourceRevision
 
     timestamps()
   end
@@ -56,26 +59,46 @@ defmodule Renga.Inventory.Resource do
     resource
     |> cast(attrs, [
       :kind,
-      :external_id,
-      :serial_number,
-      :asset_tag,
-      :hostname,
-      :fqdn,
-      :vendor,
-      :model,
-      :status,
-      :metadata,
-      :first_seen_at,
-      :last_seen_at,
-      :last_changed_at,
-      :stale_at
+      :name,
+      :display_name,
+      :lifecycle_state,
+      :spec,
+      :labels,
+      :annotations,
+      :deletion_requested_at
     ])
-    |> validate_required([:organization_id, :kind, :status])
+    |> update_change(:name, &String.trim/1)
+    |> update_change(:display_name, &trim_string/1)
+    |> maybe_increment_generation()
+    |> validate_required([:organization_id, :kind, :name, :lifecycle_state])
     |> validate_inclusion(:kind, @kinds)
-    |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:lifecycle_state, @lifecycle_states)
+    |> validate_number(:generation, greater_than: 0)
+    |> validate_map(:spec)
+    |> validate_map(:labels)
+    |> validate_map(:annotations)
     |> assoc_constraint(:organization)
-    |> unique_constraint([:organization_id, :external_id])
-    |> unique_constraint([:organization_id, :serial_number])
-    |> unique_constraint([:organization_id, :asset_tag])
+    |> unique_constraint([:organization_id, :kind, :name])
   end
+
+  # Generation changes only when desired state changes, not for labels, status,
+  # conditions, or observations. Controllers can use it as a reconciliation fence.
+  defp maybe_increment_generation(%Ecto.Changeset{data: %{id: nil}} = changeset), do: changeset
+
+  defp maybe_increment_generation(changeset) do
+    if get_change(changeset, :spec) do
+      put_change(changeset, :generation, changeset.data.generation + 1)
+    else
+      changeset
+    end
+  end
+
+  defp validate_map(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if is_map(value), do: [], else: [{field, "must be a map"}]
+    end)
+  end
+
+  defp trim_string(value) when is_binary(value), do: String.trim(value)
+  defp trim_string(value), do: value
 end

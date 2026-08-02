@@ -5,12 +5,15 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
 
@@ -236,27 +239,30 @@ defmodule Renga.InventoryTest do
       scoped_organizations()
     end
 
-    test "create_resource/2 creates an organization-scoped canonical resource", %{scope: scope} do
-      now = Renga.Time.utc_now_ms()
-
+    test "create_resource/2 creates a versioned organization-scoped envelope", %{scope: scope} do
       assert {:ok, %Resource{} = resource} =
                Inventory.create_resource(scope, %{
                  kind: "server",
-                 hostname: "compute-01",
-                 fqdn: "compute-01.example.net",
-                 vendor: "Dell Inc.",
-                 model: "PowerEdge R760",
-                 status: "active",
-                 metadata: %{"rack_hint" => "rack-12"},
-                 first_seen_at: now,
-                 last_seen_at: now
+                 name: "compute-01",
+                 display_name: "Compute 01",
+                 lifecycle_state: "active",
+                 spec: %{"power" => %{"policy" => "on"}},
+                 labels: %{"site" => "iad"}
                })
 
       assert {:ok, _uuid} = Ecto.UUID.cast(resource.id)
       assert resource.organization_id == scope.organization_id
-      assert resource.hostname == "compute-01"
-      assert resource.status == "active"
-      assert resource.metadata == %{"rack_hint" => "rack-12"}
+      assert resource.name == "compute-01"
+      assert resource.lifecycle_state == "active"
+      assert resource.spec == %{"power" => %{"policy" => "on"}}
+      assert resource.generation == 1
+      assert resource.resource_version > 0
+
+      assert [%ResourceRevision{} = revision] =
+               Inventory.list_resource_revisions(scope, resource.id)
+
+      assert revision.revision == resource.resource_version
+      assert revision.action == "created"
     end
 
     test "list_resources/1 and get_resource!/2 are scoped by organization", %{
@@ -266,13 +272,13 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, _other_resource} =
         Inventory.create_resource(other_scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       assert Inventory.list_resources(scope) == [resource]
@@ -283,16 +289,17 @@ defmodule Renga.InventoryTest do
       end
     end
 
-    test "create_resource/2 validates kind and status", %{scope: scope} do
+    test "create_resource/2 validates kind and lifecycle state", %{scope: scope} do
       assert {:error, changeset} =
                Inventory.create_resource(scope, %{
                  kind: "unknown-kind",
-                 status: "missing"
+                 name: "invalid",
+                 lifecycle_state: "missing"
                })
 
       assert %{
                kind: ["is invalid"],
-               status: ["is invalid"]
+               lifecycle_state: ["is invalid"]
              } = errors_on(changeset)
     end
 
@@ -302,8 +309,7 @@ defmodule Renga.InventoryTest do
     } do
       attrs = %{
         kind: "server",
-        hostname: "compute-01",
-        serial_number: "ABC123"
+        name: "compute-01"
       }
 
       assert {:ok, _resource} = Inventory.create_resource(scope, attrs)
@@ -318,10 +324,67 @@ defmodule Renga.InventoryTest do
                Inventory.create_resource(scope, %{
                  organization_id: Ecto.UUID.generate(),
                  kind: "server",
-                 hostname: "compute-01"
+                 name: "compute-01"
                })
 
       assert resource.organization_id == scope.organization_id
+    end
+
+    test "desired spec changes advance generation and the ordered revision", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01", spec: %{}})
+
+      assert {:ok, updated} =
+               Inventory.update_resource(resource, %{spec: %{"power" => %{"policy" => "off"}}})
+
+      assert updated.generation == resource.generation + 1
+      assert updated.resource_version > resource.resource_version
+
+      assert [%{action: "created"}, %{action: "updated"}] =
+               Inventory.list_resource_revisions(scope, resource.id)
+    end
+
+    test "typed host fields remain queryable outside desired spec", %{scope: scope} do
+      {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      assert {:ok, %Host{} = host} =
+               Inventory.create_host(scope, resource.id, %{
+                 hostname: "COMPUTE-01",
+                 fqdn: "Compute-01.Example.Net",
+                 vendor: "Dell Inc.",
+                 model: "PowerEdge R760"
+               })
+
+      assert host.hostname == "compute-01"
+      assert host.fqdn == "compute-01.example.net"
+      assert Inventory.get_host_by_resource!(scope, resource.id).id == host.id
+    end
+
+    test "condition transitions are independent from lifecycle", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "compute-01",
+          lifecycle_state: "active"
+        })
+
+      assert {:ok, %ResourceCondition{} = current} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "InventoryCurrent",
+                 status: "true",
+                 observed_generation: resource.generation
+               })
+
+      assert {:ok, unchanged} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "InventoryCurrent",
+                 status: "true",
+                 reason: "Refreshed"
+               })
+
+      assert unchanged.id == current.id
+      assert unchanged.last_transition_at == current.last_transition_at
+      assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
   end
 
@@ -332,7 +395,7 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, source} =
@@ -461,7 +524,7 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, source} =
@@ -585,13 +648,13 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, other_resource} =
         Inventory.create_resource(contexts.other_scope, %{
           kind: "server",
-          hostname: "other-compute-01"
+          name: "other-compute-01"
         })
 
       {:ok, source} =
@@ -795,7 +858,7 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, interface} =
@@ -998,7 +1061,7 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01"
+          name: "compute-01"
         })
 
       {:ok, source} =
@@ -1179,8 +1242,8 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
-          hostname: "compute-01",
-          status: "active"
+          name: "compute-01",
+          lifecycle_state: "active"
         })
 
       contexts
@@ -1278,11 +1341,12 @@ defmodule Renga.InventoryTest do
     } do
       stale_at = Renga.Time.utc_now_ms()
 
-      assert {:ok, stale_resource} = Inventory.mark_resource_stale(scope, resource.id, stale_at)
+      assert {:ok, condition} = Inventory.mark_resource_stale(scope, resource.id, stale_at)
 
-      assert stale_resource.status == "stale"
-      assert stale_resource.stale_at == stale_at
-      assert stale_resource.last_changed_at == stale_at
+      assert condition.status == "false"
+      assert condition.reason == "Stale"
+      assert condition.last_transition_at == stale_at
+      assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
 
     test "mark_resource_stale/3 enforces resource organization scope", %{

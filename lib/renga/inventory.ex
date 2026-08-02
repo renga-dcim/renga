@@ -11,12 +11,15 @@ defmodule Renga.Inventory do
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
@@ -172,7 +175,7 @@ defmodule Renga.Inventory do
   def list_resources(%Scope{organization_id: organization_id}) do
     Resource
     |> where([resource], resource.organization_id == ^organization_id)
-    |> order_by([resource], asc: resource.hostname, asc: resource.id)
+    |> order_by([resource], asc: resource.name, asc: resource.id)
     |> Repo.all()
   end
 
@@ -192,18 +195,36 @@ defmodule Renga.Inventory do
   resources in another tenant by passing forged attrs.
   """
   def create_resource(%Scope{organization_id: organization_id}, attrs) do
-    %Resource{organization_id: organization_id}
-    |> Resource.changeset(attrs)
-    |> Repo.insert()
+    Repo.transaction(fn ->
+      revision = next_resource_revision!()
+
+      resource =
+        %Resource{organization_id: organization_id}
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> insert_or_rollback()
+
+      insert_resource_revision!(resource, revision, "created")
+      resource
+    end)
   end
 
   @doc """
   Updates canonical resource fields without changing its tenant.
   """
   def update_resource(%Resource{} = resource, attrs) do
-    resource
-    |> Resource.changeset(attrs)
-    |> Repo.update()
+    Repo.transaction(fn ->
+      revision = next_resource_revision!()
+
+      resource =
+        resource
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> update_or_rollback()
+
+      insert_resource_revision!(resource, revision, revision_action(resource))
+      resource
+    end)
   end
 
   @doc """
@@ -211,6 +232,80 @@ defmodule Renga.Inventory do
   """
   def change_resource(%Resource{} = resource, attrs \\ %{}) do
     Resource.changeset(resource, attrs)
+  end
+
+  @doc """
+  Creates the typed host projection for a server-like resource.
+
+  The projection is source-neutral current state. Host observations and their
+  provenance are retained separately and reconciled into this row later.
+  """
+  def create_host(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+
+    %Host{organization_id: organization_id, resource_id: resource.id}
+    |> Host.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Fetches a typed host projection through its resource tenant boundary.
+  """
+  def get_host_by_resource!(%Scope{organization_id: organization_id}, resource_id) do
+    Host
+    |> where([host], host.organization_id == ^organization_id)
+    |> where([host], host.resource_id == ^resource_id)
+    |> Repo.one!()
+  end
+
+  @doc """
+  Lists current conditions for a scoped resource.
+  """
+  def list_resource_conditions(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceCondition
+    |> where([condition], condition.organization_id == ^organization_id)
+    |> where([condition], condition.resource_id == ^resource_id)
+    |> order_by([condition], asc: condition.type)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates or transitions one independent resource condition.
+
+  `last_transition_at` advances only when status changes. Reason and message can
+  still be refreshed without making a stable condition appear newly changed.
+  """
+  def put_resource_condition(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+    type = Map.get(attrs, :type) || Map.get(attrs, "type")
+
+    existing =
+      Repo.get_by(ResourceCondition,
+        organization_id: organization_id,
+        resource_id: resource.id,
+        type: type
+      )
+
+    transition_at = condition_transition_at(existing, attrs)
+
+    (existing ||
+       %ResourceCondition{
+         organization_id: organization_id,
+         resource_id: resource.id
+       })
+    |> ResourceCondition.changeset(Map.put(attrs, :last_transition_at, transition_at))
+    |> Repo.insert_or_update()
+  end
+
+  @doc """
+  Lists ordered revisions for a scoped resource.
+  """
+  def list_resource_revisions(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceRevision
+    |> where([revision], revision.organization_id == ^organization_id)
+    |> where([revision], revision.resource_id == ^resource_id)
+    |> order_by([revision], asc: revision.revision)
+    |> Repo.all()
   end
 
   @doc """
@@ -481,10 +576,10 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Marks a resource stale inside the caller's organization.
+  Marks the resource inventory condition stale inside the caller's organization.
 
-  Staleness is a canonical resource state, while the companion change event
-  keeps a durable explanation for later timelines.
+  Freshness is independent from lifecycle: an active resource can have stale
+  inventory without becoming inactive or retired.
   """
   def mark_resource_stale(
         %Scope{} = scope,
@@ -493,13 +588,14 @@ defmodule Renga.Inventory do
       ) do
     resource = get_resource!(scope, resource_id)
 
-    resource
-    |> Resource.changeset(%{
-      status: "stale",
-      stale_at: stale_at,
-      last_changed_at: stale_at
+    put_resource_condition(scope, resource.id, %{
+      type: "InventoryCurrent",
+      status: "false",
+      reason: "Stale",
+      message: "No current inventory observation is available",
+      observed_generation: resource.generation,
+      last_transition_at: stale_at
     })
-    |> Repo.update()
   end
 
   @doc """
@@ -543,6 +639,75 @@ defmodule Renga.Inventory do
   # SHA-256 is sufficient here because source tokens are high-entropy random
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
+
+  defp next_resource_revision! do
+    %{rows: [[revision]]} = Repo.query!("SELECT nextval('resource_revision_sequence')")
+    revision
+  end
+
+  defp insert_resource_revision!(resource, revision, action) do
+    %ResourceRevision{
+      organization_id: resource.organization_id,
+      resource_id: resource.id
+    }
+    |> ResourceRevision.changeset(%{
+      revision: revision,
+      action: action,
+      generation: resource.generation,
+      snapshot: resource_snapshot(resource)
+    })
+    |> Repo.insert!()
+  end
+
+  defp resource_snapshot(resource) do
+    %{
+      "id" => resource.id,
+      "kind" => resource.kind,
+      "name" => resource.name,
+      "display_name" => resource.display_name,
+      "lifecycle_state" => resource.lifecycle_state,
+      "spec" => resource.spec,
+      "generation" => resource.generation,
+      "resource_version" => resource.resource_version,
+      "labels" => resource.labels,
+      "annotations" => resource.annotations
+    }
+  end
+
+  defp revision_action(%Resource{deletion_requested_at: nil}), do: "updated"
+  defp revision_action(%Resource{}), do: "deletion_requested"
+
+  defp insert_or_rollback(changeset) do
+    case Repo.insert(changeset) do
+      {:ok, record} -> record
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp update_or_rollback(changeset) do
+    case Repo.update(changeset) do
+      {:ok, record} -> record
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp condition_transition_at(nil, attrs) do
+    Map.get(attrs, :last_transition_at) ||
+      Map.get(attrs, "last_transition_at") ||
+      Renga.Time.utc_now_ms()
+  end
+
+  defp condition_transition_at(condition, attrs) do
+    status = Map.get(attrs, :status) || Map.get(attrs, "status")
+
+    if status == condition.status do
+      condition.last_transition_at
+    else
+      Map.get(attrs, :last_transition_at) ||
+        Map.get(attrs, "last_transition_at") ||
+        Renga.Time.utc_now_ms()
+    end
+  end
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
