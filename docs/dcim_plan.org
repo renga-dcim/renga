@@ -36,7 +36,7 @@ The system should answer:
 - Use persisted jobs with polling as the required control-plane path and Phoenix Channels as the low-latency acceleration path.
 - Keep switch polling and VM provider syncers in the architecture as future source types.
 - Build SaaS-ready organization-scoped multi-tenancy from day one.
-- Represent manual inventory edits as explicit field-level overrides that preserve observed facts.
+- Represent operator intent as desired resource state and use explicit field-level overrides only for manual corrections to observed inventory.
 - Use Renga-native typed operational queries in the agent, and treat osquery as a separate optional endpoint integration for broad host inspection.
 - Model Renga as both a live inventory system and, eventually, an automation control plane.
 - Borrow NetBox's domain discipline for DCIM, IPAM, virtualization, tenancy, interfaces, tags, custom fields, and change logging.
@@ -90,13 +90,16 @@ NetBox-inspired domain boundaries to preserve:
 Operational metadata:
 
 - Source identity.
+- Agent identity and lease health when a source is backed by a deployed agent.
 - Last seen timestamp.
+- Last successful inventory timestamp.
 - First seen timestamp.
 - Last changed timestamp.
 - Sync run ID.
 - Confidence level.
 - Raw observation payload, retained with size limits.
 - Field-level conflicts.
+- Independent resource conditions for freshness, reachability, readiness, and reconciliation.
 
 ** Change History
 
@@ -111,30 +114,54 @@ Track resource changes as events:
 
 * Data Model Draft
 
-Start with these Ecto schemas:
+Use PostgreSQL as the authoritative store. Keep identity, relationships,
+allocations, conditions, ownership, and frequently queried projections in
+relational tables. Use JSONB for variable desired state, detailed source
+observations, and vendor-specific data. Do not add a KV store until measured
+ephemeral load, connection routing, rate limiting, or cache pressure justifies
+one.
 
-- =Renga.Inventory.Site=
-- =Renga.Inventory.Rack=
+The model has four distinct layers:
+
+1. Resource envelopes identify independently addressable and reconcilable objects.
+2. Typed canonical projections provide constrained, queryable current inventory.
+3. Per-source evidence preserves provenance and disagreement.
+4. Immutable observations preserve the raw submitted evidence.
+
+The initial rebuild should define these Ecto schemas:
+
 - =Renga.Inventory.Resource=
+- =Renga.Inventory.ResourceCondition=
 - =Renga.Inventory.ResourceIdentifier=
+- =Renga.Inventory.ResourceIdentifierClaim=
+- =Renga.Inventory.ResourceOverride=
 - =Renga.Inventory.Interface=
 - =Renga.Inventory.InterfaceRelationship=
 - =Renga.Inventory.Address=
+- =Renga.Inventory.Observation=
+- =Renga.Inventory.ObservationReconciliation=
+- =Renga.Inventory.Source=
+- =Renga.Inventory.Agent=
+- =Renga.Inventory.AgentLease=
+- =Renga.Inventory.SyncRun=
+- =Renga.Inventory.ChangeEvent=
+- =Renga.Accounts.Organization=
+- =Renga.Accounts.OrganizationMembership=
+
+Add these typed domain and control schemas as their product slices land:
+
+- =Renga.Inventory.Site=
+- =Renga.Inventory.Rack=
 - =Renga.Inventory.Prefix=
 - =Renga.Inventory.Vlan=
 - =Renga.Inventory.Vrf=
 - =Renga.Inventory.Link=
 - =Renga.Inventory.Component=
-- =Renga.Inventory.Observation=
-- =Renga.Inventory.Source=
-- =Renga.Inventory.SyncRun=
-- =Renga.Inventory.ChangeEvent=
+- =Renga.Inventory.ResourceRelationship=
+- =Renga.Inventory.ResourceOwner=
 - =Renga.Inventory.Job=
 - =Renga.Inventory.JobEvent=
 - =Renga.Inventory.Capability=
-- =Renga.Inventory.ResourceOverride=
-- =Renga.Accounts.Organization=
-- =Renga.Accounts.OrganizationMembership=
 
 Core tenant boundary:
 
@@ -156,68 +183,138 @@ Defer advanced tenancy features:
 - Database-per-tenant architecture.
 - Region and data residency controls.
 
-Recommended resource fields:
+** Resource Envelope And Typed Projections
 
-- =kind=: =server=, =switch=, =vm=, =container=, =pdu=, =storage=, =unknown=.
-- =external_id=: stable ID from the reporting source when available.
-- =serial_number=
-- =asset_tag=
-- =hostname=
-- =fqdn=
-- =vendor=
-- =model=
-- =status=: =active=, =inactive=, =stale=, =retired=, =unknown=.
-- =site_id=
-- =rack_id=
-- =rack_u=
-- =metadata=: JSONB for source-specific attributes.
-- =last_seen_at=
+A =Resource= is the common envelope for an object that needs stable identity,
+desired state, independent conditions, revisions, relationships, or lifecycle
+management. Do not turn every fact into a resource. Addresses, conditions,
+identifier claims, leases, and reconciliation results remain subordinate typed
+records.
 
-Resource identity should not depend on one field. Store observed identifiers separately:
+Recommended resource envelope fields:
 
-- =kind=: =hostname=, =fqdn=, =machine_id=, =dmi_uuid=, =serial_number=, =mac_address=, =provider_instance_id=, =bmc_address=.
-- =value=
+- =organization_id=
+- =kind=: =server=, =switch=, =vm=, =container=, =pdu=, =storage=, =unknown=
+- =name= or =display_name=, which is not identity
+- =lifecycle_state=: =active=, =inactive=, =retired=, =unknown=
+- =spec=: JSONB desired state owned by users and controllers
+- =generation=: incremented only when desired state changes
+- =resource_version=: monotonically ordered revision for optimistic concurrency and future watches
+- =labels=: low-cardinality selector metadata
+- =annotations=: non-selector metadata
+- =deletion_requested_at=: nullable lifecycle marker for future managed deletion
+- millisecond-precision timestamps
+
+Stable, frequently queried inventory remains in typed projections. Examples
+include machine identity/display fields, interfaces, addresses, prefixes, rack
+placement, and scheduling capacity. PostgreSQL =macaddr=, =inet=, =cidr=,
+numeric, range, and timestamp types should be preferred over string or JSONB
+representations when the domain has a native type.
+
+Variable hardware details, full CPU flags, firmware extensions, and vendor data
+may remain JSONB. Promote values into typed projections when they become search,
+policy, allocation, or scheduling inputs.
+
+The single lifecycle state is not a health summary. =ResourceCondition= records
+represent independent facts such as =InventoryCurrent=, =AgentConnected=,
+=Ready=, =Degraded=, and =Reconciling=. Conditions should include status,
+reason, message, last transition time, the responsible manager, and an optional
+observed generation.
+
+** Desired State, Observed State, And Overrides
+
+- Desired state is what users or controllers want and belongs in =Resource.spec= or typed desired-state tables.
+- Observed evidence is what sources report and must never overwrite desired state directly.
+- Canonical projections are server-owned results derived from current source evidence using deterministic precedence rules.
+- Conditions explain whether desired and observed state have converged.
+- Field-level overrides are reserved for explicit manual corrections to observed inventory, not rack placement, ownership, lifecycle intent, or other normal desired state.
+
+When desired state changes, increment =generation=. Controllers record the
+generation they evaluated so the UI can distinguish unprocessed intent from a
+processed request that has not converged.
+
+** Resource Identity And Claims
+
+Resource identity must not depend on one field. Separate canonical identifiers
+from source claims:
+
+- =ResourceIdentifier= associates a normalized identifier with a canonical resource.
+- =ResourceIdentifierClaim= records which source and observation asserted that identifier, with confidence and first/last seen timestamps.
+
+Identifier kinds include hostname, FQDN, machine ID, DMI UUID, serial number,
+MAC address, provider instance ID, and BMC address. Kind-specific normalization
+must happen before matching.
+
+Do not enforce organization-wide uniqueness for source-reported serial numbers
+or provider external IDs. Renga must be able to represent duplicate and
+conflicting claims before reconciliation decides what they mean. Human-managed
+asset tags may remain organization-unique when policy requires it.
+
+This split lets multiple sources confirm the same identifier and lets the system
+retain disagreement without corrupting canonical identity.
+
+** Sources, Agents, And Leases
+
+A =Source= is an authenticated reporting authority and provenance anchor. An
+=Agent= is a registered runtime installation that may use a source credential.
+Do not use one row to represent both concepts.
+
+Recommended source fields:
+
+- =kind=: =host_agent=, =switch_poller=, =vm_provider=, =bmc=, =manual=
+- =name=
+- credential and revocation state
+- expected observation interval and freshness policy
+- metadata
+
+Recommended agent fields:
+
 - =source_id=
-- =confidence=
-- =first_seen_at=
-- =last_seen_at=
+- stable installation ID
+- optional managed resource ID
+- version and capabilities
+- registration and configuration metadata
 
-This lets reconciliation improve over time without baking weak assumptions into the canonical resource row.
+=AgentLease= stores holder/session identity, renewal time, and lease duration.
+Lease renewal is lightweight and independent from full inventory collection.
+Keep separate timestamps for API contact, latest inventory, latest successful
+inventory, and lease renewal. Agent online and inventory current are different
+conditions.
 
-** Resource Fields Vs Resource Identity
+** Immutable Observations And Processing
 
-Resource fields are the canonical attributes Renga currently believes describe the resource. These are the values the UI usually shows.
+=Observation= is immutable raw evidence. It contains the organization, source,
+optional sync run, source-provided idempotency key, observed time, payload
+digest, payload, metadata, UUIDv7 ID, and matching =inserted_at=. It does not
+contain mutable processing status, reconciliation errors, or a canonical
+resource assignment.
 
-Example resource fields:
+=ObservationReconciliation= records processing attempts, result status,
+candidate or matched resources, errors, and completion timestamps. Retrying
+reconciliation creates or updates processing state without mutating raw
+evidence.
 
-- =kind=: =server=
-- =hostname=: =compute-01=
-- =vendor=: =Dell=
-- =model=: =PowerEdge R760=
-- =status=: =active=
-- =site_id=: =iad-1=
-- =rack_id=: =rack-12=
-- =last_seen_at=: =2026-07-30T10:00:00Z=
+Require a source-scoped observation idempotency key. Use the payload digest to
+detect conflicting reuse of that key, not as permanent uniqueness for all
+reports. An unchanged host must be able to submit the same inventory again at a
+later observed time.
 
-Resource identity is the evidence Renga uses to decide whether a new observation refers to an existing resource or a new one.
+** Canonical Network State And Provenance
 
-Example identity facts:
+Interfaces, addresses, and typed topology rows are source-neutral canonical
+records. Per-source evidence records link them to sources and observations so
+host agents, hypervisors, BMC collectors, and switch collectors can agree or
+conflict without one source replacing another's provenance.
 
-- =serial_number=: =ABC123=
-- =dmi_uuid=: =4c4c4544-...=
-- =machine_id=: =9f3c...=
-- =fqdn=: =compute-01.example.net=
-- =mac_address=: =00:11:22:33:44:55=
-- =provider_instance_id=: =vm-104=
+Interface MAC addresses use PostgreSQL =macaddr=. Assigned or observed interface
+addresses use =inet=. Managed IPAM prefixes use =cidr=. Directed typed interface
+relationships capture bond membership, bridge membership, lower-device
+stacking, veth peers, VRF membership, and virtual interface backing links.
 
-The distinction:
-
-- Resource fields answer: what do we know about this thing?
-- Resource identity answers: is this the same thing as something we already know?
-
-The split matters because names, IPs, and MAC addresses can change, move, or conflict. A VM may be seen by both a host agent and a hypervisor API. A server may report weak identity data before a later source reports a serial number or DMI UUID.
-
-The canonical resource row should stay easy to read and query. The identifier rows should preserve the observed matching signals with source, confidence, and first/last seen timestamps.
+Use generalized =ResourceRelationship= records only for cross-domain topology
+that does not belong in a stronger typed table. Keep lifecycle ownership in
+=ResourceOwner= rather than treating every relationship as ownership. Add
+finalizers only when destructive management and cleanup workflows exist.
 
 ** Reconciliation And Audit, Not Full Event Sourcing
 
@@ -227,38 +324,21 @@ Full event sourcing would make the ordered event stream the authoritative source
 
 Start with a simpler model:
 
-- =resources=: canonical current view.
-- =resource_identifiers=: observed identity facts used for matching.
-- =observations=: raw reported payloads.
+- =resources=: identity, desired state, lifecycle, and revision envelope.
+- typed inventory tables: canonical current query projections.
+- per-source evidence and identifier claims: current provenance and conflicts.
+- =observations=: immutable raw reported payloads.
+- =observation_reconciliations=: processing attempts and outcomes.
 - =change_events=: audit/history of meaningful changes.
 
 The write path should be:
 
 1. Store the raw observation.
-2. Reconcile it into canonical resources, interfaces, addresses, and related tables.
-3. Write change events for meaningful discoveries, updates, conflicts, stale transitions, and manual edits.
+2. Record or refresh per-source evidence and identifier claims.
+3. Reconcile evidence into canonical resources, conditions, interfaces, addresses, and related typed projections.
+4. Write change events for meaningful discoveries, updates, conflicts, stale transitions, and manual edits.
 
 This gives Renga provenance, conflict detection, stale detection, debugging history, and a possible replay path later without making every normal read depend on event replay.
-
-Recommended source fields:
-
-- =kind=: =host_agent=, =switch_poller=, =vm_provider=, =bmc=, =manual=.
-- =name=
-- =status=
-- =token_hash=
-- =last_seen_at=
-- =capabilities=
-- =metadata=
-
-Use explicit tables for high-value inventory relationships, and JSONB only for less-common source-specific details.
-
-Use first-class interface and IPAM tables instead of storing network state as unstructured host metadata. Interface MAC addresses should use PostgreSQL =macaddr=. Observed interface IP assignments should attach to interfaces and use PostgreSQL =inet=. Managed IPAM prefixes/subnets should be separate records and use PostgreSQL =cidr=. Directed interface relationship rows should capture bond membership, bridge membership, lower-device stacking, veth peers, VRF membership, and virtual interface backing links. VLANs, VRFs, prefixes, and ranges should become queryable IPAM records as soon as the product needs them.
-
-Keep observed state separate from desired state:
-
-- Observed state is what agents, switch pollers, BMCs, and providers report.
-- Desired state is what Renga wants to create, place, change, or retire.
-- Jobs move the world toward desired state; later observations confirm what actually happened.
 
 Observation rows should be immutable append-only records. Their primary keys
 should be UUIDv7 so row identity carries useful creation-time ordering. Keep
@@ -283,7 +363,7 @@ Override rules:
 - Observations are still stored.
 - Conflicts between observed and overridden values remain visible.
 - Overrides are field-scoped, auditable, and removable.
-- Some fields may be manual-only from the start, such as rack position, owner, lifecycle intent, and notes.
+- Desired fields such as rack position, owner, lifecycle intent, and notes belong in =spec= or typed desired-state records instead of overrides.
 
 * Agent And Collector Model
 
@@ -415,7 +495,8 @@ API requirements:
 
 - Authenticate each source with a bearer token.
 - Store every accepted observation.
-- Process observations idempotently with a source-provided observation ID or request digest.
+- Require a source-provided observation idempotency key.
+- Use the payload digest to reject conflicting reuse of an idempotency key while allowing identical inventory to be reported again under a new key.
 - Return per-resource acceptance and validation errors.
 - Avoid accepting client-controlled canonical IDs.
 
@@ -427,7 +508,7 @@ Suggested job fields:
 
 - =kind=: =collect_inventory=, =run_query=, =vm_create=, =vm_start=, =vm_stop=, =terminal_session=.
 - =status=: =queued=, =leased=, =running=, =succeeded=, =failed=, =expired=, =cancelled=.
-- =target_source_id=
+- =target_agent_id= or =target_resource_id=
 - =requested_by=
 - =params=
 - =result=
@@ -560,16 +641,23 @@ When sources disagree:
 - Keep the canonical record stable.
 - Record field-level conflict details.
 - Prefer source types by configurable priority.
-- Preserve manual overrides separately from observed facts.
+- Preserve every current source claim and its raw observation evidence.
+- Keep desired state and manual corrections separate from observed facts.
+- Update independent resource conditions instead of collapsing disagreement into one status enum.
 
 * Freshness And Lifecycle
 
 Suggested lifecycle:
 
-- =active=: observed within expected interval.
-- =stale=: not observed after grace period.
-- =missing=: source reports a prior resource absent from a full sync.
-- =retired=: manually retired or removed by policy.
+- =active=: resource is in service.
+- =inactive=: resource is intentionally not active.
+- =retired=: resource is manually retired or removed by policy.
+- =unknown=: lifecycle intent has not been established.
+
+Freshness is a condition, not lifecycle. =InventoryCurrent= becomes false when
+the current evidence exceeds its source policy. =AgentConnected= is derived
+from the agent lease. A resource may be active while its inventory is stale or
+its agent is disconnected.
 
 Each source should define:
 
@@ -582,9 +670,10 @@ Each source should define:
 ** Slice 1: Inventory Foundation
 
 - Add =Renga.Inventory= context.
-- Add migrations and schemas for sources, resources, resource identifiers, interfaces, interface relationships, addresses, observations, sync runs, and change events. Store interface MAC addresses as PostgreSQL =macaddr=, store interface IP addresses as PostgreSQL =inet=, and reserve PostgreSQL =cidr= for future IPAM prefix/subnet records.
+- Add resource envelopes, typed projections, conditions, canonical identifiers, per-source claims, immutable observations, reconciliation results, agents, leases, interfaces, addresses, sync runs, and audit events.
+- Store interface MAC addresses as PostgreSQL =macaddr=, interface IP addresses as PostgreSQL =inet=, and future IPAM prefixes/subnets as PostgreSQL =cidr=.
 - Add basic CRUD functions in the context.
-- Add tests for creation, uniqueness, and lifecycle transitions.
+- Add tests for creation, source evidence, safe duplicate representation, observation immutability, conditions, leases, and lifecycle transitions.
 
 ** Slice 2: Ingestion API
 
@@ -592,10 +681,19 @@ Each source should define:
 - Add source token authentication plug.
 - Accept host-agent observation payloads.
 - Store raw observations.
-- Upsert canonical resources with simple matching rules.
-- Add tests for auth, idempotency, validation, and upsert behavior.
+- Store processing outcomes outside immutable observations.
+- Add tests for auth, source-scoped idempotency, conflicting key reuse, validation, and repeated identical reports.
 
-** Slice 3: Rust Host Agent MVP
+** Slice 3: Reconciliation MVP
+
+- Normalize and preserve per-source identity claims.
+- Match canonical resources using strong identifiers before weak names.
+- Reconcile source evidence into source-neutral typed projections.
+- Apply deterministic field ownership and precedence rules.
+- Update resource conditions and write non-authoritative audit events.
+- Add tests for duplicate identifiers, multi-source agreement, conflicts, and stale evidence.
+
+** Slice 4: Rust Host Agent MVP
 
 - Create a Rust agent workspace under a dedicated top-level =agent/= directory.
 - Implement daemon lifecycle, config loading, identity, auth, internal scheduling, host inventory collection, dry-run output, check-ins, and POST transport.
@@ -604,14 +702,14 @@ Each source should define:
 - Provide a raw static binary or tarball artifact for development and non-Debian testing.
 - Leave remote command execution, terminal sessions, and VM placement out of the first agent cut.
 
-** Slice 4: Operational UI
+** Slice 5: Operational UI
 
 - Replace the generated home page with a LiveView inventory dashboard.
 - Add resource list, resource detail, source list, stale-resource filters, and recent change events.
 - Use LiveView streams for lists that update.
 - Add key DOM IDs for tests.
 
-** Slice 5: Durable Jobs And Agent Capabilities
+** Slice 6: Durable Jobs And Agent Capabilities
 
 - Add persisted jobs and job events.
 - Add source capabilities.
@@ -619,13 +717,13 @@ Each source should define:
 - Add safe read-only live query jobs.
 - Add audit events for job lifecycle changes.
 
-** Slice 6: Phoenix Channels Control Acceleration
+** Slice 7: Phoenix Channels Control Acceleration
 
 - Add Phoenix Channel or socket endpoint for connected agents.
 - Use it to notify agents about queued jobs and stream job output.
 - Keep polling endpoints as the required fallback and correctness path.
 
-** Slice 7: Switch And VM Syncers
+** Slice 8: Switch And VM Syncers
 
 - Add a central collector process for switch polling.
 - Add provider-specific sync behavior behind a common behaviour module.
@@ -660,13 +758,15 @@ Each source should define:
 Build the host-agent path first:
 
 1. Manual source creation with generated token.
-2. =POST /api/v1/observations= for host facts.
-3. Canonical server and interface records.
-4. Resource identifiers for machine ID, DMI UUID, serial number, hostnames, and MAC addresses.
-5. Stale detection based on =last_seen_at=.
-6. Rust service agent with internal scheduling, check-ins, =--once=, =--dry-run=, config, auth, and POST transport.
-7. Inventory dashboard showing active and stale resources.
-8. Resource detail view showing observed facts, source, identifiers, and last sync.
+2. Agent registration and renewable lease separate from source authentication.
+3. =POST /api/v1/observations= with source-scoped idempotency keys.
+4. Immutable raw observations and separate reconciliation outcomes.
+5. Canonical server and interface projections backed by per-source evidence.
+6. Canonical identifiers plus source claims for machine ID, DMI UUID, serial number, hostnames, and MAC addresses.
+7. Inventory freshness and agent connectivity represented as independent conditions.
+8. Rust service agent with internal scheduling, leases, check-ins, =--once=, =--dry-run=, config, auth, and POST transport.
+9. Inventory dashboard showing lifecycle and freshness separately.
+10. Resource detail view showing desired state, canonical projections, observed facts, provenance, conditions, identifiers, and last sync.
 
 This creates the smallest useful loop: deploy an agent, report a host, update inventory, and see freshness in the UI.
 

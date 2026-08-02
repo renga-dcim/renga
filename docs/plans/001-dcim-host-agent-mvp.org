@@ -10,7 +10,7 @@ Build the smallest useful Renga DCIM loop:
 3. Collect host inventory facts.
 4. POST observations to Renga.
 5. Reconcile observations into canonical inventory.
-6. Show active/stale resources and their provenance in the UI.
+6. Show resource lifecycle, inventory freshness, agent connectivity, and provenance in the UI.
 
 This MVP proves the core product model before adding switch polling, VM lifecycle automation, live terminal sessions, osquery-compatible endpoints, or placement decisions.
 
@@ -50,9 +50,10 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 - Persisted jobs and Phoenix Channels are planned later; they are not needed for the first inventory loop.
 - Tenant boundary is =organization_id= in a single database.
 - Agent tokens are scoped to one organization and one source.
-- Resource identity is modeled as observed identifier facts.
-- Resource fields are the canonical current view.
-- Manual edits are explicit field-level overrides that preserve observed facts.
+- Resource identity separates canonical identifiers from per-source claims.
+- Resource envelopes own desired state, lifecycle, and revisions; typed canonical projections provide the current query view.
+- Manual corrections are explicit field-level overrides that preserve observed facts, while normal operator intent belongs in desired state.
+- Agent registration and lease health are separate from source credentials and inventory freshness.
 
 * Milestones
 
@@ -99,28 +100,59 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 - [X] Implement =POST /api/v1/agent/checkins=.
 - [X] Implement =POST /api/v1/observations= for one host resource per request.
 - [X] Store accepted raw observations before reconciliation.
-- [X] Add idempotency using a source-provided observation ID or request digest.
+- [X] Add initial idempotency using a source-provided observation ID or request digest; replace digest-wide uniqueness during the model rebuild.
 - [X] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
 - [X] Return structured acceptance and validation responses.
 - [X] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
 
-** 4. Reconciliation MVP
+** 4. Inventory Model Rebuild
+
+The completed Phase 2 checklist records the first inventory model delivered by
+the project. Before reconciliation begins, replace that initial model using a
+fresh development/test database so reconciliation is built against explicit
+desired state, observed evidence, provenance, and lifecycle boundaries.
+
+- [ ] Document the target inventory model and the boundary between resource envelopes, typed projections, source evidence, and raw observations.
+- [ ] Rebuild the inventory migrations in place and verify a fresh database can be created without compatibility migrations for the superseded model.
+- [ ] Redefine =Resource= as the organization-scoped envelope for independently addressable and reconcilable objects.
+- [ ] Add desired =spec= data, =generation=, and a monotonically ordered resource revision without replacing typed PostgreSQL projections with opaque JSONB.
+- [ ] Rename the current resource =status= to an explicit lifecycle or inventory state and add independent =ResourceCondition= records for freshness, reachability, readiness, and reconciliation state.
+- [ ] Keep stable, frequently queried inventory in typed tables and reserve JSONB for variable desired state, detailed observations, and vendor-specific data.
+- [ ] Make =Observation= strictly immutable by moving processing status, matched resources, attempts, and errors into separate reconciliation result records.
+- [ ] Require source-scoped observation idempotency keys and remove permanent payload-digest uniqueness so unchanged inventory can be reported again later.
+- [ ] Split canonical resource identifiers from per-source identifier claims, preserving source, observation, confidence, normalization, and first/last seen timestamps.
+- [ ] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
+- [ ] Make canonical interfaces, addresses, and topology relationships source-neutral while retaining per-source evidence and provenance.
+- [ ] Preserve PostgreSQL =macaddr= for MAC addresses, =inet= for assigned addresses, and =cidr= for managed IPAM prefixes.
+- [ ] Add explicit =Agent= registration records separately from =Source= credentials and provenance.
+- [ ] Add renewable agent lease records so connection liveness and inventory freshness are independent states.
+- [ ] Keep topology relationships separate from lifecycle ownership and add generalized resource relationships only for cross-domain links that cannot use typed tables.
+- [ ] Add resource ownership records for lifecycle-managed children while deferring finalizers until destructive management workflows are introduced.
+- [ ] Keep =ChangeEvent= as non-authoritative audit history and define a separate monotonically ordered outbox/revision model for future list-and-watch delivery.
+- [ ] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
+- [ ] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
+- [ ] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
+- [ ] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
+
+** 5. Reconciliation MVP
 
 - [ ] Match resources by strong identifiers first: serial number, DMI UUID, machine ID, then MAC address set.
 - [ ] Treat hostname and FQDN as weak matching signals.
-- [ ] Upsert canonical resource fields from observations.
-- [ ] Preserve observed identifiers with source, confidence, first seen, and last seen timestamps.
-- [ ] Upsert interfaces and addresses from host observations.
-- [ ] Record field conflicts when observed values disagree with canonical or overridden values.
+- [ ] Reconcile immutable observations and current source facts into source-neutral canonical projections.
+- [ ] Preserve identifier claims with source, confidence, first seen, and last seen timestamps.
+- [ ] Upsert canonical interfaces and addresses while retaining per-source evidence.
+- [ ] Apply deterministic field ownership and precedence rules without allowing observations to overwrite desired state.
+- [ ] Record field conflicts when sources disagree with each other, canonical state, or explicit desired/manual values.
+- [ ] Update resource conditions and freshness independently from lifecycle state and agent lease health.
 - [ ] Write change events for discovery, update, conflict, and stale transitions.
 - [ ] Add reconciliation tests for duplicate identifiers, hostname changes, weak matches, and conflicting observations.
 
-** 5. Rust Agent Service MVP
+** 6. Rust Agent Service MVP
 
 - [X] Create =agent/= Rust workspace.
 - [ ] Add daemon entrypoint with config loading and structured logging.
 - [ ] Add systemd unit files for Debian/Ubuntu proof-of-concept installs.
-- [ ] Add config file and environment variable support for Renga URL, token, source ID, and intervals.
+- [ ] Add config file and environment variable support for Renga URL, token, stable agent installation ID, and intervals.
 - [ ] Implement internal scheduler for inventory collection, check-ins, and config refresh.
 - [ ] Implement =--once= mode.
 - [ ] Implement =--dry-run= JSON output mode.
@@ -130,23 +162,23 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 - [ ] POST observations and check-ins with retry and backoff.
 - [ ] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
 
-** 6. Operational UI MVP
+** 7. Operational UI MVP
 
 - [ ] Add authenticated, organization-scoped LiveView routes.
-- [ ] Add inventory dashboard with active, stale, and unknown resource counts.
-- [ ] Add resource list with kind, hostname, vendor/model, status, source, and last seen.
-- [ ] Add resource detail view with canonical fields, identifiers, interfaces, addresses, source provenance, and recent change events.
-- [ ] Add source list with status, last seen, kind, and capabilities.
-- [ ] Add stale resource filter.
+- [ ] Add inventory dashboard with lifecycle, inventory freshness, and agent connectivity counts.
+- [ ] Add resource list with kind, hostname, vendor/model, lifecycle, conditions, source provenance, and last observed time.
+- [ ] Add resource detail view with desired state, canonical projections, identifier claims, interfaces, addresses, source provenance, conditions, and recent change events.
+- [ ] Add source and agent lists with credential state, lease health, last inventory, kind, and capabilities.
+- [ ] Add stale-inventory and disconnected-agent filters.
 - [ ] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
 - [ ] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
 
-** 7. Packaging And Smoke Test
+** 8. Packaging And Smoke Test
 
 - [ ] Build a raw Linux agent binary or tarball for development.
 - [ ] Build an initial Debian/Ubuntu =.deb= package.
 - [ ] Install the agent on a local or test Debian/Ubuntu host.
-- [ ] Register a source in Renga and configure the agent token.
+- [ ] Register a source and agent in Renga, then configure the agent token and installation ID.
 - [ ] Run =renga-agent --once --dry-run= and inspect JSON.
 - [ ] Run =renga-agent --once= and verify Renga receives the observation.
 - [ ] Enable the systemd service and verify periodic check-ins.
@@ -160,8 +192,8 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 - [ ] Renga stores the raw observation and reconciles it into canonical inventory.
 - [ ] Resource identifiers are preserved separately from canonical fields.
 - [ ] Repeated observations are idempotent.
-- [ ] Stale resources are visible after their source misses the expected interval.
-- [ ] The UI shows resources, sources, identifiers, interfaces, addresses, change events, and freshness.
+- [ ] Stale inventory and disconnected agents are visible as independent conditions without changing resource lifecycle intent.
+- [ ] The UI shows resources, desired state, canonical projections, source evidence, identifier claims, interfaces, addresses, conditions, agents, leases, change events, and freshness.
 - [ ] Tenant isolation tests prevent cross-organization access.
 - [ ] =mix precommit= passes.
 
