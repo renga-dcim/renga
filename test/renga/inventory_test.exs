@@ -280,6 +280,29 @@ defmodule Renga.InventoryTest do
       assert Inventory.get_agent_lease!(scope, agent.id).id == renewed.id
     end
 
+    test "an older renewal cannot shorten the current lease", %{scope: scope, source: source} do
+      {:ok, {agent, _original}} = Inventory.record_agent_check_in(scope, source.id)
+
+      assert {:ok, current} =
+               Inventory.renew_agent_lease(scope, agent.id, %{
+                 renewed_at: ~U[2030-08-01 12:00:00.000000Z],
+                 ttl_ms: 90_000
+               })
+
+      assert {:ok, replayed} =
+               Inventory.renew_agent_lease(scope, agent.id, %{
+                 renewed_at: ~U[2029-08-01 12:00:00.000000Z],
+                 ttl_ms: 1_000
+               })
+
+      assert replayed.renewed_at == current.renewed_at
+      assert replayed.expires_at == current.expires_at
+
+      stored = Inventory.get_agent_lease!(scope, agent.id)
+      assert stored.renewed_at == current.renewed_at
+      assert stored.expires_at == current.expires_at
+    end
+
     test "repeated check-ins reuse registration and lease while merging metadata", %{
       scope: scope,
       source: source
@@ -484,6 +507,21 @@ defmodule Renga.InventoryTest do
 
       assert deletion_revision.action == "deletion_requested"
       assert deletion_revision.revision == deleting.resource_version
+    end
+
+    test "updates after a deletion request remain classified as updates", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      assert {:ok, deleting} =
+               Inventory.update_resource(resource, %{
+                 deletion_requested_at: ~U[2026-08-03 12:00:00.000000Z]
+               })
+
+      assert {:ok, _updated} = Inventory.update_resource(deleting, %{labels: %{"site" => "iad"}})
+
+      assert [%{action: "created"}, %{action: "deletion_requested"}, %{action: "updated"}] =
+               Inventory.list_resource_revisions(scope, resource.id)
     end
 
     test "typed host fields remain queryable outside desired spec", %{scope: scope} do
@@ -802,6 +840,23 @@ defmodule Renga.InventoryTest do
 
       assert %{kind: ["is invalid"], value: ["can't be blank"]} = errors_on(changeset)
       assert "must be less than or equal to 100" in errors_on(changeset).confidence
+    end
+
+    test "claim defaults support string-keyed params", %{
+      scope: scope,
+      source: source,
+      observation: observation
+    } do
+      assert {:ok, claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{"kind" => "serial_number", "value" => "ABC123"}
+               )
+
+      assert claim.first_seen_at == observation.observed_at
+      assert claim.last_seen_at == observation.observed_at
     end
   end
 
@@ -1336,6 +1391,39 @@ defmodule Renga.InventoryTest do
       refute Map.has_key?(context.physical, :source_id)
       refute Map.has_key?(context.address, :source_id)
       refute Map.has_key?(context.relationship, :source_id)
+    end
+
+    test "evidence defaults support string-keyed params", context do
+      assert {:ok, interface_evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 %{"name" => "ens1f0np0", "kind" => "ethernet", "status" => "up"}
+               )
+
+      assert {:ok, address_evidence} =
+               Inventory.create_address_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.address.id,
+                 %{"address" => "192.0.2.10/24", "scope" => "global"}
+               )
+
+      assert {:ok, relationship_evidence} =
+               Inventory.create_interface_relationship_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.relationship.id,
+                 %{"kind" => "lag_member"}
+               )
+
+      assert interface_evidence.observed_at == context.observation.observed_at
+      assert address_evidence.observed_at == context.observation.observed_at
+      assert relationship_evidence.observed_at == context.observation.observed_at
     end
 
     test "multiple sources can retain conflicting interface evidence", context do
