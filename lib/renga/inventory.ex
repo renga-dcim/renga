@@ -336,13 +336,14 @@ defmodule Renga.Inventory do
       )
 
     transition_at = condition_transition_at(existing, attrs)
+    attrs = put_condition_transition_at(attrs, transition_at)
 
     (existing ||
        %ResourceCondition{
          organization_id: organization_id,
          resource_id: resource.id
        })
-    |> ResourceCondition.changeset(Map.put(attrs, :last_transition_at, transition_at))
+    |> ResourceCondition.changeset(attrs)
     |> Repo.insert_or_update()
   end
 
@@ -1048,6 +1049,14 @@ defmodule Renga.Inventory do
       Map.get(attrs, :last_transition_at) ||
         Map.get(attrs, "last_transition_at") ||
         Renga.Time.utc_now_ms()
+    end
+  end
+
+  defp put_condition_transition_at(attrs, transition_at) do
+    if Enum.all?(Map.keys(attrs), &is_binary/1) do
+      Map.put(attrs, "last_transition_at", transition_at)
+    else
+      Map.put(attrs, :last_transition_at, transition_at)
     end
   end
 

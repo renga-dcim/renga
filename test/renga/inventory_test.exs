@@ -541,6 +541,21 @@ defmodule Renga.InventoryTest do
       assert stale.last_transition_at == transition_at
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
+
+    test "condition transitions accept string-keyed attributes", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      assert {:ok, %ResourceCondition{} = condition} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 "type" => "Ready",
+                 "status" => "true"
+               })
+
+      assert condition.type == "Ready"
+      assert condition.status == "true"
+      assert %DateTime{} = condition.last_transition_at
+    end
   end
 
   describe "resource topology and ownership" do
