@@ -303,6 +303,13 @@ defmodule Renga.InventoryTest do
       assert updated_agent.metadata == %{"agent_version" => "0.2.0", "kernel" => "6.12"}
       assert updated_lease.id == original_lease.id
       assert DateTime.compare(updated_lease.renewed_at, original_lease.renewed_at) in [:eq, :gt]
+
+      assert {:ok, {unchanged_agent, _lease}} =
+               Inventory.record_agent_check_in(scope, source.id)
+
+      assert unchanged_agent.version == updated_agent.version
+      assert unchanged_agent.capabilities == updated_agent.capabilities
+      assert unchanged_agent.metadata == updated_agent.metadata
     end
 
     test "agent capabilities are validated on registration", %{scope: scope, source: source} do

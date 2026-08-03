@@ -942,13 +942,6 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp insert_or_update_or_rollback(changeset) do
-    case Repo.insert_or_update(changeset) do
-      {:ok, record} -> record
-      {:error, changeset} -> Repo.rollback(changeset)
-    end
-  end
-
   defp agent_registration_attrs(source, attrs, now) do
     metadata = get_attr(attrs, :metadata)
 
@@ -962,43 +955,64 @@ defmodule Renga.Inventory do
   end
 
   defp upsert_agent!(organization_id, source_id, attrs) do
-    existing =
-      Repo.get_by(Agent,
-        organization_id: organization_id,
-        source_id: source_id,
-        name: attrs.name
+    update_version? = Map.has_key?(attrs, :version)
+    update_capabilities? = Map.has_key?(attrs, :capabilities)
+    merge_metadata? = Map.has_key?(attrs, :metadata)
+
+    on_conflict =
+      from(agent in Agent,
+        update: [
+          set: [
+            version:
+              fragment(
+                "CASE WHEN ? THEN EXCLUDED.version ELSE ? END",
+                ^update_version?,
+                agent.version
+              ),
+            capabilities:
+              fragment(
+                "CASE WHEN ? THEN EXCLUDED.capabilities ELSE ? END",
+                ^update_capabilities?,
+                agent.capabilities
+              ),
+            metadata:
+              fragment(
+                "CASE WHEN ? THEN ? || EXCLUDED.metadata ELSE ? END",
+                ^merge_metadata?,
+                agent.metadata,
+                agent.metadata
+              ),
+            updated_at: fragment("EXCLUDED.updated_at")
+          ]
+        ]
       )
 
-    attrs = prepare_agent_update(existing, attrs)
+    result =
+      %Agent{organization_id: organization_id, source_id: source_id}
+      |> Agent.changeset(attrs)
+      |> Repo.insert(
+        on_conflict: on_conflict,
+        conflict_target: [:organization_id, :source_id, :name],
+        returning: true
+      )
 
-    (existing || %Agent{organization_id: organization_id, source_id: source_id})
-    |> Agent.changeset(attrs)
-    |> insert_or_update_or_rollback()
-  end
-
-  defp prepare_agent_update(nil, attrs), do: attrs
-
-  defp prepare_agent_update(agent, attrs) do
-    attrs
-    |> Map.put(:registered_at, agent.registered_at)
-    |> maybe_merge_metadata(agent.metadata)
-  end
-
-  defp maybe_merge_metadata(attrs, current_metadata) do
-    case Map.fetch(attrs, :metadata) do
-      {:ok, metadata} -> Map.put(attrs, :metadata, merge_metadata(current_metadata, metadata))
-      :error -> attrs
+    case result do
+      {:ok, agent} -> agent
+      {:error, changeset} -> Repo.rollback(changeset)
     end
   end
 
   defp put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms)
        when is_integer(ttl_ms) and ttl_ms > 0 do
-    lease = Repo.get_by(AgentLease, organization_id: organization_id, agent_id: agent_id)
     expires_at = DateTime.add(renewed_at, ttl_ms, :millisecond)
 
-    (lease || %AgentLease{organization_id: organization_id, agent_id: agent_id})
+    %AgentLease{organization_id: organization_id, agent_id: agent_id}
     |> AgentLease.changeset(%{renewed_at: renewed_at, expires_at: expires_at})
-    |> Repo.insert_or_update()
+    |> Repo.insert(
+      on_conflict: {:replace, [:renewed_at, :expires_at, :updated_at]},
+      conflict_target: [:organization_id, :agent_id],
+      returning: true
+    )
   end
 
   defp put_agent_lease!(organization_id, agent_id, renewed_at, ttl_ms) do
@@ -1033,12 +1047,6 @@ defmodule Renga.Inventory do
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
-
-  defp merge_metadata(_current_metadata, nil), do: nil
-
-  defp merge_metadata(current_metadata, metadata) when is_map(metadata) do
-    Map.merge(current_metadata || %{}, metadata)
-  end
 
   defp normalize_observation_attrs(scope, attrs) do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
