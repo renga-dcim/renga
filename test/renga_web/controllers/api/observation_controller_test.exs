@@ -105,6 +105,37 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
     end
 
+    test "accepts an optional source object without a kind", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["source"], %{"source_id" => source.name})
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "accepted", "duplicate" => false} = json_response(conn, 202)
+    end
+
+    test "rejects a missing observation id", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+      payload = source |> valid_observation_payload() |> Map.delete("observation_id")
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "observation_id", "message" => "is required"}]
+             } = json_response(conn, 422)
+    end
+
     test "returns duplicate acceptance for retried observation ids", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)

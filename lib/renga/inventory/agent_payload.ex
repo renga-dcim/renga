@@ -93,7 +93,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_source_kind(errors, params, source) do
     case Map.get(params, "kind") do
-      nil -> [error("observation_id", "is required") | errors]
+      nil -> errors
       kind when kind == source.kind -> errors
       _other -> [error("source.kind", "does not match authenticated source") | errors]
     end
@@ -152,7 +152,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_observation_id(errors, params) do
     case Map.get(params, "observation_id") do
-      nil -> errors
+      nil -> [error("observation_id", "is required") | errors]
       value when is_binary(value) -> validate_non_blank(errors, "observation_id", value)
       _invalid -> [error("observation_id", "must be a string") | errors]
     end

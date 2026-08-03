@@ -72,6 +72,20 @@ defmodule RengaWeb.Api.AgentControllerTest do
       assert Inventory.get_agent_lease!(scope, agent.id).expires_at
     end
 
+    test "accepts an optional source object without a kind", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{
+          "source" => %{"source_id" => source.name},
+          "capabilities" => ["host.inventory"]
+        })
+
+      assert %{"status" => "accepted"} = json_response(conn, 202)
+    end
+
     test "rejects payloads that claim a different source", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
