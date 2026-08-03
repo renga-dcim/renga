@@ -5,6 +5,8 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.Agent
+  alias Renga.Inventory.AgentLease
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
@@ -19,6 +21,8 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceOwner
+  alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
@@ -54,14 +58,12 @@ defmodule Renga.InventoryTest do
                Inventory.create_source(scope, %{
                  kind: "host_agent",
                  name: "iad-1-host-agent",
-                 capabilities: ["host.inventory"],
                  metadata: %{"interval_seconds" => 60}
                })
 
       assert {:ok, _uuid} = Ecto.UUID.cast(source.id)
       assert source.organization_id == scope.organization_id
       assert source.status == "active"
-      assert source.capabilities == ["host.inventory"]
       assert source.metadata == %{"interval_seconds" => 60}
     end
 
@@ -117,17 +119,6 @@ defmodule Renga.InventoryTest do
                kind: ["is invalid"],
                status: ["is invalid"]
              } = errors_on(changeset)
-    end
-
-    test "validates capabilities", %{scope: scope} do
-      assert {:error, changeset} =
-               Inventory.create_source(scope, %{
-                 kind: "host_agent",
-                 name: "bad-source",
-                 capabilities: ["host.inventory", "   "]
-               })
-
-      assert %{capabilities: ["must contain only non-empty strings"]} = errors_on(changeset)
     end
 
     test "programmatic organization id is not cast from attrs", %{scope: scope} do
@@ -237,6 +228,65 @@ defmodule Renga.InventoryTest do
     test "authenticate_source_token/1 rejects malformed tokens" do
       assert Inventory.authenticate_source_token("not-a-source-token") == :error
       assert Inventory.authenticate_source_token(nil) == :error
+    end
+  end
+
+  describe "agents and leases" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "iad-1-host-agent"
+        })
+
+      Map.put(contexts, :source, source)
+    end
+
+    test "check-in registers an agent separately from source credentials", %{
+      scope: scope,
+      source: source
+    } do
+      assert {:ok, {%Agent{} = agent, %AgentLease{} = lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 capabilities: ["host.inventory"],
+                 metadata: %{"agent_version" => "0.1.0", "kernel" => "6.12"}
+               })
+
+      assert agent.source_id == source.id
+      assert agent.version == "0.1.0"
+      assert agent.capabilities == ["host.inventory"]
+      assert lease.agent_id == agent.id
+      assert DateTime.compare(lease.expires_at, lease.renewed_at) == :gt
+      refute Map.has_key?(source, :last_seen_at)
+      refute Map.has_key?(source, :capabilities)
+    end
+
+    test "renewal updates one lease and expiry is deterministic", %{scope: scope, source: source} do
+      {:ok, {agent, original}} = Inventory.record_agent_check_in(scope, source.id)
+      renewed_at = ~U[2026-08-01 12:00:00.000000Z]
+
+      assert {:ok, renewed} =
+               Inventory.renew_agent_lease(scope, agent.id, %{
+                 renewed_at: renewed_at,
+                 ttl_ms: 1_500
+               })
+
+      assert renewed.id == original.id
+      assert renewed.expires_at == ~U[2026-08-01 12:00:01.500000Z]
+      refute AgentLease.expired?(renewed, ~U[2026-08-01 12:00:01.499000Z])
+      assert AgentLease.expired?(renewed, ~U[2026-08-01 12:00:01.500000Z])
+      assert Inventory.get_agent_lease!(scope, agent.id).id == renewed.id
+    end
+
+    test "agent capabilities are validated on registration", %{scope: scope, source: source} do
+      assert {:error, changeset} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 capabilities: ["host.inventory", "   "]
+               })
+
+      assert %{capabilities: ["must contain only non-empty strings"]} = errors_on(changeset)
     end
   end
 
@@ -391,6 +441,68 @@ defmodule Renga.InventoryTest do
       assert unchanged.id == current.id
       assert unchanged.last_transition_at == current.last_transition_at
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
+    end
+  end
+
+  describe "resource topology and ownership" do
+    setup do
+      contexts = scoped_organizations()
+      {:ok, host} = Inventory.create_resource(contexts.scope, %{kind: "server", name: "host-01"})
+      {:ok, vm} = Inventory.create_resource(contexts.scope, %{kind: "vm", name: "vm-01"})
+
+      {:ok, manager} =
+        Inventory.create_resource(contexts.scope, %{kind: "server", name: "manager-01"})
+
+      contexts
+      |> Map.put(:host, host)
+      |> Map.put(:vm, vm)
+      |> Map.put(:manager, manager)
+    end
+
+    test "cross-domain topology has no lifecycle ownership semantics", %{
+      scope: scope,
+      host: host,
+      vm: vm
+    } do
+      assert {:ok, %ResourceRelationship{} = relationship} =
+               Inventory.create_resource_relationship(scope, vm.id, host.id, %{
+                 kind: "hosted_on",
+                 metadata: %{"hypervisor" => "libvirt"}
+               })
+
+      assert relationship.source_resource_id == vm.id
+      assert relationship.target_resource_id == host.id
+      assert Inventory.list_resource_owners(scope, vm.id) == []
+    end
+
+    test "one controller owns lifecycle while non-controller references remain possible", %{
+      scope: scope,
+      host: host,
+      vm: vm,
+      manager: manager
+    } do
+      assert {:ok, %ResourceOwner{} = owner} =
+               Inventory.create_resource_owner(scope, host.id, vm.id, %{
+                 kind: "libvirt_domain",
+                 controller: true
+               })
+
+      assert {:error, changeset} =
+               Inventory.create_resource_owner(scope, manager.id, vm.id, %{
+                 kind: "agent_managed",
+                 controller: true
+               })
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+
+      assert {:ok, reference} =
+               Inventory.create_resource_owner(scope, manager.id, vm.id, %{
+                 kind: "agent_managed",
+                 controller: false
+               })
+
+      assert Inventory.list_resource_owners(scope, vm.id) == [owner, reference]
+      refute Map.has_key?(vm, :finalizers)
     end
   end
 

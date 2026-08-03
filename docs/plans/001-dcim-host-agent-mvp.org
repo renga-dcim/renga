@@ -124,13 +124,13 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
 - [X] Make canonical interfaces, addresses, and topology relationships source-neutral while retaining per-source evidence and provenance.
 - [X] Preserve PostgreSQL =macaddr= for MAC addresses, =inet= for assigned addresses, and =cidr= for managed IPAM prefixes.
-- [ ] Add explicit =Agent= registration records separately from =Source= credentials and provenance.
-- [ ] Add renewable agent lease records so connection liveness and inventory freshness are independent states.
-- [ ] Keep topology relationships separate from lifecycle ownership and add generalized resource relationships only for cross-domain links that cannot use typed tables.
-- [ ] Add resource ownership records for lifecycle-managed children while deferring finalizers until destructive management workflows are introduced.
+- [X] Add explicit =Agent= registration records separately from =Source= credentials and provenance.
+- [X] Add renewable agent lease records so connection liveness and inventory freshness are independent states.
+- [X] Keep topology relationships separate from lifecycle ownership and add generalized resource relationships only for cross-domain links that cannot use typed tables.
+- [X] Add resource ownership records for lifecycle-managed children while deferring finalizers until destructive management workflows are introduced.
 - [X] Keep =ChangeEvent= as non-authoritative audit history and define a separate monotonically ordered outbox/revision model for future list-and-watch delivery.
-- [ ] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
-- [ ] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
+- [X] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
+- [X] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
 - [ ] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
 - [ ] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
 

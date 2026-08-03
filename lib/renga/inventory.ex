@@ -11,6 +11,8 @@ defmodule Renga.Inventory do
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.Agent
+  alias Renga.Inventory.AgentLease
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
@@ -25,6 +27,8 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceOwner
+  alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
@@ -154,25 +158,80 @@ defmodule Renga.Inventory do
   def authenticate_source_token(_token), do: :error
 
   @doc """
-  Records that a source contacted Renga.
+  Registers or refreshes an agent and renews its independent liveness lease.
 
-  The freshness timestamp is server-generated so client clock skew cannot make
-  an agent appear fresher than the API actually observed.
+  The source remains a credential/provenance record. Server time determines
+  lease liveness so a client clock cannot extend its own connection state.
   """
-  def record_source_check_in(%Scope{} = scope, source_id, attrs \\ %{}) do
+  def record_agent_check_in(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        attrs \\ %{}
+      ) do
     source = get_source!(scope, source_id)
+    now = Renga.Time.utc_now_ms()
+    name = Map.get(attrs, :name) || Map.get(attrs, "name") || source.name
     capabilities = Map.get(attrs, :capabilities) || Map.get(attrs, "capabilities")
     metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata")
+    version = Map.get(attrs, :version) || Map.get(attrs, "version") || metadata_version(metadata)
 
-    attrs =
-      %{}
-      |> maybe_put(:capabilities, capabilities)
-      |> maybe_put(:metadata, merge_metadata(source.metadata, metadata))
-      |> Map.put(:last_seen_at, Renga.Time.utc_now_ms())
+    Repo.transaction(fn ->
+      existing =
+        Repo.get_by(Agent,
+          organization_id: organization_id,
+          source_id: source.id,
+          name: name
+        )
 
-    source
-    |> Source.changeset(attrs)
-    |> Repo.update()
+      agent_attrs =
+        %{}
+        |> Map.put(:name, name)
+        |> Map.put(:registered_at, (existing && existing.registered_at) || now)
+        |> maybe_put(:version, version)
+        |> maybe_put(:capabilities, capabilities)
+        |> maybe_put(:metadata, merge_metadata(existing && existing.metadata, metadata))
+
+      agent =
+        (existing || %Agent{organization_id: organization_id, source_id: source.id})
+        |> Agent.changeset(agent_attrs)
+        |> insert_or_update_or_rollback()
+
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+      {agent, lease}
+    end)
+  end
+
+  @doc """
+  Fetches a registered agent through the caller's organization scope.
+  """
+  def get_agent!(%Scope{organization_id: organization_id}, id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  @doc """
+  Renews an agent lease using server time or an explicit test/replay timestamp.
+  """
+  def renew_agent_lease(%Scope{organization_id: organization_id} = scope, agent_id, attrs \\ %{}) do
+    agent = get_agent!(scope, agent_id)
+
+    renewed_at =
+      Map.get(attrs, :renewed_at) || Map.get(attrs, "renewed_at") || Renga.Time.utc_now_ms()
+
+    ttl_ms = Map.get(attrs, :ttl_ms) || Map.get(attrs, "ttl_ms") || 90_000
+
+    put_agent_lease(organization_id, agent.id, renewed_at, ttl_ms)
+  end
+
+  @doc """
+  Fetches the current renewable lease for a scoped agent.
+  """
+  def get_agent_lease!(%Scope{organization_id: organization_id}, agent_id) do
+    AgentLease
+    |> where([lease], lease.organization_id == ^organization_id)
+    |> where([lease], lease.agent_id == ^agent_id)
+    |> Repo.one!()
   end
 
   @doc """
@@ -580,6 +639,59 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Creates a cross-domain topology link when no typed relationship table applies.
+  """
+  def create_resource_relationship(
+        %Scope{organization_id: organization_id} = scope,
+        source_resource_id,
+        target_resource_id,
+        attrs
+      ) do
+    source_resource = get_resource!(scope, source_resource_id)
+    target_resource = get_resource!(scope, target_resource_id)
+
+    %ResourceRelationship{
+      organization_id: organization_id,
+      source_resource_id: source_resource.id,
+      target_resource_id: target_resource.id
+    }
+    |> ResourceRelationship.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Creates lifecycle ownership separately from descriptive topology.
+  """
+  def create_resource_owner(
+        %Scope{organization_id: organization_id} = scope,
+        owner_resource_id,
+        child_resource_id,
+        attrs
+      ) do
+    owner_resource = get_resource!(scope, owner_resource_id)
+    child_resource = get_resource!(scope, child_resource_id)
+
+    %ResourceOwner{
+      organization_id: organization_id,
+      owner_resource_id: owner_resource.id,
+      child_resource_id: child_resource.id
+    }
+    |> ResourceOwner.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists lifecycle owners for a scoped child resource.
+  """
+  def list_resource_owners(%Scope{organization_id: organization_id}, child_resource_id) do
+    ResourceOwner
+    |> where([owner], owner.organization_id == ^organization_id)
+    |> where([owner], owner.child_resource_id == ^child_resource_id)
+    |> order_by([owner], desc: owner.controller, asc: owner.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
   Lists sync runs visible inside the caller's organization scope.
   """
   def list_sync_runs(%Scope{organization_id: organization_id}) do
@@ -851,6 +963,33 @@ defmodule Renga.Inventory do
       {:error, changeset} -> Repo.rollback(changeset)
     end
   end
+
+  defp insert_or_update_or_rollback(changeset) do
+    case Repo.insert_or_update(changeset) do
+      {:ok, record} -> record
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms)
+       when is_integer(ttl_ms) and ttl_ms > 0 do
+    lease = Repo.get_by(AgentLease, organization_id: organization_id, agent_id: agent_id)
+    expires_at = DateTime.add(renewed_at, ttl_ms, :millisecond)
+
+    (lease || %AgentLease{organization_id: organization_id, agent_id: agent_id})
+    |> AgentLease.changeset(%{renewed_at: renewed_at, expires_at: expires_at})
+    |> Repo.insert_or_update()
+  end
+
+  defp put_agent_lease!(organization_id, agent_id, renewed_at, ttl_ms) do
+    case put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms) do
+      {:ok, lease} -> lease
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp metadata_version(metadata) when is_map(metadata), do: Map.get(metadata, "agent_version")
+  defp metadata_version(_metadata), do: nil
 
   defp condition_transition_at(nil, attrs) do
     Map.get(attrs, :last_transition_at) ||

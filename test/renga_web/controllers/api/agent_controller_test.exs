@@ -18,8 +18,7 @@ defmodule RengaWeb.Api.AgentControllerTest do
     {:ok, {source, token}} =
       Inventory.create_source_with_token(scope, %{
         kind: Map.get(attrs, :kind, "host_agent"),
-        name: Map.get(attrs, :name, "compute-01-agent"),
-        capabilities: Map.get(attrs, :capabilities, [])
+        name: Map.get(attrs, :name, "compute-01-agent")
       })
 
     %{organization: organization, scope: scope, source: source, token: token}
@@ -54,16 +53,23 @@ defmodule RengaWeb.Api.AgentControllerTest do
                  "id" => source_id,
                  "kind" => "host_agent",
                  "last_seen_at" => last_seen_at
+               },
+               "agent" => %{
+                 "id" => agent_id,
+                 "lease_expires_at" => lease_expires_at
                }
              } = json_response(conn, 202)
 
       assert source_id == source.id
       assert {:ok, _timestamp, 0} = DateTime.from_iso8601(last_seen_at)
+      assert {:ok, _timestamp, 0} = DateTime.from_iso8601(lease_expires_at)
 
-      checked_in_source = Inventory.get_source!(scope, source.id)
-      assert checked_in_source.last_seen_at
-      assert checked_in_source.capabilities == ["host.inventory"]
-      assert checked_in_source.metadata == %{"agent_version" => "0.1.0"}
+      agent = Inventory.get_agent!(scope, agent_id)
+      assert agent.source_id == source.id
+      assert agent.capabilities == ["host.inventory"]
+      assert agent.version == "0.1.0"
+      assert agent.metadata == %{"agent_version" => "0.1.0"}
+      assert Inventory.get_agent_lease!(scope, agent.id).expires_at
     end
 
     test "rejects payloads that claim a different source", %{conn: conn} do

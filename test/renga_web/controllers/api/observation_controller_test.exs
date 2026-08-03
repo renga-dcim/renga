@@ -3,6 +3,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.Agent
   alias Renga.Inventory.Observation
   alias Renga.Repo
 
@@ -101,7 +102,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       assert observation.source_id == source.id
       assert observation.payload == payload
       assert observation.idempotency_key == payload["observation_id"]
-      assert Inventory.get_source!(scope, source.id).last_seen_at
+      assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
     end
 
     test "returns duplicate acceptance for retried observation ids", %{conn: conn} do

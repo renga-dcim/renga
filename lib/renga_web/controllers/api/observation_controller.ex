@@ -8,7 +8,8 @@ defmodule RengaWeb.Api.ObservationController do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
          {:ok, observation, disposition} <-
            Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs),
-         {:ok, _source} <- Inventory.record_source_check_in(conn.assigns.current_scope, source.id) do
+         {:ok, {_agent, _lease}} <-
+           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id) do
       conn
       |> put_status(status_for(disposition))
       |> json(%{

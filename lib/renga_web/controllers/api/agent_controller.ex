@@ -6,8 +6,8 @@ defmodule RengaWeb.Api.AgentController do
 
   def check_in(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_check_in(params, source),
-         {:ok, source} <-
-           Inventory.record_source_check_in(conn.assigns.current_scope, source.id, attrs) do
+         {:ok, {agent, lease}} <-
+           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id, attrs) do
       conn
       |> put_status(:accepted)
       |> json(%{
@@ -16,7 +16,12 @@ defmodule RengaWeb.Api.AgentController do
           id: source.id,
           kind: source.kind,
           name: source.name,
-          last_seen_at: DateTime.to_iso8601(source.last_seen_at)
+          last_seen_at: DateTime.to_iso8601(lease.renewed_at)
+        },
+        agent: %{
+          id: agent.id,
+          name: agent.name,
+          lease_expires_at: DateTime.to_iso8601(lease.expires_at)
         }
       })
     else

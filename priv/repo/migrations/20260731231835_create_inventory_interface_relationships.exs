@@ -134,5 +134,61 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfaceRelationships do
              [:organization_id, :source_id, :interface_relationship_id],
              name: :interface_relationship_evidence_source_link_index
            )
+
+    create table(:resource_relationships, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :source_resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :target_resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :kind, :string, null: false
+      add :metadata, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(
+             :resource_relationships,
+             [:organization_id, :source_resource_id, :target_resource_id, :kind],
+             name: :resource_relationships_source_target_kind_index
+           )
+
+    create index(:resource_relationships, [:organization_id, :target_resource_id])
+
+    create table(:resource_owners, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :owner_resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :child_resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :kind, :string, null: false
+      add :controller, :boolean, null: false, default: true
+      add :metadata, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(
+             :resource_owners,
+             [:organization_id, :owner_resource_id, :child_resource_id, :kind],
+             name: :resource_owners_owner_child_kind_index
+           )
+
+    create unique_index(:resource_owners, [:organization_id, :child_resource_id],
+             where: "controller = true",
+             name: :resource_owners_child_controller_index
+           )
   end
 end
