@@ -1464,6 +1464,24 @@ defmodule Renga.InventoryTest do
       assert repeated_report.idempotency_key == "host-agent:compute-01:next"
     end
 
+    test "the same idempotency key is independent for sources in one organization", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, second_source} =
+        Inventory.create_source(scope, %{kind: "host_agent", name: "compute-02-agent"})
+
+      attrs = %{
+        observation_id: "shared-report-id",
+        payload: %{"hostname" => "compute-01"}
+      }
+
+      assert {:ok, first} = Inventory.create_observation(scope, source.id, attrs)
+      assert {:ok, second} = Inventory.create_observation(scope, second_source.id, attrs)
+      refute first.id == second.id
+      assert first.idempotency_key == second.idempotency_key
+    end
+
     test "raw observations reject updates and processing is stored separately", %{
       scope: scope,
       resource: resource,
@@ -1492,6 +1510,64 @@ defmodule Renga.InventoryTest do
 
       assert result.matched_resource_id == resource.id
       assert Inventory.list_observation_reconciliations(scope, observation.id) == [result]
+    end
+
+    test "reconciliation retries preserve every attempt and leave raw evidence unchanged", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      payload = %{"hostname" => "compute-01", "serial_number" => "ABC123"}
+
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:compute-01",
+          payload: payload
+        })
+
+      assert {:ok, failed} =
+               Inventory.create_observation_reconciliation(scope, observation.id, %{
+                 attempt: 1,
+                 status: "failed",
+                 errors: %{"matcher" => ["ambiguous identity"]},
+                 completed_at: ~U[2026-08-03 12:00:00.000000Z]
+               })
+
+      assert {:ok, succeeded} =
+               Inventory.create_observation_reconciliation(scope, observation.id, %{
+                 attempt: 2,
+                 status: "succeeded",
+                 matched_resource_id: resource.id,
+                 completed_at: ~U[2026-08-03 12:01:00.000000Z]
+               })
+
+      assert Inventory.list_observation_reconciliations(scope, observation.id) == [
+               failed,
+               succeeded
+             ]
+
+      persisted = Repo.get!(Observation, observation.id)
+      assert persisted.payload == payload
+      assert persisted.payload_digest == observation.payload_digest
+      refute Map.has_key?(persisted, :status)
+      refute Map.has_key?(persisted, :resource_id)
+    end
+
+    test "PostgreSQL rejects observation updates that bypass the changeset", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:compute-01",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert_raise Postgrex.Error, ~r/observations are immutable/, fn ->
+        Observation
+        |> where([stored], stored.id == ^observation.id)
+        |> Repo.update_all(set: [payload: %{"hostname" => "tampered"}])
+      end
     end
 
     test "create_change_event/2 records scoped audit entries", %{

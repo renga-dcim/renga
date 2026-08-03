@@ -45,6 +45,23 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
 
     create unique_index(:observations, [:organization_id, :source_id, :idempotency_key])
 
+    execute """
+            CREATE FUNCTION reject_observation_update() RETURNS trigger AS $$
+            BEGIN
+              RAISE EXCEPTION 'observations are immutable'
+                USING ERRCODE = 'integrity_constraint_violation';
+            END;
+            $$ LANGUAGE plpgsql
+            """,
+            "DROP FUNCTION reject_observation_update()"
+
+    execute """
+            CREATE TRIGGER observations_reject_update
+            BEFORE UPDATE ON observations
+            FOR EACH ROW EXECUTE FUNCTION reject_observation_update()
+            """,
+            "DROP TRIGGER observations_reject_update ON observations"
+
     create table(:observation_reconciliations, primary_key: false) do
       add :id, :binary_id, primary_key: true
 

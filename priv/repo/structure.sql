@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict gliiNafgMnCQh0KcuHSMAtf3i0Ue1HdhG0QBpQLnoMOeJ91urtcMN2HJ8D2EulU
+\restrict euZZRPQoEO68tVH6oTzJrrEhbSc2sRzupqePUBS4AiiYtn3JIr70OXWfc7FM2qg
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -31,6 +31,20 @@ CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings';
+
+
+--
+-- Name: reject_observation_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_observation_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'observations are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
 
 
 SET default_tablespace = '';
@@ -1318,6 +1332,13 @@ CREATE INDEX users_tokens_user_id_index ON public.users_tokens USING btree (user
 
 
 --
+-- Name: observations observations_reject_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations FOR EACH ROW EXECUTE FUNCTION public.reject_observation_update();
+
+
+--
 -- Name: address_evidence address_evidence_address_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1849,7 +1870,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict gliiNafgMnCQh0KcuHSMAtf3i0Ue1HdhG0QBpQLnoMOeJ91urtcMN2HJ8D2EulU
+\unrestrict euZZRPQoEO68tVH6oTzJrrEhbSc2sRzupqePUBS4AiiYtn3JIr70OXWfc7FM2qg
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
