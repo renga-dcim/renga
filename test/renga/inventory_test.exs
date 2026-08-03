@@ -1646,6 +1646,46 @@ defmodule Renga.InventoryTest do
       assert first.idempotency_key == second.idempotency_key
     end
 
+    test "concurrent retries converge on one observation", %{scope: scope, source: source} do
+      attrs = %{
+        observation_id: "concurrent-report-id",
+        payload: %{"hostname" => "compute-01"}
+      }
+
+      tasks =
+        for _attempt <- 1..4 do
+          Task.async(fn ->
+            receive do
+              :accept -> Inventory.accept_observation(scope, source.id, attrs)
+            end
+          end)
+        end
+
+      Enum.each(tasks, fn task ->
+        Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), task.pid)
+        send(task.pid, :accept)
+      end)
+
+      results = Task.await_many(tasks)
+
+      assert Enum.count(results, &match?({:ok, _observation, :created}, &1)) == 1
+      assert Enum.count(results, &match?({:ok, _observation, :duplicate}, &1)) == 3
+
+      observation_ids =
+        Enum.map(results, fn {:ok, observation, _disposition} -> observation.id end)
+
+      assert observation_ids |> Enum.uniq() |> length() == 1
+
+      assert Repo.aggregate(
+               from(observation in Observation,
+                 where:
+                   observation.source_id == ^source.id and
+                     observation.idempotency_key == "concurrent-report-id"
+               ),
+               :count
+             ) == 1
+    end
+
     test "raw observations reject updates and processing is stored separately", %{
       scope: scope,
       resource: resource,
