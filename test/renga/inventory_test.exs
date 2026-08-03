@@ -13,6 +13,7 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.ResourceOverride
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
@@ -405,40 +406,48 @@ defmodule Renga.InventoryTest do
           name: "compute-01-agent"
         })
 
-      {:ok, other_source} =
-        Inventory.create_source(contexts.other_scope, %{
+      {:ok, second_source} =
+        Inventory.create_source(contexts.scope, %{
           kind: "host_agent",
-          name: "compute-01-agent"
+          name: "rack-discovery"
+        })
+
+      {:ok, observation} =
+        Inventory.create_observation(contexts.scope, source.id, %{
+          observation_id: "agent-report-1",
+          observed_at: ~U[2026-08-01 12:00:00.000000Z],
+          payload: %{"serial_number" => "ABC123"}
+        })
+
+      {:ok, second_observation} =
+        Inventory.create_observation(contexts.scope, second_source.id, %{
+          observation_id: "rack-report-1",
+          observed_at: ~U[2026-08-01 12:01:00.000000Z],
+          payload: %{"serial_number" => "ABC123"}
         })
 
       contexts
       |> Map.put(:resource, resource)
       |> Map.put(:source, source)
-      |> Map.put(:other_source, other_source)
+      |> Map.put(:second_source, second_source)
+      |> Map.put(:observation, observation)
+      |> Map.put(:second_observation, second_observation)
     end
 
-    test "create_resource_identifier/3 stores observed identity facts", %{
+    test "create_resource_identifier/3 stores normalized canonical identity", %{
       scope: scope,
-      resource: resource,
-      source: source
+      resource: resource
     } do
-      now = Renga.Time.utc_now_ms()
-
       assert {:ok, %ResourceIdentifier{} = identifier} =
                Inventory.create_resource_identifier(scope, resource.id, %{
-                 source_id: source.id,
                  kind: "machine_id",
-                 value: " 9f3c ",
-                 confidence: 95,
-                 first_seen_at: now,
-                 last_seen_at: now
+                 value: " 9F3C "
                })
 
       assert identifier.organization_id == scope.organization_id
       assert identifier.resource_id == resource.id
-      assert identifier.source_id == source.id
-      assert identifier.value == "9f3c"
-      assert identifier.confidence == 95
+      assert identifier.value == "9F3C"
+      assert identifier.normalized_value == "9f3c"
     end
 
     test "list_resource_identifiers/2 is scoped by organization", %{
@@ -468,53 +477,101 @@ defmodule Renga.InventoryTest do
       end
     end
 
-    test "create_resource_identifier/3 enforces source organization scope", %{
-      scope: scope,
-      resource: resource,
-      other_source: other_source
-    } do
-      assert_raise Ecto.NoResultsError, fn ->
-        Inventory.create_resource_identifier(scope, resource.id, %{
-          source_id: other_source.id,
-          kind: "hostname",
-          value: "compute-01"
-        })
-      end
-    end
-
-    test "identifier uniqueness is scoped by source kind and value", %{
-      scope: scope,
-      resource: resource,
-      source: source
-    } do
-      attrs = %{
-        source_id: source.id,
-        kind: "serial_number",
-        value: "ABC123"
-      }
-
-      assert {:ok, _identifier} = Inventory.create_resource_identifier(scope, resource.id, attrs)
-      assert {:error, changeset} = Inventory.create_resource_identifier(scope, resource.id, attrs)
-
-      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
-    end
-
-    test "identifier validations reject unsupported kinds and confidence outside range", %{
+    test "duplicate identifiers can be represented on separate resources", %{
       scope: scope,
       resource: resource
     } do
+      {:ok, duplicate_resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-02"})
+
+      attrs = %{kind: "serial_number", value: "ABC123"}
+
+      assert {:ok, _identifier} = Inventory.create_resource_identifier(scope, resource.id, attrs)
+
+      assert {:ok, _duplicate_identifier} =
+               Inventory.create_resource_identifier(scope, duplicate_resource.id, attrs)
+    end
+
+    test "multiple sources can agree or conflict through claims", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      second_source: second_source,
+      observation: observation,
+      second_observation: second_observation
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "serial_number",
+          value: "ABC123"
+        })
+
+      assert {:ok, %ResourceIdentifierClaim{} = agent_claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   resource_id: resource.id,
+                   resource_identifier_id: identifier.id,
+                   kind: "serial_number",
+                   value: "ABC123",
+                   confidence: 100
+                 }
+               )
+
+      assert {:ok, rack_claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 second_source.id,
+                 second_observation.id,
+                 %{
+                   resource_id: resource.id,
+                   kind: "serial_number",
+                   value: "CONFLICTING-SERIAL",
+                   confidence: 80
+                 }
+               )
+
+      assert agent_claim.normalized_value == "abc123"
+      assert agent_claim.resource_identifier_id == identifier.id
+      assert rack_claim.normalized_value == "conflicting-serial"
+
+      assert Inventory.list_resource_identifier_claims(scope, resource.id) == [
+               agent_claim,
+               rack_claim
+             ]
+    end
+
+    test "claim source must own the immutable observation", %{
+      scope: scope,
+      second_source: second_source,
+      observation: observation
+    } do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_resource_identifier_claim(
+          scope,
+          second_source.id,
+          observation.id,
+          %{kind: "serial_number", value: "ABC123"}
+        )
+      end
+    end
+
+    test "claim validations reject unsupported kinds and confidence outside range", %{
+      scope: scope,
+      source: source,
+      observation: observation
+    } do
       assert {:error, changeset} =
-               Inventory.create_resource_identifier(scope, resource.id, %{
+               Inventory.create_resource_identifier_claim(scope, source.id, observation.id, %{
                  kind: "unsupported",
                  value: "",
                  confidence: 101
                })
 
-      assert %{
-               kind: ["is invalid"],
-               value: ["can't be blank"],
-               confidence: ["must be less than or equal to 100"]
-             } = errors_on(changeset)
+      assert %{kind: ["is invalid"], value: ["can't be blank"]} = errors_on(changeset)
+      assert "must be less than or equal to 100" in errors_on(changeset).confidence
     end
   end
 

@@ -107,26 +107,20 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
       add :value, :string, null: false
-      add :confidence, :integer, null: false, default: 100
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
+      add :normalized_value, :string, null: false
       add :metadata, :map, null: false, default: %{}
 
       timestamps(type: :"timestamp(3)")
     end
 
     create index(:resource_identifiers, [:organization_id, :resource_id])
-    create index(:resource_identifiers, [:organization_id, :source_id])
-    create index(:resource_identifiers, [:organization_id, :kind, :value])
+    create index(:resource_identifiers, [:organization_id, :kind, :normalized_value])
 
-    create unique_index(:resource_identifiers, [:organization_id, :source_id, :kind, :value],
-             where: "source_id IS NOT NULL"
-           )
-
-    create unique_index(:resource_identifiers, [:organization_id, :resource_id, :kind, :value],
+    create unique_index(
+             :resource_identifiers,
+             [:organization_id, :resource_id, :kind, :normalized_value],
              name: :resource_identifiers_resource_kind_value_index
            )
   end

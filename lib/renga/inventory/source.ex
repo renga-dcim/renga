@@ -17,7 +17,7 @@ defmodule Renga.Inventory.Source do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
-  alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.SyncRun
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -41,7 +41,7 @@ defmodule Renga.Inventory.Source do
     has_many :interfaces, Interface
     has_many :interface_relationships, InterfaceRelationship
     has_many :observations, Observation
-    has_many :resource_identifiers, ResourceIdentifier
+    has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :sync_runs, SyncRun
 
     timestamps()

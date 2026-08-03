@@ -120,8 +120,8 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Keep stable, frequently queried inventory in typed tables and reserve JSONB for variable desired state, detailed observations, and vendor-specific data.
 - [X] Make =Observation= strictly immutable by moving processing status, matched resources, attempts, and errors into separate reconciliation result records.
 - [X] Require source-scoped observation idempotency keys and remove permanent payload-digest uniqueness so unchanged inventory can be reported again later.
-- [ ] Split canonical resource identifiers from per-source identifier claims, preserving source, observation, confidence, normalization, and first/last seen timestamps.
-- [ ] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
+- [X] Split canonical resource identifiers from per-source identifier claims, preserving source, observation, confidence, normalization, and first/last seen timestamps.
+- [X] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
 - [ ] Make canonical interfaces, addresses, and topology relationships source-neutral while retaining per-source evidence and provenance.
 - [ ] Preserve PostgreSQL =macaddr= for MAC addresses, =inet= for assigned addresses, and =cidr= for managed IPAM prefixes.
 - [ ] Add explicit =Agent= registration records separately from =Source= credentials and provenance.

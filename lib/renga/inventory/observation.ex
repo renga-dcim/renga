@@ -14,6 +14,7 @@ defmodule Renga.Inventory.Observation do
   alias Renga.Accounts.Organization
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
 
@@ -31,6 +32,7 @@ defmodule Renga.Inventory.Observation do
     belongs_to :source, Source
     belongs_to :sync_run, SyncRun
     has_many :reconciliations, ObservationReconciliation
+    has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :change_events, ChangeEvent
 
     timestamps(updated_at: false)

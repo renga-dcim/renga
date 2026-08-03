@@ -77,6 +77,43 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
              name: :observation_reconciliations_matched_resource_index
            )
 
+    create table(:resource_identifier_claims, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :resource_identifier_id,
+          references(:resource_identifiers, on_delete: :nilify_all, type: :binary_id)
+
+      add :resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
+      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+
+      add :observation_id, references(:observations, on_delete: :restrict, type: :binary_id),
+        null: false
+
+      add :kind, :string, null: false
+      add :value, :string, null: false
+      add :normalized_value, :string, null: false
+      add :confidence, :integer, null: false, default: 100
+      add :first_seen_at, :"timestamp(3)", null: false
+      add :last_seen_at, :"timestamp(3)", null: false
+      add :metadata, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create index(:resource_identifier_claims, [:organization_id, :source_id])
+    create index(:resource_identifier_claims, [:organization_id, :observation_id])
+    create index(:resource_identifier_claims, [:organization_id, :resource_identifier_id])
+    create index(:resource_identifier_claims, [:organization_id, :kind, :normalized_value])
+
+    create unique_index(
+             :resource_identifier_claims,
+             [:organization_id, :observation_id, :kind, :normalized_value],
+             name: :resource_identifier_claims_observation_value_index
+           )
+
     create table(:change_events, primary_key: false) do
       add :id, :binary_id, primary_key: true
 

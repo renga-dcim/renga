@@ -19,6 +19,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.ResourceOverride
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
@@ -310,7 +311,7 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Lists observed identifiers for a resource in the caller's organization.
+  Lists canonical identifiers for a resource in the caller's organization.
   """
   def list_resource_identifiers(%Scope{organization_id: organization_id}, resource_id) do
     ResourceIdentifier
@@ -321,7 +322,7 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Adds observed identity evidence to a resource.
+  Adds a source-neutral canonical identifier to a resource.
 
   The organization id is copied from the caller scope and the resource must be
   fetched through the same scope before this function is called.
@@ -332,14 +333,60 @@ defmodule Renga.Inventory do
         attrs
       ) do
     resource = get_resource!(scope, resource_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %ResourceIdentifier{
       organization_id: organization_id,
-      resource_id: resource.id,
-      source_id: source_id_from_attrs(attrs)
+      resource_id: resource.id
     }
     |> ResourceIdentifier.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists source claims for one canonical resource, including conflicting values.
+  """
+  def list_resource_identifier_claims(
+        %Scope{organization_id: organization_id},
+        resource_id
+      ) do
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.resource_id == ^resource_id)
+    |> order_by([claim], asc: claim.kind, asc: claim.normalized_value, asc: claim.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Stores one observation-scoped source assertion about identity.
+
+  Canonical links are optional because unresolved and conflicting claims must be
+  representable before the reconciler chooses a resource.
+  """
+  def create_resource_identifier_claim(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        attrs
+      ) do
+    source = get_source!(scope, source_id)
+    observation = get_source_observation!(scope, source.id, observation_id)
+
+    attrs =
+      attrs
+      |> Map.put_new(:first_seen_at, observation.observed_at)
+      |> Map.put_new(:last_seen_at, observation.observed_at)
+      |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
+      |> normalize_scoped_assoc(scope, :resource_identifier_id, &get_resource_identifier!/2)
+
+    %ResourceIdentifierClaim{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id"),
+      resource_identifier_id:
+        Map.get(attrs, :resource_identifier_id) || Map.get(attrs, "resource_identifier_id")
+    }
+    |> ResourceIdentifierClaim.changeset(attrs)
     |> Repo.insert()
   end
 
@@ -833,6 +880,23 @@ defmodule Renga.Inventory do
   defp get_observation!(%Scope{organization_id: organization_id}, id) do
     Observation
     |> where([observation], observation.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp get_source_observation!(
+         %Scope{organization_id: organization_id},
+         source_id,
+         observation_id
+       ) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.source_id == ^source_id)
+    |> Repo.get!(observation_id)
+  end
+
+  defp get_resource_identifier!(%Scope{organization_id: organization_id}, id) do
+    ResourceIdentifier
+    |> where([identifier], identifier.organization_id == ^organization_id)
     |> Repo.get!(id)
   end
 
