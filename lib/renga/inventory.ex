@@ -257,6 +257,12 @@ defmodule Renga.Inventory do
   """
   def update_resource(%Resource{} = resource, attrs) do
     Repo.transaction(fn ->
+      resource =
+        Resource
+        |> where([stored], stored.id == ^resource.id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
+
       revision = next_resource_revision!()
 
       resource =
