@@ -280,6 +280,31 @@ defmodule Renga.InventoryTest do
       assert Inventory.get_agent_lease!(scope, agent.id).id == renewed.id
     end
 
+    test "repeated check-ins reuse registration and lease while merging metadata", %{
+      scope: scope,
+      source: source
+    } do
+      assert {:ok, {original_agent, original_lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 capabilities: ["host.inventory"],
+                 metadata: %{"agent_version" => "0.1.0", "kernel" => "6.12"}
+               })
+
+      assert {:ok, {updated_agent, updated_lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 capabilities: ["host.inventory", "host.network"],
+                 metadata: %{"agent_version" => "0.2.0"}
+               })
+
+      assert updated_agent.id == original_agent.id
+      assert updated_agent.registered_at == original_agent.registered_at
+      assert updated_agent.version == "0.2.0"
+      assert updated_agent.capabilities == ["host.inventory", "host.network"]
+      assert updated_agent.metadata == %{"agent_version" => "0.2.0", "kernel" => "6.12"}
+      assert updated_lease.id == original_lease.id
+      assert DateTime.compare(updated_lease.renewed_at, original_lease.renewed_at) in [:eq, :gt]
+    end
+
     test "agent capabilities are validated on registration", %{scope: scope, source: source} do
       assert {:error, changeset} =
                Inventory.record_agent_check_in(scope, source.id, %{
@@ -400,6 +425,60 @@ defmodule Renga.InventoryTest do
                Inventory.list_resource_revisions(scope, resource.id)
     end
 
+    test "metadata changes preserve generation while advancing resource version", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "compute-01",
+          spec: %{"power" => %{"policy" => "on"}}
+        })
+
+      assert {:ok, updated} =
+               Inventory.update_resource(resource, %{
+                 display_name: "Compute 01",
+                 labels: %{"site" => "iad"},
+                 annotations: %{"owner" => "platform"}
+               })
+
+      assert updated.generation == resource.generation
+      assert updated.resource_version > resource.resource_version
+
+      assert [created, changed] = Inventory.list_resource_revisions(scope, resource.id)
+      assert created.generation == changed.generation
+      assert changed.snapshot["labels"] == %{"site" => "iad"}
+      assert changed.snapshot["annotations"] == %{"owner" => "platform"}
+    end
+
+    test "equal desired spec does not increment generation", %{scope: scope} do
+      spec = %{"power" => %{"policy" => "on"}}
+
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01", spec: spec})
+
+      assert {:ok, updated} = Inventory.update_resource(resource, %{spec: spec})
+      assert updated.generation == resource.generation
+      assert updated.resource_version > resource.resource_version
+    end
+
+    test "resource revisions are globally ordered and classify deletion requests", %{scope: scope} do
+      {:ok, first} = Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+      {:ok, second} = Inventory.create_resource(scope, %{kind: "server", name: "compute-02"})
+      deletion_requested_at = ~U[2026-08-03 12:00:00.000000Z]
+
+      assert second.resource_version > first.resource_version
+
+      assert {:ok, deleting} =
+               Inventory.update_resource(first, %{deletion_requested_at: deletion_requested_at})
+
+      assert deleting.resource_version > second.resource_version
+
+      assert [%{action: "created"}, deletion_revision] =
+               Inventory.list_resource_revisions(scope, first.id)
+
+      assert deletion_revision.action == "deletion_requested"
+      assert deletion_revision.revision == deleting.resource_version
+    end
+
     test "typed host fields remain queryable outside desired spec", %{scope: scope} do
       {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
 
@@ -440,6 +519,19 @@ defmodule Renga.InventoryTest do
 
       assert unchanged.id == current.id
       assert unchanged.last_transition_at == current.last_transition_at
+
+      transition_at = DateTime.add(current.last_transition_at, 1, :millisecond)
+
+      assert {:ok, stale} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "InventoryCurrent",
+                 status: "false",
+                 reason: "Stale",
+                 last_transition_at: transition_at
+               })
+
+      assert stale.id == current.id
+      assert stale.last_transition_at == transition_at
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
   end
