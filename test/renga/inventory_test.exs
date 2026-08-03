@@ -265,7 +265,7 @@ defmodule Renga.InventoryTest do
 
     test "renewal updates one lease and expiry is deterministic", %{scope: scope, source: source} do
       {:ok, {agent, original}} = Inventory.record_agent_check_in(scope, source.id)
-      renewed_at = ~U[2026-08-01 12:00:00.000000Z]
+      renewed_at = ~U[2030-08-01 12:00:00.000000Z]
 
       assert {:ok, renewed} =
                Inventory.renew_agent_lease(scope, agent.id, %{
@@ -274,9 +274,9 @@ defmodule Renga.InventoryTest do
                })
 
       assert renewed.id == original.id
-      assert renewed.expires_at == ~U[2026-08-01 12:00:01.500000Z]
-      refute AgentLease.expired?(renewed, ~U[2026-08-01 12:00:01.499000Z])
-      assert AgentLease.expired?(renewed, ~U[2026-08-01 12:00:01.500000Z])
+      assert renewed.expires_at == ~U[2030-08-01 12:00:01.500000Z]
+      refute AgentLease.expired?(renewed, ~U[2030-08-01 12:00:01.499000Z])
+      assert AgentLease.expired?(renewed, ~U[2030-08-01 12:00:01.500000Z])
       assert Inventory.get_agent_lease!(scope, agent.id).id == renewed.id
     end
 

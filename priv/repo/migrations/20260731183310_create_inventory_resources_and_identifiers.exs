@@ -2,7 +2,8 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
   use Ecto.Migration
 
   def change do
-    execute "CREATE SEQUENCE resource_revision_sequence AS bigint"
+    execute "CREATE SEQUENCE resource_revision_sequence AS bigint",
+            "DROP SEQUENCE resource_revision_sequence"
 
     create table(:resources, primary_key: false) do
       add :id, :binary_id, primary_key: true

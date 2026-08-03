@@ -257,7 +257,7 @@ defmodule Renga.Inventory do
   """
   def update_resource(%Resource{} = resource, attrs) do
     Repo.transaction(fn ->
-      resource =
+      stored_resource =
         Resource
         |> where([stored], stored.id == ^resource.id)
         |> lock("FOR UPDATE")
@@ -266,12 +266,17 @@ defmodule Renga.Inventory do
       revision = next_resource_revision!()
 
       resource =
-        resource
+        stored_resource
         |> Resource.changeset(attrs)
         |> Ecto.Changeset.put_change(:resource_version, revision)
         |> update_or_rollback()
 
-      insert_resource_revision!(resource, revision, revision_action(resource))
+      insert_resource_revision!(
+        resource,
+        revision,
+        revision_action(stored_resource, resource)
+      )
+
       resource
     end)
   end
@@ -421,8 +426,8 @@ defmodule Renga.Inventory do
 
     attrs =
       attrs
-      |> Map.put_new(:first_seen_at, observation.observed_at)
-      |> Map.put_new(:last_seen_at, observation.observed_at)
+      |> put_new_attr(:first_seen_at, observation.observed_at)
+      |> put_new_attr(:last_seen_at, observation.observed_at)
       |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
       |> normalize_scoped_assoc(scope, :resource_identifier_id, &get_resource_identifier!/2)
 
@@ -563,7 +568,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     interface = get_interface!(scope, interface_id)
-    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
 
     %InterfaceEvidence{
       organization_id: organization_id,
@@ -587,7 +592,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     address = get_address!(scope, address_id)
-    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
 
     %AddressEvidence{
       organization_id: organization_id,
@@ -611,7 +616,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     relationship = get_interface_relationship!(scope, relationship_id)
-    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
 
     %InterfaceRelationshipEvidence{
       organization_id: organization_id,
@@ -932,8 +937,14 @@ defmodule Renga.Inventory do
     }
   end
 
-  defp revision_action(%Resource{deletion_requested_at: nil}), do: "updated"
-  defp revision_action(%Resource{}), do: "deletion_requested"
+  defp revision_action(
+         %Resource{deletion_requested_at: nil},
+         %Resource{deletion_requested_at: deletion_requested_at}
+       )
+       when not is_nil(deletion_requested_at),
+       do: "deletion_requested"
+
+  defp revision_action(%Resource{}, %Resource{}), do: "updated"
 
   defp insert_or_rollback(changeset) do
     case Repo.insert(changeset) do
@@ -1013,10 +1024,27 @@ defmodule Renga.Inventory do
        when is_integer(ttl_ms) and ttl_ms > 0 do
     expires_at = DateTime.add(renewed_at, ttl_ms, :millisecond)
 
+    on_conflict =
+      from(lease in AgentLease,
+        update: [
+          set: [
+            renewed_at: fragment("GREATEST(?, EXCLUDED.renewed_at)", lease.renewed_at),
+            expires_at: fragment("GREATEST(?, EXCLUDED.expires_at)", lease.expires_at),
+            updated_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? OR EXCLUDED.expires_at > ? THEN EXCLUDED.updated_at ELSE ? END",
+                lease.renewed_at,
+                lease.expires_at,
+                lease.updated_at
+              )
+          ]
+        ]
+      )
+
     %AgentLease{organization_id: organization_id, agent_id: agent_id}
     |> AgentLease.changeset(%{renewed_at: renewed_at, expires_at: expires_at})
     |> Repo.insert(
-      on_conflict: {:replace, [:renewed_at, :expires_at, :updated_at]},
+      on_conflict: on_conflict,
       conflict_target: [:organization_id, :agent_id],
       returning: true
     )
@@ -1057,6 +1085,14 @@ defmodule Renga.Inventory do
       Map.put(attrs, "last_transition_at", transition_at)
     else
       Map.put(attrs, :last_transition_at, transition_at)
+    end
+  end
+
+  defp put_new_attr(attrs, key, value) do
+    if Enum.all?(Map.keys(attrs), &is_binary/1) do
+      Map.put_new(attrs, Atom.to_string(key), value)
+    else
+      Map.put_new(attrs, key, value)
     end
   end
 
