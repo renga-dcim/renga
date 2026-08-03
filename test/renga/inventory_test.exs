@@ -1229,6 +1229,19 @@ defmodule Renga.InventoryTest do
           payload: %{"interfaces" => []}
         })
 
+      {:ok, second_source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "vm_provider",
+          name: "libvirt-discovery"
+        })
+
+      {:ok, second_observation} =
+        Inventory.create_observation(contexts.scope, second_source.id, %{
+          observation_id: "network-report-2",
+          observed_at: ~U[2026-08-03 12:01:00.000000Z],
+          payload: %{"interfaces" => []}
+        })
+
       {:ok, physical} =
         Inventory.create_interface(contexts.scope, resource.id, %{
           name: "ens1f0np0",
@@ -1255,6 +1268,8 @@ defmodule Renga.InventoryTest do
       contexts
       |> Map.put(:source, source)
       |> Map.put(:observation, observation)
+      |> Map.put(:second_source, second_source)
+      |> Map.put(:second_observation, second_observation)
       |> Map.put(:physical, physical)
       |> Map.put(:address, address)
       |> Map.put(:relationship, relationship)
@@ -1300,6 +1315,106 @@ defmodule Renga.InventoryTest do
       refute Map.has_key?(context.address, :source_id)
       refute Map.has_key?(context.relationship, :source_id)
     end
+
+    test "multiple sources can retain conflicting interface evidence", context do
+      assert {:ok, host_evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 %{
+                   name: "ens1f0np0",
+                   kind: "ethernet",
+                   status: "up",
+                   mac_address: "aa:bb:cc:dd:ee:ff"
+                 }
+               )
+
+      assert {:ok, hypervisor_evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.second_source.id,
+                 context.second_observation.id,
+                 context.physical.id,
+                 %{
+                   name: "ens1f0np0",
+                   kind: "virtual",
+                   status: "down",
+                   mac_address: "aa:bb:cc:dd:ee:00"
+                 }
+               )
+
+      assert host_evidence.interface_id == hypervisor_evidence.interface_id
+      refute host_evidence.source_id == hypervisor_evidence.source_id
+      refute host_evidence.kind == hypervisor_evidence.kind
+      refute host_evidence.mac_address == hypervisor_evidence.mac_address
+
+      canonical = Inventory.get_interface!(context.scope, context.physical.id)
+      assert canonical.kind == "ethernet"
+      assert canonical.status == "unknown"
+      assert canonical.mac_address == nil
+    end
+
+    test "evidence requires the authenticated source's own observation", context do
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface_evidence(
+          context.scope,
+          context.second_source.id,
+          context.observation.id,
+          context.physical.id,
+          %{name: "ens1f0np0", kind: "ethernet", status: "up"}
+        )
+      end
+    end
+
+    test "evidence cannot cross organization boundaries", context do
+      {:ok, other_source} =
+        Inventory.create_source(context.other_scope, %{
+          kind: "host_agent",
+          name: "other-agent"
+        })
+
+      {:ok, other_observation} =
+        Inventory.create_observation(context.other_scope, other_source.id, %{
+          observation_id: "other-network-report",
+          payload: %{"interfaces" => []}
+        })
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_interface_evidence(
+          context.scope,
+          other_source.id,
+          other_observation.id,
+          context.physical.id,
+          %{name: "ens1f0np0", kind: "ethernet", status: "up"}
+        )
+      end
+    end
+
+    test "one observation cannot assert the same canonical interface twice", context do
+      attrs = %{name: "ens1f0np0", kind: "ethernet", status: "up"}
+
+      assert {:ok, _evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 attrs
+               )
+
+      assert {:error, changeset} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 attrs
+               )
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
   end
 
   describe "prefixes" do
@@ -1315,6 +1430,55 @@ defmodule Renga.InventoryTest do
                })
 
       assert prefix.prefix == %Postgrex.INET{address: {192, 0, 2, 0}, netmask: 24}
+    end
+
+    test "rejects CIDR values with host bits set" do
+      %{scope: scope} = scoped_organizations()
+      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "invalid"})
+
+      assert {:error, changeset} =
+               Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.10/24"})
+
+      assert %{prefix: ["is invalid"]} = errors_on(changeset)
+    end
+
+    test "uses PostgreSQL native network types and CIDR operators" do
+      %{scope: scope} = scoped_organizations()
+      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "iad-public"})
+      {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.0/24"})
+
+      assert %{rows: [["macaddr", "inet", "cidr"]]} =
+               Repo.query!("""
+               SELECT
+                 (SELECT udt_name FROM information_schema.columns
+                  WHERE table_name = 'interfaces' AND column_name = 'mac_address'),
+                 (SELECT udt_name FROM information_schema.columns
+                  WHERE table_name = 'addresses' AND column_name = 'address'),
+                 (SELECT udt_name FROM information_schema.columns
+                  WHERE table_name = 'prefixes' AND column_name = 'prefix')
+               """)
+
+      assert %{rows: [[true, false, true]]} =
+               Repo.query!(
+                 """
+                 SELECT
+                   prefix >>= $1::text::inet,
+                   prefix >>= $2::text::inet,
+                   prefix && $3::text::cidr
+                 FROM prefixes
+                 WHERE id = $4::text::uuid
+                 """,
+                 ["192.0.2.42", "198.51.100.1", "192.0.2.128/25", prefix.id]
+               )
+
+      assert %{rows: [[index_definition]]} =
+               Repo.query!("""
+               SELECT indexdef
+               FROM pg_indexes
+               WHERE indexname = 'prefixes_prefix_gist_index'
+               """)
+
+      assert index_definition =~ "USING gist (prefix inet_ops)"
     end
   end
 
