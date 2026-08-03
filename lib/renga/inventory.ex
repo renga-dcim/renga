@@ -15,6 +15,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
@@ -492,12 +493,11 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Lists raw observations for a scoped resource, newest first.
+  Lists immutable raw observations in the caller's organization, newest first.
   """
-  def list_observations(%Scope{organization_id: organization_id}, resource_id) do
+  def list_observations(%Scope{organization_id: organization_id}) do
     Observation
     |> where([observation], observation.organization_id == ^organization_id)
-    |> where([observation], observation.resource_id == ^resource_id)
     |> order_by([observation], desc: observation.observed_at)
     |> Repo.all()
   end
@@ -515,8 +515,7 @@ defmodule Renga.Inventory do
     %Observation{
       organization_id: organization_id,
       source_id: source.id,
-      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),
-      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id")
+      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id")
     }
     |> Observation.changeset(attrs)
     |> Repo.insert()
@@ -532,16 +531,51 @@ defmodule Renga.Inventory do
   def accept_observation(%Scope{} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
     attrs = normalize_observation_attrs(scope, attrs)
-    observation_id = Map.get(attrs, :observation_id) || Map.get(attrs, "observation_id")
+    idempotency_key = Map.get(attrs, :idempotency_key) || Map.get(attrs, "idempotency_key")
     payload_digest = Map.get(attrs, :payload_digest) || Map.get(attrs, "payload_digest")
 
-    case find_idempotent_observation(scope, source.id, observation_id, payload_digest) do
+    case find_idempotent_observation(scope, source.id, idempotency_key) do
       %Observation{} = observation ->
         idempotent_observation_result(observation, payload_digest)
 
       nil ->
-        insert_idempotent_observation(scope, source.id, attrs, observation_id, payload_digest)
+        insert_idempotent_observation(scope, source.id, attrs, idempotency_key, payload_digest)
     end
+  end
+
+  @doc """
+  Records a scoped reconciliation attempt without mutating raw evidence.
+  """
+  def create_observation_reconciliation(
+        %Scope{organization_id: organization_id} = scope,
+        observation_id,
+        attrs
+      ) do
+    observation = get_observation!(scope, observation_id)
+    attrs = normalize_scoped_assoc(attrs, scope, :matched_resource_id, &get_resource!/2)
+
+    %ObservationReconciliation{
+      organization_id: organization_id,
+      observation_id: observation.id,
+      matched_resource_id:
+        Map.get(attrs, :matched_resource_id) || Map.get(attrs, "matched_resource_id")
+    }
+    |> ObservationReconciliation.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists processing attempts for one scoped observation in attempt order.
+  """
+  def list_observation_reconciliations(
+        %Scope{organization_id: organization_id},
+        observation_id
+      ) do
+    ObservationReconciliation
+    |> where([result], result.organization_id == ^organization_id)
+    |> where([result], result.observation_id == ^observation_id)
+    |> order_by([result], asc: result.attempt)
+    |> Repo.all()
   end
 
   @doc """
@@ -721,20 +755,26 @@ defmodule Renga.Inventory do
   defp normalize_observation_attrs(scope, attrs) do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
 
+    idempotency_key =
+      Map.get(attrs, :idempotency_key) ||
+        Map.get(attrs, "idempotency_key") ||
+        Map.get(attrs, :observation_id) ||
+        Map.get(attrs, "observation_id")
+
     attrs
+    |> Map.put(:idempotency_key, idempotency_key)
     |> Map.put_new(:observed_at, Renga.Time.utc_now_ms())
     |> Map.put_new(:payload_digest, digest_payload(payload))
     |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
-    |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
   end
 
-  defp insert_idempotent_observation(scope, source_id, attrs, observation_id, payload_digest) do
+  defp insert_idempotent_observation(scope, source_id, attrs, idempotency_key, payload_digest) do
     case create_observation(scope, source_id, attrs) do
       {:ok, observation} ->
         {:ok, observation, :created}
 
       {:error, changeset} ->
-        case find_idempotent_observation(scope, source_id, observation_id, payload_digest) do
+        case find_idempotent_observation(scope, source_id, idempotency_key) do
           %Observation{} = observation ->
             idempotent_observation_result(observation, payload_digest)
 
@@ -752,50 +792,16 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp find_idempotent_observation(_scope, _source_id, nil, nil), do: nil
-
   defp find_idempotent_observation(
          %Scope{organization_id: organization_id},
          source_id,
-         nil,
-         digest
+         idempotency_key
        ) do
     Repo.get_by(Observation,
       organization_id: organization_id,
       source_id: source_id,
-      payload_digest: digest
+      idempotency_key: idempotency_key
     )
-  end
-
-  defp find_idempotent_observation(
-         %Scope{organization_id: organization_id},
-         source_id,
-         observation_id,
-         nil
-       ) do
-    Repo.get_by(Observation,
-      organization_id: organization_id,
-      source_id: source_id,
-      observation_id: observation_id
-    )
-  end
-
-  defp find_idempotent_observation(
-         %Scope{organization_id: organization_id},
-         source_id,
-         observation_id,
-         digest
-       ) do
-    Repo.get_by(Observation,
-      organization_id: organization_id,
-      source_id: source_id,
-      observation_id: observation_id
-    ) ||
-      Repo.get_by(Observation,
-        organization_id: organization_id,
-        source_id: source_id,
-        payload_digest: digest
-      )
   end
 
   defp normalize_change_event_attrs(scope, attrs) do

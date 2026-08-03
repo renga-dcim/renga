@@ -17,7 +17,6 @@ defmodule Renga.Inventory.Resource do
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
-  alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.ResourceOverride
@@ -48,7 +47,6 @@ defmodule Renga.Inventory.Resource do
     has_many :conditions, ResourceCondition
     has_many :identifiers, ResourceIdentifier
     has_many :interfaces, Interface
-    has_many :observations, Observation
     has_many :overrides, ResourceOverride
     has_many :revisions, ResourceRevision
 

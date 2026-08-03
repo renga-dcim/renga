@@ -100,7 +100,7 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       assert observation.organization_id == scope.organization_id
       assert observation.source_id == source.id
       assert observation.payload == payload
-      assert observation.status == "accepted"
+      assert observation.idempotency_key == payload["observation_id"]
       assert Inventory.get_source!(scope, source.id).last_seen_at
     end
 
@@ -125,6 +125,25 @@ defmodule RengaWeb.Api.ObservationControllerTest do
                "duplicate" => true,
                "observation" => %{"id" => ^observation_id}
              } = json_response(retry_conn, 200)
+    end
+
+    test "accepts identical reports when their idempotency keys differ", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source, %{"observation_id" => "report-1"})
+
+      conn
+      |> authorize(token)
+      |> post(~p"/api/v1/observations", payload)
+      |> json_response(202)
+
+      second_payload = Map.put(payload, "observation_id", "report-2")
+
+      second_conn =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", second_payload)
+
+      assert %{"status" => "accepted", "duplicate" => false} = json_response(second_conn, 202)
     end
 
     test "rejects reused observation ids with different payloads", %{conn: conn} do

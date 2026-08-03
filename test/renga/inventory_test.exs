@@ -9,6 +9,7 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
@@ -1080,13 +1081,11 @@ defmodule Renga.InventoryTest do
 
     test "create_observation/3 stores raw payloads with a computed digest", %{
       scope: scope,
-      resource: resource,
       source: source,
       sync_run: sync_run
     } do
       assert {:ok, %Observation{} = observation} =
                Inventory.create_observation(scope, source.id, %{
-                 resource_id: resource.id,
                  sync_run_id: sync_run.id,
                  observation_id: " host-agent:compute-01 ",
                  payload: %{"hostname" => "compute-01", "serial" => "ABC123"}
@@ -1094,10 +1093,9 @@ defmodule Renga.InventoryTest do
 
       assert observation.organization_id == scope.organization_id
       assert observation.source_id == source.id
-      assert observation.resource_id == resource.id
       assert observation.sync_run_id == sync_run.id
       assert String.at(observation.id, 14) == "7"
-      assert observation.observation_id == "host-agent:compute-01"
+      assert observation.idempotency_key == "host-agent:compute-01"
       assert is_binary(observation.payload_digest)
       refute Map.has_key?(observation, :updated_at)
 
@@ -1105,29 +1103,26 @@ defmodule Renga.InventoryTest do
       assert observation.inserted_at == Renga.Time.from_unix_ms!(uuid_unix_ms)
     end
 
-    test "list_observations/2 is scoped by organization", %{
+    test "list_observations/1 is scoped by organization", %{
       scope: scope,
       other_scope: other_scope,
-      resource: resource,
       source: source
     } do
       {:ok, observation} =
         Inventory.create_observation(scope, source.id, %{
-          resource_id: resource.id,
+          observation_id: "host-agent:compute-01",
           payload: %{"hostname" => "compute-01"}
         })
 
-      assert Inventory.list_observations(scope, resource.id) == [observation]
-      assert Inventory.list_observations(other_scope, resource.id) == []
+      assert Inventory.list_observations(scope) == [observation]
+      assert Inventory.list_observations(other_scope) == []
     end
 
-    test "observations are unique by source observation id and payload digest", %{
+    test "idempotency is source-keyed while identical later reports remain valid", %{
       scope: scope,
-      resource: resource,
       source: source
     } do
       attrs = %{
-        resource_id: resource.id,
         observation_id: "host-agent:compute-01",
         payload: %{"hostname" => "compute-01"}
       }
@@ -1142,26 +1137,43 @@ defmodule Renga.InventoryTest do
 
       assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
 
-      assert {:error, changeset} =
+      assert {:ok, repeated_report} =
                Inventory.create_observation(scope, source.id, %{
-                 resource_id: resource.id,
+                 observation_id: "host-agent:compute-01:next",
                  payload: %{"hostname" => "compute-01"}
                })
 
-      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+      assert repeated_report.idempotency_key == "host-agent:compute-01:next"
     end
 
-    test "create_observation/3 enforces linked resource organization scope", %{
-      other_scope: other_scope,
+    test "raw observations reject updates and processing is stored separately", %{
+      scope: scope,
       resource: resource,
       source: source
     } do
-      assert_raise Ecto.NoResultsError, fn ->
-        Inventory.create_observation(other_scope, source.id, %{
-          resource_id: resource.id,
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:compute-01",
           payload: %{"hostname" => "compute-01"}
         })
-      end
+
+      assert {:error, changeset} =
+               observation
+               |> Observation.changeset(%{payload: %{"hostname" => "changed"}})
+               |> Repo.update()
+
+      assert %{base: ["observation is immutable"]} = errors_on(changeset)
+
+      assert {:ok, %ObservationReconciliation{} = result} =
+               Inventory.create_observation_reconciliation(scope, observation.id, %{
+                 attempt: 1,
+                 status: "succeeded",
+                 matched_resource_id: resource.id,
+                 completed_at: Renga.Time.utc_now_ms()
+               })
+
+      assert result.matched_resource_id == resource.id
+      assert Inventory.list_observation_reconciliations(scope, observation.id) == [result]
     end
 
     test "create_change_event/2 records scoped audit entries", %{
@@ -1172,8 +1184,8 @@ defmodule Renga.InventoryTest do
     } do
       {:ok, observation} =
         Inventory.create_observation(scope, source.id, %{
-          resource_id: resource.id,
           sync_run_id: sync_run.id,
+          observation_id: "host-agent:compute-01",
           payload: %{"hostname" => "compute-01"}
         })
 

@@ -63,7 +63,7 @@ defmodule Renga.Inventory.AgentPayload do
       [] ->
         {:ok,
          %{
-           observation_id: blank_to_nil(Map.get(params, "observation_id")),
+           idempotency_key: blank_to_nil(Map.get(params, "observation_id")),
            observed_at: observed_at,
            payload: params
          }}
@@ -93,7 +93,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_source_kind(errors, params, source) do
     case Map.get(params, "kind") do
-      nil -> errors
+      nil -> [error("observation_id", "is required") | errors]
       kind when kind == source.kind -> errors
       _other -> [error("source.kind", "does not match authenticated source") | errors]
     end

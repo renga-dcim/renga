@@ -29,31 +29,52 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
+      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
       add :sync_run_id, references(:sync_runs, on_delete: :nilify_all, type: :binary_id)
-      add :resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
-      add :observation_id, :string
+      add :idempotency_key, :string, null: false
       add :observed_at, :"timestamp(3)", null: false
-      add :status, :string, null: false, default: "accepted"
       add :payload_digest, :binary, null: false
       add :payload, :map, null: false
-      add :errors, :map, null: false, default: %{}
-      add :metadata, :map, null: false, default: %{}
 
       timestamps(type: :"timestamp(3)", updated_at: false)
     end
 
     create index(:observations, [:organization_id, :source_id])
     create index(:observations, [:organization_id, :sync_run_id])
-    create index(:observations, [:organization_id, :resource_id])
     create index(:observations, [:organization_id, :observed_at])
 
-    create unique_index(:observations, [:organization_id, :source_id, :observation_id],
-             where: "source_id IS NOT NULL AND observation_id IS NOT NULL"
+    create unique_index(:observations, [:organization_id, :source_id, :idempotency_key])
+
+    create table(:observation_reconciliations, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :observation_id, references(:observations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :matched_resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
+      add :status, :string, null: false, default: "pending"
+      add :attempt, :integer, null: false
+      add :errors, :map, null: false, default: %{}
+      add :metadata, :map, null: false, default: %{}
+      add :started_at, :"timestamp(3)"
+      add :completed_at, :"timestamp(3)"
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(
+             :observation_reconciliations,
+             [:organization_id, :observation_id, :attempt],
+             name: :observation_reconciliations_observation_attempt_index
            )
 
-    create unique_index(:observations, [:organization_id, :source_id, :payload_digest],
-             where: "source_id IS NOT NULL"
+    create index(:observation_reconciliations, [:organization_id, :status])
+
+    create index(:observation_reconciliations, [:organization_id, :matched_resource_id],
+             name: :observation_reconciliations_matched_resource_index
            )
 
     create table(:change_events, primary_key: false) do

@@ -16,7 +16,7 @@ defmodule RengaWeb.Api.ObservationController do
         duplicate: disposition == :duplicate,
         observation: %{
           id: observation.id,
-          observation_id: observation.observation_id,
+          observation_id: observation.idempotency_key,
           observed_at: DateTime.to_iso8601(observation.observed_at),
           source_id: observation.source_id
         }
