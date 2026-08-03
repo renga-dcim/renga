@@ -1,10 +1,13 @@
 defmodule RengaWeb.Api.ObservationControllerTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query, only: [from: 2]
+
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Agent
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.Source
   alias Renga.Repo
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
@@ -103,6 +106,30 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       assert observation.payload == payload
       assert observation.idempotency_key == payload["observation_id"]
       assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
+    end
+
+    test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+
+      Repo.update_all(from(stored in Source, where: stored.id == ^source.id), set: [name: "   "])
+      source = Repo.get!(Source, source.id)
+      payload = valid_observation_payload(source)
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "agent.name", "message" => "can't be blank"}]
+             } = json_response(conn, 422)
+
+      refute Repo.get_by(Observation,
+               organization_id: scope.organization_id,
+               source_id: source.id,
+               idempotency_key: payload["observation_id"]
+             )
     end
 
     test "accepts an optional source object without a kind", %{conn: conn} do

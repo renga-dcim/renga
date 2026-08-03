@@ -6,10 +6,10 @@ defmodule RengaWeb.Api.ObservationController do
 
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
-         {:ok, observation, disposition} <-
-           Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs),
          {:ok, {_agent, _lease}} <-
-           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id) do
+           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id),
+         {:ok, observation, disposition} <-
+           Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs) do
       conn
       |> put_status(status_for(disposition))
       |> json(%{
@@ -41,6 +41,11 @@ defmodule RengaWeb.Api.ObservationController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{status: "rejected", errors: errors})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{status: "rejected", errors: changeset_errors(changeset, "agent")})
     end
   end
 
@@ -52,4 +57,16 @@ defmodule RengaWeb.Api.ObservationController do
 
   defp status_for(:created), do: :accepted
   defp status_for(:duplicate), do: :ok
+
+  defp changeset_errors(changeset, prefix) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, opts} ->
+      Enum.reduce(opts, message, fn {key, value}, rendered ->
+        String.replace(rendered, "%{#{key}}", to_string(value))
+      end)
+    end)
+    |> Enum.flat_map(fn {field, messages} ->
+      Enum.map(messages, &%{path: "#{prefix}.#{field}", message: &1})
+    end)
+  end
 end

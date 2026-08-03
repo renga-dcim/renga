@@ -40,6 +40,9 @@ defmodule Renga.Inventory.Agent do
       empty_values: []
     )
     |> update_change(:name, &String.trim/1)
+    |> validate_change(:name, fn :name, name ->
+      if name == "", do: [name: "can't be blank"], else: []
+    end)
     |> validate_required([:organization_id, :source_id, :name, :status, :registered_at])
     |> validate_inclusion(:status, @statuses)
     |> validate_capabilities()
