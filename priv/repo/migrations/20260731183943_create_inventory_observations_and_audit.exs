@@ -105,8 +105,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
 
     create index(:resource_identifier_claims, [:organization_id, :source_id])
     create index(:resource_identifier_claims, [:organization_id, :observation_id])
-    create index(:resource_identifier_claims, [:organization_id, :resource_identifier_id])
-    create index(:resource_identifier_claims, [:organization_id, :kind, :normalized_value])
+
+    create index(:resource_identifier_claims, [:organization_id, :resource_identifier_id],
+             name: :resource_identifier_claims_canonical_index
+           )
+
+    create index(:resource_identifier_claims, [:organization_id, :kind, :normalized_value],
+             name: :resource_identifier_claims_normalized_value_index
+           )
 
     create unique_index(
              :resource_identifier_claims,

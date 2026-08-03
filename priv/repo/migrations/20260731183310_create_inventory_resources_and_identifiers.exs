@@ -116,7 +116,10 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
     end
 
     create index(:resource_identifiers, [:organization_id, :resource_id])
-    create index(:resource_identifiers, [:organization_id, :kind, :normalized_value])
+
+    create index(:resource_identifiers, [:organization_id, :kind, :normalized_value],
+             name: :resource_identifiers_normalized_value_index
+           )
 
     create unique_index(
              :resource_identifiers,

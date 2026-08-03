@@ -170,32 +170,10 @@ defmodule Renga.Inventory do
       ) do
     source = get_source!(scope, source_id)
     now = Renga.Time.utc_now_ms()
-    name = Map.get(attrs, :name) || Map.get(attrs, "name") || source.name
-    capabilities = Map.get(attrs, :capabilities) || Map.get(attrs, "capabilities")
-    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata")
-    version = Map.get(attrs, :version) || Map.get(attrs, "version") || metadata_version(metadata)
+    agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
-      existing =
-        Repo.get_by(Agent,
-          organization_id: organization_id,
-          source_id: source.id,
-          name: name
-        )
-
-      agent_attrs =
-        %{}
-        |> Map.put(:name, name)
-        |> Map.put(:registered_at, (existing && existing.registered_at) || now)
-        |> maybe_put(:version, version)
-        |> maybe_put(:capabilities, capabilities)
-        |> maybe_put(:metadata, merge_metadata(existing && existing.metadata, metadata))
-
-      agent =
-        (existing || %Agent{organization_id: organization_id, source_id: source.id})
-        |> Agent.changeset(agent_attrs)
-        |> insert_or_update_or_rollback()
-
+      agent = upsert_agent!(organization_id, source.id, agent_attrs)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
@@ -971,6 +949,48 @@ defmodule Renga.Inventory do
     end
   end
 
+  defp agent_registration_attrs(source, attrs, now) do
+    metadata = get_attr(attrs, :metadata)
+
+    %{
+      name: get_attr(attrs, :name) || source.name,
+      registered_at: now
+    }
+    |> maybe_put(:version, get_attr(attrs, :version) || metadata_version(metadata))
+    |> maybe_put(:capabilities, get_attr(attrs, :capabilities))
+    |> maybe_put(:metadata, metadata)
+  end
+
+  defp upsert_agent!(organization_id, source_id, attrs) do
+    existing =
+      Repo.get_by(Agent,
+        organization_id: organization_id,
+        source_id: source_id,
+        name: attrs.name
+      )
+
+    attrs = prepare_agent_update(existing, attrs)
+
+    (existing || %Agent{organization_id: organization_id, source_id: source_id})
+    |> Agent.changeset(attrs)
+    |> insert_or_update_or_rollback()
+  end
+
+  defp prepare_agent_update(nil, attrs), do: attrs
+
+  defp prepare_agent_update(agent, attrs) do
+    attrs
+    |> Map.put(:registered_at, agent.registered_at)
+    |> maybe_merge_metadata(agent.metadata)
+  end
+
+  defp maybe_merge_metadata(attrs, current_metadata) do
+    case Map.fetch(attrs, :metadata) do
+      {:ok, metadata} -> Map.put(attrs, :metadata, merge_metadata(current_metadata, metadata))
+      :error -> attrs
+    end
+  end
+
   defp put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms)
        when is_integer(ttl_ms) and ttl_ms > 0 do
     lease = Repo.get_by(AgentLease, organization_id: organization_id, agent_id: agent_id)
@@ -990,6 +1010,8 @@ defmodule Renga.Inventory do
 
   defp metadata_version(metadata) when is_map(metadata), do: Map.get(metadata, "agent_version")
   defp metadata_version(_metadata), do: nil
+
+  defp get_attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
 
   defp condition_transition_at(nil, attrs) do
     Map.get(attrs, :last_transition_at) ||

@@ -113,7 +113,7 @@ fresh development/test database so reconciliation is built against explicit
 desired state, observed evidence, provenance, and lifecycle boundaries.
 
 - [X] Document the target inventory model and the boundary between resource envelopes, typed projections, source evidence, and raw observations.
-- [ ] Rebuild the inventory migrations in place and verify a fresh database can be created without compatibility migrations for the superseded model.
+- [X] Rebuild the inventory migrations in place and verify a fresh database can be created without compatibility migrations for the superseded model.
 - [X] Redefine =Resource= as the organization-scoped envelope for independently addressable and reconcilable objects.
 - [X] Add desired =spec= data, =generation=, and a monotonically ordered resource revision without replacing typed PostgreSQL projections with opaque JSONB.
 - [X] Rename the current resource =status= to an explicit lifecycle or inventory state and add independent =ResourceCondition= records for freshness, reachability, readiness, and reconciliation state.
@@ -131,8 +131,8 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Keep =ChangeEvent= as non-authoritative audit history and define a separate monotonically ordered outbox/revision model for future list-and-watch delivery.
 - [X] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
 - [X] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
-- [ ] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
-- [ ] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
+- [X] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
+- [X] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
 
 ** 5. Reconciliation MVP
 
