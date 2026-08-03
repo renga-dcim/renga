@@ -10,12 +10,16 @@ defmodule Renga.Inventory do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
+  alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.Prefix
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
@@ -415,12 +419,10 @@ defmodule Renga.Inventory do
   """
   def create_interface(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
     resource = get_resource!(scope, resource_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %Interface{
       organization_id: organization_id,
-      resource_id: resource.id,
-      source_id: source_id_from_attrs(attrs)
+      resource_id: resource.id
     }
     |> Interface.changeset(attrs)
     |> Repo.insert()
@@ -445,13 +447,11 @@ defmodule Renga.Inventory do
   """
   def create_address(%Scope{organization_id: organization_id} = scope, interface_id, attrs) do
     interface = get_interface!(scope, interface_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %Address{
       organization_id: organization_id,
       resource_id: interface.resource_id,
-      interface_id: interface.id,
-      source_id: source_id_from_attrs(attrs)
+      interface_id: interface.id
     }
     |> Address.changeset(attrs)
     |> Repo.insert()
@@ -476,8 +476,7 @@ defmodule Renga.Inventory do
   Creates a directed relationship between two scoped interfaces.
 
   The relationship source and target must both belong to the caller's
-  organization. Optional `source_id` is provenance for the collector that
-  observed the relationship.
+  organization. Collector provenance is stored in relationship evidence.
   """
   def create_interface_relationship(
         %Scope{organization_id: organization_id} = scope,
@@ -487,15 +486,96 @@ defmodule Renga.Inventory do
       ) do
     source_interface = get_interface!(scope, source_interface_id)
     target_interface = get_interface!(scope, target_interface_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %InterfaceRelationship{
       organization_id: organization_id,
       source_interface_id: source_interface.id,
-      target_interface_id: target_interface.id,
-      source_id: source_id_from_attrs(attrs)
+      target_interface_id: target_interface.id
     }
     |> InterfaceRelationship.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Creates a typed canonical IPAM prefix for a resource envelope.
+  """
+  def create_prefix(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+
+    %Prefix{organization_id: organization_id, resource_id: resource.id}
+    |> Prefix.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical interface.
+  """
+  def create_interface_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        interface_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    interface = get_interface!(scope, interface_id)
+    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+
+    %InterfaceEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      interface_id: interface.id
+    }
+    |> InterfaceEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical assigned address.
+  """
+  def create_address_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        address_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    address = get_address!(scope, address_id)
+    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+
+    %AddressEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      address_id: address.id
+    }
+    |> AddressEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical interface relationship.
+  """
+  def create_interface_relationship_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        relationship_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    relationship = get_interface_relationship!(scope, relationship_id)
+    attrs = Map.put_new(attrs, :observed_at, observation.observed_at)
+
+    %InterfaceRelationshipEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      interface_relationship_id: relationship.id
+    }
+    |> InterfaceRelationshipEvidence.changeset(attrs)
     |> Repo.insert()
   end
 
@@ -860,12 +940,6 @@ defmodule Renga.Inventory do
     |> normalize_scoped_assoc(scope, :observation_id, &get_observation!/2)
   end
 
-  defp normalize_source_attrs(scope, attrs) do
-    normalize_scoped_assoc(attrs, scope, :source_id, &get_source!/2)
-  end
-
-  defp source_id_from_attrs(attrs), do: Map.get(attrs, :source_id) || Map.get(attrs, "source_id")
-
   defp normalize_scoped_assoc(attrs, scope, field, fetch_fun) do
     value = Map.get(attrs, field) || Map.get(attrs, Atom.to_string(field))
 
@@ -892,6 +966,23 @@ defmodule Renga.Inventory do
     |> where([observation], observation.organization_id == ^organization_id)
     |> where([observation], observation.source_id == ^source_id)
     |> Repo.get!(observation_id)
+  end
+
+  defp source_observation!(scope, source_id, observation_id) do
+    source = get_source!(scope, source_id)
+    {source, get_source_observation!(scope, source.id, observation_id)}
+  end
+
+  defp get_address!(%Scope{organization_id: organization_id}, id) do
+    Address
+    |> where([address], address.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp get_interface_relationship!(%Scope{organization_id: organization_id}, id) do
+    InterfaceRelationship
+    |> where([relationship], relationship.organization_id == ^organization_id)
+    |> Repo.get!(id)
   end
 
   defp get_resource_identifier!(%Scope{organization_id: organization_id}, id) do

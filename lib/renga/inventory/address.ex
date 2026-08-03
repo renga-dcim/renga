@@ -13,7 +13,6 @@ defmodule Renga.Inventory.Address do
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
-  alias Renga.Inventory.Source
   alias Renga.Types.Inet
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -26,13 +25,9 @@ defmodule Renga.Inventory.Address do
     field :address, Inet
     field :scope, :string
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime_usec
-    field :last_seen_at, :utc_datetime_usec
-
     belongs_to :organization, Organization
     belongs_to :resource, Resource
     belongs_to :interface, Interface
-    belongs_to :source, Source
 
     timestamps()
   end
@@ -43,9 +38,7 @@ defmodule Renga.Inventory.Address do
       :kind,
       :address,
       :scope,
-      :metadata,
-      :first_seen_at,
-      :last_seen_at
+      :metadata
     ])
     |> validate_required([:organization_id, :resource_id, :interface_id, :kind, :address])
     |> validate_inclusion(:kind, @kinds)
@@ -53,7 +46,6 @@ defmodule Renga.Inventory.Address do
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource)
     |> assoc_constraint(:interface)
-    |> assoc_constraint(:source)
     |> unique_constraint([:organization_id, :interface_id, :address])
   end
 

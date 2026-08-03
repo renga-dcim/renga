@@ -12,10 +12,10 @@ defmodule Renga.Inventory.Source do
   import Ecto.Changeset
 
   alias Renga.Accounts.Organization
-  alias Renga.Inventory.Address
+  alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ChangeEvent
-  alias Renga.Inventory.Interface
-  alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceEvidence
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.SyncRun
@@ -36,10 +36,10 @@ defmodule Renga.Inventory.Source do
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
-    has_many :addresses, Address
+    has_many :address_evidence, AddressEvidence
     has_many :change_events, ChangeEvent
-    has_many :interfaces, Interface
-    has_many :interface_relationships, InterfaceRelationship
+    has_many :interface_evidence, InterfaceEvidence
+    has_many :interface_relationship_evidence, InterfaceRelationshipEvidence
     has_many :observations, Observation
     has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :sync_runs, SyncRun

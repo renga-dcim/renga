@@ -15,7 +15,6 @@ defmodule Renga.Inventory.InterfaceRelationship do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.Interface
-  alias Renga.Inventory.Source
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -25,27 +24,23 @@ defmodule Renga.Inventory.InterfaceRelationship do
   schema "interface_relationships" do
     field :kind, :string
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime_usec
-    field :last_seen_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source_interface, Interface
     belongs_to :target_interface, Interface
-    belongs_to :source, Source
 
     timestamps()
   end
 
   def changeset(interface_relationship, attrs) do
     interface_relationship
-    |> cast(attrs, [:kind, :metadata, :first_seen_at, :last_seen_at])
+    |> cast(attrs, [:kind, :metadata])
     |> validate_required([:organization_id, :source_interface_id, :target_interface_id, :kind])
     |> validate_inclusion(:kind, @kinds)
     |> validate_distinct_interfaces()
     |> assoc_constraint(:organization)
     |> assoc_constraint(:source_interface)
     |> assoc_constraint(:target_interface)
-    |> assoc_constraint(:source)
     |> unique_constraint(
       [
         :organization_id,

@@ -14,11 +14,8 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfaceRelationships do
       add :target_interface_id, references(:interfaces, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
 
       timestamps(type: :"timestamp(3)")
     end
@@ -31,7 +28,6 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfaceRelationships do
              name: :interface_relationships_org_target_interface_index
            )
 
-    create index(:interface_relationships, [:organization_id, :source_id])
     create index(:interface_relationships, [:organization_id, :kind])
 
     create unique_index(
@@ -43,6 +39,100 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfaceRelationships do
                :kind
              ],
              name: :interface_relationships_source_target_kind_index
+           )
+
+    create table(:interface_evidence, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :interface_id, references(:interfaces, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+
+      add :observation_id, references(:observations, on_delete: :restrict, type: :binary_id),
+        null: false
+
+      add :name, :string, null: false
+      add :mac_address, :macaddr
+      add :kind, :string, null: false
+      add :status, :string, null: false
+      add :mtu, :integer
+      add :speed_mbps, :integer
+      add :metadata, :map, null: false, default: %{}
+      add :observed_at, :"timestamp(3)", null: false
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(:interface_evidence, [:organization_id, :observation_id, :interface_id],
+             name: :interface_evidence_observation_link_index
+           )
+
+    create index(:interface_evidence, [:organization_id, :source_id, :interface_id])
+
+    create table(:address_evidence, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :address_id, references(:addresses, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+
+      add :observation_id, references(:observations, on_delete: :restrict, type: :binary_id),
+        null: false
+
+      add :address, :inet, null: false
+      add :scope, :string
+      add :metadata, :map, null: false, default: %{}
+      add :observed_at, :"timestamp(3)", null: false
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(:address_evidence, [:organization_id, :observation_id, :address_id],
+             name: :address_evidence_observation_link_index
+           )
+
+    create index(:address_evidence, [:organization_id, :source_id, :address_id])
+
+    create table(:interface_relationship_evidence, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :interface_relationship_id,
+          references(:interface_relationships, on_delete: :delete_all, type: :binary_id),
+          null: false
+
+      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+
+      add :observation_id, references(:observations, on_delete: :restrict, type: :binary_id),
+        null: false
+
+      add :kind, :string, null: false
+      add :metadata, :map, null: false, default: %{}
+      add :observed_at, :"timestamp(3)", null: false
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(
+             :interface_relationship_evidence,
+             [:organization_id, :observation_id, :interface_relationship_id],
+             name: :interface_relationship_evidence_observation_link_index
+           )
+
+    create index(
+             :interface_relationship_evidence,
+             [:organization_id, :source_id, :interface_relationship_id],
+             name: :interface_relationship_evidence_source_link_index
            )
   end
 end

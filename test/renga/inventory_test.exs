@@ -4,12 +4,16 @@ defmodule Renga.InventoryTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Address
+  alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.Prefix
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
@@ -605,12 +609,10 @@ defmodule Renga.InventoryTest do
 
     test "create_interface/3 creates a scoped resource interface", %{
       scope: scope,
-      resource: resource,
-      source: source
+      resource: resource
     } do
       assert {:ok, %Interface{} = interface} =
                Inventory.create_interface(scope, resource.id, %{
-                 source_id: source.id,
                  name: " eth0 ",
                  mac_address: " AA:BB:CC:DD:EE:FF ",
                  kind: "ethernet",
@@ -621,7 +623,7 @@ defmodule Renga.InventoryTest do
 
       assert interface.organization_id == scope.organization_id
       assert interface.resource_id == resource.id
-      assert interface.source_id == source.id
+      refute Map.has_key?(interface, :source_id)
       assert interface.name == "eth0"
       assert interface.mac_address == %Postgrex.MACADDR{address: {170, 187, 204, 221, 238, 255}}
     end
@@ -652,19 +654,6 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_interface(other_scope, resource.id, %{name: "eth0"})
-      end
-    end
-
-    test "create_interface/3 enforces source organization scope", %{
-      scope: scope,
-      resource: resource,
-      other_source: other_source
-    } do
-      assert_raise Ecto.NoResultsError, fn ->
-        Inventory.create_interface(scope, resource.id, %{
-          source_id: other_source.id,
-          name: "eth0"
-        })
       end
     end
 
@@ -763,30 +752,24 @@ defmodule Renga.InventoryTest do
 
     test "create_interface_relationship/4 stores directed topology facts", %{
       scope: scope,
-      source: source,
       physical_interface: physical_interface,
       bond_interface: bond_interface
     } do
-      now = Renga.Time.utc_now_ms()
-
       assert {:ok, %InterfaceRelationship{} = relationship} =
                Inventory.create_interface_relationship(
                  scope,
                  physical_interface.id,
                  bond_interface.id,
                  %{
-                   source_id: source.id,
                    kind: "lag_member",
-                   metadata: %{"operational" => "enslaved"},
-                   first_seen_at: now,
-                   last_seen_at: now
+                   metadata: %{"operational" => "enslaved"}
                  }
                )
 
       assert relationship.organization_id == scope.organization_id
       assert relationship.source_interface_id == physical_interface.id
       assert relationship.target_interface_id == bond_interface.id
-      assert relationship.source_id == source.id
+      refute Map.has_key?(relationship, :source_id)
       assert relationship.kind == "lag_member"
       assert relationship.metadata == %{"operational" => "enslaved"}
     end
@@ -831,25 +814,6 @@ defmodule Renga.InventoryTest do
           other_interface.id,
           %{
             kind: "peer"
-          }
-        )
-      end
-    end
-
-    test "create_interface_relationship/4 enforces provenance source organization scope", %{
-      scope: scope,
-      other_source: other_source,
-      physical_interface: physical_interface,
-      bond_interface: bond_interface
-    } do
-      assert_raise Ecto.NoResultsError, fn ->
-        Inventory.create_interface_relationship(
-          scope,
-          physical_interface.id,
-          bond_interface.id,
-          %{
-            source_id: other_source.id,
-            kind: "lag_member"
           }
         )
       end
@@ -946,12 +910,10 @@ defmodule Renga.InventoryTest do
     test "create_address/3 creates a scoped interface address", %{
       scope: scope,
       resource: resource,
-      interface: interface,
-      source: source
+      interface: interface
     } do
       assert {:ok, %Address{} = address} =
                Inventory.create_address(scope, interface.id, %{
-                 source_id: source.id,
                  kind: "ipv4",
                  address: " 192.0.2.10/24 ",
                  scope: "global"
@@ -960,7 +922,7 @@ defmodule Renga.InventoryTest do
       assert address.organization_id == scope.organization_id
       assert address.resource_id == resource.id
       assert address.interface_id == interface.id
-      assert address.source_id == source.id
+      refute Map.has_key?(address, :source_id)
       assert address.address == %Postgrex.INET{address: {192, 0, 2, 10}, netmask: 24}
     end
 
@@ -985,20 +947,6 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_address(other_scope, interface.id, %{
-          kind: "ipv4",
-          address: "192.0.2.10"
-        })
-      end
-    end
-
-    test "create_address/3 enforces source organization scope", %{
-      scope: scope,
-      interface: interface,
-      other_source: other_source
-    } do
-      assert_raise Ecto.NoResultsError, fn ->
-        Inventory.create_address(scope, interface.id, %{
-          source_id: other_source.id,
           kind: "ipv4",
           address: "192.0.2.10"
         })
@@ -1054,6 +1002,115 @@ defmodule Renga.InventoryTest do
                })
 
       assert %{kind: ["is invalid"]} = errors_on(changeset)
+    end
+  end
+
+  describe "network evidence" do
+    setup do
+      contexts = scoped_organizations()
+
+      {:ok, resource} =
+        Inventory.create_resource(contexts.scope, %{kind: "server", name: "compute-01"})
+
+      {:ok, source} =
+        Inventory.create_source(contexts.scope, %{
+          kind: "host_agent",
+          name: "compute-01-agent"
+        })
+
+      {:ok, observation} =
+        Inventory.create_observation(contexts.scope, source.id, %{
+          observation_id: "network-report-1",
+          observed_at: ~U[2026-08-01 12:00:00.000000Z],
+          payload: %{"interfaces" => []}
+        })
+
+      {:ok, physical} =
+        Inventory.create_interface(contexts.scope, resource.id, %{
+          name: "ens1f0np0",
+          kind: "ethernet"
+        })
+
+      {:ok, bond} =
+        Inventory.create_interface(contexts.scope, resource.id, %{name: "bond0", kind: "bond"})
+
+      {:ok, address} =
+        Inventory.create_address(contexts.scope, physical.id, %{
+          kind: "ipv4",
+          address: "192.0.2.10/24"
+        })
+
+      {:ok, relationship} =
+        Inventory.create_interface_relationship(
+          contexts.scope,
+          physical.id,
+          bond.id,
+          %{kind: "lag_member"}
+        )
+
+      contexts
+      |> Map.put(:source, source)
+      |> Map.put(:observation, observation)
+      |> Map.put(:physical, physical)
+      |> Map.put(:address, address)
+      |> Map.put(:relationship, relationship)
+    end
+
+    test "retains typed source evidence without source-owned canonical rows", context do
+      assert {:ok, %InterfaceEvidence{} = interface_evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 %{
+                   name: "ens1f0np0",
+                   kind: "ethernet",
+                   status: "up",
+                   mac_address: "aa:bb:cc:dd:ee:ff"
+                 }
+               )
+
+      assert {:ok, %AddressEvidence{} = address_evidence} =
+               Inventory.create_address_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.address.id,
+                 %{address: "192.0.2.10/24", scope: "global"}
+               )
+
+      assert {:ok, %InterfaceRelationshipEvidence{} = relationship_evidence} =
+               Inventory.create_interface_relationship_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.relationship.id,
+                 %{kind: "lag_member"}
+               )
+
+      assert interface_evidence.source_id == context.source.id
+      assert address_evidence.address == context.address.address
+      assert relationship_evidence.observation_id == context.observation.id
+      refute Map.has_key?(context.physical, :source_id)
+      refute Map.has_key?(context.address, :source_id)
+      refute Map.has_key?(context.relationship, :source_id)
+    end
+  end
+
+  describe "prefixes" do
+    test "stores managed IPAM networks using PostgreSQL cidr" do
+      %{scope: scope} = scoped_organizations()
+      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "iad-public"})
+
+      assert {:ok, %Prefix{} = prefix} =
+               Inventory.create_prefix(scope, resource.id, %{
+                 prefix: "192.0.2.0/24",
+                 vrf: "default",
+                 description: "Public service network"
+               })
+
+      assert prefix.prefix == %Postgrex.INET{address: {192, 0, 2, 0}, netmask: 24}
     end
   end
 
