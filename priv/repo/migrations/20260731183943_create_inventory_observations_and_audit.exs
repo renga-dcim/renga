@@ -48,6 +48,20 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
     execute """
             CREATE FUNCTION reject_observation_update() RETURNS trigger AS $$
             BEGIN
+              IF NEW.sync_run_id IS NULL
+                 AND OLD.sync_run_id IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM sync_runs WHERE id = OLD.sync_run_id)
+                 AND NEW.id IS NOT DISTINCT FROM OLD.id
+                 AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
+                 AND NEW.source_id IS NOT DISTINCT FROM OLD.source_id
+                 AND NEW.idempotency_key IS NOT DISTINCT FROM OLD.idempotency_key
+                 AND NEW.observed_at IS NOT DISTINCT FROM OLD.observed_at
+                 AND NEW.payload_digest IS NOT DISTINCT FROM OLD.payload_digest
+                 AND NEW.payload IS NOT DISTINCT FROM OLD.payload
+                 AND NEW.inserted_at IS NOT DISTINCT FROM OLD.inserted_at THEN
+                RETURN NEW;
+              END IF;
+
               RAISE EXCEPTION 'observations are immutable'
                 USING ERRCODE = 'integrity_constraint_violation';
             END;

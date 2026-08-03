@@ -1781,6 +1781,22 @@ defmodule Renga.InventoryTest do
       end
     end
 
+    test "deleting a sync run preserves its immutable observations", %{
+      scope: scope,
+      source: source,
+      sync_run: sync_run
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          sync_run_id: sync_run.id,
+          observation_id: "host-agent:sync-run-deletion",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert {:ok, _sync_run} = Repo.delete(sync_run)
+      assert Repo.get!(Observation, observation.id).sync_run_id == nil
+    end
+
     test "create_change_event/2 records scoped audit entries", %{
       scope: scope,
       resource: resource,
