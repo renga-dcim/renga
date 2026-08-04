@@ -964,6 +964,35 @@ defmodule Renga.InventoryTest do
       assert claim.resource_identifier_id == identifier.id
     end
 
+    test "canonical identifier links must match the claim kind and normalized value", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      observation: observation
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "serial_number",
+          value: "ABC123"
+        })
+
+      for claim_attrs <- [
+            %{kind: "hostname", value: "ABC123"},
+            %{kind: "serial_number", value: "XYZ789"}
+          ] do
+        assert {:error, changeset} =
+                 Inventory.create_resource_identifier_claim(
+                   scope,
+                   source.id,
+                   observation.id,
+                   Map.put(claim_attrs, :resource_identifier_id, identifier.id)
+                 )
+
+        assert %{resource_identifier_id: ["must match claim kind and normalized value"]} =
+                 errors_on(changeset)
+      end
+    end
+
     test "a canonical identifier derives and constrains the claim resource", %{
       scope: scope,
       resource: resource,

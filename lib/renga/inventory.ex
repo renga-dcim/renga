@@ -1207,7 +1207,13 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp validate_claim_resource_link(
+  defp validate_claim_resource_link(changeset, resource, resource_identifier) do
+    changeset
+    |> validate_claim_resource(resource, resource_identifier)
+    |> validate_claim_identifier(resource_identifier)
+  end
+
+  defp validate_claim_resource(
          changeset,
          %Resource{id: resource_id},
          %ResourceIdentifier{resource_id: identifier_resource_id}
@@ -1216,7 +1222,26 @@ defmodule Renga.Inventory do
     Ecto.Changeset.add_error(changeset, :resource_id, "must match resource identifier")
   end
 
-  defp validate_claim_resource_link(changeset, _resource, _resource_identifier), do: changeset
+  defp validate_claim_resource(changeset, _resource, _resource_identifier), do: changeset
+
+  defp validate_claim_identifier(changeset, %ResourceIdentifier{} = resource_identifier) do
+    claim_kind = Ecto.Changeset.get_field(changeset, :kind)
+    claim_value = Ecto.Changeset.get_field(changeset, :normalized_value)
+
+    if is_binary(claim_kind) and is_binary(claim_value) and
+         (claim_kind != resource_identifier.kind or
+            claim_value != resource_identifier.normalized_value) do
+      Ecto.Changeset.add_error(
+        changeset,
+        :resource_identifier_id,
+        "must match claim kind and normalized value"
+      )
+    else
+      changeset
+    end
+  end
+
+  defp validate_claim_identifier(changeset, nil), do: changeset
 
   defp get_observation!(%Scope{organization_id: organization_id}, id) do
     Observation
