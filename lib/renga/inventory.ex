@@ -1095,7 +1095,7 @@ defmodule Renga.Inventory do
   end
 
   defp condition_transition_at(condition, attrs) do
-    status = Map.get(attrs, :status) || Map.get(attrs, "status")
+    status = Map.get(attrs, :status) || Map.get(attrs, "status") || condition.status
 
     if status == condition.status do
       condition.last_transition_at

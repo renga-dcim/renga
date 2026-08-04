@@ -601,6 +601,32 @@ defmodule Renga.InventoryTest do
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
 
+    test "refreshing condition details without a status preserves transition time", %{
+      scope: scope
+    } do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      transition_at = ~U[2025-08-01 12:00:00.000000Z]
+
+      assert {:ok, current} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "InventoryCurrent",
+                 status: "true",
+                 last_transition_at: transition_at
+               })
+
+      assert {:ok, refreshed} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "InventoryCurrent",
+                 reason: "Refreshed",
+                 message: "Inventory remains current"
+               })
+
+      assert refreshed.status == current.status
+      assert refreshed.last_transition_at == transition_at
+    end
+
     test "condition transitions accept string-keyed attributes", %{scope: scope} do
       {:ok, resource} =
         Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
