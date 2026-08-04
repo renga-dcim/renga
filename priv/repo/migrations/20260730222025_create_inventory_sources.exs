@@ -38,7 +38,7 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
       timestamps(type: :"timestamp(3)")
     end
 
-    create unique_index(:agents, [:organization_id, :source_id, :name])
+    create unique_index(:agents, [:organization_id, :source_id])
     create index(:agents, [:organization_id, :status])
 
     create table(:agent_leases, primary_key: false) do

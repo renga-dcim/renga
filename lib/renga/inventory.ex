@@ -335,27 +335,40 @@ defmodule Renga.Inventory do
   `last_transition_at` advances only when status changes. Reason and message can
   still be refreshed without making a stable condition appear newly changed.
   """
-  def put_resource_condition(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
-    resource = get_resource!(scope, resource_id)
-    type = Map.get(attrs, :type) || Map.get(attrs, "type")
+  def put_resource_condition(%Scope{organization_id: organization_id}, resource_id, attrs) do
+    Repo.transaction(fn ->
+      resource =
+        Resource
+        |> where([resource], resource.id == ^resource_id)
+        |> where([resource], resource.organization_id == ^organization_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
 
-    existing =
-      Repo.get_by(ResourceCondition,
-        organization_id: organization_id,
-        resource_id: resource.id,
-        type: type
-      )
+      type = Map.get(attrs, :type) || Map.get(attrs, "type")
 
-    transition_at = condition_transition_at(existing, attrs)
-    attrs = put_condition_transition_at(attrs, transition_at)
+      existing =
+        Repo.get_by(ResourceCondition,
+          organization_id: organization_id,
+          resource_id: resource.id,
+          type: type
+        )
 
-    (existing ||
-       %ResourceCondition{
-         organization_id: organization_id,
-         resource_id: resource.id
-       })
-    |> ResourceCondition.changeset(attrs)
-    |> Repo.insert_or_update()
+      transition_at = condition_transition_at(existing, attrs)
+      attrs = put_condition_transition_at(attrs, transition_at)
+
+      changeset =
+        (existing ||
+           %ResourceCondition{
+             organization_id: organization_id,
+             resource_id: resource.id
+           })
+        |> ResourceCondition.changeset(attrs)
+
+      case Repo.insert_or_update(changeset) do
+        {:ok, condition} -> condition
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc """
@@ -762,7 +775,7 @@ defmodule Renga.Inventory do
   """
   def create_observation(%Scope{organization_id: organization_id} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
-    attrs = normalize_observation_attrs(scope, attrs)
+    attrs = normalize_observation_attrs(scope, source.id, attrs)
 
     %Observation{
       organization_id: organization_id,
@@ -782,7 +795,7 @@ defmodule Renga.Inventory do
   """
   def accept_observation(%Scope{} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
-    attrs = normalize_observation_attrs(scope, attrs)
+    attrs = normalize_observation_attrs(scope, source.id, attrs)
     idempotency_key = Map.get(attrs, :idempotency_key) || Map.get(attrs, "idempotency_key")
     payload_digest = Map.get(attrs, :payload_digest) || Map.get(attrs, "payload_digest")
 
@@ -1008,6 +1021,7 @@ defmodule Renga.Inventory do
       from(agent in Agent,
         update: [
           set: [
+            name: fragment("EXCLUDED.name"),
             version:
               fragment(
                 "CASE WHEN ? THEN EXCLUDED.version ELSE ? END",
@@ -1037,7 +1051,7 @@ defmodule Renga.Inventory do
       |> Agent.changeset(attrs)
       |> Repo.insert(
         on_conflict: on_conflict,
-        conflict_target: [:organization_id, :source_id, :name],
+        conflict_target: [:organization_id, :source_id],
         returning: true
       )
 
@@ -1135,7 +1149,7 @@ defmodule Renga.Inventory do
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
-  defp normalize_observation_attrs(scope, attrs) do
+  defp normalize_observation_attrs(scope, source_id, attrs) do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
 
     idempotency_key =
@@ -1148,7 +1162,11 @@ defmodule Renga.Inventory do
     |> Map.put(:idempotency_key, idempotency_key)
     |> Map.put_new(:observed_at, Renga.Time.utc_now_ms())
     |> Map.put_new(:payload_digest, digest_payload(payload))
-    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
+    |> normalize_scoped_assoc(
+      scope,
+      :sync_run_id,
+      &get_source_sync_run!(&1, source_id, &2)
+    )
   end
 
   defp insert_idempotent_observation(scope, source_id, attrs, idempotency_key, payload_digest) do
@@ -1268,6 +1286,17 @@ defmodule Renga.Inventory do
     |> where([observation], observation.organization_id == ^organization_id)
     |> where([observation], observation.source_id == ^source_id)
     |> Repo.get!(observation_id)
+  end
+
+  defp get_source_sync_run!(
+         %Scope{organization_id: organization_id},
+         source_id,
+         sync_run_id
+       ) do
+    SyncRun
+    |> where([sync_run], sync_run.organization_id == ^organization_id)
+    |> where([sync_run], sync_run.source_id == ^source_id)
+    |> Repo.get!(sync_run_id)
   end
 
   defp source_observation!(scope, source_id, observation_id) do

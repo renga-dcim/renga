@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict DxbYUBOvL8VdWBctAiYoy835lPpg5GX6d1RcjqgryES041qeOpyqTRyUosF8kwv
+\restrict jJAHDJrkUsWwcD79ndVxeSMEL0GBVL9R8acGW8nn8G6vaHquIucqhwdCxwmTLes
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -849,10 +849,10 @@ CREATE INDEX agent_leases_organization_id_expires_at_index ON public.agent_lease
 
 
 --
--- Name: agents_organization_id_source_id_name_index; Type: INDEX; Schema: public; Owner: -
+-- Name: agents_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX agents_organization_id_source_id_name_index ON public.agents USING btree (organization_id, source_id, name);
+CREATE UNIQUE INDEX agents_organization_id_source_id_index ON public.agents USING btree (organization_id, source_id);
 
 
 --
@@ -1884,7 +1884,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict DxbYUBOvL8VdWBctAiYoy835lPpg5GX6d1RcjqgryES041qeOpyqTRyUosF8kwv
+\unrestrict jJAHDJrkUsWwcD79ndVxeSMEL0GBVL9R8acGW8nn8G6vaHquIucqhwdCxwmTLes
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

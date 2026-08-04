@@ -270,7 +270,7 @@ Recommended source fields:
 Recommended agent fields:
 
 - =source_id=
-- stable installation ID (the current API uses the agent =name=)
+- stable installation ID (the current one-agent-per-source API uses =source_id=)
 - optional managed resource ID
 - version and capabilities
 - registration and configuration metadata

@@ -11,6 +11,7 @@ defmodule Renga.Inventory.AgentPayload do
   alias Renga.Types.MacAddress
 
   @max_observation_bytes 256_000
+  @max_agent_string_length 255
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
@@ -118,10 +119,21 @@ defmodule Renga.Inventory.AgentPayload do
         errors
 
       capabilities when is_list(capabilities) ->
-        if Enum.all?(capabilities, &non_empty_string?/1) do
-          errors
-        else
-          [error("capabilities", "must contain only non-empty strings") | errors]
+        cond do
+          not Enum.all?(capabilities, &non_empty_string?/1) ->
+            [error("capabilities", "must contain only non-empty strings") | errors]
+
+          Enum.any?(capabilities, &(String.length(&1) > @max_agent_string_length)) ->
+            [
+              error(
+                "capabilities",
+                "must be at most #{@max_agent_string_length} characters"
+              )
+              | errors
+            ]
+
+          true ->
+            errors
         end
 
       _invalid ->
@@ -139,9 +151,24 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_agent_version(errors, metadata) do
     case Map.get(metadata, "agent_version") do
-      nil -> errors
-      version when is_binary(version) -> errors
-      _invalid -> [error("metadata.agent_version", "must be a string") | errors]
+      nil ->
+        errors
+
+      version when is_binary(version) ->
+        if String.length(version) <= @max_agent_string_length do
+          errors
+        else
+          [
+            error(
+              "metadata.agent_version",
+              "must be at most #{@max_agent_string_length} characters"
+            )
+            | errors
+          ]
+        end
+
+      _invalid ->
+        [error("metadata.agent_version", "must be a string") | errors]
     end
   end
 

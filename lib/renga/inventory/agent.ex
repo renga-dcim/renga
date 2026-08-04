@@ -17,6 +17,7 @@ defmodule Renga.Inventory.Agent do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(active disabled)
+  @max_string_length 255
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "agents" do
@@ -45,18 +46,24 @@ defmodule Renga.Inventory.Agent do
     end)
     |> validate_required([:organization_id, :source_id, :name, :status, :registered_at])
     |> validate_inclusion(:status, @statuses)
+    |> validate_length(:version, max: @max_string_length)
     |> validate_capabilities()
     |> assoc_constraint(:organization)
     |> assoc_constraint(:source)
-    |> unique_constraint([:organization_id, :source_id, :name])
+    |> unique_constraint([:organization_id, :source_id])
   end
 
   defp validate_capabilities(changeset) do
     validate_change(changeset, :capabilities, fn :capabilities, capabilities ->
-      if Enum.all?(capabilities, &(is_binary(&1) and String.trim(&1) != "")) do
-        []
-      else
-        [capabilities: "must contain only non-empty strings"]
+      cond do
+        not Enum.all?(capabilities, &(is_binary(&1) and String.trim(&1) != "")) ->
+          [capabilities: "must contain only non-empty strings"]
+
+        Enum.any?(capabilities, &(String.length(&1) > @max_string_length)) ->
+          [capabilities: "must be at most #{@max_string_length} characters"]
+
+        true ->
+          []
       end
     end)
   end
