@@ -1032,6 +1032,28 @@ defmodule Renga.InventoryTest do
       assert claim.last_seen_at == observation.observed_at
     end
 
+    test "claim timestamps are derived from the immutable observation", %{
+      scope: scope,
+      source: source,
+      observation: observation
+    } do
+      assert {:ok, claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   kind: "serial_number",
+                   value: "ABC123",
+                   first_seen_at: ~U[2020-01-01 00:00:00Z],
+                   last_seen_at: ~U[2099-01-01 00:00:00Z]
+                 }
+               )
+
+      assert claim.first_seen_at == observation.observed_at
+      assert claim.last_seen_at == observation.observed_at
+    end
+
     test "canonical claim links support string-keyed params", %{
       scope: scope,
       resource: resource,
@@ -1703,6 +1725,49 @@ defmodule Renga.InventoryTest do
       assert relationship_evidence.observed_at == context.observation.observed_at
     end
 
+    test "evidence timestamps are derived from the immutable observation", context do
+      supplied_observed_at = ~U[2099-01-01 00:00:00Z]
+
+      assert {:ok, interface_evidence} =
+               Inventory.create_interface_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.physical.id,
+                 %{
+                   name: "ens1f0np0",
+                   kind: "ethernet",
+                   status: "up",
+                   observed_at: supplied_observed_at
+                 }
+               )
+
+      assert {:ok, address_evidence} =
+               Inventory.create_address_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.address.id,
+                 %{
+                   address: "192.0.2.10/24",
+                   observed_at: supplied_observed_at
+                 }
+               )
+
+      assert {:ok, relationship_evidence} =
+               Inventory.create_interface_relationship_evidence(
+                 context.scope,
+                 context.source.id,
+                 context.observation.id,
+                 context.relationship.id,
+                 %{kind: "lag_member", observed_at: supplied_observed_at}
+               )
+
+      assert interface_evidence.observed_at == context.observation.observed_at
+      assert address_evidence.observed_at == context.observation.observed_at
+      assert relationship_evidence.observed_at == context.observation.observed_at
+    end
+
     test "multiple sources can retain conflicting interface evidence", context do
       assert {:ok, host_evidence} =
                Inventory.create_interface_evidence(
@@ -1898,6 +1963,18 @@ defmodule Renga.InventoryTest do
       assert %DateTime{} = sync_run.started_at
     end
 
+    test "create_sync_run/3 accepts string-keyed attributes", %{scope: scope, source: source} do
+      assert {:ok, %SyncRun{} = sync_run} =
+               Inventory.create_sync_run(scope, source.id, %{
+                 "status" => "running",
+                 "metadata" => %{"collector" => "host-agent"}
+               })
+
+      assert sync_run.status == "running"
+      assert sync_run.metadata == %{"collector" => "host-agent"}
+      assert %DateTime{} = sync_run.started_at
+    end
+
     test "list_sync_runs/1 and get_sync_run!/2 are scoped by organization", %{
       scope: scope,
       other_scope: other_scope,
@@ -1970,6 +2047,23 @@ defmodule Renga.InventoryTest do
 
       {:ok, <<uuid_unix_ms::48, _rest::binary>>} = Ecto.UUID.dump(observation.id)
       assert observation.inserted_at == Renga.Time.from_unix_ms!(uuid_unix_ms)
+    end
+
+    test "create_observation/3 accepts string-keyed attributes", %{
+      scope: scope,
+      source: source,
+      sync_run: sync_run
+    } do
+      assert {:ok, %Observation{} = observation} =
+               Inventory.create_observation(scope, source.id, %{
+                 "sync_run_id" => sync_run.id,
+                 "observation_id" => "host-agent:string-keys",
+                 "payload" => %{"hostname" => "compute-01"}
+               })
+
+      assert observation.sync_run_id == sync_run.id
+      assert observation.idempotency_key == "host-agent:string-keys"
+      assert is_binary(observation.payload_digest)
     end
 
     test "an observation cannot use another source's sync run", %{
@@ -2252,6 +2346,51 @@ defmodule Renga.InventoryTest do
       assert change_event.observation_id == observation.id
       assert change_event.field == "status"
       assert %DateTime{} = change_event.occurred_at
+    end
+
+    test "create_change_event/2 accepts string-keyed attributes", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:ok, %ChangeEvent{} = change_event} =
+               Inventory.create_change_event(scope, %{
+                 "resource_id" => resource.id,
+                 "kind" => "discovered"
+               })
+
+      assert change_event.resource_id == resource.id
+      assert change_event.kind == "discovered"
+      assert %DateTime{} = change_event.occurred_at
+    end
+
+    test "create_change_event/2 rejects contradictory observation provenance", %{
+      scope: scope,
+      source: source,
+      sync_run: sync_run
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          sync_run_id: sync_run.id,
+          observation_id: "host-agent:audit-provenance",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      {:ok, other_source} =
+        Inventory.create_source(scope, %{
+          kind: "host_agent",
+          name: "compute-02-agent"
+        })
+
+      {:ok, other_sync_run} = Inventory.create_sync_run(scope, other_source.id)
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_change_event(scope, %{
+          source_id: other_source.id,
+          sync_run_id: other_sync_run.id,
+          observation_id: observation.id,
+          kind: "updated"
+        })
+      end
     end
 
     test "list_change_events/2 is scoped by organization", %{

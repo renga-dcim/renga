@@ -163,6 +163,28 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
              } = json_response(conn, 422)
     end
 
+    test "rejects observation ids longer than the storage limit", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        valid_observation_payload(source, %{"observation_id" => String.duplicate("o", 256)})
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [
+                 %{
+                   "path" => "observation_id",
+                   "message" => "must be at most 255 characters"
+                 }
+               ]
+             } = json_response(conn, 422)
+    end
+
     test "returns duplicate acceptance for retried observation ids", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)
