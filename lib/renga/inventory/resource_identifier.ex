@@ -18,6 +18,7 @@ defmodule Renga.Inventory.ResourceIdentifier do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @kinds ~w(serial_number asset_tag hostname fqdn machine_id dmi_uuid mac_address provider_instance_id bmc_address external_id)
+  @case_insensitive_kinds ~w(hostname fqdn machine_id dmi_uuid bmc_address)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "resource_identifiers" do
@@ -48,22 +49,46 @@ defmodule Renga.Inventory.ResourceIdentifier do
   end
 
   @doc """
-  Produces the comparison form shared by canonical identifiers and claims.
+  Produces the kind-specific comparison form shared by identifiers and claims.
+
+  Network names and hexadecimal machine identifiers are case-insensitive, MAC
+  addresses also have a canonical delimiter form, and opaque provider or
+  vendor values retain their case.
   """
-  def normalize_value(value) when is_binary(value) do
+  def normalize_value("mac_address", value) when is_binary(value) do
+    trimmed_value = String.trim(value)
+
+    compact_value =
+      trimmed_value
+      |> String.downcase()
+      |> String.replace(~r/[:.\-]/, "")
+
+    if Regex.match?(~r/\A[0-9a-f]{12}\z/, compact_value) do
+      compact_value
+      |> String.graphemes()
+      |> Enum.chunk_every(2)
+      |> Enum.map_join(":", &Enum.join/1)
+    else
+      String.downcase(trimmed_value)
+    end
+  end
+
+  def normalize_value(kind, value)
+      when kind in @case_insensitive_kinds and is_binary(value) do
     value
     |> String.trim()
     |> String.downcase()
   end
 
-  def normalize_value(value), do: value
+  def normalize_value(_kind, value) when is_binary(value), do: String.trim(value)
+  def normalize_value(_kind, value), do: value
 
   defp put_normalized_value(changeset) do
-    case get_field(changeset, :value) do
-      value when is_binary(value) ->
-        put_change(changeset, :normalized_value, normalize_value(value))
+    case {get_field(changeset, :kind), get_field(changeset, :value)} do
+      {kind, value} when is_binary(kind) and is_binary(value) ->
+        put_change(changeset, :normalized_value, normalize_value(kind, value))
 
-      _value ->
+      _kind_and_value ->
         changeset
     end
   end

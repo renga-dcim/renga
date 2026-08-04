@@ -69,11 +69,15 @@ defmodule Renga.Inventory.ResourceIdentifierClaim do
   end
 
   defp put_normalized_value(changeset) do
-    case get_field(changeset, :value) do
-      value when is_binary(value) ->
-        put_change(changeset, :normalized_value, ResourceIdentifier.normalize_value(value))
+    case {get_field(changeset, :kind), get_field(changeset, :value)} do
+      {kind, value} when is_binary(kind) and is_binary(value) ->
+        put_change(
+          changeset,
+          :normalized_value,
+          ResourceIdentifier.normalize_value(kind, value)
+        )
 
-      _value ->
+      _kind_and_value ->
         changeset
     end
   end

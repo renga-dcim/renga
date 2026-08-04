@@ -739,6 +739,61 @@ defmodule Renga.InventoryTest do
       assert identifier.normalized_value == "9f3c"
     end
 
+    test "MAC address normalization canonicalizes case and delimiters", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      observation: observation
+    } do
+      assert {:ok, identifier} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "mac_address",
+                 value: "AA-BB-CC-DD-EE-FF"
+               })
+
+      assert identifier.normalized_value == "aa:bb:cc:dd:ee:ff"
+
+      assert {:ok, claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   resource_id: resource.id,
+                   resource_identifier_id: identifier.id,
+                   kind: "mac_address",
+                   value: "aa:bb:cc:dd:ee:ff"
+                 }
+               )
+
+      assert claim.normalized_value == identifier.normalized_value
+
+      assert {:error, changeset} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "mac_address",
+                 value: "aa:bb:cc:dd:ee:ff"
+               })
+
+      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "opaque provider identifiers preserve case", %{scope: scope, resource: resource} do
+      assert {:ok, upper_identifier} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "provider_instance_id",
+                 value: "instance-ABC123"
+               })
+
+      assert {:ok, lower_identifier} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "provider_instance_id",
+                 value: "instance-abc123"
+               })
+
+      assert upper_identifier.normalized_value == "instance-ABC123"
+      assert lower_identifier.normalized_value == "instance-abc123"
+    end
+
     test "list_resource_identifiers/2 is scoped by organization", %{
       scope: scope,
       other_scope: other_scope,
@@ -822,9 +877,9 @@ defmodule Renga.InventoryTest do
                  }
                )
 
-      assert agent_claim.normalized_value == "abc123"
+      assert agent_claim.normalized_value == "ABC123"
       assert agent_claim.resource_identifier_id == identifier.id
-      assert rack_claim.normalized_value == "conflicting-serial"
+      assert rack_claim.normalized_value == "CONFLICTING-SERIAL"
 
       assert Inventory.list_resource_identifier_claims(scope, resource.id) == [
                agent_claim,
