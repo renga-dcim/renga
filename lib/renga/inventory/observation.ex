@@ -52,6 +52,7 @@ defmodule Renga.Inventory.Observation do
       :payload_digest,
       :payload
     ])
+    |> validate_length(:idempotency_key, max: 255)
     |> assoc_constraint(:organization)
     |> assoc_constraint(:source)
     |> assoc_constraint(:sync_run)

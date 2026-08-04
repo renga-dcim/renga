@@ -12,6 +12,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   @max_observation_bytes 256_000
   @max_agent_string_length 255
+  @max_observation_id_length 255
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
@@ -187,9 +188,29 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_observation_id(errors, params) do
     case Map.get(params, "observation_id") do
-      nil -> [error("observation_id", "is required") | errors]
-      value when is_binary(value) -> validate_non_blank(errors, "observation_id", value)
-      _invalid -> [error("observation_id", "must be a string") | errors]
+      nil ->
+        [error("observation_id", "is required") | errors]
+
+      value when is_binary(value) ->
+        cond do
+          String.trim(value) == "" ->
+            [error("observation_id", "can't be blank") | errors]
+
+          String.length(value) > @max_observation_id_length ->
+            [
+              error(
+                "observation_id",
+                "must be at most #{@max_observation_id_length} characters"
+              )
+              | errors
+            ]
+
+          true ->
+            errors
+        end
+
+      _invalid ->
+        [error("observation_id", "must be a string") | errors]
     end
   end
 

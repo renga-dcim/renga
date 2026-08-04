@@ -2386,6 +2386,14 @@ defmodule Renga.InventoryTest do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_change_event(scope, %{
           source_id: other_source.id,
+          observation_id: observation.id,
+          kind: "updated"
+        })
+      end
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_change_event(scope, %{
+          source_id: source.id,
           sync_run_id: other_sync_run.id,
           observation_id: observation.id,
           kind: "updated"

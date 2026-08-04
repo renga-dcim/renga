@@ -445,8 +445,8 @@ defmodule Renga.Inventory do
 
     attrs =
       attrs
-      |> put_new_attr(:first_seen_at, observation.observed_at)
-      |> put_new_attr(:last_seen_at, observation.observed_at)
+      |> put_attr(:first_seen_at, observation.observed_at)
+      |> put_attr(:last_seen_at, observation.observed_at)
 
     resource =
       case get_attr(attrs, :resource_id) do
@@ -604,7 +604,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     interface = get_interface!(scope, interface_id)
-    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
 
     %InterfaceEvidence{
       organization_id: organization_id,
@@ -628,7 +628,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     address = get_address!(scope, address_id)
-    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
 
     %AddressEvidence{
       organization_id: organization_id,
@@ -652,7 +652,7 @@ defmodule Renga.Inventory do
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     relationship = get_interface_relationship!(scope, relationship_id)
-    attrs = put_new_attr(attrs, :observed_at, observation.observed_at)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
 
     %InterfaceRelationshipEvidence{
       organization_id: organization_id,
@@ -747,7 +747,7 @@ defmodule Renga.Inventory do
 
     attrs =
       attrs
-      |> Map.put_new(:started_at, Renga.Time.utc_now_ms())
+      |> put_new_attr(:started_at, Renga.Time.utc_now_ms())
 
     %SyncRun{
       organization_id: organization_id,
@@ -1159,9 +1159,9 @@ defmodule Renga.Inventory do
         Map.get(attrs, "observation_id")
 
     attrs
-    |> Map.put(:idempotency_key, idempotency_key)
-    |> Map.put_new(:observed_at, Renga.Time.utc_now_ms())
-    |> Map.put_new(:payload_digest, digest_payload(payload))
+    |> put_attr(:idempotency_key, idempotency_key)
+    |> put_new_attr(:observed_at, Renga.Time.utc_now_ms())
+    |> put_new_attr(:payload_digest, digest_payload(payload))
     |> normalize_scoped_assoc(
       scope,
       :sync_run_id,
@@ -1207,11 +1207,49 @@ defmodule Renga.Inventory do
 
   defp normalize_change_event_attrs(scope, attrs) do
     attrs
-    |> Map.put_new(:occurred_at, Renga.Time.utc_now_ms())
-    |> normalize_scoped_assoc(scope, :source_id, &get_source!/2)
+    |> put_new_attr(:occurred_at, Renga.Time.utc_now_ms())
     |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
-    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
-    |> normalize_scoped_assoc(scope, :observation_id, &get_observation!/2)
+    |> normalize_change_event_provenance(scope)
+  end
+
+  defp normalize_change_event_provenance(attrs, scope) do
+    case get_attr(attrs, :observation_id) do
+      nil -> normalize_change_event_without_observation(attrs, scope)
+      observation_id -> normalize_change_event_with_observation(attrs, scope, observation_id)
+    end
+  end
+
+  defp normalize_change_event_with_observation(attrs, scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    source_id = get_attr(attrs, :source_id) || observation.source_id
+    sync_run_id = get_attr(attrs, :sync_run_id) || observation.sync_run_id
+
+    get_source_observation!(scope, source_id, observation.id)
+
+    if sync_run_id do
+      get_observation_sync_run!(scope, observation.id, sync_run_id)
+    end
+
+    attrs
+    |> put_attr(:observation_id, observation.id)
+    |> put_attr(:source_id, source_id)
+    |> put_attr(:sync_run_id, sync_run_id)
+  end
+
+  defp normalize_change_event_without_observation(attrs, scope) do
+    case get_attr(attrs, :sync_run_id) do
+      nil ->
+        normalize_scoped_assoc(attrs, scope, :source_id, &get_source!/2)
+
+      sync_run_id ->
+        sync_run = get_sync_run!(scope, sync_run_id)
+        source_id = get_attr(attrs, :source_id) || sync_run.source_id
+        get_source_sync_run!(scope, source_id, sync_run.id)
+
+        attrs
+        |> put_attr(:source_id, source_id)
+        |> put_attr(:sync_run_id, sync_run.id)
+    end
   end
 
   defp normalize_scoped_assoc(attrs, scope, field, fetch_fun) do
@@ -1228,7 +1266,7 @@ defmodule Renga.Inventory do
   defp put_attr(attrs, key, value) do
     string_key = Atom.to_string(key)
 
-    if Map.has_key?(attrs, string_key) do
+    if Map.has_key?(attrs, string_key) or Enum.all?(Map.keys(attrs), &is_binary/1) do
       Map.put(attrs, string_key, value)
     else
       Map.put(attrs, key, value)
@@ -1297,6 +1335,17 @@ defmodule Renga.Inventory do
     |> where([sync_run], sync_run.organization_id == ^organization_id)
     |> where([sync_run], sync_run.source_id == ^source_id)
     |> Repo.get!(sync_run_id)
+  end
+
+  defp get_observation_sync_run!(
+         %Scope{organization_id: organization_id},
+         observation_id,
+         sync_run_id
+       ) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.sync_run_id == ^sync_run_id)
+    |> Repo.get!(observation_id)
   end
 
   defp source_observation!(scope, source_id, observation_id) do
