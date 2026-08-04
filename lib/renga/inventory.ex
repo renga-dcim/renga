@@ -36,6 +36,7 @@ defmodule Renga.Inventory do
 
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
+  @resource_revision_lock_key 1_380_271_687
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -909,6 +910,9 @@ defmodule Renga.Inventory do
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
 
   defp next_resource_revision! do
+    # Hold allocation order until commit so a watch cursor cannot pass an
+    # earlier revision that is still invisible in another transaction.
+    Repo.query!("SELECT pg_advisory_xact_lock($1)", [@resource_revision_lock_key])
     %{rows: [[revision]]} = Repo.query!("SELECT nextval('resource_revision_sequence')")
     revision
   end

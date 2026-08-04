@@ -37,6 +37,58 @@ defmodule Renga.InventoryResourceConcurrencyTest do
     end)
   end
 
+  test "revision allocation is serialized until the allocating transaction commits" do
+    with_resources(fn scope, first, second ->
+      test_process = self()
+
+      first_task =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              result =
+                Inventory.update_resource(scope, first, %{display_name: "First updated"})
+
+              send(test_process, :first_revision_allocated)
+
+              receive do
+                :commit_first_revision -> result
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :first_revision_allocated, 1_000
+
+      second_task =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.update_resource(scope, second, %{display_name: "Second updated"})
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      second_result =
+        try do
+          Task.yield(second_task, 200)
+        after
+          send(first_task.pid, :commit_first_revision)
+        end
+
+      assert {:ok, {:ok, first_updated}} = Task.await(first_task)
+
+      assert second_result == nil
+      assert {:ok, second_updated} = Task.await(second_task)
+      assert first_updated.resource_version < second_updated.resource_version
+    end)
+  end
+
   defp with_resource(fun) do
     :ok = Sandbox.checkout(Repo, sandbox: false)
 
@@ -61,5 +113,18 @@ defmodule Renga.InventoryResourceConcurrencyTest do
       Repo.delete!(organization)
       Sandbox.checkin(Repo)
     end
+  end
+
+  defp with_resources(fun) do
+    with_resource(fn scope, first ->
+      {:ok, second} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "second-concurrent-resource",
+          spec: %{}
+        })
+
+      fun.(scope, first, second)
+    end)
   end
 end
