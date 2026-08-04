@@ -16,7 +16,7 @@ defmodule Renga.InventoryResourceConcurrencyTest do
             :ok = Sandbox.checkout(Repo, sandbox: false)
 
             try do
-              Inventory.update_resource(resource, %{
+              Inventory.update_resource(scope, resource, %{
                 spec: %{"concurrent_update" => update}
               })
             after

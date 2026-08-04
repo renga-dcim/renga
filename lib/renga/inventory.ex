@@ -253,13 +253,18 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Updates canonical resource fields without changing its tenant.
+  Updates canonical resource fields within the caller's organization scope.
   """
-  def update_resource(%Resource{} = resource, attrs) do
+  def update_resource(
+        %Scope{organization_id: organization_id},
+        %Resource{} = resource,
+        attrs
+      ) do
     Repo.transaction(fn ->
       stored_resource =
         Resource
         |> where([stored], stored.id == ^resource.id)
+        |> where([stored], stored.organization_id == ^organization_id)
         |> lock("FOR UPDATE")
         |> Repo.one!()
 

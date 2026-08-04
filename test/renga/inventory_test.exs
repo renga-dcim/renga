@@ -441,12 +441,30 @@ defmodule Renga.InventoryTest do
       assert resource.organization_id == scope.organization_id
     end
 
+    test "update_resource/3 rejects a resource outside the caller's organization", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      forged_resource = %Resource{id: resource.id}
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.update_resource(other_scope, forged_resource, %{display_name: "Compromised"})
+      end
+
+      assert Inventory.get_resource!(scope, resource.id).display_name == nil
+    end
+
     test "desired spec changes advance generation and the ordered revision", %{scope: scope} do
       {:ok, resource} =
         Inventory.create_resource(scope, %{kind: "server", name: "compute-01", spec: %{}})
 
       assert {:ok, updated} =
-               Inventory.update_resource(resource, %{spec: %{"power" => %{"policy" => "off"}}})
+               Inventory.update_resource(scope, resource, %{
+                 spec: %{"power" => %{"policy" => "off"}}
+               })
 
       assert updated.generation == resource.generation + 1
       assert updated.resource_version > resource.resource_version
@@ -464,7 +482,7 @@ defmodule Renga.InventoryTest do
         })
 
       assert {:ok, updated} =
-               Inventory.update_resource(resource, %{
+               Inventory.update_resource(scope, resource, %{
                  display_name: "Compute 01",
                  labels: %{"site" => "iad"},
                  annotations: %{"owner" => "platform"}
@@ -485,7 +503,7 @@ defmodule Renga.InventoryTest do
       {:ok, resource} =
         Inventory.create_resource(scope, %{kind: "server", name: "compute-01", spec: spec})
 
-      assert {:ok, updated} = Inventory.update_resource(resource, %{spec: spec})
+      assert {:ok, updated} = Inventory.update_resource(scope, resource, %{spec: spec})
       assert updated.generation == resource.generation
       assert updated.resource_version > resource.resource_version
     end
@@ -498,7 +516,9 @@ defmodule Renga.InventoryTest do
       assert second.resource_version > first.resource_version
 
       assert {:ok, deleting} =
-               Inventory.update_resource(first, %{deletion_requested_at: deletion_requested_at})
+               Inventory.update_resource(scope, first, %{
+                 deletion_requested_at: deletion_requested_at
+               })
 
       assert deleting.resource_version > second.resource_version
 
@@ -514,11 +534,12 @@ defmodule Renga.InventoryTest do
         Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
 
       assert {:ok, deleting} =
-               Inventory.update_resource(resource, %{
+               Inventory.update_resource(scope, resource, %{
                  deletion_requested_at: ~U[2026-08-03 12:00:00.000000Z]
                })
 
-      assert {:ok, _updated} = Inventory.update_resource(deleting, %{labels: %{"site" => "iad"}})
+      assert {:ok, _updated} =
+               Inventory.update_resource(scope, deleting, %{labels: %{"site" => "iad"}})
 
       assert [%{action: "created"}, %{action: "deletion_requested"}, %{action: "updated"}] =
                Inventory.list_resource_revisions(scope, resource.id)
