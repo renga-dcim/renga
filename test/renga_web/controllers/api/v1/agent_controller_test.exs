@@ -106,6 +106,25 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       end
     end
 
+    test "returns validation errors when agent registration fails", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      assert {:ok, _source} =
+               source
+               |> Ecto.Changeset.change(name: "   ")
+               |> Renga.Repo.update()
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "agent.name", "message" => "can't be blank"}]
+             } = json_response(conn, 422)
+    end
+
     test "rejects payloads that claim a different source", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 

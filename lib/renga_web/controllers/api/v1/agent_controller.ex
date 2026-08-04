@@ -29,6 +29,11 @@ defmodule RengaWeb.Api.V1.AgentController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{status: "rejected", errors: errors})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{status: "rejected", errors: changeset_errors(changeset, "agent")})
     end
   end
 
@@ -36,5 +41,17 @@ defmodule RengaWeb.Api.V1.AgentController do
     conn
     |> put_status(:forbidden)
     |> json(%{errors: [%{path: "source.kind", message: "must be host_agent"}]})
+  end
+
+  defp changeset_errors(changeset, prefix) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, opts} ->
+      Enum.reduce(opts, message, fn {key, value}, rendered ->
+        String.replace(rendered, "%{#{key}}", to_string(value))
+      end)
+    end)
+    |> Enum.flat_map(fn {field, messages} ->
+      Enum.map(messages, &%{path: "#{prefix}.#{field}", message: &1})
+    end)
   end
 end
