@@ -361,6 +361,21 @@ defmodule Renga.InventoryTest do
       assert unchanged_agent.metadata == updated_agent.metadata
     end
 
+    test "renaming a source preserves its agent registration", %{scope: scope, source: source} do
+      assert {:ok, {original_agent, original_lease}} =
+               Inventory.record_agent_check_in(scope, source.id)
+
+      assert {:ok, renamed_source} =
+               Inventory.update_source(source, %{name: "renamed-host-agent"})
+
+      assert {:ok, {renamed_agent, renewed_lease}} =
+               Inventory.record_agent_check_in(scope, renamed_source.id)
+
+      assert renamed_agent.id == original_agent.id
+      assert renamed_agent.name == renamed_source.name
+      assert renewed_lease.id == original_lease.id
+    end
+
     test "agent capabilities are validated on registration", %{scope: scope, source: source} do
       assert {:error, changeset} =
                Inventory.record_agent_check_in(scope, source.id, %{
@@ -1955,6 +1970,27 @@ defmodule Renga.InventoryTest do
 
       {:ok, <<uuid_unix_ms::48, _rest::binary>>} = Ecto.UUID.dump(observation.id)
       assert observation.inserted_at == Renga.Time.from_unix_ms!(uuid_unix_ms)
+    end
+
+    test "an observation cannot use another source's sync run", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, other_source} =
+        Inventory.create_source(scope, %{
+          kind: "host_agent",
+          name: "compute-02-agent"
+        })
+
+      {:ok, other_sync_run} = Inventory.create_sync_run(scope, other_source.id)
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.create_observation(scope, source.id, %{
+          sync_run_id: other_sync_run.id,
+          observation_id: "host-agent:compute-01:wrong-run",
+          payload: %{"hostname" => "compute-01"}
+        })
+      end
     end
 
     test "list_observations/1 is scoped by organization", %{

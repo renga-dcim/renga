@@ -89,6 +89,63 @@ defmodule Renga.InventoryResourceConcurrencyTest do
     end)
   end
 
+  test "concurrent initial condition puts both succeed" do
+    with_resource(fn scope, resource ->
+      test_process = self()
+
+      first_task =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              result =
+                Inventory.put_resource_condition(scope, resource.id, %{
+                  type: "Ready",
+                  status: "true"
+                })
+
+              send(test_process, :first_condition_inserted)
+
+              receive do
+                :commit_first_condition -> result
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :first_condition_inserted, 1_000
+
+      second_task =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.put_resource_condition(scope, resource.id, %{
+              type: "Ready",
+              status: "true"
+            })
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      second_result =
+        try do
+          Task.yield(second_task, 200)
+        after
+          send(first_task.pid, :commit_first_condition)
+        end
+
+      assert {:ok, {:ok, first_condition}} = Task.await(first_task)
+      assert second_result == nil
+      assert {:ok, second_condition} = Task.await(second_task)
+      assert second_condition.id == first_condition.id
+    end)
+  end
+
   defp with_resource(fun) do
     :ok = Sandbox.checkout(Repo, sandbox: false)
 

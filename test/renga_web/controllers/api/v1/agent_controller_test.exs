@@ -106,6 +106,45 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       end
     end
 
+    test "rejects agent versions longer than the storage limit", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{
+          "metadata" => %{"agent_version" => String.duplicate("v", 256)}
+        })
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [
+                 %{
+                   "path" => "metadata.agent_version",
+                   "message" => "must be at most 255 characters"
+                 }
+               ]
+             } = json_response(conn, 422)
+    end
+
+    test "rejects capabilities longer than the storage limit", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{
+          "capabilities" => [String.duplicate("c", 256)]
+        })
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [
+                 %{"path" => "capabilities", "message" => "must be at most 255 characters"}
+               ]
+             } = json_response(conn, 422)
+    end
+
     test "returns validation errors when agent registration fails", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
