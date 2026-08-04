@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict euZZRPQoEO68tVH6oTzJrrEhbSc2sRzupqePUBS4AiiYtn3JIr70OXWfc7FM2qg
+\restrict DxbYUBOvL8VdWBctAiYoy835lPpg5GX6d1RcjqgryES041qeOpyqTRyUosF8kwv
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -41,6 +41,20 @@ CREATE FUNCTION public.reject_observation_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  IF NEW.sync_run_id IS NULL
+     AND OLD.sync_run_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM sync_runs WHERE id = OLD.sync_run_id)
+     AND NEW.id IS NOT DISTINCT FROM OLD.id
+     AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
+     AND NEW.source_id IS NOT DISTINCT FROM OLD.source_id
+     AND NEW.idempotency_key IS NOT DISTINCT FROM OLD.idempotency_key
+     AND NEW.observed_at IS NOT DISTINCT FROM OLD.observed_at
+     AND NEW.payload_digest IS NOT DISTINCT FROM OLD.payload_digest
+     AND NEW.payload IS NOT DISTINCT FROM OLD.payload
+     AND NEW.inserted_at IS NOT DISTINCT FROM OLD.inserted_at THEN
+    RETURN NEW;
+  END IF;
+
   RAISE EXCEPTION 'observations are immutable'
     USING ERRCODE = 'integrity_constraint_violation';
 END;
@@ -1870,7 +1884,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict euZZRPQoEO68tVH6oTzJrrEhbSc2sRzupqePUBS4AiiYtn3JIr70OXWfc7FM2qg
+\unrestrict DxbYUBOvL8VdWBctAiYoy835lPpg5GX6d1RcjqgryES041qeOpyqTRyUosF8kwv
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
