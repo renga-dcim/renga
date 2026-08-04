@@ -1054,13 +1054,22 @@ defmodule Renga.Inventory do
       from(lease in AgentLease,
         update: [
           set: [
-            renewed_at: fragment("GREATEST(?, EXCLUDED.renewed_at)", lease.renewed_at),
-            expires_at: fragment("GREATEST(?, EXCLUDED.expires_at)", lease.expires_at),
+            renewed_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.renewed_at ELSE ? END",
+                lease.renewed_at,
+                lease.renewed_at
+              ),
+            expires_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.expires_at ELSE ? END",
+                lease.renewed_at,
+                lease.expires_at
+              ),
             updated_at:
               fragment(
-                "CASE WHEN EXCLUDED.renewed_at > ? OR EXCLUDED.expires_at > ? THEN EXCLUDED.updated_at ELSE ? END",
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.updated_at ELSE ? END",
                 lease.renewed_at,
-                lease.expires_at,
                 lease.updated_at
               )
           ]

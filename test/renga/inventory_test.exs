@@ -303,6 +303,32 @@ defmodule Renga.InventoryTest do
       assert stored.expires_at == current.expires_at
     end
 
+    test "an older renewal with a larger TTL cannot extend the current lease", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, {agent, _original}} = Inventory.record_agent_check_in(scope, source.id)
+
+      assert {:ok, current} =
+               Inventory.renew_agent_lease(scope, agent.id, %{
+                 renewed_at: ~U[2030-08-01 12:00:00.000000Z],
+                 ttl_ms: 90_000
+               })
+
+      assert {:ok, replayed} =
+               Inventory.renew_agent_lease(scope, agent.id, %{
+                 renewed_at: ~U[2030-08-01 11:59:00.000000Z],
+                 ttl_ms: 180_000
+               })
+
+      assert replayed.renewed_at == current.renewed_at
+      assert replayed.expires_at == current.expires_at
+
+      stored = Inventory.get_agent_lease!(scope, agent.id)
+      assert stored.renewed_at == current.renewed_at
+      assert stored.expires_at == current.expires_at
+    end
+
     test "repeated check-ins reuse registration and lease while merging metadata", %{
       scope: scope,
       source: source
