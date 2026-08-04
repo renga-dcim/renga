@@ -132,8 +132,16 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_metadata(errors, params) do
     case Map.get(params, "metadata") do
       nil -> errors
-      metadata when is_map(metadata) -> errors
+      metadata when is_map(metadata) -> validate_agent_version(errors, metadata)
       _invalid -> [error("metadata", "must be an object") | errors]
+    end
+  end
+
+  defp validate_agent_version(errors, metadata) do
+    case Map.get(metadata, "agent_version") do
+      nil -> errors
+      version when is_binary(version) -> errors
+      _invalid -> [error("metadata.agent_version", "must be a string") | errors]
     end
   end
 

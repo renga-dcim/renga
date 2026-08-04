@@ -86,6 +86,26 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       assert %{"status" => "accepted"} = json_response(conn, 202)
     end
 
+    test "rejects non-string agent versions without crashing", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      for invalid_version <- [%{"major" => 1}, ["0.1.0"]] do
+        conn =
+          conn
+          |> authorize(token)
+          |> post(~p"/api/v1/agent/checkins", %{
+            "metadata" => %{"agent_version" => invalid_version}
+          })
+
+        assert %{
+                 "status" => "rejected",
+                 "errors" => [
+                   %{"path" => "metadata.agent_version", "message" => "must be a string"}
+                 ]
+               } = json_response(conn, 422)
+      end
+    end
+
     test "rejects payloads that claim a different source", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
