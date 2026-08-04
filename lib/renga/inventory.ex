@@ -959,7 +959,8 @@ defmodule Renga.Inventory do
       "generation" => resource.generation,
       "resource_version" => resource.resource_version,
       "labels" => resource.labels,
-      "annotations" => resource.annotations
+      "annotations" => resource.annotations,
+      "deletion_requested_at" => resource.deletion_requested_at
     }
   end
 

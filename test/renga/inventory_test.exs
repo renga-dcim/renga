@@ -553,6 +553,36 @@ defmodule Renga.InventoryTest do
 
       assert deletion_revision.action == "deletion_requested"
       assert deletion_revision.revision == deleting.resource_version
+
+      assert deletion_revision.snapshot["deletion_requested_at"] ==
+               DateTime.to_iso8601(deletion_requested_at)
+    end
+
+    test "clearing a deletion request is explicit in the revision snapshot", %{scope: scope} do
+      deletion_requested_at = ~U[2026-08-03 12:00:00.000000Z]
+
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      assert {:ok, deleting} =
+               Inventory.update_resource(scope, resource, %{
+                 deletion_requested_at: deletion_requested_at
+               })
+
+      assert {:ok, restored} =
+               Inventory.update_resource(scope, deleting, %{deletion_requested_at: nil})
+
+      assert [created, deletion_requested, deletion_cleared] =
+               Inventory.list_resource_revisions(scope, resource.id)
+
+      assert created.snapshot["deletion_requested_at"] == nil
+
+      assert deletion_requested.snapshot["deletion_requested_at"] ==
+               DateTime.to_iso8601(deletion_requested_at)
+
+      assert deletion_cleared.action == "updated"
+      assert Map.fetch!(deletion_cleared.snapshot, "deletion_requested_at") == nil
+      assert deletion_cleared.revision == restored.resource_version
     end
 
     test "updates after a deletion request remain classified as updates", %{scope: scope} do
