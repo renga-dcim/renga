@@ -434,18 +434,35 @@ defmodule Renga.Inventory do
       attrs
       |> put_new_attr(:first_seen_at, observation.observed_at)
       |> put_new_attr(:last_seen_at, observation.observed_at)
-      |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
-      |> normalize_scoped_assoc(scope, :resource_identifier_id, &get_resource_identifier!/2)
+
+    resource =
+      case get_attr(attrs, :resource_id) do
+        nil -> nil
+        id -> get_resource!(scope, id)
+      end
+
+    resource_identifier =
+      case get_attr(attrs, :resource_identifier_id) do
+        nil -> nil
+        id -> get_resource_identifier!(scope, id)
+      end
+
+    resource_id =
+      case {resource, resource_identifier} do
+        {%Resource{id: id}, _resource_identifier} -> id
+        {nil, %ResourceIdentifier{resource_id: id}} -> id
+        {nil, nil} -> nil
+      end
 
     %ResourceIdentifierClaim{
       organization_id: organization_id,
       source_id: source.id,
       observation_id: observation.id,
-      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id"),
-      resource_identifier_id:
-        Map.get(attrs, :resource_identifier_id) || Map.get(attrs, "resource_identifier_id")
+      resource_id: resource_id,
+      resource_identifier_id: resource_identifier && resource_identifier.id
     }
     |> ResourceIdentifierClaim.changeset(attrs)
+    |> validate_claim_resource_link(resource, resource_identifier)
     |> Repo.insert()
   end
 
@@ -1176,9 +1193,30 @@ defmodule Renga.Inventory do
       attrs
     else
       record = fetch_fun.(scope, value)
-      Map.put(attrs, field, record.id)
+      put_attr(attrs, field, record.id)
     end
   end
+
+  defp put_attr(attrs, key, value) do
+    string_key = Atom.to_string(key)
+
+    if Map.has_key?(attrs, string_key) do
+      Map.put(attrs, string_key, value)
+    else
+      Map.put(attrs, key, value)
+    end
+  end
+
+  defp validate_claim_resource_link(
+         changeset,
+         %Resource{id: resource_id},
+         %ResourceIdentifier{resource_id: identifier_resource_id}
+       )
+       when resource_id != identifier_resource_id do
+    Ecto.Changeset.add_error(changeset, :resource_id, "must match resource identifier")
+  end
+
+  defp validate_claim_resource_link(changeset, _resource, _resource_identifier), do: changeset
 
   defp get_observation!(%Scope{organization_id: organization_id}, id) do
     Observation

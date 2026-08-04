@@ -934,6 +934,81 @@ defmodule Renga.InventoryTest do
       assert claim.first_seen_at == observation.observed_at
       assert claim.last_seen_at == observation.observed_at
     end
+
+    test "canonical claim links support string-keyed params", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      observation: observation
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "serial_number",
+          value: "ABC123"
+        })
+
+      assert {:ok, claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   "resource_id" => resource.id,
+                   "resource_identifier_id" => identifier.id,
+                   "kind" => "serial_number",
+                   "value" => "ABC123"
+                 }
+               )
+
+      assert claim.resource_id == resource.id
+      assert claim.resource_identifier_id == identifier.id
+    end
+
+    test "a canonical identifier derives and constrains the claim resource", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      observation: observation
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "serial_number",
+          value: "ABC123"
+        })
+
+      assert {:ok, claim} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   resource_identifier_id: identifier.id,
+                   kind: "serial_number",
+                   value: "ABC123"
+                 }
+               )
+
+      assert claim.resource_id == resource.id
+      assert Inventory.list_resource_identifier_claims(scope, resource.id) == [claim]
+
+      {:ok, other_resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-02"})
+
+      assert {:error, changeset} =
+               Inventory.create_resource_identifier_claim(
+                 scope,
+                 source.id,
+                 observation.id,
+                 %{
+                   resource_id: other_resource.id,
+                   resource_identifier_id: identifier.id,
+                   kind: "hostname",
+                   value: "compute-02"
+                 }
+               )
+
+      assert %{resource_id: ["must match resource identifier"]} = errors_on(changeset)
+    end
   end
 
   describe "interfaces" do
@@ -1900,6 +1975,28 @@ defmodule Renga.InventoryTest do
 
       assert result.matched_resource_id == resource.id
       assert Inventory.list_observation_reconciliations(scope, observation.id) == [result]
+    end
+
+    test "reconciliation resource links support string-keyed params", %{
+      scope: scope,
+      resource: resource,
+      source: source
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:compute-01",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert {:ok, result} =
+               Inventory.create_observation_reconciliation(scope, observation.id, %{
+                 "attempt" => 1,
+                 "status" => "succeeded",
+                 "matched_resource_id" => resource.id,
+                 "completed_at" => Renga.Time.utc_now_ms()
+               })
+
+      assert result.matched_resource_id == resource.id
     end
 
     test "reconciliation retries preserve every attempt and leave raw evidence unchanged", %{
