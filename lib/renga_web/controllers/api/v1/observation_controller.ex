@@ -1,4 +1,4 @@
-defmodule RengaWeb.Api.ObservationController do
+defmodule RengaWeb.Api.V1.ObservationController do
   use RengaWeb, :controller
 
   alias Renga.Inventory

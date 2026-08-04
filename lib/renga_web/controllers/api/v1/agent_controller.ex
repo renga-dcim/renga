@@ -1,4 +1,4 @@
-defmodule RengaWeb.Api.AgentController do
+defmodule RengaWeb.Api.V1.AgentController do
   use RengaWeb, :controller
 
   alias Renga.Inventory

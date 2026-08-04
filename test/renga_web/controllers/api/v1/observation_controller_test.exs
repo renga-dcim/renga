@@ -1,4 +1,4 @@
-defmodule RengaWeb.Api.ObservationControllerTest do
+defmodule RengaWeb.Api.V1.ObservationControllerTest do
   use RengaWeb.ConnCase, async: true
 
   import Ecto.Query, only: [from: 2]

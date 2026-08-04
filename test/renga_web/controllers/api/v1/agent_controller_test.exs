@@ -1,4 +1,4 @@
-defmodule RengaWeb.Api.AgentControllerTest do
+defmodule RengaWeb.Api.V1.AgentControllerTest do
   use RengaWeb.ConnCase, async: true
 
   alias Renga.Accounts
