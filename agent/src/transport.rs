@@ -6,7 +6,8 @@ use crate::{
 };
 use reqwest::{
     blocking::{Client, Response},
-    StatusCode,
+    header::{HeaderValue, AUTHORIZATION},
+    StatusCode, Url,
 };
 use serde::Serialize;
 use std::{fmt, thread, time::Duration};
@@ -34,37 +35,67 @@ impl std::error::Error for TransportError {}
 
 pub struct HttpClient {
     client: Client,
-    base_url: String,
-    token: String,
+    checkin_url: Url,
+    observation_url: Url,
+    authorization: HeaderValue,
     attempts: u32,
 }
 impl HttpClient {
     pub fn new(config: &Config) -> Result<Self, TransportError> {
+        let has_explicit_authority = config
+            .renga_url
+            .split_once("://")
+            .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
+        let base_url = Url::parse(&config.renga_url)
+            .map_err(|_| TransportError::new("invalid Renga server URL".into(), false))?;
+        // The agent API is rooted at the origin. Rejecting base paths avoids silently
+        // discarding an operator-supplied path when joining absolute API routes.
+        if !has_explicit_authority
+            || !matches!(base_url.scheme(), "http" | "https")
+            || base_url.host_str().is_none()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+            || base_url.path() != "/"
+        {
+            return Err(TransportError::new(
+                "Renga server URL must be an HTTP(S) origin without credentials, path, query, or fragment"
+                    .into(),
+                false,
+            ));
+        }
+        let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
+        let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.token))
+            .map_err(|_| TransportError::new("invalid bearer token".into(), false))?;
+        authorization.set_sensitive(true);
         let client = Client::builder()
             .timeout(config.request_timeout)
             .build()
             .map_err(|e| TransportError::new(format!("cannot build HTTP client: {e}"), false))?;
         Ok(Self {
             client,
-            base_url: config.renga_url.clone(),
-            token: config.token.clone(),
+            checkin_url,
+            observation_url,
+            authorization,
             attempts: config.max_retry_attempts,
         })
     }
     pub fn post_checkin(&self, value: &CheckIn) -> Result<(), TransportError> {
-        self.post(CHECKIN_PATH, value)
+        self.post(self.checkin_url.clone(), value)
     }
     pub fn post_observation(&self, value: &Observation) -> Result<(), TransportError> {
-        self.post(OBSERVATION_PATH, value)
+        self.post(self.observation_url.clone(), value)
     }
-    fn post<T: Serialize>(&self, path: &str, value: &T) -> Result<(), TransportError> {
+    fn post<T: Serialize>(&self, url: Url, value: &T) -> Result<(), TransportError> {
         retry(
             self.attempts,
             || {
                 let response = self
                     .client
-                    .post(format!("{}{path}", self.base_url))
-                    .bearer_auth(&self.token)
+                    .post(url.clone())
+                    .header(AUTHORIZATION, self.authorization.clone())
                     .json(value)
                     .send()
                     .map_err(|e| {
@@ -78,6 +109,12 @@ impl HttpClient {
             thread::sleep,
         )
     }
+}
+
+fn endpoint_url(base_url: &Url, path: &str) -> Result<Url, TransportError> {
+    base_url
+        .join(path)
+        .map_err(|_| TransportError::new("cannot construct Renga API endpoint URL".into(), false))
 }
 
 fn response_result(response: Response) -> Result<(), TransportError> {
@@ -122,6 +159,21 @@ fn retry<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn config(renga_url: &str, token: &str) -> Config {
+        Config {
+            config_path: PathBuf::from("agent.toml"),
+            renga_url: renga_url.into(),
+            token: token.into(),
+            installation_id: uuid::Uuid::nil(),
+            inventory_interval: Duration::from_secs(300),
+            checkin_interval: Duration::from_secs(60),
+            config_refresh_interval: Duration::from_secs(300),
+            request_timeout: Duration::from_secs(30),
+            max_retry_attempts: 1,
+        }
+    }
 
     fn error(transient: bool) -> TransportError {
         TransportError::new("failure".into(), transient)
@@ -131,6 +183,51 @@ mod tests {
     fn uses_the_server_api_routes() {
         assert_eq!(CHECKIN_PATH, "/api/v1/agent/checkins");
         assert_eq!(OBSERVATION_PATH, "/api/v1/observations");
+    }
+
+    #[test]
+    fn validates_and_builds_exact_endpoint_urls_and_authorization() {
+        for base in ["https://renga.test", "https://renga.test/"] {
+            let client = HttpClient::new(&config(base, "valid-token")).unwrap();
+            assert_eq!(
+                client.checkin_url.as_str(),
+                "https://renga.test/api/v1/agent/checkins"
+            );
+            assert_eq!(
+                client.observation_url.as_str(),
+                "https://renga.test/api/v1/observations"
+            );
+            assert_eq!(client.authorization.to_str().unwrap(), "Bearer valid-token");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_or_unsafe_server_urls_at_construction() {
+        for url in [
+            "http://",
+            "http:///missing-host",
+            "ftp://renga.test",
+            "https://user:pass@renga.test",
+            "https://renga.test?query=yes",
+            "https://renga.test/#fragment",
+            "https://renga.test/base",
+        ] {
+            assert!(
+                HttpClient::new(&config(url, "valid-token")).is_err(),
+                "accepted {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_bearer_header_without_exposing_token() {
+        let token = "secret\nInjected: value";
+        let error = match HttpClient::new(&config("https://renga.test", token)) {
+            Ok(_) => panic!("accepted invalid bearer token"),
+            Err(error) => error,
+        };
+        assert!(!error.to_string().contains(token));
+        assert!(!format!("{error:?}").contains(token));
     }
 
     #[test]
