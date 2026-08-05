@@ -16,6 +16,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_observation_id_length 255
   @max_postgres_integer 2_147_483_647
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
+  @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
   @address_kinds ~w(ipv4 ipv6)
@@ -262,6 +263,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_no_prohibited_keys(resource, path, @prohibited_resource_keys)
     |> validate_resource_kind(resource, path)
     |> validate_identifiers(resource, path)
+    |> validate_current_mac_identity(resource, path)
     |> validate_attributes(resource, path)
     |> validate_coherent_host_identity(resource, path)
     |> validate_interfaces(resource, path)
@@ -354,14 +356,12 @@ defmodule Renga.Inventory.AgentPayload do
           false
       end)
 
-    has_non_mac_identifier? =
-      identifiers
-      |> Map.drop(["mac_address"])
-      |> Enum.any?(fn
-        {kind, value} when kind in @accepted_identifier_kinds and is_binary(value) ->
+    has_matchable_identifier? =
+      Enum.any?(identifiers, fn
+        {kind, value} when kind in @matchable_identifier_kinds and is_binary(value) ->
           String.trim(value) != ""
 
-        {kind, values} when kind in @accepted_identifier_kinds and is_list(values) ->
+        {kind, values} when kind in @matchable_identifier_kinds and is_list(values) ->
           Enum.any?(values, &non_empty_string?/1)
 
         _other ->
@@ -369,10 +369,49 @@ defmodule Renga.Inventory.AgentPayload do
       end)
 
     cond do
-      not has_identifier? -> [error(path, "must include at least one identifier") | errors]
-      not has_non_mac_identifier? -> [error(path, "must include a non-MAC identifier") | errors]
-      true -> errors
+      not has_identifier? ->
+        [error(path, "must include at least one identifier") | errors]
+
+      not has_matchable_identifier? ->
+        [error(path, "must include an identifier supported by matching") | errors]
+
+      true ->
+        errors
     end
+  end
+
+  defp validate_current_mac_identity(errors, resource, path) do
+    identifiers = Map.get(resource, "identifiers", %{})
+
+    case Map.get(identifiers, "mac_address") do
+      nil ->
+        errors
+
+      declared_macs ->
+        current_macs =
+          resource
+          |> Map.get("interfaces", [])
+          |> Enum.reject(&(&1["status"] == "not_present"))
+          |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
+
+        if normalized_mac_set(List.wrap(declared_macs)) == normalized_mac_set(current_macs) do
+          errors
+        else
+          [
+            error(
+              "#{path}.identifiers.mac_address",
+              "must exactly match MAC addresses on current interfaces"
+            )
+            | errors
+          ]
+        end
+    end
+  end
+
+  defp normalized_mac_set(values) do
+    values
+    |> Enum.map(&Renga.Inventory.ResourceIdentifier.normalize_value("mac_address", &1))
+    |> MapSet.new()
   end
 
   defp validate_coherent_host_identity(errors, resource, path) do

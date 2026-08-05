@@ -511,6 +511,7 @@ defmodule Renga.Inventory.Reconciler do
     interface_macs =
       resource
       |> Map.get("interfaces", [])
+      |> Enum.reject(&(&1["status"] == "not_present"))
       |> Enum.flat_map(fn interface ->
         case Map.get(interface, "mac_address") do
           nil -> []

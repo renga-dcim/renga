@@ -213,6 +213,90 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects top-level MAC identity that is not the current interface MAC set" do
+      %{source: source, token: token} = source_fixture()
+
+      resources = [
+        %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-01",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          }
+        },
+        %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-02",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          },
+          "interfaces" => [
+            %{
+              "name" => "eth0",
+              "status" => "not_present",
+              "mac_address" => "aa:bb:cc:dd:ee:ff"
+            }
+          ]
+        }
+      ]
+
+      for resource <- resources do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "accepts a top-level MAC identity equal to the current interface MAC set", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "hostname" => "compute-01",
+          "mac_address" => "aa-bb-cc-dd-ee-ff"
+        })
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+      assert %{"status" => "accepted"} = json_response(conn, 202)
+    end
+
+    test "rejects identity containing only matcher-unsupported identifiers before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for identifiers <- [
+            %{"provider_instance_id" => "i-123"},
+            %{"bmc_address" => "192.0.2.20"}
+          ] do
+        payload =
+          put_in(
+            valid_observation_payload(source),
+            ["resources", Access.at(0), "identifiers"],
+            identifiers
+          )
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects interface integers above PostgreSQL's signed limit before raw storage", %{
       conn: conn
     } do
