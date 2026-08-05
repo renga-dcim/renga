@@ -42,7 +42,7 @@ defmodule Renga.Inventory.ResourceIdentifier do
     |> validate_required([:organization_id, :resource_id, :kind, :value, :normalized_value])
     |> validate_inclusion(:kind, @kinds)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :resource_identifiers_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id, :kind, :normalized_value],
       name: :resource_identifiers_resource_kind_value_index
     )

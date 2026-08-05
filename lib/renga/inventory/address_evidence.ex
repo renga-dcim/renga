@@ -46,9 +46,9 @@ defmodule Renga.Inventory.AddressEvidence do
       :observed_at
     ])
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:address_record)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:observation)
+    |> assoc_constraint(:address_record, name: :address_evidence_tenant_address_fkey)
+    |> assoc_constraint(:source, name: :address_evidence_tenant_source_fkey)
+    |> assoc_constraint(:observation, name: :address_evidence_tenant_observation_fkey)
     |> unique_constraint([:organization_id, :observation_id, :address_id],
       name: :address_evidence_observation_link_index
     )

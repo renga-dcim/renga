@@ -36,9 +36,10 @@ defmodule Renga.Inventory.ResourceRelationship do
     |> validate_required([:organization_id, :source_resource_id, :target_resource_id, :kind])
     |> validate_inclusion(:kind, @kinds)
     |> validate_distinct_resources()
+    |> check_constraint(:target_resource_id, name: :resource_relationships_distinct_endpoints)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source_resource)
-    |> assoc_constraint(:target_resource)
+    |> assoc_constraint(:source_resource, name: :resource_relationships_tenant_source_fkey)
+    |> assoc_constraint(:target_resource, name: :resource_relationships_tenant_endpoints_fkey)
     |> unique_constraint(
       [:organization_id, :source_resource_id, :target_resource_id, :kind],
       name: :resource_relationships_source_target_kind_index

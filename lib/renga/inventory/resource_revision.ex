@@ -45,7 +45,7 @@ defmodule Renga.Inventory.ResourceRevision do
     |> validate_number(:revision, greater_than: 0)
     |> validate_number(:generation, greater_than: 0)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :resource_revisions_organization_resource_fkey)
     |> unique_constraint(:revision)
   end
 end

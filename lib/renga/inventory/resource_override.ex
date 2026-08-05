@@ -37,7 +37,7 @@ defmodule Renga.Inventory.ResourceOverride do
     |> update_change(:reason, &trim_string/1)
     |> validate_required([:organization_id, :resource_id, :field, :value])
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :resource_overrides_organization_resource_fkey)
     |> assoc_constraint(:created_by_user)
     |> unique_constraint([:organization_id, :resource_id, :field])
   end

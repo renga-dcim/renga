@@ -50,7 +50,7 @@ defmodule Renga.Inventory.ResourceCondition do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:observed_generation, greater_than: 0)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :resource_conditions_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id, :type])
   end
 end

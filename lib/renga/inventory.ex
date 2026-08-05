@@ -13,6 +13,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
@@ -93,8 +94,9 @@ defmodule Renga.Inventory do
   @doc """
   Updates source metadata while keeping token lifecycle separate.
   """
-  def update_source(%Source{} = source, attrs) do
-    source
+  def update_source(%Scope{} = scope, %Source{} = source, attrs) do
+    scope
+    |> get_source!(source.id)
     |> Source.changeset(attrs)
     |> Repo.update()
   end
@@ -170,7 +172,15 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
-    now = Renga.Time.utc_now_ms()
+
+    now =
+      attrs
+      |> get_attr(:checked_in_at)
+      |> case do
+        nil -> Renga.Time.utc_now_ms()
+        checked_in_at -> Renga.Time.floor_to_millisecond(checked_in_at)
+      end
+
     agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
@@ -779,8 +789,8 @@ defmodule Renga.Inventory do
   @doc """
   Stores one raw source payload.
 
-  The payload digest is computed when absent so duplicate submissions can be
-  rejected without requiring every collector to pre-hash its own payload.
+  The payload digest is always computed by the server so duplicate detection
+  cannot be influenced by a caller-provided digest.
   """
   def create_observation(%Scope{organization_id: organization_id} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
@@ -1032,27 +1042,27 @@ defmodule Renga.Inventory do
           set: [
             name:
               fragment(
-                "CASE WHEN EXCLUDED.updated_at > ? THEN EXCLUDED.name ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.name ELSE ? END",
                 agent.updated_at,
                 agent.name
               ),
             version:
               fragment(
-                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN EXCLUDED.version ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN EXCLUDED.version ELSE ? END",
                 agent.updated_at,
                 ^update_version?,
                 agent.version
               ),
             capabilities:
               fragment(
-                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN EXCLUDED.capabilities ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN EXCLUDED.capabilities ELSE ? END",
                 agent.updated_at,
                 ^update_capabilities?,
                 agent.capabilities
               ),
             metadata:
               fragment(
-                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN ? || EXCLUDED.metadata ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN ? || EXCLUDED.metadata ELSE ? END",
                 agent.updated_at,
                 ^merge_metadata?,
                 agent.metadata,
@@ -1060,7 +1070,7 @@ defmodule Renga.Inventory do
               ),
             updated_at:
               fragment(
-                "CASE WHEN EXCLUDED.updated_at > ? THEN EXCLUDED.updated_at ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.updated_at ELSE ? END",
                 agent.updated_at,
                 agent.updated_at
               )
@@ -1068,11 +1078,37 @@ defmodule Renga.Inventory do
         ]
       )
 
-    result =
+    changeset =
       %Agent{organization_id: organization_id, source_id: source_id}
       |> Agent.changeset(attrs)
       |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
-      |> Repo.insert(
+
+    changeset =
+      if merge_metadata? do
+        existing_agent =
+          Agent
+          |> where([agent], agent.organization_id == ^organization_id)
+          |> where([agent], agent.source_id == ^source_id)
+          |> select([agent], %{metadata: agent.metadata, updated_at: agent.updated_at})
+          |> Repo.one()
+
+        case existing_agent do
+          nil ->
+            validate_agent_metadata_size(changeset, attrs.metadata)
+
+          %{metadata: metadata, updated_at: updated_at} ->
+            if DateTime.compare(attrs.registered_at, updated_at) in [:eq, :gt] do
+              validate_agent_metadata_size(changeset, Map.merge(metadata, attrs.metadata))
+            else
+              changeset
+            end
+        end
+      else
+        changeset
+      end
+
+    result =
+      Repo.insert(changeset,
         on_conflict: on_conflict,
         conflict_target: [:organization_id, :source_id],
         returning: true
@@ -1081,6 +1117,20 @@ defmodule Renga.Inventory do
     case result do
       {:ok, agent} -> agent
       {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp validate_agent_metadata_size(changeset, metadata) do
+    max_bytes = AgentPayload.max_agent_metadata_bytes()
+
+    if metadata |> Jason.encode!() |> byte_size() <= max_bytes do
+      changeset
+    else
+      Ecto.Changeset.add_error(
+        changeset,
+        :metadata,
+        "must encode to at most #{max_bytes} bytes"
+      )
     end
   end
 
@@ -1136,9 +1186,9 @@ defmodule Renga.Inventory do
   defp get_attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
 
   defp condition_transition_at(nil, attrs) do
-    Map.get(attrs, :last_transition_at) ||
-      Map.get(attrs, "last_transition_at") ||
-      Renga.Time.utc_now_ms()
+    attrs
+    |> get_attr(:last_transition_at)
+    |> normalize_transition_at()
   end
 
   defp condition_transition_at(condition, attrs) do
@@ -1147,11 +1197,20 @@ defmodule Renga.Inventory do
     if status == condition.status do
       condition.last_transition_at
     else
-      Map.get(attrs, :last_transition_at) ||
-        Map.get(attrs, "last_transition_at") ||
-        next_transition_at(condition.last_transition_at)
+      attrs
+      |> get_attr(:last_transition_at)
+      |> normalize_transition_at(condition.last_transition_at)
     end
   end
+
+  defp normalize_transition_at(nil), do: Renga.Time.utc_now_ms()
+  defp normalize_transition_at(transition_at), do: Renga.Time.floor_to_millisecond(transition_at)
+
+  defp normalize_transition_at(nil, previous_transition_at),
+    do: next_transition_at(previous_transition_at)
+
+  defp normalize_transition_at(transition_at, _previous_transition_at),
+    do: Renga.Time.floor_to_millisecond(transition_at)
 
   defp next_transition_at(previous_transition_at) do
     now = Renga.Time.utc_now_ms()
@@ -1236,7 +1295,7 @@ defmodule Renga.Inventory do
     attrs
     |> put_attr(:idempotency_key, idempotency_key)
     |> put_new_attr(:observed_at, Renga.Time.utc_now_ms())
-    |> put_new_attr(:payload_digest, digest_payload(payload))
+    |> put_attr(:payload_digest, digest_payload(payload))
     |> normalize_scoped_assoc(
       scope,
       :sync_run_id,

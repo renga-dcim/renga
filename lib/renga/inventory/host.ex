@@ -39,7 +39,7 @@ defmodule Renga.Inventory.Host do
     |> update_change(:fqdn, &normalize_hostname/1)
     |> validate_required([:organization_id, :resource_id])
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :hosts_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id])
   end
 

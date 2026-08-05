@@ -46,9 +46,13 @@ defmodule Renga.Inventory.InterfaceRelationshipEvidence do
     ])
     |> validate_inclusion(:kind, @kinds)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:interface_relationship)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:observation)
+    |> assoc_constraint(:interface_relationship,
+      name: :interface_relationship_evidence_tenant_relationship_fkey
+    )
+    |> assoc_constraint(:source, name: :interface_relationship_evidence_tenant_source_fkey)
+    |> assoc_constraint(:observation,
+      name: :interface_relationship_evidence_tenant_observation_fkey
+    )
     |> unique_constraint([:organization_id, :observation_id, :interface_relationship_id],
       name: :interface_relationship_evidence_observation_link_index
     )

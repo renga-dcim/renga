@@ -58,11 +58,24 @@ defmodule Renga.Inventory.ResourceIdentifierClaim do
     ])
     |> validate_inclusion(:kind, @kinds)
     |> validate_number(:confidence, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
+    |> validate_seen_order()
+    |> check_constraint(:confidence, name: :resource_identifier_claims_confidence_range)
+    |> check_constraint(:last_seen_at, name: :resource_identifier_claims_seen_order)
+    |> check_constraint(:resource_id,
+      name: :resource_identifier_claims_canonical_requires_resource
+    )
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource_identifier)
-    |> assoc_constraint(:resource)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:observation)
+    |> assoc_constraint(:resource_identifier,
+      name: :resource_identifier_claims_tenant_identifier_fkey
+    )
+    |> foreign_key_constraint(:resource_identifier_id,
+      name: :resource_identifier_claims_canonical_resource_fkey
+    )
+    |> assoc_constraint(:resource, name: :resource_identifier_claims_tenant_resource_fkey)
+    |> assoc_constraint(:source, name: :resource_identifier_claims_tenant_source_fkey)
+    |> assoc_constraint(:observation,
+      name: :resource_identifier_claims_tenant_observation_fkey
+    )
     |> unique_constraint([:organization_id, :observation_id, :kind, :normalized_value],
       name: :resource_identifier_claims_observation_value_index
     )
@@ -79,6 +92,17 @@ defmodule Renga.Inventory.ResourceIdentifierClaim do
 
       _kind_and_value ->
         changeset
+    end
+  end
+
+  defp validate_seen_order(changeset) do
+    first_seen_at = get_field(changeset, :first_seen_at)
+    last_seen_at = get_field(changeset, :last_seen_at)
+
+    if first_seen_at && last_seen_at && DateTime.compare(last_seen_at, first_seen_at) == :lt do
+      add_error(changeset, :last_seen_at, "must not be before first_seen_at")
+    else
+      changeset
     end
   end
 end

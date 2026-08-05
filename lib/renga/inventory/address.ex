@@ -44,8 +44,8 @@ defmodule Renga.Inventory.Address do
     |> validate_inclusion(:kind, @kinds)
     |> validate_kind_matches_address()
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
-    |> assoc_constraint(:interface)
+    |> assoc_constraint(:resource, name: :addresses_organization_resource_fkey)
+    |> assoc_constraint(:interface, name: :addresses_interface_resource_fkey)
     |> unique_constraint([:organization_id, :interface_id, :address])
   end
 

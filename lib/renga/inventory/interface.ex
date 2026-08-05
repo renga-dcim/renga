@@ -57,8 +57,9 @@ defmodule Renga.Inventory.Interface do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:mtu, greater_than: 0)
     |> validate_number(:speed_mbps, greater_than: 0)
+    |> check_constraint(:mtu, name: :interfaces_mtu_speed_positive)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :interfaces_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id, :name])
   end
 end

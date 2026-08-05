@@ -54,8 +54,8 @@ defmodule Renga.Inventory.Observation do
     ])
     |> validate_length(:idempotency_key, max: 255)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:sync_run)
+    |> assoc_constraint(:source, name: :observations_organization_source_fkey)
+    |> assoc_constraint(:sync_run, name: :observations_source_sync_run_fkey)
     |> unique_constraint([:organization_id, :source_id, :idempotency_key])
   end
 

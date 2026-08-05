@@ -32,8 +32,9 @@ defmodule Renga.Inventory.AgentLease do
     |> cast(attrs, [:renewed_at, :expires_at])
     |> validate_required([:organization_id, :agent_id, :renewed_at, :expires_at])
     |> validate_expiry()
+    |> check_constraint(:expires_at, name: :agent_leases_expiry_after_renewal)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:agent)
+    |> assoc_constraint(:agent, name: :agent_leases_organization_agent_fkey)
     |> unique_constraint([:organization_id, :agent_id])
   end
 

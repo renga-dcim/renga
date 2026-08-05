@@ -48,8 +48,12 @@ defmodule Renga.Inventory.Agent do
     |> validate_inclusion(:status, @statuses)
     |> validate_length(:version, max: @max_string_length)
     |> validate_capabilities()
+    |> check_constraint(:metadata,
+      name: :agents_metadata_size,
+      message: "must encode to at most 16000 bytes"
+    )
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source)
+    |> assoc_constraint(:source, name: :agents_organization_source_fkey)
     |> unique_constraint([:organization_id, :source_id])
   end
 

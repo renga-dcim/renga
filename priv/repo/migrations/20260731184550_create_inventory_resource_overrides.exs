@@ -8,8 +8,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourceOverrides do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_overrides_organization_resource_fkey
+          ),
+          null: false
 
       add :field, :string, null: false
       add :value, :map, null: false

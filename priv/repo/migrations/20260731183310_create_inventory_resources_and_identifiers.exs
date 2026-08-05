@@ -26,6 +26,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
     end
 
     create unique_index(:resources, [:organization_id, :kind, :name])
+    create unique_index(:resources, [:id, :organization_id])
     create index(:resources, [:organization_id, :kind])
     create index(:resources, [:organization_id, :lifecycle_state])
     create index(:resources, [:organization_id, :resource_version])
@@ -37,8 +38,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :hosts_organization_resource_fkey
+          ),
+          null: false
 
       add :hostname, :string
       add :fqdn, :string
@@ -61,8 +68,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_conditions_organization_resource_fkey
+          ),
+          null: false
 
       add :type, :string, null: false
       add :status, :string, null: false
@@ -84,8 +97,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_revisions_organization_resource_fkey
+          ),
+          null: false
 
       add :revision, :bigint, null: false
       add :action, :string, null: false
@@ -105,8 +124,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_identifiers_organization_resource_fkey
+          ),
+          null: false
 
       add :kind, :string, null: false
       add :value, :string, null: false
@@ -117,6 +142,8 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
     end
 
     create index(:resource_identifiers, [:organization_id, :resource_id])
+    create unique_index(:resource_identifiers, [:id, :organization_id])
+    create unique_index(:resource_identifiers, [:id, :organization_id, :resource_id])
 
     create index(:resource_identifiers, [:organization_id, :kind, :normalized_value],
              name: :resource_identifiers_normalized_value_index

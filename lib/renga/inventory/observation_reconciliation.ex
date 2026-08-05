@@ -42,9 +42,14 @@ defmodule Renga.Inventory.ObservationReconciliation do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:attempt, greater_than: 0)
     |> validate_completion_state()
+    |> check_constraint(:attempt, name: :observation_reconciliations_attempt_positive)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:observation)
-    |> assoc_constraint(:matched_resource)
+    |> assoc_constraint(:observation,
+      name: :observation_reconciliations_tenant_observation_fkey
+    )
+    |> assoc_constraint(:matched_resource,
+      name: :observation_reconciliations_tenant_resource_fkey
+    )
     |> unique_constraint([:organization_id, :observation_id, :attempt],
       name: :observation_reconciliations_observation_attempt_index
     )

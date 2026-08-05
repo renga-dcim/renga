@@ -38,9 +38,10 @@ defmodule Renga.Inventory.InterfaceRelationship do
     |> validate_required([:organization_id, :source_interface_id, :target_interface_id, :kind])
     |> validate_inclusion(:kind, @kinds)
     |> validate_distinct_interfaces()
+    |> check_constraint(:target_interface_id, name: :interface_relationships_distinct_endpoints)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source_interface)
-    |> assoc_constraint(:target_interface)
+    |> assoc_constraint(:source_interface, name: :interface_relationships_tenant_source_fkey)
+    |> assoc_constraint(:target_interface, name: :interface_relationships_tenant_target_fkey)
     |> unique_constraint(
       [
         :organization_id,

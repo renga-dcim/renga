@@ -8,7 +8,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
+      add :source_id,
+          references(:sources,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:source_id]},
+            type: :binary_id,
+            name: :sync_runs_organization_source_fkey
+          )
+
       add :status, :string, null: false, default: "running"
       add :started_at, :"timestamp(3)", null: false
       add :completed_at, :"timestamp(3)"
@@ -30,6 +37,8 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
            )
 
     create index(:sync_runs, [:organization_id, :source_id])
+    create unique_index(:sync_runs, [:id, :organization_id])
+    create unique_index(:sync_runs, [:id, :organization_id, :source_id])
     create index(:sync_runs, [:organization_id, :status])
     create index(:sync_runs, [:organization_id, :started_at])
 
@@ -39,8 +48,23 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
-      add :sync_run_id, references(:sync_runs, on_delete: :nilify_all, type: :binary_id)
+      add :source_id,
+          references(:sources,
+            with: [organization_id: :organization_id],
+            on_delete: :restrict,
+            type: :binary_id,
+            name: :observations_organization_source_fkey
+          ),
+          null: false
+
+      add :sync_run_id,
+          references(:sync_runs,
+            with: [organization_id: :organization_id, source_id: :source_id],
+            on_delete: {:nilify, [:sync_run_id]},
+            type: :binary_id,
+            name: :observations_source_sync_run_fkey
+          )
+
       add :idempotency_key, :string, null: false
       add :observed_at, :"timestamp(3)", null: false
       add :payload_digest, :binary, null: false
@@ -54,6 +78,8 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
     create index(:observations, [:organization_id, :observed_at])
 
     create unique_index(:observations, [:organization_id, :source_id, :idempotency_key])
+    create unique_index(:observations, [:id, :organization_id])
+    create unique_index(:observations, [:id, :organization_id, :source_id])
 
     execute """
             CREATE FUNCTION reject_observation_update() RETURNS trigger AS $$
@@ -92,10 +118,23 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :observation_id, references(:observations, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :observation_id,
+          references(:observations,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :observation_reconciliations_tenant_observation_fkey
+          ),
+          null: false
 
-      add :matched_resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
+      add :matched_resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:matched_resource_id]},
+            type: :binary_id,
+            name: :observation_reconciliations_tenant_resource_fkey
+          )
+
       add :status, :string, null: false, default: "pending"
       add :attempt, :integer, null: false
       add :errors, :map, null: false, default: %{}
@@ -120,6 +159,10 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
              """
            )
 
+    create constraint(:observation_reconciliations, :observation_reconciliations_attempt_positive,
+             check: "attempt > 0"
+           )
+
     create unique_index(
              :observation_reconciliations,
              [:organization_id, :observation_id, :attempt],
@@ -139,13 +182,38 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
         null: false
 
       add :resource_identifier_id,
-          references(:resource_identifiers, on_delete: :nilify_all, type: :binary_id)
+          references(:resource_identifiers,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:resource_identifier_id]},
+            type: :binary_id,
+            name: :resource_identifier_claims_tenant_identifier_fkey
+          )
 
-      add :resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
-      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:resource_id]},
+            type: :binary_id,
+            name: :resource_identifier_claims_tenant_resource_fkey
+          )
 
-      add :observation_id, references(:observations, on_delete: :restrict, type: :binary_id),
-        null: false
+      add :source_id,
+          references(:sources,
+            with: [organization_id: :organization_id],
+            on_delete: :restrict,
+            type: :binary_id,
+            name: :resource_identifier_claims_tenant_source_fkey
+          ),
+          null: false
+
+      add :observation_id,
+          references(:observations,
+            with: [organization_id: :organization_id, source_id: :source_id],
+            on_delete: :restrict,
+            type: :binary_id,
+            name: :resource_identifier_claims_tenant_observation_fkey
+          ),
+          null: false
 
       add :kind, :string, null: false
       add :value, :string, null: false
@@ -175,16 +243,69 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
              name: :resource_identifier_claims_observation_value_index
            )
 
+    execute """
+            ALTER TABLE resource_identifier_claims
+            ADD CONSTRAINT resource_identifier_claims_canonical_resource_fkey
+            FOREIGN KEY (resource_identifier_id, organization_id, resource_id)
+            REFERENCES resource_identifiers (id, organization_id, resource_id)
+            """,
+            """
+            ALTER TABLE resource_identifier_claims
+            DROP CONSTRAINT resource_identifier_claims_canonical_resource_fkey
+            """
+
+    create constraint(:resource_identifier_claims, :resource_identifier_claims_confidence_range,
+             check: "confidence >= 0 AND confidence <= 100"
+           )
+
+    create constraint(:resource_identifier_claims, :resource_identifier_claims_seen_order,
+             check: "last_seen_at >= first_seen_at"
+           )
+
+    create constraint(
+             :resource_identifier_claims,
+             :resource_identifier_claims_canonical_requires_resource,
+             check: "resource_identifier_id IS NULL OR resource_id IS NOT NULL"
+           )
+
     create table(:change_events, primary_key: false) do
       add :id, :binary_id, primary_key: true
 
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :nilify_all, type: :binary_id)
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
-      add :sync_run_id, references(:sync_runs, on_delete: :nilify_all, type: :binary_id)
-      add :observation_id, references(:observations, on_delete: :nilify_all, type: :binary_id)
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:resource_id]},
+            type: :binary_id,
+            name: :change_events_tenant_resource_fkey
+          )
+
+      add :source_id,
+          references(:sources,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:source_id]},
+            type: :binary_id,
+            name: :change_events_tenant_source_fkey
+          )
+
+      add :sync_run_id,
+          references(:sync_runs,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:sync_run_id]},
+            type: :binary_id,
+            name: :change_events_tenant_sync_run_fkey
+          )
+
+      add :observation_id,
+          references(:observations,
+            with: [organization_id: :organization_id],
+            on_delete: {:nilify, [:observation_id]},
+            type: :binary_id,
+            name: :change_events_tenant_observation_fkey
+          )
+
       add :kind, :string, null: false
       add :field, :string
       add :old_value, :map

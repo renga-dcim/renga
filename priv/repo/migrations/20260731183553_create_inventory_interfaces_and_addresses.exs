@@ -8,8 +8,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :interfaces_organization_resource_fkey
+          ),
+          null: false
 
       add :name, :string, null: false
       add :mac_address, :macaddr
@@ -22,8 +28,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
     end
 
     create index(:interfaces, [:organization_id, :resource_id])
+    create unique_index(:interfaces, [:id, :organization_id])
+    create unique_index(:interfaces, [:id, :organization_id, :resource_id])
     create index(:interfaces, [:organization_id, :mac_address])
     create unique_index(:interfaces, [:organization_id, :resource_id, :name])
+
+    create constraint(:interfaces, :interfaces_mtu_speed_positive,
+             check: "(mtu IS NULL OR mtu > 0) AND (speed_mbps IS NULL OR speed_mbps > 0)"
+           )
 
     create table(:addresses, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -31,11 +43,23 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :addresses_organization_resource_fkey
+          ),
+          null: false
 
-      add :interface_id, references(:interfaces, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :interface_id,
+          references(:interfaces,
+            with: [organization_id: :organization_id, resource_id: :resource_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :addresses_interface_resource_fkey
+          ),
+          null: false
 
       add :kind, :string, null: false
       add :address, :inet, null: false
@@ -47,6 +71,7 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
     create index(:addresses, [:organization_id, :resource_id])
     create index(:addresses, [:organization_id, :interface_id])
     create unique_index(:addresses, [:organization_id, :interface_id, :address])
+    create unique_index(:addresses, [:id, :organization_id])
 
     create table(:prefixes, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -54,8 +79,14 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :prefixes_organization_resource_fkey
+          ),
+          null: false
 
       add :prefix, :cidr, null: false
       add :vrf, :string

@@ -66,10 +66,11 @@ defmodule Renga.Inventory.InterfaceEvidence do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:mtu, greater_than: 0)
     |> validate_number(:speed_mbps, greater_than: 0)
+    |> check_constraint(:mtu, name: :interface_evidence_mtu_speed_positive)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:interface)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:observation)
+    |> assoc_constraint(:interface, name: :interface_evidence_tenant_interface_fkey)
+    |> assoc_constraint(:source, name: :interface_evidence_tenant_source_fkey)
+    |> assoc_constraint(:observation, name: :interface_evidence_tenant_fkey)
     |> unique_constraint([:organization_id, :observation_id, :interface_id],
       name: :interface_evidence_observation_link_index
     )

@@ -47,7 +47,7 @@ defmodule Renga.Inventory.SyncRun do
     |> validate_number(:error_count, greater_than_or_equal_to: 0)
     |> validate_completion_state()
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source)
+    |> assoc_constraint(:source, name: :sync_runs_organization_source_fkey)
     |> check_constraint(:completed_at, name: :sync_runs_completion_state)
   end
 

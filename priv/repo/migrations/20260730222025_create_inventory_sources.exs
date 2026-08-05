@@ -18,6 +18,7 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
     end
 
     create unique_index(:sources, [:organization_id, :name])
+    create unique_index(:sources, [:id, :organization_id])
     create index(:sources, [:organization_id, :kind])
     create index(:sources, [:organization_id, :status])
 
@@ -27,7 +28,15 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :source_id, references(:sources, on_delete: :restrict, type: :binary_id), null: false
+      add :source_id,
+          references(:sources,
+            with: [organization_id: :organization_id],
+            on_delete: :restrict,
+            type: :binary_id,
+            name: :agents_organization_source_fkey
+          ),
+          null: false
+
       add :name, :string, null: false
       add :status, :string, null: false, default: "active"
       add :version, :string
@@ -39,6 +48,7 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
     end
 
     create unique_index(:agents, [:organization_id, :source_id])
+    create unique_index(:agents, [:id, :organization_id])
     create index(:agents, [:organization_id, :status])
 
     create table(:agent_leases, primary_key: false) do
@@ -47,7 +57,15 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :agent_id, references(:agents, on_delete: :delete_all, type: :binary_id), null: false
+      add :agent_id,
+          references(:agents,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :agent_leases_organization_agent_fkey
+          ),
+          null: false
+
       add :renewed_at, :"timestamp(3)", null: false
       add :expires_at, :"timestamp(3)", null: false
 
@@ -56,5 +74,13 @@ defmodule Renga.Repo.Migrations.CreateInventorySources do
 
     create unique_index(:agent_leases, [:organization_id, :agent_id])
     create index(:agent_leases, [:organization_id, :expires_at])
+
+    create constraint(:agent_leases, :agent_leases_expiry_after_renewal,
+             check: "expires_at > renewed_at"
+           )
+
+    create constraint(:agents, :agents_metadata_size,
+             check: "octet_length(metadata::text) <= 16000"
+           )
   end
 end

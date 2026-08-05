@@ -37,9 +37,10 @@ defmodule Renga.Inventory.ResourceOwner do
     |> validate_required([:organization_id, :owner_resource_id, :child_resource_id, :kind])
     |> validate_inclusion(:kind, @kinds)
     |> validate_distinct_resources()
+    |> check_constraint(:child_resource_id, name: :resource_owners_distinct_endpoints)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:owner_resource)
-    |> assoc_constraint(:child_resource)
+    |> assoc_constraint(:owner_resource, name: :resource_owners_tenant_owner_fkey)
+    |> assoc_constraint(:child_resource, name: :resource_owners_tenant_child_fkey)
     |> unique_constraint(
       [:organization_id, :owner_resource_id, :child_resource_id, :kind],
       name: :resource_owners_owner_child_kind_index

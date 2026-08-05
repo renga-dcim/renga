@@ -38,7 +38,7 @@ defmodule Renga.Inventory.Prefix do
     |> validate_required([:organization_id, :resource_id, :prefix, :status])
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
+    |> assoc_constraint(:resource, name: :prefixes_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id])
   end
 end
