@@ -467,6 +467,13 @@ defmodule Renga.Inventory do
       kind = get_attr(attrs, :kind)
       normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
 
+      claim_history_key =
+        [organization_id, source.id, kind, normalized_value]
+        |> :erlang.term_to_binary()
+        |> Base.encode64()
+
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [claim_history_key])
+
       previous_first_seen_at =
         ResourceIdentifierClaim
         |> where([claim], claim.organization_id == ^organization_id)
