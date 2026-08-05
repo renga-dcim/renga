@@ -789,6 +789,69 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "accepted overrides immediately materialize with operator provenance and remain authoritative" do
+    context = context()
+
+    {:ok, user} =
+      Accounts.register_user(%{email: "override#{System.unique_integer()}@example.com"})
+
+    scope = %{context.scope | user: user}
+
+    observation =
+      observation(context, "1", %{"machine_id" => "override-machine"}, %{"vendor" => "Observed"})
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(scope, observation.id)
+
+    assert {:ok, override} =
+             Inventory.create_resource_override(scope, resource.id, %{
+               field: "host.vendor",
+               value: %{"value" => "Operator Vendor"}
+             })
+
+    assert {:ok, omitted_override} =
+             Inventory.create_resource_override(scope, resource.id, %{
+               field: "host.asset_tag",
+               value: %{"value" => "ASSET-42"}
+             })
+
+    host = Inventory.get_host_by_resource!(scope, resource.id)
+    assert host.vendor == "Operator Vendor"
+    assert host.asset_tag == "ASSET-42"
+
+    for {field, accepted_override} <- [
+          {"vendor", override},
+          {"asset_tag", omitted_override}
+        ] do
+      owner = host.metadata["field_owners"][field]
+      assert owner["source_kind"] == "manual"
+      assert owner["override_id"] == accepted_override.id
+      assert owner["created_by_user_id"] == user.id
+      assert owner["overridden_at"] == DateTime.to_iso8601(accepted_override.inserted_at)
+      refute Map.has_key?(owner, "observation_id")
+    end
+
+    events = Inventory.list_change_events(scope, resource.id)
+
+    assert Enum.any?(events, fn event ->
+             event.kind == "manual_override" and event.field == "host.vendor" and
+               event.metadata["override_id"] == override.id and
+               event.metadata["created_by_user_id"] == user.id and
+               is_nil(event.observation_id) and is_nil(event.source_id)
+           end)
+
+    later =
+      observation(context, "2", %{"machine_id" => "override-machine"}, %{
+        "vendor" => "Later Observation",
+        "asset_tag" => "LATER"
+      })
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(scope, later.id)
+    host = Inventory.get_host_by_resource!(scope, resource.id)
+    assert host.vendor == "Operator Vendor"
+    assert host.asset_tag == "ASSET-42"
+    assert host.metadata["field_owners"]["vendor"]["override_id"] == override.id
+  end
+
   test "normalizes canonical names before lookup, comparison, and retry" do
     context = context()
 

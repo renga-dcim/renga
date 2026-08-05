@@ -453,8 +453,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
           )
         end
 
-        {Map.put(accepted, field, manual_value),
-         Map.put(owners, field, manual_owner(observation))}
+        {Map.put(accepted, field, manual_value), Map.put(owners, field, manual_owner(override))}
       else
         {Map.put(accepted, field, value), Map.put(owners, field, owner(source, observation))}
       end
@@ -653,7 +652,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
             end
 
             {Map.put(changes, field, manual_value),
-             Map.put(owners, field, manual_owner(observation))}
+             Map.put(owners, field, manual_owner(override))}
 
           source_wins?(source, observation, existing_owner, field_path) ->
             if current_value != nil and current_value != incoming_value and
@@ -745,12 +744,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
     }
   end
 
-  defp manual_owner(observation) do
+  defp manual_owner(override) do
     %{
-      "source_id" => nil,
       "source_kind" => "manual",
-      "observed_at" => DateTime.to_iso8601(observation.observed_at),
-      "observation_id" => observation.id
+      "override_id" => override.id,
+      "created_by_user_id" => override.created_by_user_id,
+      "overridden_at" => DateTime.to_iso8601(override.inserted_at)
     }
   end
 

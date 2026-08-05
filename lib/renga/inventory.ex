@@ -1024,14 +1024,164 @@ defmodule Renga.Inventory do
       ) do
     resource = get_resource!(scope, resource_id)
 
-    %ResourceOverride{
-      organization_id: organization_id,
-      resource_id: resource.id,
-      created_by_user_id: scope.user && scope.user.id
-    }
-    |> ResourceOverride.changeset(attrs)
-    |> Repo.insert()
+    changeset =
+      %ResourceOverride{
+        organization_id: organization_id,
+        resource_id: resource.id,
+        created_by_user_id: scope.user && scope.user.id
+      }
+      |> ResourceOverride.changeset(attrs)
+      |> validate_override_contract()
+
+    Repo.transaction(fn ->
+      with {:ok, override} <- Repo.insert(changeset),
+           {:ok, old_value} <- materialize_override(scope, resource, override),
+           {:ok, _event} <-
+             create_change_event(scope, %{
+               kind: "manual_override",
+               field: override.field,
+               resource_id: resource.id,
+               old_value: override_event_value(old_value),
+               new_value: override.value,
+               metadata: override_provenance(override),
+               occurred_at: override.inserted_at
+             }) do
+        override
+      else
+        {:error, error} -> Repo.rollback(error)
+      end
+    end)
   end
+
+  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
+  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
+  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
+  @interface_statuses ~w(up down dormant not_present unknown)
+
+  defp validate_override_contract(changeset) do
+    field = Ecto.Changeset.get_field(changeset, :field)
+    value = Ecto.Changeset.get_field(changeset, :value)
+
+    case {field, value, parse_override_path(field), unwrap_override_value(value)} do
+      {field, _value, _path, _unwrapped} when field in [nil, ""] ->
+        changeset
+
+      {_field, _value, :error, _unwrapped} ->
+        Ecto.Changeset.add_error(changeset, :field, "is not a supported projection path")
+
+      {_field, _value, {:ok, path}, {:ok, typed_value}} ->
+        validate_override_type(changeset, path, typed_value)
+
+      {_field, _value, {:ok, _path}, :error} ->
+        Ecto.Changeset.add_error(changeset, :value, "must contain a value")
+    end
+  end
+
+  defp parse_override_path("host." <> field) when field in @host_override_fields,
+    do: {:ok, {:host, field}}
+
+  defp parse_override_path("interfaces." <> rest) do
+    case String.split(rest, ".") do
+      [name, field] when name != "" and field in @interface_override_fields ->
+        {:ok, {:interface, name, field}}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp parse_override_path(_field), do: :error
+  defp unwrap_override_value(%{"value" => value}), do: {:ok, value}
+  defp unwrap_override_value(%{value: value}), do: {:ok, value}
+  defp unwrap_override_value(_value), do: :error
+
+  defp validate_override_type(changeset, {:host, _field}, value) when is_binary(value),
+    do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, "kind"}, value)
+       when value in @interface_kinds,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, "status"}, value)
+       when value in @interface_statuses,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, field}, value)
+       when field in ~w(mtu speed_mbps) and is_integer(value) and value > 0,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, "mac_address"}, value) do
+    case Renga.Types.MacAddress.cast(value) do
+      {:ok, _mac} -> changeset
+      :error -> Ecto.Changeset.add_error(changeset, :value, "has an invalid type or value")
+    end
+  end
+
+  defp validate_override_type(changeset, _path, _value),
+    do: Ecto.Changeset.add_error(changeset, :value, "has an invalid type or value")
+
+  defp materialize_override(scope, resource, override) do
+    {:ok, path} = parse_override_path(override.field)
+    {:ok, value} = unwrap_override_value(override.value)
+    owner = override_provenance(override) |> Map.put("source_kind", "manual")
+
+    case path do
+      {:host, field} ->
+        host = Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id)
+        host = host || %Host{organization_id: scope.organization_id, resource_id: resource.id}
+        old_value = Map.get(host, String.to_existing_atom(field))
+        metadata = put_override_owner(host.metadata, field, owner)
+        changeset = Host.changeset(host, %{field => value, "metadata" => metadata})
+        persist_projection(host, changeset, old_value)
+
+      {:interface, name, field} ->
+        interface =
+          Repo.get_by(Interface,
+            organization_id: scope.organization_id,
+            resource_id: resource.id,
+            name: name
+          )
+
+        interface =
+          interface ||
+            %Interface{
+              organization_id: scope.organization_id,
+              resource_id: resource.id,
+              name: name
+            }
+
+        old_value = Map.get(interface, String.to_existing_atom(field))
+        metadata = put_override_owner(interface.metadata, field, owner)
+        changeset = Interface.changeset(interface, %{field => value, "metadata" => metadata})
+        persist_projection(interface, changeset, old_value)
+    end
+  end
+
+  defp persist_projection(%{id: nil}, changeset, old_value),
+    do: Repo.insert(changeset) |> projection_result(old_value)
+
+  defp persist_projection(_projection, changeset, old_value),
+    do: Repo.update(changeset) |> projection_result(old_value)
+
+  defp projection_result({:ok, _projection}, old_value), do: {:ok, old_value}
+  defp projection_result({:error, changeset}, _old_value), do: {:error, changeset}
+
+  defp put_override_owner(metadata, field, owner) do
+    metadata = metadata || %{}
+    owners = Map.get(metadata, "field_owners", %{})
+    Map.put(metadata, "field_owners", Map.put(owners, field, owner))
+  end
+
+  defp override_provenance(override) do
+    %{
+      "override_id" => override.id,
+      "created_by_user_id" => override.created_by_user_id,
+      "overridden_at" => DateTime.to_iso8601(override.inserted_at)
+    }
+  end
+
+  defp override_event_value(nil), do: nil
+  defp override_event_value(value), do: %{"value" => value}
 
   defp earliest_timestamp(nil, timestamp), do: timestamp
 
