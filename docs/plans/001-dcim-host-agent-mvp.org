@@ -112,27 +112,27 @@ the project. Before reconciliation begins, replace that initial model using a
 fresh development/test database so reconciliation is built against explicit
 desired state, observed evidence, provenance, and lifecycle boundaries.
 
-- [ ] Document the target inventory model and the boundary between resource envelopes, typed projections, source evidence, and raw observations.
-- [ ] Rebuild the inventory migrations in place and verify a fresh database can be created without compatibility migrations for the superseded model.
-- [ ] Redefine =Resource= as the organization-scoped envelope for independently addressable and reconcilable objects.
-- [ ] Add desired =spec= data, =generation=, and a monotonically ordered resource revision without replacing typed PostgreSQL projections with opaque JSONB.
-- [ ] Rename the current resource =status= to an explicit lifecycle or inventory state and add independent =ResourceCondition= records for freshness, reachability, readiness, and reconciliation state.
-- [ ] Keep stable, frequently queried inventory in typed tables and reserve JSONB for variable desired state, detailed observations, and vendor-specific data.
-- [ ] Make =Observation= strictly immutable by moving processing status, matched resources, attempts, and errors into separate reconciliation result records.
-- [ ] Require source-scoped observation idempotency keys and remove permanent payload-digest uniqueness so unchanged inventory can be reported again later.
-- [ ] Split canonical resource identifiers from per-source identifier claims, preserving source, observation, confidence, normalization, and first/last seen timestamps.
-- [ ] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
-- [ ] Make canonical interfaces, addresses, and topology relationships source-neutral while retaining per-source evidence and provenance.
-- [ ] Preserve PostgreSQL =macaddr= for MAC addresses, =inet= for assigned addresses, and =cidr= for managed IPAM prefixes.
-- [ ] Add explicit =Agent= registration records separately from =Source= credentials and provenance.
-- [ ] Add renewable agent lease records so connection liveness and inventory freshness are independent states.
-- [ ] Keep topology relationships separate from lifecycle ownership and add generalized resource relationships only for cross-domain links that cannot use typed tables.
-- [ ] Add resource ownership records for lifecycle-managed children while deferring finalizers until destructive management workflows are introduced.
-- [ ] Keep =ChangeEvent= as non-authoritative audit history and define a separate monotonically ordered outbox/revision model for future list-and-watch delivery.
-- [ ] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
-- [ ] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
-- [ ] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
-- [ ] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
+- [X] Document the target inventory model and the boundary between resource envelopes, typed projections, source evidence, and raw observations.
+- [X] Rebuild the inventory migrations in place and verify a fresh database can be created without compatibility migrations for the superseded model.
+- [X] Redefine =Resource= as the organization-scoped envelope for independently addressable and reconcilable objects.
+- [X] Add desired =spec= data, =generation=, and a monotonically ordered resource revision without replacing typed PostgreSQL projections with opaque JSONB.
+- [X] Rename the current resource =status= to an explicit lifecycle or inventory state and add independent =ResourceCondition= records for freshness, reachability, readiness, and reconciliation state.
+- [X] Keep stable, frequently queried inventory in typed tables and reserve JSONB for variable desired state, detailed observations, and vendor-specific data.
+- [X] Make =Observation= strictly immutable by moving processing status, matched resources, attempts, and errors into separate reconciliation result records.
+- [X] Require source-scoped observation idempotency keys and remove permanent payload-digest uniqueness so unchanged inventory can be reported again later.
+- [X] Split canonical resource identifiers from per-source identifier claims, preserving source, observation, confidence, normalization, and first/last seen timestamps.
+- [X] Relax uniqueness constraints that prevent duplicate serial numbers, source-scoped external IDs, and conflicting identity claims from being represented and reconciled.
+- [X] Make canonical interfaces, addresses, and topology relationships source-neutral while retaining per-source evidence and provenance.
+- [X] Preserve PostgreSQL =macaddr= for MAC addresses, =inet= for assigned addresses, and =cidr= for managed IPAM prefixes.
+- [X] Add explicit =Agent= registration records separately from =Source= credentials and provenance.
+- [X] Add renewable agent lease records so connection liveness and inventory freshness are independent states.
+- [X] Keep topology relationships separate from lifecycle ownership and add generalized resource relationships only for cross-domain links that cannot use typed tables.
+- [X] Add resource ownership records for lifecycle-managed children while deferring finalizers until destructive management workflows are introduced.
+- [X] Keep =ChangeEvent= as non-authoritative audit history and define a separate monotonically ordered outbox/revision model for future list-and-watch delivery.
+- [X] Update ingestion contexts, API responses, fixtures, and tests for the rebuilt schemas without changing the accepted host-observation contract unnecessarily.
+- [X] Add model tests for immutable observations, repeated identical reports, duplicate identifiers, multi-source agreement/conflict, condition transitions, and lease expiry.
+- [X] Reset development and test databases, run all migrations from scratch, and regenerate the checked-in schema dump.
+- [X] Run =mix precommit= and =./scripts/check-plan-status.sh= after the rebuild.
 
 ** 5. Reconciliation MVP
 

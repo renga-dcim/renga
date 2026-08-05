@@ -46,10 +46,10 @@ defmodule Renga.Inventory.ChangeEvent do
     |> validate_required([:organization_id, :kind, :occurred_at])
     |> validate_inclusion(:kind, @kinds)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:sync_run)
-    |> assoc_constraint(:observation)
+    |> assoc_constraint(:resource, name: :change_events_tenant_resource_fkey)
+    |> assoc_constraint(:source, name: :change_events_tenant_source_fkey)
+    |> assoc_constraint(:sync_run, name: :change_events_tenant_sync_run_fkey)
+    |> assoc_constraint(:observation, name: :change_events_tenant_observation_fkey)
   end
 
   defp trim_string(value) when is_binary(value), do: String.trim(value)

@@ -12,12 +12,13 @@ defmodule Renga.Inventory.Source do
   import Ecto.Changeset
 
   alias Renga.Accounts.Organization
-  alias Renga.Inventory.Address
+  alias Renga.Inventory.Agent
+  alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ChangeEvent
-  alias Renga.Inventory.Interface
-  alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceEvidence
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
-  alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.SyncRun
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -31,17 +32,16 @@ defmodule Renga.Inventory.Source do
     field :name, :string
     field :status, :string, default: "active"
     field :token_hash, :binary
-    field :capabilities, {:array, :string}, default: []
-    field :last_seen_at, :utc_datetime_usec
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
-    has_many :addresses, Address
+    has_many :agents, Agent
+    has_many :address_evidence, AddressEvidence
     has_many :change_events, ChangeEvent
-    has_many :interfaces, Interface
-    has_many :interface_relationships, InterfaceRelationship
+    has_many :interface_evidence, InterfaceEvidence
+    has_many :interface_relationship_evidence, InterfaceRelationshipEvidence
     has_many :observations, Observation
-    has_many :resource_identifiers, ResourceIdentifier
+    has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :sync_runs, SyncRun
 
     timestamps()
@@ -49,13 +49,10 @@ defmodule Renga.Inventory.Source do
 
   def changeset(source, attrs) do
     source
-    |> cast(attrs, [:kind, :name, :status, :capabilities, :last_seen_at, :metadata],
-      empty_values: []
-    )
+    |> cast(attrs, [:kind, :name, :status, :metadata])
     |> validate_required([:organization_id, :kind, :name, :status])
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
-    |> validate_capabilities()
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :name])
   end
@@ -78,20 +75,4 @@ defmodule Renga.Inventory.Source do
   def revoke_changeset(source) do
     change(source, token_hash: nil, status: "revoked")
   end
-
-  defp validate_capabilities(changeset) do
-    validate_change(changeset, :capabilities, fn :capabilities, capabilities ->
-      if Enum.all?(capabilities, &valid_capability?/1) do
-        []
-      else
-        [capabilities: "must contain only non-empty strings"]
-      end
-    end)
-  end
-
-  defp valid_capability?(capability) when is_binary(capability) do
-    String.trim(capability) != ""
-  end
-
-  defp valid_capability?(_capability), do: false
 end

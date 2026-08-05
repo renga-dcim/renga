@@ -1,9 +1,13 @@
-defmodule RengaWeb.Api.ObservationControllerTest do
+defmodule RengaWeb.Api.V1.ObservationControllerTest do
   use RengaWeb.ConnCase, async: true
+
+  import Ecto.Query, only: [from: 2]
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.Agent
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.Source
   alias Renga.Repo
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
@@ -100,8 +104,85 @@ defmodule RengaWeb.Api.ObservationControllerTest do
       assert observation.organization_id == scope.organization_id
       assert observation.source_id == source.id
       assert observation.payload == payload
-      assert observation.status == "accepted"
-      assert Inventory.get_source!(scope, source.id).last_seen_at
+      assert observation.idempotency_key == payload["observation_id"]
+      assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
+    end
+
+    test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+
+      Repo.update_all(from(stored in Source, where: stored.id == ^source.id), set: [name: "   "])
+      source = Repo.get!(Source, source.id)
+      payload = valid_observation_payload(source)
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "agent.name", "message" => "can't be blank"}]
+             } = json_response(conn, 422)
+
+      refute Repo.get_by(Observation,
+               organization_id: scope.organization_id,
+               source_id: source.id,
+               idempotency_key: payload["observation_id"]
+             )
+    end
+
+    test "accepts an optional source object without a kind", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["source"], %{"source_id" => source.name})
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "accepted", "duplicate" => false} = json_response(conn, 202)
+    end
+
+    test "rejects a missing observation id", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+      payload = source |> valid_observation_payload() |> Map.delete("observation_id")
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "observation_id", "message" => "is required"}]
+             } = json_response(conn, 422)
+    end
+
+    test "rejects observation ids longer than the storage limit", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        valid_observation_payload(source, %{"observation_id" => String.duplicate("o", 256)})
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [
+                 %{
+                   "path" => "observation_id",
+                   "message" => "must be at most 255 characters"
+                 }
+               ]
+             } = json_response(conn, 422)
     end
 
     test "returns duplicate acceptance for retried observation ids", %{conn: conn} do
@@ -125,6 +206,25 @@ defmodule RengaWeb.Api.ObservationControllerTest do
                "duplicate" => true,
                "observation" => %{"id" => ^observation_id}
              } = json_response(retry_conn, 200)
+    end
+
+    test "accepts identical reports when their idempotency keys differ", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source, %{"observation_id" => "report-1"})
+
+      conn
+      |> authorize(token)
+      |> post(~p"/api/v1/observations", payload)
+      |> json_response(202)
+
+      second_payload = Map.put(payload, "observation_id", "report-2")
+
+      second_conn =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", second_payload)
+
+      assert %{"status" => "accepted", "duplicate" => false} = json_response(second_conn, 202)
     end
 
     test "rejects reused observation ids with different payloads", %{conn: conn} do

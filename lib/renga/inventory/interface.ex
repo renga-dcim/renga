@@ -15,7 +15,6 @@ defmodule Renga.Inventory.Interface do
   alias Renga.Inventory.Address
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.Resource
-  alias Renga.Inventory.Source
   alias Renga.Types.MacAddress
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -32,12 +31,8 @@ defmodule Renga.Inventory.Interface do
     field :mtu, :integer
     field :speed_mbps, :integer
     field :metadata, :map, default: %{}
-    field :first_seen_at, :utc_datetime_usec
-    field :last_seen_at, :utc_datetime_usec
-
     belongs_to :organization, Organization
     belongs_to :resource, Resource
-    belongs_to :source, Source
     has_many :addresses, Address
     has_many :outgoing_relationships, InterfaceRelationship, foreign_key: :source_interface_id
     has_many :incoming_relationships, InterfaceRelationship, foreign_key: :target_interface_id
@@ -54,9 +49,7 @@ defmodule Renga.Inventory.Interface do
       :status,
       :mtu,
       :speed_mbps,
-      :metadata,
-      :first_seen_at,
-      :last_seen_at
+      :metadata
     ])
     |> update_change(:name, &String.trim/1)
     |> validate_required([:organization_id, :resource_id, :name, :kind, :status])
@@ -64,9 +57,9 @@ defmodule Renga.Inventory.Interface do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:mtu, greater_than: 0)
     |> validate_number(:speed_mbps, greater_than: 0)
+    |> check_constraint(:mtu, name: :interfaces_mtu_speed_positive)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:resource)
-    |> assoc_constraint(:source)
+    |> assoc_constraint(:resource, name: :interfaces_organization_resource_fkey)
     |> unique_constraint([:organization_id, :resource_id, :name])
   end
 end

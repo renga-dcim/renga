@@ -19,6 +19,7 @@ defmodule Renga.Inventory.SyncRun do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(running succeeded failed partial)
+  @terminal_statuses ~w(succeeded failed partial)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "sync_runs" do
@@ -44,7 +45,29 @@ defmodule Renga.Inventory.SyncRun do
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:resource_count, greater_than_or_equal_to: 0)
     |> validate_number(:error_count, greater_than_or_equal_to: 0)
+    |> validate_completion_state()
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source)
+    |> assoc_constraint(:source, name: :sync_runs_organization_source_fkey)
+    |> check_constraint(:completed_at, name: :sync_runs_completion_state)
+  end
+
+  defp validate_completion_state(changeset) do
+    status = get_field(changeset, :status)
+    started_at = get_field(changeset, :started_at)
+    completed_at = get_field(changeset, :completed_at)
+
+    cond do
+      status in @terminal_statuses and is_nil(completed_at) ->
+        add_error(changeset, :completed_at, "is required for a completed run")
+
+      status == "running" and completed_at ->
+        add_error(changeset, :completed_at, "must be empty while the run is running")
+
+      started_at && completed_at && DateTime.compare(completed_at, started_at) == :lt ->
+        add_error(changeset, :completed_at, "must not be before started_at")
+
+      true ->
+        changeset
+    end
   end
 end

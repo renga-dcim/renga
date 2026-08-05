@@ -1,9 +1,10 @@
 defmodule Renga.Inventory.Observation do
   @moduledoc """
-  Immutable raw inventory payload observed by a source.
+  Immutable raw inventory payload accepted from one source.
 
-  Observations keep the source payload and digest separate from canonical
-  resources so reconciliation decisions can be re-run or audited later.
+  This row records what the source said and when. Matching decisions, attempts,
+  status, and errors belong to `Renga.Inventory.ObservationReconciliation` so a
+  retry or improved reconciler cannot rewrite historical evidence.
   """
 
   use Ecto.Schema
@@ -12,28 +13,26 @@ defmodule Renga.Inventory.Observation do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.ChangeEvent
-  alias Renga.Inventory.Resource
+  alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
 
   @primary_key {:id, Ecto.UUID, autogenerate: false}
   @foreign_key_type :binary_id
-  @statuses ~w(accepted rejected reconciled failed)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "observations" do
-    field :observation_id, :string
+    field :idempotency_key, :string
     field :observed_at, :utc_datetime_usec
-    field :status, :string, default: "accepted"
     field :payload_digest, :binary
     field :payload, :map
-    field :errors, :map, default: %{}
-    field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
     belongs_to :source, Source
     belongs_to :sync_run, SyncRun
-    belongs_to :resource, Resource
+    has_many :reconciliations, ObservationReconciliation
+    has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :change_events, ChangeEvent
 
     timestamps(updated_at: false)
@@ -41,26 +40,31 @@ defmodule Renga.Inventory.Observation do
 
   def changeset(observation, attrs) do
     observation
-    |> cast(attrs, [
-      :observation_id,
-      :observed_at,
-      :status,
-      :payload_digest,
-      :payload,
-      :errors,
-      :metadata
-    ])
+    |> cast(attrs, [:idempotency_key, :observed_at, :payload_digest, :payload])
+    |> reject_mutation()
     |> put_uuidv7_identity()
-    |> update_change(:observation_id, &trim_string/1)
-    |> validate_required([:organization_id, :observed_at, :status, :payload_digest, :payload])
-    |> validate_inclusion(:status, @statuses)
+    |> update_change(:idempotency_key, &trim_string/1)
+    |> validate_required([
+      :organization_id,
+      :source_id,
+      :idempotency_key,
+      :observed_at,
+      :payload_digest,
+      :payload
+    ])
+    |> validate_length(:idempotency_key, max: 255)
     |> assoc_constraint(:organization)
-    |> assoc_constraint(:source)
-    |> assoc_constraint(:sync_run)
-    |> assoc_constraint(:resource)
-    |> unique_constraint([:organization_id, :source_id, :observation_id])
-    |> unique_constraint([:organization_id, :source_id, :payload_digest])
+    |> assoc_constraint(:source, name: :observations_organization_source_fkey)
+    |> assoc_constraint(:sync_run, name: :observations_source_sync_run_fkey)
+    |> unique_constraint([:organization_id, :source_id, :idempotency_key])
   end
+
+  defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
+       when not is_nil(id) and map_size(changes) > 0 do
+    add_error(changeset, :base, "observation is immutable")
+  end
+
+  defp reject_mutation(changeset), do: changeset
 
   defp put_uuidv7_identity(changeset) do
     if get_field(changeset, :id) do

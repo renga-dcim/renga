@@ -8,10 +8,15 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :interfaces_organization_resource_fkey
+          ),
+          null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :name, :string, null: false
       add :mac_address, :macaddr
       add :kind, :string, null: false, default: "ethernet"
@@ -19,16 +24,18 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :mtu, :integer
       add :speed_mbps, :integer
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
-
       timestamps(type: :"timestamp(3)")
     end
 
     create index(:interfaces, [:organization_id, :resource_id])
-    create index(:interfaces, [:organization_id, :source_id])
+    create unique_index(:interfaces, [:id, :organization_id])
+    create unique_index(:interfaces, [:id, :organization_id, :resource_id])
     create index(:interfaces, [:organization_id, :mac_address])
     create unique_index(:interfaces, [:organization_id, :resource_id, :name])
+
+    create constraint(:interfaces, :interfaces_mtu_speed_positive,
+             check: "(mtu IS NULL OR mtu > 0) AND (speed_mbps IS NULL OR speed_mbps > 0)"
+           )
 
     create table(:addresses, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -36,26 +43,63 @@ defmodule Renga.Repo.Migrations.CreateInventoryInterfacesAndAddresses do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :addresses_organization_resource_fkey
+          ),
+          null: false
 
-      add :interface_id, references(:interfaces, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :interface_id,
+          references(:interfaces,
+            with: [organization_id: :organization_id, resource_id: :resource_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :addresses_interface_resource_fkey
+          ),
+          null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
       add :address, :inet, null: false
       add :scope, :string
       add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
-
       timestamps(type: :"timestamp(3)")
     end
 
     create index(:addresses, [:organization_id, :resource_id])
     create index(:addresses, [:organization_id, :interface_id])
-    create index(:addresses, [:organization_id, :source_id])
     create unique_index(:addresses, [:organization_id, :interface_id, :address])
+    create unique_index(:addresses, [:id, :organization_id])
+
+    create table(:prefixes, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :prefixes_organization_resource_fkey
+          ),
+          null: false
+
+      add :prefix, :cidr, null: false
+      add :vrf, :string
+      add :status, :string, null: false, default: "active"
+      add :description, :text
+      add :metadata, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(:prefixes, [:organization_id, :resource_id])
+
+    execute "CREATE INDEX prefixes_prefix_gist_index ON prefixes USING gist (prefix inet_ops)",
+            "DROP INDEX prefixes_prefix_gist_index"
   end
 end

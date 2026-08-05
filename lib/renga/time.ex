@@ -19,7 +19,10 @@ defmodule Renga.Time do
     |> floor_to_millisecond()
   end
 
-  defp floor_to_millisecond(%DateTime{microsecond: {microsecond, _precision}} = datetime) do
+  @doc """
+  Floors a timestamp to the millisecond precision used by persisted timestamps.
+  """
+  def floor_to_millisecond(%DateTime{microsecond: {microsecond, _precision}} = datetime) do
     %{datetime | microsecond: {div(microsecond, 1_000) * 1_000, 6}}
   end
 end

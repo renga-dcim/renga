@@ -10,19 +10,34 @@ defmodule Renga.Inventory do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
+  alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.Agent
+  alias Renga.Inventory.AgentLease
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.Prefix
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.ResourceOverride
+  alias Renga.Inventory.ResourceOwner
+  alias Renga.Inventory.ResourceRelationship
+  alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
 
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
+  @resource_revision_lock_key 1_380_271_687
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -79,8 +94,9 @@ defmodule Renga.Inventory do
   @doc """
   Updates source metadata while keeping token lifecycle separate.
   """
-  def update_source(%Source{} = source, attrs) do
-    source
+  def update_source(%Scope{} = scope, %Source{} = source, attrs) do
+    scope
+    |> get_source!(source.id)
     |> Source.changeset(attrs)
     |> Repo.update()
   end
@@ -145,25 +161,66 @@ defmodule Renga.Inventory do
   def authenticate_source_token(_token), do: :error
 
   @doc """
-  Records that a source contacted Renga.
+  Registers or refreshes an agent and renews its independent liveness lease.
 
-  The freshness timestamp is server-generated so client clock skew cannot make
-  an agent appear fresher than the API actually observed.
+  The source remains a credential/provenance record. Server time determines
+  lease liveness so a client clock cannot extend its own connection state.
   """
-  def record_source_check_in(%Scope{} = scope, source_id, attrs \\ %{}) do
+  def record_agent_check_in(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        attrs \\ %{}
+      ) do
     source = get_source!(scope, source_id)
-    capabilities = Map.get(attrs, :capabilities) || Map.get(attrs, "capabilities")
-    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata")
 
-    attrs =
-      %{}
-      |> maybe_put(:capabilities, capabilities)
-      |> maybe_put(:metadata, merge_metadata(source.metadata, metadata))
-      |> Map.put(:last_seen_at, Renga.Time.utc_now_ms())
+    now =
+      attrs
+      |> get_attr(:checked_in_at)
+      |> case do
+        nil -> Renga.Time.utc_now_ms()
+        checked_in_at -> Renga.Time.floor_to_millisecond(checked_in_at)
+      end
 
-    source
-    |> Source.changeset(attrs)
-    |> Repo.update()
+    agent_attrs = agent_registration_attrs(source, attrs, now)
+
+    Repo.transaction(fn ->
+      agent = upsert_agent!(organization_id, source.id, agent_attrs)
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+      {agent, lease}
+    end)
+  end
+
+  @doc """
+  Fetches a registered agent through the caller's organization scope.
+  """
+  def get_agent!(%Scope{organization_id: organization_id}, id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  @doc """
+  Renews an agent lease using server time or an explicit test/replay timestamp.
+  """
+  def renew_agent_lease(%Scope{organization_id: organization_id} = scope, agent_id, attrs \\ %{}) do
+    agent = get_agent!(scope, agent_id)
+
+    renewed_at =
+      Map.get(attrs, :renewed_at) || Map.get(attrs, "renewed_at") || Renga.Time.utc_now_ms()
+
+    ttl_ms = Map.get(attrs, :ttl_ms) || Map.get(attrs, "ttl_ms") || 90_000
+
+    put_agent_lease(organization_id, agent.id, renewed_at, ttl_ms)
+  end
+
+  @doc """
+  Fetches the current renewable lease for a scoped agent.
+  """
+  def get_agent_lease!(%Scope{organization_id: organization_id}, agent_id) do
+    AgentLease
+    |> where([lease], lease.organization_id == ^organization_id)
+    |> where([lease], lease.agent_id == ^agent_id)
+    |> Repo.one!()
   end
 
   @doc """
@@ -172,7 +229,7 @@ defmodule Renga.Inventory do
   def list_resources(%Scope{organization_id: organization_id}) do
     Resource
     |> where([resource], resource.organization_id == ^organization_id)
-    |> order_by([resource], asc: resource.hostname, asc: resource.id)
+    |> order_by([resource], asc: resource.name, asc: resource.id)
     |> Repo.all()
   end
 
@@ -192,18 +249,59 @@ defmodule Renga.Inventory do
   resources in another tenant by passing forged attrs.
   """
   def create_resource(%Scope{organization_id: organization_id}, attrs) do
-    %Resource{organization_id: organization_id}
-    |> Resource.changeset(attrs)
-    |> Repo.insert()
+    Repo.transaction(fn ->
+      revision = next_resource_revision!()
+
+      resource =
+        %Resource{organization_id: organization_id}
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> insert_or_rollback()
+
+      insert_resource_revision!(resource, revision, "created")
+      resource
+    end)
   end
 
   @doc """
-  Updates canonical resource fields without changing its tenant.
+  Updates canonical resource fields within the caller's organization scope.
   """
-  def update_resource(%Resource{} = resource, attrs) do
-    resource
-    |> Resource.changeset(attrs)
-    |> Repo.update()
+  def update_resource(
+        %Scope{organization_id: organization_id},
+        %Resource{} = resource,
+        attrs
+      ) do
+    Repo.transaction(fn ->
+      stored_resource =
+        Resource
+        |> where([stored], stored.id == ^resource.id)
+        |> where([stored], stored.organization_id == ^organization_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
+
+      if stored_resource.resource_version != resource.resource_version do
+        stored_resource
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.add_error(:resource_version, "is stale")
+        |> Repo.rollback()
+      end
+
+      revision = next_resource_revision!()
+
+      resource =
+        stored_resource
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> update_or_rollback()
+
+      insert_resource_revision!(
+        resource,
+        revision,
+        revision_action(stored_resource, resource)
+      )
+
+      resource
+    end)
   end
 
   @doc """
@@ -214,7 +312,97 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Lists observed identifiers for a resource in the caller's organization.
+  Creates the typed host projection for a server-like resource.
+
+  The projection is source-neutral current state. Host observations and their
+  provenance are retained separately and reconciled into this row later.
+  """
+  def create_host(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+
+    %Host{organization_id: organization_id, resource_id: resource.id}
+    |> Host.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Fetches a typed host projection through its resource tenant boundary.
+  """
+  def get_host_by_resource!(%Scope{organization_id: organization_id}, resource_id) do
+    Host
+    |> where([host], host.organization_id == ^organization_id)
+    |> where([host], host.resource_id == ^resource_id)
+    |> Repo.one!()
+  end
+
+  @doc """
+  Lists current conditions for a scoped resource.
+  """
+  def list_resource_conditions(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceCondition
+    |> where([condition], condition.organization_id == ^organization_id)
+    |> where([condition], condition.resource_id == ^resource_id)
+    |> order_by([condition], asc: condition.type)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates or transitions one independent resource condition.
+
+  `last_transition_at` advances only when status changes. Reason and message can
+  still be refreshed without making a stable condition appear newly changed.
+  """
+  def put_resource_condition(%Scope{organization_id: organization_id}, resource_id, attrs) do
+    Repo.transaction(fn ->
+      resource =
+        Resource
+        |> where([resource], resource.id == ^resource_id)
+        |> where([resource], resource.organization_id == ^organization_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
+
+      type = Map.get(attrs, :type) || Map.get(attrs, "type")
+
+      existing =
+        Repo.get_by(ResourceCondition,
+          organization_id: organization_id,
+          resource_id: resource.id,
+          type: type
+        )
+
+      transition_at = condition_transition_at(existing, attrs)
+      attrs = put_condition_transition_at(attrs, transition_at)
+
+      changeset =
+        (existing ||
+           %ResourceCondition{
+             organization_id: organization_id,
+             resource_id: resource.id
+           })
+        |> ResourceCondition.changeset(attrs)
+        |> validate_condition_transition(existing)
+        |> validate_condition_generation(existing, resource)
+
+      case Repo.insert_or_update(changeset) do
+        {:ok, condition} -> condition
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  @doc """
+  Lists ordered revisions for a scoped resource.
+  """
+  def list_resource_revisions(%Scope{organization_id: organization_id}, resource_id) do
+    ResourceRevision
+    |> where([revision], revision.organization_id == ^organization_id)
+    |> where([revision], revision.resource_id == ^resource_id)
+    |> order_by([revision], asc: revision.revision)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists canonical identifiers for a resource in the caller's organization.
   """
   def list_resource_identifiers(%Scope{organization_id: organization_id}, resource_id) do
     ResourceIdentifier
@@ -225,7 +413,7 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Adds observed identity evidence to a resource.
+  Adds a source-neutral canonical identifier to a resource.
 
   The organization id is copied from the caller scope and the resource must be
   fetched through the same scope before this function is called.
@@ -236,14 +424,77 @@ defmodule Renga.Inventory do
         attrs
       ) do
     resource = get_resource!(scope, resource_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %ResourceIdentifier{
       organization_id: organization_id,
-      resource_id: resource.id,
-      source_id: source_id_from_attrs(attrs)
+      resource_id: resource.id
     }
     |> ResourceIdentifier.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists source claims for one canonical resource, including conflicting values.
+  """
+  def list_resource_identifier_claims(
+        %Scope{organization_id: organization_id},
+        resource_id
+      ) do
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.resource_id == ^resource_id)
+    |> order_by([claim], asc: claim.kind, asc: claim.normalized_value, asc: claim.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc """
+  Stores one observation-scoped source assertion about identity.
+
+  Canonical links are optional because unresolved and conflicting claims must be
+  representable before the reconciler chooses a resource.
+  """
+  def create_resource_identifier_claim(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        attrs
+      ) do
+    source = get_source!(scope, source_id)
+    observation = get_source_observation!(scope, source.id, observation_id)
+
+    attrs =
+      attrs
+      |> put_attr(:first_seen_at, observation.observed_at)
+      |> put_attr(:last_seen_at, observation.observed_at)
+
+    resource =
+      case get_attr(attrs, :resource_id) do
+        nil -> nil
+        id -> get_resource!(scope, id)
+      end
+
+    resource_identifier =
+      case get_attr(attrs, :resource_identifier_id) do
+        nil -> nil
+        id -> get_resource_identifier!(scope, id)
+      end
+
+    resource_id =
+      case {resource, resource_identifier} do
+        {%Resource{id: id}, _resource_identifier} -> id
+        {nil, %ResourceIdentifier{resource_id: id}} -> id
+        {nil, nil} -> nil
+      end
+
+    %ResourceIdentifierClaim{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      resource_id: resource_id,
+      resource_identifier_id: resource_identifier && resource_identifier.id
+    }
+    |> ResourceIdentifierClaim.changeset(attrs)
+    |> validate_claim_resource_link(resource, resource_identifier)
     |> Repo.insert()
   end
 
@@ -272,12 +523,10 @@ defmodule Renga.Inventory do
   """
   def create_interface(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
     resource = get_resource!(scope, resource_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %Interface{
       organization_id: organization_id,
-      resource_id: resource.id,
-      source_id: source_id_from_attrs(attrs)
+      resource_id: resource.id
     }
     |> Interface.changeset(attrs)
     |> Repo.insert()
@@ -302,13 +551,11 @@ defmodule Renga.Inventory do
   """
   def create_address(%Scope{organization_id: organization_id} = scope, interface_id, attrs) do
     interface = get_interface!(scope, interface_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %Address{
       organization_id: organization_id,
       resource_id: interface.resource_id,
-      interface_id: interface.id,
-      source_id: source_id_from_attrs(attrs)
+      interface_id: interface.id
     }
     |> Address.changeset(attrs)
     |> Repo.insert()
@@ -333,8 +580,7 @@ defmodule Renga.Inventory do
   Creates a directed relationship between two scoped interfaces.
 
   The relationship source and target must both belong to the caller's
-  organization. Optional `source_id` is provenance for the collector that
-  observed the relationship.
+  organization. Collector provenance is stored in relationship evidence.
   """
   def create_interface_relationship(
         %Scope{organization_id: organization_id} = scope,
@@ -344,16 +590,150 @@ defmodule Renga.Inventory do
       ) do
     source_interface = get_interface!(scope, source_interface_id)
     target_interface = get_interface!(scope, target_interface_id)
-    attrs = normalize_source_attrs(scope, attrs)
 
     %InterfaceRelationship{
       organization_id: organization_id,
       source_interface_id: source_interface.id,
-      target_interface_id: target_interface.id,
-      source_id: source_id_from_attrs(attrs)
+      target_interface_id: target_interface.id
     }
     |> InterfaceRelationship.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc """
+  Creates a typed canonical IPAM prefix for a resource envelope.
+  """
+  def create_prefix(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+
+    %Prefix{organization_id: organization_id, resource_id: resource.id}
+    |> Prefix.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical interface.
+  """
+  def create_interface_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        interface_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    interface = get_interface!(scope, interface_id)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
+
+    %InterfaceEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      interface_id: interface.id
+    }
+    |> InterfaceEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical assigned address.
+  """
+  def create_address_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        address_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    address = get_address!(scope, address_id)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
+
+    %AddressEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      address_id: address.id
+    }
+    |> AddressEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stores one source observation of a canonical interface relationship.
+  """
+  def create_interface_relationship_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        relationship_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    relationship = get_interface_relationship!(scope, relationship_id)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
+
+    %InterfaceRelationshipEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      interface_relationship_id: relationship.id
+    }
+    |> InterfaceRelationshipEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Creates a cross-domain topology link when no typed relationship table applies.
+  """
+  def create_resource_relationship(
+        %Scope{organization_id: organization_id} = scope,
+        source_resource_id,
+        target_resource_id,
+        attrs
+      ) do
+    source_resource = get_resource!(scope, source_resource_id)
+    target_resource = get_resource!(scope, target_resource_id)
+
+    %ResourceRelationship{
+      organization_id: organization_id,
+      source_resource_id: source_resource.id,
+      target_resource_id: target_resource.id
+    }
+    |> ResourceRelationship.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Creates lifecycle ownership separately from descriptive topology.
+  """
+  def create_resource_owner(
+        %Scope{organization_id: organization_id} = scope,
+        owner_resource_id,
+        child_resource_id,
+        attrs
+      ) do
+    owner_resource = get_resource!(scope, owner_resource_id)
+    child_resource = get_resource!(scope, child_resource_id)
+
+    %ResourceOwner{
+      organization_id: organization_id,
+      owner_resource_id: owner_resource.id,
+      child_resource_id: child_resource.id
+    }
+    |> ResourceOwner.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists lifecycle owners for a scoped child resource.
+  """
+  def list_resource_owners(%Scope{organization_id: organization_id}, child_resource_id) do
+    ResourceOwner
+    |> where([owner], owner.organization_id == ^organization_id)
+    |> where([owner], owner.child_resource_id == ^child_resource_id)
+    |> order_by([owner], desc: owner.controller, asc: owner.inserted_at)
+    |> Repo.all()
   end
 
   @doc """
@@ -386,7 +766,7 @@ defmodule Renga.Inventory do
 
     attrs =
       attrs
-      |> Map.put_new(:started_at, Renga.Time.utc_now_ms())
+      |> put_new_attr(:started_at, Renga.Time.utc_now_ms())
 
     %SyncRun{
       organization_id: organization_id,
@@ -397,12 +777,11 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Lists raw observations for a scoped resource, newest first.
+  Lists immutable raw observations in the caller's organization, newest first.
   """
-  def list_observations(%Scope{organization_id: organization_id}, resource_id) do
+  def list_observations(%Scope{organization_id: organization_id}) do
     Observation
     |> where([observation], observation.organization_id == ^organization_id)
-    |> where([observation], observation.resource_id == ^resource_id)
     |> order_by([observation], desc: observation.observed_at)
     |> Repo.all()
   end
@@ -410,18 +789,17 @@ defmodule Renga.Inventory do
   @doc """
   Stores one raw source payload.
 
-  The payload digest is computed when absent so duplicate submissions can be
-  rejected without requiring every collector to pre-hash its own payload.
+  The payload digest is always computed by the server so duplicate detection
+  cannot be influenced by a caller-provided digest.
   """
   def create_observation(%Scope{organization_id: organization_id} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
-    attrs = normalize_observation_attrs(scope, attrs)
+    attrs = normalize_observation_attrs(scope, source.id, attrs)
 
     %Observation{
       organization_id: organization_id,
       source_id: source.id,
-      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),
-      resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id")
+      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id")
     }
     |> Observation.changeset(attrs)
     |> Repo.insert()
@@ -436,17 +814,52 @@ defmodule Renga.Inventory do
   """
   def accept_observation(%Scope{} = scope, source_id, attrs) do
     source = get_source!(scope, source_id)
-    attrs = normalize_observation_attrs(scope, attrs)
-    observation_id = Map.get(attrs, :observation_id) || Map.get(attrs, "observation_id")
+    attrs = normalize_observation_attrs(scope, source.id, attrs)
+    idempotency_key = Map.get(attrs, :idempotency_key) || Map.get(attrs, "idempotency_key")
     payload_digest = Map.get(attrs, :payload_digest) || Map.get(attrs, "payload_digest")
 
-    case find_idempotent_observation(scope, source.id, observation_id, payload_digest) do
+    case find_idempotent_observation(scope, source.id, idempotency_key) do
       %Observation{} = observation ->
         idempotent_observation_result(observation, payload_digest)
 
       nil ->
-        insert_idempotent_observation(scope, source.id, attrs, observation_id, payload_digest)
+        insert_idempotent_observation(scope, source.id, attrs, idempotency_key, payload_digest)
     end
+  end
+
+  @doc """
+  Records a scoped reconciliation attempt without mutating raw evidence.
+  """
+  def create_observation_reconciliation(
+        %Scope{organization_id: organization_id} = scope,
+        observation_id,
+        attrs
+      ) do
+    observation = get_observation!(scope, observation_id)
+    attrs = normalize_scoped_assoc(attrs, scope, :matched_resource_id, &get_resource!/2)
+
+    %ObservationReconciliation{
+      organization_id: organization_id,
+      observation_id: observation.id,
+      matched_resource_id:
+        Map.get(attrs, :matched_resource_id) || Map.get(attrs, "matched_resource_id")
+    }
+    |> ObservationReconciliation.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists processing attempts for one scoped observation in attempt order.
+  """
+  def list_observation_reconciliations(
+        %Scope{organization_id: organization_id},
+        observation_id
+      ) do
+    ObservationReconciliation
+    |> where([result], result.organization_id == ^organization_id)
+    |> where([result], result.observation_id == ^observation_id)
+    |> order_by([result], asc: result.attempt)
+    |> Repo.all()
   end
 
   @doc """
@@ -481,10 +894,10 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Marks a resource stale inside the caller's organization.
+  Marks the resource inventory condition stale inside the caller's organization.
 
-  Staleness is a canonical resource state, while the companion change event
-  keeps a durable explanation for later timelines.
+  Freshness is independent from lifecycle: an active resource can have stale
+  inventory without becoming inactive or retired.
   """
   def mark_resource_stale(
         %Scope{} = scope,
@@ -493,13 +906,14 @@ defmodule Renga.Inventory do
       ) do
     resource = get_resource!(scope, resource_id)
 
-    resource
-    |> Resource.changeset(%{
-      status: "stale",
-      stale_at: stale_at,
-      last_changed_at: stale_at
+    put_resource_condition(scope, resource.id, %{
+      type: "InventoryCurrent",
+      status: "false",
+      reason: "Stale",
+      message: "No current inventory observation is available",
+      observed_generation: resource.generation,
+      last_transition_at: stale_at
     })
-    |> Repo.update()
   end
 
   @doc """
@@ -544,32 +958,365 @@ defmodule Renga.Inventory do
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
 
+  defp next_resource_revision! do
+    # Hold allocation order until commit so a watch cursor cannot pass an
+    # earlier revision that is still invisible in another transaction.
+    Repo.query!("SELECT pg_advisory_xact_lock($1)", [@resource_revision_lock_key])
+    %{rows: [[revision]]} = Repo.query!("SELECT nextval('resource_revision_sequence')")
+    revision
+  end
+
+  defp insert_resource_revision!(resource, revision, action) do
+    %ResourceRevision{
+      organization_id: resource.organization_id,
+      resource_id: resource.id
+    }
+    |> ResourceRevision.changeset(%{
+      revision: revision,
+      action: action,
+      generation: resource.generation,
+      snapshot: resource_snapshot(resource)
+    })
+    |> Repo.insert!()
+  end
+
+  defp resource_snapshot(resource) do
+    %{
+      "id" => resource.id,
+      "kind" => resource.kind,
+      "name" => resource.name,
+      "display_name" => resource.display_name,
+      "lifecycle_state" => resource.lifecycle_state,
+      "spec" => resource.spec,
+      "generation" => resource.generation,
+      "resource_version" => resource.resource_version,
+      "labels" => resource.labels,
+      "annotations" => resource.annotations,
+      "deletion_requested_at" => resource.deletion_requested_at
+    }
+  end
+
+  defp revision_action(
+         %Resource{deletion_requested_at: nil},
+         %Resource{deletion_requested_at: deletion_requested_at}
+       )
+       when not is_nil(deletion_requested_at),
+       do: "deletion_requested"
+
+  defp revision_action(%Resource{}, %Resource{}), do: "updated"
+
+  defp insert_or_rollback(changeset) do
+    case Repo.insert(changeset) do
+      {:ok, record} -> record
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp update_or_rollback(changeset) do
+    case Repo.update(changeset) do
+      {:ok, record} -> record
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp agent_registration_attrs(source, attrs, now) do
+    metadata = get_attr(attrs, :metadata)
+
+    %{
+      name: get_attr(attrs, :name) || source.name,
+      registered_at: now
+    }
+    |> maybe_put(:version, get_attr(attrs, :version) || metadata_version(metadata))
+    |> maybe_put(:capabilities, get_attr(attrs, :capabilities))
+    |> maybe_put(:metadata, metadata)
+  end
+
+  defp upsert_agent!(organization_id, source_id, attrs) do
+    update_version? = Map.has_key?(attrs, :version)
+    update_capabilities? = Map.has_key?(attrs, :capabilities)
+    merge_metadata? = Map.has_key?(attrs, :metadata)
+
+    on_conflict =
+      from(agent in Agent,
+        update: [
+          set: [
+            name:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.name ELSE ? END",
+                agent.updated_at,
+                agent.name
+              ),
+            version:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN EXCLUDED.version ELSE ? END",
+                agent.updated_at,
+                ^update_version?,
+                agent.version
+              ),
+            capabilities:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN EXCLUDED.capabilities ELSE ? END",
+                agent.updated_at,
+                ^update_capabilities?,
+                agent.capabilities
+              ),
+            metadata:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at >= ? AND ? THEN ? || EXCLUDED.metadata ELSE ? END",
+                agent.updated_at,
+                ^merge_metadata?,
+                agent.metadata,
+                agent.metadata
+              ),
+            updated_at:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.updated_at ELSE ? END",
+                agent.updated_at,
+                agent.updated_at
+              )
+          ]
+        ]
+      )
+
+    changeset =
+      %Agent{organization_id: organization_id, source_id: source_id}
+      |> Agent.changeset(attrs)
+      |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
+
+    changeset =
+      if merge_metadata? do
+        existing_agent =
+          Agent
+          |> where([agent], agent.organization_id == ^organization_id)
+          |> where([agent], agent.source_id == ^source_id)
+          |> select([agent], %{metadata: agent.metadata, updated_at: agent.updated_at})
+          |> Repo.one()
+
+        case existing_agent do
+          nil ->
+            validate_agent_metadata_size(changeset, attrs.metadata)
+
+          existing_agent ->
+            validate_agent_metadata_merge(changeset, attrs, existing_agent)
+        end
+      else
+        changeset
+      end
+
+    result =
+      Repo.insert(changeset,
+        on_conflict: on_conflict,
+        conflict_target: [:organization_id, :source_id],
+        returning: true
+      )
+
+    case result do
+      {:ok, agent} -> agent
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp validate_agent_metadata_merge(changeset, attrs, existing_agent) do
+    if DateTime.compare(attrs.registered_at, existing_agent.updated_at) in [:eq, :gt] do
+      validate_agent_metadata_size(
+        changeset,
+        Map.merge(existing_agent.metadata, attrs.metadata)
+      )
+    else
+      changeset
+    end
+  end
+
+  defp validate_agent_metadata_size(changeset, metadata) do
+    max_bytes = AgentPayload.max_agent_metadata_bytes()
+
+    if metadata |> Jason.encode!() |> byte_size() <= max_bytes do
+      changeset
+    else
+      Ecto.Changeset.add_error(
+        changeset,
+        :metadata,
+        "must encode to at most #{max_bytes} bytes"
+      )
+    end
+  end
+
+  defp put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms)
+       when is_integer(ttl_ms) and ttl_ms > 0 do
+    expires_at = DateTime.add(renewed_at, ttl_ms, :millisecond)
+
+    on_conflict =
+      from(lease in AgentLease,
+        update: [
+          set: [
+            renewed_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.renewed_at ELSE ? END",
+                lease.renewed_at,
+                lease.renewed_at
+              ),
+            expires_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.expires_at ELSE ? END",
+                lease.renewed_at,
+                lease.expires_at
+              ),
+            updated_at:
+              fragment(
+                "CASE WHEN EXCLUDED.renewed_at > ? THEN EXCLUDED.updated_at ELSE ? END",
+                lease.renewed_at,
+                lease.updated_at
+              )
+          ]
+        ]
+      )
+
+    %AgentLease{organization_id: organization_id, agent_id: agent_id}
+    |> AgentLease.changeset(%{renewed_at: renewed_at, expires_at: expires_at})
+    |> Repo.insert(
+      on_conflict: on_conflict,
+      conflict_target: [:organization_id, :agent_id],
+      returning: true
+    )
+  end
+
+  defp put_agent_lease!(organization_id, agent_id, renewed_at, ttl_ms) do
+    case put_agent_lease(organization_id, agent_id, renewed_at, ttl_ms) do
+      {:ok, lease} -> lease
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp metadata_version(metadata) when is_map(metadata), do: Map.get(metadata, "agent_version")
+  defp metadata_version(_metadata), do: nil
+
+  defp get_attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+
+  defp condition_transition_at(nil, attrs) do
+    attrs
+    |> get_attr(:last_transition_at)
+    |> normalize_transition_at()
+  end
+
+  defp condition_transition_at(condition, attrs) do
+    status = Map.get(attrs, :status) || Map.get(attrs, "status") || condition.status
+
+    if status == condition.status do
+      condition.last_transition_at
+    else
+      attrs
+      |> get_attr(:last_transition_at)
+      |> normalize_transition_at(condition.last_transition_at)
+    end
+  end
+
+  defp normalize_transition_at(nil), do: Renga.Time.utc_now_ms()
+  defp normalize_transition_at(transition_at), do: Renga.Time.floor_to_millisecond(transition_at)
+
+  defp normalize_transition_at(nil, previous_transition_at),
+    do: next_transition_at(previous_transition_at)
+
+  defp normalize_transition_at(transition_at, _previous_transition_at),
+    do: Renga.Time.floor_to_millisecond(transition_at)
+
+  defp next_transition_at(previous_transition_at) do
+    now = Renga.Time.utc_now_ms()
+
+    if DateTime.compare(now, previous_transition_at) == :gt do
+      now
+    else
+      DateTime.add(previous_transition_at, 1, :millisecond)
+    end
+  end
+
+  defp validate_condition_transition(changeset, nil), do: changeset
+
+  defp validate_condition_transition(changeset, condition) do
+    status = Ecto.Changeset.get_field(changeset, :status)
+    transition_at = Ecto.Changeset.get_field(changeset, :last_transition_at)
+
+    if (status != condition.status and transition_at) &&
+         DateTime.compare(transition_at, condition.last_transition_at) != :gt do
+      Ecto.Changeset.add_error(
+        changeset,
+        :last_transition_at,
+        "must be after the previous transition"
+      )
+    else
+      changeset
+    end
+  end
+
+  defp validate_condition_generation(changeset, condition, resource) do
+    observed_generation = Ecto.Changeset.get_field(changeset, :observed_generation)
+
+    cond do
+      observed_generation && observed_generation > resource.generation ->
+        Ecto.Changeset.add_error(
+          changeset,
+          :observed_generation,
+          "cannot exceed the resource generation"
+        )
+
+      condition && condition.observed_generation &&
+          (is_nil(observed_generation) || observed_generation < condition.observed_generation) ->
+        Ecto.Changeset.add_error(
+          changeset,
+          :observed_generation,
+          "cannot be older than the current condition"
+        )
+
+      true ->
+        changeset
+    end
+  end
+
+  defp put_condition_transition_at(attrs, transition_at) do
+    if Enum.all?(Map.keys(attrs), &is_binary/1) do
+      Map.put(attrs, "last_transition_at", transition_at)
+    else
+      Map.put(attrs, :last_transition_at, transition_at)
+    end
+  end
+
+  defp put_new_attr(attrs, key, value) do
+    if Enum.all?(Map.keys(attrs), &is_binary/1) do
+      Map.put_new(attrs, Atom.to_string(key), value)
+    else
+      Map.put_new(attrs, key, value)
+    end
+  end
+
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
-  defp merge_metadata(_current_metadata, nil), do: nil
-
-  defp merge_metadata(current_metadata, metadata) when is_map(metadata) do
-    Map.merge(current_metadata || %{}, metadata)
-  end
-
-  defp normalize_observation_attrs(scope, attrs) do
+  defp normalize_observation_attrs(scope, source_id, attrs) do
     payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
 
+    idempotency_key =
+      Map.get(attrs, :idempotency_key) ||
+        Map.get(attrs, "idempotency_key") ||
+        Map.get(attrs, :observation_id) ||
+        Map.get(attrs, "observation_id")
+
     attrs
-    |> Map.put_new(:observed_at, Renga.Time.utc_now_ms())
-    |> Map.put_new(:payload_digest, digest_payload(payload))
-    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
-    |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
+    |> put_attr(:idempotency_key, idempotency_key)
+    |> put_new_attr(:observed_at, Renga.Time.utc_now_ms())
+    |> put_attr(:payload_digest, digest_payload(payload))
+    |> normalize_scoped_assoc(
+      scope,
+      :sync_run_id,
+      &get_source_sync_run!(&1, source_id, &2)
+    )
   end
 
-  defp insert_idempotent_observation(scope, source_id, attrs, observation_id, payload_digest) do
+  defp insert_idempotent_observation(scope, source_id, attrs, idempotency_key, payload_digest) do
     case create_observation(scope, source_id, attrs) do
       {:ok, observation} ->
         {:ok, observation, :created}
 
       {:error, changeset} ->
-        case find_idempotent_observation(scope, source_id, observation_id, payload_digest) do
+        case find_idempotent_observation(scope, source_id, idempotency_key) do
           %Observation{} = observation ->
             idempotent_observation_result(observation, payload_digest)
 
@@ -587,66 +1334,64 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp find_idempotent_observation(_scope, _source_id, nil, nil), do: nil
-
   defp find_idempotent_observation(
          %Scope{organization_id: organization_id},
          source_id,
-         nil,
-         digest
+         idempotency_key
        ) do
     Repo.get_by(Observation,
       organization_id: organization_id,
       source_id: source_id,
-      payload_digest: digest
+      idempotency_key: idempotency_key
     )
-  end
-
-  defp find_idempotent_observation(
-         %Scope{organization_id: organization_id},
-         source_id,
-         observation_id,
-         nil
-       ) do
-    Repo.get_by(Observation,
-      organization_id: organization_id,
-      source_id: source_id,
-      observation_id: observation_id
-    )
-  end
-
-  defp find_idempotent_observation(
-         %Scope{organization_id: organization_id},
-         source_id,
-         observation_id,
-         digest
-       ) do
-    Repo.get_by(Observation,
-      organization_id: organization_id,
-      source_id: source_id,
-      observation_id: observation_id
-    ) ||
-      Repo.get_by(Observation,
-        organization_id: organization_id,
-        source_id: source_id,
-        payload_digest: digest
-      )
   end
 
   defp normalize_change_event_attrs(scope, attrs) do
     attrs
-    |> Map.put_new(:occurred_at, Renga.Time.utc_now_ms())
-    |> normalize_scoped_assoc(scope, :source_id, &get_source!/2)
+    |> put_new_attr(:occurred_at, Renga.Time.utc_now_ms())
     |> normalize_scoped_assoc(scope, :resource_id, &get_resource!/2)
-    |> normalize_scoped_assoc(scope, :sync_run_id, &get_sync_run!/2)
-    |> normalize_scoped_assoc(scope, :observation_id, &get_observation!/2)
+    |> normalize_change_event_provenance(scope)
   end
 
-  defp normalize_source_attrs(scope, attrs) do
-    normalize_scoped_assoc(attrs, scope, :source_id, &get_source!/2)
+  defp normalize_change_event_provenance(attrs, scope) do
+    case get_attr(attrs, :observation_id) do
+      nil -> normalize_change_event_without_observation(attrs, scope)
+      observation_id -> normalize_change_event_with_observation(attrs, scope, observation_id)
+    end
   end
 
-  defp source_id_from_attrs(attrs), do: Map.get(attrs, :source_id) || Map.get(attrs, "source_id")
+  defp normalize_change_event_with_observation(attrs, scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    source_id = get_attr(attrs, :source_id) || observation.source_id
+    sync_run_id = get_attr(attrs, :sync_run_id) || observation.sync_run_id
+
+    get_source_observation!(scope, source_id, observation.id)
+
+    if sync_run_id do
+      get_observation_sync_run!(scope, observation.id, sync_run_id)
+    end
+
+    attrs
+    |> put_attr(:observation_id, observation.id)
+    |> put_attr(:source_id, source_id)
+    |> put_attr(:sync_run_id, sync_run_id)
+  end
+
+  defp normalize_change_event_without_observation(attrs, scope) do
+    case get_attr(attrs, :sync_run_id) do
+      nil ->
+        normalize_scoped_assoc(attrs, scope, :source_id, &get_source!/2)
+
+      sync_run_id ->
+        sync_run = get_sync_run!(scope, sync_run_id)
+        source_id = get_attr(attrs, :source_id) || sync_run.source_id
+        get_source_sync_run!(scope, source_id, sync_run.id)
+
+        attrs
+        |> put_attr(:source_id, source_id)
+        |> put_attr(:sync_run_id, sync_run.id)
+    end
+  end
 
   defp normalize_scoped_assoc(attrs, scope, field, fetch_fun) do
     value = Map.get(attrs, field) || Map.get(attrs, Atom.to_string(field))
@@ -655,13 +1400,115 @@ defmodule Renga.Inventory do
       attrs
     else
       record = fetch_fun.(scope, value)
-      Map.put(attrs, field, record.id)
+      put_attr(attrs, field, record.id)
     end
   end
+
+  defp put_attr(attrs, key, value) do
+    string_key = Atom.to_string(key)
+
+    if Map.has_key?(attrs, string_key) or Enum.all?(Map.keys(attrs), &is_binary/1) do
+      Map.put(attrs, string_key, value)
+    else
+      Map.put(attrs, key, value)
+    end
+  end
+
+  defp validate_claim_resource_link(changeset, resource, resource_identifier) do
+    changeset
+    |> validate_claim_resource(resource, resource_identifier)
+    |> validate_claim_identifier(resource_identifier)
+  end
+
+  defp validate_claim_resource(
+         changeset,
+         %Resource{id: resource_id},
+         %ResourceIdentifier{resource_id: identifier_resource_id}
+       )
+       when resource_id != identifier_resource_id do
+    Ecto.Changeset.add_error(changeset, :resource_id, "must match resource identifier")
+  end
+
+  defp validate_claim_resource(changeset, _resource, _resource_identifier), do: changeset
+
+  defp validate_claim_identifier(changeset, %ResourceIdentifier{} = resource_identifier) do
+    claim_kind = Ecto.Changeset.get_field(changeset, :kind)
+    claim_value = Ecto.Changeset.get_field(changeset, :normalized_value)
+
+    if is_binary(claim_kind) and is_binary(claim_value) and
+         (claim_kind != resource_identifier.kind or
+            claim_value != resource_identifier.normalized_value) do
+      Ecto.Changeset.add_error(
+        changeset,
+        :resource_identifier_id,
+        "must match claim kind and normalized value"
+      )
+    else
+      changeset
+    end
+  end
+
+  defp validate_claim_identifier(changeset, nil), do: changeset
 
   defp get_observation!(%Scope{organization_id: organization_id}, id) do
     Observation
     |> where([observation], observation.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp get_source_observation!(
+         %Scope{organization_id: organization_id},
+         source_id,
+         observation_id
+       ) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.source_id == ^source_id)
+    |> Repo.get!(observation_id)
+  end
+
+  defp get_source_sync_run!(
+         %Scope{organization_id: organization_id},
+         source_id,
+         sync_run_id
+       ) do
+    SyncRun
+    |> where([sync_run], sync_run.organization_id == ^organization_id)
+    |> where([sync_run], sync_run.source_id == ^source_id)
+    |> Repo.get!(sync_run_id)
+  end
+
+  defp get_observation_sync_run!(
+         %Scope{organization_id: organization_id},
+         observation_id,
+         sync_run_id
+       ) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.sync_run_id == ^sync_run_id)
+    |> Repo.get!(observation_id)
+  end
+
+  defp source_observation!(scope, source_id, observation_id) do
+    source = get_source!(scope, source_id)
+    {source, get_source_observation!(scope, source.id, observation_id)}
+  end
+
+  defp get_address!(%Scope{organization_id: organization_id}, id) do
+    Address
+    |> where([address], address.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp get_interface_relationship!(%Scope{organization_id: organization_id}, id) do
+    InterfaceRelationship
+    |> where([relationship], relationship.organization_id == ^organization_id)
+    |> Repo.get!(id)
+  end
+
+  defp get_resource_identifier!(%Scope{organization_id: organization_id}, id) do
+    ResourceIdentifier
+    |> where([identifier], identifier.organization_id == ^organization_id)
     |> Repo.get!(id)
   end
 

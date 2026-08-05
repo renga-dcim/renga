@@ -270,12 +270,14 @@ Recommended source fields:
 Recommended agent fields:
 
 - =source_id=
-- stable installation ID
+- stable installation ID (the current one-agent-per-source API uses =source_id=)
 - optional managed resource ID
 - version and capabilities
 - registration and configuration metadata
 
-=AgentLease= stores holder/session identity, renewal time, and lease duration.
+=AgentLease= identifies its holder through =agent_id= and stores renewal and
+expiration times. Add a separate session identity when the agent protocol can
+send one reliably.
 Lease renewal is lightweight and independent from full inventory collection.
 Keep separate timestamps for API contact, latest inventory, latest successful
 inventory, and lease renewal. Agent online and inventory current are different
@@ -285,7 +287,7 @@ conditions.
 
 =Observation= is immutable raw evidence. It contains the organization, source,
 optional sync run, source-provided idempotency key, observed time, payload
-digest, payload, metadata, UUIDv7 ID, and matching =inserted_at=. It does not
+digest, payload, UUIDv7 ID, and matching =inserted_at=. It does not
 contain mutable processing status, reconciliation errors, or a canonical
 resource assignment.
 
@@ -671,7 +673,7 @@ Each source should define:
 
 - Add =Renga.Inventory= context.
 - Add resource envelopes, typed projections, conditions, canonical identifiers, per-source claims, immutable observations, reconciliation results, agents, leases, interfaces, addresses, sync runs, and audit events.
-- Store interface MAC addresses as PostgreSQL =macaddr=, interface IP addresses as PostgreSQL =inet=, and future IPAM prefixes/subnets as PostgreSQL =cidr=.
+- Store interface MAC addresses as PostgreSQL =macaddr=, interface IP addresses as PostgreSQL =inet=, and managed IPAM prefixes/subnets as PostgreSQL =cidr=.
 - Add basic CRUD functions in the context.
 - Add tests for creation, source evidence, safe duplicate representation, observation immutability, conditions, leases, and lifecycle transitions.
 

@@ -2,6 +2,9 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
   use Ecto.Migration
 
   def change do
+    execute "CREATE SEQUENCE resource_revision_sequence AS bigint",
+            "DROP SEQUENCE resource_revision_sequence"
+
     create table(:resources, primary_key: false) do
       add :id, :binary_id, primary_key: true
 
@@ -9,40 +12,111 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
         null: false
 
       add :kind, :string, null: false
-      add :external_id, :string
-      add :serial_number, :string
-      add :asset_tag, :string
-      add :hostname, :string
-      add :fqdn, :string
-      add :vendor, :string
-      add :model, :string
-      add :status, :string, null: false, default: "unknown"
-      add :metadata, :map, null: false, default: %{}
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
-      add :last_changed_at, :"timestamp(3)"
-      add :stale_at, :"timestamp(3)"
+      add :name, :string, null: false
+      add :display_name, :string
+      add :lifecycle_state, :string, null: false, default: "unknown"
+      add :spec, :map, null: false, default: %{}
+      add :generation, :bigint, null: false, default: 1
+      add :resource_version, :bigint, null: false
+      add :labels, :map, null: false, default: %{}
+      add :annotations, :map, null: false, default: %{}
+      add :deletion_requested_at, :"timestamp(3)"
 
       timestamps(type: :"timestamp(3)")
     end
 
+    create unique_index(:resources, [:organization_id, :kind, :name])
+    create unique_index(:resources, [:id, :organization_id])
     create index(:resources, [:organization_id, :kind])
-    create index(:resources, [:organization_id, :status])
-    create index(:resources, [:organization_id, :hostname])
-    create index(:resources, [:organization_id, :fqdn])
-    create index(:resources, [:organization_id, :last_seen_at])
+    create index(:resources, [:organization_id, :lifecycle_state])
+    create index(:resources, [:organization_id, :resource_version])
+    create index(:resources, [:labels], using: :gin)
 
-    create unique_index(:resources, [:organization_id, :external_id],
-             where: "external_id IS NOT NULL"
-           )
+    create table(:hosts, primary_key: false) do
+      add :id, :binary_id, primary_key: true
 
-    create unique_index(:resources, [:organization_id, :serial_number],
-             where: "serial_number IS NOT NULL"
-           )
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
 
-    create unique_index(:resources, [:organization_id, :asset_tag],
-             where: "asset_tag IS NOT NULL"
-           )
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :hosts_organization_resource_fkey
+          ),
+          null: false
+
+      add :hostname, :string
+      add :fqdn, :string
+      add :vendor, :string
+      add :model, :string
+      add :asset_tag, :string
+      add :metadata, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(:hosts, [:organization_id, :resource_id])
+    create index(:hosts, [:organization_id, :hostname])
+    create index(:hosts, [:organization_id, :fqdn])
+    create index(:hosts, [:organization_id, :asset_tag])
+
+    create table(:resource_conditions, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_conditions_organization_resource_fkey
+          ),
+          null: false
+
+      add :type, :string, null: false
+      add :status, :string, null: false
+      add :reason, :string
+      add :message, :text
+      add :observed_generation, :bigint
+      add :last_transition_at, :"timestamp(3)", null: false
+      add :details, :map, null: false, default: %{}
+
+      timestamps(type: :"timestamp(3)")
+    end
+
+    create unique_index(:resource_conditions, [:organization_id, :resource_id, :type])
+    create index(:resource_conditions, [:organization_id, :type, :status])
+
+    create table(:resource_revisions, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
+        null: false
+
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_revisions_organization_resource_fkey
+          ),
+          null: false
+
+      add :revision, :bigint, null: false
+      add :action, :string, null: false
+      add :generation, :bigint, null: false
+      add :snapshot, :map, null: false
+
+      timestamps(type: :"timestamp(3)", updated_at: false)
+    end
+
+    create unique_index(:resource_revisions, [:revision])
+    create index(:resource_revisions, [:organization_id, :revision])
+    create index(:resource_revisions, [:organization_id, :resource_id, :revision])
 
     create table(:resource_identifiers, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -50,29 +124,34 @@ defmodule Renga.Repo.Migrations.CreateInventoryResourcesAndIdentifiers do
       add :organization_id, references(:organizations, on_delete: :delete_all, type: :binary_id),
         null: false
 
-      add :resource_id, references(:resources, on_delete: :delete_all, type: :binary_id),
-        null: false
+      add :resource_id,
+          references(:resources,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :resource_identifiers_organization_resource_fkey
+          ),
+          null: false
 
-      add :source_id, references(:sources, on_delete: :nilify_all, type: :binary_id)
       add :kind, :string, null: false
       add :value, :string, null: false
-      add :confidence, :integer, null: false, default: 100
-      add :first_seen_at, :"timestamp(3)"
-      add :last_seen_at, :"timestamp(3)"
+      add :normalized_value, :string, null: false
       add :metadata, :map, null: false, default: %{}
 
       timestamps(type: :"timestamp(3)")
     end
 
     create index(:resource_identifiers, [:organization_id, :resource_id])
-    create index(:resource_identifiers, [:organization_id, :source_id])
-    create index(:resource_identifiers, [:organization_id, :kind, :value])
+    create unique_index(:resource_identifiers, [:id, :organization_id])
+    create unique_index(:resource_identifiers, [:id, :organization_id, :resource_id])
 
-    create unique_index(:resource_identifiers, [:organization_id, :source_id, :kind, :value],
-             where: "source_id IS NOT NULL"
+    create index(:resource_identifiers, [:organization_id, :kind, :normalized_value],
+             name: :resource_identifiers_normalized_value_index
            )
 
-    create unique_index(:resource_identifiers, [:organization_id, :resource_id, :kind, :value],
+    create unique_index(
+             :resource_identifiers,
+             [:organization_id, :resource_id, :kind, :normalized_value],
              name: :resource_identifiers_resource_kind_value_index
            )
   end

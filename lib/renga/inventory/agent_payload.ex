@@ -11,6 +11,9 @@ defmodule Renga.Inventory.AgentPayload do
   alias Renga.Types.MacAddress
 
   @max_observation_bytes 256_000
+  @max_agent_metadata_bytes 16_000
+  @max_agent_string_length 255
+  @max_observation_id_length 255
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
@@ -21,6 +24,11 @@ defmodule Renga.Inventory.AgentPayload do
   Returns the maximum accepted JSON observation payload size in bytes.
   """
   def max_observation_bytes, do: @max_observation_bytes
+
+  @doc """
+  Returns the maximum encoded JSON agent metadata size in bytes.
+  """
+  def max_agent_metadata_bytes, do: @max_agent_metadata_bytes
 
   @doc """
   Validates an agent check-in payload and returns attrs safe for the source row.
@@ -63,7 +71,7 @@ defmodule Renga.Inventory.AgentPayload do
       [] ->
         {:ok,
          %{
-           observation_id: blank_to_nil(Map.get(params, "observation_id")),
+           idempotency_key: blank_to_nil(Map.get(params, "observation_id")),
            observed_at: observed_at,
            payload: params
          }}
@@ -118,10 +126,21 @@ defmodule Renga.Inventory.AgentPayload do
         errors
 
       capabilities when is_list(capabilities) ->
-        if Enum.all?(capabilities, &non_empty_string?/1) do
-          errors
-        else
-          [error("capabilities", "must contain only non-empty strings") | errors]
+        cond do
+          not Enum.all?(capabilities, &non_empty_string?/1) ->
+            [error("capabilities", "must contain only non-empty strings") | errors]
+
+          Enum.any?(capabilities, &(String.length(&1) > @max_agent_string_length)) ->
+            [
+              error(
+                "capabilities",
+                "must be at most #{@max_agent_string_length} characters"
+              )
+              | errors
+            ]
+
+          true ->
+            errors
         end
 
       _invalid ->
@@ -131,9 +150,52 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_metadata(errors, params) do
     case Map.get(params, "metadata") do
-      nil -> errors
-      metadata when is_map(metadata) -> errors
-      _invalid -> [error("metadata", "must be an object") | errors]
+      nil ->
+        errors
+
+      metadata when is_map(metadata) ->
+        errors
+        |> validate_agent_metadata_size(metadata)
+        |> validate_agent_version(metadata)
+
+      _invalid ->
+        [error("metadata", "must be an object") | errors]
+    end
+  end
+
+  defp validate_agent_metadata_size(errors, metadata) do
+    case Jason.encode(metadata) do
+      {:ok, encoded} when byte_size(encoded) <= @max_agent_metadata_bytes ->
+        errors
+
+      {:ok, _encoded} ->
+        [error("metadata", "must encode to at most #{@max_agent_metadata_bytes} bytes") | errors]
+
+      {:error, _reason} ->
+        [error("metadata", "must be JSON encodable") | errors]
+    end
+  end
+
+  defp validate_agent_version(errors, metadata) do
+    case Map.get(metadata, "agent_version") do
+      nil ->
+        errors
+
+      version when is_binary(version) ->
+        if String.length(version) <= @max_agent_string_length do
+          errors
+        else
+          [
+            error(
+              "metadata.agent_version",
+              "must be at most #{@max_agent_string_length} characters"
+            )
+            | errors
+          ]
+        end
+
+      _invalid ->
+        [error("metadata.agent_version", "must be a string") | errors]
     end
   end
 
@@ -152,9 +214,29 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_observation_id(errors, params) do
     case Map.get(params, "observation_id") do
-      nil -> errors
-      value when is_binary(value) -> validate_non_blank(errors, "observation_id", value)
-      _invalid -> [error("observation_id", "must be a string") | errors]
+      nil ->
+        [error("observation_id", "is required") | errors]
+
+      value when is_binary(value) ->
+        cond do
+          String.trim(value) == "" ->
+            [error("observation_id", "can't be blank") | errors]
+
+          String.length(value) > @max_observation_id_length ->
+            [
+              error(
+                "observation_id",
+                "must be at most #{@max_observation_id_length} characters"
+              )
+              | errors
+            ]
+
+          true ->
+            errors
+        end
+
+      _invalid ->
+        [error("observation_id", "must be a string") | errors]
     end
   end
 
@@ -415,16 +497,12 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp parse_required_timestamp(value, path) when is_binary(value) do
     case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> {floor_to_millisecond(datetime), []}
+      {:ok, datetime, _offset} -> {Renga.Time.floor_to_millisecond(datetime), []}
       {:error, _reason} -> {nil, [error(path, "must be an ISO 8601 timestamp")]}
     end
   end
 
   defp parse_required_timestamp(_value, path), do: {nil, [error(path, "must be a string")]}
-
-  defp floor_to_millisecond(%DateTime{microsecond: {microsecond, _precision}} = datetime) do
-    %{datetime | microsecond: {div(microsecond, 1_000) * 1_000, 6}}
-  end
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)

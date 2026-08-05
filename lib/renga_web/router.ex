@@ -27,7 +27,7 @@ defmodule RengaWeb.Router do
     get "/", PageController, :home
   end
 
-  scope "/api/v1", RengaWeb.Api do
+  scope "/api/v1", RengaWeb.Api.V1 do
     pipe_through [:api, :source_api]
 
     post "/agent/checkins", AgentController, :check_in
