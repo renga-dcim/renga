@@ -467,55 +467,21 @@ defmodule Renga.Inventory do
       kind = get_attr(attrs, :kind)
       normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
 
-      claim_history_key =
-        [organization_id, source.id, kind, normalized_value]
-        |> :erlang.term_to_binary()
-        |> Base.encode64()
-
-      Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [claim_history_key])
-
-      previous_first_seen_at =
-        ResourceIdentifierClaim
-        |> where([claim], claim.organization_id == ^organization_id)
-        |> where([claim], claim.source_id == ^source.id)
-        |> where([claim], claim.kind == ^kind)
-        |> where([claim], claim.normalized_value == ^normalized_value)
-        |> select([claim], min(claim.first_seen_at))
-        |> Repo.one()
-
-      first_seen_at = earliest_timestamp(previous_first_seen_at, observation.observed_at)
-
-      ResourceIdentifierClaim
-      |> where([claim], claim.organization_id == ^organization_id)
-      |> where([claim], claim.source_id == ^source.id)
-      |> where([claim], claim.kind == ^kind)
-      |> where([claim], claim.normalized_value == ^normalized_value)
-      |> where([claim], claim.first_seen_at > ^first_seen_at)
-      |> Repo.update_all(set: [first_seen_at: first_seen_at])
+      first_seen_at =
+        lock_and_update_claim_history(
+          organization_id,
+          source.id,
+          kind,
+          normalized_value,
+          observation.observed_at
+        )
 
       attrs =
         attrs
         |> put_attr(:first_seen_at, first_seen_at)
         |> put_attr(:last_seen_at, observation.observed_at)
 
-      resource =
-        case get_attr(attrs, :resource_id) do
-          nil -> nil
-          id -> get_resource!(scope, id)
-        end
-
-      resource_identifier =
-        case get_attr(attrs, :resource_identifier_id) do
-          nil -> nil
-          id -> get_resource_identifier!(scope, id)
-        end
-
-      resource_id =
-        case {resource, resource_identifier} do
-          {%Resource{id: id}, _resource_identifier} -> id
-          {nil, %ResourceIdentifier{resource_id: id}} -> id
-          {nil, nil} -> nil
-        end
+      {resource, resource_identifier, resource_id} = resolve_claim_links(scope, attrs)
 
       existing_claim =
         Repo.get_by(ResourceIdentifierClaim,
@@ -546,6 +512,69 @@ defmodule Renga.Inventory do
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
+  end
+
+  defp lock_and_update_claim_history(
+         organization_id,
+         source_id,
+         kind,
+         normalized_value,
+         observed_at
+       ) do
+    claim_history_key =
+      [organization_id, source_id, kind, normalized_value]
+      |> :erlang.term_to_binary()
+      |> Base.encode64()
+
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [claim_history_key])
+
+    previous_first_seen_at =
+      ResourceIdentifierClaim
+      |> where([claim], claim.organization_id == ^organization_id)
+      |> where([claim], claim.source_id == ^source_id)
+      |> where([claim], claim.kind == ^kind)
+      |> where([claim], claim.normalized_value == ^normalized_value)
+      |> select([claim], min(claim.first_seen_at))
+      |> Repo.one()
+
+    first_seen_at = earliest_timestamp(previous_first_seen_at, observed_at)
+
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.source_id == ^source_id)
+    |> where([claim], claim.kind == ^kind)
+    |> where([claim], claim.normalized_value == ^normalized_value)
+    |> where([claim], claim.first_seen_at > ^first_seen_at)
+    |> Repo.update_all(set: [first_seen_at: first_seen_at])
+
+    first_seen_at
+  end
+
+  defp resolve_claim_links(scope, attrs) do
+    resource = fetch_optional_claim_link(attrs, :resource_id, &get_resource!(scope, &1))
+
+    resource_identifier =
+      fetch_optional_claim_link(
+        attrs,
+        :resource_identifier_id,
+        &get_resource_identifier!(scope, &1)
+      )
+
+    resource_id =
+      case {resource, resource_identifier} do
+        {%Resource{id: id}, _resource_identifier} -> id
+        {nil, %ResourceIdentifier{resource_id: id}} -> id
+        {nil, nil} -> nil
+      end
+
+    {resource, resource_identifier, resource_id}
+  end
+
+  defp fetch_optional_claim_link(attrs, key, fetch) do
+    case get_attr(attrs, key) do
+      nil -> nil
+      id -> fetch.(id)
+    end
   end
 
   @doc """

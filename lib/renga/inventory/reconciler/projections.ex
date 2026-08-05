@@ -79,16 +79,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
     if host do
       {changes, owners} =
         reconcile_fields(
-          scope,
-          source,
-          observation,
-          resource,
+          reconciliation_context(scope, source, observation, resource, overrides),
           host,
           attrs,
           @host_fields,
           "host",
-          host.metadata,
-          overrides
+          host.metadata
         )
 
       metadata = put_field_owners(host.metadata, owners)
@@ -138,13 +134,11 @@ defmodule Renga.Inventory.Reconciler.Projections do
       )
 
     if interface || allow_new_rows? do
+      context = reconciliation_context(scope, source, observation, resource, overrides)
+
       do_reconcile_interface(
-        scope,
-        source,
-        observation,
-        resource,
+        context,
         attrs,
-        overrides,
         allow_new_rows?,
         name,
         interface
@@ -153,16 +147,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp do_reconcile_interface(
-         scope,
-         source,
-         observation,
-         resource,
+         context,
          attrs,
-         overrides,
          allow_new_rows?,
          name,
          interface
        ) do
+    %{scope: scope, source: source, observation: observation, resource: resource} = context
+    overrides = context.overrides
+
     reported_attrs =
       attrs
       |> Map.take(@interface_fields)
@@ -178,16 +171,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
       if interface do
         {changes, owners} =
           reconcile_fields(
-            scope,
-            source,
-            observation,
-            resource,
+            context,
             interface,
             reported_attrs,
             @interface_fields,
             "interfaces.#{name}",
-            interface.metadata,
-            overrides
+            interface.metadata
           )
 
         metadata = put_field_owners(interface.metadata, owners)
@@ -379,16 +368,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
        ) do
     {changes, owners} =
       reconcile_fields(
-        scope,
-        source,
-        observation,
-        resource,
+        reconciliation_context(scope, source, observation, resource, overrides),
         address,
         Map.take(attrs, ~w(scope)),
         ~w(scope),
         "addresses.#{attrs["address"]}",
-        address.metadata,
-        overrides
+        address.metadata
       )
 
     metadata =
@@ -441,27 +426,25 @@ defmodule Renga.Inventory.Reconciler.Projections do
         value
       )
 
-      if override do
-        manual_value = normalize_override_value(path, field, override_value(override.value))
-
-        if manual_value != value do
-          record_conflict(
-            scope,
-            source,
-            observation,
-            resource,
-            field_path,
-            manual_value,
-            value,
-            "manual_override"
-          )
-        end
-
-        {Map.put(accepted, field, manual_value), Map.put(owners, field, manual_owner(override))}
-      else
-        {Map.put(accepted, field, value), Map.put(owners, field, owner(source, observation))}
-      end
+      context = reconciliation_context(scope, source, observation, resource, overrides)
+      accept_initial_field(context, {accepted, owners}, path, field, value, override)
     end)
+  end
+
+  defp accept_initial_field(context, {accepted, owners}, _path, field, value, nil) do
+    {Map.put(accepted, field, value),
+     Map.put(owners, field, owner(context.source, context.observation))}
+  end
+
+  defp accept_initial_field(context, {accepted, owners}, path, field, value, override) do
+    manual_value = normalize_override_value(path, field, override_value(override.value))
+    field_path = "#{path}.#{field}"
+
+    if manual_value != value do
+      record_conflict(context, field_path, manual_value, value, "manual_override")
+    end
+
+    {Map.put(accepted, field, manual_value), Map.put(owners, field, manual_owner(override))}
   end
 
   defp reconcile_network_omissions(
@@ -507,34 +490,53 @@ defmodule Renga.Inventory.Reconciler.Projections do
         )
       end
 
-      scope
-      |> Inventory.list_addresses(interface.id)
-      |> Enum.each(fn address ->
-        address_key = {interface.name, format_inet(address.address)}
+      context = reconciliation_context(scope, source, observation, resource, overrides)
 
-        addresses_authoritative? =
-          not MapSet.member?(reported_names, interface.name) or
-            MapSet.member?(authoritative_address_names, interface.name)
-
-        if addresses_authoritative? and source_reported_address?(scope, source, address) and
-             not MapSet.member?(reported_addresses, address_key) do
-          metadata = put_address_presence(address.metadata, source, observation, false)
-
-          record_address_presence_update(
-            scope,
-            source,
-            observation,
-            resource,
-            address,
-            metadata
-          )
-
-          if metadata != address.metadata do
-            {:ok, _address} = address |> Address.changeset(%{metadata: metadata}) |> Repo.update()
-          end
-        end
+      Enum.each(Inventory.list_addresses(scope, interface.id), fn address ->
+        reconcile_address_omission(
+          context,
+          interface,
+          address,
+          reported_names,
+          authoritative_address_names,
+          reported_addresses
+        )
       end)
     end)
+  end
+
+  defp reconcile_address_omission(
+         context,
+         interface,
+         address,
+         names,
+         authoritative_names,
+         addresses
+       ) do
+    authoritative? =
+      not MapSet.member?(names, interface.name) or
+        MapSet.member?(authoritative_names, interface.name)
+
+    address_key = {interface.name, format_inet(address.address)}
+
+    if authoritative? and source_reported_address?(context.scope, context.source, address) and
+         not MapSet.member?(addresses, address_key) do
+      metadata =
+        put_address_presence(address.metadata, context.source, context.observation, false)
+
+      record_address_presence_update(
+        context.scope,
+        context.source,
+        context.observation,
+        context.resource,
+        address,
+        metadata
+      )
+
+      if metadata != address.metadata do
+        {:ok, _address} = address |> Address.changeset(%{metadata: metadata}) |> Repo.update()
+      end
+    end
   end
 
   defp source_reported_interface?(scope, source, interface) do
@@ -565,16 +567,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
        ) do
     {changes, owners} =
       reconcile_fields(
-        scope,
-        source,
-        observation,
-        resource,
+        reconciliation_context(scope, source, observation, resource, overrides),
         interface,
         %{"status" => "not_present"},
         ~w(status),
         "interfaces.#{interface.name}",
-        interface.metadata,
-        overrides
+        interface.metadata
       )
 
     metadata = put_field_owners(interface.metadata, owners)
@@ -588,127 +586,114 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp reconcile_fields(
-         scope,
-         source,
-         observation,
-         resource,
+         context,
          record,
          incoming,
          fields,
          path,
-         metadata,
-         overrides
+         metadata
        ) do
     owners = Map.get(metadata || %{}, "field_owners", %{})
 
     Enum.reduce(fields, {%{}, owners}, fn field, {changes, owners} ->
       if Map.has_key?(incoming, field) do
-        incoming_value = Map.fetch!(incoming, field)
-        current_value = Map.get(record, String.to_existing_atom(field))
-        field_path = "#{path}.#{field}"
-        override = Map.get(overrides, field_path) || Map.get(overrides, field)
-        existing_owner = Map.get(owners, field)
-
-        existing_owner =
-          if is_nil(override) && get_in(existing_owner || %{}, ["source_kind"]) == "manual" do
-            nil
-          else
-            existing_owner
-          end
-
-        maybe_record_desired_conflict(
-          scope,
-          source,
-          observation,
-          resource,
-          field_path,
-          desired_value(resource.spec, path, field),
-          incoming_value
-        )
-
-        cond do
-          override ->
-            manual_value = normalize_override_value(path, field, override_value(override.value))
-
-            if manual_value != incoming_value do
-              record_conflict(
-                scope,
-                source,
-                observation,
-                resource,
-                field_path,
-                manual_value,
-                incoming_value,
-                "manual_override"
-              )
-            end
-
-            if current_value != manual_value do
-              record_update(
-                scope,
-                source,
-                observation,
-                resource,
-                field_path,
-                current_value,
-                manual_value
-              )
-            end
-
-            {Map.put(changes, field, manual_value),
-             Map.put(owners, field, manual_owner(override))}
-
-          source_wins?(source, observation, existing_owner, field_path) ->
-            if current_value != nil and current_value != incoming_value and
-                 get_in(owners, [field, "source_id"]) != source.id do
-              record_conflict(
-                scope,
-                source,
-                observation,
-                resource,
-                field_path,
-                current_value,
-                incoming_value,
-                "source_disagreement"
-              )
-            end
-
-            if current_value != incoming_value do
-              record_update(
-                scope,
-                source,
-                observation,
-                resource,
-                field_path,
-                current_value,
-                incoming_value
-              )
-            end
-
-            {Map.put(changes, field, incoming_value),
-             Map.put(owners, field, owner(source, observation))}
-
-          current_value != incoming_value ->
-            record_conflict(
-              scope,
-              source,
-              observation,
-              resource,
-              field_path,
-              current_value,
-              incoming_value,
-              "lower_precedence_source"
-            )
-
-            {changes, owners}
-
-          true ->
-            {changes, owners}
-        end
+        reconcile_field(context, record, incoming, path, field, {changes, owners})
       else
         {changes, owners}
       end
     end)
+  end
+
+  defp reconcile_field(context, record, incoming, path, field, {changes, owners}) do
+    incoming_value = Map.fetch!(incoming, field)
+    current_value = Map.get(record, String.to_existing_atom(field))
+    field_path = "#{path}.#{field}"
+    override = Map.get(context.overrides, field_path) || Map.get(context.overrides, field)
+    existing_owner = effective_owner(Map.get(owners, field), override)
+
+    maybe_record_desired_conflict(
+      context.scope,
+      context.source,
+      context.observation,
+      context.resource,
+      field_path,
+      desired_value(context.resource.spec, path, field),
+      incoming_value
+    )
+
+    cond do
+      override ->
+        reconcile_overridden_field(
+          context,
+          {changes, owners},
+          path,
+          field,
+          current_value,
+          incoming_value,
+          override
+        )
+
+      source_wins?(context.source, context.observation, existing_owner, field_path) ->
+        reconcile_winning_field(
+          context,
+          {changes, owners},
+          field,
+          field_path,
+          current_value,
+          incoming_value
+        )
+
+      current_value != incoming_value ->
+        record_conflict(
+          context,
+          field_path,
+          current_value,
+          incoming_value,
+          "lower_precedence_source"
+        )
+
+        {changes, owners}
+
+      true ->
+        {changes, owners}
+    end
+  end
+
+  defp effective_owner(owner, nil) do
+    if get_in(owner || %{}, ["source_kind"]) == "manual", do: nil, else: owner
+  end
+
+  defp effective_owner(owner, _override), do: owner
+
+  defp reconcile_overridden_field(
+         context,
+         {changes, owners},
+         path,
+         field,
+         current,
+         incoming,
+         override
+       ) do
+    value = normalize_override_value(path, field, override_value(override.value))
+    field_path = "#{path}.#{field}"
+
+    if value != incoming,
+      do: record_conflict(context, field_path, value, incoming, "manual_override")
+
+    if current != value, do: record_update(context, field_path, current, value)
+    {Map.put(changes, field, value), Map.put(owners, field, manual_owner(override))}
+  end
+
+  defp reconcile_winning_field(context, {changes, owners}, field, field_path, current, incoming) do
+    if current != nil and current != incoming and
+         get_in(owners, [field, "source_id"]) != context.source.id do
+      record_conflict(context, field_path, current, incoming, "source_disagreement")
+    end
+
+    if current != incoming, do: record_update(context, field_path, current, incoming)
+
+    {Map.put(changes, field, incoming),
+     Map.put(owners, field, owner(context.source, context.observation))}
   end
 
   defp source_wins?(_source, _observation, nil, _path), do: true
@@ -839,17 +824,18 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp record_update(scope, source, observation, resource, field, old_value, new_value) do
-    record_event(
-      scope,
-      source,
-      observation,
-      resource,
-      "updated",
-      field,
-      old_value,
-      new_value,
-      %{}
-    )
+    context = reconciliation_context(scope, source, observation, resource, %{})
+    record_update(context, field, old_value, new_value)
+  end
+
+  defp record_update(context, field, old_value, new_value) do
+    record_event(context, %{
+      kind: "updated",
+      field: field,
+      old_value: old_value,
+      new_value: new_value,
+      metadata: %{}
+    })
   end
 
   defp record_conflict(
@@ -862,30 +848,26 @@ defmodule Renga.Inventory.Reconciler.Projections do
          observed_value,
          reason
        ) do
-    record_event(
-      scope,
-      source,
-      observation,
-      resource,
-      "conflict",
-      field,
-      canonical_value,
-      observed_value,
-      %{"reason" => reason}
-    )
+    context = reconciliation_context(scope, source, observation, resource, %{})
+    record_conflict(context, field, canonical_value, observed_value, reason)
   end
 
-  defp record_event(
-         scope,
-         source,
-         observation,
-         resource,
-         kind,
-         field,
-         old_value,
-         new_value,
-         metadata
-       ) do
+  defp record_conflict(context, field, canonical_value, observed_value, reason) do
+    record_event(context, %{
+      kind: "conflict",
+      field: field,
+      old_value: canonical_value,
+      new_value: observed_value,
+      metadata: %{"reason" => reason}
+    })
+  end
+
+  defp record_event(context, event_attrs) do
+    %{scope: scope, source: source, observation: observation, resource: resource} = context
+
+    %{kind: kind, field: field, old_value: old_value, new_value: new_value, metadata: metadata} =
+      event_attrs
+
     query =
       from event in Renga.Inventory.ChangeEvent,
         where:
@@ -918,6 +900,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
           occurred_at: observation.observed_at
         })
     end
+  end
+
+  defp reconciliation_context(scope, source, observation, resource, overrides) do
+    %{
+      scope: scope,
+      source: source,
+      observation: observation,
+      resource: resource,
+      overrides: overrides
+    }
   end
 
   defp desired_value(spec, "host", field) do

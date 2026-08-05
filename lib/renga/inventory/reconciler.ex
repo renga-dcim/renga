@@ -322,41 +322,40 @@ defmodule Renga.Inventory.Reconciler do
     if MapSet.size(observed_macs) == 0 do
       :none
     else
-      current_mac_rows =
-        Resource
-        |> join(:inner, [resource], interface in Interface,
-          on: interface.resource_id == resource.id
-        )
-        |> where([resource], resource.organization_id == ^scope.organization_id)
-        |> where([_resource, interface], interface.status != "not_present")
-        |> where([_resource, interface], not is_nil(interface.mac_address))
-        |> join(:inner, [resource, _interface], candidate in Interface,
-          on:
-            candidate.resource_id == resource.id and candidate.status != "not_present" and
-              fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
-        )
-        |> select(
-          [resource, interface, _candidate],
-          {resource, fragment("?::text", interface.mac_address)}
-        )
-        |> distinct(true)
-        |> Repo.all()
-
-      candidates =
-        current_mac_rows
-        |> Enum.group_by(fn {resource, _mac} -> resource.id end)
-        |> Enum.flat_map(fn {_resource_id, rows} ->
-          [{resource, _mac} | _rest] = rows
-          current_macs = MapSet.new(rows, &elem(&1, 1))
-          if MapSet.equal?(current_macs, observed_macs), do: [resource], else: []
-        end)
-
-      case candidates do
+      case mac_set_candidates(scope, observed_macs) do
         [] -> :none
         [resource] -> {:ok, resource, %{"strategy" => "mac_address_set"}}
         resources -> {:error, Enum.map(resources, & &1.id)}
       end
     end
+  end
+
+  defp mac_set_candidates(scope, observed_macs) do
+    Resource
+    |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
+    |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([_resource, interface], interface.status != "not_present")
+    |> where([_resource, interface], not is_nil(interface.mac_address))
+    |> join(:inner, [resource, _interface], candidate in Interface,
+      on:
+        candidate.resource_id == resource.id and candidate.status != "not_present" and
+          fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
+    )
+    |> select(
+      [resource, interface, _candidate],
+      {resource, fragment("?::text", interface.mac_address)}
+    )
+    |> distinct(true)
+    |> Repo.all()
+    |> Enum.group_by(fn {resource, _mac} -> resource.id end)
+    |> Enum.flat_map(&resource_with_exact_mac_set(&1, observed_macs))
+  end
+
+  defp resource_with_exact_mac_set(
+         {_resource_id, [{resource, _mac} | _rest] = rows},
+         observed_macs
+       ) do
+    if MapSet.equal?(MapSet.new(rows, &elem(&1, 1)), observed_macs), do: [resource], else: []
   end
 
   defp resources_for_identifier_values(_scope, _kind, []), do: []

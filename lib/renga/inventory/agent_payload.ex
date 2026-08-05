@@ -392,19 +392,7 @@ defmodule Renga.Inventory.AgentPayload do
         errors
 
       declared_macs ->
-        current_macs =
-          case Map.get(resource, "interfaces") do
-            interfaces when is_list(interfaces) ->
-              interfaces
-              |> Enum.filter(&is_map/1)
-              |> Enum.reject(&(&1["status"] == "not_present"))
-              |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
-
-            _invalid ->
-              []
-          end
-
-        if normalized_mac_set(List.wrap(declared_macs)) == normalized_mac_set(current_macs) do
+        if normalized_mac_set(List.wrap(declared_macs)) == current_mac_set(resource) do
           errors
         else
           [
@@ -415,6 +403,20 @@ defmodule Renga.Inventory.AgentPayload do
             | errors
           ]
         end
+    end
+  end
+
+  defp current_mac_set(resource) do
+    case Map.get(resource, "interfaces") do
+      interfaces when is_list(interfaces) ->
+        interfaces
+        |> Enum.filter(&is_map/1)
+        |> Enum.reject(&(&1["status"] == "not_present"))
+        |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
+        |> normalized_mac_set()
+
+      _invalid ->
+        MapSet.new()
     end
   end
 
