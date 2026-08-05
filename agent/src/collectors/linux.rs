@@ -210,9 +210,7 @@ fn collect_from_with_ip(
     }
     components.extend(collect_disks(root));
     components.extend(collect_filesystems(root));
-    if let Some(kind) = virtualization_hint(root) {
-        components.push(component("virtualization", [("kind", json!(kind))]));
-    }
+    components.push(virtualization_component(root));
     let vendor = read(root, "sys/class/dmi/id/sys_vendor");
     let model = read(root, "sys/class/dmi/id/product_name");
     Ok(ServerResource {
@@ -338,15 +336,47 @@ fn collect_filesystems(root: &Path) -> Vec<Component> {
         })
         .collect()
 }
-fn virtualization_hint(root: &Path) -> Option<String> {
+/// Container execution takes environment precedence over a VM guest, while the VM provider is
+/// retained because it describes the underlying host. Runtime sockets indicate hosting only.
+fn virtualization_component(root: &Path) -> Component {
     let product = read(root, "sys/class/dmi/id/product_name")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    ["kvm", "vmware", "virtualbox", "hyper-v", "xen"]
+    let provider = ["kvm", "vmware", "virtualbox", "hyper-v", "xen"]
         .into_iter()
         .find(|v| product.contains(v))
-        .map(Into::into)
-        .or_else(|| root.join(".dockerenv").exists().then(|| "container".into()))
+        .map(str::to_owned);
+    let container_guest = root.join(".dockerenv").exists()
+        || root.join("run/.containerenv").exists()
+        || read(root, "proc/1/cgroup").is_some_and(|cgroup| {
+            ["/docker/", "/containerd/", "/kubepods/", "/libpod/"]
+                .iter()
+                .any(|marker| cgroup.contains(marker))
+        });
+    let container_host = [
+        "run/docker.sock",
+        "var/run/docker.sock",
+        "run/containerd/containerd.sock",
+        "run/podman/podman.sock",
+    ]
+    .iter()
+    .any(|path| root.join(path).exists());
+    let environment = if container_guest {
+        "container_guest"
+    } else if provider.is_some() {
+        "vm_guest"
+    } else {
+        "bare_metal"
+    };
+
+    component(
+        "virtualization",
+        [
+            ("environment", json!(environment)),
+            ("provider", json!(provider)),
+            ("container_host", json!(container_host.then_some(true))),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -448,6 +478,77 @@ mod tests {
         let resource = collect_from_with_ip(&root, Ok("malformed")).unwrap();
         assert_eq!(resource.interfaces.unwrap()[0].name, "eth9");
         assert_eq!(resource.identifiers.mac_address, ["12:34:56:78:9a:bc"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn virtualization(resource: &ServerResource) -> &Component {
+        resource
+            .components
+            .iter()
+            .find(|component| component.kind == "virtualization")
+            .unwrap()
+    }
+
+    #[test]
+    fn reports_explicit_bare_metal_without_virtualization_evidence() {
+        let root = fixture();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "bare_metal"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_vm_guest_provider() {
+        let root = fixture();
+        let dmi = root.join("sys/class/dmi/id");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::write(dmi.join("product_name"), "KVM Virtual Machine\n").unwrap();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "vm_guest"
+        );
+        assert_eq!(virtualization(&resource).attributes["provider"], "kvm");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn container_host_requires_a_runtime_socket() {
+        let root = fixture();
+        fs::create_dir_all(root.join("run/containerd")).unwrap();
+        fs::write(root.join("run/containerd/containerd.sock"), "").unwrap();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(virtualization(&resource).attributes["container_host"], true);
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "bare_metal"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn container_on_vm_retains_vm_provider() {
+        let root = fixture();
+        let dmi = root.join("sys/class/dmi/id");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::write(dmi.join("product_name"), "VMware Virtual Platform\n").unwrap();
+        fs::write(root.join(".dockerenv"), "").unwrap();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "container_guest"
+        );
+        assert_eq!(virtualization(&resource).attributes["provider"], "vmware");
+        assert!(!virtualization(&resource)
+            .attributes
+            .contains_key("container_host"));
         fs::remove_dir_all(root).unwrap();
     }
 }

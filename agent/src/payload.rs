@@ -1,7 +1,7 @@
 //! JSON models matching the Phoenix host-agent contract.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{ser::SerializeMap, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -114,11 +114,25 @@ pub struct Address {
 }
 
 /// Components are deliberately shape-open while retaining a stable type discriminator.
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Component {
     pub kind: String,
-    #[serde(flatten)]
     pub attributes: BTreeMap<String, Value>,
+}
+
+impl Serialize for Component {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.attributes.len() + 1))?;
+        map.serialize_entry("kind", &self.kind)?;
+        for (key, value) in self
+            .attributes
+            .iter()
+            .filter(|(key, _)| key.as_str() != "kind")
+        {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -193,6 +207,23 @@ mod tests {
 
         let value = serde_json::to_value(resource).unwrap();
         assert_eq!(value["interfaces"], serde_json::json!([]));
+    }
+    #[test]
+    fn component_serialization_has_one_kind_discriminator() {
+        let component = Component {
+            kind: "virtualization".into(),
+            attributes: BTreeMap::from([
+                ("kind".into(), serde_json::json!("vmware")),
+                ("environment".into(), serde_json::json!("vm_guest")),
+            ]),
+        };
+
+        let json = serde_json::to_string(&component).unwrap();
+        assert_eq!(json.matches("\"kind\"").count(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&json).unwrap()["kind"],
+            "virtualization"
+        );
     }
     #[test]
     fn checkin_has_capability_and_identity() {
