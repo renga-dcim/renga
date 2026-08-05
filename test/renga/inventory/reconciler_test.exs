@@ -423,6 +423,46 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert length(Inventory.list_addresses(context.scope, interface.id)) == 1
   end
 
+  test "newer full snapshots mark omitted network rows as not present" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "status" => "up",
+            "addresses" => ["192.0.2.10/24", "192.0.2.20/24"]
+          },
+          %{"name" => "eth1", "status" => "up"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    second =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "eth0", "status" => "up", "addresses" => ["192.0.2.10/24"]}]
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+    [eth0, eth1] = Inventory.list_interfaces(context.scope, resource.id)
+    assert eth0.status == "up"
+    assert eth1.status == "not_present"
+
+    [current, omitted] = Inventory.list_addresses(context.scope, eth0.id)
+    assert current.metadata["present"]
+    refute omitted.metadata["present"]
+  end
+
   test "same-name discoveries receive collision-resistant resource names" do
     context = context()
 

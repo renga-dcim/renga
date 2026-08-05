@@ -39,9 +39,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
     reconcile_host(scope, source, observation, resource, payload, overrides)
 
-    payload
-    |> Map.get("interfaces", [])
-    |> Enum.each(
+    interfaces = Map.get(payload, "interfaces", [])
+
+    Enum.each(
+      interfaces,
       &reconcile_interface(
         scope,
         source,
@@ -52,6 +53,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
         allow_new_rows?
       )
     )
+
+    if allow_new_rows? do
+      reconcile_network_omissions(scope, source, observation, resource, interfaces, overrides)
+    end
   end
 
   defp reconcile_host(scope, source, observation, resource, payload, overrides) do
@@ -344,7 +349,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
       attrs
       |> Map.take(~w(address kind))
       |> Map.merge(mutable_attrs)
-      |> Map.put("metadata", put_field_owners(%{}, owners))
+      |> Map.put(
+        "metadata",
+        %{}
+        |> put_field_owners(owners)
+        |> put_address_presence(source, observation, true)
+      )
 
     case Inventory.create_address(scope, interface.id, create_attrs) do
       {:ok, created} -> created
@@ -376,7 +386,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
         overrides
       )
 
-    metadata = put_field_owners(address.metadata, owners)
+    metadata =
+      address.metadata
+      |> put_field_owners(owners)
+      |> put_address_presence(source, observation, true)
 
     if changes != %{} or metadata != address.metadata do
       {:ok, address} =
@@ -436,6 +449,111 @@ defmodule Renga.Inventory.Reconciler.Projections do
         {Map.put(accepted, field, value), Map.put(owners, field, owner(source, observation))}
       end
     end)
+  end
+
+  defp reconcile_network_omissions(
+         scope,
+         source,
+         observation,
+         resource,
+         reported_interfaces,
+         overrides
+       ) do
+    reported_names = MapSet.new(reported_interfaces, &(&1 |> Map.fetch!("name") |> String.trim()))
+
+    reported_addresses =
+      reported_interfaces
+      |> Enum.flat_map(fn interface ->
+        name = interface |> Map.fetch!("name") |> String.trim()
+
+        Enum.map(Map.get(interface, "addresses", []), fn address ->
+          attrs = normalize_address(address)
+          {:ok, cast_address} = Inet.cast(attrs["address"])
+          {name, format_inet(cast_address)}
+        end)
+      end)
+      |> MapSet.new()
+
+    scope
+    |> Inventory.list_interfaces(resource.id)
+    |> Enum.each(fn interface ->
+      if source_reported_interface?(scope, source, interface) and
+           not MapSet.member?(reported_names, interface.name) do
+        mark_interface_not_present(
+          scope,
+          source,
+          observation,
+          resource,
+          interface,
+          overrides
+        )
+      end
+
+      scope
+      |> Inventory.list_addresses(interface.id)
+      |> Enum.each(fn address ->
+        address_key = {interface.name, format_inet(address.address)}
+
+        if source_reported_address?(scope, source, address) and
+             not MapSet.member?(reported_addresses, address_key) do
+          metadata = put_address_presence(address.metadata, source, observation, false)
+
+          if metadata != address.metadata do
+            {:ok, _address} = address |> Address.changeset(%{metadata: metadata}) |> Repo.update()
+          end
+        end
+      end)
+    end)
+  end
+
+  defp source_reported_interface?(scope, source, interface) do
+    Repo.exists?(
+      from evidence in InterfaceEvidence,
+        where:
+          evidence.organization_id == ^scope.organization_id and
+            evidence.source_id == ^source.id and evidence.interface_id == ^interface.id
+    )
+  end
+
+  defp source_reported_address?(scope, source, address) do
+    Repo.exists?(
+      from evidence in AddressEvidence,
+        where:
+          evidence.organization_id == ^scope.organization_id and
+            evidence.source_id == ^source.id and evidence.address_id == ^address.id
+    )
+  end
+
+  defp mark_interface_not_present(
+         scope,
+         source,
+         observation,
+         resource,
+         interface,
+         overrides
+       ) do
+    {changes, owners} =
+      reconcile_fields(
+        scope,
+        source,
+        observation,
+        resource,
+        interface,
+        %{"status" => "not_present"},
+        ~w(status),
+        "interfaces.#{interface.name}",
+        interface.metadata,
+        overrides
+      )
+
+    metadata = put_field_owners(interface.metadata, owners)
+
+    if changes != %{} or metadata != interface.metadata do
+      {:ok, _interface} =
+        interface
+        |> Interface.changeset(Map.put(changes, "metadata", metadata))
+        |> Repo.update()
+    end
   end
 
   defp reconcile_fields(
@@ -618,6 +736,18 @@ defmodule Renga.Inventory.Reconciler.Projections do
   defp owner_observed_at(_owner), do: 0
 
   defp put_field_owners(metadata, owners), do: Map.put(metadata || %{}, "field_owners", owners)
+
+  defp put_address_presence(metadata, source, observation, present?) do
+    metadata = metadata || %{}
+
+    if source_wins?(source, observation, metadata["presence_owner"], "addresses.presence") do
+      metadata
+      |> Map.put("present", present?)
+      |> Map.put("presence_owner", owner(source, observation))
+    else
+      metadata
+    end
+  end
 
   defp maybe_record_desired_conflict(
          _scope,
