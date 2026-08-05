@@ -80,28 +80,39 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     if let Err(failure) = send_checkin(&client, &config) {
                         warn!(error = %failure, "check-in failed");
                     }
-                    scheduler.reschedule(job, now, config.checkin_interval);
+                    scheduler.reschedule(job, Instant::now(), config.checkin_interval);
                 }
                 Job::Inventory => {
                     if let Err(failure) = send_inventory(&client) {
                         warn!(error = %failure, "inventory failed");
                     }
-                    scheduler.reschedule(job, now, config.inventory_interval);
+                    scheduler.reschedule(job, Instant::now(), config.inventory_interval);
                 }
                 Job::Reload => {
+                    let old_checkin_interval = config.checkin_interval;
+                    let old_inventory_interval = config.inventory_interval;
                     match reload(&args.config) {
                         Ok((new_config, new_client)) => {
                             config = new_config;
                             client = new_client;
-                            scheduler.reschedule(Job::CheckIn, now, config.checkin_interval);
-                            scheduler.reschedule(Job::Inventory, now, config.inventory_interval);
+                            scheduler.refresh_intervals(
+                                Instant::now(),
+                                old_checkin_interval,
+                                config.checkin_interval,
+                                old_inventory_interval,
+                                config.inventory_interval,
+                            );
                             info!("configuration reloaded");
                         }
                         Err(failure) => {
                             warn!(error = %failure, "configuration reload failed; retaining previous configuration")
                         }
                     }
-                    scheduler.reschedule(Job::Reload, now, config.config_refresh_interval);
+                    scheduler.reschedule(
+                        Job::Reload,
+                        Instant::now(),
+                        config.config_refresh_interval,
+                    );
                 }
             }
         }

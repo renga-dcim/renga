@@ -44,6 +44,22 @@ impl Scheduler {
         }
     }
 
+    pub fn refresh_intervals(
+        &mut self,
+        now: Instant,
+        old_checkin: Duration,
+        new_checkin: Duration,
+        old_inventory: Duration,
+        new_inventory: Duration,
+    ) {
+        if old_checkin != new_checkin {
+            self.reschedule(Job::CheckIn, now, new_checkin);
+        }
+        if old_inventory != new_inventory {
+            self.reschedule(Job::Inventory, now, new_inventory);
+        }
+    }
+
     pub fn wait(&self, now: Instant) -> Duration {
         [self.checkin, self.inventory, self.reload]
             .into_iter()
@@ -56,6 +72,75 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_refreshes_preserve_the_original_inventory_deadline() {
+        let started = Instant::now();
+        let checkin = Duration::from_secs(30);
+        let inventory = Duration::from_secs(60);
+        let refresh = Duration::from_secs(10);
+        let mut scheduler = Scheduler::new(started, checkin, inventory, refresh);
+
+        for elapsed in [10, 20, 30, 40, 50] {
+            let refreshed_at = started + Duration::from_secs(elapsed);
+            scheduler.refresh_intervals(refreshed_at, checkin, checkin, inventory, inventory);
+            scheduler.reschedule(Job::Reload, refreshed_at, refresh);
+        }
+
+        assert!(scheduler
+            .due(started + Duration::from_secs(59))
+            .iter()
+            .all(|job| *job != Job::Inventory));
+        assert!(scheduler.due(started + inventory).contains(&Job::Inventory));
+    }
+
+    #[test]
+    fn credential_only_refresh_preserves_checkin_and_inventory_deadlines() {
+        let started = Instant::now();
+        let checkin = Duration::from_secs(20);
+        let inventory = Duration::from_secs(60);
+        let mut scheduler = Scheduler::new(started, checkin, inventory, Duration::from_secs(5));
+
+        scheduler.refresh_intervals(
+            started + Duration::from_secs(5),
+            checkin,
+            checkin,
+            inventory,
+            inventory,
+        );
+
+        let due = scheduler.due(started + checkin);
+        assert!(due.contains(&Job::CheckIn));
+        assert!(!due.contains(&Job::Inventory));
+    }
+
+    #[test]
+    fn changed_intervals_are_measured_from_refresh_completion() {
+        let started = Instant::now();
+        let refreshed_at = started + Duration::from_secs(5);
+        let mut scheduler = Scheduler::new(
+            started,
+            Duration::from_secs(20),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        );
+
+        scheduler.refresh_intervals(
+            refreshed_at,
+            Duration::from_secs(20),
+            Duration::from_secs(10),
+            Duration::from_secs(60),
+            Duration::from_secs(30),
+        );
+
+        let due = scheduler.due(refreshed_at + Duration::from_secs(10));
+        assert!(due.contains(&Job::CheckIn));
+        assert!(!due.contains(&Job::Inventory));
+        assert!(scheduler
+            .due(refreshed_at + Duration::from_secs(30))
+            .contains(&Job::Inventory));
+    }
+
     #[test]
     fn jobs_become_due_and_accept_refreshed_intervals() {
         let now = Instant::now();
