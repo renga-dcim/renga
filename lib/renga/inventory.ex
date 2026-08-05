@@ -1038,18 +1038,19 @@ defmodule Renga.Inventory do
         resource_id,
         attrs
       ) do
-    resource = get_resource!(scope, resource_id)
-
-    changeset =
-      %ResourceOverride{
-        organization_id: organization_id,
-        resource_id: resource.id,
-        created_by_user_id: scope.user && scope.user.id
-      }
-      |> ResourceOverride.changeset(attrs)
-      |> validate_override_contract()
-
     Repo.transaction(fn ->
+      lock_organization!(organization_id)
+      resource = get_resource!(scope, resource_id)
+
+      changeset =
+        %ResourceOverride{
+          organization_id: organization_id,
+          resource_id: resource.id,
+          created_by_user_id: scope.user && scope.user.id
+        }
+        |> ResourceOverride.changeset(attrs)
+        |> validate_override_contract()
+
       with {:ok, override} <- Repo.insert(changeset),
            {:ok, old_value} <- materialize_override(scope, resource, override),
            {:ok, _event} <-
@@ -1067,6 +1068,11 @@ defmodule Renga.Inventory do
         {:error, error} -> Repo.rollback(error)
       end
     end)
+  end
+
+  @doc false
+  def lock_organization!(organization_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
   end
 
   @host_override_fields ~w(hostname fqdn vendor model asset_tag)

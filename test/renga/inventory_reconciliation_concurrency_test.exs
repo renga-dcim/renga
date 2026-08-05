@@ -6,6 +6,57 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
   alias Renga.Inventory
   alias Renga.Repo
 
+  test "manual overrides wait for organization reconciliation before materializing" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = System.unique_integer([:positive])
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Concurrent override #{suffix}",
+        slug: "concurrent-override-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+    {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "host-#{suffix}"})
+
+    # This is the same transaction-scoped fence held while reconciliation
+    # reads overrides and writes canonical projections.
+    Repo.query!("BEGIN")
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization.id])
+
+    task =
+      Task.async(fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+
+        try do
+          Inventory.create_resource_override(scope, resource.id, %{
+            field: "host.vendor",
+            value: %{"value" => "Operator Vendor"}
+          })
+        after
+          Sandbox.checkin(Repo)
+        end
+      end)
+
+    try do
+      assert wait_for_advisory_lock(task.pid, 1_000),
+             "override materialization raced the reconciliation fence"
+    after
+      # End the transaction holding the organization fence.
+      Repo.query!("COMMIT")
+    end
+
+    try do
+      assert {:ok, override} = Task.await(task)
+      host = Inventory.get_host_by_resource!(scope, resource.id)
+      assert host.vendor == "Operator Vendor"
+      assert host.metadata["field_owners"]["vendor"]["override_id"] == override.id
+    after
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
+
   test "concurrent ingestion reconciles an immutable observation only once" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     suffix = System.unique_integer([:positive])
@@ -151,6 +202,30 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     deadline = System.monotonic_time(:millisecond) + timeout
 
     do_wait_for_insert_barrier(expected, deadline)
+  end
+
+  defp wait_for_advisory_lock(pid, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_advisory_lock(pid, deadline)
+  end
+
+  defp do_wait_for_advisory_lock(pid, deadline) do
+    [[waiting?]] =
+      Repo.query!("""
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE wait_event = 'advisory'
+          AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'
+      )
+      """).rows
+
+    cond do
+      waiting? -> true
+      not Process.alive?(pid) -> false
+      System.monotonic_time(:millisecond) >= deadline -> false
+      true -> Process.sleep(10) && do_wait_for_advisory_lock(pid, deadline)
+    end
   end
 
   defp do_wait_for_insert_barrier(expected, deadline) do

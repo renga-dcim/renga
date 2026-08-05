@@ -41,7 +41,7 @@ defmodule Renga.Inventory.Reconciler do
   """
   def reconcile_once(%Scope{} = scope, %Observation{} = observation) do
     Repo.transaction(fn ->
-      lock_organization!(scope.organization_id)
+      Inventory.lock_organization!(scope.organization_id)
 
       case latest_result(scope, observation.id) do
         nil -> reconcile_first_attempt(scope, observation)
@@ -68,7 +68,7 @@ defmodule Renga.Inventory.Reconciler do
 
   defp do_reconcile(scope, observation) do
     Repo.transaction(fn ->
-      lock_organization!(scope.organization_id)
+      Inventory.lock_organization!(scope.organization_id)
       perform_reconciliation(scope, observation)
     end)
     |> case do
@@ -164,7 +164,7 @@ defmodule Renga.Inventory.Reconciler do
 
   defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do
     Repo.transaction(fn ->
-      lock_organization!(scope.organization_id)
+      Inventory.lock_organization!(scope.organization_id)
 
       case Inventory.create_observation_reconciliation(
              scope,
@@ -562,10 +562,6 @@ defmodule Renga.Inventory.Reconciler do
       nil ->
         now
     end
-  end
-
-  defp lock_organization!(organization_id) do
-    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
   end
 
   defp observation_identifiers(payload) do
