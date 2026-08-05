@@ -621,9 +621,9 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_optional_inclusion(errors, attrs, key, accepted_values, path) do
-    case Map.get(attrs, key) do
-      nil -> errors
-      value -> validate_inclusion_value(errors, value, accepted_values, path)
+    case Map.fetch(attrs, key) do
+      :error -> errors
+      {:ok, value} -> validate_inclusion_value(errors, value, accepted_values, path)
     end
   end
 

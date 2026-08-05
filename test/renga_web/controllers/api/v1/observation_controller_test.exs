@@ -143,6 +143,58 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects explicit null interface kind and status before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for field <- ~w(kind status) do
+        payload =
+          source
+          |> valid_observation_payload(%{"observation_id" => "null-interface-#{field}"})
+          |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), field], nil)
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.#{field}"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects explicit null address kind before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "null-address-kind"})
+        |> put_in(
+          [
+            "resources",
+            Access.at(0),
+            "interfaces",
+            Access.at(0),
+            "addresses",
+            Access.at(0),
+            "kind"
+          ],
+          nil
+        )
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.addresses.0.kind"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects identifiers that exceed their projection storage limit before raw storage" do
       %{source: source, token: token} = source_fixture()
       oversized = String.duplicate("i", 256)
