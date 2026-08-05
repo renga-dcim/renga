@@ -100,8 +100,8 @@ pub struct Interface {
     pub mtu: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed_mbps: Option<u32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub addresses: Vec<Address>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addresses: Option<Vec<Address>>,
 }
 
 #[derive(Debug, Serialize)]

@@ -125,7 +125,7 @@ fn parse_ip_snapshot(input: &str) -> Result<Vec<Interface>, ()> {
                     .and_then(Value::as_u64)
                     .and_then(|v| u32::try_from(v).ok()),
                 speed_mbps: None,
-                addresses,
+                addresses: Some(addresses),
             })
         })
         .collect())
@@ -290,7 +290,7 @@ fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
                 mac_address: read(root, &format!("{base}/address")).and_then(|v| normalize_mac(&v)),
                 mtu: None,
                 speed_mbps: None,
-                addresses: vec![],
+                addresses: None,
             }
         })
         .collect())
@@ -419,7 +419,16 @@ mod tests {
             r#"[{"ifname":"eth0","flags":["UP"],"mtu":1500,"address":"AA:BB:CC:DD:EE:FF","addr_info":[{"family":"inet","local":"10.0.0.2","prefixlen":24,"scope":"global"}]}]"#,
         );
         assert_eq!(v[0].mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
-        assert_eq!(v[0].addresses[0].address, "10.0.0.2/24");
+        assert_eq!(v[0].addresses.as_ref().unwrap()[0].address, "10.0.0.2/24");
+    }
+
+    #[test]
+    fn authoritative_interface_with_empty_addr_info_serializes_addresses() {
+        let interfaces = parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":[]}]"#).unwrap();
+        let value = serde_json::to_value(&interfaces[0]).unwrap();
+
+        assert!(interfaces[0].addresses.as_ref().is_some_and(Vec::is_empty));
+        assert_eq!(value["addresses"], json!([]));
     }
     #[test]
     fn malformed_ip_degrades() {
@@ -476,7 +485,9 @@ mod tests {
         fs::write(interface.join("address"), "12:34:56:78:9a:bc\n").unwrap();
 
         let resource = collect_from_with_ip(&root, Ok("malformed")).unwrap();
-        assert_eq!(resource.interfaces.unwrap()[0].name, "eth9");
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(resource.interfaces.as_ref().unwrap()[0].name, "eth9");
+        assert!(value["interfaces"][0].get("addresses").is_none());
         assert_eq!(resource.identifiers.mac_address, ["12:34:56:78:9a:bc"]);
         fs::remove_dir_all(root).unwrap();
     }
