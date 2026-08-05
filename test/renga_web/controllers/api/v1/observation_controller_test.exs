@@ -117,6 +117,32 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
     end
 
+    test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "attributes", "vendor"], %{})
+        |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), "mtu"], -1)
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "metadata"],
+          "invalid"
+        )
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.attributes.vendor" in paths
+      assert "resources.0.interfaces.0.mtu" in paths
+      assert "resources.0.interfaces.0.metadata" in paths
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
 
@@ -216,6 +242,39 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                "reconciliation" => %{"status" => "succeeded"},
                "observation" => %{"id" => ^observation_id}
              } = json_response(retry_conn, 200)
+    end
+
+    test "a duplicate request recovers a stored observation with no reconciliation attempt", %{
+      conn: conn
+    } do
+      %{scope: scope, source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source, %{"observation_id" => "stored-before-crash"})
+      {:ok, observed_at, _offset} = DateTime.from_iso8601(payload["observed_at"])
+
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          idempotency_key: payload["observation_id"],
+          observed_at: observed_at,
+          payload: payload
+        })
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "duplicate" => true,
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "matched_resource_id" => resource_id
+               }
+             } = json_response(conn, 200)
+
+      assert resource_id
+
+      assert [%{status: "succeeded"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
     end
 
     test "accepts identical reports when their idempotency keys differ", %{conn: conn} do

@@ -341,12 +341,13 @@ defmodule Renga.Inventory.AgentPayload do
         errors
 
       %{} = attributes ->
-        validate_no_prohibited_keys(
-          errors,
+        errors
+        |> validate_no_prohibited_keys(
           attributes,
           "#{path}.attributes",
           @prohibited_resource_keys
         )
+        |> validate_host_projection_fields(attributes, "#{path}.attributes")
 
       _invalid ->
         [error("#{path}.attributes", "must be an object") | errors]
@@ -373,9 +374,13 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_interface(errors, %{} = interface, path) do
     errors
     |> validate_required_string(interface, "name", "#{path}.name")
+    |> validate_string_length(interface, "name", "#{path}.name")
     |> validate_optional_inclusion(interface, "kind", @interface_kinds, "#{path}.kind")
     |> validate_optional_inclusion(interface, "status", @interface_statuses, "#{path}.status")
     |> validate_optional_mac(interface, "#{path}.mac_address")
+    |> validate_optional_positive_integer(interface, "mtu", "#{path}.mtu")
+    |> validate_optional_positive_integer(interface, "speed_mbps", "#{path}.speed_mbps")
+    |> validate_optional_map(interface, "metadata", "#{path}.metadata")
     |> validate_interface_addresses(interface, path)
   end
 
@@ -424,6 +429,8 @@ defmodule Renga.Inventory.AgentPayload do
     errors
     |> validate_required_inet(address, "#{path}.address")
     |> validate_optional_inclusion(address, "kind", @address_kinds, "#{path}.kind")
+    |> validate_optional_string(address, "scope", "#{path}.scope")
+    |> validate_optional_map(address, "metadata", "#{path}.metadata")
   end
 
   defp validate_address(errors, _address, path) do
@@ -467,6 +474,51 @@ defmodule Renga.Inventory.AgentPayload do
       value when is_binary(value) -> validate_non_blank(errors, path, value)
       nil -> [error(path, "is required") | errors]
       _invalid -> [error(path, "must be a string") | errors]
+    end
+  end
+
+  defp validate_host_projection_fields(errors, attributes, path) do
+    Enum.reduce(~w(hostname fqdn vendor model asset_tag), errors, fn field, errors ->
+      validate_optional_string(errors, attributes, field, "#{path}.#{field}")
+    end)
+  end
+
+  defp validate_optional_string(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      nil -> errors
+      value when is_binary(value) -> validate_string_value(errors, value, path)
+      _invalid -> [error(path, "must be a string") | errors]
+    end
+  end
+
+  defp validate_string_length(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      value when is_binary(value) -> validate_string_value(errors, value, path)
+      _missing_or_invalid -> errors
+    end
+  end
+
+  defp validate_string_value(errors, value, path) do
+    if String.length(value) <= @max_agent_string_length do
+      errors
+    else
+      [error(path, "must be at most #{@max_agent_string_length} characters") | errors]
+    end
+  end
+
+  defp validate_optional_positive_integer(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      nil -> errors
+      value when is_integer(value) and value > 0 -> errors
+      _invalid -> [error(path, "must be a positive integer") | errors]
+    end
+  end
+
+  defp validate_optional_map(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      nil -> errors
+      value when is_map(value) -> errors
+      _invalid -> [error(path, "must be an object") | errors]
     end
   end
 
