@@ -469,7 +469,7 @@ defmodule Renga.InventoryTest do
                Inventory.record_agent_check_in(scope, source.id)
 
       assert {:ok, renamed_source} =
-               Inventory.update_source(source, %{name: "renamed-host-agent"})
+               Inventory.update_source(scope, source, %{name: "renamed-host-agent"})
 
       assert {:ok, {renamed_agent, renewed_lease}} =
                Inventory.record_agent_check_in(scope, renamed_source.id)
@@ -2962,7 +2962,7 @@ defmodule Renga.InventoryTest do
     test "interface evidence tenant must match canonical record, source, and observation", %{
       scope: scope,
       interface: interface,
-      foreign_source: source,
+      source: source,
       foreign_observation: observation
     } do
       assert_raise Ecto.ConstraintError, ~r/interface_evidence_tenant_fkey/, fn ->
@@ -3002,7 +3002,7 @@ defmodule Renga.InventoryTest do
     } do
       {:ok, run} = Inventory.create_sync_run(scope, peer_source.id)
 
-      assert_raise Ecto.ConstraintError, ~r/observations_source_sync_run_fkey/, fn ->
+      changeset =
         %Observation{
           organization_id: scope.organization_id,
           source_id: source.id,
@@ -3014,8 +3014,9 @@ defmodule Renga.InventoryTest do
           payload_digest: :crypto.hash(:sha256, "{}"),
           payload: %{}
         })
-        |> Repo.insert!()
-      end
+
+      assert {:error, changeset} = Repo.insert(changeset)
+      assert %{sync_run: ["does not exist"]} = errors_on(changeset)
     end
 
     test "agent leases require expiry after renewal", %{scope: scope, source: source} do
@@ -3081,6 +3082,36 @@ defmodule Renga.InventoryTest do
           last_seen_at: ~U[2026-08-01 00:00:00.000000Z]
         })
       end
+    end
+
+    test "canonical identifier claims require the identifier's resource", %{
+      scope: scope,
+      resource: resource,
+      source: source,
+      observation: observation
+    } do
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "hostname",
+          value: "compute-01"
+        })
+
+      assert_raise Ecto.ConstraintError,
+                   ~r/resource_identifier_claims_canonical_requires_resource/,
+                   fn ->
+                     Repo.insert!(%ResourceIdentifierClaim{
+                       organization_id: scope.organization_id,
+                       resource_identifier_id: identifier.id,
+                       source_id: source.id,
+                       observation_id: observation.id,
+                       kind: "hostname",
+                       value: "compute-01",
+                       normalized_value: "compute-01",
+                       confidence: 100,
+                       first_seen_at: ~U[2026-08-01 00:00:00.000000Z],
+                       last_seen_at: ~U[2026-08-01 00:00:00.000000Z]
+                     })
+                   end
     end
 
     test "interfaces require positive mtu and speed", %{scope: scope, resource: resource} do
