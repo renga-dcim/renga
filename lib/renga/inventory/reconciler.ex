@@ -81,18 +81,54 @@ defmodule Renga.Inventory.Reconciler do
   defp record_unexpected_failure(scope, observation, exception) do
     now = Renga.Time.utc_now_ms()
 
-    {:ok, result} =
-      Inventory.create_observation_reconciliation(scope, observation.id, %{
-        status: "failed",
-        attempt: next_attempt(scope, observation.id),
-        errors: %{"processing" => "projection_failed"},
-        metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
-        started_at: now,
-        completed_at: now
-      })
+    attrs = %{
+      status: "failed",
+      errors: %{"processing" => "projection_failed"},
+      metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
+      started_at: now,
+      completed_at: now
+    }
 
-    {:error, result}
+    record_serialized_failure(scope, observation, attrs)
   end
+
+  defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do
+    Repo.transaction(fn ->
+      lock_organization!(scope.organization_id)
+
+      case Inventory.create_observation_reconciliation(
+             scope,
+             observation.id,
+             Map.put(attrs, :attempt, next_attempt(scope, observation.id))
+           ) do
+        {:ok, result} -> result
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+    |> case do
+      {:ok, result} ->
+        {:error, result}
+
+      {:error, changeset} when retries > 0 ->
+        if attempt_conflict?(changeset) do
+          record_serialized_failure(scope, observation, attrs, retries - 1)
+        else
+          {:error, changeset}
+        end
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp attempt_conflict?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn {_field, {_message, metadata}} ->
+      metadata[:constraint] == :unique and
+        metadata[:constraint_name] == "observation_reconciliations_observation_attempt_index"
+    end)
+  end
+
+  defp attempt_conflict?(_reason), do: false
 
   defp reconcile_resource(
          scope,
