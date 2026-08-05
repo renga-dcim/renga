@@ -262,6 +262,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_resource_kind(resource, path)
     |> validate_identifiers(resource, path)
     |> validate_attributes(resource, path)
+    |> validate_coherent_host_identity(resource, path)
     |> validate_interfaces(resource, path)
     |> validate_components(resource, path)
   end
@@ -330,10 +331,45 @@ defmodule Renga.Inventory.AgentPayload do
           false
       end)
 
-    if has_identifier?,
-      do: errors,
-      else: [error(path, "must include at least one identifier") | errors]
+    has_non_mac_identifier? =
+      identifiers
+      |> Map.drop(["mac_address"])
+      |> Enum.any?(fn
+        {kind, value} when kind in @accepted_identifier_kinds and is_binary(value) ->
+          String.trim(value) != ""
+
+        {kind, values} when kind in @accepted_identifier_kinds and is_list(values) ->
+          Enum.any?(values, &non_empty_string?/1)
+
+        _other ->
+          false
+      end)
+
+    cond do
+      not has_identifier? -> [error(path, "must include at least one identifier") | errors]
+      not has_non_mac_identifier? -> [error(path, "must include a non-MAC identifier") | errors]
+      true -> errors
+    end
   end
+
+  defp validate_coherent_host_identity(errors, resource, path) do
+    identifiers = Map.get(resource, "identifiers", %{})
+    attributes = Map.get(resource, "attributes", %{})
+
+    Enum.reduce(~w(hostname fqdn), errors, fn field, errors ->
+      identifier = Map.get(identifiers, field)
+      attribute = Map.get(attributes, field)
+
+      if is_binary(identifier) and is_binary(attribute) and
+           normalize_host_identity(identifier) != normalize_host_identity(attribute) do
+        [error("#{path}.attributes.#{field}", "must match the corresponding identifier") | errors]
+      else
+        errors
+      end
+    end)
+  end
+
+  defp normalize_host_identity(value), do: value |> String.trim() |> String.downcase()
 
   defp validate_attributes(errors, resource, path) do
     case Map.get(resource, "attributes") do

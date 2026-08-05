@@ -138,6 +138,36 @@ defmodule Renga.Inventory.ReconcilerTest do
     refute distinct.id == resource.id
   end
 
+  test "rejects weak identity when hostname and FQDN resolve to different resources" do
+    context = context()
+
+    {:ok, hostname_resource} =
+      Inventory.create_resource(context.scope, %{kind: "server", name: "hostname-resource"})
+
+    {:ok, _host} =
+      Inventory.create_host(context.scope, hostname_resource.id, %{hostname: "compute-01"})
+
+    {:ok, fqdn_resource} =
+      Inventory.create_resource(context.scope, %{kind: "server", name: "fqdn-resource"})
+
+    {:ok, _host} =
+      Inventory.create_host(context.scope, fqdn_resource.id, %{fqdn: "compute-01.example.com"})
+
+    incoming =
+      observation(context, "1", %{
+        "hostname" => "compute-01",
+        "fqdn" => "compute-01.example.com"
+      })
+
+    assert {:error, reconciliation} =
+             Inventory.reconcile_observation(context.scope, incoming.id)
+
+    assert reconciliation.errors["identity"] == "ambiguous"
+
+    assert Enum.sort(reconciliation.errors["candidate_resource_ids"]) ==
+             Enum.sort([hostname_resource.id, fqdn_resource.id])
+  end
+
   test "does not weak-match a hostname retired by a strong-identity rename" do
     context = context()
 
@@ -256,6 +286,47 @@ defmodule Renga.Inventory.ReconcilerTest do
         %{"mac_address" => "aa:bb:cc:dd:ee:02"},
         %{},
         [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:02"}]
+      )
+
+    assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, mac_only.id)
+    assert matched.id == resource.id
+  end
+
+  test "matches only the present MAC set after an interface is omitted" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:01"},
+          %{"name" => "eth1", "mac_address" => "aa:bb:cc:dd:ee:02"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    omitted =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:01"}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, omitted.id)
+
+    mac_only =
+      observation(
+        context,
+        "3",
+        %{"mac_address" => "aa:bb:cc:dd:ee:01"},
+        %{},
+        [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:01"}]
       )
 
     assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, mac_only.id)

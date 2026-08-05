@@ -143,6 +143,58 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects MAC-only identity before raw storage", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "identifiers"], %{
+          "mac_address" => "aa:bb:cc:dd:ee:ff"
+        })
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
+
+      repeated_conn =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", Map.put(payload, "observation_id", "repeated-mac"))
+
+      assert %{"status" => "rejected"} = json_response(repeated_conn, 422)
+      assert Repo.aggregate(Observation, :count) == 0
+      assert Inventory.list_resources(scope) == []
+    end
+
+    test "rejects hostname and FQDN disagreement between identifiers and attributes", %{
+      conn: conn
+    } do
+      %{source: source, token: token} = source_fixture()
+
+      resource = %{
+        "kind" => "server",
+        "identifiers" => %{
+          "hostname" => "identifier-host",
+          "fqdn" => "identifier.example.com"
+        },
+        "attributes" => %{
+          "hostname" => "attribute-host",
+          "fqdn" => "attribute.example.com"
+        }
+      }
+
+      payload = valid_observation_payload(source, %{"resources" => [resource]})
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.attributes.hostname" in paths
+      assert "resources.0.attributes.fqdn" in paths
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
 
@@ -306,7 +358,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       |> json_response(202)
 
       changed_payload =
-        put_in(payload, ["resources", Access.at(0), "attributes", "hostname"], "compute-02")
+        payload
+        |> put_in(["resources", Access.at(0), "identifiers", "hostname"], "compute-02")
+        |> put_in(["resources", Access.at(0), "attributes", "hostname"], "compute-02")
 
       conflict_conn =
         build_conn()

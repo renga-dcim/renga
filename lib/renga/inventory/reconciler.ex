@@ -140,22 +140,21 @@ defmodule Renga.Inventory.Reconciler do
 
     case combine_strong_matches(results) do
       :none when strong_identity? -> :none
-      :none -> first_weak_match(scope, identifiers)
+      :none -> match_weak_identity(scope, identifiers)
       result -> result
     end
   end
 
-  defp first_weak_match(scope, identifiers) do
-    Enum.reduce_while(@weak_identifier_kinds, :none, fn kind, :none ->
-      values =
-        for identifier <- identifiers, identifier.kind == kind, do: identifier.normalized_value
+  defp match_weak_identity(scope, identifiers) do
+    results =
+      Enum.map(@weak_identifier_kinds, fn kind ->
+        values =
+          for identifier <- identifiers, identifier.kind == kind, do: identifier.normalized_value
 
-      case resources_for_current_host_values(scope, kind, values) do
-        [] -> {:cont, :none}
-        [resource] -> {:halt, {:ok, resource, %{"strategy" => kind}}}
-        resources -> {:halt, {:error, Enum.map(resources, & &1.id)}}
-      end
-    end)
+        {kind, resources_for_current_host_values(scope, kind, values)}
+      end)
+
+    combine_strong_matches(results)
   end
 
   defp identifier_matches(scope, identifiers, kinds) do
@@ -217,30 +216,33 @@ defmodule Renga.Inventory.Reconciler do
     if MapSet.size(observed_macs) == 0 do
       :none
     else
-      candidates =
+      current_mac_rows =
         Resource
         |> join(:inner, [resource], interface in Interface,
           on: interface.resource_id == resource.id
         )
         |> where([resource], resource.organization_id == ^scope.organization_id)
-        |> where(
-          [_resource, interface],
-          fragment("?::text", interface.mac_address) in ^MapSet.to_list(observed_macs)
+        |> where([_resource, interface], interface.status != "not_present")
+        |> where([_resource, interface], not is_nil(interface.mac_address))
+        |> join(:inner, [resource, _interface], candidate in Interface,
+          on:
+            candidate.resource_id == resource.id and candidate.status != "not_present" and
+              fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
+        )
+        |> select(
+          [resource, interface, _candidate],
+          {resource, fragment("?::text", interface.mac_address)}
         )
         |> distinct(true)
         |> Repo.all()
 
       candidates =
-        Enum.filter(candidates, fn resource ->
-          canonical_macs =
-            Interface
-            |> where([interface], interface.resource_id == ^resource.id)
-            |> where([interface], not is_nil(interface.mac_address))
-            |> select([interface], fragment("?::text", interface.mac_address))
-            |> Repo.all()
-            |> MapSet.new()
-
-          MapSet.equal?(canonical_macs, observed_macs)
+        current_mac_rows
+        |> Enum.group_by(fn {resource, _mac} -> resource.id end)
+        |> Enum.flat_map(fn {_resource_id, rows} ->
+          [{resource, _mac} | _rest] = rows
+          current_macs = MapSet.new(rows, &elem(&1, 1))
+          if MapSet.equal?(current_macs, observed_macs), do: [resource], else: []
         end)
 
       case candidates do
