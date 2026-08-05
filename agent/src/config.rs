@@ -1,0 +1,227 @@
+//! Configuration loading without transport-specific policy.
+
+use serde::Deserialize;
+use std::{
+    env, fmt, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+const INVENTORY_DEFAULT: u64 = 3_600;
+const CHECKIN_DEFAULT: u64 = 60;
+const REFRESH_DEFAULT: u64 = 300;
+const TIMEOUT_DEFAULT: u64 = 30;
+const RETRIES_DEFAULT: u32 = 5;
+
+/// Validated runtime configuration. The token is intentionally redacted from Debug.
+#[derive(Clone)]
+pub struct Config {
+    pub config_path: PathBuf,
+    pub renga_url: String,
+    pub token: String,
+    pub installation_id: uuid::Uuid,
+    pub inventory_interval: Duration,
+    pub checkin_interval: Duration,
+    pub config_refresh_interval: Duration,
+    pub request_timeout: Duration,
+    pub max_retry_attempts: u32,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("config_path", &self.config_path)
+            .field("renga_url", &self.renga_url)
+            .field("token", &"[REDACTED]")
+            .field("installation_id", &self.installation_id)
+            .field("inventory_interval", &self.inventory_interval)
+            .field("checkin_interval", &self.checkin_interval)
+            .field("config_refresh_interval", &self.config_refresh_interval)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_retry_attempts", &self.max_retry_attempts)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct ConfigError(String);
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ConfigError {}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    renga_url: Option<String>,
+    token: Option<String>,
+    installation_id: Option<String>,
+    inventory_interval_seconds: Option<u64>,
+    checkin_interval_seconds: Option<u64>,
+    config_refresh_interval_seconds: Option<u64>,
+    request_timeout_seconds: Option<u64>,
+    max_retry_attempts: Option<u32>,
+}
+
+impl Config {
+    /// Loads TOML and then applies `RENGA_*` overrides. Durations are in seconds.
+    /// Defaults: inventory 1h, check-in 1m, refresh 5m, timeout 30s, retries 5.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let mut raw: RawConfig = match fs::read_to_string(path) {
+            // TOML diagnostics can echo source lines, including the token.
+            Ok(text) => toml::from_str(&text)
+                .map_err(|_| ConfigError(format!("invalid config TOML in {}", path.display())))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => RawConfig::default(),
+            Err(e) => {
+                return Err(ConfigError(format!(
+                    "cannot read config {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+        macro_rules! string_env {
+            ($key:literal, $field:ident) => {
+                if let Ok(v) = env::var($key) {
+                    raw.$field = Some(v);
+                }
+            };
+        }
+        macro_rules! number_env {
+            ($key:literal, $field:ident, $ty:ty) => {
+                if let Ok(v) = env::var($key) {
+                    raw.$field = Some(v.parse::<$ty>().map_err(|_| {
+                        ConfigError(format!("{} must be a positive integer", $key))
+                    })?);
+                }
+            };
+        }
+        string_env!("RENGA_URL", renga_url);
+        string_env!("RENGA_TOKEN", token);
+        string_env!("RENGA_INSTALLATION_ID", installation_id);
+        number_env!(
+            "RENGA_INVENTORY_INTERVAL_SECONDS",
+            inventory_interval_seconds,
+            u64
+        );
+        number_env!(
+            "RENGA_CHECKIN_INTERVAL_SECONDS",
+            checkin_interval_seconds,
+            u64
+        );
+        number_env!(
+            "RENGA_CONFIG_REFRESH_INTERVAL_SECONDS",
+            config_refresh_interval_seconds,
+            u64
+        );
+        number_env!(
+            "RENGA_REQUEST_TIMEOUT_SECONDS",
+            request_timeout_seconds,
+            u64
+        );
+        number_env!("RENGA_MAX_RETRY_ATTEMPTS", max_retry_attempts, u32);
+        Self::from_raw(path.to_path_buf(), raw)
+    }
+
+    fn from_raw(config_path: PathBuf, raw: RawConfig) -> Result<Self, ConfigError> {
+        fn required(value: Option<String>, name: &str) -> Result<String, ConfigError> {
+            value
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| ConfigError(format!("{name} is required")))
+        }
+        fn duration(value: Option<u64>, default: u64, name: &str) -> Result<Duration, ConfigError> {
+            let seconds = value.unwrap_or(default);
+            if seconds == 0 {
+                Err(ConfigError(format!("{name} must be greater than zero")))
+            } else {
+                Ok(Duration::from_secs(seconds))
+            }
+        }
+        let installation = required(raw.installation_id, "installation_id")?;
+        let renga_url = required(raw.renga_url, "renga_url")?;
+        if !(renga_url.starts_with("https://") || renga_url.starts_with("http://")) {
+            return Err(ConfigError("renga_url must be an HTTP or HTTPS URL".into()));
+        }
+        let max_retry_attempts = raw.max_retry_attempts.unwrap_or(RETRIES_DEFAULT);
+        if max_retry_attempts == 0 {
+            return Err(ConfigError(
+                "max_retry_attempts must be greater than zero".into(),
+            ));
+        }
+        Ok(Self {
+            config_path,
+            renga_url,
+            token: required(raw.token, "token")?,
+            installation_id: uuid::Uuid::parse_str(&installation)
+                .map_err(|_| ConfigError("installation_id must be a UUID".into()))?,
+            inventory_interval: duration(
+                raw.inventory_interval_seconds,
+                INVENTORY_DEFAULT,
+                "inventory_interval_seconds",
+            )?,
+            checkin_interval: duration(
+                raw.checkin_interval_seconds,
+                CHECKIN_DEFAULT,
+                "checkin_interval_seconds",
+            )?,
+            config_refresh_interval: duration(
+                raw.config_refresh_interval_seconds,
+                REFRESH_DEFAULT,
+                "config_refresh_interval_seconds",
+            )?,
+            request_timeout: duration(
+                raw.request_timeout_seconds,
+                TIMEOUT_DEFAULT,
+                "request_timeout_seconds",
+            )?,
+            max_retry_attempts,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn raw() -> RawConfig {
+        RawConfig {
+            renga_url: Some("https://renga.test".into()),
+            token: Some("secret".into()),
+            installation_id: Some("67e55044-10b1-426f-9247-bb680e5fe0c8".into()),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn defaults_are_sane_and_secret_is_redacted() {
+        let c = Config::from_raw("x".into(), raw()).unwrap();
+        assert_eq!(c.inventory_interval, Duration::from_secs(3600));
+        assert!(!format!("{c:?}").contains("secret"));
+    }
+    #[test]
+    fn parses_toml_and_rejects_invalid_values() {
+        let r: RawConfig =
+            toml::from_str("renga_url='https://renga.test'\ntoken='y'\ninstallation_id='bad'\n")
+                .unwrap();
+        assert!(Config::from_raw("x".into(), r)
+            .unwrap_err()
+            .to_string()
+            .contains("UUID"));
+        let mut r = raw();
+        r.request_timeout_seconds = Some(0);
+        assert!(Config::from_raw("x".into(), r).is_err());
+    }
+    #[test]
+    fn environment_wins_over_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        fs::write(&path,"renga_url='file'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+        env::set_var("RENGA_URL", "https://environment.test");
+        let c = Config::load(&path).unwrap();
+        env::remove_var("RENGA_URL");
+        fs::remove_file(path).unwrap();
+        assert_eq!(c.renga_url, "https://environment.test");
+    }
+}

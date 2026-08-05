@@ -1,0 +1,360 @@
+//! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
+
+use crate::payload::{
+    Address, Component, HostAttributes, Identifiers, Interface, ResourceKind, ServerResource,
+};
+use serde_json::{json, Value};
+use std::{collections::BTreeMap, fmt, fs, path::Path, process::Command};
+
+#[derive(Debug)]
+pub struct CollectError(pub String);
+impl fmt::Display for CollectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for CollectError {}
+
+fn read(root: &Path, path: &str) -> Option<String> {
+    fs::read_to_string(root.join(path.trim_start_matches('/')))
+        .ok()
+        .and_then(|v| normalize_value(&v))
+}
+
+/// Removes firmware placeholders which are common on generic/cloud DMI tables.
+pub fn normalize_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    if value.is_empty()
+        || matches!(
+            lower.as_str(),
+            "none"
+                | "unknown"
+                | "not specified"
+                | "not applicable"
+                | "to be filled by o.e.m."
+                | "default string"
+        )
+    {
+        None
+    } else {
+        Some(value.into())
+    }
+}
+
+pub fn parse_os_release(input: &str) -> BTreeMap<String, String> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            Some((k.into(), v.trim_matches('"').replace("\\\"", "\"")))
+        })
+        .collect()
+}
+pub fn parse_meminfo(input: &str) -> Option<u64> {
+    input
+        .lines()
+        .find(|l| l.starts_with("MemTotal:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u64>()
+        .ok()
+        .map(|kb| kb * 1024)
+}
+pub fn parse_cpuinfo(input: &str) -> (usize, Option<String>) {
+    let count = input.lines().filter(|l| l.starts_with("processor")).count();
+    let model = input.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        (k.trim() == "model name").then(|| v.trim().into())
+    });
+    (count, model)
+}
+
+/// Parses `ip -j address`; command/JSON failure yields no interfaces rather than aborting inventory.
+pub fn parse_ip_json(input: &str) -> Vec<Interface> {
+    let Ok(Value::Array(items)) = serde_json::from_str(input) else {
+        return vec![];
+    };
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let name = item.get("ifname")?.as_str()?.into();
+            let flags = item.get("flags").and_then(Value::as_array);
+            let up = flags.is_some_and(|f| f.iter().any(|x| x.as_str() == Some("UP")));
+            let addresses = item
+                .get("addr_info")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|a| {
+                    let local = a.get("local")?.as_str()?;
+                    let prefix = a.get("prefixlen").and_then(Value::as_u64)?;
+                    Some(Address {
+                        address: format!("{local}/{prefix}"),
+                        kind: a.get("family").and_then(Value::as_str).map(|v| {
+                            if v == "inet" {
+                                "ipv4".into()
+                            } else {
+                                "ipv6".into()
+                            }
+                        }),
+                        scope: a.get("scope").and_then(Value::as_str).map(Into::into),
+                    })
+                })
+                .collect();
+            Some(Interface {
+                name,
+                kind: "unknown".into(),
+                status: if up { "up" } else { "down" }.into(),
+                mac_address: item
+                    .get("address")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_mac),
+                mtu: item
+                    .get("mtu")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok()),
+                speed_mbps: None,
+                addresses,
+            })
+        })
+        .collect()
+}
+fn normalize_mac(v: &str) -> Option<String> {
+    let v = v.trim().to_ascii_lowercase();
+    if v == "00:00:00:00:00:00" || v.len() != 17 {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// Collects one server resource. `root` permits parser/filesystem fixtures in tests.
+pub fn collect_from(root: &Path) -> Result<ServerResource, CollectError> {
+    let hostname = read(root, "etc/hostname").ok_or_else(|| {
+        CollectError("Linux host has no usable /etc/hostname; observation cannot be matched".into())
+    })?;
+    let fqdn = Command::new("hostname")
+        .arg("-f")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| normalize_value(&s))
+        .filter(|s| s.contains('.'));
+    let ip_output = Command::new("ip")
+        .args(["-j", "address"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    let mut interfaces = parse_ip_json(&ip_output);
+    if interfaces.is_empty() {
+        interfaces = collect_sysfs_interfaces(root);
+    }
+    enrich_interfaces(root, &mut interfaces);
+    let macs = interfaces
+        .iter()
+        .filter(|i| i.status != "not_present")
+        .filter_map(|i| i.mac_address.clone())
+        .collect();
+    let os = read(root, "etc/os-release")
+        .map(|s| parse_os_release(&s))
+        .unwrap_or_default();
+    let (cpu_count, cpu_model) = read(root, "proc/cpuinfo")
+        .map(|s| parse_cpuinfo(&s))
+        .unwrap_or((0, None));
+    let mut components = vec![
+        component(
+            "os",
+            [
+                ("name", json!(os.get("NAME"))),
+                ("version", json!(os.get("VERSION_ID"))),
+                ("kernel", json!(read(root, "proc/sys/kernel/osrelease"))),
+                ("architecture", json!(std::env::consts::ARCH)),
+            ],
+        ),
+        component(
+            "cpu",
+            [
+                ("logical_count", json!(cpu_count)),
+                ("model", json!(cpu_model)),
+            ],
+        ),
+    ];
+    if let Some(bytes) = read(root, "proc/meminfo").and_then(|s| parse_meminfo(&s)) {
+        components.push(component("memory", [("total_bytes", json!(bytes))]));
+    }
+    components.extend(collect_disks(root));
+    components.extend(collect_filesystems(root));
+    if let Some(kind) = virtualization_hint(root) {
+        components.push(component("virtualization", [("kind", json!(kind))]));
+    }
+    let vendor = read(root, "sys/class/dmi/id/sys_vendor");
+    let model = read(root, "sys/class/dmi/id/product_name");
+    Ok(ServerResource {
+        kind: ResourceKind::Server,
+        identifiers: Identifiers {
+            hostname: hostname.clone(),
+            fqdn: fqdn.clone(),
+            machine_id: read(root, "etc/machine-id"),
+            dmi_uuid: read(root, "sys/class/dmi/id/product_uuid"),
+            serial_number: read(root, "sys/class/dmi/id/product_serial"),
+            mac_address: macs,
+        },
+        attributes: Some(HostAttributes {
+            hostname: Some(hostname),
+            fqdn,
+            vendor,
+            model,
+            asset_tag: read(root, "sys/class/dmi/id/chassis_asset_tag"),
+        }),
+        interfaces,
+        components,
+    })
+}
+
+/// Collects from the running Linux host.
+pub fn collect() -> Result<ServerResource, CollectError> {
+    collect_from(Path::new("/"))
+}
+
+fn component<const N: usize>(kind: &str, values: [(&str, Value); N]) -> Component {
+    Component {
+        kind: kind.into(),
+        attributes: values
+            .into_iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (k.into(), v))
+            .collect(),
+    }
+}
+fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
+    for i in interfaces {
+        let base = format!("sys/class/net/{}", i.name);
+        i.mtu = read(root, &format!("{base}/mtu"))
+            .and_then(|v| v.parse().ok())
+            .or(i.mtu);
+        i.speed_mbps = read(root, &format!("{base}/speed"))
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v > 0);
+        i.kind = if i.name == "lo" {
+            "loopback"
+        } else if root.join(format!("{base}/device")).exists() {
+            "ethernet"
+        } else {
+            "virtual"
+        }
+        .into();
+    }
+}
+fn collect_sysfs_interfaces(root: &Path) -> Vec<Interface> {
+    let Ok(entries) = fs::read_dir(root.join("sys/class/net")) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let base = format!("sys/class/net/{name}");
+            let status = match read(root, &format!("{base}/operstate")).as_deref() {
+                Some("up") => "up",
+                Some("down") => "down",
+                Some("dormant") => "dormant",
+                _ => "unknown",
+            }
+            .into();
+            Interface {
+                name,
+                kind: "unknown".into(),
+                status,
+                mac_address: read(root, &format!("{base}/address")).and_then(|v| normalize_mac(&v)),
+                mtu: None,
+                speed_mbps: None,
+                addresses: vec![],
+            }
+        })
+        .collect()
+}
+fn collect_disks(root: &Path) -> Vec<Component> {
+    let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let sectors = read(root, &format!("sys/block/{name}/size"))?
+                .parse::<u64>()
+                .ok()?;
+            Some(component(
+                "disk",
+                [
+                    ("name", json!(name)),
+                    ("size_bytes", json!(sectors.saturating_mul(512))),
+                ],
+            ))
+        })
+        .collect()
+}
+fn collect_filesystems(root: &Path) -> Vec<Component> {
+    read(root, "proc/mounts")
+        .into_iter()
+        .flat_map(|s| {
+            s.lines()
+                .filter_map(|l| {
+                    let mut p = l.split_whitespace();
+                    Some(component(
+                        "filesystem",
+                        [
+                            ("device", json!(p.next()?)),
+                            ("mountpoint", json!(p.next()?)),
+                            ("filesystem_type", json!(p.next()?)),
+                        ],
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+fn virtualization_hint(root: &Path) -> Option<String> {
+    let product = read(root, "sys/class/dmi/id/product_name")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    ["kvm", "vmware", "virtualbox", "hyper-v", "xen"]
+        .into_iter()
+        .find(|v| product.contains(v))
+        .map(Into::into)
+        .or_else(|| root.join(".dockerenv").exists().then(|| "container".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn normalizes_firmware_placeholders() {
+        assert_eq!(normalize_value(" To Be Filled By O.E.M. "), None);
+        assert_eq!(normalize_value("Dell"), Some("Dell".into()));
+    }
+    #[test]
+    fn parses_proc_data() {
+        assert_eq!(parse_meminfo("MemTotal: 1024 kB\n"), Some(1_048_576));
+        assert_eq!(
+            parse_cpuinfo("processor : 0\nmodel name : Xeon\nprocessor : 1\n"),
+            (2, Some("Xeon".into()))
+        );
+    }
+    #[test]
+    fn parses_ip_addresses() {
+        let v = parse_ip_json(
+            r#"[{"ifname":"eth0","flags":["UP"],"mtu":1500,"address":"AA:BB:CC:DD:EE:FF","addr_info":[{"family":"inet","local":"10.0.0.2","prefixlen":24,"scope":"global"}]}]"#,
+        );
+        assert_eq!(v[0].mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(v[0].addresses[0].address, "10.0.0.2/24");
+    }
+    #[test]
+    fn malformed_ip_degrades() {
+        assert!(parse_ip_json("nope").is_empty());
+    }
+}
