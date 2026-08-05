@@ -61,7 +61,9 @@ sudo chmod 0640 /etc/renga/agent.env
 using the network. `--once` loads configuration, posts one check-in and one
 inventory observation, then exits. With neither option the agent sends both at
 startup, schedules periodic check-ins and inventory, and retries transient HTTP
-failures with backoff. SIGTERM/SIGINT initiates a clean stop.
+failures with backoff. SIGTERM/SIGINT stops retry attempts and backoff promptly,
+including during `--once`. A blocking request already in flight can continue up
+to `request_timeout_seconds` before the process exits.
 
 The daemon reloads the TOML file and environment overrides on the configured
 refresh interval. A valid reload replaces transport and interval settings; an
@@ -93,6 +95,10 @@ sudo journalctl -u renga-agent.service -f
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
 capabilities and makes the host filesystem read-only to the service.
+The example unit allows 40 seconds for shutdown, slightly above the default
+30-second request timeout. If `request_timeout_seconds` is increased, operators
+should increase `TimeoutStopSec` too; otherwise systemd may forcibly stop an
+in-flight request when its 40-second limit expires.
 
 ## Collector scope and degradation
 

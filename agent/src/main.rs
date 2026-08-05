@@ -1,5 +1,6 @@
 use clap::Parser;
 use renga_agent::{
+    cancellation::Cancellation,
     collectors::linux,
     config::Config,
     payload::{CheckIn, Observation},
@@ -9,10 +10,6 @@ use renga_agent::{
 use std::{
     error::Error,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
     thread,
     time::{Duration, Instant},
 };
@@ -52,17 +49,28 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    // Install shutdown handling before configuration or transport setup so even
+    // startup and --once deliveries share the interruptible path.
+    let stopped = install_shutdown_handler()?;
+    run_configured(args, stopped)
+}
+
+fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
+    let stopped = Cancellation::default();
+    let signal_flag = stopped.clone();
+    ctrlc::set_handler(move || signal_flag.cancel())?;
+    Ok(stopped)
+}
+
+fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config)?;
-    let mut client = HttpClient::new(&config)?;
+    let mut client = HttpClient::new(&config, stopped.clone())?;
     send_checkin(&client, &config)?;
     send_inventory(&client)?;
     if args.once {
         return Ok(());
     }
 
-    let stopped = Arc::new(AtomicBool::new(false));
-    let signal_flag = Arc::clone(&stopped);
-    ctrlc::set_handler(move || signal_flag.store(true, Ordering::SeqCst))?;
     let now = Instant::now();
     let mut scheduler = Scheduler::new(
         now,
@@ -72,7 +80,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
     );
     info!("daemon started");
 
-    while !stopped.load(Ordering::SeqCst) {
+    while !stopped.cancelled() {
         let now = Instant::now();
         for job in scheduler.due(now) {
             match job {
@@ -91,7 +99,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
                 Job::Reload => {
                     let old_checkin_interval = config.checkin_interval;
                     let old_inventory_interval = config.inventory_interval;
-                    match reload(&args.config) {
+                    match reload(&args.config, stopped.clone()) {
                         Ok((new_config, new_client)) => {
                             config = new_config;
                             client = new_client;
@@ -138,8 +146,25 @@ fn send_inventory(client: &HttpClient) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn reload(path: &PathBuf) -> Result<(Config, HttpClient), Box<dyn Error>> {
+fn reload(
+    path: &PathBuf,
+    cancellation: Cancellation,
+) -> Result<(Config, HttpClient), Box<dyn Error>> {
     let config = Config::load(path)?;
-    let client = HttpClient::new(&config)?;
+    let client = HttpClient::new(&config, cancellation)?;
     Ok((config, client))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_handle_is_shared_with_configured_startup() {
+        let installed_handler_state = Cancellation::default();
+        let delivery_state = installed_handler_state.clone();
+        installed_handler_state.cancel();
+
+        assert!(delivery_state.cancelled());
+    }
 }

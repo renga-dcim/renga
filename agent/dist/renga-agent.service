@@ -13,7 +13,8 @@ EnvironmentFile=-/etc/renga/agent.env
 ExecStart=/usr/bin/renga-agent --config /etc/renga/agent.toml
 Restart=on-failure
 RestartSec=10s
-TimeoutStopSec=30s
+# Keep this above request_timeout_seconds (30s by default); raise both together.
+TimeoutStopSec=40s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=renga-agent

@@ -1,6 +1,7 @@
 //! Blocking HTTP transport and bounded retry policy.
 
 use crate::{
+    cancellation::Cancellation,
     config::Config,
     payload::{CheckIn, Observation},
 };
@@ -15,6 +16,7 @@ use std::{fmt, thread, time::Duration};
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
+const BACKOFF_SLICE: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone)]
 pub struct TransportError {
@@ -24,6 +26,14 @@ pub struct TransportError {
 impl TransportError {
     fn new(message: String, transient: bool) -> Self {
         Self { message, transient }
+    }
+
+    fn cancelled() -> Self {
+        Self::new("HTTP delivery cancelled".into(), false)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.message == "HTTP delivery cancelled"
     }
 }
 impl fmt::Display for TransportError {
@@ -39,9 +49,10 @@ pub struct HttpClient {
     observation_url: Url,
     authorization: HeaderValue,
     attempts: u32,
+    cancellation: Cancellation,
 }
 impl HttpClient {
-    pub fn new(config: &Config) -> Result<Self, TransportError> {
+    pub fn new(config: &Config, cancellation: Cancellation) -> Result<Self, TransportError> {
         let has_explicit_authority = config
             .renga_url
             .split_once("://")
@@ -80,6 +91,7 @@ impl HttpClient {
             observation_url,
             authorization,
             attempts: config.max_retry_attempts,
+            cancellation,
         })
     }
     pub fn post_checkin(&self, value: &CheckIn) -> Result<(), TransportError> {
@@ -107,6 +119,7 @@ impl HttpClient {
                 response_result(response)
             },
             thread::sleep,
+            &self.cancellation,
         )
     }
 }
@@ -141,14 +154,26 @@ fn retry<T>(
     attempts: u32,
     mut operation: impl FnMut() -> Result<T, TransportError>,
     mut sleep: impl FnMut(Duration),
+    cancellation: &Cancellation,
 ) -> Result<T, TransportError> {
     let mut delay = Duration::from_millis(250);
     for attempt in 1..=attempts {
+        if cancellation.cancelled() {
+            return Err(TransportError::cancelled());
+        }
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) if !error.transient || attempt == attempts => return Err(error),
             Err(_) => {
-                sleep(delay);
+                let mut remaining = delay;
+                while !remaining.is_zero() {
+                    if cancellation.cancelled() {
+                        return Err(TransportError::cancelled());
+                    }
+                    let slice = remaining.min(BACKOFF_SLICE);
+                    sleep(slice);
+                    remaining -= slice;
+                }
                 delay = (delay * 2).min(Duration::from_secs(8));
             }
         }
@@ -188,7 +213,8 @@ mod tests {
     #[test]
     fn validates_and_builds_exact_endpoint_urls_and_authorization() {
         for base in ["https://renga.test", "https://renga.test/"] {
-            let client = HttpClient::new(&config(base, "valid-token")).unwrap();
+            let client =
+                HttpClient::new(&config(base, "valid-token"), Cancellation::default()).unwrap();
             assert_eq!(
                 client.checkin_url.as_str(),
                 "https://renga.test/api/v1/agent/checkins"
@@ -213,7 +239,7 @@ mod tests {
             "https://renga.test/base",
         ] {
             assert!(
-                HttpClient::new(&config(url, "valid-token")).is_err(),
+                HttpClient::new(&config(url, "valid-token"), Cancellation::default()).is_err(),
                 "accepted {url}"
             );
         }
@@ -222,7 +248,10 @@ mod tests {
     #[test]
     fn rejects_invalid_bearer_header_without_exposing_token() {
         let token = "secret\nInjected: value";
-        let error = match HttpClient::new(&config("https://renga.test", token)) {
+        let error = match HttpClient::new(
+            &config("https://renga.test", token),
+            Cancellation::default(),
+        ) {
             Ok(_) => panic!("accepted invalid bearer token"),
             Err(error) => error,
         };
@@ -234,6 +263,7 @@ mod tests {
     fn succeeds_after_transients() {
         let mut calls = 0;
         let mut sleeps = vec![];
+        let cancellation = Cancellation::default();
         let result = retry(
             3,
             || {
@@ -245,23 +275,23 @@ mod tests {
                 }
             },
             |d| sleeps.push(d),
+            &cancellation,
         );
         assert_eq!(result.unwrap(), 7);
-        assert_eq!(
-            sleeps,
-            vec![Duration::from_millis(250), Duration::from_millis(500)]
-        );
+        assert_eq!(sleeps, vec![Duration::from_millis(25); 30]);
     }
     #[test]
     fn stops_on_permanent_response() {
         let mut calls = 0;
+        let cancellation = Cancellation::default();
         assert!(retry::<()>(
             5,
             || {
                 calls += 1;
                 Err(error(false))
             },
-            |_| {}
+            |_| {},
+            &cancellation
         )
         .is_err());
         assert_eq!(calls, 1);
@@ -269,15 +299,61 @@ mod tests {
     #[test]
     fn exhausts_total_attempts() {
         let mut calls = 0;
+        let cancellation = Cancellation::default();
         assert!(retry::<()>(
             3,
             || {
                 calls += 1;
                 Err(error(true))
             },
-            |_| {}
+            |_| {},
+            &cancellation
         )
         .is_err());
         assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn already_cancelled_makes_no_attempt() {
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let mut calls = 0;
+        let failure = retry::<()>(
+            3,
+            || {
+                calls += 1;
+                Ok(())
+            },
+            |_| panic!("cancelled delivery must not back off"),
+            &cancellation,
+        )
+        .unwrap_err();
+        assert_eq!(calls, 0);
+        assert!(failure.is_cancelled());
+        assert_eq!(failure.to_string(), "HTTP delivery cancelled");
+    }
+
+    #[test]
+    fn cancellation_during_backoff_prevents_the_next_attempt() {
+        let cancellation = Cancellation::default();
+        let from_sleep = cancellation.clone();
+        let mut calls = 0;
+        let mut sleeps = 0;
+        let failure = retry::<()>(
+            3,
+            || {
+                calls += 1;
+                Err(error(true))
+            },
+            |_| {
+                sleeps += 1;
+                from_sleep.cancel();
+            },
+            &cancellation,
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(sleeps, 1);
+        assert!(failure.is_cancelled());
     }
 }
