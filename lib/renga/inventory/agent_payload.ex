@@ -14,6 +14,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_agent_metadata_bytes 16_000
   @max_agent_string_length 255
   @max_observation_id_length 255
+  @max_postgres_integer 2_147_483_647
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
@@ -307,16 +308,38 @@ defmodule Renga.Inventory.AgentPayload do
           errors
 
         is_binary(value) ->
-          validate_non_blank(errors, "#{path}.#{kind}", value)
+          errors
+          |> validate_non_blank("#{path}.#{kind}", value)
+          |> validate_string_value(value, "#{path}.#{kind}")
+          |> validate_mac_identifier(kind, [value], "#{path}.#{kind}")
+
+        kind in ~w(hostname fqdn) ->
+          [error("#{path}.#{kind}", "must be a string") | errors]
 
         is_list(value) and Enum.all?(value, &non_empty_string?/1) ->
           errors
+          |> validate_identifier_value_lengths(value, "#{path}.#{kind}")
+          |> validate_mac_identifier(kind, value, "#{path}.#{kind}")
 
         true ->
           [error("#{path}.#{kind}", "must be a string or list of non-empty strings") | errors]
       end
     end)
   end
+
+  defp validate_identifier_value_lengths(errors, values, path) do
+    Enum.reduce(values, errors, fn value, errors -> validate_string_value(errors, value, path) end)
+  end
+
+  defp validate_mac_identifier(errors, "mac_address", values, path) do
+    if Enum.all?(values, &match?({:ok, _mac}, MacAddress.cast(&1))) do
+      errors
+    else
+      [error(path, "contains an invalid MAC address") | errors]
+    end
+  end
+
+  defp validate_mac_identifier(errors, _kind, _values, _path), do: errors
 
   defp validate_identifier_presence(errors, identifiers, path) do
     has_identifier? =
@@ -545,8 +568,8 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_optional_positive_integer(errors, attrs, key, path) do
     case Map.get(attrs, key) do
       nil -> errors
-      value when is_integer(value) and value > 0 -> errors
-      _invalid -> [error(path, "must be a positive integer") | errors]
+      value when is_integer(value) and value in 1..@max_postgres_integer -> errors
+      _invalid -> [error(path, "must be a positive signed 32-bit integer") | errors]
     end
   end
 

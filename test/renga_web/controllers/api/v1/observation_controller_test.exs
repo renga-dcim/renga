@@ -143,6 +143,106 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects identifiers that exceed their projection storage limit before raw storage" do
+      %{source: source, token: token} = source_fixture()
+      oversized = String.duplicate("i", 256)
+
+      payloads = [
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "machine_id" => oversized
+        }),
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "serial_number" => ["valid", oversized]
+        })
+      ]
+
+      for payload <- payloads do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &String.starts_with?(&1["path"], "resources.0.identifiers."))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects multi-valued hostname and FQDN identifiers before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for field <- ~w(hostname fqdn) do
+        payload =
+          put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+            field => ["compute-01", "compute-02"],
+            "machine_id" => "9f3c7a8b"
+          })
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.#{field}"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects malformed MAC identifiers before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "machine_id" => "9f3c7a8b",
+          "mac_address" => ["aa:bb:cc:dd:ee:ff", "not-a-mac"]
+        })
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects interface integers above PostgreSQL's signed limit before raw storage", %{
+      conn: conn
+    } do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "mtu"],
+          2_147_483_648
+        )
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "speed_mbps"],
+          2_147_483_648
+        )
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.interfaces.0.mtu" in paths
+      assert "resources.0.interfaces.0.speed_mbps" in paths
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects MAC-only identity before raw storage", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
 
