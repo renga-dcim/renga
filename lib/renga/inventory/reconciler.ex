@@ -88,7 +88,10 @@ defmodule Renga.Inventory.Reconciler do
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
     reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
     freshness_advanced? = current_observation?(scope, resource.id, observation)
-    Projections.reconcile(scope, source, observation, resource)
+
+    Projections.reconcile(scope, source, observation, resource,
+      allow_new_rows?: freshness_advanced?
+    )
 
     record_success(
       scope,
@@ -346,7 +349,7 @@ defmodule Renga.Inventory.Reconciler do
           reason: "ObservationReconciled",
           message: "Inventory is current as of the latest reconciled observation",
           observed_generation: resource.generation,
-          last_transition_at: observation.observed_at,
+          last_transition_at: condition_transition_now(scope, resource.id),
           details: %{
             "observation_id" => observation.id,
             "observed_at" => observation.observed_at
@@ -411,6 +414,23 @@ defmodule Renga.Inventory.Reconciler do
       {latest_observed_at, latest_id} ->
         {DateTime.to_unix(observation.observed_at, :microsecond), observation.id} >=
           {DateTime.to_unix(latest_observed_at, :microsecond), latest_id}
+    end
+  end
+
+  defp condition_transition_now(scope, resource_id) do
+    now = Renga.Time.utc_now_ms()
+
+    case Enum.find(
+           Inventory.list_resource_conditions(scope, resource_id),
+           &(&1.type == "InventoryCurrent")
+         ) do
+      %{last_transition_at: previous} ->
+        if DateTime.compare(now, previous) == :gt,
+          do: now,
+          else: DateTime.add(previous, 1, :millisecond)
+
+      nil ->
+        now
     end
   end
 

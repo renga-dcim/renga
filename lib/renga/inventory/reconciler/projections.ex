@@ -30,16 +30,28 @@ defmodule Renga.Inventory.Reconciler.Projections do
         %Scope{} = scope,
         %Source{} = source,
         %Observation{} = observation,
-        %Resource{} = resource
+        %Resource{} = resource,
+        opts \\ []
       ) do
     payload = resource_payload(observation.payload)
     overrides = Map.new(Inventory.list_resource_overrides(scope, resource.id), &{&1.field, &1})
+    allow_new_rows? = Keyword.get(opts, :allow_new_rows?, true)
 
     reconcile_host(scope, source, observation, resource, payload, overrides)
 
     payload
     |> Map.get("interfaces", [])
-    |> Enum.each(&reconcile_interface(scope, source, observation, resource, &1, overrides))
+    |> Enum.each(
+      &reconcile_interface(
+        scope,
+        source,
+        observation,
+        resource,
+        &1,
+        overrides,
+        allow_new_rows?
+      )
+    )
   end
 
   defp reconcile_host(scope, source, observation, resource, payload, overrides) do
@@ -100,7 +112,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp reconcile_interface(scope, source, observation, resource, attrs, overrides) do
+  defp reconcile_interface(
+         scope,
+         source,
+         observation,
+         resource,
+         attrs,
+         overrides,
+         allow_new_rows?
+       ) do
     name = attrs |> Map.fetch!("name") |> String.trim()
 
     interface =
@@ -110,6 +130,32 @@ defmodule Renga.Inventory.Reconciler.Projections do
         name: name
       )
 
+    if interface || allow_new_rows? do
+      do_reconcile_interface(
+        scope,
+        source,
+        observation,
+        resource,
+        attrs,
+        overrides,
+        allow_new_rows?,
+        name,
+        interface
+      )
+    end
+  end
+
+  defp do_reconcile_interface(
+         scope,
+         source,
+         observation,
+         resource,
+         attrs,
+         overrides,
+         allow_new_rows?,
+         name,
+         interface
+       ) do
     canonical_attrs =
       attrs
       |> Map.take(@interface_fields)
@@ -178,7 +224,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
     attrs
     |> Map.get("addresses", [])
     |> Enum.each(
-      &reconcile_address(scope, source, observation, resource, interface, &1, overrides)
+      &reconcile_address(
+        scope,
+        source,
+        observation,
+        resource,
+        interface,
+        &1,
+        overrides,
+        allow_new_rows?
+      )
     )
   end
 
@@ -217,7 +272,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
          resource,
          interface,
          raw_address,
-         overrides
+         overrides,
+         allow_new_rows?
        ) do
     attrs = normalize_address(raw_address)
     {:ok, cast_address} = Inet.cast(attrs["address"])
@@ -227,34 +283,36 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Inventory.list_addresses(interface.id)
       |> Enum.find(&(&1.address == cast_address))
 
-    address =
-      reconcile_canonical_address(
-        scope,
-        source,
-        observation,
-        resource,
-        interface,
-        address,
-        attrs,
-        overrides
-      )
-
-    existing =
-      Repo.get_by(AddressEvidence,
-        organization_id: scope.organization_id,
-        observation_id: observation.id,
-        address_id: address.id
-      )
-
-    unless existing do
-      {:ok, _evidence} =
-        Inventory.create_address_evidence(
+    if address || allow_new_rows? do
+      address =
+        reconcile_canonical_address(
           scope,
-          source.id,
-          observation.id,
-          address.id,
-          Map.take(attrs, ~w(address scope metadata))
+          source,
+          observation,
+          resource,
+          interface,
+          address,
+          attrs,
+          overrides
         )
+
+      existing =
+        Repo.get_by(AddressEvidence,
+          organization_id: scope.organization_id,
+          observation_id: observation.id,
+          address_id: address.id
+        )
+
+      unless existing do
+        {:ok, _evidence} =
+          Inventory.create_address_evidence(
+            scope,
+            source.id,
+            observation.id,
+            address.id,
+            Map.take(attrs, ~w(address scope metadata))
+          )
+      end
     end
   end
 

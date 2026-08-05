@@ -366,6 +366,63 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert condition.details["observation_id"] == newer.id
   end
 
+  test "a delayed newest observation restores inventory after a later stale transition" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    [current_condition] = Inventory.list_resource_conditions(context.scope, resource.id)
+    stale_at = DateTime.add(current_condition.last_transition_at, 1, :second)
+
+    assert {:ok, %{status: "false"}} =
+             Inventory.mark_resource_stale(context.scope, resource.id, stale_at)
+
+    delayed = observation(context, "2", %{"machine_id" => "machine-1"})
+    assert DateTime.compare(delayed.observed_at, stale_at) == :lt
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, delayed.id)
+
+    assert [%{status: "true", details: %{"observation_id" => observation_id}}] =
+             Inventory.list_resource_conditions(context.scope, resource.id)
+
+    assert observation_id == delayed.id
+  end
+
+  test "older snapshots do not reintroduce absent interfaces or addresses" do
+    context = context()
+
+    newer =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "addresses" => ["192.0.2.10/24"]
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, newer.id)
+
+    older =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{"name" => "eth0", "addresses" => ["192.0.2.20/24"]},
+          %{"name" => "eth1", "addresses" => ["198.51.100.10/24"]}
+        ]
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, older.id)
+    assert [%{name: "eth0"} = interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert length(Inventory.list_addresses(context.scope, interface.id)) == 1
+  end
+
   test "same-name discoveries receive collision-resistant resource names" do
     context = context()
 
