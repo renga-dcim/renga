@@ -6,7 +6,7 @@ defmodule Renga.InventoryResourceConcurrencyTest do
   alias Renga.Inventory
   alias Renga.Repo
 
-  test "concurrent stale updates serialize resource versions and generations" do
+  test "concurrent stale updates allow one winner and reject the rest" do
     with_resource(fn scope, resource ->
       update_count = 4
 
@@ -26,13 +26,20 @@ defmodule Renga.InventoryResourceConcurrencyTest do
         end
 
       results = Task.await_many(tasks)
-      assert Enum.all?(results, &match?({:ok, _resource}, &1))
+      {successful, stale} = Enum.split_with(results, &match?({:ok, _resource}, &1))
+
+      assert length(successful) == 1
+      assert length(stale) == update_count - 1
+
+      assert Enum.all?(stale, fn {:error, changeset} ->
+               Keyword.has_key?(changeset.errors, :resource_version)
+             end)
 
       revisions = Inventory.list_resource_revisions(scope, resource.id)
       persisted = Inventory.get_resource!(scope, resource.id)
 
-      assert Enum.map(revisions, & &1.generation) == Enum.to_list(1..(update_count + 1))
-      assert persisted.generation == resource.generation + update_count
+      assert Enum.map(revisions, & &1.generation) == [1, 2]
+      assert persisted.generation == resource.generation + 1
       assert persisted.resource_version == revisions |> List.last() |> Map.fetch!(:revision)
     end)
   end

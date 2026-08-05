@@ -361,6 +361,41 @@ defmodule Renga.InventoryTest do
       assert unchanged_agent.metadata == updated_agent.metadata
     end
 
+    test "an older check-in cannot overwrite newer agent state", %{scope: scope, source: source} do
+      {:ok, {agent, _lease}} = Inventory.record_agent_check_in(scope, source.id)
+      newer_check_in_at = ~U[2030-08-01 12:00:00.000000Z]
+
+      Repo.update_all(
+        from(stored in Agent, where: stored.id == ^agent.id),
+        set: [
+          version: "2.0.0",
+          capabilities: ["host.inventory", "host.network"],
+          metadata: %{"kernel" => "7.0"},
+          updated_at: newer_check_in_at
+        ]
+      )
+
+      {:ok, newer_lease} =
+        Inventory.renew_agent_lease(scope, agent.id, %{
+          renewed_at: newer_check_in_at,
+          ttl_ms: 90_000
+        })
+
+      assert {:ok, {replayed_agent, replayed_lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 version: "1.0.0",
+                 capabilities: ["host.inventory"],
+                 metadata: %{"kernel" => "6.12"}
+               })
+
+      assert replayed_agent.version == "2.0.0"
+      assert replayed_agent.capabilities == ["host.inventory", "host.network"]
+      assert replayed_agent.metadata == %{"kernel" => "7.0"}
+      assert replayed_agent.updated_at == newer_check_in_at
+      assert replayed_lease.renewed_at == newer_lease.renewed_at
+      assert replayed_lease.expires_at == newer_lease.expires_at
+    end
+
     test "renaming a source preserves its agent registration", %{scope: scope, source: source} do
       assert {:ok, {original_agent, original_lease}} =
                Inventory.record_agent_check_in(scope, source.id)
@@ -737,6 +772,39 @@ defmodule Renga.InventoryTest do
 
       assert %{observed_generation: ["cannot exceed the resource generation"]} =
                errors_on(changeset)
+    end
+
+    test "conditions reject stale observed generations", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      {:ok, resource} =
+        Inventory.update_resource(scope, resource, %{spec: %{"profile" => "compute"}})
+
+      transition_at = ~U[2026-08-01 12:00:00.000000Z]
+
+      assert {:ok, current} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "true",
+                 observed_generation: resource.generation,
+                 last_transition_at: transition_at
+               })
+
+      assert {:error, changeset} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "false",
+                 observed_generation: resource.generation - 1,
+                 last_transition_at: DateTime.add(transition_at, 1, :millisecond)
+               })
+
+      assert %{observed_generation: ["cannot be older than the current condition"]} =
+               errors_on(changeset)
+
+      assert [stored] = Inventory.list_resource_conditions(scope, resource.id)
+      assert stored.status == current.status
+      assert stored.observed_generation == current.observed_generation
     end
 
     test "condition transitions accept string-keyed attributes", %{scope: scope} do
