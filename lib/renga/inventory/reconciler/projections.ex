@@ -12,6 +12,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
   alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
@@ -943,25 +944,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp normalize_override_value(_path, _field, value), do: value
 
-  defp event_value(nil), do: nil
-  defp event_value(%Postgrex.MACADDR{address: address}), do: %{"value" => format_mac(address)}
-  defp event_value(%Postgrex.INET{} = address), do: %{"value" => format_inet(address)}
-  defp event_value(value) when is_map(value), do: value
-
-  defp event_value(value) when is_binary(value) or is_number(value) or is_boolean(value),
-    do: %{"value" => value}
-
-  defp event_value(value), do: %{"value" => inspect(value)}
-
-  defp format_mac(address) do
-    address
-    |> Tuple.to_list()
-    |> Enum.map_join(":", &(Integer.to_string(&1, 16) |> String.pad_leading(2, "0")))
-  end
-
-  defp format_inet(%Postgrex.INET{address: address, netmask: nil}) do
-    address |> :inet.ntoa() |> to_string()
-  end
+  defp event_value(value), do: ChangeEvent.audit_value(value)
 
   defp format_inet(%Postgrex.INET{address: address, netmask: netmask}) do
     "#{address |> :inet.ntoa() |> to_string()}/#{netmask}"

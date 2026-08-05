@@ -17,6 +17,8 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
       })
 
     scope = Accounts.scope_for(organization)
+    {:ok, user} = Accounts.register_user(%{email: "concurrent-actor-#{suffix}@example.com"})
+    scope = %{scope | user: user}
     {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "host-#{suffix}"})
 
     # This is the same transaction-scoped fence held while reconciliation

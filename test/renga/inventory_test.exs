@@ -2759,6 +2759,11 @@ defmodule Renga.InventoryTest do
     setup do
       contexts = scoped_organizations()
 
+      {:ok, user} =
+        Accounts.register_user(%{email: "override-actor-#{System.unique_integer()}@example.com"})
+
+      contexts = %{contexts | scope: %{contexts.scope | user: user}}
+
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
@@ -2875,6 +2880,52 @@ defmodule Renga.InventoryTest do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.get_host_by_resource!(scope, resource.id)
       end
+    end
+
+    test "resource overrides enforce projection storage limits atomically", %{
+      scope: scope,
+      resource: resource
+    } do
+      for attrs <- [
+            %{field: "host.vendor", value: %{"value" => String.duplicate("x", 256)}},
+            %{field: "interfaces.eth0.mtu", value: %{"value" => 2_147_483_648}},
+            %{field: "interfaces.eth0.speed_mbps", value: %{"value" => 2_147_483_648}}
+          ] do
+        assert {:error, changeset} = Inventory.create_resource_override(scope, resource.id, attrs)
+        assert errors_on(changeset) != %{}
+      end
+
+      assert Inventory.list_resource_overrides(scope, resource.id) == []
+      assert Inventory.list_change_events(scope, resource.id) == []
+    end
+
+    test "interface override paths use trimmed canonical interface names", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:ok, override} =
+               Inventory.create_resource_override(scope, resource.id, %{
+                 field: "interfaces. eth0 .status",
+                 value: %{"value" => "down"}
+               })
+
+      assert override.field == "interfaces.eth0.status"
+      assert [%{name: "eth0", status: "down"}] = Inventory.list_interfaces(scope, resource.id)
+    end
+
+    test "manual overrides require a human actor and leave no partial writes", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:error, changeset} =
+               Inventory.create_resource_override(%{scope | user: nil}, resource.id, %{
+                 field: "host.vendor",
+                 value: %{"value" => "Operator Vendor"}
+               })
+
+      assert %{created_by_user_id: ["can't be blank"]} = errors_on(changeset)
+      assert Inventory.list_resource_overrides(scope, resource.id) == []
+      assert Inventory.list_change_events(scope, resource.id) == []
     end
 
     test "mark_resource_stale/3 records a scoped freshness transition", %{

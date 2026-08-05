@@ -52,6 +52,31 @@ defmodule Renga.Inventory.ChangeEvent do
     |> assoc_constraint(:observation, name: :change_events_tenant_observation_fkey)
   end
 
+  @doc false
+  def audit_value(nil), do: nil
+  def audit_value(%Postgrex.MACADDR{address: address}), do: %{"value" => format_mac(address)}
+  def audit_value(%Postgrex.INET{} = address), do: %{"value" => format_inet(address)}
+  def audit_value(value) when is_map(value), do: value
+
+  def audit_value(value) when is_binary(value) or is_number(value) or is_boolean(value),
+    do: %{"value" => value}
+
+  def audit_value(value), do: %{"value" => inspect(value)}
+
+  defp format_mac(address) do
+    address
+    |> Tuple.to_list()
+    |> Enum.map_join(":", &(Integer.to_string(&1, 16) |> String.pad_leading(2, "0")))
+  end
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: nil}) do
+    address |> :inet.ntoa() |> to_string()
+  end
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: netmask}) do
+    "#{:inet.ntoa(address)}/#{netmask}"
+  end
+
   defp trim_string(value) when is_binary(value), do: String.trim(value)
   defp trim_string(value), do: value
 end

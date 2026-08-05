@@ -18,6 +18,11 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     scope = Accounts.scope_for(organization)
 
+    {:ok, user} =
+      Accounts.register_user(%{email: "reconciler-actor-#{suffix}@example.com"})
+
+    scope = %{scope | user: user}
+
     {:ok, source} =
       Inventory.create_source(scope, %{kind: "host_agent", name: "host-agent-#{suffix}"})
 
@@ -886,6 +891,37 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert host.vendor == "Operator Vendor"
     assert host.asset_tag == "ASSET-42"
     assert host.metadata["field_owners"]["vendor"]["override_id"] == override.id
+  end
+
+  test "overriding an existing MAC records JSON-safe old and new audit values" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "mac-override-machine"},
+        %{},
+        [%{"name" => " eth0 ", "mac_address" => "00:11:22:33:44:55"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert {:ok, override} =
+             Inventory.create_resource_override(context.scope, resource.id, %{
+               field: "interfaces. eth0 .mac_address",
+               value: %{"value" => "aa:bb:cc:dd:ee:ff"}
+             })
+
+    assert override.field == "interfaces.eth0.mac_address"
+
+    assert event =
+             Enum.find(Inventory.list_change_events(context.scope, resource.id), fn event ->
+               event.kind == "manual_override" and event.field == "interfaces.eth0.mac_address"
+             end)
+
+    assert event.old_value == %{"value" => "00:11:22:33:44:55"}
+    assert event.new_value == %{"value" => "aa:bb:cc:dd:ee:ff"}
   end
 
   test "normalizes canonical names before lookup, comparison, and retry" do

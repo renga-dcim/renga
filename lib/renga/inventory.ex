@@ -1058,8 +1058,8 @@ defmodule Renga.Inventory do
                kind: "manual_override",
                field: override.field,
                resource_id: resource.id,
-               old_value: override_event_value(old_value),
-               new_value: override.value,
+               old_value: ChangeEvent.audit_value(old_value),
+               new_value: override.value |> unwrap_override_value!() |> ChangeEvent.audit_value(),
                metadata: override_provenance(override),
                occurred_at: override.inserted_at
              }) do
@@ -1079,6 +1079,7 @@ defmodule Renga.Inventory do
   @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @interface_statuses ~w(up down dormant not_present unknown)
+  @signed_int_max 2_147_483_647
 
   defp validate_override_contract(changeset) do
     field = Ecto.Changeset.get_field(changeset, :field)
@@ -1117,8 +1118,13 @@ defmodule Renga.Inventory do
   defp unwrap_override_value(%{value: value}), do: {:ok, value}
   defp unwrap_override_value(_value), do: :error
 
-  defp validate_override_type(changeset, {:host, _field}, value) when is_binary(value),
-    do: changeset
+  defp validate_override_type(changeset, {:host, _field}, value) when is_binary(value) do
+    if String.length(value) <= 255 do
+      changeset
+    else
+      Ecto.Changeset.add_error(changeset, :value, "must be at most 255 characters")
+    end
+  end
 
   defp validate_override_type(changeset, {:interface, _name, "kind"}, value)
        when value in @interface_kinds,
@@ -1129,7 +1135,8 @@ defmodule Renga.Inventory do
        do: changeset
 
   defp validate_override_type(changeset, {:interface, _name, field}, value)
-       when field in ~w(mtu speed_mbps) and is_integer(value) and value > 0,
+       when field in ~w(mtu speed_mbps) and is_integer(value) and value > 0 and
+              value <= @signed_int_max,
        do: changeset
 
   defp validate_override_type(changeset, {:interface, _name, "mac_address"}, value) do
@@ -1202,8 +1209,10 @@ defmodule Renga.Inventory do
     }
   end
 
-  defp override_event_value(nil), do: nil
-  defp override_event_value(value), do: %{"value" => value}
+  defp unwrap_override_value!(value) do
+    {:ok, value} = unwrap_override_value(value)
+    value
+  end
 
   defp earliest_timestamp(nil, timestamp), do: timestamp
 
