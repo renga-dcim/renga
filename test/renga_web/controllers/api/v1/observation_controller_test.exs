@@ -298,6 +298,29 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects explicit null attributes with valid identifiers" do
+      %{source: source, token: token} = source_fixture()
+
+      resource = %{
+        "kind" => "server",
+        "identifiers" => %{"hostname" => "compute-01"},
+        "attributes" => nil
+      }
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(
+          ~p"/api/v1/observations",
+          valid_observation_payload(source, %{"resources" => [resource]})
+        )
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.attributes"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects top-level MAC identity with malformed interface containers without crashing" do
       %{source: source, token: token} = source_fixture()
 

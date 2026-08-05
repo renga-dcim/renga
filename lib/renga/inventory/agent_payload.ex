@@ -453,11 +453,11 @@ defmodule Renga.Inventory.AgentPayload do
   defp normalize_host_identity(value), do: value |> String.trim() |> String.downcase()
 
   defp validate_attributes(errors, resource, path) do
-    case Map.get(resource, "attributes") do
-      nil ->
+    case Map.fetch(resource, "attributes") do
+      :error ->
         errors
 
-      %{} = attributes ->
+      {:ok, %{} = attributes} ->
         errors
         |> validate_no_prohibited_keys(
           attributes,
@@ -466,7 +466,7 @@ defmodule Renga.Inventory.AgentPayload do
         )
         |> validate_host_projection_fields(attributes, "#{path}.attributes")
 
-      _invalid ->
+      {:ok, _invalid} ->
         [error("#{path}.attributes", "must be an object") | errors]
     end
   end
