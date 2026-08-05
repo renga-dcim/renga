@@ -31,6 +31,16 @@ defmodule Renga.Inventory.ReconcilerTest do
   end
 
   defp observation_at(context, id, observed_at, identifiers, attributes, interfaces) do
+    resource_payload =
+      %{
+        "kind" => "server",
+        "identifiers" => identifiers,
+        "attributes" => attributes
+      }
+      |> then(fn payload ->
+        if interfaces == :absent, do: payload, else: Map.put(payload, "interfaces", interfaces)
+      end)
+
     {:ok, observation} =
       Inventory.create_observation(context.scope, context.source.id, %{
         idempotency_key: "observation-#{id}",
@@ -38,14 +48,7 @@ defmodule Renga.Inventory.ReconcilerTest do
         payload: %{
           "observation_id" => "observation-#{id}",
           "observed_at" => DateTime.to_iso8601(observed_at),
-          "resources" => [
-            %{
-              "kind" => "server",
-              "identifiers" => identifiers,
-              "attributes" => attributes,
-              "interfaces" => interfaces
-            }
-          ]
+          "resources" => [resource_payload]
         }
       })
 
@@ -532,6 +535,76 @@ defmodule Renga.Inventory.ReconcilerTest do
     [current, omitted] = Inventory.list_addresses(context.scope, eth0.id)
     assert current.metadata["present"]
     refute omitted.metadata["present"]
+  end
+
+  test "absent interfaces preserve network state while an explicit empty collection withdraws it" do
+    context = context()
+
+    first =
+      observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up", "addresses" => ["192.0.2.10/24"]}
+      ])
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    partial = observation(context, "2", %{"machine_id" => "machine-1"}, %{}, :absent)
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert interface.status == "up"
+
+    assert [%{metadata: %{"present" => true}}] =
+             Inventory.list_addresses(context.scope, interface.id)
+
+    authoritative = observation(context, "3", %{"machine_id" => "machine-1"}, %{}, [])
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, authoritative.id)
+
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert interface.status == "not_present"
+
+    assert [%{metadata: %{"present" => false}}] =
+             Inventory.list_addresses(context.scope, interface.id)
+  end
+
+  test "absent addresses preserve address state while an explicit empty collection withdraws it with an audit event" do
+    context = context()
+
+    first =
+      observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up", "addresses" => ["192.0.2.10/24"]}
+      ])
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    partial =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up"}
+      ])
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+
+    assert [%{metadata: %{"present" => true}}] =
+             Inventory.list_addresses(context.scope, interface.id)
+
+    authoritative =
+      observation(context, "3", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up", "addresses" => []}
+      ])
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, authoritative.id)
+
+    assert [%{metadata: %{"present" => false}}] =
+             Inventory.list_addresses(context.scope, interface.id)
+
+    assert Enum.any?(
+             Inventory.list_change_events(context.scope, resource.id),
+             &(&1.kind == "updated" and &1.field == "addresses.192.0.2.10/24.present" and
+                 &1.old_value == %{"value" => true} and &1.new_value == %{"value" => false})
+           )
   end
 
   test "same-name discoveries receive collision-resistant resource names" do

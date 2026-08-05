@@ -39,6 +39,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
     reconcile_host(scope, source, observation, resource, payload, overrides)
 
+    interfaces_authoritative? = Map.has_key?(payload, "interfaces")
     interfaces = Map.get(payload, "interfaces", [])
 
     Enum.each(
@@ -54,7 +55,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
       )
     )
 
-    if allow_new_rows? do
+    if allow_new_rows? and interfaces_authoritative? do
       reconcile_network_omissions(scope, source, observation, resource, interfaces, overrides)
     end
   end
@@ -391,6 +392,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> put_field_owners(owners)
       |> put_address_presence(source, observation, true)
 
+    record_address_presence_update(
+      scope,
+      source,
+      observation,
+      resource,
+      address,
+      metadata
+    )
+
     if changes != %{} or metadata != address.metadata do
       {:ok, address} =
         address
@@ -461,6 +471,11 @@ defmodule Renga.Inventory.Reconciler.Projections do
        ) do
     reported_names = MapSet.new(reported_interfaces, &(&1 |> Map.fetch!("name") |> String.trim()))
 
+    authoritative_address_names =
+      reported_interfaces
+      |> Enum.filter(&Map.has_key?(&1, "addresses"))
+      |> MapSet.new(&(&1 |> Map.fetch!("name") |> String.trim()))
+
     reported_addresses =
       reported_interfaces
       |> Enum.flat_map(fn interface ->
@@ -494,9 +509,22 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.each(fn address ->
         address_key = {interface.name, format_inet(address.address)}
 
-        if source_reported_address?(scope, source, address) and
+        addresses_authoritative? =
+          not MapSet.member?(reported_names, interface.name) or
+            MapSet.member?(authoritative_address_names, interface.name)
+
+        if addresses_authoritative? and source_reported_address?(scope, source, address) and
              not MapSet.member?(reported_addresses, address_key) do
           metadata = put_address_presence(address.metadata, source, observation, false)
+
+          record_address_presence_update(
+            scope,
+            source,
+            observation,
+            resource,
+            address,
+            metadata
+          )
 
           if metadata != address.metadata do
             {:ok, _address} = address |> Address.changeset(%{metadata: metadata}) |> Repo.update()
@@ -746,6 +774,30 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Map.put("presence_owner", owner(source, observation))
     else
       metadata
+    end
+  end
+
+  defp record_address_presence_update(
+         scope,
+         source,
+         observation,
+         resource,
+         address,
+         metadata
+       ) do
+    old_present? = address.metadata["present"]
+    new_present? = metadata["present"]
+
+    if is_boolean(old_present?) and old_present? != new_present? do
+      record_update(
+        scope,
+        source,
+        observation,
+        resource,
+        "addresses.#{format_inet(address.address)}.present",
+        old_present?,
+        new_present?
+      )
     end
   end
 
