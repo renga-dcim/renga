@@ -6,6 +6,50 @@ use crate::payload::{
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fmt, fs, path::Path, process::Command};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum VirtDetection {
+    None,
+    Detected(String),
+    Unknown,
+}
+
+trait VirtDetector {
+    fn container(&self) -> VirtDetection;
+    fn vm(&self) -> VirtDetection;
+}
+
+struct SystemdVirtDetector;
+
+impl SystemdVirtDetector {
+    fn detect(category: &str) -> VirtDetection {
+        let Ok(output) = Command::new("systemd-detect-virt").arg(category).output() else {
+            return VirtDetection::Unknown;
+        };
+        let Ok(value) = String::from_utf8(output.stdout) else {
+            return VirtDetection::Unknown;
+        };
+        let value = value.trim();
+        // systemd-detect-virt uses exit 1 for a successful negative detection.
+        if value == "none" && matches!(output.status.code(), Some(0 | 1)) {
+            VirtDetection::None
+        } else if output.status.success() && !value.is_empty() {
+            VirtDetection::Detected(value.to_owned())
+        } else {
+            VirtDetection::Unknown
+        }
+    }
+}
+
+impl VirtDetector for SystemdVirtDetector {
+    fn container(&self) -> VirtDetection {
+        Self::detect("--container")
+    }
+
+    fn vm(&self) -> VirtDetection {
+        Self::detect("--vm")
+    }
+}
+
 #[derive(Debug)]
 pub struct CollectError(pub String);
 impl fmt::Display for CollectError {
@@ -147,12 +191,13 @@ pub fn collect_from(root: &Path) -> Result<ServerResource, CollectError> {
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok());
-    collect_from_with_ip(root, ip_output.as_deref().ok_or(()))
+    collect_from_with_ip_and_detector(root, ip_output.as_deref().ok_or(()), &SystemdVirtDetector)
 }
 
-fn collect_from_with_ip(
+fn collect_from_with_ip_and_detector(
     root: &Path,
     ip_output: Result<&str, ()>,
+    detector: &dyn VirtDetector,
 ) -> Result<ServerResource, CollectError> {
     let hostname = read(root, "etc/hostname").ok_or_else(|| {
         CollectError("Linux host has no usable /etc/hostname; observation cannot be matched".into())
@@ -210,7 +255,7 @@ fn collect_from_with_ip(
     }
     components.extend(collect_disks(root));
     components.extend(collect_filesystems(root));
-    components.push(virtualization_component(root));
+    components.push(virtualization_component(root, detector));
     let vendor = read(root, "sys/class/dmi/id/sys_vendor");
     let model = read(root, "sys/class/dmi/id/product_name");
     Ok(ServerResource {
@@ -338,15 +383,38 @@ fn collect_filesystems(root: &Path) -> Vec<Component> {
 }
 /// Container execution takes environment precedence over a VM guest, while the VM provider is
 /// retained because it describes the underlying host. Runtime sockets indicate hosting only.
-fn virtualization_component(root: &Path) -> Component {
-    let product = read(root, "sys/class/dmi/id/product_name")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let provider = ["kvm", "vmware", "virtualbox", "hyper-v", "xen"]
-        .into_iter()
-        .find(|v| product.contains(v))
-        .map(str::to_owned);
-    let container_guest = root.join(".dockerenv").exists()
+fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Component {
+    let dmi = format!(
+        "{} {}",
+        read(root, "sys/class/dmi/id/sys_vendor").unwrap_or_default(),
+        read(root, "sys/class/dmi/id/product_name").unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let fallback_provider = [
+        (["qemu", "libvirt", "kvm"].as_slice(), "kvm"),
+        (["vmware"].as_slice(), "vmware"),
+        (["virtualbox", "innotek"].as_slice(), "virtualbox"),
+        (["hyper-v"].as_slice(), "hyper-v"),
+        (["xen"].as_slice(), "xen"),
+        (["amazon ec2", "amazon.com"].as_slice(), "aws"),
+        (["google compute engine", "google"].as_slice(), "gcp"),
+        (
+            ["microsoft corporation virtual machine"].as_slice(),
+            "azure",
+        ),
+        (["digitalocean"].as_slice(), "digitalocean"),
+        (["openstack"].as_slice(), "openstack"),
+        (["parallels"].as_slice(), "parallels"),
+        (["bhyve"].as_slice(), "bhyve"),
+    ]
+    .into_iter()
+    .find_map(|(markers, provider)| {
+        markers
+            .iter()
+            .any(|v| dmi.contains(v))
+            .then(|| provider.to_owned())
+    });
+    let container_fallback = root.join(".dockerenv").exists()
         || root.join("run/.containerenv").exists()
         || read(root, "proc/1/cgroup").is_some_and(|cgroup| {
             ["/docker/", "/containerd/", "/kubepods/", "/libpod/"]
@@ -361,12 +429,25 @@ fn virtualization_component(root: &Path) -> Component {
     ]
     .iter()
     .any(|path| root.join(path).exists());
+    let container_detection = detector.container();
+    let vm_detection = detector.vm();
+    let container_type = match &container_detection {
+        VirtDetection::Detected(value) => Some(value.clone()),
+        _ => None,
+    };
+    let provider = match &vm_detection {
+        VirtDetection::Detected(value) => Some(value.clone()),
+        _ => fallback_provider,
+    };
+    let container_guest = container_type.is_some() || container_fallback;
     let environment = if container_guest {
         "container_guest"
     } else if provider.is_some() {
         "vm_guest"
-    } else {
+    } else if container_detection == VirtDetection::None && vm_detection == VirtDetection::None {
         "bare_metal"
+    } else {
+        "unknown"
     };
 
     component(
@@ -374,6 +455,7 @@ fn virtualization_component(root: &Path) -> Component {
         [
             ("environment", json!(environment)),
             ("provider", json!(provider)),
+            ("container_type", json!(container_type)),
             ("container_host", json!(container_host.then_some(true))),
         ],
     )
@@ -386,6 +468,42 @@ mod tests {
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    struct FakeDetector {
+        container: VirtDetection,
+        vm: VirtDetection,
+    }
+
+    impl VirtDetector for FakeDetector {
+        fn container(&self) -> VirtDetection {
+            self.container.clone()
+        }
+
+        fn vm(&self) -> VirtDetection {
+            self.vm.clone()
+        }
+    }
+
+    fn collect_from_with_ip(
+        root: &Path,
+        ip_output: Result<&str, ()>,
+    ) -> Result<ServerResource, CollectError> {
+        collect_with_detection(
+            root,
+            ip_output,
+            VirtDetection::Unknown,
+            VirtDetection::Unknown,
+        )
+    }
+
+    fn collect_with_detection(
+        root: &Path,
+        ip_output: Result<&str, ()>,
+        container: VirtDetection,
+        vm: VirtDetection,
+    ) -> Result<ServerResource, CollectError> {
+        collect_from_with_ip_and_detector(root, ip_output, &FakeDetector { container, vm })
+    }
 
     fn fixture() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -501,9 +619,11 @@ mod tests {
     }
 
     #[test]
-    fn reports_explicit_bare_metal_without_virtualization_evidence() {
+    fn reports_bare_metal_only_when_both_detectors_report_none() {
         let root = fixture();
-        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+        let resource =
+            collect_with_detection(&root, Ok("[]"), VirtDetection::None, VirtDetection::None)
+                .unwrap();
 
         assert_eq!(
             virtualization(&resource).attributes["environment"],
@@ -513,11 +633,23 @@ mod tests {
     }
 
     #[test]
-    fn reports_vm_guest_provider() {
+    fn unavailable_detectors_without_fallback_evidence_report_unknown() {
+        let root = fixture();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "unknown"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qemu_sys_vendor_is_positive_vm_fallback() {
         let root = fixture();
         let dmi = root.join("sys/class/dmi/id");
         fs::create_dir_all(&dmi).unwrap();
-        fs::write(dmi.join("product_name"), "KVM Virtual Machine\n").unwrap();
+        fs::write(dmi.join("sys_vendor"), "QEMU\n").unwrap();
         let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
 
         assert_eq!(
@@ -529,11 +661,32 @@ mod tests {
     }
 
     #[test]
+    fn detected_vm_value_is_the_provider() {
+        let root = fixture();
+        let resource = collect_with_detection(
+            &root,
+            Ok("[]"),
+            VirtDetection::None,
+            VirtDetection::Detected("oracle".into()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "vm_guest"
+        );
+        assert_eq!(virtualization(&resource).attributes["provider"], "oracle");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn container_host_requires_a_runtime_socket() {
         let root = fixture();
         fs::create_dir_all(root.join("run/containerd")).unwrap();
         fs::write(root.join("run/containerd/containerd.sock"), "").unwrap();
-        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+        let resource =
+            collect_with_detection(&root, Ok("[]"), VirtDetection::None, VirtDetection::None)
+                .unwrap();
 
         assert_eq!(virtualization(&resource).attributes["container_host"], true);
         assert_eq!(
@@ -550,16 +703,42 @@ mod tests {
         fs::create_dir_all(&dmi).unwrap();
         fs::write(dmi.join("product_name"), "VMware Virtual Platform\n").unwrap();
         fs::write(root.join(".dockerenv"), "").unwrap();
-        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+        let resource = collect_with_detection(
+            &root,
+            Ok("[]"),
+            VirtDetection::Detected("docker".into()),
+            VirtDetection::Detected("vmware".into()),
+        )
+        .unwrap();
 
         assert_eq!(
             virtualization(&resource).attributes["environment"],
             "container_guest"
         );
         assert_eq!(virtualization(&resource).attributes["provider"], "vmware");
+        assert_eq!(
+            virtualization(&resource).attributes["container_type"],
+            "docker"
+        );
         assert!(!virtualization(&resource)
             .attributes
             .contains_key("container_host"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn container_markers_are_positive_fallback_evidence() {
+        let root = fixture();
+        fs::write(root.join(".dockerenv"), "").unwrap();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+
+        assert_eq!(
+            virtualization(&resource).attributes["environment"],
+            "container_guest"
+        );
+        assert!(!virtualization(&resource)
+            .attributes
+            .contains_key("container_type"));
         fs::remove_dir_all(root).unwrap();
     }
 }

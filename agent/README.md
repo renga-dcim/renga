@@ -110,9 +110,14 @@ or unsupported kernel data generally omit the affected optional facts rather
 than failing the whole observation. A usable `/etc/hostname` is currently
 required. Inventory from other operating systems is not implemented.
 
-The `virtualization` component always reports an `environment`: `bare_metal`,
-`vm_guest`, or `container_guest`. VM guests also report their detected
-`provider`; when the agent runs in a container on a VM, `container_guest` takes
-precedence while the underlying VM provider remains present. `container_host`
-is reported only when a Docker, containerd, or Podman runtime socket is visible;
-container markers and cgroups describe agent execution, not hosting capability.
+The `virtualization` component reports an `environment`: `bare_metal`,
+`vm_guest`, `container_guest`, or `unknown`. `bare_metal` requires conclusive
+negative container and VM results from `systemd-detect-virt`; missing utilities,
+command failures, and absent DMI hints instead produce `unknown`. Positive DMI
+and container-marker evidence can still identify a guest. VM guests also report
+their detected `provider`; when the agent runs in a container on a VM,
+`container_guest` takes precedence while the underlying VM provider remains
+present, and a detector-provided container type is reported as `container_type`.
+`container_host` is reported only when a Docker, containerd, or Podman runtime
+socket is visible; container markers and cgroups describe agent execution, not
+hosting capability.
