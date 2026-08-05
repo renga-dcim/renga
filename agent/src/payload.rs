@@ -48,7 +48,8 @@ pub struct ServerResource {
     pub identifiers: Identifiers,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attributes: Option<HostAttributes>,
-    pub interfaces: Vec<Interface>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interfaces: Option<Vec<Interface>>,
     pub components: Vec<Component>,
 }
 
@@ -154,7 +155,7 @@ mod tests {
                 ..Default::default()
             },
             attributes: None,
-            interfaces: vec![],
+            interfaces: None,
             components: vec![],
         };
         let value = serde_json::to_value(Observation {
@@ -173,7 +174,25 @@ mod tests {
         assert_eq!(value["source"]["kind"], "host_agent");
         assert!(value["source"].get("source_id").is_none());
         assert!(value["resources"][0].get("attributes").is_none());
+        assert!(value["resources"][0].get("interfaces").is_none());
         assert_eq!(value["resources"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn authoritative_empty_interfaces_are_serialized() {
+        let resource = ServerResource {
+            kind: ResourceKind::Server,
+            identifiers: Identifiers {
+                hostname: "host".into(),
+                ..Default::default()
+            },
+            attributes: None,
+            interfaces: Some(vec![]),
+            components: vec![],
+        };
+
+        let value = serde_json::to_value(resource).unwrap();
+        assert_eq!(value["interfaces"], serde_json::json!([]));
     }
     #[test]
     fn checkin_has_capability_and_identity() {

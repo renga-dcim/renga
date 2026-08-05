@@ -70,12 +70,22 @@ pub fn parse_cpuinfo(input: &str) -> (usize, Option<String>) {
     (count, model)
 }
 
-/// Parses `ip -j address`; command/JSON failure yields no interfaces rather than aborting inventory.
+/// Parses `ip -j address`; malformed output yields no interfaces for parser callers.
 pub fn parse_ip_json(input: &str) -> Vec<Interface> {
-    let Ok(Value::Array(items)) = serde_json::from_str(input) else {
-        return vec![];
+    parse_ip_snapshot(input).unwrap_or_default()
+}
+
+fn parse_ip_snapshot(input: &str) -> Result<Vec<Interface>, ()> {
+    let Value::Array(items) = serde_json::from_str(input).map_err(|_| ())? else {
+        return Err(());
     };
-    items
+    if items
+        .iter()
+        .any(|item| item.get("ifname").and_then(Value::as_str).is_none())
+    {
+        return Err(());
+    }
+    Ok(items
         .into_iter()
         .filter_map(|item| {
             let name = item.get("ifname")?.as_str()?.into();
@@ -118,7 +128,7 @@ pub fn parse_ip_json(input: &str) -> Vec<Interface> {
                 addresses,
             })
         })
-        .collect()
+        .collect())
 }
 fn normalize_mac(v: &str) -> Option<String> {
     let v = v.trim().to_ascii_lowercase();
@@ -131,6 +141,19 @@ fn normalize_mac(v: &str) -> Option<String> {
 
 /// Collects one server resource. `root` permits parser/filesystem fixtures in tests.
 pub fn collect_from(root: &Path) -> Result<ServerResource, CollectError> {
+    let ip_output = Command::new("ip")
+        .args(["-j", "address"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+    collect_from_with_ip(root, ip_output.as_deref().ok_or(()))
+}
+
+fn collect_from_with_ip(
+    root: &Path,
+    ip_output: Result<&str, ()>,
+) -> Result<ServerResource, CollectError> {
     let hostname = read(root, "etc/hostname").ok_or_else(|| {
         CollectError("Linux host has no usable /etc/hostname; observation cannot be matched".into())
     })?;
@@ -142,19 +165,18 @@ pub fn collect_from(root: &Path) -> Result<ServerResource, CollectError> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| normalize_value(&s))
         .filter(|s| s.contains('.'));
-    let ip_output = Command::new("ip")
-        .args(["-j", "address"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default();
-    let mut interfaces = parse_ip_json(&ip_output);
-    if interfaces.is_empty() {
-        interfaces = collect_sysfs_interfaces(root);
+    // A syntactically valid `ip` response, including `[]`, is authoritative.
+    // Command or parse failures only become authoritative if sysfs can be listed.
+    let mut interfaces = ip_output
+        .and_then(parse_ip_snapshot)
+        .or_else(|_| collect_sysfs_interfaces(root).map_err(|_| ()))
+        .ok();
+    if let Some(interfaces) = &mut interfaces {
+        enrich_interfaces(root, interfaces);
     }
-    enrich_interfaces(root, &mut interfaces);
     let macs = interfaces
+        .as_deref()
+        .unwrap_or_default()
         .iter()
         .filter(|i| i.status != "not_present")
         .filter_map(|i| i.mac_address.clone())
@@ -249,11 +271,9 @@ fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
         .into();
     }
 }
-fn collect_sysfs_interfaces(root: &Path) -> Vec<Interface> {
-    let Ok(entries) = fs::read_dir(root.join("sys/class/net")) else {
-        return vec![];
-    };
-    entries
+fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
+    let entries = fs::read_dir(root.join("sys/class/net"))?;
+    Ok(entries
         .flatten()
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -275,7 +295,7 @@ fn collect_sysfs_interfaces(root: &Path) -> Vec<Interface> {
                 addresses: vec![],
             }
         })
-        .collect()
+        .collect())
 }
 fn collect_disks(root: &Path) -> Vec<Component> {
     let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
@@ -332,6 +352,24 @@ fn virtualization_hint(root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn fixture() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "renga-linux-collector-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("etc")).unwrap();
+        fs::write(root.join("etc/hostname"), "test-host\n").unwrap();
+        root
+    }
     #[test]
     fn normalizes_firmware_placeholders() {
         assert_eq!(normalize_value(" To Be Filled By O.E.M. "), None);
@@ -356,5 +394,60 @@ mod tests {
     #[test]
     fn malformed_ip_degrades() {
         assert!(parse_ip_json("nope").is_empty());
+    }
+
+    #[test]
+    fn unavailable_network_snapshot_omits_interfaces_and_macs() {
+        let root = fixture();
+        let resource = collect_from_with_ip(&root, Err(())).unwrap();
+        let value = serde_json::to_value(resource).unwrap();
+
+        assert!(value.get("interfaces").is_none());
+        assert!(value["identifiers"].get("mac_address").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_empty_network_snapshot_serializes_empty_interfaces() {
+        let root = fixture();
+        let resource = collect_from_with_ip(&root, Ok("[]")).unwrap();
+        let value = serde_json::to_value(resource).unwrap();
+
+        assert_eq!(value["interfaces"], json!([]));
+        assert!(value["identifiers"].get("mac_address").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_snapshot_preserves_interface_and_top_level_mac_set() {
+        let root = fixture();
+        let resource = collect_from_with_ip(
+            &root,
+            Ok(r#"[{"ifname":"eth1","flags":["UP"],"address":"00:11:22:33:44:55"},{"ifname":"eth0","flags":[],"address":"aa:bb:cc:dd:ee:ff"}]"#),
+        ).unwrap();
+        let value = serde_json::to_value(resource).unwrap();
+
+        assert_eq!(
+            value["identifiers"]["mac_address"],
+            json!(["00:11:22:33:44:55", "aa:bb:cc:dd:ee:ff"])
+        );
+        assert_eq!(value["interfaces"].as_array().unwrap().len(), 2);
+        assert_eq!(value["interfaces"][0]["name"], "eth1");
+        assert_eq!(value["interfaces"][1]["name"], "eth0");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_ip_output_falls_back_to_sysfs() {
+        let root = fixture();
+        let interface = root.join("sys/class/net/eth9");
+        fs::create_dir_all(&interface).unwrap();
+        fs::write(interface.join("operstate"), "up\n").unwrap();
+        fs::write(interface.join("address"), "12:34:56:78:9a:bc\n").unwrap();
+
+        let resource = collect_from_with_ip(&root, Ok("malformed")).unwrap();
+        assert_eq!(resource.interfaces.unwrap()[0].name, "eth9");
+        assert_eq!(resource.identifiers.mac_address, ["12:34:56:78:9a:bc"]);
+        fs::remove_dir_all(root).unwrap();
     }
 }
