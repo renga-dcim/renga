@@ -19,6 +19,16 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
       timestamps(type: :"timestamp(3)")
     end
 
+    create constraint(:sync_runs, :sync_runs_completion_state,
+             check: """
+             (status = 'running' AND completed_at IS NULL)
+             OR
+             (status IN ('succeeded', 'failed', 'partial')
+              AND completed_at IS NOT NULL
+              AND completed_at >= started_at)
+             """
+           )
+
     create index(:sync_runs, [:organization_id, :source_id])
     create index(:sync_runs, [:organization_id, :status])
     create index(:sync_runs, [:organization_id, :started_at])
@@ -95,6 +105,20 @@ defmodule Renga.Repo.Migrations.CreateInventoryObservationsAndAudit do
 
       timestamps(type: :"timestamp(3)")
     end
+
+    create constraint(
+             :observation_reconciliations,
+             :observation_reconciliations_completion_state,
+             check: """
+             (
+               (status IN ('pending', 'running') AND completed_at IS NULL)
+               OR
+               (status IN ('succeeded', 'failed') AND completed_at IS NOT NULL)
+             )
+             AND
+             (started_at IS NULL OR completed_at IS NULL OR completed_at >= started_at)
+             """
+           )
 
     create unique_index(
              :observation_reconciliations,

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict jJAHDJrkUsWwcD79ndVxeSMEL0GBVL9R8acGW8nn8G6vaHquIucqhwdCxwmTLes
+\restrict Y4Ee4y6EkpHrlPH9Byz3XTo8nKRluSYHYw4SyHz77I9XS6yk1v5ZAZ9UaNn4TAR
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -270,7 +270,8 @@ CREATE TABLE public.observation_reconciliations (
     started_at timestamp(3) without time zone,
     completed_at timestamp(3) without time zone,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT observation_reconciliations_completion_state CHECK ((((((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[])) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying])::text[])) AND (completed_at IS NOT NULL))) AND ((started_at IS NULL) OR (completed_at IS NULL) OR (completed_at >= started_at))))
 );
 
 
@@ -542,7 +543,8 @@ CREATE TABLE public.sync_runs (
     error_count integer DEFAULT 0 NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT sync_runs_completion_state CHECK (((((status)::text = 'running'::text) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'partial'::character varying])::text[])) AND (completed_at IS NOT NULL) AND (completed_at >= started_at))))
 );
 
 
@@ -1884,7 +1886,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict jJAHDJrkUsWwcD79ndVxeSMEL0GBVL9R8acGW8nn8G6vaHquIucqhwdCxwmTLes
+\unrestrict Y4Ee4y6EkpHrlPH9Byz3XTo8nKRluSYHYw4SyHz77I9XS6yk1v5ZAZ9UaNn4TAR
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);

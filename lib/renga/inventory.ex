@@ -363,6 +363,8 @@ defmodule Renga.Inventory do
              resource_id: resource.id
            })
         |> ResourceCondition.changeset(attrs)
+        |> validate_condition_transition(existing)
+        |> validate_condition_generation(resource)
 
       case Repo.insert_or_update(changeset) do
         {:ok, condition} -> condition
@@ -1126,7 +1128,49 @@ defmodule Renga.Inventory do
     else
       Map.get(attrs, :last_transition_at) ||
         Map.get(attrs, "last_transition_at") ||
-        Renga.Time.utc_now_ms()
+        next_transition_at(condition.last_transition_at)
+    end
+  end
+
+  defp next_transition_at(previous_transition_at) do
+    now = Renga.Time.utc_now_ms()
+
+    if DateTime.compare(now, previous_transition_at) == :gt do
+      now
+    else
+      DateTime.add(previous_transition_at, 1, :millisecond)
+    end
+  end
+
+  defp validate_condition_transition(changeset, nil), do: changeset
+
+  defp validate_condition_transition(changeset, condition) do
+    status = Ecto.Changeset.get_field(changeset, :status)
+    transition_at = Ecto.Changeset.get_field(changeset, :last_transition_at)
+
+    if (status != condition.status and transition_at) &&
+         DateTime.compare(transition_at, condition.last_transition_at) != :gt do
+      Ecto.Changeset.add_error(
+        changeset,
+        :last_transition_at,
+        "must be after the previous transition"
+      )
+    else
+      changeset
+    end
+  end
+
+  defp validate_condition_generation(changeset, resource) do
+    observed_generation = Ecto.Changeset.get_field(changeset, :observed_generation)
+
+    if observed_generation && observed_generation > resource.generation do
+      Ecto.Changeset.add_error(
+        changeset,
+        :observed_generation,
+        "cannot exceed the resource generation"
+      )
+    else
+      changeset
     end
   end
 

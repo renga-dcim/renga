@@ -2039,7 +2039,7 @@ defmodule Renga.InventoryTest do
       scope: scope,
       source: source
     } do
-      assert_raise Postgrex.Error, ~r/sync_runs_completion_state/, fn ->
+      assert_raise Ecto.ConstraintError, ~r/sync_runs_completion_state/, fn ->
         Repo.insert!(%SyncRun{
           organization_id: scope.organization_id,
           source_id: source.id,
@@ -2396,7 +2396,7 @@ defmodule Renga.InventoryTest do
           payload: %{"hostname" => "compute-01"}
         })
 
-      assert_raise Postgrex.Error, ~r/observation_reconciliations_completion_state/, fn ->
+      assert_raise Ecto.ConstraintError, ~r/observation_reconciliations_completion_state/, fn ->
         Repo.insert!(%ObservationReconciliation{
           organization_id: scope.organization_id,
           observation_id: observation.id,

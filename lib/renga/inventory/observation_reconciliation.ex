@@ -17,6 +17,7 @@ defmodule Renga.Inventory.ObservationReconciliation do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(pending running succeeded failed)
+  @terminal_statuses ~w(succeeded failed)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "observation_reconciliations" do
@@ -40,11 +41,35 @@ defmodule Renga.Inventory.ObservationReconciliation do
     |> validate_required([:organization_id, :observation_id, :status, :attempt])
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:attempt, greater_than: 0)
+    |> validate_completion_state()
     |> assoc_constraint(:organization)
     |> assoc_constraint(:observation)
     |> assoc_constraint(:matched_resource)
     |> unique_constraint([:organization_id, :observation_id, :attempt],
       name: :observation_reconciliations_observation_attempt_index
     )
+    |> check_constraint(:completed_at,
+      name: :observation_reconciliations_completion_state
+    )
+  end
+
+  defp validate_completion_state(changeset) do
+    status = get_field(changeset, :status)
+    started_at = get_field(changeset, :started_at)
+    completed_at = get_field(changeset, :completed_at)
+
+    cond do
+      status in @terminal_statuses and is_nil(completed_at) ->
+        add_error(changeset, :completed_at, "is required for a completed reconciliation")
+
+      status in ["pending", "running"] and completed_at ->
+        add_error(changeset, :completed_at, "must be empty before reconciliation completes")
+
+      started_at && completed_at && DateTime.compare(completed_at, started_at) == :lt ->
+        add_error(changeset, :completed_at, "must not be before started_at")
+
+      true ->
+        changeset
+    end
   end
 end
