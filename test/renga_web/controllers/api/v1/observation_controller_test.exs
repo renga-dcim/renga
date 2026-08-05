@@ -78,7 +78,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
     end
 
-    test "stores accepted raw host observations before reconciliation", %{conn: conn} do
+    test "stores and reconciles accepted raw host observations", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)
 
@@ -90,6 +90,10 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => false,
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "matched_resource_id" => resource_id
+               },
                "observation" => %{
                  "id" => observation_id,
                  "observation_id" => payload_observation_id,
@@ -106,6 +110,11 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert observation.payload == payload
       assert observation.idempotency_key == payload["observation_id"]
       assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
+
+      resource = Inventory.get_resource!(scope, resource_id)
+      assert resource.kind == "server"
+      assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
+      assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
     end
 
     test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
@@ -204,6 +213,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => true,
+               "reconciliation" => %{"status" => "succeeded"},
                "observation" => %{"id" => ^observation_id}
              } = json_response(retry_conn, 200)
     end

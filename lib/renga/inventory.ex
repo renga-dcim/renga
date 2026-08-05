@@ -947,16 +947,49 @@ defmodule Renga.Inventory do
         resource_id,
         stale_at \\ Renga.Time.utc_now_ms()
       ) do
-    resource = get_resource!(scope, resource_id)
+    Repo.transaction(fn ->
+      resource =
+        Resource
+        |> where([resource], resource.organization_id == ^scope.organization_id)
+        |> where([resource], resource.id == ^resource_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
 
-    put_resource_condition(scope, resource.id, %{
-      type: "InventoryCurrent",
-      status: "false",
-      reason: "Stale",
-      message: "No current inventory observation is available",
-      observed_generation: resource.generation,
-      last_transition_at: stale_at
-    })
+      previous_condition =
+        ResourceCondition
+        |> where([condition], condition.organization_id == ^scope.organization_id)
+        |> where([condition], condition.resource_id == ^resource.id)
+        |> where([condition], condition.type == "InventoryCurrent")
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      condition =
+        case put_resource_condition(scope, resource.id, %{
+               type: "InventoryCurrent",
+               status: "false",
+               reason: "Stale",
+               message: "No current inventory observation is available",
+               observed_generation: resource.generation,
+               last_transition_at: stale_at
+             }) do
+          {:ok, condition} -> condition
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      if is_nil(previous_condition) or previous_condition.status != "false" do
+        {:ok, _event} =
+          create_change_event(scope, %{
+            kind: "stale",
+            field: "conditions.InventoryCurrent",
+            resource_id: resource.id,
+            old_value: previous_condition && %{"status" => previous_condition.status},
+            new_value: %{"status" => "false", "reason" => "Stale"},
+            occurred_at: stale_at
+          })
+      end
+
+      condition
+    end)
   end
 
   @doc """

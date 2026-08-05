@@ -2867,6 +2867,18 @@ defmodule Renga.InventoryTest do
       assert condition.reason == "Stale"
       assert condition.last_transition_at == stale_at
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
+
+      assert [%{kind: "stale", field: "conditions.InventoryCurrent"}] =
+               Inventory.list_change_events(scope, resource.id)
+
+      assert {:ok, _condition} =
+               Inventory.mark_resource_stale(
+                 scope,
+                 resource.id,
+                 DateTime.add(stale_at, 1, :second)
+               )
+
+      assert length(Inventory.list_change_events(scope, resource.id)) == 1
     end
 
     test "mark_resource_stale/3 enforces resource organization scope", %{

@@ -143,8 +143,8 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Upsert canonical interfaces and addresses while retaining per-source evidence.
 - [X] Apply deterministic field ownership and precedence rules without allowing observations to overwrite desired state.
 - [X] Record field conflicts when sources disagree with each other, canonical state, or explicit desired/manual values.
-- [ ] Update resource conditions and freshness independently from lifecycle state and agent lease health.
-- [ ] Write change events for discovery, update, conflict, and stale transitions.
+- [X] Update resource conditions and freshness independently from lifecycle state and agent lease health.
+- [X] Write change events for discovery, update, conflict, and stale transitions.
 - [X] Add reconciliation tests for duplicate identifiers, hostname changes, weak matches, and conflicting observations.
 
 ** 6. Rust Agent Service MVP
