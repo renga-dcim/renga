@@ -463,74 +463,82 @@ defmodule Renga.Inventory do
     source = get_source!(scope, source_id)
     observation = get_source_observation!(scope, source.id, observation_id)
 
-    kind = get_attr(attrs, :kind)
-    normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
+    Repo.transaction(fn ->
+      kind = get_attr(attrs, :kind)
+      normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
 
-    previous_first_seen_at =
+      previous_first_seen_at =
+        ResourceIdentifierClaim
+        |> where([claim], claim.organization_id == ^organization_id)
+        |> where([claim], claim.source_id == ^source.id)
+        |> where([claim], claim.kind == ^kind)
+        |> where([claim], claim.normalized_value == ^normalized_value)
+        |> select([claim], min(claim.first_seen_at))
+        |> Repo.one()
+
+      first_seen_at = earliest_timestamp(previous_first_seen_at, observation.observed_at)
+
       ResourceIdentifierClaim
       |> where([claim], claim.organization_id == ^organization_id)
       |> where([claim], claim.source_id == ^source.id)
       |> where([claim], claim.kind == ^kind)
       |> where([claim], claim.normalized_value == ^normalized_value)
-      |> select([claim], min(claim.first_seen_at))
-      |> Repo.one()
+      |> where([claim], claim.first_seen_at > ^first_seen_at)
+      |> Repo.update_all(set: [first_seen_at: first_seen_at])
 
-    first_seen_at = earliest_timestamp(previous_first_seen_at, observation.observed_at)
+      attrs =
+        attrs
+        |> put_attr(:first_seen_at, first_seen_at)
+        |> put_attr(:last_seen_at, observation.observed_at)
 
-    ResourceIdentifierClaim
-    |> where([claim], claim.organization_id == ^organization_id)
-    |> where([claim], claim.source_id == ^source.id)
-    |> where([claim], claim.kind == ^kind)
-    |> where([claim], claim.normalized_value == ^normalized_value)
-    |> where([claim], claim.first_seen_at > ^first_seen_at)
-    |> Repo.update_all(set: [first_seen_at: first_seen_at])
+      resource =
+        case get_attr(attrs, :resource_id) do
+          nil -> nil
+          id -> get_resource!(scope, id)
+        end
 
-    attrs =
-      attrs
-      |> put_attr(:first_seen_at, first_seen_at)
-      |> put_attr(:last_seen_at, observation.observed_at)
+      resource_identifier =
+        case get_attr(attrs, :resource_identifier_id) do
+          nil -> nil
+          id -> get_resource_identifier!(scope, id)
+        end
 
-    resource =
-      case get_attr(attrs, :resource_id) do
-        nil -> nil
-        id -> get_resource!(scope, id)
+      resource_id =
+        case {resource, resource_identifier} do
+          {%Resource{id: id}, _resource_identifier} -> id
+          {nil, %ResourceIdentifier{resource_id: id}} -> id
+          {nil, nil} -> nil
+        end
+
+      existing_claim =
+        Repo.get_by(ResourceIdentifierClaim,
+          organization_id: organization_id,
+          observation_id: observation.id,
+          kind: kind,
+          normalized_value: normalized_value
+        )
+
+      result =
+        (existing_claim ||
+           %ResourceIdentifierClaim{
+             organization_id: organization_id,
+             source_id: source.id,
+             observation_id: observation.id
+           })
+        |> ResourceIdentifierClaim.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_id, resource_id)
+        |> Ecto.Changeset.put_change(
+          :resource_identifier_id,
+          resource_identifier && resource_identifier.id
+        )
+        |> validate_claim_resource_link(resource, resource_identifier)
+        |> Repo.insert_or_update()
+
+      case result do
+        {:ok, claim} -> claim
+        {:error, changeset} -> Repo.rollback(changeset)
       end
-
-    resource_identifier =
-      case get_attr(attrs, :resource_identifier_id) do
-        nil -> nil
-        id -> get_resource_identifier!(scope, id)
-      end
-
-    resource_id =
-      case {resource, resource_identifier} do
-        {%Resource{id: id}, _resource_identifier} -> id
-        {nil, %ResourceIdentifier{resource_id: id}} -> id
-        {nil, nil} -> nil
-      end
-
-    existing_claim =
-      Repo.get_by(ResourceIdentifierClaim,
-        organization_id: organization_id,
-        observation_id: observation.id,
-        kind: kind,
-        normalized_value: normalized_value
-      )
-
-    (existing_claim ||
-       %ResourceIdentifierClaim{
-         organization_id: organization_id,
-         source_id: source.id,
-         observation_id: observation.id
-       })
-    |> ResourceIdentifierClaim.changeset(attrs)
-    |> Ecto.Changeset.put_change(:resource_id, resource_id)
-    |> Ecto.Changeset.put_change(
-      :resource_identifier_id,
-      resource_identifier && resource_identifier.id
-    )
-    |> validate_claim_resource_link(resource, resource_identifier)
-    |> Repo.insert_or_update()
+    end)
   end
 
   @doc """

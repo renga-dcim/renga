@@ -27,6 +27,12 @@ defmodule Renga.Inventory.Reconciler do
   Reconciles one scoped observation and records its immutable processing result.
   """
   def reconcile(%Scope{} = scope, %Observation{} = observation) do
+    do_reconcile(scope, observation)
+  rescue
+    exception -> record_unexpected_failure(scope, observation, exception)
+  end
+
+  defp do_reconcile(scope, observation) do
     source = Inventory.get_source!(scope, observation.source_id)
     identifiers = observation_identifiers(observation.payload)
     started_at = Renga.Time.utc_now_ms()
@@ -70,6 +76,22 @@ defmodule Renga.Inventory.Reconciler do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp record_unexpected_failure(scope, observation, exception) do
+    now = Renga.Time.utc_now_ms()
+
+    {:ok, result} =
+      Inventory.create_observation_reconciliation(scope, observation.id, %{
+        status: "failed",
+        attempt: next_attempt(scope, observation.id),
+        errors: %{"processing" => "projection_failed"},
+        metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
+        started_at: now,
+        completed_at: now
+      })
+
+    {:error, result}
   end
 
   defp reconcile_resource(

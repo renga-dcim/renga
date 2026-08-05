@@ -585,7 +585,7 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, observation.id)
     host = Inventory.get_host_by_resource!(context.scope, matched.id)
-    assert host.vendor == nil
+    assert host.vendor == "Manual Vendor"
     assert host.model == "Observed Model"
     assert Inventory.get_resource!(context.scope, matched.id).spec == resource.spec
 
@@ -665,10 +665,10 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert {:ok, _resource, false} =
              Inventory.reconcile_observation(context.scope, observation.id)
 
-    assert [%{status: "unknown", kind: "ethernet", metadata: %{"field_owners" => owners}}] =
+    assert [%{status: "down", kind: "ethernet", metadata: %{"field_owners" => owners}}] =
              Inventory.list_interfaces(context.scope, resource.id)
 
-    refute Map.has_key?(owners, "status")
+    assert owners["status"]["source_kind"] == "manual"
 
     conflicts = Inventory.list_change_events(context.scope, resource.id)
 
@@ -780,5 +780,48 @@ defmodule Renga.Inventory.ReconcilerTest do
       |> Enum.sort()
 
     assert reasons == ["desired_state", "manual_override"]
+  end
+
+  test "a rejected older claim does not mutate accepted claim history" do
+    context = context()
+    newer = observation(context, "2", %{"machine_id" => "machine-1"})
+    older = observation(context, "1", %{"machine_id" => "machine-1"})
+
+    assert {:ok, claim} =
+             Inventory.create_resource_identifier_claim(
+               context.scope,
+               context.source.id,
+               newer.id,
+               %{kind: "machine_id", value: "machine-1"}
+             )
+
+    assert {:error, _changeset} =
+             Inventory.create_resource_identifier_claim(
+               context.scope,
+               context.source.id,
+               older.id,
+               %{kind: "machine_id", value: "machine-1", confidence: -1}
+             )
+
+    assert Repo.reload!(claim).first_seen_at == newer.observed_at
+  end
+
+  test "unexpected projection failures are retained as terminal reconciliation attempts" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => %{"invalid" => true}}
+      )
+
+    assert {:error, result} = Inventory.reconcile_observation(context.scope, observation.id)
+    assert result.status == "failed"
+    assert result.errors["processing"]
+
+    assert [%{status: "failed"}] =
+             Inventory.list_observation_reconciliations(context.scope, observation.id)
   end
 end

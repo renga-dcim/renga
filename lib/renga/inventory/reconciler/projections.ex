@@ -414,19 +414,24 @@ defmodule Renga.Inventory.Reconciler.Projections do
         value
       )
 
-      if override && override_value(override.value) != value do
-        record_conflict(
-          scope,
-          source,
-          observation,
-          resource,
-          field_path,
-          override_value(override.value),
-          value,
-          "manual_override"
-        )
+      if override do
+        manual_value = normalize_override_value(path, field, override_value(override.value))
 
-        {accepted, owners}
+        if manual_value != value do
+          record_conflict(
+            scope,
+            source,
+            observation,
+            resource,
+            field_path,
+            manual_value,
+            value,
+            "manual_override"
+          )
+        end
+
+        {Map.put(accepted, field, manual_value),
+         Map.put(owners, field, manual_owner(observation))}
       else
         {Map.put(accepted, field, value), Map.put(owners, field, owner(source, observation))}
       end
@@ -453,6 +458,14 @@ defmodule Renga.Inventory.Reconciler.Projections do
         current_value = Map.get(record, String.to_existing_atom(field))
         field_path = "#{path}.#{field}"
         override = Map.get(overrides, field_path) || Map.get(overrides, field)
+        existing_owner = Map.get(owners, field)
+
+        existing_owner =
+          if is_nil(override) && get_in(existing_owner || %{}, ["source_kind"]) == "manual" do
+            nil
+          else
+            existing_owner
+          end
 
         maybe_record_desired_conflict(
           scope,
@@ -465,21 +478,38 @@ defmodule Renga.Inventory.Reconciler.Projections do
         )
 
         cond do
-          override && override_value(override.value) != incoming_value ->
-            record_conflict(
-              scope,
-              source,
-              observation,
-              resource,
-              field_path,
-              override_value(override.value),
-              incoming_value,
-              "manual_override"
-            )
+          override ->
+            manual_value = normalize_override_value(path, field, override_value(override.value))
 
-            {changes, owners}
+            if manual_value != incoming_value do
+              record_conflict(
+                scope,
+                source,
+                observation,
+                resource,
+                field_path,
+                manual_value,
+                incoming_value,
+                "manual_override"
+              )
+            end
 
-          source_wins?(source, observation, Map.get(owners, field), field_path) ->
+            if current_value != manual_value do
+              record_update(
+                scope,
+                source,
+                observation,
+                resource,
+                field_path,
+                current_value,
+                manual_value
+              )
+            end
+
+            {Map.put(changes, field, manual_value),
+             Map.put(owners, field, manual_owner(observation))}
+
+          source_wins?(source, observation, existing_owner, field_path) ->
             if current_value != nil and current_value != incoming_value and
                  get_in(owners, [field, "source_id"]) != source.id do
               record_conflict(
@@ -564,6 +594,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
     %{
       "source_id" => source.id,
       "source_kind" => source.kind,
+      "observed_at" => DateTime.to_iso8601(observation.observed_at),
+      "observation_id" => observation.id
+    }
+  end
+
+  defp manual_owner(observation) do
+    %{
+      "source_id" => nil,
+      "source_kind" => "manual",
       "observed_at" => DateTime.to_iso8601(observation.observed_at),
       "observation_id" => observation.id
     }
@@ -705,6 +744,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
   defp override_value(%{"value" => value}), do: value
   defp override_value(%{value: value}), do: value
   defp override_value(value), do: value
+
+  defp normalize_override_value("host", field, value)
+       when field in ~w(hostname fqdn) and is_binary(value) do
+    value |> String.trim() |> String.downcase()
+  end
+
+  defp normalize_override_value("interfaces." <> _name, "mac_address", value) do
+    case MacAddress.cast(value) do
+      {:ok, mac_address} -> mac_address
+      :error -> value
+    end
+  end
+
+  defp normalize_override_value(_path, _field, value), do: value
 
   defp event_value(nil), do: nil
   defp event_value(%Postgrex.MACADDR{address: address}), do: %{"value" => format_mac(address)}
