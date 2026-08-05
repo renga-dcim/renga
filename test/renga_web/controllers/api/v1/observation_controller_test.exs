@@ -265,6 +265,72 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "rejects non-object identifiers and malformed attribute containers without crashing" do
+      %{source: source, token: token} = source_fixture()
+
+      resources = [
+        %{"kind" => "server", "identifiers" => ["compute-01"], "attributes" => nil},
+        %{
+          "kind" => "server",
+          "identifiers" => %{"hostname" => "compute-01"},
+          "attributes" => ["compute-01"]
+        }
+      ]
+
+      for resource <- resources do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+
+        assert Enum.any?(
+                 errors,
+                 &(&1["path"] in ~w(resources.0.identifiers resources.0.attributes))
+               )
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects top-level MAC identity with malformed interface containers without crashing" do
+      %{source: source, token: token} = source_fixture()
+
+      for interfaces <- [nil, %{"eth0" => %{}}, [nil, "eth0"]] do
+        resource = %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-01",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          },
+          "interfaces" => interfaces
+        }
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+
+        if interfaces != nil do
+          assert Enum.any?(errors, &String.starts_with?(&1["path"], "resources.0.interfaces"))
+        end
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects top-level MAC identity that is not the current interface MAC set" do
       %{source: source, token: token} = source_fixture()
 

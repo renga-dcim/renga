@@ -381,7 +381,11 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_current_mac_identity(errors, resource, path) do
-    identifiers = Map.get(resource, "identifiers", %{})
+    identifiers =
+      case Map.get(resource, "identifiers") do
+        %{} = identifiers -> identifiers
+        _invalid -> %{}
+      end
 
     case Map.get(identifiers, "mac_address") do
       nil ->
@@ -389,10 +393,16 @@ defmodule Renga.Inventory.AgentPayload do
 
       declared_macs ->
         current_macs =
-          resource
-          |> Map.get("interfaces", [])
-          |> Enum.reject(&(&1["status"] == "not_present"))
-          |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
+          case Map.get(resource, "interfaces") do
+            interfaces when is_list(interfaces) ->
+              interfaces
+              |> Enum.filter(&is_map/1)
+              |> Enum.reject(&(&1["status"] == "not_present"))
+              |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
+
+            _invalid ->
+              []
+          end
 
         if normalized_mac_set(List.wrap(declared_macs)) == normalized_mac_set(current_macs) do
           errors
@@ -415,8 +425,17 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_coherent_host_identity(errors, resource, path) do
-    identifiers = Map.get(resource, "identifiers", %{})
-    attributes = Map.get(resource, "attributes", %{})
+    identifiers =
+      case Map.get(resource, "identifiers") do
+        %{} = identifiers -> identifiers
+        _invalid -> %{}
+      end
+
+    attributes =
+      case Map.get(resource, "attributes") do
+        %{} = attributes -> attributes
+        _invalid -> %{}
+      end
 
     Enum.reduce(~w(hostname fqdn), errors, fn field, errors ->
       identifier = Map.get(identifiers, field)
