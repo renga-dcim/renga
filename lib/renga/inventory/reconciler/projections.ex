@@ -162,13 +162,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
          name,
          interface
        ) do
-    canonical_attrs =
+    reported_attrs =
       attrs
       |> Map.take(@interface_fields)
       |> Map.put("name", name)
+      |> cast_mac_address()
+
+    create_attrs =
+      reported_attrs
       |> Map.put_new("kind", "ethernet")
       |> Map.put_new("status", "unknown")
-      |> cast_mac_address()
 
     interface =
       if interface do
@@ -179,7 +182,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
             observation,
             resource,
             interface,
-            canonical_attrs,
+            reported_attrs,
             @interface_fields,
             "interfaces.#{name}",
             interface.metadata,
@@ -205,7 +208,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
             source,
             observation,
             resource,
-            canonical_attrs,
+            create_attrs,
             "interfaces.#{name}",
             overrides,
             %{"name" => name, "kind" => "ethernet", "status" => "unknown"}
@@ -225,7 +228,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
         interface
       end
 
-    put_interface_evidence(scope, source, observation, interface, canonical_attrs, attrs)
+    put_interface_evidence(scope, source, observation, interface, create_attrs, attrs)
 
     attrs
     |> Map.get("addresses", [])

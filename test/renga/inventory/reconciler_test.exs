@@ -691,6 +691,42 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "partial interface reports preserve omitted canonical attributes and ownership" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "br0", "kind" => "bridge", "status" => "up", "addresses" => []}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [original] = Inventory.list_interfaces(context.scope, resource.id)
+
+    second =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "br0", "addresses" => ["192.0.2.10/24"]}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+
+    assert interface.kind == "bridge"
+    assert interface.status == "up"
+
+    for field <- ~w(kind status) do
+      assert interface.metadata["field_owners"][field] ==
+               original.metadata["field_owners"][field]
+    end
+  end
+
   test "field precedence is deterministic and source disagreements remain visible" do
     context = context()
 
