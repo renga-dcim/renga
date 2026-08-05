@@ -32,45 +32,44 @@ defmodule Renga.Inventory.Reconciler do
     exception -> record_unexpected_failure(scope, observation, exception)
   end
 
-  defp do_reconcile(scope, observation) do
-    source = Inventory.get_source!(scope, observation.source_id)
-    identifiers = observation_identifiers(observation.payload)
-    started_at = Renga.Time.utc_now_ms()
+  @doc """
+  Reconciles an observation only when it has no terminal processing result.
 
+  This is the ingestion path. The organization lock makes the terminal-result
+  check and first attempt allocation atomic, while `reconcile/2` remains the
+  explicit retry path for repaired failures.
+  """
+  def reconcile_once(%Scope{} = scope, %Observation{} = observation) do
     Repo.transaction(fn ->
       lock_organization!(scope.organization_id)
-      attempt = next_attempt(scope, observation.id)
 
-      case match_resource(scope, identifiers) do
-        {:ok, resource, match} ->
-          reconcile_resource(
-            scope,
-            source,
-            observation,
-            identifiers,
-            resource,
-            attempt,
-            started_at,
-            match
-          )
-
-        :none ->
-          reconcile_resource(
-            scope,
-            source,
-            observation,
-            identifiers,
-            nil,
-            attempt,
-            started_at,
-            %{"strategy" => "discovered"}
-          )
-
-        {:error, candidates} ->
-          reconcile_claims(scope, source.id, observation, nil, %{})
-          result = record_ambiguous(scope, observation, attempt, started_at, candidates)
-          {:error, result}
+      case latest_result(scope, observation.id) do
+        nil -> reconcile_first_attempt(scope, observation)
+        result -> result_to_reconciliation(scope, result)
       end
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    exception -> record_unexpected_failure_once(scope, observation, exception)
+  end
+
+  defp reconcile_first_attempt(scope, observation) do
+    Repo.transaction(fn -> perform_reconciliation(scope, observation) end, mode: :savepoint)
+    |> case do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    exception -> create_unexpected_failure(scope, observation, exception)
+  end
+
+  defp do_reconcile(scope, observation) do
+    Repo.transaction(fn ->
+      lock_organization!(scope.organization_id)
+      perform_reconciliation(scope, observation)
     end)
     |> case do
       {:ok, result} -> result
@@ -78,18 +77,89 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
+  defp perform_reconciliation(scope, observation) do
+    source = Inventory.get_source!(scope, observation.source_id)
+    identifiers = observation_identifiers(observation.payload)
+    started_at = Renga.Time.utc_now_ms()
+    attempt = next_attempt(scope, observation.id)
+
+    case match_resource(scope, identifiers) do
+      {:ok, resource, match} ->
+        reconcile_resource(
+          scope,
+          source,
+          observation,
+          identifiers,
+          resource,
+          attempt,
+          started_at,
+          match
+        )
+
+      :none ->
+        reconcile_resource(
+          scope,
+          source,
+          observation,
+          identifiers,
+          nil,
+          attempt,
+          started_at,
+          %{"strategy" => "discovered"}
+        )
+
+      {:error, candidates} ->
+        reconcile_claims(scope, source.id, observation, nil, %{})
+        result = record_ambiguous(scope, observation, attempt, started_at, candidates)
+        {:error, result}
+    end
+  end
+
+  defp latest_result(scope, observation_id) do
+    scope
+    |> Inventory.list_observation_reconciliations(observation_id)
+    |> List.last()
+  end
+
+  defp result_to_reconciliation(scope, %{status: "succeeded"} = result) do
+    {:ok, Inventory.get_resource!(scope, result.matched_resource_id), false}
+  end
+
+  defp result_to_reconciliation(_scope, result), do: {:error, result}
+
+  defp record_unexpected_failure_once(scope, observation, exception) do
+    case latest_result(scope, observation.id) do
+      nil -> record_unexpected_failure(scope, observation, exception)
+      result -> result_to_reconciliation(scope, result)
+    end
+  end
+
   defp record_unexpected_failure(scope, observation, exception) do
+    record_serialized_failure(scope, observation, unexpected_failure_attrs(exception))
+  end
+
+  defp create_unexpected_failure(scope, observation, exception) do
+    attrs =
+      exception
+      |> unexpected_failure_attrs()
+      |> Map.put(:attempt, next_attempt(scope, observation.id))
+
+    case Inventory.create_observation_reconciliation(scope, observation.id, attrs) do
+      {:ok, result} -> {:error, result}
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp unexpected_failure_attrs(exception) do
     now = Renga.Time.utc_now_ms()
 
-    attrs = %{
+    %{
       status: "failed",
       errors: %{"processing" => "projection_failed"},
       metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
       started_at: now,
       completed_at: now
     }
-
-    record_serialized_failure(scope, observation, attrs)
   end
 
   defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do

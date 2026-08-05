@@ -6,6 +6,59 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
   alias Renga.Inventory
   alias Renga.Repo
 
+  test "concurrent ingestion reconciles an immutable observation only once" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = System.unique_integer([:positive])
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Concurrent ingestion #{suffix}",
+        slug: "concurrent-ingestion-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "ingestion-#{suffix}",
+        observed_at: ~U[2026-08-01 12:00:00.000Z],
+        payload: %{
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "machine-#{suffix}"},
+              "attributes" => %{},
+              "interfaces" => []
+            }
+          ]
+        }
+      })
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.reconcile_observation_once(scope, observation.id)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+      end
+
+    try do
+      assert Enum.all?(Task.await_many(tasks), &match?({:ok, %{}, _}, &1))
+
+      assert [%{attempt: 1, status: "succeeded"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
+    after
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
+
   test "concurrent unexpected failures retain distinct terminal attempts" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     suffix = System.unique_integer([:positive])

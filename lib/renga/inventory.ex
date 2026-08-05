@@ -886,6 +886,15 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Reconciles one observation for ingestion, returning its existing terminal
+  result when another request has already attempted it.
+  """
+  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    Reconciler.reconcile_once(scope, observation)
+  end
+
+  @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
   """
   def create_observation_reconciliation(

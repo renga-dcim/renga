@@ -62,30 +62,20 @@ defmodule RengaWeb.Api.V1.ObservationController do
   defp status_for(:created), do: :accepted
   defp status_for(:duplicate), do: :ok
 
-  defp reconcile_observation(scope, observation, :created) do
-    case Inventory.reconcile_observation(scope, observation.id) do
+  defp reconcile_observation(scope, observation, disposition) do
+    case Inventory.reconcile_observation_once(scope, observation.id) do
       {:ok, resource, _discovered?} ->
         %{status: "succeeded", matched_resource_id: resource.id}
 
-      {:error, result} ->
-        %{status: "failed", errors: result.errors}
-    end
-  end
-
-  defp reconcile_observation(scope, observation, :duplicate) do
-    case List.last(Inventory.list_observation_reconciliations(scope, observation.id)) do
-      nil ->
-        reconcile_observation(scope, observation, :created)
-
-      %{status: "failed"} = result ->
+      {:error, result} when disposition == :duplicate ->
         %{
-          status: result.status,
+          status: "failed",
           matched_resource_id: result.matched_resource_id,
           errors: result.errors
         }
 
-      result ->
-        %{status: result.status, matched_resource_id: result.matched_resource_id}
+      {:error, result} ->
+        %{status: "failed", errors: result.errors}
     end
   end
 
