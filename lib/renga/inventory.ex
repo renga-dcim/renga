@@ -1096,12 +1096,8 @@ defmodule Renga.Inventory do
           nil ->
             validate_agent_metadata_size(changeset, attrs.metadata)
 
-          %{metadata: metadata, updated_at: updated_at} ->
-            if DateTime.compare(attrs.registered_at, updated_at) in [:eq, :gt] do
-              validate_agent_metadata_size(changeset, Map.merge(metadata, attrs.metadata))
-            else
-              changeset
-            end
+          existing_agent ->
+            validate_agent_metadata_merge(changeset, attrs, existing_agent)
         end
       else
         changeset
@@ -1117,6 +1113,17 @@ defmodule Renga.Inventory do
     case result do
       {:ok, agent} -> agent
       {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp validate_agent_metadata_merge(changeset, attrs, existing_agent) do
+    if DateTime.compare(attrs.registered_at, existing_agent.updated_at) in [:eq, :gt] do
+      validate_agent_metadata_size(
+        changeset,
+        Map.merge(existing_agent.metadata, attrs.metadata)
+      )
+    else
+      changeset
     end
   end
 
