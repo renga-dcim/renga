@@ -10,11 +10,15 @@ defmodule RengaWeb.Api.V1.ObservationController do
            Inventory.record_agent_check_in(conn.assigns.current_scope, source.id),
          {:ok, observation, disposition} <-
            Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs) do
+      reconciliation =
+        reconcile_observation(conn.assigns.current_scope, observation, disposition)
+
       conn
       |> put_status(status_for(disposition))
       |> json(%{
         status: "accepted",
         duplicate: disposition == :duplicate,
+        reconciliation: reconciliation,
         observation: %{
           id: observation.id,
           observation_id: observation.idempotency_key,
@@ -57,6 +61,23 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   defp status_for(:created), do: :accepted
   defp status_for(:duplicate), do: :ok
+
+  defp reconcile_observation(scope, observation, disposition) do
+    case Inventory.reconcile_observation_once(scope, observation.id) do
+      {:ok, resource, _discovered?} ->
+        %{status: "succeeded", matched_resource_id: resource.id}
+
+      {:error, result} when disposition == :duplicate ->
+        %{
+          status: "failed",
+          matched_resource_id: result.matched_resource_id,
+          errors: result.errors
+        }
+
+      {:error, result} ->
+        %{status: "failed", errors: result.errors}
+    end
+  end
 
   defp changeset_errors(changeset, prefix) do
     changeset

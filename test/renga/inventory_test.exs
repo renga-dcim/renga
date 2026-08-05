@@ -2759,6 +2759,11 @@ defmodule Renga.InventoryTest do
     setup do
       contexts = scoped_organizations()
 
+      {:ok, user} =
+        Accounts.register_user(%{email: "override-actor-#{System.unique_integer()}@example.com"})
+
+      contexts = %{contexts | scope: %{contexts.scope | user: user}}
+
       {:ok, resource} =
         Inventory.create_resource(contexts.scope, %{
           kind: "server",
@@ -2783,7 +2788,7 @@ defmodule Renga.InventoryTest do
 
       assert {:ok, %ResourceOverride{} = override} =
                Inventory.create_resource_override(scope, resource.id, %{
-                 field: " hostname ",
+                 field: " host.hostname ",
                  value: %{"value" => "manual-compute-01"},
                  reason: " vendor feed is stale ",
                  created_by_user_id: Ecto.UUID.generate()
@@ -2792,7 +2797,7 @@ defmodule Renga.InventoryTest do
       assert override.organization_id == scope.organization_id
       assert override.resource_id == resource.id
       assert override.created_by_user_id == user.id
-      assert override.field == "hostname"
+      assert override.field == "host.hostname"
       assert override.reason == "vendor feed is stale"
       assert override.value == %{"value" => "manual-compute-01"}
     end
@@ -2804,8 +2809,8 @@ defmodule Renga.InventoryTest do
     } do
       {:ok, override} =
         Inventory.create_resource_override(scope, resource.id, %{
-          field: "status",
-          value: %{"value" => "maintenance"}
+          field: "interfaces.eth0.status",
+          value: %{"value" => "down"}
         })
 
       assert Inventory.list_resource_overrides(scope, resource.id) == [override]
@@ -2818,8 +2823,8 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.create_resource_override(other_scope, resource.id, %{
-          field: "status",
-          value: %{"value" => "maintenance"}
+          field: "interfaces.eth0.status",
+          value: %{"value" => "down"}
         })
       end
     end
@@ -2829,7 +2834,7 @@ defmodule Renga.InventoryTest do
       resource: resource
     } do
       attrs = %{
-        field: "status",
+        field: "host.hostname",
         value: %{"value" => "maintenance"}
       }
 
@@ -2855,6 +2860,74 @@ defmodule Renga.InventoryTest do
              } = errors_on(changeset)
     end
 
+    test "resource overrides reject unsupported paths and incorrectly typed values atomically", %{
+      scope: scope,
+      resource: resource
+    } do
+      for attrs <- [
+            %{field: "host.serial_number", value: %{"value" => "nope"}},
+            %{field: "host.vendor", value: %{"value" => 42}},
+            %{field: "interfaces.eth0.mtu", value: %{"value" => "1500"}},
+            %{field: "interfaces.eth0.status", value: %{"value" => "broken"}}
+          ] do
+        assert {:error, changeset} = Inventory.create_resource_override(scope, resource.id, attrs)
+        assert errors_on(changeset) != %{}
+      end
+
+      assert Inventory.list_resource_overrides(scope, resource.id) == []
+      assert Inventory.list_change_events(scope, resource.id) == []
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.get_host_by_resource!(scope, resource.id)
+      end
+    end
+
+    test "resource overrides enforce projection storage limits atomically", %{
+      scope: scope,
+      resource: resource
+    } do
+      for attrs <- [
+            %{field: "host.vendor", value: %{"value" => String.duplicate("x", 256)}},
+            %{field: "interfaces.eth0.mtu", value: %{"value" => 2_147_483_648}},
+            %{field: "interfaces.eth0.speed_mbps", value: %{"value" => 2_147_483_648}}
+          ] do
+        assert {:error, changeset} = Inventory.create_resource_override(scope, resource.id, attrs)
+        assert errors_on(changeset) != %{}
+      end
+
+      assert Inventory.list_resource_overrides(scope, resource.id) == []
+      assert Inventory.list_change_events(scope, resource.id) == []
+    end
+
+    test "interface override paths use trimmed canonical interface names", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:ok, override} =
+               Inventory.create_resource_override(scope, resource.id, %{
+                 field: "interfaces. eth0 .status",
+                 value: %{"value" => "down"}
+               })
+
+      assert override.field == "interfaces.eth0.status"
+      assert [%{name: "eth0", status: "down"}] = Inventory.list_interfaces(scope, resource.id)
+    end
+
+    test "manual overrides require a human actor and leave no partial writes", %{
+      scope: scope,
+      resource: resource
+    } do
+      assert {:error, changeset} =
+               Inventory.create_resource_override(%{scope | user: nil}, resource.id, %{
+                 field: "host.vendor",
+                 value: %{"value" => "Operator Vendor"}
+               })
+
+      assert %{created_by_user_id: ["can't be blank"]} = errors_on(changeset)
+      assert Inventory.list_resource_overrides(scope, resource.id) == []
+      assert Inventory.list_change_events(scope, resource.id) == []
+    end
+
     test "mark_resource_stale/3 records a scoped freshness transition", %{
       scope: scope,
       resource: resource
@@ -2867,6 +2940,18 @@ defmodule Renga.InventoryTest do
       assert condition.reason == "Stale"
       assert condition.last_transition_at == stale_at
       assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
+
+      assert [%{kind: "stale", field: "conditions.InventoryCurrent"}] =
+               Inventory.list_change_events(scope, resource.id)
+
+      assert {:ok, _condition} =
+               Inventory.mark_resource_stale(
+                 scope,
+                 resource.id,
+                 DateTime.add(stale_at, 1, :second)
+               )
+
+      assert length(Inventory.list_change_events(scope, resource.id)) == 1
     end
 
     test "mark_resource_stale/3 enforces resource organization scope", %{

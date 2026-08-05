@@ -4,6 +4,7 @@ This is a web application written using the Phoenix web framework.
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Make small, logical commits as work is completed. Each commit should be independently reviewable, scoped to one concern, and backed by relevant tests run before committing
+- When Jujutsu is available for the workspace, use `jj` to record changes with detailed explanations; use Git commits only when `jj` is unavailable
 - Add concise comments or module/function docs that explain intent, domain boundaries, security decisions, or non-obvious tradeoffs. Avoid comments that merely restate what the code does
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 

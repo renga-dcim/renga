@@ -78,7 +78,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
     end
 
-    test "stores accepted raw host observations before reconciliation", %{conn: conn} do
+    test "stores and reconciles accepted raw host observations", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)
 
@@ -90,6 +90,10 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => false,
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "matched_resource_id" => resource_id
+               },
                "observation" => %{
                  "id" => observation_id,
                  "observation_id" => payload_observation_id,
@@ -106,6 +110,414 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert observation.payload == payload
       assert observation.idempotency_key == payload["observation_id"]
       assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
+
+      resource = Inventory.get_resource!(scope, resource_id)
+      assert resource.kind == "server"
+      assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
+      assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
+    end
+
+    test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "attributes", "vendor"], %{})
+        |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), "mtu"], -1)
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "metadata"],
+          "invalid"
+        )
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.attributes.vendor" in paths
+      assert "resources.0.interfaces.0.mtu" in paths
+      assert "resources.0.interfaces.0.metadata" in paths
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects explicit null interface kind and status before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for field <- ~w(kind status) do
+        payload =
+          source
+          |> valid_observation_payload(%{"observation_id" => "null-interface-#{field}"})
+          |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), field], nil)
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.#{field}"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects explicit null address kind before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "null-address-kind"})
+        |> put_in(
+          [
+            "resources",
+            Access.at(0),
+            "interfaces",
+            Access.at(0),
+            "addresses",
+            Access.at(0),
+            "kind"
+          ],
+          nil
+        )
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.addresses.0.kind"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects identifiers that exceed their projection storage limit before raw storage" do
+      %{source: source, token: token} = source_fixture()
+      oversized = String.duplicate("i", 256)
+
+      payloads = [
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "machine_id" => oversized
+        }),
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "serial_number" => ["valid", oversized]
+        })
+      ]
+
+      for payload <- payloads do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &String.starts_with?(&1["path"], "resources.0.identifiers."))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects multi-valued hostname and FQDN identifiers before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for field <- ~w(hostname fqdn) do
+        payload =
+          put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+            field => ["compute-01", "compute-02"],
+            "machine_id" => "9f3c7a8b"
+          })
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.#{field}"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects malformed MAC identifiers before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "machine_id" => "9f3c7a8b",
+          "mac_address" => ["aa:bb:cc:dd:ee:ff", "not-a-mac"]
+        })
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects non-object identifiers and malformed attribute containers without crashing" do
+      %{source: source, token: token} = source_fixture()
+
+      resources = [
+        %{"kind" => "server", "identifiers" => ["compute-01"], "attributes" => nil},
+        %{
+          "kind" => "server",
+          "identifiers" => %{"hostname" => "compute-01"},
+          "attributes" => ["compute-01"]
+        }
+      ]
+
+      for resource <- resources do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+
+        assert Enum.any?(
+                 errors,
+                 &(&1["path"] in ~w(resources.0.identifiers resources.0.attributes))
+               )
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects explicit null attributes with valid identifiers" do
+      %{source: source, token: token} = source_fixture()
+
+      resource = %{
+        "kind" => "server",
+        "identifiers" => %{"hostname" => "compute-01"},
+        "attributes" => nil
+      }
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(
+          ~p"/api/v1/observations",
+          valid_observation_payload(source, %{"resources" => [resource]})
+        )
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.attributes"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects top-level MAC identity with malformed interface containers without crashing" do
+      %{source: source, token: token} = source_fixture()
+
+      for interfaces <- [nil, %{"eth0" => %{}}, [nil, "eth0"]] do
+        resource = %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-01",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          },
+          "interfaces" => interfaces
+        }
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+
+        if interfaces != nil do
+          assert Enum.any?(errors, &String.starts_with?(&1["path"], "resources.0.interfaces"))
+        end
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects top-level MAC identity that is not the current interface MAC set" do
+      %{source: source, token: token} = source_fixture()
+
+      resources = [
+        %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-01",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          }
+        },
+        %{
+          "kind" => "server",
+          "identifiers" => %{
+            "hostname" => "compute-02",
+            "mac_address" => "aa:bb:cc:dd:ee:ff"
+          },
+          "interfaces" => [
+            %{
+              "name" => "eth0",
+              "status" => "not_present",
+              "mac_address" => "aa:bb:cc:dd:ee:ff"
+            }
+          ]
+        }
+      ]
+
+      for resource <- resources do
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(
+            ~p"/api/v1/observations",
+            valid_observation_payload(source, %{"resources" => [resource]})
+          )
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "accepts a top-level MAC identity equal to the current interface MAC set", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        put_in(valid_observation_payload(source), ["resources", Access.at(0), "identifiers"], %{
+          "hostname" => "compute-01",
+          "mac_address" => "aa-bb-cc-dd-ee-ff"
+        })
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+      assert %{"status" => "accepted"} = json_response(conn, 202)
+    end
+
+    test "rejects identity containing only matcher-unsupported identifiers before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      for identifiers <- [
+            %{"provider_instance_id" => "i-123"},
+            %{"bmc_address" => "192.0.2.20"}
+          ] do
+        payload =
+          put_in(
+            valid_observation_payload(source),
+            ["resources", Access.at(0), "identifiers"],
+            identifiers
+          )
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => errors} = response
+        assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects interface integers above PostgreSQL's signed limit before raw storage", %{
+      conn: conn
+    } do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "mtu"],
+          2_147_483_648
+        )
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "speed_mbps"],
+          2_147_483_648
+        )
+
+      response =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => errors} = response
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.interfaces.0.mtu" in paths
+      assert "resources.0.interfaces.0.speed_mbps" in paths
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects MAC-only identity before raw storage", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "identifiers"], %{
+          "mac_address" => "aa:bb:cc:dd:ee:ff"
+        })
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
+
+      repeated_conn =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", Map.put(payload, "observation_id", "repeated-mac"))
+
+      assert %{"status" => "rejected"} = json_response(repeated_conn, 422)
+      assert Repo.aggregate(Observation, :count) == 0
+      assert Inventory.list_resources(scope) == []
+    end
+
+    test "rejects hostname and FQDN disagreement between identifiers and attributes", %{
+      conn: conn
+    } do
+      %{source: source, token: token} = source_fixture()
+
+      resource = %{
+        "kind" => "server",
+        "identifiers" => %{
+          "hostname" => "identifier-host",
+          "fqdn" => "identifier.example.com"
+        },
+        "attributes" => %{
+          "hostname" => "attribute-host",
+          "fqdn" => "attribute.example.com"
+        }
+      }
+
+      payload = valid_observation_payload(source, %{"resources" => [resource]})
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+
+      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      paths = Enum.map(errors, & &1["path"])
+      assert "resources.0.attributes.hostname" in paths
+      assert "resources.0.attributes.fqdn" in paths
+      assert Repo.aggregate(Observation, :count) == 0
     end
 
     test "rolls back observation acceptance when agent registration fails", %{conn: conn} do
@@ -204,8 +616,42 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => true,
+               "reconciliation" => %{"status" => "succeeded"},
                "observation" => %{"id" => ^observation_id}
              } = json_response(retry_conn, 200)
+    end
+
+    test "a duplicate request recovers a stored observation with no reconciliation attempt", %{
+      conn: conn
+    } do
+      %{scope: scope, source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source, %{"observation_id" => "stored-before-crash"})
+      {:ok, observed_at, _offset} = DateTime.from_iso8601(payload["observed_at"])
+
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          idempotency_key: payload["observation_id"],
+          observed_at: observed_at,
+          payload: payload
+        })
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "duplicate" => true,
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "matched_resource_id" => resource_id
+               }
+             } = json_response(conn, 200)
+
+      assert resource_id
+
+      assert [%{status: "succeeded"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
     end
 
     test "accepts identical reports when their idempotency keys differ", %{conn: conn} do
@@ -237,7 +683,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       |> json_response(202)
 
       changed_payload =
-        put_in(payload, ["resources", Access.at(0), "attributes", "hostname"], "compute-02")
+        payload
+        |> put_in(["resources", Access.at(0), "identifiers", "hostname"], "compute-02")
+        |> put_in(["resources", Access.at(0), "attributes", "hostname"], "compute-02")
 
       conflict_conn =
         build_conn()

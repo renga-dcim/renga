@@ -31,6 +31,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ResourceOwner
   alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
+  alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
@@ -462,22 +463,102 @@ defmodule Renga.Inventory do
     source = get_source!(scope, source_id)
     observation = get_source_observation!(scope, source.id, observation_id)
 
-    attrs =
-      attrs
-      |> put_attr(:first_seen_at, observation.observed_at)
-      |> put_attr(:last_seen_at, observation.observed_at)
+    Repo.transaction(fn ->
+      kind = get_attr(attrs, :kind)
+      normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
 
-    resource =
-      case get_attr(attrs, :resource_id) do
-        nil -> nil
-        id -> get_resource!(scope, id)
+      first_seen_at =
+        lock_and_update_claim_history(
+          organization_id,
+          source.id,
+          kind,
+          normalized_value,
+          observation.observed_at
+        )
+
+      attrs =
+        attrs
+        |> put_attr(:first_seen_at, first_seen_at)
+        |> put_attr(:last_seen_at, observation.observed_at)
+
+      {resource, resource_identifier, resource_id} = resolve_claim_links(scope, attrs)
+
+      existing_claim =
+        Repo.get_by(ResourceIdentifierClaim,
+          organization_id: organization_id,
+          observation_id: observation.id,
+          kind: kind,
+          normalized_value: normalized_value
+        )
+
+      result =
+        (existing_claim ||
+           %ResourceIdentifierClaim{
+             organization_id: organization_id,
+             source_id: source.id,
+             observation_id: observation.id
+           })
+        |> ResourceIdentifierClaim.changeset(attrs)
+        |> Ecto.Changeset.put_change(:resource_id, resource_id)
+        |> Ecto.Changeset.put_change(
+          :resource_identifier_id,
+          resource_identifier && resource_identifier.id
+        )
+        |> validate_claim_resource_link(resource, resource_identifier)
+        |> Repo.insert_or_update()
+
+      case result do
+        {:ok, claim} -> claim
+        {:error, changeset} -> Repo.rollback(changeset)
       end
+    end)
+  end
+
+  defp lock_and_update_claim_history(
+         organization_id,
+         source_id,
+         kind,
+         normalized_value,
+         observed_at
+       ) do
+    claim_history_key =
+      [organization_id, source_id, kind, normalized_value]
+      |> :erlang.term_to_binary()
+      |> Base.encode64()
+
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [claim_history_key])
+
+    previous_first_seen_at =
+      ResourceIdentifierClaim
+      |> where([claim], claim.organization_id == ^organization_id)
+      |> where([claim], claim.source_id == ^source_id)
+      |> where([claim], claim.kind == ^kind)
+      |> where([claim], claim.normalized_value == ^normalized_value)
+      |> select([claim], min(claim.first_seen_at))
+      |> Repo.one()
+
+    first_seen_at = earliest_timestamp(previous_first_seen_at, observed_at)
+
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.source_id == ^source_id)
+    |> where([claim], claim.kind == ^kind)
+    |> where([claim], claim.normalized_value == ^normalized_value)
+    |> where([claim], claim.first_seen_at > ^first_seen_at)
+    |> Repo.update_all(set: [first_seen_at: first_seen_at])
+
+    first_seen_at
+  end
+
+  defp resolve_claim_links(scope, attrs) do
+    resource = fetch_optional_claim_link(attrs, :resource_id, &get_resource!(scope, &1))
 
     resource_identifier =
-      case get_attr(attrs, :resource_identifier_id) do
-        nil -> nil
-        id -> get_resource_identifier!(scope, id)
-      end
+      fetch_optional_claim_link(
+        attrs,
+        :resource_identifier_id,
+        &get_resource_identifier!(scope, &1)
+      )
 
     resource_id =
       case {resource, resource_identifier} do
@@ -486,16 +567,14 @@ defmodule Renga.Inventory do
         {nil, nil} -> nil
       end
 
-    %ResourceIdentifierClaim{
-      organization_id: organization_id,
-      source_id: source.id,
-      observation_id: observation.id,
-      resource_id: resource_id,
-      resource_identifier_id: resource_identifier && resource_identifier.id
-    }
-    |> ResourceIdentifierClaim.changeset(attrs)
-    |> validate_claim_resource_link(resource, resource_identifier)
-    |> Repo.insert()
+    {resource, resource_identifier, resource_id}
+  end
+
+  defp fetch_optional_claim_link(attrs, key, fetch) do
+    case get_attr(attrs, key) do
+      nil -> nil
+      id -> fetch.(id)
+    end
   end
 
   @doc """
@@ -828,6 +907,23 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Reconciles one immutable observation into canonical inventory.
+  """
+  def reconcile_observation(%Scope{} = scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    Reconciler.reconcile(scope, observation)
+  end
+
+  @doc """
+  Reconciles one observation for ingestion, returning its existing terminal
+  result when another request has already attempted it.
+  """
+  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    Reconciler.reconcile_once(scope, observation)
+  end
+
+  @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
   """
   def create_observation_reconciliation(
@@ -904,16 +1000,49 @@ defmodule Renga.Inventory do
         resource_id,
         stale_at \\ Renga.Time.utc_now_ms()
       ) do
-    resource = get_resource!(scope, resource_id)
+    Repo.transaction(fn ->
+      resource =
+        Resource
+        |> where([resource], resource.organization_id == ^scope.organization_id)
+        |> where([resource], resource.id == ^resource_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
 
-    put_resource_condition(scope, resource.id, %{
-      type: "InventoryCurrent",
-      status: "false",
-      reason: "Stale",
-      message: "No current inventory observation is available",
-      observed_generation: resource.generation,
-      last_transition_at: stale_at
-    })
+      previous_condition =
+        ResourceCondition
+        |> where([condition], condition.organization_id == ^scope.organization_id)
+        |> where([condition], condition.resource_id == ^resource.id)
+        |> where([condition], condition.type == "InventoryCurrent")
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      condition =
+        case put_resource_condition(scope, resource.id, %{
+               type: "InventoryCurrent",
+               status: "false",
+               reason: "Stale",
+               message: "No current inventory observation is available",
+               observed_generation: resource.generation,
+               last_transition_at: stale_at
+             }) do
+          {:ok, condition} -> condition
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      if is_nil(previous_condition) or previous_condition.status != "false" do
+        {:ok, _event} =
+          create_change_event(scope, %{
+            kind: "stale",
+            field: "conditions.InventoryCurrent",
+            resource_id: resource.id,
+            old_value: previous_condition && %{"status" => previous_condition.status},
+            new_value: %{"status" => "false", "reason" => "Stale"},
+            occurred_at: stale_at
+          })
+      end
+
+      condition
+    end)
   end
 
   @doc """
@@ -938,15 +1067,186 @@ defmodule Renga.Inventory do
         resource_id,
         attrs
       ) do
-    resource = get_resource!(scope, resource_id)
+    Repo.transaction(fn ->
+      lock_organization!(organization_id)
+      resource = get_resource!(scope, resource_id)
 
-    %ResourceOverride{
-      organization_id: organization_id,
-      resource_id: resource.id,
-      created_by_user_id: scope.user && scope.user.id
+      changeset =
+        %ResourceOverride{
+          organization_id: organization_id,
+          resource_id: resource.id,
+          created_by_user_id: scope.user && scope.user.id
+        }
+        |> ResourceOverride.changeset(attrs)
+        |> validate_override_contract()
+
+      with {:ok, override} <- Repo.insert(changeset),
+           {:ok, old_value} <- materialize_override(scope, resource, override),
+           {:ok, _event} <-
+             create_change_event(scope, %{
+               kind: "manual_override",
+               field: override.field,
+               resource_id: resource.id,
+               old_value: ChangeEvent.audit_value(old_value),
+               new_value: override.value |> unwrap_override_value!() |> ChangeEvent.audit_value(),
+               metadata: override_provenance(override),
+               occurred_at: override.inserted_at
+             }) do
+        override
+      else
+        {:error, error} -> Repo.rollback(error)
+      end
+    end)
+  end
+
+  @doc false
+  def lock_organization!(organization_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
+  end
+
+  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
+  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
+  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
+  @interface_statuses ~w(up down dormant not_present unknown)
+  @signed_int_max 2_147_483_647
+
+  defp validate_override_contract(changeset) do
+    field = Ecto.Changeset.get_field(changeset, :field)
+    value = Ecto.Changeset.get_field(changeset, :value)
+
+    case {field, value, parse_override_path(field), unwrap_override_value(value)} do
+      {field, _value, _path, _unwrapped} when field in [nil, ""] ->
+        changeset
+
+      {_field, _value, :error, _unwrapped} ->
+        Ecto.Changeset.add_error(changeset, :field, "is not a supported projection path")
+
+      {_field, _value, {:ok, path}, {:ok, typed_value}} ->
+        validate_override_type(changeset, path, typed_value)
+
+      {_field, _value, {:ok, _path}, :error} ->
+        Ecto.Changeset.add_error(changeset, :value, "must contain a value")
+    end
+  end
+
+  defp parse_override_path("host." <> field) when field in @host_override_fields,
+    do: {:ok, {:host, field}}
+
+  defp parse_override_path("interfaces." <> rest) do
+    case String.split(rest, ".") do
+      [name, field] when name != "" and field in @interface_override_fields ->
+        {:ok, {:interface, name, field}}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp parse_override_path(_field), do: :error
+  defp unwrap_override_value(%{"value" => value}), do: {:ok, value}
+  defp unwrap_override_value(%{value: value}), do: {:ok, value}
+  defp unwrap_override_value(_value), do: :error
+
+  defp validate_override_type(changeset, {:host, _field}, value) when is_binary(value) do
+    if String.length(value) <= 255 do
+      changeset
+    else
+      Ecto.Changeset.add_error(changeset, :value, "must be at most 255 characters")
+    end
+  end
+
+  defp validate_override_type(changeset, {:interface, _name, "kind"}, value)
+       when value in @interface_kinds,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, "status"}, value)
+       when value in @interface_statuses,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, field}, value)
+       when field in ~w(mtu speed_mbps) and is_integer(value) and value > 0 and
+              value <= @signed_int_max,
+       do: changeset
+
+  defp validate_override_type(changeset, {:interface, _name, "mac_address"}, value) do
+    case Renga.Types.MacAddress.cast(value) do
+      {:ok, _mac} -> changeset
+      :error -> Ecto.Changeset.add_error(changeset, :value, "has an invalid type or value")
+    end
+  end
+
+  defp validate_override_type(changeset, _path, _value),
+    do: Ecto.Changeset.add_error(changeset, :value, "has an invalid type or value")
+
+  defp materialize_override(scope, resource, override) do
+    {:ok, path} = parse_override_path(override.field)
+    {:ok, value} = unwrap_override_value(override.value)
+    owner = override_provenance(override) |> Map.put("source_kind", "manual")
+
+    case path do
+      {:host, field} ->
+        host = Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id)
+        host = host || %Host{organization_id: scope.organization_id, resource_id: resource.id}
+        old_value = Map.get(host, String.to_existing_atom(field))
+        metadata = put_override_owner(host.metadata, field, owner)
+        changeset = Host.changeset(host, %{field => value, "metadata" => metadata})
+        persist_projection(host, changeset, old_value)
+
+      {:interface, name, field} ->
+        interface =
+          Repo.get_by(Interface,
+            organization_id: scope.organization_id,
+            resource_id: resource.id,
+            name: name
+          )
+
+        interface =
+          interface ||
+            %Interface{
+              organization_id: scope.organization_id,
+              resource_id: resource.id,
+              name: name
+            }
+
+        old_value = Map.get(interface, String.to_existing_atom(field))
+        metadata = put_override_owner(interface.metadata, field, owner)
+        changeset = Interface.changeset(interface, %{field => value, "metadata" => metadata})
+        persist_projection(interface, changeset, old_value)
+    end
+  end
+
+  defp persist_projection(%{id: nil}, changeset, old_value),
+    do: Repo.insert(changeset) |> projection_result(old_value)
+
+  defp persist_projection(_projection, changeset, old_value),
+    do: Repo.update(changeset) |> projection_result(old_value)
+
+  defp projection_result({:ok, _projection}, old_value), do: {:ok, old_value}
+  defp projection_result({:error, changeset}, _old_value), do: {:error, changeset}
+
+  defp put_override_owner(metadata, field, owner) do
+    metadata = metadata || %{}
+    owners = Map.get(metadata, "field_owners", %{})
+    Map.put(metadata, "field_owners", Map.put(owners, field, owner))
+  end
+
+  defp override_provenance(override) do
+    %{
+      "override_id" => override.id,
+      "created_by_user_id" => override.created_by_user_id,
+      "overridden_at" => DateTime.to_iso8601(override.inserted_at)
     }
-    |> ResourceOverride.changeset(attrs)
-    |> Repo.insert()
+  end
+
+  defp unwrap_override_value!(value) do
+    {:ok, value} = unwrap_override_value(value)
+    value
+  end
+
+  defp earliest_timestamp(nil, timestamp), do: timestamp
+
+  defp earliest_timestamp(first, second) do
+    if DateTime.compare(first, second) == :gt, do: second, else: first
   end
 
   defp generate_source_token do

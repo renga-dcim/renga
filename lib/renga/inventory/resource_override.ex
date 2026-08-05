@@ -33,14 +33,23 @@ defmodule Renga.Inventory.ResourceOverride do
   def changeset(resource_override, attrs) do
     resource_override
     |> cast(attrs, [:field, :value, :reason])
-    |> update_change(:field, &trim_string/1)
+    |> update_change(:field, &normalize_field/1)
     |> update_change(:reason, &trim_string/1)
-    |> validate_required([:organization_id, :resource_id, :field, :value])
+    |> validate_required([:organization_id, :resource_id, :created_by_user_id, :field, :value])
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource, name: :resource_overrides_organization_resource_fkey)
     |> assoc_constraint(:created_by_user)
     |> unique_constraint([:organization_id, :resource_id, :field])
   end
+
+  defp normalize_field(value) when is_binary(value) do
+    case String.split(String.trim(value), ".") do
+      ["interfaces", name, field] -> Enum.join(["interfaces", String.trim(name), field], ".")
+      _parts -> String.trim(value)
+    end
+  end
+
+  defp normalize_field(value), do: value
 
   defp trim_string(value) when is_binary(value), do: String.trim(value)
   defp trim_string(value), do: value
