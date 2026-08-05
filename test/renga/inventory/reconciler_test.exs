@@ -138,6 +138,28 @@ defmodule Renga.Inventory.ReconcilerTest do
     refute distinct.id == resource.id
   end
 
+  test "does not weak-match a hostname retired by a strong-identity rename" do
+    context = context()
+
+    first =
+      observation(context, "1", %{"hostname" => "old-name", "machine_id" => "machine-1"}, %{
+        "hostname" => "old-name"
+      })
+
+    assert {:ok, original, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    renamed =
+      observation(context, "2", %{"hostname" => "new-name", "machine_id" => "machine-1"}, %{
+        "hostname" => "new-name"
+      })
+
+    assert {:ok, ^original, false} = Inventory.reconcile_observation(context.scope, renamed.id)
+
+    recycled = observation(context, "3", %{"hostname" => "old-name"}, %{"hostname" => "old-name"})
+    assert {:ok, replacement, true} = Inventory.reconcile_observation(context.scope, recycled.id)
+    refute replacement.id == original.id
+  end
+
   test "fails safely when a strong identifier belongs to duplicate resources" do
     context = context()
 
@@ -177,12 +199,15 @@ defmodule Renga.Inventory.ReconcilerTest do
     {:ok, resource} =
       Inventory.create_resource(context.scope, %{kind: "server", name: "compute-01"})
 
-    for mac <- ~w(aa:bb:cc:dd:ee:01 aa:bb:cc:dd:ee:02) do
+    for {name, mac} <- Enum.zip(~w(eth0 eth1), ~w(aa:bb:cc:dd:ee:01 aa:bb:cc:dd:ee:02)) do
       {:ok, _identifier} =
         Inventory.create_resource_identifier(context.scope, resource.id, %{
           kind: "mac_address",
           value: mac
         })
+
+      {:ok, _interface} =
+        Inventory.create_interface(context.scope, resource.id, %{name: name, mac_address: mac})
     end
 
     observation =
@@ -192,6 +217,48 @@ defmodule Renga.Inventory.ReconcilerTest do
       })
 
     assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, observation.id)
+    assert matched.id == resource.id
+  end
+
+  test "matches the current MAC set after an interface MAC replacement" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:01"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    replacement =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:02"}]
+      )
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, replacement.id)
+
+    {:ok, expected_mac} = Renga.Types.MacAddress.cast("aa:bb:cc:dd:ee:02")
+    assert [%{mac_address: ^expected_mac}] = Inventory.list_interfaces(context.scope, resource.id)
+
+    mac_only =
+      observation(
+        context,
+        "3",
+        %{"mac_address" => "aa:bb:cc:dd:ee:02"},
+        %{},
+        [%{"name" => "eth0", "mac_address" => "aa:bb:cc:dd:ee:02"}]
+      )
+
+    assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, mac_only.id)
     assert matched.id == resource.id
   end
 

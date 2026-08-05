@@ -43,10 +43,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp reconcile_host(scope, source, observation, resource, payload, overrides) do
+    identifiers = Map.get(payload, "identifiers", %{})
+
     attrs =
       payload
       |> Map.get("attributes", %{})
       |> Map.take(@host_fields)
+      |> Map.put_new("hostname", single_identifier(identifiers, "hostname"))
+      |> Map.put_new("fqdn", single_identifier(identifiers, "fqdn"))
+      |> Enum.reject(fn {_field, value} -> is_nil(value) end)
+      |> Map.new()
       |> normalize_host_attrs()
 
     host = Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id)
@@ -643,12 +649,28 @@ defmodule Renga.Inventory.Reconciler.Projections do
   defp override_value(value), do: value
 
   defp event_value(nil), do: nil
+  defp event_value(%Postgrex.MACADDR{address: address}), do: %{"value" => format_mac(address)}
+  defp event_value(%Postgrex.INET{} = address), do: %{"value" => format_inet(address)}
   defp event_value(value) when is_map(value), do: value
 
   defp event_value(value) when is_binary(value) or is_number(value) or is_boolean(value),
     do: %{"value" => value}
 
   defp event_value(value), do: %{"value" => inspect(value)}
+
+  defp format_mac(address) do
+    address
+    |> Tuple.to_list()
+    |> Enum.map_join(":", &(Integer.to_string(&1, 16) |> String.pad_leading(2, "0")))
+  end
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: nil}) do
+    address |> :inet.ntoa() |> to_string()
+  end
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: netmask}) do
+    "#{address |> :inet.ntoa() |> to_string()}/#{netmask}"
+  end
 
   defp cast_mac_address(%{"mac_address" => mac_address} = attrs) do
     {:ok, cast_mac_address} = MacAddress.cast(mac_address)
@@ -661,6 +683,14 @@ defmodule Renga.Inventory.Reconciler.Projections do
     attrs
     |> normalize_name("hostname")
     |> normalize_name("fqdn")
+  end
+
+  defp single_identifier(identifiers, kind) do
+    case Map.get(identifiers, kind) do
+      value when is_binary(value) -> value
+      [value] when is_binary(value) -> value
+      _missing_or_multiple -> nil
+    end
   end
 
   defp normalize_name(attrs, field) do

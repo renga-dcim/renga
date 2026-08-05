@@ -11,6 +11,8 @@ defmodule Renga.Inventory.Reconciler do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory
+  alias Renga.Inventory.Host
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Reconciler.Projections
@@ -113,9 +115,22 @@ defmodule Renga.Inventory.Reconciler do
 
     case combine_strong_matches(results) do
       :none when strong_identity? -> :none
-      :none -> first_identifier_match(scope, identifiers, @weak_identifier_kinds)
+      :none -> first_weak_match(scope, identifiers)
       result -> result
     end
+  end
+
+  defp first_weak_match(scope, identifiers) do
+    Enum.reduce_while(@weak_identifier_kinds, :none, fn kind, :none ->
+      values =
+        for identifier <- identifiers, identifier.kind == kind, do: identifier.normalized_value
+
+      case resources_for_current_host_values(scope, kind, values) do
+        [] -> {:cont, :none}
+        [resource] -> {:halt, {:ok, resource, %{"strategy" => kind}}}
+        resources -> {:halt, {:error, Enum.map(resources, & &1.id)}}
+      end
+    end)
   end
 
   defp identifier_matches(scope, identifiers, kinds) do
@@ -167,19 +182,6 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp first_identifier_match(scope, identifiers, kinds) do
-    Enum.reduce_while(kinds, :none, fn kind, :none ->
-      values =
-        for identifier <- identifiers, identifier.kind == kind, do: identifier.normalized_value
-
-      case resources_for_identifier_values(scope, kind, values) do
-        [] -> {:cont, :none}
-        [resource] -> {:halt, {:ok, resource, %{"strategy" => kind}}}
-        resources -> {:halt, {:error, Enum.map(resources, & &1.id)}}
-      end
-    end)
-  end
-
   defp match_mac_set(scope, identifiers) do
     observed_macs =
       identifiers
@@ -191,15 +193,25 @@ defmodule Renga.Inventory.Reconciler do
       :none
     else
       candidates =
-        resources_for_identifier_values(scope, "mac_address", MapSet.to_list(observed_macs))
+        Resource
+        |> join(:inner, [resource], interface in Interface,
+          on: interface.resource_id == resource.id
+        )
+        |> where([resource], resource.organization_id == ^scope.organization_id)
+        |> where(
+          [_resource, interface],
+          fragment("?::text", interface.mac_address) in ^MapSet.to_list(observed_macs)
+        )
+        |> distinct(true)
+        |> Repo.all()
 
       candidates =
         Enum.filter(candidates, fn resource ->
           canonical_macs =
-            ResourceIdentifier
-            |> where([identifier], identifier.resource_id == ^resource.id)
-            |> where([identifier], identifier.kind == "mac_address")
-            |> select([identifier], identifier.normalized_value)
+            Interface
+            |> where([interface], interface.resource_id == ^resource.id)
+            |> where([interface], not is_nil(interface.mac_address))
+            |> select([interface], fragment("?::text", interface.mac_address))
             |> Repo.all()
             |> MapSet.new()
 
@@ -224,6 +236,19 @@ defmodule Renga.Inventory.Reconciler do
     |> where([resource], resource.organization_id == ^scope.organization_id)
     |> where([_resource, identifier], identifier.kind == ^kind)
     |> where([_resource, identifier], identifier.normalized_value in ^values)
+    |> distinct(true)
+    |> Repo.all()
+  end
+
+  defp resources_for_current_host_values(_scope, _kind, []), do: []
+
+  defp resources_for_current_host_values(scope, kind, values) do
+    field = String.to_existing_atom(kind)
+
+    Resource
+    |> join(:inner, [resource], host in Host, on: host.resource_id == resource.id)
+    |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([_resource, host], field(host, ^field) in ^values)
     |> distinct(true)
     |> Repo.all()
   end
