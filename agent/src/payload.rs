@@ -15,6 +15,20 @@ pub struct Observation {
     pub resources: [ServerResource; 1],
 }
 
+impl Observation {
+    pub fn new(resource: ServerResource) -> Self {
+        Self {
+            observation_id: Uuid::new_v4(),
+            observed_at: Utc::now(),
+            source: Source {
+                kind: SourceKind::HostAgent,
+                source_id: None,
+            },
+            resources: [resource],
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Source {
     pub kind: SourceKind,

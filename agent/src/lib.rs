@@ -3,3 +3,5 @@
 pub mod collectors;
 pub mod config;
 pub mod payload;
+pub mod scheduler;
+pub mod transport;

@@ -140,7 +140,9 @@ impl Config {
             }
         }
         let installation = required(raw.installation_id, "installation_id")?;
-        let renga_url = required(raw.renga_url, "renga_url")?;
+        let renga_url = required(raw.renga_url, "renga_url")?
+            .trim_end_matches('/')
+            .to_owned();
         if !(renga_url.starts_with("https://") || renga_url.starts_with("http://")) {
             return Err(ConfigError("renga_url must be an HTTP or HTTPS URL".into()));
         }
@@ -196,8 +198,11 @@ mod tests {
     }
     #[test]
     fn defaults_are_sane_and_secret_is_redacted() {
-        let c = Config::from_raw("x".into(), raw()).unwrap();
+        let mut input = raw();
+        input.renga_url = Some("https://renga.test///".into());
+        let c = Config::from_raw("x".into(), input).unwrap();
         assert_eq!(c.inventory_interval, Duration::from_secs(3600));
+        assert_eq!(c.renga_url, "https://renga.test");
         assert!(!format!("{c:?}").contains("secret"));
     }
     #[test]
