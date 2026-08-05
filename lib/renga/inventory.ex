@@ -269,6 +269,13 @@ defmodule Renga.Inventory do
         |> lock("FOR UPDATE")
         |> Repo.one!()
 
+      if stored_resource.resource_version != resource.resource_version do
+        stored_resource
+        |> Resource.changeset(attrs)
+        |> Ecto.Changeset.add_error(:resource_version, "is stale")
+        |> Repo.rollback()
+      end
+
       revision = next_resource_revision!()
 
       resource =
@@ -364,7 +371,7 @@ defmodule Renga.Inventory do
            })
         |> ResourceCondition.changeset(attrs)
         |> validate_condition_transition(existing)
-        |> validate_condition_generation(resource)
+        |> validate_condition_generation(existing, resource)
 
       case Repo.insert_or_update(changeset) do
         {:ok, condition} -> condition
@@ -1023,27 +1030,40 @@ defmodule Renga.Inventory do
       from(agent in Agent,
         update: [
           set: [
-            name: fragment("EXCLUDED.name"),
+            name:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at > ? THEN EXCLUDED.name ELSE ? END",
+                agent.updated_at,
+                agent.name
+              ),
             version:
               fragment(
-                "CASE WHEN ? THEN EXCLUDED.version ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN EXCLUDED.version ELSE ? END",
+                agent.updated_at,
                 ^update_version?,
                 agent.version
               ),
             capabilities:
               fragment(
-                "CASE WHEN ? THEN EXCLUDED.capabilities ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN EXCLUDED.capabilities ELSE ? END",
+                agent.updated_at,
                 ^update_capabilities?,
                 agent.capabilities
               ),
             metadata:
               fragment(
-                "CASE WHEN ? THEN ? || EXCLUDED.metadata ELSE ? END",
+                "CASE WHEN EXCLUDED.updated_at > ? AND ? THEN ? || EXCLUDED.metadata ELSE ? END",
+                agent.updated_at,
                 ^merge_metadata?,
                 agent.metadata,
                 agent.metadata
               ),
-            updated_at: fragment("EXCLUDED.updated_at")
+            updated_at:
+              fragment(
+                "CASE WHEN EXCLUDED.updated_at > ? THEN EXCLUDED.updated_at ELSE ? END",
+                agent.updated_at,
+                agent.updated_at
+              )
           ]
         ]
       )
@@ -1051,6 +1071,7 @@ defmodule Renga.Inventory do
     result =
       %Agent{organization_id: organization_id, source_id: source_id}
       |> Agent.changeset(attrs)
+      |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
       |> Repo.insert(
         on_conflict: on_conflict,
         conflict_target: [:organization_id, :source_id],
@@ -1160,17 +1181,27 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp validate_condition_generation(changeset, resource) do
+  defp validate_condition_generation(changeset, condition, resource) do
     observed_generation = Ecto.Changeset.get_field(changeset, :observed_generation)
 
-    if observed_generation && observed_generation > resource.generation do
-      Ecto.Changeset.add_error(
-        changeset,
-        :observed_generation,
-        "cannot exceed the resource generation"
-      )
-    else
-      changeset
+    cond do
+      observed_generation && observed_generation > resource.generation ->
+        Ecto.Changeset.add_error(
+          changeset,
+          :observed_generation,
+          "cannot exceed the resource generation"
+        )
+
+      condition && condition.observed_generation &&
+          (is_nil(observed_generation) || observed_generation < condition.observed_generation) ->
+        Ecto.Changeset.add_error(
+          changeset,
+          :observed_generation,
+          "cannot be older than the current condition"
+        )
+
+      true ->
+        changeset
     end
   end
 
