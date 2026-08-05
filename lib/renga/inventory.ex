@@ -31,6 +31,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ResourceOwner
   alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
+  alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
@@ -462,9 +463,31 @@ defmodule Renga.Inventory do
     source = get_source!(scope, source_id)
     observation = get_source_observation!(scope, source.id, observation_id)
 
+    kind = get_attr(attrs, :kind)
+    normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
+
+    previous_first_seen_at =
+      ResourceIdentifierClaim
+      |> where([claim], claim.organization_id == ^organization_id)
+      |> where([claim], claim.source_id == ^source.id)
+      |> where([claim], claim.kind == ^kind)
+      |> where([claim], claim.normalized_value == ^normalized_value)
+      |> select([claim], min(claim.first_seen_at))
+      |> Repo.one()
+
+    first_seen_at = earliest_timestamp(previous_first_seen_at, observation.observed_at)
+
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.source_id == ^source.id)
+    |> where([claim], claim.kind == ^kind)
+    |> where([claim], claim.normalized_value == ^normalized_value)
+    |> where([claim], claim.first_seen_at > ^first_seen_at)
+    |> Repo.update_all(set: [first_seen_at: first_seen_at])
+
     attrs =
       attrs
-      |> put_attr(:first_seen_at, observation.observed_at)
+      |> put_attr(:first_seen_at, first_seen_at)
       |> put_attr(:last_seen_at, observation.observed_at)
 
     resource =
@@ -486,16 +509,28 @@ defmodule Renga.Inventory do
         {nil, nil} -> nil
       end
 
-    %ResourceIdentifierClaim{
-      organization_id: organization_id,
-      source_id: source.id,
-      observation_id: observation.id,
-      resource_id: resource_id,
-      resource_identifier_id: resource_identifier && resource_identifier.id
-    }
+    existing_claim =
+      Repo.get_by(ResourceIdentifierClaim,
+        organization_id: organization_id,
+        observation_id: observation.id,
+        kind: kind,
+        normalized_value: normalized_value
+      )
+
+    (existing_claim ||
+       %ResourceIdentifierClaim{
+         organization_id: organization_id,
+         source_id: source.id,
+         observation_id: observation.id
+       })
     |> ResourceIdentifierClaim.changeset(attrs)
+    |> Ecto.Changeset.put_change(:resource_id, resource_id)
+    |> Ecto.Changeset.put_change(
+      :resource_identifier_id,
+      resource_identifier && resource_identifier.id
+    )
     |> validate_claim_resource_link(resource, resource_identifier)
-    |> Repo.insert()
+    |> Repo.insert_or_update()
   end
 
   @doc """
@@ -828,6 +863,14 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Reconciles one immutable observation into canonical inventory.
+  """
+  def reconcile_observation(%Scope{} = scope, observation_id) do
+    observation = get_observation!(scope, observation_id)
+    Reconciler.reconcile(scope, observation)
+  end
+
+  @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
   """
   def create_observation_reconciliation(
@@ -947,6 +990,12 @@ defmodule Renga.Inventory do
     }
     |> ResourceOverride.changeset(attrs)
     |> Repo.insert()
+  end
+
+  defp earliest_timestamp(nil, timestamp), do: timestamp
+
+  defp earliest_timestamp(first, second) do
+    if DateTime.compare(first, second) == :gt, do: second, else: first
   end
 
   defp generate_source_token do
