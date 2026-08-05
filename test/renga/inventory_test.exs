@@ -698,6 +698,47 @@ defmodule Renga.InventoryTest do
       assert refreshed.last_transition_at == transition_at
     end
 
+    test "condition transitions reject timestamps that do not advance", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      transition_at = ~U[2026-08-01 12:00:00.000000Z]
+
+      assert {:ok, _current} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "true",
+                 last_transition_at: transition_at
+               })
+
+      for invalid_transition_at <- [transition_at, DateTime.add(transition_at, -1, :millisecond)] do
+        assert {:error, changeset} =
+                 Inventory.put_resource_condition(scope, resource.id, %{
+                   type: "Ready",
+                   status: "false",
+                   last_transition_at: invalid_transition_at
+                 })
+
+        assert %{last_transition_at: ["must be after the previous transition"]} =
+                 errors_on(changeset)
+      end
+    end
+
+    test "conditions reject generations newer than their resource", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
+
+      assert {:error, changeset} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "true",
+                 observed_generation: resource.generation + 1
+               })
+
+      assert %{observed_generation: ["cannot exceed the resource generation"]} =
+               errors_on(changeset)
+    end
+
     test "condition transitions accept string-keyed attributes", %{scope: scope} do
       {:ok, resource} =
         Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
@@ -1975,6 +2016,39 @@ defmodule Renga.InventoryTest do
       assert %DateTime{} = sync_run.started_at
     end
 
+    test "sync-run status and completion timestamps must agree", %{scope: scope, source: source} do
+      started_at = ~U[2026-08-01 12:00:00.000000Z]
+
+      invalid_attrs = [
+        %{status: "succeeded", started_at: started_at},
+        %{status: "running", started_at: started_at, completed_at: started_at},
+        %{
+          status: "failed",
+          started_at: started_at,
+          completed_at: DateTime.add(started_at, -1, :millisecond)
+        }
+      ]
+
+      for attrs <- invalid_attrs do
+        assert {:error, changeset} = Inventory.create_sync_run(scope, source.id, attrs)
+        assert %{completed_at: [_message]} = errors_on(changeset)
+      end
+    end
+
+    test "PostgreSQL rejects contradictory sync-run completion state", %{
+      scope: scope,
+      source: source
+    } do
+      assert_raise Postgrex.Error, ~r/sync_runs_completion_state/, fn ->
+        Repo.insert!(%SyncRun{
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          status: "succeeded",
+          started_at: ~U[2026-08-01 12:00:00.000000Z]
+        })
+      end
+    end
+
     test "list_sync_runs/1 and get_sync_run!/2 are scoped by organization", %{
       scope: scope,
       other_scope: other_scope,
@@ -2279,6 +2353,57 @@ defmodule Renga.InventoryTest do
       assert persisted.payload_digest == observation.payload_digest
       refute Map.has_key?(persisted, :status)
       refute Map.has_key?(persisted, :resource_id)
+    end
+
+    test "reconciliation status and completion timestamps must agree", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:reconciliation-state",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      started_at = ~U[2026-08-01 12:00:00.000000Z]
+
+      invalid_attrs = [
+        %{attempt: 1, status: "succeeded"},
+        %{attempt: 2, status: "pending", completed_at: started_at},
+        %{
+          attempt: 3,
+          status: "failed",
+          started_at: started_at,
+          completed_at: DateTime.add(started_at, -1, :millisecond)
+        }
+      ]
+
+      for attrs <- invalid_attrs do
+        assert {:error, changeset} =
+                 Inventory.create_observation_reconciliation(scope, observation.id, attrs)
+
+        assert %{completed_at: [_message]} = errors_on(changeset)
+      end
+    end
+
+    test "PostgreSQL rejects contradictory reconciliation completion state", %{
+      scope: scope,
+      source: source
+    } do
+      {:ok, observation} =
+        Inventory.create_observation(scope, source.id, %{
+          observation_id: "host-agent:reconciliation-constraint",
+          payload: %{"hostname" => "compute-01"}
+        })
+
+      assert_raise Postgrex.Error, ~r/observation_reconciliations_completion_state/, fn ->
+        Repo.insert!(%ObservationReconciliation{
+          organization_id: scope.organization_id,
+          observation_id: observation.id,
+          attempt: 1,
+          status: "succeeded"
+        })
+      end
     end
 
     test "PostgreSQL rejects observation updates that bypass the changeset", %{
