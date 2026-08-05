@@ -3,6 +3,8 @@ defmodule Renga.Inventory.ReconcilerTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.ResourceIdentifierClaim
 
   defp context do
@@ -25,6 +27,10 @@ defmodule Renga.Inventory.ReconcilerTest do
   defp observation(context, id, identifiers, attributes \\ %{}, interfaces \\ []) do
     observed_at = DateTime.add(~U[2026-08-01 12:00:00.000Z], String.to_integer(id), :second)
 
+    observation_at(context, id, observed_at, identifiers, attributes, interfaces)
+  end
+
+  defp observation_at(context, id, observed_at, identifiers, attributes, interfaces) do
     {:ok, observation} =
       Inventory.create_observation(context.scope, context.source.id, %{
         idempotency_key: "observation-#{id}",
@@ -287,7 +293,7 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert Enum.all?(claims, &(&1.first_seen_at == older.observed_at))
 
     [result] = Inventory.list_observation_reconciliations(context.scope, older.id)
-    refute result.metadata["projection_applied"]
+    refute result.metadata["freshness_advanced"]
 
     [condition] = Inventory.list_resource_conditions(context.scope, resource.id)
     assert condition.details["observation_id"] == newer.id
@@ -308,5 +314,347 @@ defmodule Renga.Inventory.ReconcilerTest do
       end
 
     assert resources |> Enum.map(& &1.name) |> Enum.uniq() |> length() == 3
+  end
+
+  test "upserts canonical interfaces and addresses while retaining each observation as evidence" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "status" => "down",
+            "mac_address" => "aa:bb:cc:dd:ee:ff",
+            "addresses" => ["192.0.2.10/24"]
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert interface.status == "down"
+    assert length(Inventory.list_addresses(context.scope, interface.id)) == 1
+
+    second =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "status" => "up",
+            "mac_address" => "aa-bb-cc-dd-ee-ff",
+            "addresses" => [
+              %{"kind" => "ipv4", "address" => "192.0.2.10/24", "scope" => "global"},
+              "2001:db8::10/64"
+            ]
+          }
+        ]
+      )
+
+    assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, second.id)
+    assert matched.id == resource.id
+
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert interface.status == "up"
+    addresses = Inventory.list_addresses(context.scope, interface.id)
+    assert length(addresses) == 2
+
+    assert Enum.find(
+             addresses,
+             &match?(%Postgrex.INET{address: {192, 0, 2, 10}}, &1.address)
+           ).scope == "global"
+
+    assert Repo.aggregate(InterfaceEvidence, :count) == 2
+    assert Repo.aggregate(AddressEvidence, :count) == 3
+
+    assert Enum.any?(
+             Inventory.list_change_events(context.scope, resource.id),
+             &(&1.kind == "updated" and &1.field == "interfaces.eth0.status")
+           )
+  end
+
+  test "field precedence is deterministic and source disagreements remain visible" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"hostname" => "agent-name", "vendor" => "Agent Vendor"}
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    {:ok, bmc_source} =
+      Inventory.create_source(context.scope, %{kind: "bmc", name: "bmc-collector"})
+
+    bmc_context = %{context | source: bmc_source}
+
+    second =
+      observation(
+        bmc_context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{"hostname" => "bmc-name", "vendor" => "BMC Vendor"}
+      )
+
+    assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, second.id)
+    assert matched.id == resource.id
+
+    host = Inventory.get_host_by_resource!(context.scope, resource.id)
+    assert host.hostname == "agent-name"
+    assert host.vendor == "BMC Vendor"
+    assert host.metadata["field_owners"]["hostname"]["source_id"] == context.source.id
+    assert host.metadata["field_owners"]["vendor"]["source_id"] == bmc_source.id
+
+    conflict_fields =
+      context.scope
+      |> Inventory.list_change_events(resource.id)
+      |> Enum.filter(&(&1.kind == "conflict"))
+      |> Enum.map(& &1.field)
+
+    assert "host.hostname" in conflict_fields
+    assert "host.vendor" in conflict_fields
+  end
+
+  test "manual and desired values are not overwritten and conflicts are audited" do
+    context = context()
+
+    {:ok, resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "compute-01",
+        spec: %{"host" => %{"model" => "Desired Model"}}
+      })
+
+    {:ok, _identifier} =
+      Inventory.create_resource_identifier(context.scope, resource.id, %{
+        kind: "machine_id",
+        value: "machine-1"
+      })
+
+    {:ok, _override} =
+      Inventory.create_resource_override(context.scope, resource.id, %{
+        field: "host.vendor",
+        value: %{"value" => "Manual Vendor"},
+        reason: "Verified by operator"
+      })
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => "Observed Vendor", "model" => "Observed Model"}
+      )
+
+    assert {:ok, matched, false} = Inventory.reconcile_observation(context.scope, observation.id)
+    host = Inventory.get_host_by_resource!(context.scope, matched.id)
+    assert host.vendor == nil
+    assert host.model == "Observed Model"
+    assert Inventory.get_resource!(context.scope, matched.id).spec == resource.spec
+
+    conflicts =
+      context.scope
+      |> Inventory.list_change_events(resource.id)
+      |> Enum.filter(&(&1.kind == "conflict"))
+
+    assert Enum.any?(
+             conflicts,
+             &(&1.field == "host.vendor" and &1.metadata["reason"] == "manual_override")
+           )
+
+    assert Enum.any?(
+             conflicts,
+             &(&1.field == "host.model" and &1.metadata["reason"] == "desired_state")
+           )
+  end
+
+  test "normalizes canonical names before lookup, comparison, and retry" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"hostname" => " Compute-01 "},
+        [%{"name" => " eth0 ", "kind" => "ethernet", "status" => "up"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert Inventory.get_host_by_resource!(context.scope, resource.id).hostname == "compute-01"
+    assert [%{name: "eth0"}] = Inventory.list_interfaces(context.scope, resource.id)
+
+    refute Enum.any?(
+             Inventory.list_change_events(context.scope, resource.id),
+             &(&1.kind == "updated" and &1.field == "host.hostname")
+           )
+  end
+
+  test "applies interface overrides and desired conflicts on first discovery" do
+    context = context()
+
+    {:ok, resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "compute-01",
+        spec: %{"interfaces" => %{"eth0" => %{"kind" => "bridge"}}}
+      })
+
+    {:ok, _identifier} =
+      Inventory.create_resource_identifier(context.scope, resource.id, %{
+        kind: "machine_id",
+        value: "machine-1"
+      })
+
+    {:ok, _override} =
+      Inventory.create_resource_override(context.scope, resource.id, %{
+        field: "interfaces.eth0.status",
+        value: %{"value" => "down"}
+      })
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [%{"name" => "eth0", "kind" => "ethernet", "status" => "up"}]
+      )
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert [%{status: "unknown", kind: "ethernet", metadata: %{"field_owners" => owners}}] =
+             Inventory.list_interfaces(context.scope, resource.id)
+
+    refute Map.has_key?(owners, "status")
+
+    conflicts = Inventory.list_change_events(context.scope, resource.id)
+
+    assert Enum.any?(
+             conflicts,
+             &(&1.field == "interfaces.eth0.status" and
+                 &1.metadata["reason"] == "manual_override")
+           )
+
+    assert Enum.any?(
+             conflicts,
+             &(&1.field == "interfaces.eth0.kind" and
+                 &1.metadata["reason"] == "desired_state")
+           )
+  end
+
+  test "equal-time facts use observation identity as a deterministic tie breaker" do
+    context = context()
+    observed_at = ~U[2026-08-01 12:00:00.000Z]
+
+    first =
+      observation_at(
+        context,
+        "1",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => "First"},
+        []
+      )
+
+    second =
+      observation_at(
+        context,
+        "2",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => "Second"},
+        []
+      )
+
+    [{winner, winner_value}, {loser, _loser_value}] =
+      [{first, "First"}, {second, "Second"}]
+      |> Enum.sort_by(fn {observation, _value} -> observation.id end, :desc)
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, winner.id)
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, loser.id)
+    assert Inventory.get_host_by_resource!(context.scope, resource.id).vendor == winner_value
+
+    [loser_result] = Inventory.list_observation_reconciliations(context.scope, loser.id)
+    refute loser_result.metadata["freshness_advanced"]
+
+    [condition] = Inventory.list_resource_conditions(context.scope, resource.id)
+    assert condition.details["observation_id"] == winner.id
+  end
+
+  test "accepts nullable host name attributes during reconciliation" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"hostname" => nil, "fqdn" => nil}
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert %{hostname: nil, fqdn: nil} =
+             Inventory.get_host_by_resource!(context.scope, resource.id)
+  end
+
+  test "records and deduplicates each conflict reason for the same field" do
+    context = context()
+
+    {:ok, resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "compute-01",
+        spec: %{"host" => %{"vendor" => "Desired"}}
+      })
+
+    {:ok, _identifier} =
+      Inventory.create_resource_identifier(context.scope, resource.id, %{
+        kind: "machine_id",
+        value: "machine-1"
+      })
+
+    {:ok, _override} =
+      Inventory.create_resource_override(context.scope, resource.id, %{
+        field: "host.vendor",
+        value: %{"value" => "Manual"}
+      })
+
+    observation =
+      observation(context, "1", %{"machine_id" => "machine-1"}, %{"vendor" => "Observed"})
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    reasons =
+      context.scope
+      |> Inventory.list_change_events(resource.id)
+      |> Enum.filter(&(&1.kind == "conflict" and &1.field == "host.vendor"))
+      |> Enum.map(& &1.metadata["reason"])
+      |> Enum.sort()
+
+    assert reasons == ["desired_state", "manual_override"]
   end
 end

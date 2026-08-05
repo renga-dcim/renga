@@ -11,9 +11,9 @@ defmodule Renga.Inventory.Reconciler do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory
-  alias Renga.Inventory.Host
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.Reconciler.Projections
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Repo
@@ -37,7 +37,7 @@ defmodule Renga.Inventory.Reconciler do
         {:ok, resource, match} ->
           reconcile_resource(
             scope,
-            source.id,
+            source,
             observation,
             identifiers,
             resource,
@@ -49,7 +49,7 @@ defmodule Renga.Inventory.Reconciler do
         :none ->
           reconcile_resource(
             scope,
-            source.id,
+            source,
             observation,
             identifiers,
             nil,
@@ -72,7 +72,7 @@ defmodule Renga.Inventory.Reconciler do
 
   defp reconcile_resource(
          scope,
-         source_id,
+         source,
          observation,
          identifiers,
          matched_resource,
@@ -84,22 +84,19 @@ defmodule Renga.Inventory.Reconciler do
       ensure_resource(scope, observation, identifiers, matched_resource)
 
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
-    reconcile_claims(scope, source_id, observation, resource, canonical_identifiers)
-    projection_applied? = current_observation?(scope, resource.id, observation.observed_at)
-
-    if projection_applied? do
-      reconcile_host(scope, resource, observation.payload)
-    end
+    reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
+    freshness_advanced? = current_observation?(scope, resource.id, observation)
+    Projections.reconcile(scope, source, observation, resource)
 
     record_success(
       scope,
-      source_id,
+      source.id,
       observation,
       resource,
       attempt,
       started_at,
       match,
-      projection_applied?
+      freshness_advanced?
     )
 
     {:ok, resource, discovered?}
@@ -291,19 +288,6 @@ defmodule Renga.Inventory.Reconciler do
     end)
   end
 
-  defp reconcile_host(scope, resource, payload) do
-    attributes = payload |> resource_payload() |> Map.get("attributes", %{})
-    host_attrs = Map.take(attributes, ~w(hostname fqdn vendor model asset_tag))
-
-    case Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id) do
-      nil ->
-        {:ok, _host} = Inventory.create_host(scope, resource.id, host_attrs)
-
-      host ->
-        {:ok, _host} = host |> Host.changeset(host_attrs) |> Repo.update()
-    end
-  end
-
   defp record_success(
          scope,
          source_id,
@@ -312,7 +296,7 @@ defmodule Renga.Inventory.Reconciler do
          attempt,
          started_at,
          match,
-         projection_applied?
+         freshness_advanced?
        ) do
     completed_at = Renga.Time.utc_now_ms()
     previous_events = Inventory.list_change_events(scope, resource.id)
@@ -329,7 +313,7 @@ defmodule Renga.Inventory.Reconciler do
         })
     end
 
-    if projection_applied? do
+    if freshness_advanced? do
       {:ok, _condition} =
         Inventory.put_resource_condition(scope, resource.id, %{
           type: "InventoryCurrent",
@@ -350,7 +334,7 @@ defmodule Renga.Inventory.Reconciler do
         status: "succeeded",
         attempt: attempt,
         matched_resource_id: resource.id,
-        metadata: %{"match" => match, "projection_applied" => projection_applied?},
+        metadata: %{"match" => match, "freshness_advanced" => freshness_advanced?},
         started_at: started_at,
         completed_at: completed_at
       })
@@ -381,8 +365,8 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp current_observation?(scope, resource_id, observed_at) do
-    latest_observed_at =
+  defp current_observation?(scope, resource_id, observation) do
+    latest_observation =
       ObservationReconciliation
       |> join(:inner, [result], observation in Observation,
         on: observation.id == result.observation_id
@@ -390,10 +374,19 @@ defmodule Renga.Inventory.Reconciler do
       |> where([result], result.organization_id == ^scope.organization_id)
       |> where([result], result.matched_resource_id == ^resource_id)
       |> where([result], result.status == "succeeded")
-      |> select([_result, observation], max(observation.observed_at))
+      |> order_by([_result, observation], desc: observation.observed_at, desc: observation.id)
+      |> select([_result, observation], {observation.observed_at, observation.id})
+      |> limit(1)
       |> Repo.one()
 
-    is_nil(latest_observed_at) or DateTime.compare(observed_at, latest_observed_at) != :lt
+    case latest_observation do
+      nil ->
+        true
+
+      {latest_observed_at, latest_id} ->
+        {DateTime.to_unix(observation.observed_at, :microsecond), observation.id} >=
+          {DateTime.to_unix(latest_observed_at, :microsecond), latest_id}
+    end
   end
 
   defp lock_organization!(organization_id) do
@@ -401,20 +394,34 @@ defmodule Renga.Inventory.Reconciler do
   end
 
   defp observation_identifiers(payload) do
-    payload
-    |> resource_payload()
-    |> Map.get("identifiers", %{})
-    |> Enum.flat_map(fn {kind, values} ->
-      values
-      |> List.wrap()
-      |> Enum.map(fn value ->
-        %{
-          kind: kind,
-          value: String.trim(value),
-          normalized_value: ResourceIdentifier.normalize_value(kind, value)
-        }
+    resource = resource_payload(payload)
+
+    identifiers =
+      resource
+      |> Map.get("identifiers", %{})
+      |> Enum.flat_map(fn {kind, values} ->
+        Enum.map(List.wrap(values), &identifier(kind, &1))
       end)
-    end)
+
+    interface_macs =
+      resource
+      |> Map.get("interfaces", [])
+      |> Enum.flat_map(fn interface ->
+        case Map.get(interface, "mac_address") do
+          nil -> []
+          mac_address -> [identifier("mac_address", mac_address)]
+        end
+      end)
+
+    Enum.uniq_by(identifiers ++ interface_macs, &{&1.kind, &1.normalized_value})
+  end
+
+  defp identifier(kind, value) do
+    %{
+      kind: kind,
+      value: String.trim(value),
+      normalized_value: ResourceIdentifier.normalize_value(kind, value)
+    }
   end
 
   defp resource_payload(%{"resources" => [resource]}), do: resource
