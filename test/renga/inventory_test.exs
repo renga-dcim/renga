@@ -7,6 +7,7 @@ defmodule Renga.InventoryTest do
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
@@ -95,6 +96,20 @@ defmodule Renga.InventoryTest do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.get_source!(other_scope, source.id)
       end
+    end
+
+    test "update_source/3 enforces organization scope and preserves rejected records", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      {:ok, source} =
+        Inventory.create_source(scope, %{kind: "host_agent", name: "iad-1-host-agent"})
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Inventory.update_source(other_scope, source, %{name: "forged-name"})
+      end
+
+      assert Repo.reload!(source).name == "iad-1-host-agent"
     end
 
     test "source names are unique per organization", %{scope: scope, other_scope: other_scope} do
@@ -394,6 +409,59 @@ defmodule Renga.InventoryTest do
       assert replayed_agent.updated_at == newer_check_in_at
       assert replayed_lease.renewed_at == newer_lease.renewed_at
       assert replayed_lease.expires_at == newer_lease.expires_at
+    end
+
+    test "equal-timestamp check-ins apply the latest committed state and older replays do not", %{
+      scope: scope,
+      source: source
+    } do
+      checked_in_at = ~U[2030-08-01 12:00:00.000000Z]
+
+      assert {:ok, {_agent, _lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 checked_in_at: checked_in_at,
+                 version: "1.0.0",
+                 metadata: %{"sequence" => 1}
+               })
+
+      assert {:ok, {latest, _lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 checked_in_at: checked_in_at,
+                 version: "2.0.0",
+                 metadata: %{"sequence" => 2}
+               })
+
+      assert latest.version == "2.0.0"
+      assert latest.metadata == %{"sequence" => 2}
+      assert latest.updated_at == checked_in_at
+
+      assert {:ok, {replayed, _lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 checked_in_at: ~U[2029-08-01 12:00:00.000000Z],
+                 version: "0.9.0",
+                 metadata: %{"sequence" => 0}
+               })
+
+      assert replayed.version == latest.version
+      assert replayed.metadata == latest.metadata
+      assert replayed.updated_at == checked_in_at
+    end
+
+    test "cumulative metadata patches cannot exceed the encoded storage limit", %{
+      scope: scope,
+      source: source
+    } do
+      assert AgentPayload.max_agent_metadata_bytes() == 16_000
+      patch = String.duplicate("x", 8_000)
+
+      assert {:ok, {agent, _lease}} =
+               Inventory.record_agent_check_in(scope, source.id, %{metadata: %{"first" => patch}})
+
+      assert {:error, changeset} =
+               Inventory.record_agent_check_in(scope, source.id, %{metadata: %{"second" => patch}})
+
+      assert %{metadata: ["must encode to at most 16000 bytes"]} = errors_on(changeset)
+      assert Repo.reload!(agent).metadata == %{"first" => patch}
     end
 
     test "renaming a source preserves its agent registration", %{scope: scope, source: source} do
@@ -757,6 +825,37 @@ defmodule Renga.InventoryTest do
         assert %{last_transition_at: ["must be after the previous transition"]} =
                  errors_on(changeset)
       end
+    end
+
+    test "condition transitions compare timestamps after millisecond alignment", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{kind: "server", name: "precision-check"})
+
+      assert {:ok, _current} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "true",
+                 last_transition_at: ~U[2026-08-01 12:00:00.123000Z]
+               })
+
+      assert {:error, changeset} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "false",
+                 last_transition_at: ~U[2026-08-01 12:00:00.123001Z]
+               })
+
+      assert %{last_transition_at: ["must be after the previous transition"]} =
+               errors_on(changeset)
+
+      assert {:ok, advanced} =
+               Inventory.put_resource_condition(scope, resource.id, %{
+                 type: "Ready",
+                 status: "false",
+                 last_transition_at: ~U[2026-08-01 12:00:00.124000Z]
+               })
+
+      assert advanced.last_transition_at == ~U[2026-08-01 12:00:00.124000Z]
     end
 
     test "conditions reject generations newer than their resource", %{scope: scope} do
@@ -2191,6 +2290,31 @@ defmodule Renga.InventoryTest do
       assert observation.inserted_at == Renga.Time.from_unix_ms!(uuid_unix_ms)
     end
 
+    test "caller-supplied observation digests cannot forge duplicate detection", %{
+      scope: scope,
+      source: source
+    } do
+      forged_digest = :crypto.hash(:sha256, "caller-controlled")
+
+      assert {:ok, first, :created} =
+               Inventory.accept_observation(scope, source.id, %{
+                 observation_id: "digest-forgery",
+                 payload: %{"hostname" => "compute-01"},
+                 payload_digest: forged_digest
+               })
+
+      refute first.payload_digest == forged_digest
+
+      assert {:error, :idempotency_conflict, conflicting} =
+               Inventory.accept_observation(scope, source.id, %{
+                 observation_id: "digest-forgery",
+                 payload: %{"hostname" => "attacker-controlled"},
+                 payload_digest: first.payload_digest
+               })
+
+      assert conflicting.id == first.id
+    end
+
     test "create_observation/3 accepts string-keyed attributes", %{
       scope: scope,
       source: source,
@@ -2751,6 +2875,280 @@ defmodule Renga.InventoryTest do
     } do
       assert_raise Ecto.NoResultsError, fn ->
         Inventory.mark_resource_stale(other_scope, resource.id)
+      end
+    end
+  end
+
+  describe "database tenant and value invariants" do
+    setup do
+      contexts = scoped_organizations()
+      {:ok, source} = Inventory.create_source(contexts.scope, %{kind: "host_agent", name: "a"})
+
+      {:ok, peer_source} =
+        Inventory.create_source(contexts.scope, %{kind: "host_agent", name: "b"})
+
+      {:ok, foreign_source} =
+        Inventory.create_source(contexts.other_scope, %{kind: "host_agent", name: "foreign"})
+
+      {:ok, resource} = Inventory.create_resource(contexts.scope, %{kind: "server", name: "a"})
+
+      {:ok, peer_resource} =
+        Inventory.create_resource(contexts.scope, %{kind: "server", name: "b"})
+
+      {:ok, foreign_resource} =
+        Inventory.create_resource(contexts.other_scope, %{kind: "server", name: "foreign"})
+
+      {:ok, interface} = Inventory.create_interface(contexts.scope, resource.id, %{name: "eth0"})
+
+      {:ok, peer_interface} =
+        Inventory.create_interface(contexts.scope, peer_resource.id, %{name: "eth1"})
+
+      {:ok, observation} =
+        Inventory.create_observation(contexts.scope, source.id, %{
+          observation_id: "local",
+          payload: %{}
+        })
+
+      {:ok, foreign_observation} =
+        Inventory.create_observation(contexts.other_scope, foreign_source.id, %{
+          observation_id: "foreign",
+          payload: %{}
+        })
+
+      Map.merge(contexts, %{
+        source: source,
+        peer_source: peer_source,
+        foreign_source: foreign_source,
+        resource: resource,
+        peer_resource: peer_resource,
+        foreign_resource: foreign_resource,
+        interface: interface,
+        peer_interface: peer_interface,
+        observation: observation,
+        foreign_observation: foreign_observation
+      })
+    end
+
+    test "agents require the source to belong to their organization", %{
+      scope: scope,
+      foreign_source: source
+    } do
+      assert_raise Ecto.ConstraintError, ~r/agents_organization_source_fkey/, fn ->
+        Repo.insert!(%Agent{
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          name: "forged",
+          status: "active",
+          registered_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "resource relationships require both endpoints in their organization", %{
+      scope: scope,
+      resource: resource,
+      foreign_resource: foreign
+    } do
+      assert_raise Ecto.ConstraintError, ~r/resource_relationships_tenant_endpoints_fkey/, fn ->
+        Repo.insert!(%ResourceRelationship{
+          organization_id: scope.organization_id,
+          source_resource_id: resource.id,
+          target_resource_id: foreign.id,
+          kind: "connected_to"
+        })
+      end
+    end
+
+    test "interface evidence tenant must match canonical record, source, and observation", %{
+      scope: scope,
+      interface: interface,
+      foreign_source: source,
+      foreign_observation: observation
+    } do
+      assert_raise Ecto.ConstraintError, ~r/interface_evidence_tenant_fkey/, fn ->
+        Repo.insert!(%InterfaceEvidence{
+          organization_id: scope.organization_id,
+          interface_id: interface.id,
+          source_id: source.id,
+          observation_id: observation.id,
+          name: "eth0",
+          kind: "ethernet",
+          status: "up",
+          observed_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "addresses require their resource to match their interface", %{
+      scope: scope,
+      peer_resource: resource,
+      interface: interface
+    } do
+      assert_raise Ecto.ConstraintError, ~r/addresses_interface_resource_fkey/, fn ->
+        Repo.insert!(%Address{
+          organization_id: scope.organization_id,
+          resource_id: resource.id,
+          interface_id: interface.id,
+          kind: "ipv4",
+          address: %Postgrex.INET{address: {192, 0, 2, 1}}
+        })
+      end
+    end
+
+    test "observations require a sync run owned by the same source", %{
+      scope: scope,
+      source: source,
+      peer_source: peer_source
+    } do
+      {:ok, run} = Inventory.create_sync_run(scope, peer_source.id)
+
+      assert_raise Ecto.ConstraintError, ~r/observations_source_sync_run_fkey/, fn ->
+        %Observation{
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          sync_run_id: run.id
+        }
+        |> Observation.changeset(%{
+          idempotency_key: "wrong-run-direct",
+          observed_at: ~U[2026-08-01 00:00:00.000000Z],
+          payload_digest: :crypto.hash(:sha256, "{}"),
+          payload: %{}
+        })
+        |> Repo.insert!()
+      end
+    end
+
+    test "agent leases require expiry after renewal", %{scope: scope, source: source} do
+      {:ok, {agent, lease}} = Inventory.record_agent_check_in(scope, source.id)
+      Repo.delete!(lease)
+
+      assert_raise Ecto.ConstraintError, ~r/agent_leases_expiry_after_renewal/, fn ->
+        Repo.insert!(%AgentLease{
+          organization_id: scope.organization_id,
+          agent_id: agent.id,
+          renewed_at: ~U[2026-08-01 00:00:00.000000Z],
+          expires_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "reconciliation attempts must be positive", %{scope: scope, observation: observation} do
+      assert_raise Ecto.ConstraintError, ~r/observation_reconciliations_attempt_positive/, fn ->
+        Repo.insert!(%ObservationReconciliation{
+          organization_id: scope.organization_id,
+          observation_id: observation.id,
+          status: "pending",
+          attempt: 0
+        })
+      end
+    end
+
+    test "identifier claim confidence must be between zero and one hundred", %{
+      scope: scope,
+      source: source,
+      observation: observation
+    } do
+      assert_raise Ecto.ConstraintError, ~r/resource_identifier_claims_confidence_range/, fn ->
+        Repo.insert!(%ResourceIdentifierClaim{
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          observation_id: observation.id,
+          kind: "hostname",
+          value: "host",
+          normalized_value: "host",
+          confidence: 101,
+          first_seen_at: ~U[2026-08-01 00:00:00.000000Z],
+          last_seen_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "identifier claim last_seen cannot precede first_seen", %{
+      scope: scope,
+      source: source,
+      observation: observation
+    } do
+      assert_raise Ecto.ConstraintError, ~r/resource_identifier_claims_seen_order/, fn ->
+        Repo.insert!(%ResourceIdentifierClaim{
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          observation_id: observation.id,
+          kind: "hostname",
+          value: "host",
+          normalized_value: "host",
+          confidence: 100,
+          first_seen_at: ~U[2026-08-02 00:00:00.000000Z],
+          last_seen_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "interfaces require positive mtu and speed", %{scope: scope, resource: resource} do
+      assert_raise Ecto.ConstraintError, ~r/interfaces_mtu_speed_positive/, fn ->
+        Repo.insert!(%Interface{
+          organization_id: scope.organization_id,
+          resource_id: resource.id,
+          name: "invalid-link",
+          kind: "ethernet",
+          status: "up",
+          mtu: 0,
+          speed_mbps: -1
+        })
+      end
+    end
+
+    test "interface evidence requires positive mtu and speed", %{
+      scope: scope,
+      interface: interface,
+      source: source,
+      observation: observation
+    } do
+      assert_raise Ecto.ConstraintError, ~r/interface_evidence_mtu_speed_positive/, fn ->
+        Repo.insert!(%InterfaceEvidence{
+          organization_id: scope.organization_id,
+          interface_id: interface.id,
+          source_id: source.id,
+          observation_id: observation.id,
+          name: "eth0",
+          kind: "ethernet",
+          status: "up",
+          mtu: -1,
+          speed_mbps: 0,
+          observed_at: ~U[2026-08-01 00:00:00.000000Z]
+        })
+      end
+    end
+
+    test "interface relationships reject self-links", %{scope: scope, interface: interface} do
+      assert_raise Ecto.ConstraintError, ~r/interface_relationships_distinct_endpoints/, fn ->
+        Repo.insert!(%InterfaceRelationship{
+          organization_id: scope.organization_id,
+          source_interface_id: interface.id,
+          target_interface_id: interface.id,
+          kind: "peer"
+        })
+      end
+    end
+
+    test "resource relationships reject self-links", %{scope: scope, resource: resource} do
+      assert_raise Ecto.ConstraintError, ~r/resource_relationships_distinct_endpoints/, fn ->
+        Repo.insert!(%ResourceRelationship{
+          organization_id: scope.organization_id,
+          source_resource_id: resource.id,
+          target_resource_id: resource.id,
+          kind: "connected_to"
+        })
+      end
+    end
+
+    test "resource owners reject self-links", %{scope: scope, resource: resource} do
+      assert_raise Ecto.ConstraintError, ~r/resource_owners_distinct_endpoints/, fn ->
+        Repo.insert!(%ResourceOwner{
+          organization_id: scope.organization_id,
+          owner_resource_id: resource.id,
+          child_resource_id: resource.id,
+          kind: "component"
+        })
       end
     end
   end

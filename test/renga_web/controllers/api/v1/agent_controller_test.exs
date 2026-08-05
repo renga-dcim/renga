@@ -3,6 +3,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.AgentPayload
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
@@ -123,6 +124,26 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                    "path" => "metadata.agent_version",
                    "message" => "must be at most 255 characters"
                  }
+               ]
+             } = json_response(conn, 422)
+    end
+
+    test "rejects metadata larger than the encoded storage limit", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      assert AgentPayload.max_agent_metadata_bytes() == 16_000
+
+      conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{
+          "metadata" => %{"inventory" => String.duplicate("x", 16_000)}
+        })
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [
+                 %{"path" => "metadata", "message" => "must encode to at most 16000 bytes"}
                ]
              } = json_response(conn, 422)
     end
