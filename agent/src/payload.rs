@@ -137,7 +137,7 @@ impl Serialize for Component {
 
 #[derive(Debug, Serialize)]
 pub struct CheckIn {
-    pub capabilities: [&'static str; 1],
+    pub capabilities: Vec<&'static str>,
     pub metadata: AgentMetadata,
 }
 #[derive(Debug, Serialize)]
@@ -146,9 +146,9 @@ pub struct AgentMetadata {
     pub installation_id: Uuid,
 }
 impl CheckIn {
-    pub fn new(installation_id: Uuid) -> Self {
+    pub fn new(installation_id: Uuid, capabilities: Vec<&'static str>) -> Self {
         Self {
-            capabilities: ["host.inventory"],
+            capabilities,
             metadata: AgentMetadata {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
                 installation_id,
@@ -227,7 +227,8 @@ mod tests {
     }
     #[test]
     fn checkin_has_capability_and_identity() {
-        let value = serde_json::to_value(CheckIn::new(Uuid::nil())).unwrap();
+        let value =
+            serde_json::to_value(CheckIn::new(Uuid::nil(), vec!["host.inventory"])).unwrap();
         assert_eq!(value["capabilities"][0], "host.inventory");
         assert_eq!(
             value["metadata"]["installation_id"],

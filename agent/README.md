@@ -1,8 +1,9 @@
 # Renga host agent
 
-The Renga agent is a Linux-only inventory collector. It reads host facts and sends
-check-ins and observations to Renga over HTTP(S). It does **not** provide a remote
-shell, execute server-supplied commands, or expose a listening network service.
+The Renga agent is a cross-platform service with a Linux-first inventory backend.
+It reads host facts and sends check-ins and observations to Renga over HTTP(S).
+It does **not** provide a remote shell, execute server-supplied commands, or expose
+a listening network service.
 
 ## Build and checks
 
@@ -100,15 +101,23 @@ The example unit allows 40 seconds for shutdown, slightly above the default
 should increase `TimeoutStopSec` too; otherwise systemd may forcibly stop an
 in-flight request when its 40-second limit expires.
 
-## Collector scope and degradation
+## Collector scope, portability, and degradation
 
-The current collector supports Linux only. It reads hostname, OS/kernel,
+The currently implemented backend supports Linux. It reads hostname, OS/kernel,
 architecture, machine and DMI identity, CPU, memory, block devices, filesystems,
 interfaces, addresses, and basic virtualization hints from `/etc`, procfs, sysfs,
 and the `hostname`/`ip` commands. Missing firmware files, utilities, permissions,
 or unsupported kernel data generally omit the affected optional facts rather
 than failing the whole observation. A usable `/etc/hostname` is currently
-required. Inventory from other operating systems is not implemented.
+required.
+
+Collection is accessed through a platform-neutral facade rather than directly
+from the Linux backend. This keeps configuration, scheduling, payloads, retries,
+and transport shared across operating systems. Future macOS and Windows backends
+can collect the facts available on those systems and advertise a reduced
+capability set when they cannot provide the full Linux inventory surface. Until
+those backends are implemented, running on another operating system returns a
+clear unsupported-collector error instead of emitting an incomplete observation.
 
 The `virtualization` component reports an `environment`: `bare_metal`,
 `vm_guest`, `container_guest`, or `unknown`. `bare_metal` requires conclusive

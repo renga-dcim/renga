@@ -1,10 +1,11 @@
 //! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
 
+use super::CollectError;
 use crate::payload::{
     Address, Component, HostAttributes, Identifiers, Interface, ResourceKind, ServerResource,
 };
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fmt, fs, path::Path, process::Command};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum VirtDetection {
@@ -49,15 +50,6 @@ impl VirtDetector for SystemdVirtDetector {
         Self::detect("--vm")
     }
 }
-
-#[derive(Debug)]
-pub struct CollectError(pub String);
-impl fmt::Display for CollectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for CollectError {}
 
 fn read(root: &Path, path: &str) -> Option<String> {
     fs::read_to_string(root.join(path.trim_start_matches('/')))
@@ -115,7 +107,8 @@ pub fn parse_cpuinfo(input: &str) -> (usize, Option<String>) {
 }
 
 /// Parses `ip -j address`; malformed output yields no interfaces for parser callers.
-pub fn parse_ip_json(input: &str) -> Vec<Interface> {
+#[cfg(test)]
+fn parse_ip_json(input: &str) -> Vec<Interface> {
     parse_ip_snapshot(input).unwrap_or_default()
 }
 

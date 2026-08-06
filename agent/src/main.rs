@@ -1,7 +1,7 @@
 use clap::Parser;
 use renga_agent::{
     cancellation::Cancellation,
-    collectors::linux,
+    collectors,
     config::Config,
     payload::{CheckIn, Observation},
     scheduler::{Job, Scheduler},
@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "renga-agent", version, about = "Renga Linux inventory agent")]
+#[command(name = "renga-agent", version, about = "Renga host inventory agent")]
 struct Args {
     #[arg(long, default_value = "/etc/renga/agent.toml")]
     config: PathBuf,
@@ -44,7 +44,7 @@ fn main() {
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
     if args.dry_run {
-        let observation = Observation::new(linux::collect()?);
+        let observation = Observation::new(collectors::collect()?);
         println!("{}", serde_json::to_string_pretty(&observation)?);
         return Ok(());
     }
@@ -134,13 +134,16 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
 }
 
 fn send_checkin(client: &HttpClient, config: &Config) -> Result<(), Box<dyn Error>> {
-    client.post_checkin(&CheckIn::new(config.installation_id))?;
+    client.post_checkin(&CheckIn::new(
+        config.installation_id,
+        collectors::capabilities(),
+    ))?;
     info!("check-in posted");
     Ok(())
 }
 
 fn send_inventory(client: &HttpClient) -> Result<(), Box<dyn Error>> {
-    let observation = Observation::new(linux::collect()?);
+    let observation = Observation::new(collectors::collect()?);
     client.post_observation(&observation)?;
     info!(observation_id = %observation.observation_id, "observation posted");
     Ok(())

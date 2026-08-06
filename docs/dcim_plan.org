@@ -394,6 +394,8 @@ The host agent should be implemented in Rust and structured around modules:
 The first Rust agent should be intentionally boring:
 
 - Runs as a daemon/service from the beginning.
+- Uses a platform-neutral collector facade, with Linux implemented first and
+  room for reduced-capability macOS and Windows backends later.
 - Uses an internal scheduler for periodic inventory collection, check-ins, and config refresh.
 - Ships with a systemd unit for Linux proof of concept deployments.
 - Supports =--once= only as a development and troubleshooting mode.
