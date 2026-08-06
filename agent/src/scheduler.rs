@@ -175,6 +175,21 @@ mod tests {
     }
 
     #[test]
+    fn startup_work_does_not_shift_first_checkin_deadline() {
+        let startup_began = Instant::now();
+        let scheduler = Scheduler::new(
+            startup_began,
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+            Duration::from_secs(300),
+        );
+
+        assert!(scheduler
+            .due(startup_began + Duration::from_secs(60))
+            .contains(&Job::CheckIn));
+    }
+
+    #[test]
     fn cancellation_stops_remaining_due_jobs() {
         let stopped = Cancellation::default();
         let now = Instant::now();

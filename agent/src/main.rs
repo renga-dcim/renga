@@ -65,6 +65,9 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
+    // Anchor periodic deadlines before startup work so a slow initial inventory cannot postpone
+    // the first lease renewal by another full check-in interval.
+    let scheduler_epoch = Instant::now();
     let operations = RuntimeOperations {
         client: &client,
         config: &config,
@@ -81,9 +84,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         return Ok(());
     }
 
-    let now = Instant::now();
     let mut scheduler = Scheduler::new(
-        now,
+        scheduler_epoch,
         config.checkin_interval,
         config.inventory_interval,
         config.config_refresh_interval,
