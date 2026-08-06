@@ -64,7 +64,9 @@ impl Scheduler {
         new_inventory: Duration,
     ) {
         if old_checkin != new_checkin {
-            self.reschedule(Job::CheckIn, now, new_checkin);
+            // A reload may accelerate lease renewal, but it must never postpone a renewal that
+            // was already promised under the previous configuration.
+            self.checkin = self.checkin.min(now + new_checkin);
         }
         if old_inventory != new_inventory {
             self.reschedule(Job::Inventory, now, new_inventory);
@@ -150,6 +152,29 @@ mod tests {
         assert!(scheduler
             .due(refreshed_at + Duration::from_secs(30))
             .contains(&Job::Inventory));
+    }
+
+    #[test]
+    fn changed_checkin_interval_never_postpones_pending_lease_renewal() {
+        let started = Instant::now();
+        let mut scheduler = Scheduler::new(
+            started,
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+            Duration::from_secs(59),
+        );
+
+        scheduler.refresh_intervals(
+            started + Duration::from_secs(59),
+            Duration::from_secs(60),
+            Duration::from_secs(59),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+        );
+
+        assert!(scheduler
+            .due(started + Duration::from_secs(60))
+            .contains(&Job::CheckIn));
     }
 
     #[test]
