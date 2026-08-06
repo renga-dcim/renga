@@ -47,6 +47,10 @@ The example documents every key and its default. `renga_url`, `token`, and
 * `RENGA_REQUEST_TIMEOUT_SECONDS`
 * `RENGA_MAX_RETRY_ATTEMPTS`
 
+`checkin_interval_seconds` must be between 1 and 60 seconds. The 60-second
+maximum keeps check-ins within the server's fixed 90-second lease while
+reserving a 30-second margin for delivery and retries.
+
 HTTPS is required by default, and redirects are never followed. For deliberate
 local development only, `allow_insecure_http = true` (or the strict environment
 override `RENGA_ALLOW_INSECURE_HTTP=true`) permits an `http://` URL. **Do not use

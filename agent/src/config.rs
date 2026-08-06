@@ -9,6 +9,8 @@ use std::{
 
 const INVENTORY_DEFAULT: u64 = 3_600;
 const CHECKIN_DEFAULT: u64 = 60;
+// The server lease is 90s; reserve 30s for check-in delivery and retry latency.
+const CHECKIN_MAX: u64 = 60;
 const REFRESH_DEFAULT: u64 = 300;
 const TIMEOUT_DEFAULT: u64 = 30;
 const RETRIES_DEFAULT: u32 = 5;
@@ -153,6 +155,16 @@ impl Config {
                 Ok(Duration::from_secs(seconds))
             }
         }
+        fn checkin_duration(value: Option<u64>) -> Result<Duration, ConfigError> {
+            let duration = duration(value, CHECKIN_DEFAULT, "checkin_interval_seconds")?;
+            if duration.as_secs() > CHECKIN_MAX {
+                Err(ConfigError(format!(
+                    "checkin_interval_seconds must not exceed {CHECKIN_MAX}"
+                )))
+            } else {
+                Ok(duration)
+            }
+        }
         let installation = required(raw.installation_id, "installation_id")?;
         let renga_url = required(raw.renga_url, "renga_url")?
             .trim_end_matches('/')
@@ -183,11 +195,7 @@ impl Config {
                 INVENTORY_DEFAULT,
                 "inventory_interval_seconds",
             )?,
-            checkin_interval: duration(
-                raw.checkin_interval_seconds,
-                CHECKIN_DEFAULT,
-                "checkin_interval_seconds",
-            )?,
+            checkin_interval: checkin_duration(raw.checkin_interval_seconds)?,
             config_refresh_interval: duration(
                 raw.config_refresh_interval_seconds,
                 REFRESH_DEFAULT,
@@ -248,6 +256,42 @@ mod tests {
         env::remove_var("RENGA_URL");
         fs::remove_file(path).unwrap();
         assert_eq!(c.renga_url, "https://environment.test");
+    }
+
+    #[test]
+    fn checkin_interval_accepts_sixty_seconds_and_rejects_sixty_one_from_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let config = |seconds| {
+            format!(
+                "renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds={seconds}\n"
+            )
+        };
+
+        fs::write(&path, config(60)).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().checkin_interval,
+            Duration::from_secs(60)
+        );
+
+        fs::write(&path, config(61)).unwrap();
+        let error = Config::load(&path).unwrap_err();
+        assert!(error.to_string().contains("must not exceed 60"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn checkin_interval_rejects_oversized_environment_override_on_reload_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        fs::write(&path,"renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds=60\n").unwrap();
+        env::set_var("RENGA_CHECKIN_INTERVAL_SECONDS", "61");
+
+        let error = Config::load(&path).unwrap_err();
+
+        env::remove_var("RENGA_CHECKIN_INTERVAL_SECONDS");
+        fs::remove_file(path).unwrap();
+        assert!(error.to_string().contains("must not exceed 60"));
     }
 
     #[test]
