@@ -128,11 +128,23 @@ The currently implemented backend supports Linux. A portable `sysinfo` baseline
 provides best-effort hostname, OS/kernel/architecture, CPU, memory, and visible
 disk entries. The Linux backend enriches that baseline with stable machine and
 DMI identity, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
-and virtualization hints from `/etc`, procfs, sysfs, and the `hostname`/`ip`
-commands. `/etc/hostname` remains authoritative when usable, with the portable
+and virtualization hints from `/etc`, procfs, sysfs, and the `hostname` command.
+`/etc/hostname` remains authoritative when usable, with the portable
 hostname as a fallback. Missing firmware files, utilities, permissions, or
 unsupported platform facts omit only the affected optional values rather than
 failing the whole observation.
+
+Network inventory uses the unmodified `getifs` crate and describes interfaces
+visible in the agent's current network namespace. Because interface metadata and
+addresses come from separate kernel dumps, the agent publishes them only after
+two consecutive normalized snapshots match. Interrupted, inconsistent, or
+changing samples are retried within a fixed bound; exhausted retries leave
+network facts unavailable, while a stable empty snapshot is authoritative.
+On Linux, link speed and physical-versus-virtual kind are enriched from sysfs.
+MAC addresses have an additional safety check because `getifs` does not preserve
+the kernel link-address length: `/sys/class/net/<name>/address` must be readable,
+must contain exactly six two-digit hexadecimal octets, must be nonzero, and must
+match the `getifs` value. Otherwise that interface's MAC is omitted.
 
 Disk components are the portable disk entries visible to the agent and can vary
 with operating-system APIs and service sandboxing. They are not the

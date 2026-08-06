@@ -5,6 +5,7 @@ use std::fmt;
 
 #[cfg(target_os = "linux")]
 mod linux;
+mod network_facts;
 mod system_facts;
 
 #[derive(Debug)]

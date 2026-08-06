@@ -1,6 +1,7 @@
 //! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
 
 use super::{
+    network_facts::{AddressFamily, GetifsSource, NetworkFactsSource, NetworkInterface},
     system_facts::{DiskFacts, DiskMedium, SysinfoSource, SystemFactsSource},
     CollectError,
 };
@@ -90,90 +91,22 @@ pub fn normalize_value(value: &str) -> Option<String> {
     }
 }
 
-/// Parses `ip -j address`; malformed output yields no interfaces for parser callers.
-#[cfg(test)]
-fn parse_ip_json(input: &str) -> Vec<Interface> {
-    parse_ip_snapshot(input).unwrap_or_default()
-}
-
-fn parse_ip_snapshot(input: &str) -> Result<Vec<Interface>, ()> {
-    let Value::Array(items) = serde_json::from_str(input).map_err(|_| ())? else {
-        return Err(());
-    };
-    items
-        .into_iter()
-        .map(|item| {
-            let name = item.get("ifname").and_then(Value::as_str).ok_or(())?.into();
-            let flags = item.get("flags").and_then(Value::as_array);
-            let up = flags.is_some_and(|f| f.iter().any(|x| x.as_str() == Some("UP")));
-            let addresses = item
-                .get("addr_info")
-                .and_then(Value::as_array)
-                .ok_or(())?
-                .iter()
-                .map(|address| {
-                    let local = address.get("local").and_then(Value::as_str).ok_or(())?;
-                    let prefix = address.get("prefixlen").and_then(Value::as_u64).ok_or(())?;
-                    Ok(Address {
-                        address: format!("{local}/{prefix}"),
-                        kind: address.get("family").and_then(Value::as_str).map(|v| {
-                            if v == "inet" {
-                                "ipv4".into()
-                            } else {
-                                "ipv6".into()
-                            }
-                        }),
-                        scope: address.get("scope").and_then(Value::as_str).map(Into::into),
-                    })
-                })
-                .collect::<Result<Vec<_>, ()>>()?;
-            Ok(Interface {
-                name,
-                kind: "unknown".into(),
-                status: if up { "up" } else { "down" }.into(),
-                mac_address: item
-                    .get("address")
-                    .and_then(Value::as_str)
-                    .and_then(normalize_mac),
-                mtu: item
-                    .get("mtu")
-                    .and_then(Value::as_u64)
-                    .and_then(|v| u32::try_from(v).ok()),
-                speed_mbps: None,
-                addresses: Some(addresses),
-            })
-        })
-        .collect()
-}
-fn normalize_mac(v: &str) -> Option<String> {
-    let v = v.trim().to_ascii_lowercase();
-    if v == "00:00:00:00:00:00" || v.len() != 17 {
-        None
-    } else {
-        Some(v)
-    }
-}
-
 fn collect_from_with_cancellation(
     root: &Path,
     cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
-    let ip_output = command::run(Command::new("ip").args(["-j", "address"]), cancellation)
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok());
-    collect_from_with_ip_and_detector(
+    collect_from_with_sources(
         root,
-        ip_output.as_deref().ok_or(()),
+        &GetifsSource,
         &SystemdVirtDetector(cancellation),
         &SysinfoSource,
         cancellation,
     )
 }
 
-fn collect_from_with_ip_and_detector(
+fn collect_from_with_sources(
     root: &Path,
-    ip_output: Result<&str, ()>,
+    network_source: &dyn NetworkFactsSource,
     detector: &dyn VirtDetector,
     facts_source: &dyn SystemFactsSource,
     cancellation: &Cancellation,
@@ -192,12 +125,7 @@ fn collect_from_with_ip_and_detector(
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| normalize_value(&s))
         .filter(|s| s.contains('.'));
-    // A syntactically valid `ip` response, including `[]`, is authoritative.
-    // Command or parse failures only become authoritative if sysfs can be listed.
-    let mut interfaces = ip_output
-        .and_then(parse_ip_snapshot)
-        .or_else(|_| collect_sysfs_interfaces(root).map_err(|_| ()))
-        .ok();
+    let mut interfaces = network_source.collect().ok().map(project_interfaces);
     if let Some(interfaces) = &mut interfaces {
         enrich_interfaces(root, interfaces);
     }
@@ -275,53 +203,65 @@ fn component<const N: usize>(kind: &str, values: [(&str, Value); N]) -> Componen
 fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
     for i in interfaces {
         let base = format!("sys/class/net/{}", i.name);
-        i.mtu = read(root, &format!("{base}/mtu"))
-            .and_then(|v| v.parse().ok())
-            .or(i.mtu);
+        i.mac_address = i.mac_address.take().filter(|mac| {
+            read(root, &format!("{base}/address"))
+                .and_then(|value| parse_ethernet_mac(&value))
+                .as_ref()
+                == Some(mac)
+        });
         i.speed_mbps = read(root, &format!("{base}/speed"))
             .and_then(|v| v.parse().ok())
             .filter(|v| *v > 0);
-        i.kind = if i.name == "lo" {
-            "loopback"
-        } else if root.join(format!("{base}/device")).exists() {
-            "ethernet"
-        } else {
-            "virtual"
-        }
-        .into();
-    }
-}
-fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
-    let entries = fs::read_dir(root.join("sys/class/net"))?;
-    collect_sysfs_interfaces_from_entries(root, entries)
-}
-
-fn collect_sysfs_interfaces_from_entries(
-    root: &Path,
-    entries: impl IntoIterator<Item = std::io::Result<fs::DirEntry>>,
-) -> std::io::Result<Vec<Interface>> {
-    entries
-        .into_iter()
-        .map(|entry| {
-            let e = entry?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            let base = format!("sys/class/net/{name}");
-            let status = match read(root, &format!("{base}/operstate")).as_deref() {
-                Some("up") => "up",
-                Some("down") => "down",
-                Some("dormant") => "dormant",
-                _ => "unknown",
+        if i.kind != "loopback" {
+            i.kind = if root.join(format!("{base}/device")).exists() {
+                "ethernet"
+            } else {
+                "virtual"
             }
             .into();
-            Ok(Interface {
-                name,
-                kind: "unknown".into(),
-                status,
-                mac_address: read(root, &format!("{base}/address")).and_then(|v| normalize_mac(&v)),
-                mtu: None,
-                speed_mbps: None,
-                addresses: None,
-            })
+        }
+    }
+}
+
+fn parse_ethernet_mac(value: &str) -> Option<String> {
+    let octets = value.trim().split(':').collect::<Vec<_>>();
+    if octets.len() != 6
+        || octets
+            .iter()
+            .any(|octet| octet.len() != 2 || !octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    let normalized = octets.join(":").to_ascii_lowercase();
+    (normalized != "00:00:00:00:00:00").then_some(normalized)
+}
+
+fn project_interfaces(facts: Vec<NetworkInterface>) -> Vec<Interface> {
+    facts
+        .into_iter()
+        .map(|fact| Interface {
+            name: fact.name,
+            kind: if fact.loopback { "loopback" } else { "unknown" }.into(),
+            status: if fact.up { "up" } else { "down" }.into(),
+            mac_address: fact.mac,
+            mtu: fact.mtu,
+            speed_mbps: None,
+            addresses: Some(
+                fact.addresses
+                    .into_iter()
+                    .map(|address| Address {
+                        address: format!("{}/{}", address.ip, address.prefix),
+                        kind: Some(
+                            match address.family {
+                                AddressFamily::Ipv4 => "ipv4",
+                                AddressFamily::Ipv6 => "ipv6",
+                            }
+                            .into(),
+                        ),
+                        scope: None,
+                    })
+                    .collect(),
+            ),
         })
         .collect()
 }
@@ -490,6 +430,7 @@ fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Compone
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collectors::network_facts::NetworkAddress;
     use crate::collectors::system_facts::{CpuFacts, OsFacts, SystemFacts};
     use std::{
         fs,
@@ -526,6 +467,15 @@ mod tests {
         }
     }
 
+    struct FakeNetwork(Option<Vec<NetworkInterface>>);
+    impl NetworkFactsSource for FakeNetwork {
+        fn collect(&self) -> std::io::Result<Vec<NetworkInterface>> {
+            self.0
+                .clone()
+                .ok_or_else(|| std::io::Error::other("unavailable"))
+        }
+    }
+
     fn collect_from_with_ip(
         root: &Path,
         ip_output: Result<&str, ()>,
@@ -544,9 +494,10 @@ mod tests {
         container: VirtDetection,
         vm: VirtDetection,
     ) -> Result<ServerResource, CollectError> {
-        collect_from_with_ip_and_detector(
+        let network = FakeNetwork(ip_output.ok().map(|_| vec![]));
+        collect_from_with_sources(
             root,
-            ip_output,
+            &network,
             &FakeDetector { container, vm },
             &partial_facts(),
             &Cancellation::default(),
@@ -596,9 +547,9 @@ mod tests {
                 mount_point: Some("/data".into()),
             }]),
         });
-        let resource = collect_from_with_ip_and_detector(
+        let resource = collect_from_with_sources(
             &root,
-            Ok("[]"),
+            &FakeNetwork(Some(vec![])),
             &FakeDetector {
                 container: VirtDetection::Unknown,
                 vm: VirtDetection::Unknown,
@@ -666,9 +617,9 @@ mod tests {
                 hostname: Some(fallback.into()),
                 ..SystemFacts::default()
             });
-            let result = collect_from_with_ip_and_detector(
+            let result = collect_from_with_sources(
                 &root,
-                Ok("[]"),
+                &FakeNetwork(Some(vec![])),
                 &FakeDetector {
                     container: VirtDetection::Unknown,
                     vm: VirtDetection::Unknown,
@@ -690,9 +641,9 @@ mod tests {
     fn partial_facts_omit_unavailable_values_and_use_hostname_fallback() {
         let root = fixture();
         fs::remove_file(root.join("etc/hostname")).unwrap();
-        let resource = collect_from_with_ip_and_detector(
+        let resource = collect_from_with_sources(
             &root,
-            Ok("[]"),
+            &FakeNetwork(Some(vec![])),
             &FakeDetector {
                 container: VirtDetection::Unknown,
                 vm: VirtDetection::Unknown,
@@ -808,54 +759,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_ip_addresses() {
-        let v = parse_ip_json(
-            r#"[{"ifname":"eth0","flags":["UP"],"mtu":1500,"address":"AA:BB:CC:DD:EE:FF","addr_info":[{"family":"inet","local":"10.0.0.2","prefixlen":24,"scope":"global"}]}]"#,
-        );
-        assert_eq!(v[0].mac_address.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
-        assert_eq!(v[0].addresses.as_ref().unwrap()[0].address, "10.0.0.2/24");
-    }
-
-    #[test]
-    fn authoritative_interface_with_empty_addr_info_serializes_addresses() {
-        let interfaces = parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":[]}]"#).unwrap();
-        let value = serde_json::to_value(&interfaces[0]).unwrap();
-
-        assert!(interfaces[0].addresses.as_ref().is_some_and(Vec::is_empty));
-        assert_eq!(value["addresses"], json!([]));
-    }
-
-    #[test]
-    fn ip_snapshot_requires_an_address_array_for_every_interface() {
-        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0"}]"#).is_err());
-        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":null}]"#).is_err());
-        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":{}}]"#).is_err());
-    }
-
-    #[test]
-    fn malformed_address_invalidates_the_entire_ip_snapshot() {
-        let snapshot = r#"[{"ifname":"eth0","addr_info":[{"family":"inet","local":"10.0.0.2","prefixlen":24},{"family":"inet","prefixlen":24}]}]"#;
-
-        assert!(parse_ip_snapshot(snapshot).is_err());
-    }
-
-    #[test]
-    fn sysfs_entry_enumeration_error_invalidates_the_snapshot() {
-        let root = fixture();
-        let entries = vec![Err(std::io::Error::other(
-            "injected directory entry failure",
-        ))];
-
-        assert!(collect_sysfs_interfaces_from_entries(&root, entries).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn malformed_ip_degrades() {
-        assert!(parse_ip_json("nope").is_empty());
-    }
-
-    #[test]
     fn unavailable_network_snapshot_omits_interfaces_and_macs() {
         let root = fixture();
         let resource = collect_from_with_ip(&root, Err(())).unwrap();
@@ -878,38 +781,89 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_snapshot_preserves_interface_and_top_level_mac_set() {
+    fn populated_snapshot_maps_addresses_flags_macs_and_linux_enrichment() {
         let root = fixture();
-        let resource = collect_from_with_ip(
+        let base = root.join("sys/class/net/eth0");
+        fs::create_dir_all(base.join("device")).unwrap();
+        fs::write(base.join("speed"), "1000\n").unwrap();
+        fs::write(base.join("address"), "aa:bb:cc:dd:ee:ff\n").unwrap();
+        let network = FakeNetwork(Some(vec![NetworkInterface {
+            name: "eth0".into(),
+            index: 2,
+            mac: Some("aa:bb:cc:dd:ee:ff".into()),
+            mtu: Some(1500),
+            up: true,
+            running: false,
+            loopback: false,
+            addresses: vec![NetworkAddress {
+                ip: "10.0.0.2".parse().unwrap(),
+                prefix: 24,
+                family: AddressFamily::Ipv4,
+            }],
+        }]));
+        let resource = collect_from_with_sources(
             &root,
-            Ok(r#"[{"ifname":"eth1","flags":["UP"],"address":"00:11:22:33:44:55","addr_info":[]},{"ifname":"eth0","flags":[],"address":"aa:bb:cc:dd:ee:ff","addr_info":[]}]"#),
-        ).unwrap();
+            &network,
+            &FakeDetector {
+                container: VirtDetection::Unknown,
+                vm: VirtDetection::Unknown,
+            },
+            &partial_facts(),
+            &Cancellation::default(),
+        )
+        .unwrap();
         let value = serde_json::to_value(resource).unwrap();
-
         assert_eq!(
             value["identifiers"]["mac_address"],
-            json!(["00:11:22:33:44:55", "aa:bb:cc:dd:ee:ff"])
+            json!(["aa:bb:cc:dd:ee:ff"])
         );
-        assert_eq!(value["interfaces"].as_array().unwrap().len(), 2);
-        assert_eq!(value["interfaces"][0]["name"], "eth1");
-        assert_eq!(value["interfaces"][1]["name"], "eth0");
+        assert_eq!(
+            value["interfaces"][0]["addresses"][0]["address"],
+            "10.0.0.2/24"
+        );
+        assert_eq!(value["interfaces"][0]["status"], "up");
+        assert_eq!(value["interfaces"][0]["kind"], "ethernet");
+        assert_eq!(value["interfaces"][0]["speed_mbps"], 1000);
+        assert_eq!(value["interfaces"][0]["mtu"], 1500);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn malformed_ip_output_falls_back_to_sysfs() {
-        let root = fixture();
-        let interface = root.join("sys/class/net/eth9");
-        fs::create_dir_all(&interface).unwrap();
-        fs::write(interface.join("operstate"), "up\n").unwrap();
-        fs::write(interface.join("address"), "12:34:56:78:9a:bc\n").unwrap();
+    fn linux_mac_enrichment_requires_matching_six_byte_nonzero_sysfs_address() {
+        for (sysfs, expected) in [
+            (Some("AA:BB:CC:DD:EE:FF\n"), Some("aa:bb:cc:dd:ee:ff")),
+            (None, None),
+            (Some("11:22:33:44:55:66\n"), None),
+            (
+                Some("00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33\n"),
+                None,
+            ),
+            (Some("00:00:00:00:00:00\n"), None),
+            (Some("aa:bb:cc:dd:ee:gg\n"), None),
+        ] {
+            let root = fixture();
+            let base = root.join("sys/class/net/eth0");
+            fs::create_dir_all(&base).unwrap();
+            if let Some(sysfs) = sysfs {
+                fs::write(base.join("address"), sysfs).unwrap();
+            }
+            let mut interfaces = project_interfaces(vec![NetworkInterface {
+                name: "eth0".into(),
+                index: 2,
+                mac: Some("aa:bb:cc:dd:ee:ff".into()),
+                mtu: None,
+                up: false,
+                running: true,
+                loopback: false,
+                addresses: vec![],
+            }]);
 
-        let resource = collect_from_with_ip(&root, Ok("malformed")).unwrap();
-        let value = serde_json::to_value(&resource).unwrap();
-        assert_eq!(resource.interfaces.as_ref().unwrap()[0].name, "eth9");
-        assert!(value["interfaces"][0].get("addresses").is_none());
-        assert_eq!(resource.identifiers.mac_address, ["12:34:56:78:9a:bc"]);
-        fs::remove_dir_all(root).unwrap();
+            enrich_interfaces(&root, &mut interfaces);
+
+            assert_eq!(interfaces[0].mac_address.as_deref(), expected, "{sysfs:?}");
+            assert_eq!(interfaces[0].status, "down");
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn virtualization(resource: &ServerResource) -> &Component {
