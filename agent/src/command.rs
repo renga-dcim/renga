@@ -1,6 +1,8 @@
 //! Bounded, cancellation-aware execution for optional collector commands.
 
 use crate::cancellation::Cancellation;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     io::{self, Read},
     process::{Command, ExitStatus, Stdio},
@@ -30,6 +32,8 @@ fn run_with_timeout(
     if cancellation.cancelled() {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "agent stopping"));
     }
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -45,7 +49,7 @@ fn run_with_timeout(
     let started = Instant::now();
     let status = loop {
         if cancellation.cancelled() || started.elapsed() >= timeout {
-            let _ = child.kill();
+            terminate_command_tree(&mut child);
             let _ = child.wait();
             let _ = reader.join();
             let message = if cancellation.cancelled() {
@@ -67,10 +71,23 @@ fn run_with_timeout(
         }
         thread::sleep(POLL_INTERVAL);
     };
+    // A short-lived collector must not leave descendants holding its output pipe open.
+    terminate_command_tree(&mut child);
     let stdout = reader
         .join()
         .map_err(|_| io::Error::other("output reader panicked"))??;
     Ok(Output { status, stdout })
+}
+
+fn terminate_command_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // SAFETY: the child was placed in a process group whose ID is its PID. A negative PID asks
+    // kill(2) to signal only that group; failures are best-effort because it may already be gone.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
 }
 
 #[cfg(all(test, unix))]
@@ -98,6 +115,20 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn successful_parent_does_not_wait_for_descendant_inheriting_stdout() {
+        let started = Instant::now();
+        let output = run_with_timeout(
+            Command::new("sh").args(["-c", "sleep 5 &"]),
+            &Cancellation::default(),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
