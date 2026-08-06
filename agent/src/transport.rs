@@ -12,7 +12,7 @@ use reqwest::{
     StatusCode, Url,
 };
 use serde::Serialize;
-use std::{fmt, thread, time::Duration};
+use std::{fmt, io::Read, thread, time::Duration};
 
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
@@ -171,17 +171,12 @@ fn endpoint_url(base_url: &Url, path: &str) -> Result<Url, TransportError> {
         .map_err(|_| TransportError::new("cannot construct Renga API endpoint URL".into(), false))
 }
 
-fn response_result(response: Response) -> Result<(), TransportError> {
+fn response_result(mut response: Response) -> Result<(), TransportError> {
     let status = response.status();
     if status.is_success() {
         return Ok(());
     }
-    let excerpt: String = response
-        .text()
-        .unwrap_or_default()
-        .chars()
-        .take(MAX_ERROR_BODY)
-        .collect();
+    let excerpt = bounded_error_excerpt(&mut response);
     let transient = status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error();
@@ -189,6 +184,12 @@ fn response_result(response: Response) -> Result<(), TransportError> {
         format!("server returned {status}; response excerpt: {excerpt:?}"),
         transient,
     ))
+}
+
+fn bounded_error_excerpt(reader: &mut impl Read) -> String {
+    let mut bytes = Vec::with_capacity(MAX_ERROR_BODY);
+    let _ = reader.take(MAX_ERROR_BODY as u64).read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn retry<T>(
@@ -251,6 +252,16 @@ mod tests {
 
     fn error(transient: bool) -> TransportError {
         TransportError::new("failure".into(), transient)
+    }
+
+    #[test]
+    fn error_excerpt_never_reads_beyond_its_byte_limit() {
+        let mut body = std::io::Cursor::new(vec![b'x'; MAX_ERROR_BODY * 4]);
+
+        let excerpt = bounded_error_excerpt(&mut body);
+
+        assert_eq!(excerpt.len(), MAX_ERROR_BODY);
+        assert_eq!(body.position(), MAX_ERROR_BODY as u64);
     }
 
     fn oversized_observation() -> Observation {
