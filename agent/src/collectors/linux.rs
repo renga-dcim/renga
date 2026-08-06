@@ -1,6 +1,9 @@
 //! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
 
-use super::CollectError;
+use super::{
+    system_facts::{DiskFacts, DiskMedium, SysinfoSource, SystemFactsSource},
+    CollectError,
+};
 use crate::{
     cancellation::Cancellation,
     command,
@@ -9,7 +12,7 @@ use crate::{
     },
 };
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{fs, path::Path, process::Command};
 
 /// Non-authoritative component limits reserve payload space for identity and network facts.
 const MAX_DISK_COMPONENTS: usize = 128;
@@ -85,34 +88,6 @@ pub fn normalize_value(value: &str) -> Option<String> {
     } else {
         Some(value.into())
     }
-}
-
-pub fn parse_os_release(input: &str) -> BTreeMap<String, String> {
-    input
-        .lines()
-        .filter_map(|line| {
-            let (k, v) = line.split_once('=')?;
-            Some((k.into(), v.trim_matches('"').replace("\\\"", "\"")))
-        })
-        .collect()
-}
-pub fn parse_meminfo(input: &str) -> Option<u64> {
-    input
-        .lines()
-        .find(|l| l.starts_with("MemTotal:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse::<u64>()
-        .ok()
-        .map(|kb| kb * 1024)
-}
-pub fn parse_cpuinfo(input: &str) -> (usize, Option<String>) {
-    let count = input.lines().filter(|l| l.starts_with("processor")).count();
-    let model = input.lines().find_map(|l| {
-        let (k, v) = l.split_once(':')?;
-        (k.trim() == "model name").then(|| v.trim().into())
-    });
-    (count, model)
 }
 
 /// Parses `ip -j address`; malformed output yields no interfaces for parser callers.
@@ -191,6 +166,7 @@ fn collect_from_with_cancellation(
         root,
         ip_output.as_deref().ok_or(()),
         &SystemdVirtDetector(cancellation),
+        &SysinfoSource,
         cancellation,
     )
 }
@@ -199,11 +175,17 @@ fn collect_from_with_ip_and_detector(
     root: &Path,
     ip_output: Result<&str, ()>,
     detector: &dyn VirtDetector,
+    facts_source: &dyn SystemFactsSource,
     cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
-    let hostname = read(root, "etc/hostname").ok_or_else(|| {
-        CollectError("Linux host has no usable /etc/hostname; observation cannot be matched".into())
-    })?;
+    let facts = facts_source.collect();
+    let hostname = read(root, "etc/hostname")
+        .or_else(|| facts.hostname.as_deref().and_then(normalize_value))
+        .ok_or_else(|| {
+            CollectError(
+                "Linux host has no usable /etc/hostname; observation cannot be matched".into(),
+            )
+        })?;
     let fqdn = command::run(Command::new("hostname").arg("-f"), cancellation)
         .ok()
         .filter(|o| o.status.success())
@@ -226,34 +208,29 @@ fn collect_from_with_ip_and_detector(
         .filter(|i| i.status != "not_present")
         .filter_map(|i| i.mac_address.clone())
         .collect();
-    let os = read(root, "etc/os-release")
-        .map(|s| parse_os_release(&s))
-        .unwrap_or_default();
-    let (cpu_count, cpu_model) = read(root, "proc/cpuinfo")
-        .map(|s| parse_cpuinfo(&s))
-        .unwrap_or((0, None));
     let mut components = vec![
         component(
             "os",
             [
-                ("name", json!(os.get("NAME"))),
-                ("version", json!(os.get("VERSION_ID"))),
-                ("kernel", json!(read(root, "proc/sys/kernel/osrelease"))),
-                ("architecture", json!(std::env::consts::ARCH)),
+                ("name", json!(facts.os.name)),
+                ("version", json!(facts.os.version)),
+                ("kernel", json!(facts.os.kernel)),
+                ("architecture", json!(facts.os.architecture)),
             ],
         ),
         component(
             "cpu",
             [
-                ("logical_count", json!(cpu_count)),
-                ("model", json!(cpu_model)),
+                ("logical_count", json!(facts.cpu.logical_count)),
+                ("physical_count", json!(facts.cpu.physical_count)),
+                ("model", json!(facts.cpu.brand)),
             ],
         ),
     ];
-    if let Some(bytes) = read(root, "proc/meminfo").and_then(|s| parse_meminfo(&s)) {
+    if let Some(bytes) = facts.total_memory_bytes {
         components.push(component("memory", [("total_bytes", json!(bytes))]));
     }
-    components.extend(collect_disks(root));
+    components.extend(collect_disks(facts.disks));
     components.extend(collect_filesystems(root));
     components.push(virtualization_component(root, detector));
     let vendor = read(root, "sys/class/dmi/id/sys_vendor");
@@ -348,25 +325,32 @@ fn collect_sysfs_interfaces_from_entries(
         })
         .collect()
 }
-fn collect_disks(root: &Path) -> Vec<Component> {
-    let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
+fn collect_disks(disks: Option<Vec<DiskFacts>>) -> Vec<Component> {
+    let Some(disks) = disks else {
         return vec![];
     };
     bounded_components(
         "disk",
         MAX_DISK_COMPONENTS,
-        entries.flatten().filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let sectors = read(root, &format!("sys/block/{name}/size"))?
-                .parse::<u64>()
-                .ok()?;
-            Some(component(
+        disks.into_iter().map(|disk| {
+            let name = normalize_value(&disk.name)
+                .or_else(|| disk.mount_point.as_deref().and_then(normalize_value));
+            component(
                 "disk",
                 [
                     ("name", json!(name)),
-                    ("size_bytes", json!(sectors.saturating_mul(512))),
+                    (
+                        "medium",
+                        json!(match disk.medium {
+                            DiskMedium::Hdd => "hdd",
+                            DiskMedium::Ssd => "ssd",
+                            DiskMedium::Unknown => "unknown",
+                        }),
+                    ),
+                    ("size_bytes", json!(disk.total_bytes)),
+                    ("mountpoint", json!(disk.mount_point)),
                 ],
-            ))
+            )
         }),
     )
 }
@@ -506,6 +490,7 @@ fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Compone
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collectors::system_facts::{CpuFacts, OsFacts, SystemFacts};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -514,6 +499,21 @@ mod tests {
     struct FakeDetector {
         container: VirtDetection,
         vm: VirtDetection,
+    }
+
+    struct FakeFacts(SystemFacts);
+
+    impl SystemFactsSource for FakeFacts {
+        fn collect(&self) -> SystemFacts {
+            self.0.clone()
+        }
+    }
+
+    fn partial_facts() -> FakeFacts {
+        FakeFacts(SystemFacts {
+            hostname: Some("portable-host".into()),
+            ..SystemFacts::default()
+        })
     }
 
     impl VirtDetector for FakeDetector {
@@ -548,6 +548,7 @@ mod tests {
             root,
             ip_output,
             &FakeDetector { container, vm },
+            &partial_facts(),
             &Cancellation::default(),
         )
     }
@@ -570,13 +571,148 @@ mod tests {
         assert_eq!(normalize_value(" To Be Filled By O.E.M. "), None);
         assert_eq!(normalize_value("Dell"), Some("Dell".into()));
     }
+
     #[test]
-    fn parses_proc_data() {
-        assert_eq!(parse_meminfo("MemTotal: 1024 kB\n"), Some(1_048_576));
+    fn maps_complete_portable_facts_to_exact_payload_components() {
+        let root = fixture();
+        let facts = FakeFacts(SystemFacts {
+            os: OsFacts {
+                name: Some("Example OS".into()),
+                version: Some("42".into()),
+                kernel: Some("6.1".into()),
+                architecture: Some("test-arch".into()),
+            },
+            hostname: Some("fallback-host".into()),
+            cpu: CpuFacts {
+                logical_count: Some(8),
+                physical_count: Some(4),
+                brand: Some("Example CPU".into()),
+            },
+            total_memory_bytes: Some(16_384),
+            disks: Some(vec![DiskFacts {
+                name: "disk0".into(),
+                medium: DiskMedium::Ssd,
+                total_bytes: Some(1_000_000),
+                mount_point: Some("/data".into()),
+            }]),
+        });
+        let resource = collect_from_with_ip_and_detector(
+            &root,
+            Ok("[]"),
+            &FakeDetector {
+                container: VirtDetection::Unknown,
+                vm: VirtDetection::Unknown,
+            },
+            &facts,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let components = serde_json::to_value(resource.components).unwrap();
+
         assert_eq!(
-            parse_cpuinfo("processor : 0\nmodel name : Xeon\nprocessor : 1\n"),
-            (2, Some("Xeon".into()))
+            components[0],
+            json!({"kind":"os","name":"Example OS","version":"42","kernel":"6.1","architecture":"test-arch"})
         );
+        assert_eq!(
+            components[1],
+            json!({"kind":"cpu","logical_count":8,"physical_count":4,"model":"Example CPU"})
+        );
+        assert_eq!(components[2], json!({"kind":"memory","total_bytes":16_384}));
+        assert_eq!(
+            components[3],
+            json!({"kind":"disk","name":"disk0","medium":"ssd","size_bytes":1_000_000,"mountpoint":"/data"})
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disk_payload_omits_unknown_capacity_and_falls_back_to_mountpoint_for_blank_name() {
+        let disks = collect_disks(Some(vec![DiskFacts {
+            name: "  ".into(),
+            medium: DiskMedium::Unknown,
+            total_bytes: None,
+            mount_point: Some("/data".into()),
+        }]));
+
+        assert_eq!(
+            serde_json::to_value(&disks[0]).unwrap(),
+            json!({"kind":"disk","name":"/data","medium":"unknown","mountpoint":"/data"})
+        );
+    }
+
+    #[test]
+    fn indeterminate_and_injected_authoritative_empty_disks_emit_no_components() {
+        assert!(collect_disks(None).is_empty());
+        assert!(collect_disks(Some(vec![])).is_empty());
+    }
+
+    #[test]
+    fn hostname_fallback_is_normalized_when_file_is_missing_or_rejected() {
+        for (file_value, fallback, expected) in [
+            (None, "", None),
+            (None, "  \n", None),
+            (None, "unknown", None),
+            (None, "none", None),
+            (Some("unknown\n"), "fallback-host ", Some("fallback-host")),
+            (Some("none\n"), " valid-host\n", Some("valid-host")),
+        ] {
+            let root = fixture();
+            if let Some(file_value) = file_value {
+                fs::write(root.join("etc/hostname"), file_value).unwrap();
+            } else {
+                fs::remove_file(root.join("etc/hostname")).unwrap();
+            }
+            let facts = FakeFacts(SystemFacts {
+                hostname: Some(fallback.into()),
+                ..SystemFacts::default()
+            });
+            let result = collect_from_with_ip_and_detector(
+                &root,
+                Ok("[]"),
+                &FakeDetector {
+                    container: VirtDetection::Unknown,
+                    vm: VirtDetection::Unknown,
+                },
+                &facts,
+                &Cancellation::default(),
+            );
+
+            assert_eq!(
+                result.ok().map(|resource| resource.identifiers.hostname),
+                expected.map(str::to_owned),
+                "file={file_value:?}, fallback={fallback:?}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn partial_facts_omit_unavailable_values_and_use_hostname_fallback() {
+        let root = fixture();
+        fs::remove_file(root.join("etc/hostname")).unwrap();
+        let resource = collect_from_with_ip_and_detector(
+            &root,
+            Ok("[]"),
+            &FakeDetector {
+                container: VirtDetection::Unknown,
+                vm: VirtDetection::Unknown,
+            },
+            &partial_facts(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let value = serde_json::to_value(resource).unwrap();
+
+        assert_eq!(value["identifiers"]["hostname"], "portable-host");
+        assert_eq!(value["attributes"]["hostname"], "portable-host");
+        assert_eq!(value["components"][0], json!({"kind":"os"}));
+        assert_eq!(value["components"][1], json!({"kind":"cpu"}));
+        assert!(value["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "memory" && item["kind"] != "disk"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -634,14 +770,16 @@ mod tests {
 
     #[test]
     fn bounds_disks_and_reports_explicit_truncation_status() {
-        let root = fixture();
-        for index in 0..=MAX_DISK_COMPONENTS {
-            let disk = root.join(format!("sys/block/disk{index}"));
-            fs::create_dir_all(&disk).unwrap();
-            fs::write(disk.join("size"), "8\n").unwrap();
-        }
+        let disks = (0..=MAX_DISK_COMPONENTS)
+            .map(|index| DiskFacts {
+                name: format!("disk{index}"),
+                medium: DiskMedium::Unknown,
+                total_bytes: Some(4096),
+                mount_point: None,
+            })
+            .collect();
 
-        let disks = collect_disks(&root);
+        let disks = collect_disks(Some(disks));
 
         assert_eq!(disks.len(), MAX_DISK_COMPONENTS + 1);
         let status = disks.last().unwrap();
@@ -653,7 +791,6 @@ mod tests {
         );
         assert_eq!(status.attributes["emitted_count"], MAX_DISK_COMPONENTS);
         assert_eq!(status.attributes["truncated"], true);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

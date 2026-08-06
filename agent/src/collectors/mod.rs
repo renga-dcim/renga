@@ -5,6 +5,7 @@ use std::fmt;
 
 #[cfg(target_os = "linux")]
 mod linux;
+mod system_facts;
 
 #[derive(Debug)]
 pub struct CollectError(pub String);

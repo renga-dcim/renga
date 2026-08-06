@@ -124,13 +124,21 @@ in-flight request when its 40-second limit expires.
 
 ## Collector scope, portability, and degradation
 
-The currently implemented backend supports Linux. It reads hostname, OS/kernel,
-architecture, machine and DMI identity, CPU, memory, block devices, filesystems,
-interfaces, addresses, and basic virtualization hints from `/etc`, procfs, sysfs,
-and the `hostname`/`ip` commands. Missing firmware files, utilities, permissions,
-or unsupported kernel data generally omit the affected optional facts rather
-than failing the whole observation. A usable `/etc/hostname` is currently
-required.
+The currently implemented backend supports Linux. A portable `sysinfo` baseline
+provides best-effort hostname, OS/kernel/architecture, CPU, memory, and visible
+disk entries. The Linux backend enriches that baseline with stable machine and
+DMI identity, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
+and virtualization hints from `/etc`, procfs, sysfs, and the `hostname`/`ip`
+commands. `/etc/hostname` remains authoritative when usable, with the portable
+hostname as a fallback. Missing firmware files, utilities, permissions, or
+unsupported platform facts omit only the affected optional values rather than
+failing the whole observation.
+
+Disk components are the portable disk entries visible to the agent and can vary
+with operating-system APIs and service sandboxing. They are not the
+authoritative filesystem inventory: filesystem components continue to come
+only from Linux PID 1's `/proc/1/mounts` view and are omitted when that view is
+inaccessible.
 
 Encoded observations are limited to 256,000 bytes, matching the Phoenix API.
 The agent rejects larger observations locally before opening a network request.
