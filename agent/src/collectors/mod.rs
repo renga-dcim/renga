@@ -1,6 +1,6 @@
 //! Platform-neutral inventory facade with operating-system-specific backends.
 
-use crate::payload::ServerResource;
+use crate::{cancellation::Cancellation, payload::ServerResource};
 use std::fmt;
 
 #[cfg(target_os = "linux")]
@@ -31,10 +31,10 @@ pub fn capabilities() -> Vec<&'static str> {
     }
 }
 
-pub fn collect() -> Result<ServerResource, CollectError> {
+pub fn collect(cancellation: &Cancellation) -> Result<ServerResource, CollectError> {
     #[cfg(target_os = "linux")]
     {
-        linux::collect()
+        linux::collect(cancellation)
     }
 
     #[cfg(not(target_os = "linux"))]

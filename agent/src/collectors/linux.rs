@@ -1,8 +1,12 @@
 //! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
 
 use super::CollectError;
-use crate::payload::{
-    Address, Component, HostAttributes, Identifiers, Interface, ResourceKind, ServerResource,
+use crate::{
+    cancellation::Cancellation,
+    command,
+    payload::{
+        Address, Component, HostAttributes, Identifiers, Interface, ResourceKind, ServerResource,
+    },
 };
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
@@ -19,11 +23,12 @@ trait VirtDetector {
     fn vm(&self) -> VirtDetection;
 }
 
-struct SystemdVirtDetector;
+struct SystemdVirtDetector<'a>(&'a Cancellation);
 
-impl SystemdVirtDetector {
-    fn detect(category: &str) -> VirtDetection {
-        let Ok(output) = Command::new("systemd-detect-virt").arg(category).output() else {
+impl SystemdVirtDetector<'_> {
+    fn detect(&self, category: &str) -> VirtDetection {
+        let Ok(output) = command::run(Command::new("systemd-detect-virt").arg(category), self.0)
+        else {
             return VirtDetection::Unknown;
         };
         let Ok(value) = String::from_utf8(output.stdout) else {
@@ -41,13 +46,13 @@ impl SystemdVirtDetector {
     }
 }
 
-impl VirtDetector for SystemdVirtDetector {
+impl VirtDetector for SystemdVirtDetector<'_> {
     fn container(&self) -> VirtDetection {
-        Self::detect("--container")
+        self.detect("--container")
     }
 
     fn vm(&self) -> VirtDetection {
-        Self::detect("--vm")
+        self.detect("--vm")
     }
 }
 
@@ -170,28 +175,32 @@ fn normalize_mac(v: &str) -> Option<String> {
     }
 }
 
-/// Collects one server resource. `root` permits parser/filesystem fixtures in tests.
-pub fn collect_from(root: &Path) -> Result<ServerResource, CollectError> {
-    let ip_output = Command::new("ip")
-        .args(["-j", "address"])
-        .output()
+fn collect_from_with_cancellation(
+    root: &Path,
+    cancellation: &Cancellation,
+) -> Result<ServerResource, CollectError> {
+    let ip_output = command::run(Command::new("ip").args(["-j", "address"]), cancellation)
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok());
-    collect_from_with_ip_and_detector(root, ip_output.as_deref().ok_or(()), &SystemdVirtDetector)
+    collect_from_with_ip_and_detector(
+        root,
+        ip_output.as_deref().ok_or(()),
+        &SystemdVirtDetector(cancellation),
+        cancellation,
+    )
 }
 
 fn collect_from_with_ip_and_detector(
     root: &Path,
     ip_output: Result<&str, ()>,
     detector: &dyn VirtDetector,
+    cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
     let hostname = read(root, "etc/hostname").ok_or_else(|| {
         CollectError("Linux host has no usable /etc/hostname; observation cannot be matched".into())
     })?;
-    let fqdn = Command::new("hostname")
-        .arg("-f")
-        .output()
+    let fqdn = command::run(Command::new("hostname").arg("-f"), cancellation)
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -268,8 +277,8 @@ fn collect_from_with_ip_and_detector(
 }
 
 /// Collects from the running Linux host.
-pub fn collect() -> Result<ServerResource, CollectError> {
-    collect_from(Path::new("/"))
+pub fn collect(cancellation: &Cancellation) -> Result<ServerResource, CollectError> {
+    collect_from_with_cancellation(Path::new("/"), cancellation)
 }
 
 fn component<const N: usize>(kind: &str, values: [(&str, Value); N]) -> Component {
@@ -501,7 +510,12 @@ mod tests {
         container: VirtDetection,
         vm: VirtDetection,
     ) -> Result<ServerResource, CollectError> {
-        collect_from_with_ip_and_detector(root, ip_output, &FakeDetector { container, vm })
+        collect_from_with_ip_and_detector(
+            root,
+            ip_output,
+            &FakeDetector { container, vm },
+            &Cancellation::default(),
+        )
     }
 
     fn fixture() -> std::path::PathBuf {

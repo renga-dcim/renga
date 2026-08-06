@@ -44,7 +44,7 @@ fn main() {
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
     if args.dry_run {
-        let observation = Observation::new(collectors::collect()?);
+        let observation = Observation::new(collectors::collect(&Cancellation::default())?);
         println!("{}", serde_json::to_string_pretty(&observation)?);
         return Ok(());
     }
@@ -65,9 +65,19 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
-    send_checkin(&client, &config)?;
-    send_inventory(&client)?;
+    let operations = RuntimeOperations {
+        client: &client,
+        config: &config,
+        stopped: &stopped,
+    };
+    let startup_failures = deliver_startup(&operations);
     if args.once {
+        return aggregated_result(startup_failures);
+    }
+    for failure in startup_failures {
+        warn!(error = %failure, "startup delivery failed");
+    }
+    if stopped.cancelled() {
         return Ok(());
     }
 
@@ -82,7 +92,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
 
     while !stopped.cancelled() {
         let now = Instant::now();
-        for job in scheduler.due(now) {
+        for job in scheduler.due_until_cancelled(now, &stopped) {
             match job {
                 Job::CheckIn => {
                     if let Err(failure) = send_checkin(&client, &config) {
@@ -91,7 +101,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
                 }
                 Job::Inventory => {
-                    if let Err(failure) = send_inventory(&client) {
+                    if let Err(failure) = send_inventory(&client, &stopped) {
                         warn!(error = %failure, "inventory failed");
                     }
                     scheduler.reschedule(job, Instant::now(), config.inventory_interval);
@@ -142,11 +152,49 @@ fn send_checkin(client: &HttpClient, config: &Config) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn send_inventory(client: &HttpClient) -> Result<(), Box<dyn Error>> {
-    let observation = Observation::new(collectors::collect()?);
+fn send_inventory(client: &HttpClient, stopped: &Cancellation) -> Result<(), Box<dyn Error>> {
+    let observation = Observation::new(collectors::collect(stopped)?);
     client.post_observation(&observation)?;
     info!(observation_id = %observation.observation_id, "observation posted");
     Ok(())
+}
+
+trait Operations {
+    fn checkin(&self) -> Result<(), Box<dyn Error>>;
+    fn inventory(&self) -> Result<(), Box<dyn Error>>;
+}
+
+struct RuntimeOperations<'a> {
+    client: &'a HttpClient,
+    config: &'a Config,
+    stopped: &'a Cancellation,
+}
+
+impl Operations for RuntimeOperations<'_> {
+    fn checkin(&self) -> Result<(), Box<dyn Error>> {
+        send_checkin(self.client, self.config)
+    }
+    fn inventory(&self) -> Result<(), Box<dyn Error>> {
+        send_inventory(self.client, self.stopped)
+    }
+}
+
+fn deliver_startup(operations: &dyn Operations) -> Vec<String> {
+    [
+        ("check-in", operations.checkin()),
+        ("inventory", operations.inventory()),
+    ]
+    .into_iter()
+    .filter_map(|(name, result)| result.err().map(|error| format!("{name}: {error}")))
+    .collect()
+}
+
+fn aggregated_result(failures: Vec<String>) -> Result<(), Box<dyn Error>> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; ").into())
+    }
 }
 
 fn reload(
@@ -161,6 +209,71 @@ fn reload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::RefCell, io};
+
+    struct FakeOperations {
+        calls: RefCell<Vec<&'static str>>,
+        checkin_fails: bool,
+        inventory_fails: bool,
+    }
+
+    impl Operations for FakeOperations {
+        fn checkin(&self) -> Result<(), Box<dyn Error>> {
+            self.calls.borrow_mut().push("check-in");
+            if self.checkin_fails {
+                Err(io::Error::other("check-in unavailable").into())
+            } else {
+                Ok(())
+            }
+        }
+        fn inventory(&self) -> Result<(), Box<dyn Error>> {
+            self.calls.borrow_mut().push("inventory");
+            if self.inventory_fails {
+                Err(io::Error::other("inventory unavailable").into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn fake(checkin_fails: bool, inventory_fails: bool) -> FakeOperations {
+        FakeOperations {
+            calls: RefCell::new(Vec::new()),
+            checkin_fails,
+            inventory_fails,
+        }
+    }
+
+    #[test]
+    fn checkin_failure_does_not_prevent_inventory_attempt() {
+        let operations = fake(true, false);
+        assert_eq!(deliver_startup(&operations).len(), 1);
+        assert_eq!(*operations.calls.borrow(), ["check-in", "inventory"]);
+    }
+
+    #[test]
+    fn inventory_failure_does_not_prevent_daemon_scheduling() {
+        let operations = fake(false, true);
+        let failures = deliver_startup(&operations);
+        assert_eq!(failures.len(), 1);
+        let scheduler = Scheduler::new(
+            Instant::now(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        assert!(scheduler.wait(Instant::now()) <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn once_attempts_both_and_reports_all_failures() {
+        let operations = fake(true, true);
+        let error = aggregated_result(deliver_startup(&operations))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(*operations.calls.borrow(), ["check-in", "inventory"]);
+        assert!(error.contains("check-in unavailable") && error.contains("inventory unavailable"));
+    }
 
     #[test]
     fn cancellation_handle_is_shared_with_configured_startup() {

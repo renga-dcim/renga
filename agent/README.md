@@ -70,12 +70,16 @@ sudo chmod 0640 /etc/renga/agent.env
 ```
 
 `--dry-run` collects once and prints pretty JSON without loading configuration or
-using the network. `--once` loads configuration, posts one check-in and one
-inventory observation, then exits. With neither option the agent sends both at
-startup, schedules periodic check-ins and inventory, and retries transient HTTP
+using the network. `--once` loads configuration and attempts both a check-in and
+an inventory observation; after both attempts it exits unsuccessfully if either
+failed and reports all failures. With neither option the agent attempts both at
+startup, logs either failure independently, then schedules periodic check-ins and inventory, and retries transient HTTP
 failures with backoff. SIGTERM/SIGINT stops retry attempts and backoff promptly,
 including during `--once`. A blocking request already in flight can continue up
-to `request_timeout_seconds` before the process exits.
+to `request_timeout_seconds` before the process exits. Collector subprocesses
+are separately bounded to two seconds and are killed and reaped on timeout or
+shutdown. Cancellation is checked before every due job, so no remaining jobs in
+the current scheduler batch start after shutdown is requested.
 
 The daemon reloads the TOML file and environment overrides on the configured
 refresh interval. A valid reload replaces transport and interval settings; an

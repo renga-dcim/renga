@@ -1,5 +1,6 @@
 //! Small monotonic scheduler, kept independent of sleeping for deterministic tests.
 
+use crate::cancellation::Cancellation;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,16 @@ impl Scheduler {
         .into_iter()
         .filter_map(|(job, at)| (at <= now).then_some(job))
         .collect()
+    }
+
+    pub fn due_until_cancelled<'a>(
+        &self,
+        now: Instant,
+        stopped: &'a Cancellation,
+    ) -> impl Iterator<Item = Job> + 'a {
+        self.due(now)
+            .into_iter()
+            .take_while(move |_| !stopped.cancelled())
     }
 
     pub fn reschedule(&mut self, job: Job, now: Instant, interval: Duration) {
@@ -161,5 +172,16 @@ mod tests {
             vec![Job::Inventory, Job::Reload]
         );
         assert_eq!(scheduler.wait(now), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn cancellation_stops_remaining_due_jobs() {
+        let stopped = Cancellation::default();
+        let now = Instant::now();
+        let scheduler = Scheduler::new(now, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut jobs = scheduler.due_until_cancelled(now, &stopped);
+        assert_eq!(jobs.next(), Some(Job::CheckIn));
+        stopped.cancel();
+        assert_eq!(jobs.next(), None);
     }
 }
