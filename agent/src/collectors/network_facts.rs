@@ -3,6 +3,8 @@
 use std::{collections::BTreeMap, io, net::IpAddr};
 
 const MAX_ATTEMPTS: usize = 5;
+const MAX_INTERFACES: usize = 4096;
+const MAX_ADDRESSES: usize = 16384;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum AddressFamily {
@@ -135,8 +137,21 @@ fn stable_snapshot(provider: &dyn DumpProvider) -> io::Result<Vec<NetworkInterfa
 
 fn snapshot(provider: &dyn DumpProvider) -> io::Result<Vec<NetworkInterface>> {
     let interfaces = provider.interfaces()?;
+    if interfaces.len() > MAX_INTERFACES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "network interface dump exceeds collection limit",
+        ));
+    }
+    let raw_addresses = provider.addresses()?;
+    if raw_addresses.len() > MAX_ADDRESSES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "network address dump exceeds collection limit",
+        ));
+    }
     let mut addresses: BTreeMap<u32, Vec<NetworkAddress>> = BTreeMap::new();
-    for address in provider.addresses()? {
+    for address in raw_addresses {
         addresses
             .entry(address.index)
             .or_default()
@@ -275,6 +290,18 @@ mod tests {
 
         let error = stable_snapshot(&fake(items)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
+    #[test]
+    fn oversized_interface_dump_is_unavailable_without_retrying() {
+        let source = fake(vec![Ok((
+            (0..=MAX_INTERFACES)
+                .map(|index| iface(index as u32, "eth"))
+                .collect(),
+            vec![],
+        ))]);
+
+        let error = stable_snapshot(&source).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
     #[test]
     fn instability_is_unavailable_after_bound() {

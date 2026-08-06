@@ -1,9 +1,10 @@
 //! Owned filesystem facts backed by PID 1's procfs mount namespace.
 
-use procfs::process::{MountInfos, Process};
-#[cfg(test)]
-use procfs::FromBufRead;
-use std::{io, path::PathBuf};
+use procfs::{process::MountInfos, FromBufRead};
+use std::{fs::File, io, io::Read, path::PathBuf};
+
+pub(super) const MAX_MOUNTINFO_BYTES: u64 = 1024 * 1024;
+const MAX_MOUNT_RECORDS: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilesystemFacts {
@@ -18,35 +19,43 @@ pub trait FilesystemFactsSource {
 }
 
 pub struct ProcfsSource {
-    process_root: Option<PathBuf>,
+    mountinfo_path: PathBuf,
 }
 
 impl ProcfsSource {
     pub fn host_pid_one() -> Self {
-        Self { process_root: None }
+        Self {
+            mountinfo_path: PathBuf::from("/proc/1/mountinfo"),
+        }
     }
 
     #[cfg(test)]
     pub fn from_process_root(process_root: PathBuf) -> Self {
         Self {
-            process_root: Some(process_root),
-        }
-    }
-
-    fn process(&self) -> procfs::ProcResult<Process> {
-        match &self.process_root {
-            Some(root) => Process::new_with_root(root.clone()),
-            None => Process::new(1),
+            mountinfo_path: process_root.join("mountinfo"),
         }
     }
 }
 
 impl FilesystemFactsSource for ProcfsSource {
     fn collect(&self) -> io::Result<Vec<FilesystemFacts>> {
-        let mountinfo = self
-            .process()
-            .and_then(|process| process.mountinfo())
-            .map_err(io::Error::other)?;
+        let mut bytes = Vec::new();
+        File::open(&self.mountinfo_path)?
+            .take(MAX_MOUNTINFO_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_MOUNTINFO_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PID 1 mountinfo exceeds collection byte limit",
+            ));
+        }
+        let mountinfo = MountInfos::from_buf_read(bytes.as_slice()).map_err(io::Error::other)?;
+        if mountinfo.0.len() > MAX_MOUNT_RECORDS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PID 1 mountinfo exceeds collection record limit",
+            ));
+        }
         Ok(project_mountinfo(mountinfo))
     }
 }

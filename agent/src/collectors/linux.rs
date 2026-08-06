@@ -273,9 +273,11 @@ fn collect_disks(disks: Option<Vec<DiskFacts>>) -> Vec<Component> {
     let Some(disks) = disks else {
         return vec![];
     };
+    let discovered_count = disks.len();
     bounded_components(
         "disk",
         MAX_DISK_COMPONENTS,
+        discovered_count,
         disks.into_iter().map(|disk| {
             let name = normalize_value(&disk.name)
                 .or_else(|| disk.mount_point.as_deref().and_then(normalize_value));
@@ -304,9 +306,11 @@ fn collect_filesystems(source: &dyn FilesystemFactsSource) -> Vec<Component> {
     let Ok(filesystems) = source.collect() else {
         return vec![];
     };
+    let discovered_count = filesystems.len();
     bounded_components(
         "filesystem",
         MAX_FILESYSTEM_COMPONENTS,
+        discovered_count,
         filesystems.into_iter().map(|filesystem| {
             component(
                 "filesystem",
@@ -323,16 +327,10 @@ fn collect_filesystems(source: &dyn FilesystemFactsSource) -> Vec<Component> {
 fn bounded_components(
     collector: &str,
     limit: usize,
+    discovered_count: usize,
     components: impl Iterator<Item = Component>,
 ) -> Vec<Component> {
-    let mut discovered_count = 0;
-    let mut emitted = Vec::with_capacity(limit + 1);
-    for component in components {
-        discovered_count += 1;
-        if emitted.len() < limit {
-            emitted.push(component);
-        }
-    }
+    let mut emitted = components.take(limit).collect::<Vec<_>>();
     if discovered_count > limit {
         // This fixed, compact status record is emitted in addition to (not instead of) the cap.
         emitted.push(component(
@@ -804,6 +802,22 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("proc/1/mountinfo"), "malformed\n").unwrap();
+
+        assert!(
+            collect_filesystems(&ProcfsSource::from_process_root(root.join("proc/1"))).is_empty()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_pid_one_mountinfo_omits_all_filesystems() {
+        let root = fixture();
+        fs::create_dir_all(root.join("proc/1")).unwrap();
+        fs::write(
+            root.join("proc/1/mountinfo"),
+            vec![b'x'; filesystem_facts::MAX_MOUNTINFO_BYTES as usize + 1],
+        )
+        .unwrap();
 
         assert!(
             collect_filesystems(&ProcfsSource::from_process_root(root.join("proc/1"))).is_empty()
