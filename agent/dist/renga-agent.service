@@ -20,6 +20,8 @@ StandardError=journal
 SyslogIdentifier=renga-agent
 
 # The collector only needs read access to host inventory in /proc and /sys.
+# DMI UUID/serial are best-effort with this unprivileged account; do not run as
+# root or weaken the sandbox merely to make optional firmware identifiers readable.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

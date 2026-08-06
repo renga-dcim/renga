@@ -107,6 +107,12 @@ sudo journalctl -u renga-agent.service -f
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
 capabilities and makes the host filesystem read-only to the service.
+Filesystem inventory is read from `/proc/1/mounts` so it describes the host
+rather than the service's sandboxed mount view; if that file is inaccessible,
+filesystem components are omitted instead of falling back to `/proc/mounts`.
+The DMI UUID and serial number remain best-effort because an unprivileged
+service may not have permission to read the relevant sysfs files. Do not run the
+agent as root or weaken the sandbox to obtain those optional identifiers.
 The example unit allows 40 seconds for shutdown, slightly above the default
 30-second request timeout. If `request_timeout_seconds` is increased, operators
 should increase `TimeoutStopSec` too; otherwise systemd may forcibly stop an

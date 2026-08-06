@@ -357,22 +357,26 @@ fn collect_disks(root: &Path) -> Vec<Component> {
         .collect()
 }
 fn collect_filesystems(root: &Path) -> Vec<Component> {
-    read(root, "proc/mounts")
-        .into_iter()
-        .flat_map(|s| {
-            s.lines()
-                .filter_map(|l| {
-                    let mut p = l.split_whitespace();
-                    Some(component(
-                        "filesystem",
-                        [
-                            ("device", json!(p.next()?)),
-                            ("mountpoint", json!(p.next()?)),
-                            ("filesystem_type", json!(p.next()?)),
-                        ],
-                    ))
-                })
-                .collect::<Vec<_>>()
+    // PID 1 exposes the host mount namespace for the normal system service. Never fall back to
+    // /proc/mounts: under filesystem sandboxing that would report the agent's private view.
+    read(root, "proc/1/mounts")
+        .map(|mounts| parse_mounts(&mounts))
+        .unwrap_or_default()
+}
+
+fn parse_mounts(mounts: &str) -> Vec<Component> {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            Some(component(
+                "filesystem",
+                [
+                    ("device", json!(parts.next()?)),
+                    ("mountpoint", json!(parts.next()?)),
+                    ("filesystem_type", json!(parts.next()?)),
+                ],
+            ))
         })
         .collect()
 }
@@ -526,6 +530,51 @@ mod tests {
             (2, Some("Xeon".into()))
         );
     }
+
+    #[test]
+    fn collects_filesystems_from_host_pid_one_mounts() {
+        let root = fixture();
+        fs::create_dir_all(root.join("proc/1")).unwrap();
+        fs::write(
+            root.join("proc/mounts"),
+            "sandboxfs /sandbox sandboxfs rw 0 0\n",
+        )
+        .unwrap();
+        fs::write(root.join("proc/1/mounts"), "hostfs /host hostfs rw 0 0\n").unwrap();
+
+        let filesystems = collect_filesystems(&root);
+
+        assert_eq!(filesystems.len(), 1);
+        assert_eq!(filesystems[0].attributes["device"], "hostfs");
+        assert_eq!(filesystems[0].attributes["mountpoint"], "/host");
+        assert_eq!(filesystems[0].attributes["filesystem_type"], "hostfs");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_mounts_fixture_and_skips_incomplete_lines() {
+        let filesystems = parse_mounts("/dev/vda1 / ext4 rw 0 0\nincomplete /entry\n");
+
+        assert_eq!(filesystems.len(), 1);
+        assert_eq!(filesystems[0].attributes["device"], "/dev/vda1");
+        assert_eq!(filesystems[0].attributes["mountpoint"], "/");
+        assert_eq!(filesystems[0].attributes["filesystem_type"], "ext4");
+    }
+
+    #[test]
+    fn inaccessible_pid_one_mounts_do_not_fall_back_to_self_mounts() {
+        let root = fixture();
+        fs::create_dir_all(root.join("proc")).unwrap();
+        fs::write(
+            root.join("proc/mounts"),
+            "sandboxfs /sandbox sandboxfs rw 0 0\n",
+        )
+        .unwrap();
+
+        assert!(collect_filesystems(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn parses_ip_addresses() {
         let v = parse_ip_json(
