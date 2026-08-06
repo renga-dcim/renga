@@ -2,7 +2,7 @@
 
 use crate::{
     cancellation::Cancellation,
-    config::Config,
+    config::{Config, DELIVERY_BUDGET},
     payload::{CheckIn, Observation, MAX_OBSERVATION_BYTES},
 };
 use reqwest::{
@@ -44,12 +44,14 @@ impl fmt::Display for TransportError {
 }
 impl std::error::Error for TransportError {}
 
+#[derive(Clone)]
 pub struct HttpClient {
     client: Client,
     checkin_url: Url,
     observation_url: Url,
     authorization: HeaderValue,
     attempts: u32,
+    request_timeout: Duration,
     cancellation: Cancellation,
 }
 impl HttpClient {
@@ -99,6 +101,7 @@ impl HttpClient {
             observation_url,
             authorization,
             attempts: config.max_retry_attempts,
+            request_timeout: config.request_timeout,
             cancellation,
         })
     }
@@ -124,6 +127,7 @@ impl HttpClient {
     fn post_encoded_observation(&self, body: Vec<u8>) -> Result<(), TransportError> {
         retry(
             self.attempts,
+            self.request_timeout,
             || {
                 let response = self
                     .client
@@ -142,6 +146,7 @@ impl HttpClient {
     fn post<T: Serialize>(&self, url: Url, value: &T) -> Result<(), TransportError> {
         retry(
             self.attempts,
+            self.request_timeout,
             || {
                 let response = self
                     .client
@@ -194,10 +199,12 @@ fn bounded_error_excerpt(reader: &mut impl Read) -> String {
 
 fn retry<T>(
     attempts: u32,
+    request_timeout: Duration,
     mut operation: impl FnMut() -> Result<T, TransportError>,
     mut sleep: impl FnMut(Duration),
     cancellation: &Cancellation,
 ) -> Result<T, TransportError> {
+    let started = std::time::Instant::now();
     let mut delay = Duration::from_millis(250);
     for attempt in 1..=attempts {
         if cancellation.cancelled() {
@@ -206,7 +213,15 @@ fn retry<T>(
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) if !error.transient || attempt == attempts => return Err(error),
-            Err(_) => {
+            Err(error) => {
+                if started
+                    .elapsed()
+                    .saturating_add(delay)
+                    .saturating_add(request_timeout)
+                    > DELIVERY_BUDGET
+                {
+                    return Err(error);
+                }
                 let mut remaining = delay;
                 while !remaining.is_zero() {
                     if cancellation.cancelled() {
@@ -406,6 +421,7 @@ mod tests {
         let cancellation = Cancellation::default();
         let result = retry(
             3,
+            Duration::ZERO,
             || {
                 calls += 1;
                 if calls < 3 {
@@ -426,6 +442,7 @@ mod tests {
         let cancellation = Cancellation::default();
         assert!(retry::<()>(
             5,
+            Duration::ZERO,
             || {
                 calls += 1;
                 Err(error(false))
@@ -442,6 +459,7 @@ mod tests {
         let cancellation = Cancellation::default();
         assert!(retry::<()>(
             3,
+            Duration::ZERO,
             || {
                 calls += 1;
                 Err(error(true))
@@ -454,12 +472,32 @@ mod tests {
     }
 
     #[test]
+    fn retry_does_not_start_an_attempt_that_cannot_fit_delivery_budget() {
+        let mut calls = 0;
+        let cancellation = Cancellation::default();
+
+        assert!(retry::<()>(
+            5,
+            DELIVERY_BUDGET,
+            || {
+                calls += 1;
+                Err(error(true))
+            },
+            |_| {},
+            &cancellation
+        )
+        .is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
     fn already_cancelled_makes_no_attempt() {
         let cancellation = Cancellation::default();
         cancellation.cancel();
         let mut calls = 0;
         let failure = retry::<()>(
             3,
+            Duration::ZERO,
             || {
                 calls += 1;
                 Ok(())
@@ -481,6 +519,7 @@ mod tests {
         let mut sleeps = 0;
         let failure = retry::<()>(
             3,
+            Duration::ZERO,
             || {
                 calls += 1;
                 Err(error(true))

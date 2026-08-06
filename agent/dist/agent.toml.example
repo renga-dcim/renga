@@ -16,8 +16,8 @@ installation_id = "00000000-0000-4000-8000-000000000000"
 # Optional intervals and transport policy, all expressed in seconds.
 # Omitted values use the defaults shown below; every value must be greater than zero.
 inventory_interval_seconds = 3600
-# Maximum 60: the server lease is 90 seconds, reserving 30 seconds for delivery.
+# Maximum 60: the server lease is 90 seconds, reserving a 25-second delivery budget.
 checkin_interval_seconds = 60
 config_refresh_interval_seconds = 300
-request_timeout_seconds = 30
+request_timeout_seconds = 20
 max_retry_attempts = 5

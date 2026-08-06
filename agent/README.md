@@ -49,7 +49,8 @@ The example documents every key and its default. `renga_url`, `token`, and
 
 `checkin_interval_seconds` must be between 1 and 60 seconds. The 60-second
 maximum keeps check-ins within the server's fixed 90-second lease while
-reserving a 30-second margin for delivery and retries.
+reserving a 25-second total check-in delivery budget. Request timeouts may not
+exceed 20 seconds and retry attempts may not exceed five.
 
 HTTPS is required by default, and redirects are never followed. For deliberate
 local development only, `allow_insecure_http = true` (or the strict environment
@@ -118,10 +119,9 @@ falling back to the agent's mount namespace.
 The DMI UUID and serial number remain best-effort because an unprivileged
 service may not have permission to read the relevant sysfs files. Do not run the
 agent as root or weaken the sandbox to obtain those optional identifiers.
-The example unit allows 40 seconds for shutdown, slightly above the default
-30-second request timeout. If `request_timeout_seconds` is increased, operators
-should increase `TimeoutStopSec` too; otherwise systemd may forcibly stop an
-in-flight request when its 40-second limit expires.
+The example unit allows 40 seconds for shutdown, above the maximum 20-second
+request timeout so an in-flight request can finish before systemd forcibly stops
+the service.
 
 ## Collector scope, portability, and degradation
 

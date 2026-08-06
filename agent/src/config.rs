@@ -9,11 +9,14 @@ use std::{
 
 const INVENTORY_DEFAULT: u64 = 3_600;
 const CHECKIN_DEFAULT: u64 = 60;
-// The server lease is 90s; reserve 30s for check-in delivery and retry latency.
+// The server lease is 90s; reserve the fixed delivery budget below for renewal.
 const CHECKIN_MAX: u64 = 60;
 const REFRESH_DEFAULT: u64 = 300;
-const TIMEOUT_DEFAULT: u64 = 30;
+const TIMEOUT_DEFAULT: u64 = 20;
 const RETRIES_DEFAULT: u32 = 5;
+const TIMEOUT_MAX: u64 = 20;
+const RETRIES_MAX: u32 = 5;
+pub const DELIVERY_BUDGET: Duration = Duration::from_secs(25);
 
 /// Validated runtime configuration. The token is intentionally redacted from Debug.
 #[derive(Clone)]
@@ -72,7 +75,7 @@ struct RawConfig {
 
 impl Config {
     /// Loads TOML and then applies `RENGA_*` overrides. Durations are in seconds.
-    /// Defaults: inventory 1h, check-in 1m, refresh 5m, timeout 30s, retries 5.
+    /// Defaults: inventory 1h, check-in 1m, refresh 5m, timeout 20s, retries 5.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let mut raw: RawConfig = match fs::read_to_string(path) {
@@ -178,10 +181,20 @@ impl Config {
             ));
         }
         let max_retry_attempts = raw.max_retry_attempts.unwrap_or(RETRIES_DEFAULT);
-        if max_retry_attempts == 0 {
-            return Err(ConfigError(
-                "max_retry_attempts must be greater than zero".into(),
-            ));
+        if !(1..=RETRIES_MAX).contains(&max_retry_attempts) {
+            return Err(ConfigError(format!(
+                "max_retry_attempts must be between 1 and {RETRIES_MAX}"
+            )));
+        }
+        let request_timeout = duration(
+            raw.request_timeout_seconds,
+            TIMEOUT_DEFAULT,
+            "request_timeout_seconds",
+        )?;
+        if request_timeout.as_secs() > TIMEOUT_MAX {
+            return Err(ConfigError(format!(
+                "request_timeout_seconds must not exceed {TIMEOUT_MAX}"
+            )));
         }
         Ok(Self {
             config_path,
@@ -201,11 +214,7 @@ impl Config {
                 REFRESH_DEFAULT,
                 "config_refresh_interval_seconds",
             )?,
-            request_timeout: duration(
-                raw.request_timeout_seconds,
-                TIMEOUT_DEFAULT,
-                "request_timeout_seconds",
-            )?,
+            request_timeout,
             max_retry_attempts,
         })
     }
@@ -245,6 +254,23 @@ mod tests {
         let mut r = raw();
         r.request_timeout_seconds = Some(0);
         assert!(Config::from_raw("x".into(), r).is_err());
+    }
+
+    #[test]
+    fn bounds_transport_timeout_and_attempt_configuration() {
+        let mut timeout = raw();
+        timeout.request_timeout_seconds = Some(TIMEOUT_MAX + 1);
+        assert!(Config::from_raw("x".into(), timeout)
+            .unwrap_err()
+            .to_string()
+            .contains("must not exceed 20"));
+
+        let mut attempts = raw();
+        attempts.max_retry_attempts = Some(RETRIES_MAX + 1);
+        assert!(Config::from_raw("x".into(), attempts)
+            .unwrap_err()
+            .to_string()
+            .contains("between 1 and 5"));
     }
     #[test]
     fn environment_wins_over_toml() {

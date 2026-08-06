@@ -88,6 +88,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         config.inventory_interval,
         config.config_refresh_interval,
     );
+    let mut inventory_worker = None;
     info!("daemon started");
 
     while !stopped.cancelled() {
@@ -101,8 +102,24 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
                 }
                 Job::Inventory => {
-                    if let Err(failure) = send_inventory(&client, &stopped) {
-                        warn!(error = %failure, "inventory failed");
+                    if inventory_worker
+                        .as_ref()
+                        .is_some_and(|worker: &thread::JoinHandle<()>| !worker.is_finished())
+                    {
+                        warn!("inventory still running; skipping overlapping collection");
+                    } else {
+                        if let Some(worker) = inventory_worker.take() {
+                            let _ = worker.join();
+                        }
+                        let inventory_client = client.clone();
+                        let inventory_stopped = stopped.clone();
+                        inventory_worker = Some(thread::spawn(move || {
+                            if let Err(failure) =
+                                send_inventory(&inventory_client, &inventory_stopped)
+                            {
+                                warn!(error = %failure, "inventory failed");
+                            }
+                        }));
                     }
                     scheduler.reschedule(job, Instant::now(), config.inventory_interval);
                 }
@@ -138,6 +155,9 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             .wait(Instant::now())
             .min(Duration::from_millis(250));
         thread::sleep(wait);
+    }
+    if let Some(worker) = inventory_worker {
+        let _ = worker.join();
     }
     info!("daemon stopped");
     Ok(())
