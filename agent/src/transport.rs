@@ -8,6 +8,7 @@ use crate::{
 use reqwest::{
     blocking::{Client, Response},
     header::{HeaderValue, AUTHORIZATION},
+    redirect::Policy,
     StatusCode, Url,
 };
 use serde::Serialize;
@@ -59,6 +60,12 @@ impl HttpClient {
             .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
         let base_url = Url::parse(&config.renga_url)
             .map_err(|_| TransportError::new("invalid Renga server URL".into(), false))?;
+        if base_url.scheme() == "http" && !config.allow_insecure_http {
+            return Err(TransportError::new(
+                "Renga server URL must use HTTPS unless insecure HTTP is explicitly enabled".into(),
+                false,
+            ));
+        }
         // The agent API is rooted at the origin. Rejecting base paths avoids silently
         // discarding an operator-supplied path when joining absolute API routes.
         if !has_explicit_authority
@@ -83,6 +90,7 @@ impl HttpClient {
         authorization.set_sensitive(true);
         let client = Client::builder()
             .timeout(config.request_timeout)
+            .redirect(Policy::none())
             .build()
             .map_err(|e| TransportError::new(format!("cannot build HTTP client: {e}"), false))?;
         Ok(Self {
@@ -184,12 +192,17 @@ fn retry<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+    };
 
     fn config(renga_url: &str, token: &str) -> Config {
         Config {
             config_path: PathBuf::from("agent.toml"),
             renga_url: renga_url.into(),
+            allow_insecure_http: false,
             token: token.into(),
             installation_id: uuid::Uuid::nil(),
             inventory_interval: Duration::from_secs(300),
@@ -225,6 +238,44 @@ mod tests {
             );
             assert_eq!(client.authorization.to_str().unwrap(), "Bearer valid-token");
         }
+    }
+
+    #[test]
+    fn rejects_plaintext_http_by_default() {
+        let result = HttpClient::new(
+            &config("http://renga.test", "valid-token"),
+            Cancellation::default(),
+        );
+        assert!(result.is_err(), "accepted a plaintext HTTP origin");
+    }
+
+    #[test]
+    fn does_not_follow_redirects_and_treats_them_as_permanent() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                let mut stream = stream.unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 302 Found\r\nLocation: http://{address}/redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        });
+
+        let mut config = config(&format!("http://{address}"), "valid-token");
+        config.allow_insecure_http = true;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let error = client
+            .post(client.checkin_url.clone(), &serde_json::json!({}))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("302 Found"));
+        assert!(!error.transient, "redirects must not be retried");
+        server.join().unwrap();
     }
 
     #[test]

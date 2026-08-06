@@ -38,6 +38,7 @@ The example documents every key and its default. `renga_url`, `token`, and
 `installation_id` are required. Environment variables override file values:
 
 * `RENGA_URL`
+* `RENGA_ALLOW_INSECURE_HTTP` (`true` or `false`, exactly)
 * `RENGA_TOKEN`
 * `RENGA_INSTALLATION_ID`
 * `RENGA_INVENTORY_INTERVAL_SECONDS`
@@ -45,6 +46,12 @@ The example documents every key and its default. `renga_url`, `token`, and
 * `RENGA_CONFIG_REFRESH_INTERVAL_SECONDS`
 * `RENGA_REQUEST_TIMEOUT_SECONDS`
 * `RENGA_MAX_RETRY_ATTEMPTS`
+
+HTTPS is required by default, and redirects are never followed. For deliberate
+local development only, `allow_insecure_http = true` (or the strict environment
+override `RENGA_ALLOW_INSECURE_HTTP=true`) permits an `http://` URL. **Do not use
+this in production:** plaintext HTTP exposes the bearer token and host inventory
+to interception. Prefer a locally trusted HTTPS endpoint whenever possible.
 
 `RUST_LOG` controls log filtering and defaults to `info`; it is not an agent
 configuration field. The supplied unit optionally reads `/etc/renga/agent.env`,

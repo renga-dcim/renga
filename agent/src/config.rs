@@ -18,6 +18,7 @@ const RETRIES_DEFAULT: u32 = 5;
 pub struct Config {
     pub config_path: PathBuf,
     pub renga_url: String,
+    pub allow_insecure_http: bool,
     pub token: String,
     pub installation_id: uuid::Uuid,
     pub inventory_interval: Duration,
@@ -32,6 +33,7 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("config_path", &self.config_path)
             .field("renga_url", &self.renga_url)
+            .field("allow_insecure_http", &self.allow_insecure_http)
             .field("token", &"[REDACTED]")
             .field("installation_id", &self.installation_id)
             .field("inventory_interval", &self.inventory_interval)
@@ -56,6 +58,7 @@ impl std::error::Error for ConfigError {}
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     renga_url: Option<String>,
+    allow_insecure_http: Option<bool>,
     token: Option<String>,
     installation_id: Option<String>,
     inventory_interval_seconds: Option<u64>,
@@ -101,6 +104,17 @@ impl Config {
         string_env!("RENGA_URL", renga_url);
         string_env!("RENGA_TOKEN", token);
         string_env!("RENGA_INSTALLATION_ID", installation_id);
+        if let Ok(value) = env::var("RENGA_ALLOW_INSECURE_HTTP") {
+            raw.allow_insecure_http = Some(match value.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => {
+                    return Err(ConfigError(
+                        "RENGA_ALLOW_INSECURE_HTTP must be exactly true or false".into(),
+                    ))
+                }
+            });
+        }
         number_env!(
             "RENGA_INVENTORY_INTERVAL_SECONDS",
             inventory_interval_seconds,
@@ -143,8 +157,13 @@ impl Config {
         let renga_url = required(raw.renga_url, "renga_url")?
             .trim_end_matches('/')
             .to_owned();
-        if !(renga_url.starts_with("https://") || renga_url.starts_with("http://")) {
-            return Err(ConfigError("renga_url must be an HTTP or HTTPS URL".into()));
+        let allow_insecure_http = raw.allow_insecure_http.unwrap_or(false);
+        if !(renga_url.starts_with("https://")
+            || allow_insecure_http && renga_url.starts_with("http://"))
+        {
+            return Err(ConfigError(
+                "renga_url must use HTTPS (HTTP requires allow_insecure_http = true)".into(),
+            ));
         }
         let max_retry_attempts = raw.max_retry_attempts.unwrap_or(RETRIES_DEFAULT);
         if max_retry_attempts == 0 {
@@ -155,6 +174,7 @@ impl Config {
         Ok(Self {
             config_path,
             renga_url,
+            allow_insecure_http,
             token: required(raw.token, "token")?,
             installation_id: uuid::Uuid::parse_str(&installation)
                 .map_err(|_| ConfigError("installation_id must be a UUID".into()))?,
@@ -228,5 +248,37 @@ mod tests {
         env::remove_var("RENGA_URL");
         fs::remove_file(path).unwrap();
         assert_eq!(c.renga_url, "https://environment.test");
+    }
+
+    #[test]
+    fn requires_https_unless_insecure_http_is_explicitly_enabled() {
+        assert!(Config::from_raw("x".into(), raw()).is_ok());
+
+        let mut input = raw();
+        input.renga_url = Some("http://localhost:4000".into());
+        assert!(Config::from_raw("x".into(), input).is_err());
+
+        let mut input = raw();
+        input.renga_url = Some("http://localhost:4000".into());
+        input.allow_insecure_http = Some(true);
+        assert!(Config::from_raw("x".into(), input).is_ok());
+    }
+
+    #[test]
+    fn insecure_http_environment_override_is_strict_and_wins_over_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        fs::write(&path, "renga_url='http://localhost:4000'\nallow_insecure_http=false\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+
+        env::set_var("RENGA_ALLOW_INSECURE_HTTP", "true");
+        let config = Config::load(&path).unwrap();
+        assert!(config.allow_insecure_http);
+
+        env::set_var("RENGA_ALLOW_INSECURE_HTTP", "TRUE");
+        let error = Config::load(&path).unwrap_err();
+        assert!(error.to_string().contains("exactly true or false"));
+
+        env::remove_var("RENGA_ALLOW_INSECURE_HTTP");
+        fs::remove_file(path).unwrap();
     }
 }

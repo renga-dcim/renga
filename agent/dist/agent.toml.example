@@ -1,6 +1,11 @@
 # Renga server base URL. Required; no default. Replace this placeholder.
 renga_url = "https://renga.example.invalid"
 
+# SECURITY: Keep false in production. Setting true permits plaintext HTTP, which
+# exposes the bearer token and inventory to network interception. Use only for
+# deliberate local development against a trusted loopback service.
+allow_insecure_http = false
+
 # Source bearer token. Required; no default. This placeholder is not a secret.
 token = "replace-with-source-token"
 
