@@ -1,6 +1,7 @@
 //! Linux inventory from procfs/sysfs. Missing individual kernel files are tolerated.
 
 use super::{
+    filesystem_facts::{FilesystemFactsSource, ProcfsSource},
     network_facts::{AddressFamily, GetifsSource, NetworkFactsSource, NetworkInterface},
     system_facts::{DiskFacts, DiskMedium, SysinfoSource, SystemFactsSource},
     CollectError,
@@ -95,11 +96,13 @@ fn collect_from_with_cancellation(
     root: &Path,
     cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
+    let filesystem_source = ProcfsSource::host_pid_one();
     collect_from_with_sources(
         root,
         &GetifsSource,
         &SystemdVirtDetector(cancellation),
         &SysinfoSource,
+        &filesystem_source,
         cancellation,
     )
 }
@@ -109,6 +112,7 @@ fn collect_from_with_sources(
     network_source: &dyn NetworkFactsSource,
     detector: &dyn VirtDetector,
     facts_source: &dyn SystemFactsSource,
+    filesystem_source: &dyn FilesystemFactsSource,
     cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
     let facts = facts_source.collect();
@@ -159,7 +163,7 @@ fn collect_from_with_sources(
         components.push(component("memory", [("total_bytes", json!(bytes))]));
     }
     components.extend(collect_disks(facts.disks));
-    components.extend(collect_filesystems(root));
+    components.extend(collect_filesystems(filesystem_source));
     components.push(virtualization_component(root, detector));
     let vendor = read(root, "sys/class/dmi/id/sys_vendor");
     let model = read(root, "sys/class/dmi/id/product_name");
@@ -294,28 +298,24 @@ fn collect_disks(disks: Option<Vec<DiskFacts>>) -> Vec<Component> {
         }),
     )
 }
-fn collect_filesystems(root: &Path) -> Vec<Component> {
-    // PID 1 exposes the host mount namespace for the normal system service. Never fall back to
-    // /proc/mounts: under filesystem sandboxing that would report the agent's private view.
-    read(root, "proc/1/mounts")
-        .map(|mounts| parse_mounts(&mounts))
-        .unwrap_or_default()
-}
-
-fn parse_mounts(mounts: &str) -> Vec<Component> {
+fn collect_filesystems(source: &dyn FilesystemFactsSource) -> Vec<Component> {
+    // PID 1 exposes the host mount namespace for the normal system service. An unavailable or
+    // malformed snapshot must not fall back to the agent's potentially sandboxed mount namespace.
+    let Ok(filesystems) = source.collect() else {
+        return vec![];
+    };
     bounded_components(
         "filesystem",
         MAX_FILESYSTEM_COMPONENTS,
-        mounts.lines().filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            Some(component(
+        filesystems.into_iter().map(|filesystem| {
+            component(
                 "filesystem",
                 [
-                    ("device", json!(parts.next()?)),
-                    ("mountpoint", json!(parts.next()?)),
-                    ("filesystem_type", json!(parts.next()?)),
+                    ("device", json!(filesystem.device)),
+                    ("mountpoint", json!(filesystem.mountpoint)),
+                    ("filesystem_type", json!(filesystem.filesystem_type)),
                 ],
-            ))
+            )
         }),
     )
 }
@@ -430,6 +430,7 @@ fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Compone
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collectors::filesystem_facts::{self, FilesystemFacts};
     use crate::collectors::network_facts::NetworkAddress;
     use crate::collectors::system_facts::{CpuFacts, OsFacts, SystemFacts};
     use std::{
@@ -476,6 +477,15 @@ mod tests {
         }
     }
 
+    struct FakeFilesystems(Option<Vec<FilesystemFacts>>);
+    impl FilesystemFactsSource for FakeFilesystems {
+        fn collect(&self) -> std::io::Result<Vec<FilesystemFacts>> {
+            self.0
+                .clone()
+                .ok_or_else(|| std::io::Error::other("unavailable"))
+        }
+    }
+
     fn collect_from_with_ip(
         root: &Path,
         ip_output: Result<&str, ()>,
@@ -500,6 +510,7 @@ mod tests {
             &network,
             &FakeDetector { container, vm },
             &partial_facts(),
+            &ProcfsSource::from_process_root(root.join("proc/1")),
             &Cancellation::default(),
         )
     }
@@ -555,6 +566,7 @@ mod tests {
                 vm: VirtDetection::Unknown,
             },
             &facts,
+            &ProcfsSource::from_process_root(root.join("proc/1")),
             &Cancellation::default(),
         )
         .unwrap();
@@ -625,6 +637,7 @@ mod tests {
                     vm: VirtDetection::Unknown,
                 },
                 &facts,
+                &ProcfsSource::from_process_root(root.join("proc/1")),
                 &Cancellation::default(),
             );
 
@@ -649,6 +662,7 @@ mod tests {
                 vm: VirtDetection::Unknown,
             },
             &partial_facts(),
+            &ProcfsSource::from_process_root(root.join("proc/1")),
             &Cancellation::default(),
         )
         .unwrap();
@@ -667,17 +681,22 @@ mod tests {
     }
 
     #[test]
-    fn collects_filesystems_from_host_pid_one_mounts() {
+    fn collects_filesystems_from_host_pid_one_mountinfo() {
         let root = fixture();
         fs::create_dir_all(root.join("proc/1")).unwrap();
         fs::write(
-            root.join("proc/mounts"),
-            "sandboxfs /sandbox sandboxfs rw 0 0\n",
+            root.join("proc/mountinfo"),
+            "20 1 0:20 / /sandbox rw - sandboxfs sandboxfs rw\n",
         )
         .unwrap();
-        fs::write(root.join("proc/1/mounts"), "hostfs /host hostfs rw 0 0\n").unwrap();
+        fs::write(
+            root.join("proc/1/mountinfo"),
+            "21 1 0:21 / /host rw - hostfs hostfs rw\n",
+        )
+        .unwrap();
 
-        let filesystems = collect_filesystems(&root);
+        let filesystems =
+            collect_filesystems(&ProcfsSource::from_process_root(root.join("proc/1")));
 
         assert_eq!(filesystems.len(), 1);
         assert_eq!(filesystems[0].attributes["device"], "hostfs");
@@ -687,22 +706,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_mounts_fixture_and_skips_incomplete_lines() {
-        let filesystems = parse_mounts("/dev/vda1 / ext4 rw 0 0\nincomplete /entry\n");
+    fn parses_mountinfo_and_unescapes_fields() {
+        let facts = filesystem_facts::parse_mountinfo(
+            "36 25 0:32 / /mnt/data\\040archive rw,nosuid - ext4 /dev/mapper/data\\040disk rw\n",
+        )
+        .unwrap();
+        let filesystems = collect_filesystems(&FakeFilesystems(Some(facts)));
 
         assert_eq!(filesystems.len(), 1);
-        assert_eq!(filesystems[0].attributes["device"], "/dev/vda1");
-        assert_eq!(filesystems[0].attributes["mountpoint"], "/");
+        assert_eq!(filesystems[0].attributes["device"], "/dev/mapper/data disk");
+        assert_eq!(filesystems[0].attributes["mountpoint"], "/mnt/data archive");
         assert_eq!(filesystems[0].attributes["filesystem_type"], "ext4");
     }
 
     #[test]
     fn bounds_filesystems_and_reports_explicit_truncation_status() {
         let mounts = (0..=MAX_FILESYSTEM_COMPONENTS)
-            .map(|index| format!("/dev/vda{index} /mnt/{index} ext4 rw 0 0\n"))
+            .map(|index| {
+                format!(
+                    "{} 1 0:{} / /mnt/{index} rw - ext4 /dev/vda{index} rw\n",
+                    index + 2,
+                    index + 2
+                )
+            })
             .collect::<String>();
 
-        let filesystems = parse_mounts(&mounts);
+        let facts = filesystem_facts::parse_mountinfo(&mounts).unwrap();
+        let filesystems = collect_filesystems(&FakeFilesystems(Some(facts)));
 
         assert_eq!(filesystems.len(), MAX_FILESYSTEM_COMPONENTS + 1);
         let status = filesystems.last().unwrap();
@@ -745,16 +775,35 @@ mod tests {
     }
 
     #[test]
-    fn inaccessible_pid_one_mounts_do_not_fall_back_to_self_mounts() {
+    fn inaccessible_pid_one_mountinfo_does_not_fall_back_to_self_mountinfo() {
         let root = fixture();
         fs::create_dir_all(root.join("proc")).unwrap();
         fs::write(
-            root.join("proc/mounts"),
-            "sandboxfs /sandbox sandboxfs rw 0 0\n",
+            root.join("proc/mountinfo"),
+            "20 1 0:20 / /sandbox rw - sandboxfs sandboxfs rw\n",
         )
         .unwrap();
 
-        assert!(collect_filesystems(&root).is_empty());
+        assert!(
+            collect_filesystems(&ProcfsSource::from_process_root(root.join("proc/1"))).is_empty()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_pid_one_mountinfo_omits_all_filesystems() {
+        let root = fixture();
+        fs::create_dir_all(root.join("proc/1")).unwrap();
+        fs::write(
+            root.join("proc/mountinfo"),
+            "20 1 0:20 / /sandbox rw - sandboxfs sandboxfs rw\n",
+        )
+        .unwrap();
+        fs::write(root.join("proc/1/mountinfo"), "malformed\n").unwrap();
+
+        assert!(
+            collect_filesystems(&ProcfsSource::from_process_root(root.join("proc/1"))).is_empty()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -809,6 +858,7 @@ mod tests {
                 vm: VirtDetection::Unknown,
             },
             &partial_facts(),
+            &ProcfsSource::from_process_root(root.join("proc/1")),
             &Cancellation::default(),
         )
         .unwrap();

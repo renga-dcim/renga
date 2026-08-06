@@ -111,9 +111,10 @@ sudo journalctl -u renga-agent.service -f
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
 capabilities and makes the host filesystem read-only to the service.
-Filesystem inventory is read from `/proc/1/mounts` so it describes the host
-rather than the service's sandboxed mount view; if that file is inaccessible,
-filesystem components are omitted instead of falling back to `/proc/mounts`.
+Filesystem inventory is parsed through `procfs` from `/proc/1/mountinfo` so it
+describes the host rather than the service's sandboxed mount view. If that view
+is inaccessible or malformed, all filesystem components are omitted instead of
+falling back to the agent's mount namespace.
 The DMI UUID and serial number remain best-effort because an unprivileged
 service may not have permission to read the relevant sysfs files. Do not run the
 agent as root or weaken the sandbox to obtain those optional identifiers.
@@ -149,8 +150,10 @@ match the `getifs` value. Otherwise that interface's MAC is omitted.
 Disk components are the portable disk entries visible to the agent and can vary
 with operating-system APIs and service sandboxing. They are not the
 authoritative filesystem inventory: filesystem components continue to come
-only from Linux PID 1's `/proc/1/mounts` view and are omitted when that view is
-inaccessible.
+only from Linux PID 1's mount namespace, parsed from `/proc/1/mountinfo` through
+the `procfs` crate, and are omitted when the complete view is inaccessible or
+malformed. The agent never falls back to its own potentially sandboxed mount
+namespace.
 
 Encoded observations are limited to 256,000 bytes, matching the Phoenix API.
 The agent rejects larger observations locally before opening a network request.
