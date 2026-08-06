@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use serde_json::{json, Value};
-use std::{fs, path::Path, process::Command};
+use std::{fs, os::unix::fs::FileTypeExt, path::Path, process::Command};
 
 /// Non-authoritative component limits reserve payload space for identity and network facts.
 const MAX_DISK_COMPONENTS: usize = 128;
@@ -394,7 +394,11 @@ fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Compone
         "run/podman/podman.sock",
     ]
     .iter()
-    .any(|path| root.join(path).exists());
+    .any(|path| {
+        root.join(path)
+            .metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_socket())
+    });
     let container_detection = detector.container();
     let vm_detection = detector.vm();
     let container_type = match &container_detection {
@@ -990,13 +994,28 @@ mod tests {
         let root = fixture();
         fs::create_dir_all(root.join("run/containerd")).unwrap();
         fs::write(root.join("run/containerd/containerd.sock"), "").unwrap();
-        let resource =
+        let regular_file =
+            collect_with_detection(&root, Ok("[]"), VirtDetection::None, VirtDetection::None)
+                .unwrap();
+        assert!(
+            virtualization(&regular_file)
+                .attributes
+                .get("container_host")
+                .is_none(),
+            "a regular file must not identify a container runtime"
+        );
+
+        fs::remove_file(root.join("run/containerd/containerd.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("run/containerd/containerd.sock"))
+                .unwrap();
+        let socket =
             collect_with_detection(&root, Ok("[]"), VirtDetection::None, VirtDetection::None)
                 .unwrap();
 
-        assert_eq!(virtualization(&resource).attributes["container_host"], true);
+        assert_eq!(virtualization(&socket).attributes["container_host"], true);
         assert_eq!(
-            virtualization(&resource).attributes["environment"],
+            virtualization(&socket).attributes["environment"],
             "bare_metal"
         );
         fs::remove_dir_all(root).unwrap();
