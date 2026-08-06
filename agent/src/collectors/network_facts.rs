@@ -63,7 +63,14 @@ struct GetifsDumpProvider;
 
 impl DumpProvider for GetifsDumpProvider {
     fn interfaces(&self) -> io::Result<Vec<RawInterface>> {
-        getifs::interfaces()?
+        let interfaces = getifs::interfaces()?;
+        if interfaces.len() > MAX_INTERFACES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "network interface dump exceeds collection limit",
+            ));
+        }
+        interfaces
             .into_iter()
             .map(|interface| {
                 let flags = interface.flags();
@@ -83,7 +90,14 @@ impl DumpProvider for GetifsDumpProvider {
     }
 
     fn addresses(&self) -> io::Result<Vec<RawAddress>> {
-        getifs::interface_addrs()?
+        let addresses = getifs::interface_addrs()?;
+        if addresses.len() > MAX_ADDRESSES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "network address dump exceeds collection limit",
+            ));
+        }
+        addresses
             .into_iter()
             .map(|network| match network {
                 getifs::IfNet::V4(v4) => RawAddress {
@@ -298,6 +312,24 @@ mod tests {
                 .map(|index| iface(index as u32, "eth"))
                 .collect(),
             vec![],
+        ))]);
+
+        let error = stable_snapshot(&source).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+    #[test]
+    fn oversized_address_dump_is_unavailable_without_retrying() {
+        let address = RawAddress {
+            index: 1,
+            address: NetworkAddress {
+                ip: "127.0.0.1".parse().unwrap(),
+                prefix: 8,
+                family: AddressFamily::Ipv4,
+            },
+        };
+        let source = fake(vec![Ok((
+            vec![iface(1, "lo")],
+            vec![address; MAX_ADDRESSES + 1],
         ))]);
 
         let error = stable_snapshot(&source).unwrap_err();
