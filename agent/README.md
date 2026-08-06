@@ -132,6 +132,14 @@ or unsupported kernel data generally omit the affected optional facts rather
 than failing the whole observation. A usable `/etc/hostname` is currently
 required.
 
+Encoded observations are limited to 256,000 bytes, matching the Phoenix API.
+The agent rejects larger observations locally before opening a network request.
+Non-authoritative inventory is capped at 128 disk and 512 filesystem components;
+when either cap is exceeded, a `collection_status` component reports the collector,
+discovered and emitted counts, and `truncated: true`. Interfaces and addresses are
+authoritative and are never truncated; exceptionally large network inventories
+are instead rejected by the final encoded-size check.
+
 Collection is accessed through a platform-neutral facade rather than directly
 from the Linux backend. This keeps configuration, scheduling, payloads, retries,
 and transport shared across operating systems. Future macOS and Windows backends

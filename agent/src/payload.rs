@@ -6,6 +6,10 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// Phoenix's configured maximum encoded request-body size for observations.
+/// Keeping this contract shared prevents the agent from sending a body the API cannot parse.
+pub const MAX_OBSERVATION_BYTES: usize = 256_000;
+
 #[derive(Debug, Serialize)]
 pub struct Observation {
     pub observation_id: Uuid,

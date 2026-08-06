@@ -11,6 +11,10 @@ use crate::{
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
+/// Non-authoritative component limits reserve payload space for identity and network facts.
+const MAX_DISK_COMPONENTS: usize = 128;
+const MAX_FILESYSTEM_COMPONENTS: usize = 512;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum VirtDetection {
     None,
@@ -348,9 +352,10 @@ fn collect_disks(root: &Path) -> Vec<Component> {
     let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
         return vec![];
     };
-    entries
-        .flatten()
-        .filter_map(|e| {
+    bounded_components(
+        "disk",
+        MAX_DISK_COMPONENTS,
+        entries.flatten().filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let sectors = read(root, &format!("sys/block/{name}/size"))?
                 .parse::<u64>()
@@ -362,8 +367,8 @@ fn collect_disks(root: &Path) -> Vec<Component> {
                     ("size_bytes", json!(sectors.saturating_mul(512))),
                 ],
             ))
-        })
-        .collect()
+        }),
+    )
 }
 fn collect_filesystems(root: &Path) -> Vec<Component> {
     // PID 1 exposes the host mount namespace for the normal system service. Never fall back to
@@ -374,9 +379,10 @@ fn collect_filesystems(root: &Path) -> Vec<Component> {
 }
 
 fn parse_mounts(mounts: &str) -> Vec<Component> {
-    mounts
-        .lines()
-        .filter_map(|line| {
+    bounded_components(
+        "filesystem",
+        MAX_FILESYSTEM_COMPONENTS,
+        mounts.lines().filter_map(|line| {
             let mut parts = line.split_whitespace();
             Some(component(
                 "filesystem",
@@ -386,8 +392,36 @@ fn parse_mounts(mounts: &str) -> Vec<Component> {
                     ("filesystem_type", json!(parts.next()?)),
                 ],
             ))
-        })
-        .collect()
+        }),
+    )
+}
+
+fn bounded_components(
+    collector: &str,
+    limit: usize,
+    components: impl Iterator<Item = Component>,
+) -> Vec<Component> {
+    let mut discovered_count = 0;
+    let mut emitted = Vec::with_capacity(limit + 1);
+    for component in components {
+        discovered_count += 1;
+        if emitted.len() < limit {
+            emitted.push(component);
+        }
+    }
+    if discovered_count > limit {
+        // This fixed, compact status record is emitted in addition to (not instead of) the cap.
+        emitted.push(component(
+            "collection_status",
+            [
+                ("collector", json!(collector)),
+                ("discovered_count", json!(discovered_count)),
+                ("emitted_count", json!(limit)),
+                ("truncated", json!(true)),
+            ],
+        ));
+    }
+    emitted
 }
 /// Container execution takes environment precedence over a VM guest, while the VM provider is
 /// retained because it describes the underlying host. Runtime sockets indicate hosting only.
@@ -573,6 +607,53 @@ mod tests {
         assert_eq!(filesystems[0].attributes["device"], "/dev/vda1");
         assert_eq!(filesystems[0].attributes["mountpoint"], "/");
         assert_eq!(filesystems[0].attributes["filesystem_type"], "ext4");
+    }
+
+    #[test]
+    fn bounds_filesystems_and_reports_explicit_truncation_status() {
+        let mounts = (0..=MAX_FILESYSTEM_COMPONENTS)
+            .map(|index| format!("/dev/vda{index} /mnt/{index} ext4 rw 0 0\n"))
+            .collect::<String>();
+
+        let filesystems = parse_mounts(&mounts);
+
+        assert_eq!(filesystems.len(), MAX_FILESYSTEM_COMPONENTS + 1);
+        let status = filesystems.last().unwrap();
+        assert_eq!(status.kind, "collection_status");
+        assert_eq!(status.attributes["collector"], "filesystem");
+        assert_eq!(
+            status.attributes["discovered_count"],
+            MAX_FILESYSTEM_COMPONENTS + 1
+        );
+        assert_eq!(
+            status.attributes["emitted_count"],
+            MAX_FILESYSTEM_COMPONENTS
+        );
+        assert_eq!(status.attributes["truncated"], true);
+    }
+
+    #[test]
+    fn bounds_disks_and_reports_explicit_truncation_status() {
+        let root = fixture();
+        for index in 0..=MAX_DISK_COMPONENTS {
+            let disk = root.join(format!("sys/block/disk{index}"));
+            fs::create_dir_all(&disk).unwrap();
+            fs::write(disk.join("size"), "8\n").unwrap();
+        }
+
+        let disks = collect_disks(&root);
+
+        assert_eq!(disks.len(), MAX_DISK_COMPONENTS + 1);
+        let status = disks.last().unwrap();
+        assert_eq!(status.kind, "collection_status");
+        assert_eq!(status.attributes["collector"], "disk");
+        assert_eq!(
+            status.attributes["discovered_count"],
+            MAX_DISK_COMPONENTS + 1
+        );
+        assert_eq!(status.attributes["emitted_count"], MAX_DISK_COMPONENTS);
+        assert_eq!(status.attributes["truncated"], true);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

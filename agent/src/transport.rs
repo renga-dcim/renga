@@ -3,7 +3,7 @@
 use crate::{
     cancellation::Cancellation,
     config::Config,
-    payload::{CheckIn, Observation},
+    payload::{CheckIn, Observation, MAX_OBSERVATION_BYTES},
 };
 use reqwest::{
     blocking::{Client, Response},
@@ -106,7 +106,38 @@ impl HttpClient {
         self.post(self.checkin_url.clone(), value)
     }
     pub fn post_observation(&self, value: &Observation) -> Result<(), TransportError> {
-        self.post(self.observation_url.clone(), value)
+        let body = serde_json::to_vec(value).map_err(|_| {
+            TransportError::new("cannot serialize observation payload".into(), false)
+        })?;
+        if body.len() > MAX_OBSERVATION_BYTES {
+            return Err(TransportError::new(
+                format!(
+                    "encoded observation exceeds {MAX_OBSERVATION_BYTES}-byte limit (encoded size: {} bytes)",
+                    body.len()
+                ),
+                false,
+            ));
+        }
+        self.post_encoded_observation(body)
+    }
+
+    fn post_encoded_observation(&self, body: Vec<u8>) -> Result<(), TransportError> {
+        retry(
+            self.attempts,
+            || {
+                let response = self
+                    .client
+                    .post(self.observation_url.clone())
+                    .header(AUTHORIZATION, self.authorization.clone())
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .send()
+                    .map_err(request_error)?;
+                response_result(response)
+            },
+            thread::sleep,
+            &self.cancellation,
+        )
     }
     fn post<T: Serialize>(&self, url: Url, value: &T) -> Result<(), TransportError> {
         retry(
@@ -118,18 +149,20 @@ impl HttpClient {
                     .header(AUTHORIZATION, self.authorization.clone())
                     .json(value)
                     .send()
-                    .map_err(|e| {
-                        TransportError::new(
-                            format!("HTTP request failed: {e}"),
-                            e.is_timeout() || e.is_connect() || e.is_request(),
-                        )
-                    })?;
+                    .map_err(request_error)?;
                 response_result(response)
             },
             thread::sleep,
             &self.cancellation,
         )
     }
+}
+
+fn request_error(error: reqwest::Error) -> TransportError {
+    TransportError::new(
+        format!("HTTP request failed: {error}"),
+        error.is_timeout() || error.is_connect() || error.is_request(),
+    )
 }
 
 fn endpoint_url(base_url: &Url, path: &str) -> Result<Url, TransportError> {
@@ -192,7 +225,10 @@ fn retry<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payload::{Component, Identifiers, ResourceKind, ServerResource};
+    use serde_json::json;
     use std::{
+        collections::BTreeMap,
         io::{Read, Write},
         net::TcpListener,
         path::PathBuf,
@@ -215,6 +251,25 @@ mod tests {
 
     fn error(transient: bool) -> TransportError {
         TransportError::new("failure".into(), transient)
+    }
+
+    fn oversized_observation() -> Observation {
+        Observation::new(ServerResource {
+            kind: ResourceKind::Server,
+            identifiers: Identifiers {
+                hostname: "host".into(),
+                ..Default::default()
+            },
+            attributes: None,
+            interfaces: None,
+            components: vec![Component {
+                kind: "generated_regression".into(),
+                attributes: BTreeMap::from([(
+                    "content".into(),
+                    json!("x".repeat(MAX_OBSERVATION_BYTES)),
+                )]),
+            }],
+        })
     }
 
     #[test]
@@ -247,6 +302,29 @@ mod tests {
             Cancellation::default(),
         );
         assert!(result.is_err(), "accepted a plaintext HTTP origin");
+    }
+
+    #[test]
+    fn rejects_encoded_observation_over_phoenix_limit_before_network_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut config = config(
+            &format!("http://{}", listener.local_addr().unwrap()),
+            "valid-token",
+        );
+        config.allow_insecure_http = true;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let observation = oversized_observation();
+        assert!(serde_json::to_vec(&observation).unwrap().len() > MAX_OBSERVATION_BYTES);
+
+        let error = client.post_observation(&observation).unwrap_err();
+
+        assert!(!error.transient);
+        assert!(error.to_string().contains("exceeds 256000-byte limit"));
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
     }
 
     #[test]
