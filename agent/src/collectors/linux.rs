@@ -116,40 +116,34 @@ fn parse_ip_snapshot(input: &str) -> Result<Vec<Interface>, ()> {
     let Value::Array(items) = serde_json::from_str(input).map_err(|_| ())? else {
         return Err(());
     };
-    if items
-        .iter()
-        .any(|item| item.get("ifname").and_then(Value::as_str).is_none())
-    {
-        return Err(());
-    }
-    Ok(items
+    items
         .into_iter()
-        .filter_map(|item| {
-            let name = item.get("ifname")?.as_str()?.into();
+        .map(|item| {
+            let name = item.get("ifname").and_then(Value::as_str).ok_or(())?.into();
             let flags = item.get("flags").and_then(Value::as_array);
             let up = flags.is_some_and(|f| f.iter().any(|x| x.as_str() == Some("UP")));
             let addresses = item
                 .get("addr_info")
                 .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|a| {
-                    let local = a.get("local")?.as_str()?;
-                    let prefix = a.get("prefixlen").and_then(Value::as_u64)?;
-                    Some(Address {
+                .ok_or(())?
+                .iter()
+                .map(|address| {
+                    let local = address.get("local").and_then(Value::as_str).ok_or(())?;
+                    let prefix = address.get("prefixlen").and_then(Value::as_u64).ok_or(())?;
+                    Ok(Address {
                         address: format!("{local}/{prefix}"),
-                        kind: a.get("family").and_then(Value::as_str).map(|v| {
+                        kind: address.get("family").and_then(Value::as_str).map(|v| {
                             if v == "inet" {
                                 "ipv4".into()
                             } else {
                                 "ipv6".into()
                             }
                         }),
-                        scope: a.get("scope").and_then(Value::as_str).map(Into::into),
+                        scope: address.get("scope").and_then(Value::as_str).map(Into::into),
                     })
                 })
-                .collect();
-            Some(Interface {
+                .collect::<Result<Vec<_>, ()>>()?;
+            Ok(Interface {
                 name,
                 kind: "unknown".into(),
                 status: if up { "up" } else { "down" }.into(),
@@ -165,7 +159,7 @@ fn parse_ip_snapshot(input: &str) -> Result<Vec<Interface>, ()> {
                 addresses: Some(addresses),
             })
         })
-        .collect())
+        .collect()
 }
 fn normalize_mac(v: &str) -> Option<String> {
     let v = v.trim().to_ascii_lowercase();
@@ -309,9 +303,17 @@ fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
 }
 fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
     let entries = fs::read_dir(root.join("sys/class/net"))?;
-    Ok(entries
-        .flatten()
-        .map(|e| {
+    collect_sysfs_interfaces_from_entries(root, entries)
+}
+
+fn collect_sysfs_interfaces_from_entries(
+    root: &Path,
+    entries: impl IntoIterator<Item = std::io::Result<fs::DirEntry>>,
+) -> std::io::Result<Vec<Interface>> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let e = entry?;
             let name = e.file_name().to_string_lossy().into_owned();
             let base = format!("sys/class/net/{name}");
             let status = match read(root, &format!("{base}/operstate")).as_deref() {
@@ -321,7 +323,7 @@ fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
                 _ => "unknown",
             }
             .into();
-            Interface {
+            Ok(Interface {
                 name,
                 kind: "unknown".into(),
                 status,
@@ -329,9 +331,9 @@ fn collect_sysfs_interfaces(root: &Path) -> std::io::Result<Vec<Interface>> {
                 mtu: None,
                 speed_mbps: None,
                 addresses: None,
-            }
+            })
         })
-        .collect())
+        .collect()
 }
 fn collect_disks(root: &Path) -> Vec<Component> {
     let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
@@ -541,6 +543,32 @@ mod tests {
         assert!(interfaces[0].addresses.as_ref().is_some_and(Vec::is_empty));
         assert_eq!(value["addresses"], json!([]));
     }
+
+    #[test]
+    fn ip_snapshot_requires_an_address_array_for_every_interface() {
+        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0"}]"#).is_err());
+        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":null}]"#).is_err());
+        assert!(parse_ip_snapshot(r#"[{"ifname":"eth0","addr_info":{}}]"#).is_err());
+    }
+
+    #[test]
+    fn malformed_address_invalidates_the_entire_ip_snapshot() {
+        let snapshot = r#"[{"ifname":"eth0","addr_info":[{"family":"inet","local":"10.0.0.2","prefixlen":24},{"family":"inet","prefixlen":24}]}]"#;
+
+        assert!(parse_ip_snapshot(snapshot).is_err());
+    }
+
+    #[test]
+    fn sysfs_entry_enumeration_error_invalidates_the_snapshot() {
+        let root = fixture();
+        let entries = vec![Err(std::io::Error::other(
+            "injected directory entry failure",
+        ))];
+
+        assert!(collect_sysfs_interfaces_from_entries(&root, entries).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn malformed_ip_degrades() {
         assert!(parse_ip_json("nope").is_empty());
@@ -573,7 +601,7 @@ mod tests {
         let root = fixture();
         let resource = collect_from_with_ip(
             &root,
-            Ok(r#"[{"ifname":"eth1","flags":["UP"],"address":"00:11:22:33:44:55"},{"ifname":"eth0","flags":[],"address":"aa:bb:cc:dd:ee:ff"}]"#),
+            Ok(r#"[{"ifname":"eth1","flags":["UP"],"address":"00:11:22:33:44:55","addr_info":[]},{"ifname":"eth0","flags":[],"address":"aa:bb:cc:dd:ee:ff","addr_info":[]}]"#),
         ).unwrap();
         let value = serde_json::to_value(resource).unwrap();
 
