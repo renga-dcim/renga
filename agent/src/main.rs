@@ -104,6 +104,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
                 }
                 Job::Inventory => {
+                    // Inventory can consume its full collection and delivery budgets. Keep one
+                    // worker outside the scheduler thread so it can never delay lease check-ins.
                     if inventory_worker
                         .as_ref()
                         .is_some_and(|worker: &thread::JoinHandle<()>| !worker.is_finished())

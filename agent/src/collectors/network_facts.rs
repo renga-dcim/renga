@@ -2,6 +2,8 @@
 
 use std::{collections::BTreeMap, io, net::IpAddr};
 
+// getifs materializes kernel dumps, so reject excessive cardinality before copying records into
+// owned facts. Oversized data is unavailable rather than a truncated authoritative snapshot.
 const MAX_ATTEMPTS: usize = 5;
 const MAX_INTERFACES: usize = 4096;
 const MAX_ADDRESSES: usize = 16384;
@@ -129,6 +131,8 @@ impl NetworkFactsSource for GetifsSource {
 }
 
 fn stable_snapshot(provider: &dyn DumpProvider) -> io::Result<Vec<NetworkInterface>> {
+    // Interface metadata and addresses come from separate kernel dumps. Requiring two adjacent,
+    // normalized matches prevents a cross-dump race from withdrawing or misassigning addresses.
     let mut previous = None;
     let mut last_error = None;
     for _ in 0..MAX_ATTEMPTS {
@@ -140,6 +144,8 @@ fn stable_snapshot(provider: &dyn DumpProvider) -> io::Result<Vec<NetworkInterfa
                 previous = Some(current);
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                // A detected race breaks adjacency; a sample from before it cannot validate one
+                // collected afterward.
                 previous = None;
                 last_error = Some(error);
             }
@@ -187,6 +193,8 @@ fn snapshot(provider: &dyn DumpProvider) -> io::Result<Vec<NetworkInterface>> {
         });
     }
     if !addresses.is_empty() {
+        // The interface disappeared between dumps. Retry the complete pair instead of publishing
+        // the remaining interfaces as if the snapshot were authoritative.
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "address references unknown interface index",

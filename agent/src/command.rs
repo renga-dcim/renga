@@ -33,6 +33,8 @@ fn run_with_timeout(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "agent stopping"));
     }
     #[cfg(unix)]
+    // A dedicated group lets timeout/cancellation close pipes inherited by grandchildren instead
+    // of hanging forever while the reader waits for EOF.
     command.process_group(0);
     let mut child = command
         .stdout(Stdio::piped())

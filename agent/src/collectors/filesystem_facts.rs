@@ -3,6 +3,8 @@
 use procfs::{process::MountInfos, FromBufRead};
 use std::{fs::File, io, io::Read, path::PathBuf};
 
+// Filesystem facts are non-authoritative enrichment. Fail the whole snapshot instead of allowing
+// a hostile or pathological mount namespace to consume unbounded memory or publish a partial view.
 pub(super) const MAX_MOUNTINFO_BYTES: u64 = 1024 * 1024;
 const MAX_MOUNT_RECORDS: usize = 4096;
 
@@ -39,6 +41,8 @@ impl ProcfsSource {
 
 impl FilesystemFactsSource for ProcfsSource {
     fn collect(&self) -> io::Result<Vec<FilesystemFacts>> {
+        // procfs's Process::mountinfo reads the complete pseudo-file internally. Read it through a
+        // sentinel byte first so the limit applies before procfs allocates and parses its records.
         let mut bytes = Vec::new();
         File::open(&self.mountinfo_path)?
             .take(MAX_MOUNTINFO_BYTES + 1)
@@ -72,6 +76,8 @@ fn project_mountinfo(mountinfo: MountInfos) -> Vec<FilesystemFacts> {
 }
 
 fn decode_mount_field(value: &str) -> String {
+    // Linux mountinfo uses these octal escapes for whitespace and backslashes in path fields;
+    // procfs 0.18 intentionally leaves them encoded.
     value
         .replace("\\040", " ")
         .replace("\\011", "\t")

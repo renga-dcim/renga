@@ -46,6 +46,8 @@ pub(super) trait SystemFactsSource {
     fn collect(&self) -> SystemFacts;
 }
 
+/// Keeps sysinfo's API and platform-specific representations behind Renga-owned facts so another
+/// operating-system backend can provide a smaller capability set without changing payload code.
 pub(super) struct SysinfoSource;
 
 impl SystemFactsSource for SysinfoSource {

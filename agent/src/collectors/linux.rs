@@ -116,6 +116,8 @@ fn collect_from_with_sources(
     cancellation: &Cancellation,
 ) -> Result<ServerResource, CollectError> {
     let facts = facts_source.collect();
+    // Hostname is the minimum reconciliation identity. Optional collector failures may degrade,
+    // but publishing an observation with no matchable identity would create ambiguous state.
     let hostname = read(root, "etc/hostname")
         .or_else(|| facts.hostname.as_deref().and_then(normalize_value))
         .ok_or_else(|| {
@@ -207,6 +209,8 @@ fn component<const N: usize>(kind: &str, values: [(&str, Value); N]) -> Componen
 fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
     for i in interfaces {
         let base = format!("sys/class/net/{}", i.name);
+        // getifs 0.6.1 can normalize non-Ethernet link addresses into MAC-shaped strings. Only a
+        // strict match with Linux's six-octet sysfs address is safe to use as canonical identity.
         i.mac_address = i.mac_address.take().filter(|mac| {
             read(root, &format!("{base}/address"))
                 .and_then(|value| parse_ethernet_mac(&value))

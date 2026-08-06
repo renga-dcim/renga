@@ -214,6 +214,8 @@ fn retry<T>(
             Ok(value) => return Ok(value),
             Err(error) if !error.transient || attempt == attempts => return Err(error),
             Err(error) => {
+                // Do not start an attempt whose configured timeout cannot fit inside the fixed
+                // delivery budget; check-in interval plus this budget must remain below lease TTL.
                 if started
                     .elapsed()
                     .saturating_add(delay)
