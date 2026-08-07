@@ -292,7 +292,7 @@ defmodule RengaWeb.UserAuth do
       socket =
         socket
         |> Phoenix.LiveView.put_flash(:error, "Select an organization to view inventory.")
-        |> Phoenix.LiveView.redirect(to: ~p"/")
+        |> Phoenix.LiveView.redirect(to: ~p"/organizations")
 
       {:halt, socket}
     end

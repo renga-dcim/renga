@@ -77,7 +77,9 @@ defmodule RengaWeb.InventoryDashboardLiveTest do
   test "requires a selected organization", %{conn: conn} do
     conn = delete_session(conn, :current_organization_id)
 
-    assert {:error, {:redirect, %{to: "/", flash: flash}}} = live(conn, ~p"/inventory")
+    assert {:error, {:redirect, %{to: "/organizations", flash: flash}}} =
+             live(conn, ~p"/inventory")
+
     assert flash["error"] == "Select an organization to view inventory."
   end
 end

@@ -37,7 +37,15 @@ defmodule RengaWeb.Layouts do
     ~H"""
     <header class="sticky top-0 z-40 border-b border-base-content/10 bg-base-100/90 backdrop-blur-xl">
       <div class="mx-auto flex min-h-16 max-w-screen-2xl items-center gap-6 px-4 sm:px-6 lg:px-8">
-        <.link navigate={~p"/inventory"} class="flex items-center gap-3 font-semibold tracking-tight">
+        <.link
+          navigate={
+            if(@current_scope && @current_scope.organization_id,
+              do: ~p"/inventory",
+              else: ~p"/organizations"
+            )
+          }
+          class="flex items-center gap-3 font-semibold tracking-tight"
+        >
           <span class="grid size-9 place-items-center rounded-xl bg-orange-500 text-white shadow-sm shadow-orange-500/20">
             <.icon name="hero-server-stack-solid" class="size-5" />
           </span>
@@ -62,6 +70,12 @@ defmodule RengaWeb.Layouts do
             class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/65 transition hover:bg-base-200 hover:text-base-content"
           >
             Sources & agents
+          </.link>
+          <.link
+            navigate={~p"/organizations"}
+            class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/45 transition hover:bg-base-200 hover:text-base-content"
+          >
+            Switch organization
           </.link>
         </nav>
 

@@ -53,6 +53,27 @@ defmodule Renga.Accounts do
   end
 
   @doc """
+  Creates an organization and its initial owner membership atomically.
+
+  This is the browser onboarding boundary: a signed-in user cannot enter an
+  organization-scoped inventory view until they own or join an organization.
+  """
+  def create_organization_for_user(%User{} = user, attrs) do
+    Repo.transaction(fn ->
+      with {:ok, organization} <- create_organization(attrs),
+           {:ok, membership} <-
+             create_organization_membership(organization, %{
+               user_id: user.id,
+               role: "owner"
+             }) do
+        {organization, membership}
+      else
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  @doc """
   Updates organization metadata without changing membership or inventory scope.
   """
   def update_organization(%Organization{} = organization, attrs) do
