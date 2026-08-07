@@ -206,6 +206,7 @@ fn component<const N: usize>(kind: &str, values: [(&str, Value); N]) -> Componen
             .collect(),
     }
 }
+
 fn enrich_interfaces(root: &Path, interfaces: &mut [Interface]) {
     for i in interfaces {
         let base = format!("sys/class/net/{}", i.name);
@@ -273,6 +274,7 @@ fn project_interfaces(facts: Vec<NetworkInterface>) -> Vec<Interface> {
         })
         .collect()
 }
+
 fn collect_disks(disks: Option<Vec<DiskFacts>>) -> Vec<Component> {
     let Some(disks) = disks else {
         return vec![];
@@ -304,6 +306,7 @@ fn collect_disks(disks: Option<Vec<DiskFacts>>) -> Vec<Component> {
         }),
     )
 }
+
 fn collect_filesystems(source: &dyn FilesystemFactsSource) -> Vec<Component> {
     // PID 1 exposes the host mount namespace for the normal system service. An unavailable or
     // malformed snapshot must not fall back to the agent's potentially sandboxed mount namespace.
@@ -349,6 +352,7 @@ fn bounded_components(
     }
     emitted
 }
+
 /// Container execution takes environment precedence over a VM guest, while the VM provider is
 /// retained because it describes the underlying host. Runtime sockets indicate hosting only.
 fn virtualization_component(root: &Path, detector: &dyn VirtDetector) -> Component {

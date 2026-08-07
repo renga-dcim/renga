@@ -144,11 +144,13 @@ pub struct CheckIn {
     pub capabilities: Vec<&'static str>,
     pub metadata: AgentMetadata,
 }
+
 #[derive(Debug, Serialize)]
 pub struct AgentMetadata {
     pub agent_version: String,
     pub installation_id: Uuid,
 }
+
 impl CheckIn {
     pub fn new(installation_id: Uuid, capabilities: Vec<&'static str>) -> Self {
         Self {

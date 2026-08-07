@@ -24,6 +24,7 @@ pub struct TransportError {
     message: String,
     transient: bool,
 }
+
 impl TransportError {
     fn new(message: String, transient: bool) -> Self {
         Self { message, transient }
@@ -37,11 +38,13 @@ impl TransportError {
         self.message == "HTTP delivery cancelled"
     }
 }
+
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
+
 impl std::error::Error for TransportError {}
 
 #[derive(Clone)]
@@ -54,6 +57,7 @@ pub struct HttpClient {
     request_timeout: Duration,
     cancellation: Cancellation,
 }
+
 impl HttpClient {
     pub fn new(config: &Config, cancellation: Cancellation) -> Result<Self, TransportError> {
         let has_explicit_authority = config

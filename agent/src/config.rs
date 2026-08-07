@@ -57,6 +57,7 @@ impl fmt::Display for ConfigError {
         f.write_str(&self.0)
     }
 }
+
 impl std::error::Error for ConfigError {}
 
 #[derive(Default, Deserialize)]
