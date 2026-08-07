@@ -112,6 +112,69 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     end
   end
 
+  test "concurrent failed ingestion records one terminal attempt" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = System.unique_integer([:positive])
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Concurrent failed ingestion #{suffix}",
+        slug: "concurrent-failed-ingestion-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "failed-ingestion-#{suffix}",
+        observed_at: ~U[2026-08-01 12:00:00.000Z],
+        payload: %{
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "machine-#{suffix}"},
+              "attributes" => %{"vendor" => %{"invalid" => true}},
+              "interfaces" => []
+            }
+          ]
+        }
+      })
+
+    Repo.query!("BEGIN")
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization.id])
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.reconcile_observation_once(scope, observation.id)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+      end
+
+    try do
+      Process.sleep(100)
+      assert Enum.all?(tasks, &Process.alive?(&1.pid))
+    after
+      Repo.query!("COMMIT")
+    end
+
+    try do
+      assert Enum.all?(Task.await_many(tasks), &match?({:error, %{status: "failed"}}, &1))
+
+      assert [%{attempt: 1, status: "failed"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
+    after
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
+
   test "concurrent unexpected failures retain distinct terminal attempts" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     suffix = System.unique_integer([:positive])

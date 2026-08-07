@@ -117,10 +117,29 @@ defmodule Renga.Inventory.Reconciler do
 
   defp result_to_reconciliation(_scope, result), do: {:error, result}
 
-  defp record_unexpected_failure_once(scope, observation, exception) do
-    case latest_result(scope, observation.id) do
-      nil -> record_unexpected_failure(scope, observation, exception)
-      result -> result_to_reconciliation(scope, result)
+  defp record_unexpected_failure_once(scope, observation, reason) do
+    attrs = unexpected_failure_attrs(reason)
+
+    Repo.transaction(fn ->
+      Inventory.lock_organization!(scope.organization_id)
+
+      case latest_result(scope, observation.id) do
+        nil -> create_failure(scope, observation, attrs)
+        result -> result_to_reconciliation(scope, result)
+      end
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp create_failure(scope, observation, attrs) do
+    attrs = Map.put(attrs, :attempt, next_attempt(scope, observation.id))
+
+    case Inventory.create_observation_reconciliation(scope, observation.id, attrs) do
+      {:ok, result} -> {:error, result}
+      {:error, changeset} -> Repo.rollback(changeset)
     end
   end
 
