@@ -6,30 +6,26 @@ defmodule RengaWeb.InventoryOperationsLive do
   alias Renga.Inventory
   alias Renga.Inventory.AgentLease
 
+  @refresh_interval 30_000
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:page_title, "Sources and agents")
-     |> stream_configure(:sources, dom_id: &source_dom_id/1)}
+     |> stream_configure(:sources, dom_id: &source_dom_id/1)
+     |> schedule_refresh()}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    scope = socket.assigns.current_scope
     disconnected_only? = params["disconnected"] == "true"
-    sources = Inventory.list_operational_sources(scope)
-    agents = Inventory.list_agents(scope)
-    agents = if disconnected_only?, do: Enum.filter(agents, &disconnected?/1), else: agents
 
     {:noreply,
      socket
+     |> assign(:disconnected_only?, disconnected_only?)
      |> assign(:filter_form, to_form(%{"disconnected" => disconnected_only?}, as: :filters))
-     |> assign(:last_inventory_by_source, Inventory.latest_observation_times(scope))
-     |> assign(:sources_empty?, sources == [])
-     |> assign(:agents_empty?, agents == [])
-     |> stream(:sources, sources, reset: true)
-     |> stream(:agents, agents, reset: true)}
+     |> load_operations()}
   end
 
   @impl true
@@ -42,6 +38,11 @@ defmodule RengaWeb.InventoryOperationsLive do
       end
 
     {:noreply, push_patch(socket, to: path)}
+  end
+
+  @impl true
+  def handle_info(:refresh, socket) do
+    {:noreply, socket |> load_operations() |> schedule_refresh()}
   end
 
   @impl true
@@ -250,6 +251,29 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   defp credential_state(%{status: "active"}), do: "Not issued"
   defp credential_state(_source), do: "Revoked"
+
+  defp load_operations(socket) do
+    scope = socket.assigns.current_scope
+    sources = Inventory.list_operational_sources(scope)
+    agents = Inventory.list_agents(scope)
+
+    agents =
+      if socket.assigns.disconnected_only?,
+        do: Enum.filter(agents, &disconnected?/1),
+        else: agents
+
+    socket
+    |> assign(:last_inventory_by_source, Inventory.latest_observation_times(scope))
+    |> assign(:sources_empty?, sources == [])
+    |> assign(:agents_empty?, agents == [])
+    |> stream(:sources, sources, reset: true)
+    |> stream(:agents, agents, reset: true)
+  end
+
+  defp schedule_refresh(socket) do
+    if connected?(socket), do: Process.send_after(self(), :refresh, @refresh_interval)
+    socket
+  end
 
   defp source_dom_id(source), do: "source-#{source.id}"
 

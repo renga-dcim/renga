@@ -6,21 +6,20 @@ defmodule RengaWeb.InventoryDashboardLive do
   alias Renga.Inventory
   alias Renga.Inventory.AgentLease
 
+  @refresh_interval 30_000
+
   @impl true
   def mount(_params, _session, socket) do
-    scope = socket.assigns.current_scope
-    resources = Inventory.list_operational_resources(scope)
-    agents = Inventory.list_agents(scope)
-
     {:ok,
-     assign(socket,
-       page_title: "Inventory overview",
-       lifecycle_counts: Enum.frequencies_by(resources, & &1.lifecycle_state),
-       freshness_counts: freshness_counts(resources),
-       connectivity_counts: connectivity_counts(agents),
-       resource_count: length(resources),
-       agent_count: length(agents)
-     )}
+     socket
+     |> assign(:page_title, "Inventory overview")
+     |> load_dashboard()
+     |> schedule_refresh()}
+  end
+
+  @impl true
+  def handle_info(:refresh, socket) do
+    {:noreply, socket |> load_dashboard() |> schedule_refresh()}
   end
 
   @impl true
@@ -192,6 +191,25 @@ defmodule RengaWeb.InventoryDashboardLive do
       end
     end)
     |> Enum.frequencies()
+  end
+
+  defp load_dashboard(socket) do
+    scope = socket.assigns.current_scope
+    resources = Inventory.list_operational_resources(scope)
+    agents = Inventory.list_agents(scope)
+
+    assign(socket,
+      lifecycle_counts: Enum.frequencies_by(resources, & &1.lifecycle_state),
+      freshness_counts: freshness_counts(resources),
+      connectivity_counts: connectivity_counts(agents),
+      resource_count: length(resources),
+      agent_count: length(agents)
+    )
+  end
+
+  defp schedule_refresh(socket) do
+    if connected?(socket), do: Process.send_after(self(), :refresh, @refresh_interval)
+    socket
   end
 
   defp count_detail(counts, key, label), do: "#{Map.get(counts, key, 0)} #{label}"

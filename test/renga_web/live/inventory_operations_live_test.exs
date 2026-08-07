@@ -1,11 +1,14 @@
 defmodule RengaWeb.InventoryOperationsLiveTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
   alias Renga.Inventory
+  alias Renga.Inventory.AgentLease
+  alias Renga.Repo
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -94,5 +97,24 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
     refute has_element?(view, "#source-#{foreign_source.id}")
     refute has_element?(view, "#agents-#{foreign_agent.id}")
+  end
+
+  test "refreshes the disconnected filter when a lease expires", %{
+    conn: conn,
+    connected_agent: agent
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations?disconnected=true")
+    refute has_element?(view, "#agents-#{agent.id}")
+
+    expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(
+      from(lease in AgentLease, where: lease.agent_id == ^agent.id),
+      set: [renewed_at: DateTime.add(expired_at, -90, :second), expires_at: expired_at]
+    )
+
+    send(view.pid, :refresh)
+
+    assert has_element?(view, "#agents-#{agent.id}", "Disconnected")
   end
 end

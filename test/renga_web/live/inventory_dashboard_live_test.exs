@@ -1,11 +1,14 @@
 defmodule RengaWeb.InventoryDashboardLiveTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
   alias Renga.Inventory
+  alias Renga.Inventory.AgentLease
+  alias Renga.Repo
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -66,6 +69,26 @@ defmodule RengaWeb.InventoryDashboardLiveTest do
 
     assert has_element?(view, "#resource-count", "0")
     refute has_element?(view, "#inventory-dashboard", "secret-host")
+  end
+
+  test "refreshes connectivity when an agent lease expires", %{conn: conn, scope: scope} do
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "edge-agent"})
+    {:ok, {agent, _lease}} = Inventory.record_agent_check_in(scope, source.id)
+    {:ok, view, _html} = live(conn, ~p"/inventory")
+
+    assert has_element?(view, "#agent-connected-count", "1")
+
+    expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(
+      from(lease in AgentLease, where: lease.agent_id == ^agent.id),
+      set: [renewed_at: DateTime.add(expired_at, -90, :second), expires_at: expired_at]
+    )
+
+    send(view.pid, :refresh)
+
+    assert has_element?(view, "#agent-connected-count > div > div > p:nth-child(2)", "0")
+    assert has_element?(view, "#health-breakdown", "1")
   end
 
   test "redirects unauthenticated users", %{conn: conn} do
