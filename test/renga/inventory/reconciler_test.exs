@@ -339,6 +339,26 @@ defmodule Renga.Inventory.ReconcilerTest do
              {"docker0", "virtual", {2, 66, 172, 17, 0, 1}},
              {"eth0", "ethernet", {170, 187, 204, 221, 238, 1}}
            ]
+
+    physical_mac_only =
+      observation(
+        context,
+        "2",
+        %{"mac_address" => "aa:bb:cc:dd:ee:01"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "mac_address" => "aa:bb:cc:dd:ee:01"
+          }
+        ]
+      )
+
+    assert {:ok, matched_resource, false} =
+             Inventory.reconcile_observation(context.scope, physical_mac_only.id)
+
+    assert matched_resource.id == resource.id
   end
 
   test "matches only the present MAC set after an interface is omitted" do

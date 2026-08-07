@@ -340,10 +340,12 @@ defmodule Renga.Inventory.Reconciler do
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
     |> where([_resource, interface], interface.status != "not_present")
+    |> where([_resource, interface], interface.kind not in ^@non_identity_interface_kinds)
     |> where([_resource, interface], not is_nil(interface.mac_address))
     |> join(:inner, [resource, _interface], candidate in Interface,
       on:
         candidate.resource_id == resource.id and candidate.status != "not_present" and
+          candidate.kind not in ^@non_identity_interface_kinds and
           fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
     )
     |> select(
