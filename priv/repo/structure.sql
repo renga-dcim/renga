@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict wkia8vOAk8niXqYkSjHacrjs46PhhwiDUVGjGudhgQSxtg1sxbQlgnaGgpYy4ie
+\restrict SfRWXP2MDbySCL0xHU77swhHNUjfYtzwJGVreZZdfPicn9LRH0rXEE8ag61uiKn
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -849,10 +849,10 @@ CREATE INDEX agent_leases_organization_id_expires_at_index ON public.agent_lease
 
 
 --
--- Name: agents_organization_id_source_id_name_index; Type: INDEX; Schema: public; Owner: -
+-- Name: agents_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX agents_organization_id_source_id_name_index ON public.agents USING btree (organization_id, source_id, name);
+CREATE UNIQUE INDEX agents_organization_id_source_id_index ON public.agents USING btree (organization_id, source_id);
 
 
 --
@@ -1884,7 +1884,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict wkia8vOAk8niXqYkSjHacrjs46PhhwiDUVGjGudhgQSxtg1sxbQlgnaGgpYy4ie
+\unrestrict SfRWXP2MDbySCL0xHU77swhHNUjfYtzwJGVreZZdfPicn9LRH0rXEE8ag61uiKn
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -1896,3 +1896,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731231835);
+INSERT INTO public."schema_migrations" (version) VALUES (20260807183000);
