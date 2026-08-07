@@ -6,6 +6,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Agent
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Source
   alias Renga.Repo
@@ -651,6 +652,44 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert resource_id
 
       assert [%{status: "succeeded"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
+    end
+
+    test "returns a stable failed reconciliation for a duplicate terminal result", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source)
+      {:ok, attrs} = AgentPayload.validate_observation(payload, source)
+      {:ok, observation, :created} = Inventory.accept_observation(scope, source.id, attrs)
+      completed_at = Renga.Time.utc_now_ms()
+
+      {:ok, _result} =
+        Inventory.create_observation_reconciliation(scope, observation.id, %{
+          status: "failed",
+          attempt: 1,
+          errors: %{"processing" => "projection_failed"},
+          started_at: completed_at,
+          completed_at: completed_at
+        })
+
+      duplicate_conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "accepted",
+               "duplicate" => true,
+               "reconciliation" => %{
+                 "status" => "failed",
+                 "matched_resource_id" => nil,
+                 "errors" => %{"processing" => "projection_failed"}
+               },
+               "observation" => %{"id" => observation_id}
+             } = json_response(duplicate_conn, 200)
+
+      assert observation_id == observation.id
+
+      assert [%{attempt: 1, status: "failed"}] =
                Inventory.list_observation_reconciliations(scope, observation.id)
     end
 
