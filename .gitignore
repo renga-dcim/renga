@@ -34,6 +34,10 @@ renga-*.tar
 # The directory Cargo will write compiled artifacts to.
 /target/
 
+# Versioned operator assets (the global dist/ ignore must not hide these).
+!/agent/dist/
+!/agent/dist/*
+
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/

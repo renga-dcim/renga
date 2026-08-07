@@ -14,7 +14,7 @@ rs-test:
 	cargo test --workspace
 
 .PHONY: lint
-lint: ex-lint rs-lint
+lint: ex-lint rs-lint rs-fmt
 
 .PHONY: ex-lint
 ex-lint:
@@ -26,7 +26,11 @@ rs-lint:
 
 .PHONY: rs-fmt
 rs-fmt:
-	cargo fmt --check
+	cargo fmt --all -- --check
+	@if rg -n -U '^}\n(?:#\[|(?:(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|type|const|static)\b))' agent/src; then \
+		echo 'Rust top-level items must have a blank line between them.' >&2; \
+		exit 1; \
+	fi
 
 .PHONY: up
 up:

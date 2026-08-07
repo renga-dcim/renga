@@ -1,19 +1,9 @@
-//! Host agent workspace entry crate.
-//!
-//! The service implementation lands in a later phase; this crate keeps the
-//! repository's Rust lint and test targets active from the start.
+//! Reusable core of the Renga Linux host agent.
 
-/// Returns true when the agent crate is linked and callable.
-pub fn crate_ready() -> bool {
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::crate_ready;
-
-    #[test]
-    fn crate_is_ready() {
-        assert!(crate_ready());
-    }
-}
+pub mod cancellation;
+pub mod collectors;
+pub mod command;
+pub mod config;
+pub mod payload;
+pub mod scheduler;
+pub mod transport;

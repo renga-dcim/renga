@@ -150,17 +150,17 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 ** 6. Rust Agent Service MVP
 
 - [X] Create =agent/= Rust workspace.
-- [ ] Add daemon entrypoint with config loading and structured logging.
-- [ ] Add systemd unit files for Debian/Ubuntu proof-of-concept installs.
-- [ ] Add config file and environment variable support for Renga URL, token, stable agent installation ID, and intervals.
-- [ ] Implement internal scheduler for inventory collection, check-ins, and config refresh.
-- [ ] Implement =--once= mode.
-- [ ] Implement =--dry-run= JSON output mode.
-- [ ] Collect hostname, FQDN, OS, kernel, architecture, machine ID, DMI UUID, serial number, vendor, and model.
-- [ ] Collect CPU, memory, disks, filesystems, NICs, MAC addresses, and IP addresses.
-- [ ] Detect basic virtualization hints: bare metal, VM guest, container host.
-- [ ] POST observations and check-ins with retry and backoff.
-- [ ] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
+- [X] Add daemon entrypoint with config loading and structured logging.
+- [X] Add systemd unit files for Debian/Ubuntu proof-of-concept installs.
+- [X] Add config file and environment variable support for Renga URL, token, stable agent installation ID, and intervals.
+- [X] Implement internal scheduler for inventory collection, check-ins, and config refresh.
+- [X] Implement =--once= mode.
+- [X] Implement =--dry-run= JSON output mode.
+- [X] Collect hostname, FQDN, OS, kernel, architecture, machine ID, vendor, and model; collect DMI UUID and serial number when unprivileged service permissions allow.
+- [X] Collect CPU, memory, disks, host filesystems from PID 1's =mountinfo= through =procfs= when accessible, NICs, MAC addresses, and IP addresses.
+- [X] Detect basic virtualization hints: bare metal, VM guest, container host.
+- [X] POST observations and check-ins with retry and backoff.
+- [X] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
 
 ** 7. Operational UI MVP
 

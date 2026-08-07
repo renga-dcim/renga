@@ -1,0 +1,46 @@
+[Unit]
+Description=Renga host inventory agent
+Documentation=https://github.com/renga-dcim/renga
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=renga-agent
+Group=renga-agent
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/renga/agent.env
+ExecStart=/usr/bin/renga-agent --config /etc/renga/agent.toml
+Restart=on-failure
+RestartSec=10s
+# Keep this above the maximum request_timeout_seconds value (20s).
+TimeoutStopSec=40s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=renga-agent
+
+# The collector only needs read access to host inventory in /proc and /sys.
+# DMI UUID/serial are best-effort with this unprivileged account; do not run as
+# root or weaken the sandbox merely to make optional firmware identifiers readable.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
