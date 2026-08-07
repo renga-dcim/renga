@@ -64,6 +64,7 @@ defmodule RengaWeb.Router do
       live "/inventory", InventoryDashboardLive, :index
       live "/inventory/resources", ResourceLive.Index, :index
       live "/inventory/resources/:id", ResourceLive.Show, :show
+      live "/inventory/operations", InventoryOperationsLive, :index
     end
 
     post "/users/update-password", UserSessionController, :update_password

@@ -168,10 +168,10 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Add inventory dashboard with lifecycle, inventory freshness, and agent connectivity counts.
 - [X] Add resource list with kind, hostname, vendor/model, lifecycle, conditions, source provenance, and last observed time.
 - [X] Add resource detail view with desired state, canonical projections, identifier claims, interfaces, addresses, source provenance, conditions, and recent change events.
-- [ ] Add source and agent lists with credential state, lease health, last inventory, kind, and capabilities.
-- [ ] Add stale-inventory and disconnected-agent filters.
-- [ ] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
-- [ ] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
+- [X] Add source and agent lists with credential state, lease health, last inventory, kind, and capabilities.
+- [X] Add stale-inventory and disconnected-agent filters.
+- [X] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
+- [X] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
 
 ** 8. Packaging And Smoke Test
 
