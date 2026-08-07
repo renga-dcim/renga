@@ -1164,4 +1164,22 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert [%{status: "failed"}] =
              Inventory.list_observation_reconciliations(context.scope, observation.id)
   end
+
+  test "ingestion retains a terminal result when projection rolls back" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => %{"invalid" => true}}
+      )
+
+    assert {:error, %{status: "failed", errors: %{"processing" => "projection_failed"}}} =
+             Inventory.reconcile_observation_once(context.scope, observation.id)
+
+    assert [%{status: "failed", attempt: 1}] =
+             Inventory.list_observation_reconciliations(context.scope, observation.id)
+  end
 end

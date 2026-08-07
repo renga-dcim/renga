@@ -3,6 +3,7 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
+  alias Renga.Inventory.ObservationReconciliation
 
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
@@ -67,15 +68,18 @@ defmodule RengaWeb.Api.V1.ObservationController do
       {:ok, resource, _discovered?} ->
         %{status: "succeeded", matched_resource_id: resource.id}
 
-      {:error, result} when disposition == :duplicate ->
+      {:error, %ObservationReconciliation{} = result} when disposition == :duplicate ->
         %{
           status: "failed",
           matched_resource_id: result.matched_resource_id,
           errors: result.errors
         }
 
-      {:error, result} ->
+      {:error, %ObservationReconciliation{} = result} ->
         %{status: "failed", errors: result.errors}
+
+      {:error, _reason} ->
+        %{status: "failed", errors: %{"processing" => "reconciliation_failed"}}
     end
   end
 

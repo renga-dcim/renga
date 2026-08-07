@@ -44,26 +44,16 @@ defmodule Renga.Inventory.Reconciler do
       Inventory.lock_organization!(scope.organization_id)
 
       case latest_result(scope, observation.id) do
-        nil -> reconcile_first_attempt(scope, observation)
+        nil -> perform_reconciliation(scope, observation)
         result -> result_to_reconciliation(scope, result)
       end
     end)
     |> case do
       {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> record_unexpected_failure_once(scope, observation, reason)
     end
   rescue
     exception -> record_unexpected_failure_once(scope, observation, exception)
-  end
-
-  defp reconcile_first_attempt(scope, observation) do
-    Repo.transaction(fn -> perform_reconciliation(scope, observation) end, mode: :savepoint)
-    |> case do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
-    end
-  rescue
-    exception -> create_unexpected_failure(scope, observation, exception)
   end
 
   defp do_reconcile(scope, observation) do
@@ -138,29 +128,24 @@ defmodule Renga.Inventory.Reconciler do
     record_serialized_failure(scope, observation, unexpected_failure_attrs(exception))
   end
 
-  defp create_unexpected_failure(scope, observation, exception) do
-    attrs =
-      exception
-      |> unexpected_failure_attrs()
-      |> Map.put(:attempt, next_attempt(scope, observation.id))
-
-    case Inventory.create_observation_reconciliation(scope, observation.id, attrs) do
-      {:ok, result} -> {:error, result}
-      {:error, changeset} -> Repo.rollback(changeset)
-    end
-  end
-
-  defp unexpected_failure_attrs(exception) do
+  defp unexpected_failure_attrs(reason) do
     now = Renga.Time.utc_now_ms()
 
     %{
       status: "failed",
       errors: %{"processing" => "projection_failed"},
-      metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
+      metadata: %{"exception" => failure_type(reason)},
       started_at: now,
       completed_at: now
     }
   end
+
+  defp failure_type(%{__struct__: module}) when is_atom(module) do
+    module |> Module.split() |> Enum.join(".")
+  end
+
+  defp failure_type(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_type(_reason), do: "unknown"
 
   defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do
     Repo.transaction(fn ->
