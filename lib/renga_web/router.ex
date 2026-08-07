@@ -62,6 +62,8 @@ defmodule RengaWeb.Router do
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
 
       live "/inventory", InventoryDashboardLive, :index
+      live "/inventory/resources", ResourceLive.Index, :index
+      live "/inventory/resources/:id", ResourceLive.Show, :show
     end
 
     post "/users/update-password", UserSessionController, :update_password

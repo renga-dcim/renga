@@ -253,8 +253,52 @@ defmodule Renga.Inventory do
     Resource
     |> where([resource], resource.organization_id == ^organization_id)
     |> order_by([resource], asc: resource.name, asc: resource.id)
-    |> preload([:host, :conditions])
+    |> preload([:host, :conditions, identifier_claims: :source])
     |> Repo.all()
+  end
+
+  @doc """
+  Fetches the complete current operational projection for one scoped resource.
+
+  Raw observations remain separate; this aggregate contains desired state,
+  canonical projections, source claims, conditions, and bounded audit history.
+  """
+  def get_operational_resource!(%Scope{} = scope, id) do
+    conditions_query = from(condition in ResourceCondition, order_by: condition.type)
+
+    identifiers_query =
+      from(identifier in ResourceIdentifier, order_by: [identifier.kind, identifier.value])
+
+    claims_query =
+      from(claim in ResourceIdentifierClaim,
+        order_by: [claim.kind, desc: claim.last_seen_at],
+        preload: [:source]
+      )
+
+    events_query =
+      from(event in ChangeEvent,
+        order_by: [desc: event.occurred_at, desc: event.id],
+        limit: 20,
+        preload: [:source]
+      )
+
+    resource =
+      scope
+      |> get_resource!(id)
+      |> Repo.preload([
+        :host,
+        conditions: conditions_query,
+        identifiers: identifiers_query,
+        identifier_claims: claims_query,
+        change_events: events_query
+      ])
+
+    interfaces =
+      scope
+      |> list_interfaces(resource.id)
+      |> Repo.preload(:addresses)
+
+    %{resource | interfaces: interfaces}
   end
 
   @doc """

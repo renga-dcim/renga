@@ -51,6 +51,12 @@ defmodule RengaWeb.Layouts do
           >
             Overview
           </.link>
+          <.link
+            navigate={~p"/inventory/resources"}
+            class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/65 transition hover:bg-base-200 hover:text-base-content"
+          >
+            Resources
+          </.link>
         </nav>
 
         <div class="ml-auto flex items-center gap-3">

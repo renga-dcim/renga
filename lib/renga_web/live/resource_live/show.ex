@@ -1,0 +1,293 @@
+defmodule RengaWeb.ResourceLive.Show do
+  use RengaWeb, :live_view
+
+  on_mount {RengaWeb.UserAuth, :require_organization}
+
+  alias Renga.Inventory
+
+  @impl true
+  def mount(%{"id" => id}, _session, socket) do
+    resource = Inventory.get_operational_resource!(socket.assigns.current_scope, id)
+
+    {:ok,
+     assign(socket,
+       page_title: resource.display_name || resource.name,
+       resource: resource
+     )}
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <Layouts.app flash={@flash} current_scope={@current_scope}>
+      <article id="resource-detail" class="space-y-6">
+        <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <.link
+              navigate={~p"/inventory/resources"}
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-base-content/50 transition hover:text-orange-600"
+            >
+              <.icon name="hero-arrow-left" class="size-3.5" /> Resources
+            </.link>
+            <div class="mt-4 flex items-center gap-3">
+              <span class="grid size-11 place-items-center rounded-xl bg-orange-500/10 text-orange-600">
+                <.icon name="hero-server-stack" class="size-6" />
+              </span>
+              <div>
+                <h1 class="text-3xl font-semibold tracking-tight">
+                  {@resource.display_name || @resource.name}
+                </h1>
+                <p class="mt-1 font-mono text-xs uppercase tracking-wider text-base-content/45">
+                  {@resource.kind} · {@resource.id}
+                </p>
+              </div>
+            </div>
+          </div>
+          <span class="rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400">
+            {@resource.lifecycle_state}
+          </span>
+        </header>
+
+        <section id="resource-conditions" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <.condition_card :for={condition <- @resource.conditions} condition={condition} />
+          <p
+            :if={@resource.conditions == []}
+            class="col-span-full rounded-2xl border border-dashed border-base-content/15 p-6 text-sm text-base-content/45"
+          >
+            No resource conditions have been reported.
+          </p>
+        </section>
+
+        <div class="grid gap-6 xl:grid-cols-3">
+          <div class="space-y-6 xl:col-span-2">
+            <.panel
+              id="canonical-projection"
+              title="Canonical projection"
+              subtitle="Current source-neutral host inventory"
+            >
+              <dl class="grid gap-x-6 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
+                <.datum label="Hostname" value={host_field(@resource, :hostname)} />
+                <.datum label="FQDN" value={host_field(@resource, :fqdn)} />
+                <.datum label="Vendor" value={host_field(@resource, :vendor)} />
+                <.datum label="Model" value={host_field(@resource, :model)} />
+                <.datum label="Asset tag" value={host_field(@resource, :asset_tag)} />
+                <.datum label="Generation" value={to_string(@resource.generation)} />
+              </dl>
+            </.panel>
+
+            <.panel
+              id="resource-interfaces"
+              title="Interfaces and addresses"
+              subtitle="Canonical network inventory"
+            >
+              <div class="divide-y divide-base-content/10">
+                <div :if={@resource.interfaces == []} class="py-5 text-sm text-base-content/45">
+                  No interfaces reported.
+                </div>
+                <div
+                  :for={interface <- @resource.interfaces}
+                  id={"interface-#{interface.id}"}
+                  class="grid gap-4 py-5 first:pt-0 last:pb-0 sm:grid-cols-[1fr_1fr_2fr]"
+                >
+                  <div>
+                    <p class="font-mono text-sm font-semibold">{interface.name}</p>
+                    <p class="mt-1 text-xs capitalize text-base-content/45">
+                      {interface.kind} · {interface.status}
+                    </p>
+                  </div>
+                  <div>
+                    <p class="text-xs uppercase tracking-wider text-base-content/40">MAC</p>
+                    <p class="mt-1 font-mono text-xs">{format_mac(interface.mac_address)}</p>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <span
+                      :for={address <- interface.addresses}
+                      class="rounded-lg bg-base-200 px-2.5 py-1.5 font-mono text-xs"
+                    >
+                      {format_inet(address.address)}
+                    </span>
+                    <span :if={interface.addresses == []} class="text-xs text-base-content/35">
+                      No addresses
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </.panel>
+
+            <.panel
+              id="identifier-claims"
+              title="Identifier claims"
+              subtitle="Source assertions retained with provenance"
+            >
+              <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                  <thead class="text-xs uppercase tracking-wider text-base-content/40">
+                    <tr>
+                      <th class="pb-3 font-semibold">Kind</th>
+                      <th class="pb-3 font-semibold">Value</th>
+                      <th class="pb-3 font-semibold">Source</th>
+                      <th class="pb-3 text-right font-semibold">Confidence</th>
+                      <th class="pb-3 text-right font-semibold">Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-base-content/10">
+                    <tr :if={@resource.identifier_claims == []}>
+                      <td colspan="5" class="py-5 text-base-content/45">
+                        No source claims retained.
+                      </td>
+                    </tr>
+                    <tr :for={claim <- @resource.identifier_claims} id={"claim-#{claim.id}"}>
+                      <td class="py-3 capitalize text-base-content/55">{humanize(claim.kind)}</td>
+                      <td class="py-3 font-mono text-xs">{claim.value}</td>
+                      <td class="py-3">{claim.source.name}</td>
+                      <td class="py-3 text-right font-mono text-xs">{claim.confidence}%</td>
+                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
+                        {format_time(claim.last_seen_at)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </.panel>
+          </div>
+
+          <aside class="space-y-6">
+            <.panel id="desired-state" title="Desired state" subtitle="Operator and controller intent">
+              <dl class="space-y-3">
+                <div
+                  :for={{key, value} <- Enum.sort(@resource.spec)}
+                  class="rounded-xl bg-base-200/70 p-3"
+                >
+                  <dt class="text-xs font-medium text-base-content/45">{key}</dt>
+                  <dd class="mt-1 break-words font-mono text-xs">{format_value(value)}</dd>
+                </div>
+                <p :if={@resource.spec == %{}} class="text-sm text-base-content/45">
+                  No desired fields set.
+                </p>
+              </dl>
+            </.panel>
+
+            <.panel
+              id="canonical-identifiers"
+              title="Canonical identifiers"
+              subtitle="Server-owned identity"
+            >
+              <dl class="space-y-3">
+                <div :for={identifier <- @resource.identifiers} id={"identifier-#{identifier.id}"}>
+                  <dt class="text-xs capitalize text-base-content/45">{humanize(identifier.kind)}</dt>
+                  <dd class="mt-1 break-all font-mono text-xs">{identifier.value}</dd>
+                </div>
+                <p :if={@resource.identifiers == []} class="text-sm text-base-content/45">
+                  No canonical identifiers.
+                </p>
+              </dl>
+            </.panel>
+
+            <.panel
+              id="change-events"
+              title="Recent changes"
+              subtitle="Non-authoritative audit history"
+            >
+              <ol class="space-y-4">
+                <li
+                  :for={event <- @resource.change_events}
+                  id={"change-event-#{event.id}"}
+                  class="relative border-l border-base-content/15 pl-4"
+                >
+                  <span class="absolute -left-1 top-1 size-2 rounded-full bg-orange-500" />
+                  <p class="text-sm font-medium capitalize">{humanize(event.kind)}</p>
+                  <p class="mt-1 text-xs text-base-content/45">
+                    {event.field || "Resource"} · {format_time(event.occurred_at)}
+                  </p>
+                  <p :if={event.source} class="mt-1 text-xs text-base-content/45">
+                    via {event.source.name}
+                  </p>
+                </li>
+                <p :if={@resource.change_events == []} class="text-sm text-base-content/45">
+                  No change events.
+                </p>
+              </ol>
+            </.panel>
+          </aside>
+        </div>
+      </article>
+    </Layouts.app>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, required: true
+  slot :inner_block, required: true
+
+  defp panel(assigns) do
+    ~H"""
+    <section id={@id} class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm">
+      <h2 class="font-semibold tracking-tight">{@title}</h2>
+      <p class="mt-1 text-xs text-base-content/45">{@subtitle}</p>
+      <div class="mt-6">{render_slot(@inner_block)}</div>
+    </section>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+
+  defp datum(assigns) do
+    ~H"""
+    <div>
+      <dt class="text-xs uppercase tracking-wider text-base-content/40">{@label}</dt>
+      <dd class="mt-1.5 text-sm font-medium">{@value}</dd>
+    </div>
+    """
+  end
+
+  attr :condition, :map, required: true
+
+  defp condition_card(assigns) do
+    ~H"""
+    <div
+      id={"condition-#{@condition.id}"}
+      class="rounded-2xl border border-base-content/10 bg-base-100 p-4 shadow-sm"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <p class="truncate text-xs font-semibold">{@condition.type}</p>
+        <span class={[
+          "size-2 rounded-full",
+          @condition.status == "true" && "bg-emerald-500",
+          @condition.status == "false" && "bg-rose-500",
+          @condition.status == "unknown" && "bg-base-content/25"
+        ]} />
+      </div>
+      <p class="mt-2 text-xs capitalize text-base-content/50">
+        {@condition.status} · {@condition.reason || "No reason"}
+      </p>
+    </div>
+    """
+  end
+
+  defp host_field(%{host: nil}, _field), do: "Not reported"
+  defp host_field(%{host: host}, field), do: Map.get(host, field) || "Not reported"
+
+  defp format_mac(nil), do: "Not reported"
+
+  defp format_mac(%Postgrex.MACADDR{address: address}) do
+    address
+    |> Tuple.to_list()
+    |> Enum.map_join(":", &(Integer.to_string(&1, 16) |> String.pad_leading(2, "0")))
+  end
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: nil}),
+    do: address |> :inet.ntoa() |> to_string()
+
+  defp format_inet(%Postgrex.INET{address: address, netmask: mask}),
+    do: "#{:inet.ntoa(address)}/#{mask}"
+
+  defp format_time(nil), do: "Never"
+  defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
+
+  defp format_value(value) when is_binary(value), do: value
+  defp format_value(value), do: Jason.encode!(value)
+
+  defp humanize(value), do: value |> String.replace("_", " ")
+end
