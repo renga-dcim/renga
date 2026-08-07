@@ -30,6 +30,7 @@ defmodule Renga.Inventory.ResourceIdentifierClaim do
     field :first_seen_at, :utc_datetime_usec
     field :last_seen_at, :utc_datetime_usec
     field :metadata, :map, default: %{}
+    field :observation_count, :integer, virtual: true
 
     belongs_to :organization, Organization
     belongs_to :resource_identifier, ResourceIdentifier

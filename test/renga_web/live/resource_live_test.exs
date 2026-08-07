@@ -122,10 +122,47 @@ defmodule RengaWeb.ResourceLiveTest do
     refute has_element?(view, "#resources-#{current_resource.id}")
   end
 
-  test "shows desired state, canonical projections, provenance, and audit history", %{
+  test "uses singular evidence count for one identifier claim", %{
     conn: conn,
     resource: resource
   } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    assert has_element?(
+             view,
+             "#identifier-claims [data-claim-kind='serial_number']",
+             "1 observation"
+           )
+  end
+
+  test "shows desired state, canonical projections, provenance, and audit history", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    [claim] = Inventory.list_resource_identifier_claims(scope, resource.id)
+
+    {:ok, second_observation} =
+      Inventory.create_observation(scope, claim.source_id, %{
+        observation_id: "resource-live-report-2",
+        observed_at: ~U[2026-08-07 10:01:00.000000Z],
+        payload: %{"hostname" => "compute-01"}
+      })
+
+    {:ok, _claim} =
+      Inventory.create_resource_identifier_claim(scope, claim.source_id, second_observation.id, %{
+        resource_id: resource.id,
+        resource_identifier_id: claim.resource_identifier_id,
+        kind: claim.kind,
+        value: claim.value,
+        confidence: claim.confidence
+      })
+
+    operational_resource = Inventory.get_operational_resource!(scope, resource.id)
+
+    assert [%{observation_count: 2}] =
+             Enum.filter(operational_resource.identifier_claims, &(&1.kind == "serial_number"))
+
     {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
 
     assert has_element?(view, "#resource-detail")
@@ -133,6 +170,13 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#canonical-projection", "compute-01.example.net")
     assert has_element?(view, "#canonical-identifiers", "SN-123")
     assert has_element?(view, "#identifier-claims", "rack-agent")
+
+    assert has_element?(
+             view,
+             "#identifier-claims [data-claim-kind='serial_number']",
+             "100% 2026-08-07 10:00 UTC 2026-08-07 10:01 UTC 2 observations"
+           )
+
     assert has_element?(view, "#resource-interfaces", "192.0.2.10/24")
     assert has_element?(view, "#resource-conditions", "InventoryCurrent")
     assert has_element?(view, "#change-events", "discovered")

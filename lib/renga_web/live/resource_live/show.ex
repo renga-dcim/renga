@@ -127,22 +127,34 @@ defmodule RengaWeb.ResourceLive.Show do
                       <th class="pb-3 font-semibold">Value</th>
                       <th class="pb-3 font-semibold">Source</th>
                       <th class="pb-3 text-right font-semibold">Confidence</th>
+                      <th class="pb-3 text-right font-semibold">First seen</th>
                       <th class="pb-3 text-right font-semibold">Last seen</th>
+                      <th class="pb-3 text-right font-semibold">Evidence</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-base-content/10">
                     <tr :if={@resource.identifier_claims == []}>
-                      <td colspan="5" class="py-5 text-base-content/45">
+                      <td colspan="7" class="py-5 text-base-content/45">
                         No source claims retained.
                       </td>
                     </tr>
-                    <tr :for={claim <- @resource.identifier_claims} id={"claim-#{claim.id}"}>
+                    <tr
+                      :for={claim <- @resource.identifier_claims}
+                      id={"claim-#{claim.id}"}
+                      data-claim-kind={claim.kind}
+                    >
                       <td class="py-3 capitalize text-base-content/55">{humanize(claim.kind)}</td>
                       <td class="py-3 font-mono text-xs">{claim.value}</td>
                       <td class="py-3">{claim.source.name}</td>
                       <td class="py-3 text-right font-mono text-xs">{claim.confidence}%</td>
                       <td class="py-3 text-right font-mono text-xs text-base-content/50">
+                        {format_time(claim.first_seen_at)}
+                      </td>
+                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
                         {format_time(claim.last_seen_at)}
+                      </td>
+                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
+                        {observation_count_label(claim.observation_count)}
                       </td>
                     </tr>
                   </tbody>
@@ -285,6 +297,9 @@ defmodule RengaWeb.ResourceLive.Show do
 
   defp format_time(nil), do: "Never"
   defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
+
+  defp observation_count_label(1), do: "1 observation"
+  defp observation_count_label(count), do: "#{count} observations"
 
   defp format_value(value) when is_binary(value), do: value
   defp format_value(value), do: Jason.encode!(value)

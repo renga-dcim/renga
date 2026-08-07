@@ -296,7 +296,22 @@ defmodule Renga.Inventory do
 
     claims_query =
       from(claim in ResourceIdentifierClaim,
-        order_by: [claim.kind, desc: claim.last_seen_at],
+        distinct: [claim.source_id, claim.kind, claim.normalized_value],
+        windows: [
+          claim_history: [
+            partition_by: [claim.source_id, claim.kind, claim.normalized_value]
+          ]
+        ],
+        select_merge: %{
+          observation_count: over(count(claim.id), :claim_history)
+        },
+        order_by: [
+          claim.source_id,
+          claim.kind,
+          claim.normalized_value,
+          desc: claim.last_seen_at,
+          desc: claim.id
+        ],
         preload: [:source]
       )
 
