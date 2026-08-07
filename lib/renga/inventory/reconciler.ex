@@ -22,6 +22,7 @@ defmodule Renga.Inventory.Reconciler do
 
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
+  @non_identity_interface_kinds ~w(loopback virtual bridge vlan)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
@@ -570,25 +571,41 @@ defmodule Renga.Inventory.Reconciler do
   defp observation_identifiers(payload) do
     resource = resource_payload(payload)
 
+    {identity_interface_macs, non_identity_interface_macs} =
+      resource
+      |> Map.get("interfaces", [])
+      |> Enum.reject(&(&1["status"] == "not_present"))
+      |> Enum.reduce({[], MapSet.new()}, fn interface, {identity_macs, non_identity_macs} ->
+        case Map.get(interface, "mac_address") do
+          nil ->
+            {identity_macs, non_identity_macs}
+
+          mac_address ->
+            mac_identifier = identifier("mac_address", mac_address)
+
+            if Map.get(interface, "kind", "ethernet") in @non_identity_interface_kinds do
+              {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
+            else
+              {[mac_identifier | identity_macs], non_identity_macs}
+            end
+        end
+      end)
+
+    identity_mac_values = MapSet.new(identity_interface_macs, & &1.normalized_value)
+    excluded_mac_values = MapSet.difference(non_identity_interface_macs, identity_mac_values)
+
     identifiers =
       resource
       |> Map.get("identifiers", %{})
       |> Enum.flat_map(fn {kind, values} ->
         Enum.map(List.wrap(values), &identifier(kind, &1))
       end)
+      |> Enum.reject(
+        &(&1.kind == "mac_address" and
+            MapSet.member?(excluded_mac_values, &1.normalized_value))
+      )
 
-    interface_macs =
-      resource
-      |> Map.get("interfaces", [])
-      |> Enum.reject(&(&1["status"] == "not_present"))
-      |> Enum.flat_map(fn interface ->
-        case Map.get(interface, "mac_address") do
-          nil -> []
-          mac_address -> [identifier("mac_address", mac_address)]
-        end
-      end)
-
-    Enum.uniq_by(identifiers ++ interface_macs, &{&1.kind, &1.normalized_value})
+    Enum.uniq_by(identifiers ++ identity_interface_macs, &{&1.kind, &1.normalized_value})
   end
 
   defp identifier(kind, value) do

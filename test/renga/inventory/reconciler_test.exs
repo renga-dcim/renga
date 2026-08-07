@@ -300,6 +300,47 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert matched.id == resource.id
   end
 
+  test "retains virtual interface MACs as network evidence without identity claims" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{
+          "machine_id" => "machine-1",
+          "mac_address" => ["aa:bb:cc:dd:ee:01", "02:42:ac:11:00:01"]
+        },
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "mac_address" => "aa:bb:cc:dd:ee:01"
+          },
+          %{
+            "name" => "docker0",
+            "kind" => "virtual",
+            "mac_address" => "02:42:ac:11:00:01"
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert context.scope
+           |> Inventory.list_resource_identifier_claims(resource.id)
+           |> Enum.filter(&(&1.kind == "mac_address"))
+           |> Enum.map(& &1.normalized_value) == ["aa:bb:cc:dd:ee:01"]
+
+    assert resource.id
+           |> then(&Inventory.list_interfaces(context.scope, &1))
+           |> Enum.map(&{&1.name, &1.kind, &1.mac_address.address}) == [
+             {"docker0", "virtual", {2, 66, 172, 17, 0, 1}},
+             {"eth0", "ethernet", {170, 187, 204, 221, 238, 1}}
+           ]
+  end
+
   test "matches only the present MAC set after an interface is omitted" do
     context = context()
 

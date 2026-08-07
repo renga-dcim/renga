@@ -140,6 +140,7 @@ fn collect_from_with_sources(
         .unwrap_or_default()
         .iter()
         .filter(|i| i.status != "not_present")
+        .filter(|i| i.kind == "ethernet")
         .filter_map(|i| i.mac_address.clone())
         .collect();
     let mut components = vec![
@@ -862,20 +863,35 @@ mod tests {
         fs::create_dir_all(base.join("device")).unwrap();
         fs::write(base.join("speed"), "1000\n").unwrap();
         fs::write(base.join("address"), "aa:bb:cc:dd:ee:ff\n").unwrap();
-        let network = FakeNetwork(Some(vec![NetworkInterface {
-            name: "eth0".into(),
-            index: 2,
-            mac: Some("aa:bb:cc:dd:ee:ff".into()),
-            mtu: Some(1500),
-            up: true,
-            running: false,
-            loopback: false,
-            addresses: vec![NetworkAddress {
-                ip: "10.0.0.2".parse().unwrap(),
-                prefix: 24,
-                family: AddressFamily::Ipv4,
-            }],
-        }]));
+        let virtual_base = root.join("sys/class/net/docker0");
+        fs::create_dir_all(&virtual_base).unwrap();
+        fs::write(virtual_base.join("address"), "02:42:ac:11:00:01\n").unwrap();
+        let network = FakeNetwork(Some(vec![
+            NetworkInterface {
+                name: "eth0".into(),
+                index: 2,
+                mac: Some("aa:bb:cc:dd:ee:ff".into()),
+                mtu: Some(1500),
+                up: true,
+                running: false,
+                loopback: false,
+                addresses: vec![NetworkAddress {
+                    ip: "10.0.0.2".parse().unwrap(),
+                    prefix: 24,
+                    family: AddressFamily::Ipv4,
+                }],
+            },
+            NetworkInterface {
+                name: "docker0".into(),
+                index: 3,
+                mac: Some("02:42:ac:11:00:01".into()),
+                mtu: Some(1500),
+                up: true,
+                running: true,
+                loopback: false,
+                addresses: vec![],
+            },
+        ]));
         let resource = collect_from_with_sources(
             &root,
             &network,
@@ -901,6 +917,8 @@ mod tests {
         assert_eq!(value["interfaces"][0]["kind"], "ethernet");
         assert_eq!(value["interfaces"][0]["speed_mbps"], 1000);
         assert_eq!(value["interfaces"][0]["mtu"], 1500);
+        assert_eq!(value["interfaces"][1]["kind"], "virtual");
+        assert_eq!(value["interfaces"][1]["mac_address"], "02:42:ac:11:00:01");
         fs::remove_dir_all(root).unwrap();
     }
 
