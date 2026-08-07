@@ -201,6 +201,17 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Lists registered agents with their source and current lease for operational views.
+  """
+  def list_agents(%Scope{organization_id: organization_id}) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> order_by([agent], asc: agent.name, asc: agent.id)
+    |> preload([:source, :lease])
+    |> Repo.all()
+  end
+
+  @doc """
   Renews an agent lease using server time or an explicit test/replay timestamp.
   """
   def renew_agent_lease(%Scope{organization_id: organization_id} = scope, agent_id, attrs \\ %{}) do
@@ -231,6 +242,18 @@ defmodule Renga.Inventory do
     Resource
     |> where([resource], resource.organization_id == ^organization_id)
     |> order_by([resource], asc: resource.name, asc: resource.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists resources with the typed host and independent conditions needed by
+  operational inventory views.
+  """
+  def list_operational_resources(%Scope{organization_id: organization_id}) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> order_by([resource], asc: resource.name, asc: resource.id)
+    |> preload([:host, :conditions])
     |> Repo.all()
   end
 
