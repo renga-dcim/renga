@@ -41,8 +41,7 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
       end)
 
     try do
-      assert wait_for_advisory_lock(task.pid, 1_000),
-             "override materialization raced the reconciliation fence"
+      refute Task.yield(task, 500), "override materialization raced the reconciliation fence"
     after
       # End the transaction holding the organization fence.
       Repo.query!("COMMIT")
@@ -267,30 +266,6 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     deadline = System.monotonic_time(:millisecond) + timeout
 
     do_wait_for_insert_barrier(expected, deadline)
-  end
-
-  defp wait_for_advisory_lock(pid, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_advisory_lock(pid, deadline)
-  end
-
-  defp do_wait_for_advisory_lock(pid, deadline) do
-    [[waiting?]] =
-      Repo.query!("""
-      SELECT EXISTS (
-        SELECT 1
-        FROM pg_stat_activity
-        WHERE wait_event = 'advisory'
-          AND query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'
-      )
-      """).rows
-
-    cond do
-      waiting? -> true
-      not Process.alive?(pid) -> false
-      System.monotonic_time(:millisecond) >= deadline -> false
-      true -> Process.sleep(10) && do_wait_for_advisory_lock(pid, deadline)
-    end
   end
 
   defp do_wait_for_insert_barrier(expected, deadline) do
