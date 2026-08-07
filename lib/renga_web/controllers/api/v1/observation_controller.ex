@@ -8,7 +8,9 @@ defmodule RengaWeb.Api.V1.ObservationController do
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
          {:ok, {_agent, _lease}} <-
-           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id),
+           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id, %{
+             installation_id: conn.assigns.current_installation_id
+           }),
          {:ok, observation, disposition} <-
            Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs) do
       reconciliation =
@@ -28,6 +30,20 @@ defmodule RengaWeb.Api.V1.ObservationController do
         }
       })
     else
+      {:error, reason}
+      when reason in [:installation_identity_mismatch, :installation_identity_conflict] ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          status: "rejected",
+          errors: [
+            %{
+              path: "installation_id",
+              message: "collector credential is already enrolled by another installation"
+            }
+          ]
+        })
+
       {:error, :idempotency_conflict, observation} ->
         conn
         |> put_status(:conflict)

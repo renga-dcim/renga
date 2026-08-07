@@ -198,6 +198,7 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
+    installation_id = get_attr(attrs, :installation_id)
 
     now =
       attrs
@@ -210,10 +211,35 @@ defmodule Renga.Inventory do
     agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
+      lock_source_for_agent!(organization_id, source.id)
+      ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
+  end
+
+  defp lock_source_for_agent!(organization_id, source_id) do
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> where([source], source.id == ^source_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
+  end
+
+  defp ensure_agent_installation!(_organization_id, _source_id, nil), do: :ok
+
+  defp ensure_agent_installation!(organization_id, source_id, installation_id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.source_id == ^source_id)
+    |> select([agent], agent.installation_id)
+    |> Repo.one()
+    |> case do
+      nil -> :ok
+      ^installation_id -> :ok
+      _other_installation_id -> Repo.rollback(:installation_identity_mismatch)
+    end
   end
 
   @doc """
@@ -1433,12 +1459,14 @@ defmodule Renga.Inventory do
       name: get_attr(attrs, :name) || source.name,
       registered_at: now
     }
+    |> maybe_put(:installation_id, get_attr(attrs, :installation_id))
     |> maybe_put(:version, get_attr(attrs, :version) || metadata_version(metadata))
     |> maybe_put(:capabilities, get_attr(attrs, :capabilities))
     |> maybe_put(:metadata, metadata)
   end
 
   defp upsert_agent!(organization_id, source_id, attrs) do
+    bind_installation? = Map.has_key?(attrs, :installation_id)
     update_version? = Map.has_key?(attrs, :version)
     update_capabilities? = Map.has_key?(attrs, :capabilities)
     merge_metadata? = Map.has_key?(attrs, :metadata)
@@ -1452,6 +1480,13 @@ defmodule Renga.Inventory do
                 "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.name ELSE ? END",
                 agent.updated_at,
                 agent.name
+              ),
+            installation_id:
+              fragment(
+                "CASE WHEN ? AND ? IS NULL THEN EXCLUDED.installation_id ELSE ? END",
+                ^bind_installation?,
+                agent.installation_id,
+                agent.installation_id
               ),
             version:
               fragment(
@@ -1491,6 +1526,15 @@ defmodule Renga.Inventory do
       |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
 
     changeset =
+      case Map.fetch(attrs, :installation_id) do
+        {:ok, installation_id} ->
+          Ecto.Changeset.put_change(changeset, :installation_id, installation_id)
+
+        :error ->
+          changeset
+      end
+
+    changeset =
       if merge_metadata? do
         existing_agent =
           Agent
@@ -1518,9 +1562,26 @@ defmodule Renga.Inventory do
       )
 
     case result do
-      {:ok, agent} -> agent
-      {:error, changeset} -> Repo.rollback(changeset)
+      {:ok, agent} ->
+        agent
+
+      {:error, changeset} ->
+        if installation_id_conflict?(changeset) do
+          Repo.rollback(:installation_identity_conflict)
+        else
+          Repo.rollback(changeset)
+        end
     end
+  end
+
+  defp installation_id_conflict?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:installation_id, {_message, options}} ->
+        options[:constraint_name] == "agents_organization_installation_id_index"
+
+      _other_error ->
+        false
+    end)
   end
 
   defp validate_agent_metadata_merge(changeset, attrs, existing_agent) do

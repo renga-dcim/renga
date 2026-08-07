@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict GJQbAJ9bHwy2JvChPW4xpdUEGnVuw55GG5D0KQoMWvy0v4cINDp7BlVf5tqiMXH
+\restrict 8FgaXd1e2M3UrgfpfmFqhdb2x0EpBdDFDdubHu3WNQDzW7t9EGEuYmR2kEckgjg
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -134,6 +134,7 @@ CREATE TABLE public.agents (
     registered_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    installation_id uuid,
     CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
 );
 
@@ -887,6 +888,13 @@ CREATE UNIQUE INDEX agents_organization_id_source_id_index ON public.agents USIN
 --
 
 CREATE INDEX agents_organization_id_status_index ON public.agents USING btree (organization_id, status);
+
+
+--
+-- Name: agents_organization_installation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agents_organization_installation_id_index ON public.agents USING btree (organization_id, installation_id) WHERE (installation_id IS NOT NULL);
 
 
 --
@@ -1996,7 +2004,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict GJQbAJ9bHwy2JvChPW4xpdUEGnVuw55GG5D0KQoMWvy0v4cINDp7BlVf5tqiMXH
+\unrestrict 8FgaXd1e2M3UrgfpfmFqhdb2x0EpBdDFDdubHu3WNQDzW7t9EGEuYmR2kEckgjg
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -2009,3 +2017,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731231835);
 INSERT INTO public."schema_migrations" (version) VALUES (20260807183000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260808070000);

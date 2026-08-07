@@ -17,6 +17,7 @@ use std::{fmt, io::Read, thread, time::Duration};
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
+const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
 const BACKOFF_SLICE: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,7 @@ pub struct HttpClient {
     checkin_url: Url,
     observation_url: Url,
     authorization: HeaderValue,
+    installation_id: HeaderValue,
     attempts: u32,
     request_timeout: Duration,
     cancellation: Cancellation,
@@ -94,6 +96,8 @@ impl HttpClient {
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.token))
             .map_err(|_| TransportError::new("invalid bearer token".into(), false))?;
         authorization.set_sensitive(true);
+        let installation_id = HeaderValue::from_str(&config.installation_id.to_string())
+            .map_err(|_| TransportError::new("invalid installation ID".into(), false))?;
         let client = Client::builder()
             .timeout(config.request_timeout)
             .redirect(Policy::none())
@@ -104,6 +108,7 @@ impl HttpClient {
             checkin_url,
             observation_url,
             authorization,
+            installation_id,
             attempts: config.max_retry_attempts,
             request_timeout: config.request_timeout,
             cancellation,
@@ -137,6 +142,7 @@ impl HttpClient {
                     .client
                     .post(self.observation_url.clone())
                     .header(AUTHORIZATION, self.authorization.clone())
+                    .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(body.clone())
                     .send()
@@ -156,6 +162,7 @@ impl HttpClient {
                     .client
                     .post(url.clone())
                     .header(AUTHORIZATION, self.authorization.clone())
+                    .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .json(value)
                     .send()
                     .map_err(request_error)?;
@@ -324,6 +331,10 @@ mod tests {
                 "https://renga.test/api/v1/observations"
             );
             assert_eq!(client.authorization.to_str().unwrap(), "Bearer valid-token");
+            assert_eq!(
+                client.installation_id.to_str().unwrap(),
+                uuid::Uuid::nil().to_string()
+            );
         }
     }
 

@@ -11,6 +11,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Inventory.Source
   alias Renga.Repo
 
+  @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
+  @other_installation_id "8ea9ae04-bf9b-4c34-8192-4f617eade95e"
+
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
   defp source_fixture(attrs \\ %{}) do
@@ -31,8 +34,10 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
     %{organization: organization, scope: scope, source: source, token: token}
   end
 
-  defp authorize(conn, token) do
-    put_req_header(conn, "authorization", "Bearer #{token}")
+  defp authorize(conn, token, installation_id \\ @installation_id) do
+    conn
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header("x-renga-installation-id", installation_id)
   end
 
   defp valid_observation_payload(source, attrs \\ %{}) do
@@ -116,6 +121,32 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert resource.kind == "server"
       assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
+    end
+
+    test "rejects observations from a different installation after enrollment", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      enrolled_conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{"status" => "accepted"} = json_response(enrolled_conn, 202)
+
+      payload = valid_observation_payload(source)
+
+      conflicting_conn =
+        build_conn()
+        |> authorize(token, @other_installation_id)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "installation_id", "message" => message}]
+             } = json_response(conflicting_conn, 409)
+
+      assert message =~ "already enrolled"
+      refute Repo.get_by(Observation, idempotency_key: payload["observation_id"])
     end
 
     test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do

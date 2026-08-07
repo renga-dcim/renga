@@ -7,7 +7,11 @@ defmodule RengaWeb.Api.V1.AgentController do
   def check_in(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_check_in(params, source),
          {:ok, {agent, lease}} <-
-           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id, attrs) do
+           Inventory.record_agent_check_in(
+             conn.assigns.current_scope,
+             source.id,
+             Map.put(attrs, :installation_id, conn.assigns.current_installation_id)
+           ) do
       conn
       |> put_status(:accepted)
       |> json(%{
@@ -25,6 +29,20 @@ defmodule RengaWeb.Api.V1.AgentController do
         }
       })
     else
+      {:error, reason}
+      when reason in [:installation_identity_mismatch, :installation_identity_conflict] ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          status: "rejected",
+          errors: [
+            %{
+              path: "installation_id",
+              message: "collector credential is already enrolled by another installation"
+            }
+          ]
+        })
+
       {:error, errors} when is_list(errors) ->
         conn
         |> put_status(:unprocessable_entity)

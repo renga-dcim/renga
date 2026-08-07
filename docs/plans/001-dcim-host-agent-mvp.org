@@ -97,6 +97,7 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 
 - [X] Add JSON routes under =/api= for agent check-ins and observations.
 - [X] Add bearer-token authentication plug for sources.
+- [X] Bind each host-agent source credential to the first stable installation UUID and reject mismatched installations on every agent API endpoint.
 - [X] Implement =POST /api/v1/agent/checkins=.
 - [X] Implement =POST /api/v1/observations= for one host resource per request.
 - [X] Store accepted raw observations before reconciliation.
@@ -104,6 +105,11 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 - [X] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
 - [X] Return structured acceptance and validation responses.
 - [X] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
+
+Deployment note: roll out the installation-identity agent release before the
+strict server release. Older servers ignore the additional request header, but
+older agents cannot report to a strict server because observations previously
+carried no installation identity.
 
 ** 4. Inventory Model Rebuild
 
@@ -160,6 +166,7 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Collect CPU, memory, disks, host filesystems from PID 1's =mountinfo= through =procfs= when accessible, NICs, MAC addresses, and IP addresses.
 - [X] Detect basic virtualization hints: bare metal, VM guest, container host.
 - [X] POST observations and check-ins with retry and backoff.
+- [X] Send the stable installation UUID with every authenticated agent request.
 - [X] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
 
 ** 7. Operational UI MVP
