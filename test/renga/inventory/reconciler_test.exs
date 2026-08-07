@@ -696,6 +696,27 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "explicit host masks remain idempotent after Postgrex decodes them as nil" do
+    context = context()
+
+    interface = %{
+      "name" => "lo",
+      "kind" => "loopback",
+      "status" => "up",
+      "addresses" => ["127.0.0.1/32", "::1/128"]
+    }
+
+    first = observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [interface])
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    second = observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [interface])
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+
+    [canonical_interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert length(Inventory.list_addresses(context.scope, canonical_interface.id)) == 2
+    assert Repo.aggregate(AddressEvidence, :count) == 4
+  end
+
   test "partial interface reports preserve omitted canonical attributes and ownership" do
     context = context()
 
