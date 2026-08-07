@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 41UTyxQQHG6qAPQOcbFvxDqAYz6JUxTtqnsYt1KQWZZzYuYv4z8iiukyR4yZZwB
+\restrict wkia8vOAk8niXqYkSjHacrjs46PhhwiDUVGjGudhgQSxtg1sxbQlgnaGgpYy4ie
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -113,8 +113,7 @@ CREATE TABLE public.agent_leases (
     renewed_at timestamp(3) without time zone NOT NULL,
     expires_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT agent_leases_expiry_after_renewal CHECK ((expires_at > renewed_at))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -133,8 +132,7 @@ CREATE TABLE public.agents (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     registered_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -198,8 +196,7 @@ CREATE TABLE public.interface_evidence (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT interface_evidence_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -233,8 +230,7 @@ CREATE TABLE public.interface_relationships (
     kind character varying(255) NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT interface_relationships_distinct_endpoints CHECK ((source_interface_id <> target_interface_id))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -254,8 +250,7 @@ CREATE TABLE public.interfaces (
     speed_mbps integer,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT interfaces_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -275,9 +270,7 @@ CREATE TABLE public.observation_reconciliations (
     started_at timestamp(3) without time zone,
     completed_at timestamp(3) without time zone,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT observation_reconciliations_attempt_positive CHECK ((attempt > 0)),
-    CONSTRAINT observation_reconciliations_completion_state CHECK ((((((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[])) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying])::text[])) AND (completed_at IS NOT NULL))) AND ((started_at IS NULL) OR (completed_at IS NULL) OR (completed_at >= started_at))))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -386,10 +379,7 @@ CREATE TABLE public.resource_identifier_claims (
     last_seen_at timestamp(3) without time zone NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT resource_identifier_claims_canonical_requires_resource CHECK (((resource_identifier_id IS NULL) OR (resource_id IS NOT NULL))),
-    CONSTRAINT resource_identifier_claims_confidence_range CHECK (((confidence >= 0) AND (confidence <= 100))),
-    CONSTRAINT resource_identifier_claims_seen_order CHECK ((last_seen_at >= first_seen_at))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -440,8 +430,7 @@ CREATE TABLE public.resource_owners (
     controller boolean DEFAULT true NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT resource_owners_distinct_endpoints CHECK ((owner_resource_id <> child_resource_id))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -457,8 +446,7 @@ CREATE TABLE public.resource_relationships (
     kind character varying(255) NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT resource_relationships_distinct_endpoints CHECK ((source_resource_id <> target_resource_id))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -554,8 +542,7 @@ CREATE TABLE public.sync_runs (
     error_count integer DEFAULT 0 NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT sync_runs_completion_state CHECK (((((status)::text = 'running'::text) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'partial'::character varying])::text[])) AND (completed_at IS NOT NULL) AND (completed_at >= started_at))))
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -827,13 +814,6 @@ CREATE INDEX address_evidence_organization_id_source_id_address_id_index ON publ
 
 
 --
--- Name: addresses_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX addresses_id_organization_id_index ON public.addresses USING btree (id, organization_id);
-
-
---
 -- Name: addresses_organization_id_interface_id_address_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -869,17 +849,10 @@ CREATE INDEX agent_leases_organization_id_expires_at_index ON public.agent_lease
 
 
 --
--- Name: agents_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+-- Name: agents_organization_id_source_id_name_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX agents_id_organization_id_index ON public.agents USING btree (id, organization_id);
-
-
---
--- Name: agents_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX agents_organization_id_source_id_index ON public.agents USING btree (organization_id, source_id);
+CREATE UNIQUE INDEX agents_organization_id_source_id_name_index ON public.agents USING btree (organization_id, source_id, name);
 
 
 --
@@ -981,13 +954,6 @@ CREATE INDEX interface_relationship_evidence_source_link_index ON public.interfa
 
 
 --
--- Name: interface_relationships_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX interface_relationships_id_organization_id_index ON public.interface_relationships USING btree (id, organization_id);
-
-
---
 -- Name: interface_relationships_org_source_interface_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1013,20 +979,6 @@ CREATE INDEX interface_relationships_organization_id_kind_index ON public.interf
 --
 
 CREATE UNIQUE INDEX interface_relationships_source_target_kind_index ON public.interface_relationships USING btree (organization_id, source_interface_id, target_interface_id, kind);
-
-
---
--- Name: interfaces_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX interfaces_id_organization_id_index ON public.interfaces USING btree (id, organization_id);
-
-
---
--- Name: interfaces_id_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX interfaces_id_organization_id_resource_id_index ON public.interfaces USING btree (id, organization_id, resource_id);
 
 
 --
@@ -1069,20 +1021,6 @@ CREATE UNIQUE INDEX observation_reconciliations_observation_attempt_index ON pub
 --
 
 CREATE INDEX observation_reconciliations_organization_id_status_index ON public.observation_reconciliations USING btree (organization_id, status);
-
-
---
--- Name: observations_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX observations_id_organization_id_index ON public.observations USING btree (id, organization_id);
-
-
---
--- Name: observations_id_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX observations_id_organization_id_source_id_index ON public.observations USING btree (id, organization_id, source_id);
 
 
 --
@@ -1212,20 +1150,6 @@ CREATE INDEX resource_identifier_claims_organization_id_source_id_index ON publi
 
 
 --
--- Name: resource_identifiers_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX resource_identifiers_id_organization_id_index ON public.resource_identifiers USING btree (id, organization_id);
-
-
---
--- Name: resource_identifiers_id_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX resource_identifiers_id_organization_id_resource_id_index ON public.resource_identifiers USING btree (id, organization_id, resource_id);
-
-
---
 -- Name: resource_identifiers_normalized_value_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1317,13 +1241,6 @@ CREATE UNIQUE INDEX resource_revisions_revision_index ON public.resource_revisio
 
 
 --
--- Name: resources_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX resources_id_organization_id_index ON public.resources USING btree (id, organization_id);
-
-
---
 -- Name: resources_labels_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1359,13 +1276,6 @@ CREATE INDEX resources_organization_id_resource_version_index ON public.resource
 
 
 --
--- Name: sources_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX sources_id_organization_id_index ON public.sources USING btree (id, organization_id);
-
-
---
 -- Name: sources_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1391,20 +1301,6 @@ CREATE INDEX sources_organization_id_status_index ON public.sources USING btree 
 --
 
 CREATE UNIQUE INDEX sources_token_hash_index ON public.sources USING btree (token_hash) WHERE (token_hash IS NOT NULL);
-
-
---
--- Name: sync_runs_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX sync_runs_id_organization_id_index ON public.sync_runs USING btree (id, organization_id);
-
-
---
--- Name: sync_runs_id_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX sync_runs_id_organization_id_source_id_index ON public.sync_runs USING btree (id, organization_id, source_id);
 
 
 --
@@ -1457,6 +1353,22 @@ CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations F
 
 
 --
+-- Name: address_evidence address_evidence_address_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.address_evidence
+    ADD CONSTRAINT address_evidence_address_id_fkey FOREIGN KEY (address_id) REFERENCES public.addresses(id) ON DELETE CASCADE;
+
+
+--
+-- Name: address_evidence address_evidence_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.address_evidence
+    ADD CONSTRAINT address_evidence_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: address_evidence address_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1465,35 +1377,19 @@ ALTER TABLE ONLY public.address_evidence
 
 
 --
--- Name: address_evidence address_evidence_tenant_address_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: address_evidence address_evidence_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.address_evidence
-    ADD CONSTRAINT address_evidence_tenant_address_fkey FOREIGN KEY (address_id, organization_id) REFERENCES public.addresses(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT address_evidence_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
 
 
 --
--- Name: address_evidence address_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.address_evidence
-    ADD CONSTRAINT address_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
-
-
---
--- Name: address_evidence address_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.address_evidence
-    ADD CONSTRAINT address_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
-
-
---
--- Name: addresses addresses_interface_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: addresses addresses_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.addresses
-    ADD CONSTRAINT addresses_interface_resource_fkey FOREIGN KEY (interface_id, organization_id, resource_id) REFERENCES public.interfaces(id, organization_id, resource_id) ON DELETE CASCADE;
+    ADD CONSTRAINT addresses_interface_id_fkey FOREIGN KEY (interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
 
 
 --
@@ -1505,19 +1401,19 @@ ALTER TABLE ONLY public.addresses
 
 
 --
--- Name: addresses addresses_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: addresses addresses_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.addresses
-    ADD CONSTRAINT addresses_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT addresses_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
--- Name: agent_leases agent_leases_organization_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_leases agent_leases_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_leases
-    ADD CONSTRAINT agent_leases_organization_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_leases_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
 
 
 --
@@ -1537,11 +1433,19 @@ ALTER TABLE ONLY public.agents
 
 
 --
--- Name: agents agents_organization_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agents agents_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agents
-    ADD CONSTRAINT agents_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT agents_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: change_events change_events_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE SET NULL;
 
 
 --
@@ -1553,35 +1457,27 @@ ALTER TABLE ONLY public.change_events
 
 
 --
--- Name: change_events change_events_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: change_events change_events_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.change_events
-    ADD CONSTRAINT change_events_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id) REFERENCES public.observations(id, organization_id) ON DELETE SET NULL (observation_id);
+    ADD CONSTRAINT change_events_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE SET NULL;
 
 
 --
--- Name: change_events change_events_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.change_events
-    ADD CONSTRAINT change_events_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE SET NULL (resource_id);
-
-
---
--- Name: change_events change_events_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: change_events change_events_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.change_events
-    ADD CONSTRAINT change_events_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE SET NULL (source_id);
+    ADD CONSTRAINT change_events_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
 
 
 --
--- Name: change_events change_events_tenant_sync_run_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: change_events change_events_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.change_events
-    ADD CONSTRAINT change_events_tenant_sync_run_fkey FOREIGN KEY (sync_run_id, organization_id) REFERENCES public.sync_runs(id, organization_id) ON DELETE SET NULL (sync_run_id);
+    ADD CONSTRAINT change_events_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
 
 
 --
@@ -1593,11 +1489,27 @@ ALTER TABLE ONLY public.hosts
 
 
 --
--- Name: hosts hosts_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: hosts hosts_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.hosts
-    ADD CONSTRAINT hosts_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT hosts_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_evidence interface_evidence_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_evidence
+    ADD CONSTRAINT interface_evidence_interface_id_fkey FOREIGN KEY (interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_evidence interface_evidence_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_evidence
+    ADD CONSTRAINT interface_evidence_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE RESTRICT;
 
 
 --
@@ -1609,27 +1521,27 @@ ALTER TABLE ONLY public.interface_evidence
 
 
 --
--- Name: interface_evidence interface_evidence_tenant_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_evidence interface_evidence_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interface_evidence
-    ADD CONSTRAINT interface_evidence_tenant_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT interface_evidence_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
 
 
 --
--- Name: interface_evidence interface_evidence_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_relationship_evidence interface_relationship_evidence_interface_relationship_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.interface_evidence
-    ADD CONSTRAINT interface_evidence_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.interface_relationship_evidence
+    ADD CONSTRAINT interface_relationship_evidence_interface_relationship_id_fkey FOREIGN KEY (interface_relationship_id) REFERENCES public.interface_relationships(id) ON DELETE CASCADE;
 
 
 --
--- Name: interface_evidence interface_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_relationship_evidence interface_relationship_evidence_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.interface_evidence
-    ADD CONSTRAINT interface_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.interface_relationship_evidence
+    ADD CONSTRAINT interface_relationship_evidence_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE RESTRICT;
 
 
 --
@@ -1641,27 +1553,11 @@ ALTER TABLE ONLY public.interface_relationship_evidence
 
 
 --
--- Name: interface_relationship_evidence interface_relationship_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_relationship_evidence interface_relationship_evidence_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interface_relationship_evidence
-    ADD CONSTRAINT interface_relationship_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
-
-
---
--- Name: interface_relationship_evidence interface_relationship_evidence_tenant_relationship_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.interface_relationship_evidence
-    ADD CONSTRAINT interface_relationship_evidence_tenant_relationship_fkey FOREIGN KEY (interface_relationship_id, organization_id) REFERENCES public.interface_relationships(id, organization_id) ON DELETE CASCADE;
-
-
---
--- Name: interface_relationship_evidence interface_relationship_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.interface_relationship_evidence
-    ADD CONSTRAINT interface_relationship_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT interface_relationship_evidence_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
 
 
 --
@@ -1673,19 +1569,19 @@ ALTER TABLE ONLY public.interface_relationships
 
 
 --
--- Name: interface_relationships interface_relationships_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_relationships interface_relationships_source_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interface_relationships
-    ADD CONSTRAINT interface_relationships_tenant_source_fkey FOREIGN KEY (source_interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT interface_relationships_source_interface_id_fkey FOREIGN KEY (source_interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
 
 
 --
--- Name: interface_relationships interface_relationships_tenant_target_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interface_relationships interface_relationships_target_interface_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interface_relationships
-    ADD CONSTRAINT interface_relationships_tenant_target_fkey FOREIGN KEY (target_interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT interface_relationships_target_interface_id_fkey FOREIGN KEY (target_interface_id) REFERENCES public.interfaces(id) ON DELETE CASCADE;
 
 
 --
@@ -1697,11 +1593,27 @@ ALTER TABLE ONLY public.interfaces
 
 
 --
--- Name: interfaces interfaces_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: interfaces interfaces_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.interfaces
-    ADD CONSTRAINT interfaces_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT interfaces_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: observation_reconciliations observation_reconciliations_matched_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observation_reconciliations
+    ADD CONSTRAINT observation_reconciliations_matched_resource_id_fkey FOREIGN KEY (matched_resource_id) REFERENCES public.resources(id) ON DELETE SET NULL;
+
+
+--
+-- Name: observation_reconciliations observation_reconciliations_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observation_reconciliations
+    ADD CONSTRAINT observation_reconciliations_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE CASCADE;
 
 
 --
@@ -1713,22 +1625,6 @@ ALTER TABLE ONLY public.observation_reconciliations
 
 
 --
--- Name: observation_reconciliations observation_reconciliations_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.observation_reconciliations
-    ADD CONSTRAINT observation_reconciliations_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id) REFERENCES public.observations(id, organization_id) ON DELETE CASCADE;
-
-
---
--- Name: observation_reconciliations observation_reconciliations_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.observation_reconciliations
-    ADD CONSTRAINT observation_reconciliations_tenant_resource_fkey FOREIGN KEY (matched_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE SET NULL (matched_resource_id);
-
-
---
 -- Name: observations observations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1737,19 +1633,19 @@ ALTER TABLE ONLY public.observations
 
 
 --
--- Name: observations observations_organization_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: observations observations_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.observations
-    ADD CONSTRAINT observations_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT observations_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
 
 
 --
--- Name: observations observations_source_sync_run_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: observations observations_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.observations
-    ADD CONSTRAINT observations_source_sync_run_fkey FOREIGN KEY (sync_run_id, organization_id, source_id) REFERENCES public.sync_runs(id, organization_id, source_id) ON DELETE SET NULL (sync_run_id);
+    ADD CONSTRAINT observations_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.sync_runs(id) ON DELETE SET NULL;
 
 
 --
@@ -1777,11 +1673,11 @@ ALTER TABLE ONLY public.prefixes
 
 
 --
--- Name: prefixes prefixes_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: prefixes prefixes_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prefixes
-    ADD CONSTRAINT prefixes_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT prefixes_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1793,19 +1689,19 @@ ALTER TABLE ONLY public.resource_conditions
 
 
 --
--- Name: resource_conditions resource_conditions_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_conditions resource_conditions_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_conditions
-    ADD CONSTRAINT resource_conditions_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_conditions_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
--- Name: resource_identifier_claims resource_identifier_claims_canonical_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_identifier_claims resource_identifier_claims_observation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_identifier_claims
-    ADD CONSTRAINT resource_identifier_claims_canonical_resource_fkey FOREIGN KEY (resource_identifier_id, organization_id, resource_id) REFERENCES public.resource_identifiers(id, organization_id, resource_id);
+    ADD CONSTRAINT resource_identifier_claims_observation_id_fkey FOREIGN KEY (observation_id) REFERENCES public.observations(id) ON DELETE RESTRICT;
 
 
 --
@@ -1817,35 +1713,27 @@ ALTER TABLE ONLY public.resource_identifier_claims
 
 
 --
--- Name: resource_identifier_claims resource_identifier_claims_tenant_identifier_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_identifier_claims resource_identifier_claims_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_identifier_claims
-    ADD CONSTRAINT resource_identifier_claims_tenant_identifier_fkey FOREIGN KEY (resource_identifier_id, organization_id) REFERENCES public.resource_identifiers(id, organization_id) ON DELETE SET NULL (resource_identifier_id);
+    ADD CONSTRAINT resource_identifier_claims_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE SET NULL;
 
 
 --
--- Name: resource_identifier_claims resource_identifier_claims_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.resource_identifier_claims
-    ADD CONSTRAINT resource_identifier_claims_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
-
-
---
--- Name: resource_identifier_claims resource_identifier_claims_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_identifier_claims resource_identifier_claims_resource_identifier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_identifier_claims
-    ADD CONSTRAINT resource_identifier_claims_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE SET NULL (resource_id);
+    ADD CONSTRAINT resource_identifier_claims_resource_identifier_id_fkey FOREIGN KEY (resource_identifier_id) REFERENCES public.resource_identifiers(id) ON DELETE SET NULL;
 
 
 --
--- Name: resource_identifier_claims resource_identifier_claims_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_identifier_claims resource_identifier_claims_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_identifier_claims
-    ADD CONSTRAINT resource_identifier_claims_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+    ADD CONSTRAINT resource_identifier_claims_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE RESTRICT;
 
 
 --
@@ -1857,11 +1745,11 @@ ALTER TABLE ONLY public.resource_identifiers
 
 
 --
--- Name: resource_identifiers resource_identifiers_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_identifiers resource_identifiers_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_identifiers
-    ADD CONSTRAINT resource_identifiers_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_identifiers_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1881,11 +1769,19 @@ ALTER TABLE ONLY public.resource_overrides
 
 
 --
--- Name: resource_overrides resource_overrides_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_overrides resource_overrides_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_overrides
-    ADD CONSTRAINT resource_overrides_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_overrides_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_owners resource_owners_child_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_owners
+    ADD CONSTRAINT resource_owners_child_resource_id_fkey FOREIGN KEY (child_resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1897,19 +1793,11 @@ ALTER TABLE ONLY public.resource_owners
 
 
 --
--- Name: resource_owners resource_owners_tenant_child_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_owners resource_owners_owner_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_owners
-    ADD CONSTRAINT resource_owners_tenant_child_fkey FOREIGN KEY (child_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
-
-
---
--- Name: resource_owners resource_owners_tenant_owner_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.resource_owners
-    ADD CONSTRAINT resource_owners_tenant_owner_fkey FOREIGN KEY (owner_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_owners_owner_resource_id_fkey FOREIGN KEY (owner_resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1921,19 +1809,19 @@ ALTER TABLE ONLY public.resource_relationships
 
 
 --
--- Name: resource_relationships resource_relationships_tenant_endpoints_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_relationships resource_relationships_source_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_relationships
-    ADD CONSTRAINT resource_relationships_tenant_endpoints_fkey FOREIGN KEY (target_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_relationships_source_resource_id_fkey FOREIGN KEY (source_resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
--- Name: resource_relationships resource_relationships_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_relationships resource_relationships_target_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_relationships
-    ADD CONSTRAINT resource_relationships_tenant_source_fkey FOREIGN KEY (source_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_relationships_target_resource_id_fkey FOREIGN KEY (target_resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1945,11 +1833,11 @@ ALTER TABLE ONLY public.resource_revisions
 
 
 --
--- Name: resource_revisions resource_revisions_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: resource_revisions resource_revisions_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_revisions
-    ADD CONSTRAINT resource_revisions_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+    ADD CONSTRAINT resource_revisions_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resources(id) ON DELETE CASCADE;
 
 
 --
@@ -1977,11 +1865,11 @@ ALTER TABLE ONLY public.sync_runs
 
 
 --
--- Name: sync_runs sync_runs_organization_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: sync_runs sync_runs_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sync_runs
-    ADD CONSTRAINT sync_runs_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE SET NULL (source_id);
+    ADD CONSTRAINT sync_runs_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id) ON DELETE SET NULL;
 
 
 --
@@ -1996,7 +1884,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 41UTyxQQHG6qAPQOcbFvxDqAYz6JUxTtqnsYt1KQWZZzYuYv4z8iiukyR4yZZwB
+\unrestrict wkia8vOAk8niXqYkSjHacrjs46PhhwiDUVGjGudhgQSxtg1sxbQlgnaGgpYy4ie
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
