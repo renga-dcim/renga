@@ -86,7 +86,7 @@ defmodule RengaWeb.ResourceLiveTest do
         occurred_at: ~U[2026-08-07 10:00:00.000000Z]
       })
 
-    %{conn: conn, scope: scope, resource: resource}
+    %{conn: conn, scope: scope, resource: resource, interface: interface}
   end
 
   test "lists canonical inventory with provenance and last observed time", %{
@@ -180,6 +180,39 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#resource-interfaces", "192.0.2.10/24")
     assert has_element?(view, "#resource-conditions", "InventoryCurrent")
     assert has_element?(view, "#change-events", "discovered")
+  end
+
+  test "renders host prefixes for inet addresses without a netmask", %{
+    conn: conn,
+    scope: scope,
+    resource: resource,
+    interface: interface
+  } do
+    {:ok, _ipv4} =
+      Inventory.create_address(scope, interface.id, %{
+        kind: "ipv4",
+        address: %Postgrex.INET{address: {198, 51, 100, 7}, netmask: nil}
+      })
+
+    {:ok, _ipv6} =
+      Inventory.create_address(scope, interface.id, %{
+        kind: "ipv6",
+        address: %Postgrex.INET{address: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 7}, netmask: nil}
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    assert has_element?(
+             view,
+             "#resource-interfaces [data-address-kind='ipv4']",
+             "198.51.100.7/32"
+           )
+
+    assert has_element?(
+             view,
+             "#resource-interfaces [data-address-kind='ipv6']",
+             "2001:db8::7/128"
+           )
   end
 
   test "resource detail enforces organization scope", %{conn: conn} do

@@ -102,6 +102,7 @@ defmodule RengaWeb.ResourceLive.Show do
                   <div class="flex flex-wrap gap-2">
                     <span
                       :for={address <- interface.addresses}
+                      data-address-kind={address.kind}
                       class="rounded-lg bg-base-200 px-2.5 py-1.5 font-mono text-xs"
                     >
                       {format_inet(address.address)}
@@ -290,10 +291,13 @@ defmodule RengaWeb.ResourceLive.Show do
   end
 
   defp format_inet(%Postgrex.INET{address: address, netmask: nil}),
-    do: address |> :inet.ntoa() |> to_string()
+    do: "#{:inet.ntoa(address)}/#{host_prefix(address)}"
 
   defp format_inet(%Postgrex.INET{address: address, netmask: mask}),
     do: "#{:inet.ntoa(address)}/#{mask}"
+
+  defp host_prefix(address) when tuple_size(address) == 4, do: 32
+  defp host_prefix(address) when tuple_size(address) == 8, do: 128
 
   defp format_time(nil), do: "Never"
   defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")

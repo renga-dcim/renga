@@ -122,6 +122,51 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "#collector-#{connected.source_id}")
   end
 
+  test "revoked enrolled collector remains connected until its lease expires", %{
+    conn: conn,
+    scope: scope,
+    connected_source: source
+  } do
+    {:ok, _source} = Inventory.revoke_collector_token(scope, source.id)
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+
+    assert has_element?(view, "#collector-#{source.id}", "Connected")
+    assert has_element?(view, "#collector-#{source.id}", "Credential revoked")
+  end
+
+  test "expired revoked enrolled collector is disconnected and included by the filter", %{
+    conn: conn,
+    scope: scope,
+    connected_source: source,
+    connected_agent: agent
+  } do
+    {:ok, _source} = Inventory.revoke_collector_token(scope, source.id)
+    expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(
+      from(lease in AgentLease, where: lease.agent_id == ^agent.id),
+      set: [renewed_at: DateTime.add(expired_at, -90, :second), expires_at: expired_at]
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations?disconnected=true")
+
+    assert has_element?(view, "#collector-#{source.id}", "Disconnected")
+    assert has_element?(view, "#collector-#{source.id}", "Credential revoked")
+  end
+
+  test "disconnected filter excludes collectors that have never enrolled", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, {source, _token}} =
+      Inventory.create_source_with_token(scope, %{kind: "host_agent", name: "not-enrolled"})
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations?disconnected=true")
+
+    refute has_element?(view, "#collector-#{source.id}")
+  end
+
   test "does not expose sources or agents from another organization", %{conn: conn} do
     other_organization = organization_fixture(%{name: "Other Operations"})
     other_scope = Renga.Accounts.scope_for(other_organization)

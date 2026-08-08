@@ -517,11 +517,8 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   defp collector_state(source) do
     cond do
-      source.status != "active" or is_nil(source.token_hash) ->
-        :disabled
-
       is_nil(collector_agent(source)) ->
-        :awaiting
+        :not_enrolled
 
       disconnected?(collector_agent(source)) ->
         :disconnected
@@ -533,8 +530,7 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   defp collector_state_label(:connected), do: "Connected"
   defp collector_state_label(:disconnected), do: "Disconnected"
-  defp collector_state_label(:awaiting), do: "Awaiting enrollment"
-  defp collector_state_label(:disabled), do: "Enrollment disabled"
+  defp collector_state_label(:not_enrolled), do: "Awaiting enrollment"
 
   defp collector_version(source) do
     case collector_agent(source) do
