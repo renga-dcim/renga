@@ -412,8 +412,10 @@ defmodule Renga.Inventory.AgentPayload do
       interfaces when is_list(interfaces) ->
         interfaces
         |> Enum.filter(&is_map/1)
-        |> Enum.reject(&(&1["status"] == "not_present"))
-        |> Enum.reject(&(Map.get(&1, "kind", "ethernet") in @non_identity_interface_kinds))
+        |> Enum.reject(
+          &(&1["status"] == "not_present" or
+              Map.get(&1, "kind", "ethernet") in @non_identity_interface_kinds)
+        )
         |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
         |> normalized_mac_set()
 

@@ -239,11 +239,7 @@ defmodule Renga.Inventory do
       token = generate_source_token()
 
       Repo.transaction(fn ->
-        source =
-          case lock_host_collector(organization_id, source_id) do
-            %Source{} = source -> source
-            nil -> Repo.rollback(:not_found)
-          end
+        source = lock_host_collector_or_rollback(organization_id, source_id)
 
         Agent
         |> where([agent], agent.organization_id == ^organization_id)
@@ -257,6 +253,13 @@ defmodule Renga.Inventory do
 
         {source, token}
       end)
+    end
+  end
+
+  defp lock_host_collector_or_rollback(organization_id, source_id) do
+    case lock_host_collector(organization_id, source_id) do
+      %Source{} = source -> source
+      nil -> Repo.rollback(:not_found)
     end
   end
 

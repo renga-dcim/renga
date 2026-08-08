@@ -577,21 +577,7 @@ defmodule Renga.Inventory.Reconciler do
       resource
       |> Map.get("interfaces", [])
       |> Enum.reject(&(&1["status"] == "not_present"))
-      |> Enum.reduce({[], MapSet.new()}, fn interface, {identity_macs, non_identity_macs} ->
-        case Map.get(interface, "mac_address") do
-          nil ->
-            {identity_macs, non_identity_macs}
-
-          mac_address ->
-            mac_identifier = identifier("mac_address", mac_address)
-
-            if Map.get(interface, "kind", "ethernet") in @non_identity_interface_kinds do
-              {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
-            else
-              {[mac_identifier | identity_macs], non_identity_macs}
-            end
-        end
-      end)
+      |> Enum.reduce({[], MapSet.new()}, &classify_interface_mac/2)
 
     identity_mac_values = MapSet.new(identity_interface_macs, & &1.normalized_value)
     excluded_mac_values = MapSet.difference(non_identity_interface_macs, identity_mac_values)
@@ -608,6 +594,22 @@ defmodule Renga.Inventory.Reconciler do
       )
 
     Enum.uniq_by(identifiers ++ identity_interface_macs, &{&1.kind, &1.normalized_value})
+  end
+
+  defp classify_interface_mac(interface, {identity_macs, non_identity_macs}) do
+    case Map.get(interface, "mac_address") do
+      nil ->
+        {identity_macs, non_identity_macs}
+
+      mac_address ->
+        mac_identifier = identifier("mac_address", mac_address)
+
+        if Map.get(interface, "kind", "ethernet") in @non_identity_interface_kinds do
+          {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
+        else
+          {[mac_identifier | identity_macs], non_identity_macs}
+        end
+    end
   end
 
   defp identifier(kind, value) do
