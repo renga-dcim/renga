@@ -169,18 +169,6 @@ defmodule RengaWeb.InventoryDashboardLive do
     """
   end
 
-  defp freshness_counts(resources) do
-    resources
-    |> Enum.map(fn resource ->
-      case Enum.find(resource.conditions, &(&1.type == "InventoryCurrent")) do
-        %{status: "true"} -> :current
-        %{status: "false"} -> :stale
-        _condition -> :unknown
-      end
-    end)
-    |> Enum.frequencies()
-  end
-
   defp connectivity_counts(agents) do
     agents
     |> Enum.map(fn agent ->
@@ -195,14 +183,14 @@ defmodule RengaWeb.InventoryDashboardLive do
 
   defp load_dashboard(socket) do
     scope = socket.assigns.current_scope
-    resources = Inventory.list_operational_resources(scope)
+    resource_counts = Inventory.operational_resource_counts(scope)
     agents = Inventory.list_agents(scope)
 
     assign(socket,
-      lifecycle_counts: Enum.frequencies_by(resources, & &1.lifecycle_state),
-      freshness_counts: freshness_counts(resources),
+      lifecycle_counts: resource_counts.lifecycle,
+      freshness_counts: resource_counts.freshness,
       connectivity_counts: connectivity_counts(agents),
-      resource_count: length(resources),
+      resource_count: resource_counts.total,
       agent_count: length(agents)
     )
   end

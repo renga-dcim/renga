@@ -41,6 +41,7 @@ defmodule Renga.Inventory do
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
   @resource_revision_lock_key 1_380_271_687
+  @operational_resource_page_size 50
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -545,15 +546,95 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Lists resources with the typed host and independent conditions needed by
-  operational inventory views.
+  Lists resources with operational projections and bounded provenance summaries.
+
+  Full identifier claim history is intentionally reserved for the resource
+  detail loader.
   """
-  def list_operational_resources(%Scope{organization_id: organization_id}) do
-    Resource
-    |> where([resource], resource.organization_id == ^organization_id)
-    |> order_by([resource], asc: resource.name, asc: resource.id)
-    |> preload([:host, :conditions, identifier_claims: :source])
-    |> Repo.all()
+  def list_operational_resources(%Scope{} = scope) do
+    scope
+    |> list_operational_resources(page: 1)
+    |> Map.fetch!(:entries)
+  end
+
+  def list_operational_resources(%Scope{organization_id: organization_id}, options) do
+    page = max(Keyword.get(options, :page, 1), 1)
+
+    entries =
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> maybe_filter_stale_resources(organization_id, Keyword.get(options, :stale_only?, false))
+      |> order_by([resource], asc: resource.name, asc: resource.id)
+      |> select_merge([resource], %{
+        source_names:
+          fragment(
+            "COALESCE((SELECT array_agg(DISTINCT sources.name ORDER BY sources.name) FROM resource_identifier_claims AS claims JOIN sources ON sources.id = claims.source_id WHERE claims.resource_id = ? AND claims.organization_id = ?), ARRAY[]::varchar[])",
+            resource.id,
+            type(^organization_id, :binary_id)
+          ),
+        last_observed_at:
+          type(
+            fragment(
+              "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
+              resource.id,
+              type(^organization_id, :binary_id)
+            ),
+            :utc_datetime_usec
+          )
+      })
+      |> limit(^(@operational_resource_page_size + 1))
+      |> offset(^((page - 1) * @operational_resource_page_size))
+      |> preload([:host, :conditions])
+      |> Repo.all()
+
+    %{
+      entries: Enum.take(entries, @operational_resource_page_size),
+      has_next?: length(entries) > @operational_resource_page_size,
+      page: page
+    }
+  end
+
+  defp maybe_filter_stale_resources(query, _organization_id, false), do: query
+
+  defp maybe_filter_stale_resources(query, organization_id, true) do
+    stale_resource_ids =
+      ResourceCondition
+      |> where([condition], condition.organization_id == ^organization_id)
+      |> where([condition], condition.type == "InventoryCurrent")
+      |> where([condition], condition.status == "false")
+      |> select([condition], condition.resource_id)
+
+    where(query, [resource], resource.id in subquery(stale_resource_ids))
+  end
+
+  @doc """
+  Returns organization-scoped dashboard counts using aggregate SQL.
+  """
+  def operational_resource_counts(%Scope{organization_id: organization_id}) do
+    lifecycle =
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> group_by([resource], resource.lifecycle_state)
+      |> select([resource], {resource.lifecycle_state, count(resource.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    freshness =
+      Resource
+      |> join(:left, [resource], condition in ResourceCondition,
+        on: condition.resource_id == resource.id and condition.type == "InventoryCurrent"
+      )
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> group_by([_resource, condition], condition.status)
+      |> select([resource, condition], {condition.status, count(resource.id)})
+      |> Repo.all()
+      |> Enum.reduce(%{}, fn
+        {"true", count}, counts -> Map.update(counts, :current, count, &(&1 + count))
+        {"false", count}, counts -> Map.update(counts, :stale, count, &(&1 + count))
+        {_status, count}, counts -> Map.update(counts, :unknown, count, &(&1 + count))
+      end)
+
+    %{lifecycle: lifecycle, freshness: freshness, total: Enum.sum(Map.values(lifecycle))}
   end
 
   @doc """

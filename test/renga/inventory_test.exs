@@ -544,6 +544,73 @@ defmodule Renga.InventoryTest do
       end
     end
 
+    test "operational summaries bound claim provenance and aggregate counts stay scoped", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "compute-01",
+          lifecycle_state: "active"
+        })
+
+      {:ok, _condition} =
+        Inventory.put_resource_condition(scope, resource.id, %{
+          type: "InventoryCurrent",
+          status: "false",
+          reason: "ObservationExpired"
+        })
+
+      {:ok, identifier} =
+        Inventory.create_resource_identifier(scope, resource.id, %{
+          kind: "serial_number",
+          value: "SN-123"
+        })
+
+      {:ok, source_a} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-a"})
+      {:ok, source_b} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-b"})
+
+      for index <- 0..11 do
+        source = if rem(index, 2) == 0, do: source_a, else: source_b
+        observed_at = DateTime.add(~U[2026-08-07 10:00:00.000000Z], index, :minute)
+
+        {:ok, observation} =
+          Inventory.create_observation(scope, source.id, %{
+            observation_id: "historical-#{index}",
+            observed_at: observed_at,
+            payload: %{}
+          })
+
+        assert {:ok, _claim} =
+                 Inventory.create_resource_identifier_claim(scope, source.id, observation.id, %{
+                   resource_id: resource.id,
+                   resource_identifier_id: identifier.id,
+                   kind: "serial_number",
+                   value: "SN-123",
+                   confidence: 100
+                 })
+      end
+
+      {:ok, _foreign_resource} =
+        Inventory.create_resource(other_scope, %{
+          kind: "server",
+          name: "secret-host",
+          lifecycle_state: "retired"
+        })
+
+      assert [summary] = Inventory.list_operational_resources(scope)
+      refute Ecto.assoc_loaded?(summary.identifier_claims)
+      assert summary.source_names == ["agent-a", "agent-b"]
+      assert summary.last_observed_at == ~U[2026-08-07 10:11:00.000000Z]
+
+      assert Inventory.operational_resource_counts(scope) == %{
+               lifecycle: %{"active" => 1},
+               freshness: %{stale: 1},
+               total: 1
+             }
+    end
+
     test "create_resource/2 validates kind and lifecycle state", %{scope: scope} do
       assert {:error, changeset} =
                Inventory.create_resource(scope, %{

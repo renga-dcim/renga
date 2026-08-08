@@ -13,13 +13,22 @@ defmodule RengaWeb.ResourceLive.Index do
   @impl true
   def handle_params(params, _uri, socket) do
     stale_only? = params["stale"] == "true"
-    resources = load_resources(socket.assigns.current_scope, stale_only?)
+    page = parse_page(params["page"])
+
+    result =
+      Inventory.list_operational_resources(socket.assigns.current_scope,
+        stale_only?: stale_only?,
+        page: page
+      )
 
     {:noreply,
      socket
      |> assign(:filter_form, to_form(%{"stale" => stale_only?}, as: :filters))
-     |> assign(:resources_empty?, resources == [])
-     |> stream(:resources, resources, reset: true)}
+     |> assign(:resources_empty?, result.entries == [])
+     |> assign(:stale_only?, stale_only?)
+     |> assign(:page, result.page)
+     |> assign(:has_next_page?, result.has_next?)
+     |> stream(:resources, result.entries, reset: true)}
   end
 
   @impl true
@@ -124,6 +133,31 @@ defmodule RengaWeb.ResourceLive.Index do
             </table>
           </div>
         </div>
+
+        <nav
+          :if={@page > 1 or @has_next_page?}
+          id="resources-pagination"
+          class="flex items-center justify-between"
+          aria-label="Resource pages"
+        >
+          <.link
+            :if={@page > 1}
+            id="resources-previous"
+            patch={pagination_path(@stale_only?, @page - 1)}
+            class="rounded-lg border border-base-content/10 px-3 py-2 text-sm font-medium transition hover:border-orange-500/30 hover:text-orange-600"
+          >
+            Previous
+          </.link>
+          <span :if={@page == 1} />
+          <.link
+            :if={@has_next_page?}
+            id="resources-next"
+            patch={pagination_path(@stale_only?, @page + 1)}
+            class="rounded-lg border border-base-content/10 px-3 py-2 text-sm font-medium transition hover:border-orange-500/30 hover:text-orange-600"
+          >
+            Next
+          </.link>
+        </nav>
       </section>
     </Layouts.app>
     """
@@ -168,19 +202,19 @@ defmodule RengaWeb.ResourceLive.Index do
     """
   end
 
-  defp load_resources(scope, stale_only?) do
-    resources = Inventory.list_operational_resources(scope)
-
-    if stale_only? do
-      Enum.filter(resources, &stale?/1)
-    else
-      resources
+  defp parse_page(page) when is_binary(page) do
+    case Integer.parse(page) do
+      {page, ""} when page > 0 -> page
+      _invalid -> 1
     end
   end
 
-  defp stale?(resource) do
-    Enum.any?(resource.conditions, &(&1.type == "InventoryCurrent" and &1.status == "false"))
-  end
+  defp parse_page(_page), do: 1
+
+  defp pagination_path(true, 1), do: ~p"/inventory/resources?stale=true"
+  defp pagination_path(true, page), do: ~p"/inventory/resources?stale=true&page=#{page}"
+  defp pagination_path(false, 1), do: ~p"/inventory/resources"
+  defp pagination_path(false, page), do: ~p"/inventory/resources?page=#{page}"
 
   defp host_name(%{host: %{hostname: hostname}}) when is_binary(hostname), do: hostname
   defp host_name(resource), do: resource.name
@@ -198,9 +232,7 @@ defmodule RengaWeb.ResourceLive.Index do
   defp hardware_name(_resource), do: "Not reported"
 
   defp source_names(resource) do
-    resource.identifier_claims
-    |> Enum.map(& &1.source.name)
-    |> Enum.uniq()
+    resource.source_names
     |> Enum.join(", ")
     |> case do
       "" -> "No source evidence"
@@ -209,10 +241,7 @@ defmodule RengaWeb.ResourceLive.Index do
   end
 
   defp last_observed_at(resource) do
-    resource.identifier_claims
-    |> Enum.map(& &1.last_seen_at)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.max(DateTime, fn -> nil end)
+    resource.last_observed_at
   end
 
   defp format_time(nil), do: "Never"

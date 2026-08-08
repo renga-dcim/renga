@@ -122,6 +122,25 @@ defmodule RengaWeb.ResourceLiveTest do
     refute has_element?(view, "#resources-#{current_resource.id}")
   end
 
+  test "paginates the operational resource list", %{conn: conn, scope: scope} do
+    for index <- 1..50 do
+      {:ok, _resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "page-#{String.pad_leading(Integer.to_string(index), 3, "0")}"
+        })
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+
+    assert has_element?(view, "#resources tr[id^='resources-']:nth-child(50)")
+    refute has_element?(view, "#resources tr[id^='resources-']:nth-child(51)")
+
+    assert has_element?(view, "#resources-next")
+    view |> element("#resources-next") |> render_click()
+    assert has_element?(view, "#resources-previous")
+  end
+
   test "uses singular evidence count for one identifier claim", %{
     conn: conn,
     resource: resource
