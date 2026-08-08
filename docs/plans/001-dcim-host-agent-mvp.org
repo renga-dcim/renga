@@ -54,6 +54,9 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 - Resource envelopes own desired state, lifecycle, and revisions; typed canonical projections provide the current query view.
 - Manual corrections are explicit field-level overrides that preserve observed facts, while normal operator intent belongs in desired state.
 - Agent registration and lease health are separate from source credentials and inventory freshness.
+- Manually creating a collector credential before agent registration is an MVP bootstrap path, not the target fleet-enrollment model.
+- Future enrollment is provider-neutral and policy-driven: successful enrollment creates the collector instead of requiring an administrator to pre-create one.
+- Enrollment policies are domain-specific ABAC admission policies over verified attributes. Evidence verification remains a separate authentication boundary.
 
 * Milestones
 
@@ -210,10 +213,276 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - Run =./scripts/check-plan-status.sh= to validate plan metadata and checklist status.
 - Run =mix precommit= after implementation changes.
 
+* Future Enrollment Architecture
+
+The MVP creates a collector credential before an agent registers. Retain that
+workflow for local testing and static deployments, but do not make manual
+collector creation the default fleet model. At scale, enrollment should turn an
+authorized installation into a collector automatically.
+
+** Decision
+
+Enrollment is a provider-neutral protocol with pluggable evidence verifiers.
+AWS, GCP, Azure, Kubernetes, SPIFFE, private infrastructure, and manual grants
+are evidence sources; they do not define separate enrollment lifecycles.
+Provider neutrality applies to the lifecycle and evaluator boundary, not to the
+meaning of every claim. A policy that inspects AWS-, GCP-, or Azure-specific
+claims remains specific to that provider.
+
+An organization defines an enrollment policy once for a deployment group. Each
+installation generates its own identity, submits evidence, and receives its own
+collector and runtime credential after authorization. Images and launch
+templates contain a non-secret policy identifier, never a shared permanent
+collector credential.
+
+The successful flow is:
+
+1. An administrator or deployment system defines an organization-scoped enrollment policy.
+2. A fresh agent installation generates a stable UUID and public/private keypair.
+3. The agent obtains a short-lived server challenge and environment evidence.
+4. Renga verifies the evidence through the policy's configured verifier.
+5. Renga evaluates the verified attributes against the enrollment policy.
+6. Renga transactionally creates the collector aggregate, installation registration, allow decision, and key-bound runtime credential.
+7. The agent uses that installation credential for check-ins, observations, renewal, and optional re-attestation.
+
+In the existing inventory model, Collector remains the UI and domain aggregate
+of a durable =Source(kind: "host_agent")= provenance record and its optional
+=Agent= installation registration. Future enrollment creates those records; it
+does not require a new persisted Collector entity unless later ownership needs
+justify one.
+
+Identity and idempotency rules depend on verifier-declared subject cardinality.
+Identity is namespaced by organization, immutable verifier-configuration
+version, issuer, and subject; a bare subject string is never globally unique.
+Retries proving possession of the same installation key return the existing
+enrollment result. A verifier may identify a singleton subject, such as a
+verified cloud instance ID, in which case a different key requires an explicit
+replacement decision. Group identities such as a Kubernetes service account or
+shared workload principal may authorize multiple installation keys subject to
+policy limits and rate controls.
+
+** Trust And Authorization Boundaries
+
+Keep these operations separate:
+
+1. *Evidence verification* authenticates evidence, validates signatures,
+   issuer trust, audience, challenge nonce, freshness, and replay protection,
+   and returns normalized verified claims.
+2. *Policy evaluation* decides whether the verified subject may perform
+   =collector:enroll= for the organization and policy.
+3. *Credential issuance* binds the authorized installation key to a newly
+   created collector and records the decision.
+
+A challenge is short-lived, single-use, and bound by the server to the
+organization, action, immutable policy version, immutable verifier-configuration
+version, and installation-key thumbprint. The policy selector is routing
+information only: knowing it grants no authority and cannot select trust roots.
+
+Bind evidence to the challenge and installation key when the evidence protocol
+supports that operation. Some OIDC, metadata, and SPIFFE credentials cannot
+embed a Renga nonce or key thumbprint; for those formats, enforce their native
+audience, freshness, and replay controls and record the lower assurance
+explicitly so policy may reject it. Proof of an installation key over a Renga
+challenge does not by itself bind an unrelated bearer assertion to that key.
+
+Challenge consumption, any one-time grant consumption, Collector creation, and
+credential issuance form one atomic successful binding. If the response is
+lost, a retry proving the same key returns the existing result. Denied attempts
+are still audited without requiring a Collector-creation transaction.
+
+Evidence verification is not ABAC. Enrollment policy evaluation is a
+domain-specific ABAC admission decision with the following inputs:
+
+- subject: normalized verified workload or instance identity;
+- action: =collector:enroll=;
+- resource: organization and enrollment policy;
+- environment: challenge, time, and trusted request context;
+- request: installation public key and untrusted requested capabilities.
+
+Policy administration remains protected by the existing organization RBAC
+boundary initially. Owners and administrators may author policies; an enrolling
+agent may only evaluate them. Broader ABAC for human and runtime authorization
+is deferred.
+
+** Attribute Provenance
+
+Do not place all reported values in an undifferentiated attribute map. Every
+attribute used by policy must retain its provenance:
+
+- *verified*: authenticated issuer, subject, account/project/subscription,
+  instance ID, image ID, deployment group, region, or equivalent claims;
+- *server-derived*: assurance level, credential age, policy version, and other
+  values computed by Renga;
+- *policy-assigned*: environment, role, owner team, and granted capabilities;
+- *self-reported*: hostname, operating-system facts, requested capabilities,
+  and ordinary agent metadata.
+
+Admission conditions consume verified claims and trusted server-derived
+context. Policy-assigned attributes and granted capabilities are outputs of an
+allow decision; they cannot satisfy the decision that assigns them. They may be
+trusted inputs to later runtime decisions after issuance. A self-reported
+attribute must never authorize its reporter merely because its name matches a
+trusted attribute.
+
+Policies may map verified claims into assigned attributes. For example, a
+verified deployment-group claim may assign =environment: production= and
+=role: web= to the resulting collector. Requested capabilities are untrusted
+inputs; the policy decides which subset is granted. A self-reported agent
+version may drive compatibility messages but cannot enforce a security minimum.
+Security-sensitive version or image restrictions require verifier- or
+attestation-backed artifact identity.
+
+** Constrained ABAC Model
+
+The first implementation should use a typed, domain-specific evaluator rather
+than expose arbitrary scripts or adopt a general-purpose policy language. Start
+with declared attribute types and a small operator set such as equality,
+membership, existence, prefix, numeric comparison, and semantic-version
+comparison where valid for that attribute.
+
+Use default-deny semantics. Keep cryptographic verifier configuration separate
+from authorization conditions: a trusted issuer, key set, audience, and allowed
+signature algorithms configure the verifier, while policy conditions inspect
+only claims returned by that verifier. An enrollment request must never choose
+its own trusted issuer or verification keys.
+
+Every evaluation records a structured decision including:
+
+- outcome and stable reason code;
+- action, normalized subject, organization, and policy;
+- policy ID and immutable policy version;
+- immutable verifier-configuration version, issuer namespace, and actual verification-key identifier or thumbprint;
+- matched or failed condition identifiers;
+- assigned attributes and granted capabilities;
+- verifier kind, assurance level, normalized claim provenance, evidence digest or non-secret reference, and evaluation time.
+
+Return only safe denial details to the agent. Retain enough non-secret decision
+material to reproduce and audit verification, but never persist reusable bearer
+evidence, plaintext grants, private material, or runtime credentials in the
+audit trail. The decision representation and evaluator boundary should remain
+compatible with a future shared ABAC engine without committing stored policy
+data to Cedar, Rego, or another vendor-specific syntax.
+
+** Evidence Verifiers
+
+The enrollment engine consumes a normalized verification envelope regardless of
+the source. The envelope contains verifier identity and version, issuer
+namespace, subject, subject cardinality, issuance and expiry, assurance,
+provenance, optional asserted instance identity, and typed verifier-specific
+claims. It is not a flattened universal claim set. Candidate verifiers include:
+
+- generic OIDC workload identity;
+- SPIFFE X.509 or JWT SVID;
+- Kubernetes projected service-account identity;
+- AWS instance or IAM-backed identity;
+- GCP metadata identity JWT;
+- Azure managed identity;
+- TPM-backed attestation;
+- short-lived, one-time manual enrollment grant;
+- operator approval of a pending enrollment challenge.
+
+An explicitly configured OIDC workload-identity profile is the preferred first
+automated verifier because it applies to multiple deployment systems. Each
+profile defines its trusted issuer, audience, claim schema, and subject
+cardinality; generic OIDC does not imply universal per-instance attestation.
+Provider-specific verifiers are adapters added after the core challenge,
+decision, identity, and credential lifecycle is stable.
+
+Manual enrollment uses the same protocol and is not a separate collector
+creation model. A one-time grant authorizes one successful installation binding,
+is hashed at rest, expires quickly, and is consumed only after proof of
+possession of the installation key. It does not become the permanent runtime
+credential. An approval-based verifier may instead let an operator compare and
+approve a short challenge code for interactive bare-metal installation. That
+approval creates server-side verified evidence bound to the organization,
+policy version, challenge, and key; it does not bypass policy evaluation or
+directly create a Collector.
+
+** Installation And Credential Identity
+
+The installation UUID remains a stable display and correlation identifier, but
+it is not sufficient proof of identity. The agent generates a private key on
+first boot and proves possession during enrollment. Prefer TPM-backed or other
+non-exportable keys when available, while supporting filesystem keys with
+strict permissions for ordinary hosts.
+
+Runtime authentication should become key-bound so copying an access token alone
+cannot impersonate an installation. Suitable mechanisms include mTLS client
+certificates, standardized proof-of-possession tokens, or signed requests with
+replay protection. Select the concrete mechanism separately from the enrollment
+policy model.
+
+Automated installation credentials belong to the enrolled installation and
+must not silently reuse =Source.token_hash=. The Source remains the durable
+provenance anchor while a separate key-bound credential authenticates its Agent
+installation. Migration from the MVP requires an explicit dual-authentication
+or cutover plan because existing agents have externally provisioned bearer
+tokens and UUIDs but no key generation, writable enrollment state, or credential
+renewal.
+
+No software-only protocol can conclusively distinguish complete disk clones
+that contain the same private key. Fresh provider evidence, subject binding,
+periodic re-attestation, and hardware-backed keys can detect or prevent many
+clone cases; deployments without those capabilities have a lower explicit
+assurance level.
+
+** Images And Horizontal Scaling
+
+Provide an image-preparation operation that removes installation UUIDs, private
+keys, credentials, cached evidence, and lease state before snapshotting. A
+golden image contains the agent binary, service definition, server URL, and
+non-secret enrollment policy selector only. First boot generates fresh
+installation state.
+
+One enrollment policy may authorize many installations in an autoscaling group
+or equivalent deployment group. Each installation supplies a unique key; its
+evidence contains a unique instance assertion only when the verifier provides
+one. Group subjects may enroll multiple keys under explicit policy limits.
+Enrollment creates one collector and credential per accepted installation.
+Never place a shared permanent collector token in an AMI, image, launch template,
+cloud-init payload, or Ansible group variable.
+
+Policies may impose active-installation limits, enrollment rate limits, allowed
+images, accounts/projects/subscriptions, regions, deployment groups, minimum
+verified artifact versions or identities, and re-attestation requirements.
+Provider lifecycle integration may later retire ephemeral collectors, but
+deletion or provenance loss must not be an implicit consequence of lease expiry.
+
+** Policy And Credential Lifecycle
+
+Record the exact policy version used for enrollment. Policy edits do not rewrite
+historical decisions. Distinguish admission-time authorization from continuous
+eligibility: a policy may optionally require fresh evidence when credentials are
+renewed or when an administrator requests re-evaluation.
+
+If an existing installation no longer satisfies current policy, configurable
+responses may include audit-only, renewal denial, quarantine, or revocation.
+Start with explicit administration and auditability rather than silently
+revoking collectors after every policy edit.
+
+** Delivery Sequence
+
+Implement this architecture incrementally after the host-agent MVP:
+
+1. Add versioned enrollment policies, versioned verifier configurations, challenges, attempts, and structured decisions.
+2. Generate installation keypairs and require challenge proof of possession.
+3. Implement idempotent transactional finalization that consumes an accepted attempt, creates the Source and Agent aggregate, persists the allow decision, and issues a key-bound credential.
+4. Add runtime authentication, renewal, and administrative revocation for installation credentials; short-lived credentials are not deployable without renewal.
+5. Implement one configured OIDC workload-identity profile as the first user-visible automated enrollment path, together with image preparation and first-boot enrollment.
+6. Add manual grants and operator approval as optional development, static-infrastructure, and break-glass verifiers without making them the default UI or packaging path.
+7. Add re-attestation, quarantine, key replacement, and provider-lifecycle retirement workflows.
+8. Add provider-specific and hardware-backed evidence verifiers as adapters.
+9. Revisit a shared ABAC engine only after enrollment policy requirements demonstrate a broader need.
+
+A manual verifier may exist earlier as an internal integration-test harness, but
+that does not establish the product's primary onboarding UI, packaging
+instructions, or deployment workflow.
+
 * Follow-Up Plans
 
 - Durable jobs and agent capabilities.
 - Phoenix Channels control acceleration.
+- Provider-neutral automated enrollment and key-bound agent credentials.
 - Renga-native operational live queries.
 - Libvirt/KVM read-only VM inventory.
 - Cloud-hypervisor inventory support.
