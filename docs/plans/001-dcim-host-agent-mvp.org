@@ -175,9 +175,10 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Add inventory dashboard with lifecycle, inventory freshness, and agent connectivity counts.
 - [X] Add resource list with kind, hostname, vendor/model, lifecycle, conditions, source provenance, and last observed time.
 - [X] Add resource detail view with desired state, canonical projections, identifier claims, interfaces, addresses, source provenance, conditions, and recent change events.
-- [X] Add source and agent lists with credential state, lease health, last inventory, kind, and capabilities.
+- [X] Present each host-agent source credential and bound installation as one collector with connection, enrollment, credential, resource, and inventory state.
+- [X] Add an owner/admin-only collector creation and credential lifecycle flow that reveals tokens and installation UUIDs once.
 - [X] Add stale-inventory and disconnected-agent filters.
-- [X] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
+- [X] Add stable DOM IDs for dashboard, resource list, resource detail, collector list, and filters.
 - [X] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
 
 ** 8. Packaging And Smoke Test

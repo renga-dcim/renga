@@ -69,7 +69,7 @@ defmodule RengaWeb.Layouts do
             navigate={~p"/inventory/operations"}
             class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/65 transition hover:bg-base-200 hover:text-base-content"
           >
-            Sources & agents
+            Collectors
           </.link>
           <.link
             navigate={~p"/organizations"}
