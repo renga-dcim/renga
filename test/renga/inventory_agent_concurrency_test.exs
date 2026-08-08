@@ -21,9 +21,10 @@ defmodule Renga.InventoryAgentConcurrencyTest do
         for _attempt <- 1..2 do
           Task.async(fn ->
             :ok = Sandbox.checkout(Repo, sandbox: false)
+            %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
 
             try do
-              send(parent, {:ready, self()})
+              send(parent, {:ready, self(), backend_pid})
               Inventory.record_agent_check_in(scope, source.id)
             after
               Sandbox.checkin(Repo)
@@ -31,14 +32,17 @@ defmodule Renga.InventoryAgentConcurrencyTest do
           end)
         end
 
-      task_pids = Enum.map(tasks, & &1.pid)
-      Enum.each(task_pids, fn task_pid -> assert_receive {:ready, ^task_pid}, @timeout end)
+      backend_pids =
+        Enum.map(tasks, fn task ->
+          assert_receive {:ready, task_pid, backend_pid} when task_pid == task.pid, @timeout
+          backend_pid
+        end)
 
       try do
-        # The source row lock serializes check-ins, so one blocked insert proves
-        # the first contender reached the operation; the second is already
-        # contending for the same source enrollment boundary.
-        await_blocked_inserts!("agents", 1, System.monotonic_time(:millisecond) + @timeout)
+        await_initial_check_in_boundary!(
+          backend_pids,
+          System.monotonic_time(:millisecond) + @timeout
+        )
       after
         Repo.query!("COMMIT")
       end
@@ -147,6 +151,49 @@ defmodule Renga.InventoryAgentConcurrencyTest do
 
       true ->
         flunk("expected #{expected} blocked #{table} inserts, found #{blocked}")
+    end
+  end
+
+  defp await_initial_check_in_boundary!(backend_pids, deadline) do
+    Repo.query!("SELECT pg_stat_clear_snapshot()")
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT pid, query
+        FROM pg_stat_activity
+        WHERE pid = ANY($1)
+          AND state = 'active'
+          AND wait_event_type = 'Lock'
+        """,
+        [backend_pids]
+      )
+
+    blocked_agent_insert? =
+      Enum.any?(rows, fn [_pid, query] -> query =~ ~s(INSERT INTO "agents") end)
+
+    source_waiters =
+      for [pid, query] <- rows,
+          query =~ ~s(FROM "sources"),
+          query =~ "FOR UPDATE",
+          do: pid
+
+    cond do
+      blocked_agent_insert? and length(source_waiters) == 1 ->
+        assert hd(source_waiters) in backend_pids
+
+      System.monotonic_time(:millisecond) < deadline ->
+        receive do
+        after
+          10 -> :ok
+        end
+
+        await_initial_check_in_boundary!(backend_pids, deadline)
+
+      true ->
+        flunk(
+          "expected specific backends #{inspect(backend_pids)} at Agent insert and Source row boundaries, got #{inspect(rows)}"
+        )
     end
   end
 
