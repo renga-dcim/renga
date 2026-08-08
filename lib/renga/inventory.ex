@@ -9,6 +9,7 @@ defmodule Renga.Inventory do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
@@ -139,14 +140,14 @@ defmodule Renga.Inventory do
   Creates a one-installation host collector for an organization administrator.
   """
   def create_collector_with_token(%Scope{} = scope, attrs) do
-    with :ok <- authorize_collector_management(scope) do
+    collector_management_transaction(scope, fn ->
       attrs =
         attrs
         |> put_attr(:kind, "host_agent")
         |> put_attr(:status, "active")
 
       create_source_with_token(scope, attrs)
-    end
+    end)
   end
 
   @doc """
@@ -195,14 +196,19 @@ defmodule Renga.Inventory do
   Replaces a host collector credential without changing its installation binding.
   """
   def rotate_collector_token(%Scope{} = scope, source_id) do
-    with :ok <- authorize_collector_management(scope),
-         {:ok, source} <- fetch_host_collector(scope, source_id) do
-      token = generate_source_token()
-
-      case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
-        {:ok, source} -> {:ok, {source, token}}
-        {:error, changeset} -> {:error, changeset}
+    collector_management_transaction(scope, fn ->
+      with {:ok, source} <- fetch_host_collector(scope, source_id) do
+        rotate_host_collector_token(source)
       end
+    end)
+  end
+
+  defp rotate_host_collector_token(source) do
+    token = generate_source_token()
+
+    case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
+      {:ok, source} -> {:ok, {source, token}}
+      {:error, changeset} -> {:error, changeset}
     end
   end
 
@@ -220,10 +226,11 @@ defmodule Renga.Inventory do
   Revokes one host collector credential while retaining its provenance.
   """
   def revoke_collector_token(%Scope{} = scope, source_id) do
-    with :ok <- authorize_collector_management(scope),
-         {:ok, source} <- fetch_host_collector(scope, source_id) do
-      source |> Source.revoke_changeset() |> Repo.update()
-    end
+    collector_management_transaction(scope, fn ->
+      with {:ok, source} <- fetch_host_collector(scope, source_id) do
+        source |> Source.revoke_changeset() |> Repo.update()
+      end
+    end)
   end
 
   @doc """
@@ -236,25 +243,22 @@ defmodule Renga.Inventory do
         %Scope{organization_id: organization_id} = scope,
         source_id
       ) do
-    with :ok <- authorize_collector_management(scope) do
+    collector_management_transaction(scope, fn ->
       token = generate_source_token()
+      source = lock_host_collector_or_rollback(organization_id, source_id)
 
-      Repo.transaction(fn ->
-        source = lock_host_collector_or_rollback(organization_id, source_id)
+      Agent
+      |> where([agent], agent.organization_id == ^organization_id)
+      |> where([agent], agent.source_id == ^source.id)
+      |> Repo.delete_all()
 
-        Agent
-        |> where([agent], agent.organization_id == ^organization_id)
-        |> where([agent], agent.source_id == ^source.id)
-        |> Repo.delete_all()
+      source =
+        source
+        |> Source.token_changeset(hash_source_token(token))
+        |> update_or_rollback()
 
-        source =
-          source
-          |> Source.token_changeset(hash_source_token(token))
-          |> update_or_rollback()
-
-        {source, token}
-      end)
-    end
+      {source, token}
+    end)
   end
 
   defp lock_host_collector_or_rollback(organization_id, source_id) do
@@ -264,9 +268,43 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp authorize_collector_management(scope) do
-    if collector_manager?(scope), do: :ok, else: {:error, :forbidden}
+  defp collector_management_transaction(%Scope{} = scope, mutation) do
+    Repo.transaction(fn ->
+      authorize_current_collector_manager_or_rollback(scope)
+
+      case mutation.() do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+        result -> result
+      end
+    end)
   end
+
+  defp authorize_current_collector_manager_or_rollback(%Scope{
+         membership_id: membership_id,
+         user: %{id: user_id},
+         organization_id: organization_id
+       })
+       when not is_nil(membership_id) do
+    authorized? =
+      OrganizationMembership
+      |> join(:inner, [membership], organization in assoc(membership, :organization))
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active")
+      |> where([membership], membership.role in ["owner", "admin"])
+      |> where([_membership, organization], organization.status == "active")
+      |> select([membership], membership.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> is_binary()
+
+    unless authorized?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_current_collector_manager_or_rollback(%Scope{}),
+    do: Repo.rollback(:forbidden)
 
   @doc """
   Authenticates a bearer token from an inventory source.

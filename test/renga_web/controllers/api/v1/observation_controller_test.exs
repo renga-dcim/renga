@@ -2,6 +2,8 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   use RengaWeb.ConnCase, async: true
 
   import Ecto.Query, only: [from: 2]
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
 
   alias Renga.Accounts
   alias Renga.Inventory
@@ -24,6 +26,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       })
 
     scope = Accounts.scope_for(organization)
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, %{role: "admin"})
+    admin_scope = Accounts.scope_for_user(admin, organization.id)
 
     {:ok, {source, token}} =
       Inventory.create_source_with_token(scope, %{
@@ -31,7 +36,13 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         name: Map.get(attrs, :name, "compute-01-agent")
       })
 
-    %{organization: organization, scope: scope, source: source, token: token}
+    %{
+      organization: organization,
+      scope: scope,
+      admin_scope: admin_scope,
+      source: source,
+      token: token
+    }
   end
 
   defp authorize(conn, token, installation_id \\ @installation_id) do
@@ -125,7 +136,13 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
 
     test "stale authenticated requests cannot ingest after credential changes" do
       for change <- [:rotation, :revocation, :enrollment_reset] do
-        %{organization: organization, scope: scope, source: source, token: token} =
+        %{
+          organization: organization,
+          scope: scope,
+          admin_scope: admin_scope,
+          source: source,
+          token: token
+        } =
           source_fixture(%{name: "#{change}-agent"})
 
         assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
@@ -137,7 +154,10 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                    })
         end
 
-        assert {:ok, _changed_source} = change_credential(change, scope, authenticated_source)
+        mutation_scope = if change == :enrollment_reset, do: admin_scope, else: scope
+
+        assert {:ok, _changed_source} =
+                 change_credential(change, mutation_scope, authenticated_source)
 
         payload = valid_observation_payload(source)
         assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
@@ -932,10 +952,8 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   end
 
   defp change_credential(:enrollment_reset, scope, source) do
-    admin_scope = %{scope | user: %{}, roles: ["admin"]}
-
     with {:ok, {changed_source, _token}} <-
-           Inventory.reset_collector_enrollment(admin_scope, source.id),
+           Inventory.reset_collector_enrollment(scope, source.id),
          do: {:ok, changed_source}
   end
 end

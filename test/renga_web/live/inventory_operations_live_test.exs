@@ -16,7 +16,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
   setup %{conn: conn} do
     user = user_fixture()
     organization = organization_fixture()
-    organization_membership_fixture(user, organization, %{role: "admin"})
+    membership = organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Renga.Accounts.scope_for_user(user, organization.id)
 
     conn =
@@ -75,6 +75,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     %{
       conn: conn,
       scope: scope,
+      membership: membership,
       connected_source: connected_source,
       connected_token: connected_token,
       connected_agent: connected_agent,
@@ -255,6 +256,38 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert current_source.status == original_source.status
     assert current_source.token_hash == original_source.token_hash
     refute Enum.any?(Inventory.list_sources(scope), &(&1.name == "forged-agent"))
+  end
+
+  for membership_change <- [%{role: "viewer"}, %{status: "disabled"}] do
+    test "cached admin scope cannot mutate collectors after membership changes to #{inspect(membership_change)}",
+         %{
+           conn: conn,
+           scope: scope,
+           membership: membership,
+           connected_source: source,
+           connected_agent: agent
+         } do
+      {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+      original_source = Inventory.get_source!(scope, source.id)
+      original_source_count = length(Inventory.list_sources(scope))
+
+      assert {:ok, _membership} =
+               Renga.Accounts.update_organization_membership(
+                 membership,
+                 unquote(Macro.escape(membership_change))
+               )
+
+      render_hook(view, "create_collector", %{"collector" => %{"name" => "stale-admin-agent"}})
+      render_hook(view, "rotate_collector", %{"id" => source.id})
+      render_hook(view, "reset_collector", %{"id" => source.id})
+      render_hook(view, "revoke_collector", %{"id" => source.id})
+
+      current_source = Inventory.get_source!(scope, source.id)
+      assert current_source.status == original_source.status
+      assert current_source.token_hash == original_source.token_hash
+      assert length(Inventory.list_sources(scope)) == original_source_count
+      assert Inventory.get_agent!(scope, agent.id).id == agent.id
+    end
   end
 
   test "crafted collector events cannot mutate another source kind", %{

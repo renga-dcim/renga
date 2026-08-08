@@ -1,6 +1,9 @@
 defmodule RengaWeb.Api.V1.AgentControllerTest do
   use RengaWeb.ConnCase, async: true
 
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
+
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
@@ -18,6 +21,9 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       })
 
     scope = Accounts.scope_for(organization)
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, %{role: "admin"})
+    admin_scope = Accounts.scope_for_user(admin, organization.id)
 
     {:ok, {source, token}} =
       Inventory.create_source_with_token(scope, %{
@@ -25,7 +31,13 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
         name: Map.get(attrs, :name, "compute-01-agent")
       })
 
-    %{organization: organization, scope: scope, source: source, token: token}
+    %{
+      organization: organization,
+      scope: scope,
+      admin_scope: admin_scope,
+      source: source,
+      token: token
+    }
   end
 
   defp authorize(conn, token, installation_id \\ @installation_id) do
@@ -164,15 +176,13 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
     end
 
     test "an old authenticated request cannot recreate an agent after enrollment reset" do
-      %{scope: scope, token: token} = source_fixture()
+      %{scope: scope, admin_scope: admin_scope, token: token} = source_fixture()
       assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
 
       assert {:ok, {_agent, _lease}} =
                Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
                  installation_id: @installation_id
                })
-
-      admin_scope = %{scope | user: %{}, roles: ["admin"]}
 
       assert {:ok, {_source, _new_token}} =
                Inventory.reset_collector_enrollment(admin_scope, authenticated_source.id)
