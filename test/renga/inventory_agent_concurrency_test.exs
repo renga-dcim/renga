@@ -10,10 +10,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
 
   test "concurrent initial check-ins converge on one agent and lease" do
     with_source(fn scope, source ->
-      # A SHARE lock lets both lookups observe no row while holding their inserts
-      # until both transactions are ready to exercise the unique-index race.
-      Repo.query!("BEGIN")
-      Repo.query!("LOCK TABLE agents IN SHARE MODE")
+      parent = self()
 
       tasks =
         for _attempt <- 1..2 do
@@ -21,6 +18,12 @@ defmodule Renga.InventoryAgentConcurrencyTest do
             :ok = Sandbox.checkout(Repo, sandbox: false)
 
             try do
+              send(parent, {:ready, self()})
+
+              receive do
+                :start -> :ok
+              end
+
               Inventory.record_agent_check_in(scope, source.id)
             after
               Sandbox.checkin(Repo)
@@ -28,11 +31,9 @@ defmodule Renga.InventoryAgentConcurrencyTest do
           end)
         end
 
-      try do
-        await_blocked_inserts!("agents", 2, System.monotonic_time(:millisecond) + 2_000)
-      after
-        Repo.query!("COMMIT")
-      end
+      task_pids = Enum.map(tasks, & &1.pid)
+      Enum.each(task_pids, fn task_pid -> assert_receive {:ready, ^task_pid} end)
+      Enum.each(task_pids, &send(&1, :start))
 
       results = Task.await_many(tasks)
 
