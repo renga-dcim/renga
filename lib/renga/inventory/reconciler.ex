@@ -22,7 +22,7 @@ defmodule Renga.Inventory.Reconciler do
 
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
-  @non_identity_interface_kinds ~w(loopback virtual bridge vlan)
+  @identity_interface_kinds ~w(ethernet)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
@@ -340,12 +340,12 @@ defmodule Renga.Inventory.Reconciler do
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
     |> where([_resource, interface], interface.status != "not_present")
-    |> where([_resource, interface], interface.kind not in ^@non_identity_interface_kinds)
+    |> where([_resource, interface], interface.kind in ^@identity_interface_kinds)
     |> where([_resource, interface], not is_nil(interface.mac_address))
     |> join(:inner, [resource, _interface], candidate in Interface,
       on:
         candidate.resource_id == resource.id and candidate.status != "not_present" and
-          candidate.kind not in ^@non_identity_interface_kinds and
+          candidate.kind in ^@identity_interface_kinds and
           fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
     )
     |> select(
@@ -604,10 +604,10 @@ defmodule Renga.Inventory.Reconciler do
       mac_address ->
         mac_identifier = identifier("mac_address", mac_address)
 
-        if Map.get(interface, "kind", "ethernet") in @non_identity_interface_kinds do
-          {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
-        else
+        if Map.get(interface, "kind", "ethernet") in @identity_interface_kinds do
           {[mac_identifier | identity_macs], non_identity_macs}
+        else
+          {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
         end
     end
   end

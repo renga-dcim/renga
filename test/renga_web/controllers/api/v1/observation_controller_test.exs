@@ -517,7 +517,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"status" => "accepted"} = json_response(conn, 202)
     end
 
-    test "accepts physical MAC identity while retaining virtual interface evidence", %{conn: conn} do
+    test "accepts physical MAC identity while retaining non-ethernet interface evidence", %{
+      conn: conn
+    } do
       %{source: source, token: token} = source_fixture()
 
       payload =
@@ -534,6 +536,20 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                 "kind" => "virtual",
                 "status" => "up",
                 "mac_address" => "02:42:ac:11:00:01",
+                "addresses" => []
+              },
+              %{
+                "name" => "bond0",
+                "kind" => "bond",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:02",
+                "addresses" => []
+              },
+              %{
+                "name" => "unclassified0",
+                "kind" => "unknown",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:03",
                 "addresses" => []
               }
             ]

@@ -18,7 +18,7 @@ defmodule Renga.Inventory.AgentPayload do
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
-  @non_identity_interface_kinds ~w(loopback virtual bridge vlan)
+  @identity_interface_kinds ~w(ethernet)
   @interface_statuses ~w(up down dormant not_present unknown)
   @address_kinds ~w(ipv4 ipv6)
   @prohibited_resource_keys ~w(id organization_id resource_id source_id sync_run_id)
@@ -411,10 +411,9 @@ defmodule Renga.Inventory.AgentPayload do
     case Map.get(resource, "interfaces") do
       interfaces when is_list(interfaces) ->
         interfaces
-        |> Enum.filter(&is_map/1)
-        |> Enum.reject(
-          &(&1["status"] == "not_present" or
-              Map.get(&1, "kind", "ethernet") in @non_identity_interface_kinds)
+        |> Enum.filter(
+          &(is_map(&1) and &1["status"] != "not_present" and
+              Map.get(&1, "kind", "ethernet") in @identity_interface_kinds)
         )
         |> Enum.flat_map(fn interface -> List.wrap(Map.get(interface, "mac_address")) end)
         |> normalized_mac_set()

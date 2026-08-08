@@ -361,6 +361,64 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert matched_resource.id == resource.id
   end
 
+  test "retains bond and unknown MACs as evidence without claims or matching eligibility" do
+    for {kind, sequence} <- Enum.with_index(~w(bond unknown), 1) do
+      context = context()
+
+      first =
+        observation(
+          context,
+          Integer.to_string(sequence * 2 - 1),
+          %{"machine_id" => "machine-#{kind}"},
+          %{},
+          [
+            %{
+              "name" => "eth0",
+              "kind" => "ethernet",
+              "mac_address" => "aa:bb:cc:dd:ee:01"
+            },
+            %{
+              "name" => "#{kind}0",
+              "kind" => kind,
+              "mac_address" => "02:42:ac:11:00:01"
+            }
+          ]
+        )
+
+      assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+      assert context.scope
+             |> Inventory.list_resource_identifier_claims(resource.id)
+             |> Enum.filter(&(&1.kind == "mac_address"))
+             |> Enum.map(& &1.normalized_value) == ["aa:bb:cc:dd:ee:01"]
+
+      assert resource.id
+             |> then(&Inventory.list_interfaces(context.scope, &1))
+             |> Enum.map(&{&1.name, &1.kind})
+             |> Enum.sort() == Enum.sort([{kind <> "0", kind}, {"eth0", "ethernet"}])
+
+      ethernet_mac_only =
+        observation(
+          context,
+          Integer.to_string(sequence * 2),
+          %{"mac_address" => "aa:bb:cc:dd:ee:01"},
+          %{},
+          [
+            %{
+              "name" => "eth0",
+              "kind" => "ethernet",
+              "mac_address" => "aa:bb:cc:dd:ee:01"
+            }
+          ]
+        )
+
+      assert {:ok, matched_resource, false} =
+               Inventory.reconcile_observation(context.scope, ethernet_mac_only.id)
+
+      assert matched_resource.id == resource.id
+    end
+  end
+
   test "matches only the present MAC set after an interface is omitted" do
     context = context()
 
