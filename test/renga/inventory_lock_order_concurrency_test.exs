@@ -11,9 +11,109 @@ defmodule Renga.InventoryLockOrderConcurrencyTest do
 
   @timeout 5_000
 
+  test "authenticated check-in waits for Organization before locking Source" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = Ecto.UUID.generate()
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Check-in lock order #{suffix}",
+        slug: "check-in-lock-order-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+
+    {:ok, {source, token}} =
+      Inventory.create_source_with_token(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
+
+    {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+    Repo.query!("BEGIN")
+    organization_id = Ecto.UUID.dump!(organization.id)
+    source_id = Ecto.UUID.dump!(source.id)
+
+    Repo.query!("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", [organization_id])
+    parent = self()
+
+    check_in =
+      Task.async(fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+        %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
+        send(parent, {:check_in_backend, backend_pid})
+
+        try do
+          Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+            installation_id: Ecto.UUID.generate()
+          })
+        after
+          Sandbox.checkin(Repo)
+        end
+      end)
+
+    assert_receive {:check_in_backend, check_in_backend_pid}, @timeout
+
+    await_backend_lock_wait!(
+      check_in_backend_pid,
+      System.monotonic_time(:millisecond) + @timeout
+    )
+
+    probe =
+      Task.async(fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+
+        try do
+          Repo.query!("SELECT id FROM sources WHERE id = $1 FOR UPDATE NOWAIT", [source_id])
+          :source_available
+        after
+          Sandbox.checkin(Repo)
+        end
+      end)
+
+    try do
+      assert Task.await(probe, @timeout) == :source_available
+    after
+      Repo.query!("COMMIT")
+    end
+
+    assert {:ok, {%Agent{}, %AgentLease{}}} = Task.await(check_in, @timeout)
+
+    Repo.delete!(organization)
+    Sandbox.checkin(Repo)
+  end
+
+  test "stale authenticated check-in after Organization disable creates no Agent or lease" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = Ecto.UUID.generate()
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Disabled check-in #{suffix}",
+        slug: "disabled-check-in-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+
+    {:ok, {_source, token}} =
+      Inventory.create_source_with_token(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
+
+    {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+    {:ok, _organization} = Accounts.update_organization(organization, %{status: "disabled"})
+
+    assert {:error, :source_credential_changed} =
+             Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+               installation_id: Ecto.UUID.generate()
+             })
+
+    refute Repo.get_by(Agent, organization_id: organization.id)
+    refute Repo.get_by(AgentLease, organization_id: organization.id)
+
+    Repo.delete!(organization)
+    Sandbox.checkin(Repo)
+  end
+
   test "authenticated ingestion waits for Organization before locking Source" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
-    suffix = System.unique_integer([:positive])
+    suffix = Ecto.UUID.generate()
 
     {:ok, organization} =
       Accounts.create_organization(%{

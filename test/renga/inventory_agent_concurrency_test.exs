@@ -108,7 +108,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
     {:ok, organization} =
       Accounts.create_organization(%{
         name: "Concurrent Agent Registration",
-        slug: "concurrent-agent-#{System.unique_integer([:positive])}"
+        slug: "concurrent-agent-#{Ecto.UUID.generate()}"
       })
 
     scope = Accounts.scope_for(organization)
@@ -172,15 +172,15 @@ defmodule Renga.InventoryAgentConcurrencyTest do
     blocked_agent_insert? =
       Enum.any?(rows, fn [_pid, query] -> query =~ ~s(INSERT INTO "agents") end)
 
-    source_waiters =
+    organization_waiters =
       for [pid, query] <- rows,
-          query =~ ~s(FROM "sources"),
+          query =~ ~s(FROM "organizations"),
           query =~ "FOR UPDATE",
           do: pid
 
     cond do
-      blocked_agent_insert? and length(source_waiters) == 1 ->
-        assert hd(source_waiters) in backend_pids
+      blocked_agent_insert? and length(organization_waiters) == 1 ->
+        assert hd(organization_waiters) in backend_pids
 
       System.monotonic_time(:millisecond) < deadline ->
         receive do
@@ -192,7 +192,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
 
       true ->
         flunk(
-          "expected specific backends #{inspect(backend_pids)} at Agent insert and Source row boundaries, got #{inspect(rows)}"
+          "expected specific backends #{inspect(backend_pids)} at Agent insert and Organization row boundaries, got #{inspect(rows)}"
         )
     end
   end

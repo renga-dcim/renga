@@ -428,6 +428,7 @@ defmodule Renga.Inventory do
     agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
+      ensure_organization_active!(organization_id)
       locked_source = lock_source_for_agent!(organization_id, source.id)
       ensure_source_credential_current!(locked_source, expected_token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
