@@ -40,6 +40,8 @@ defmodule Renga.Inventory.Resource do
     field :labels, :map, default: %{}
     field :annotations, :map, default: %{}
     field :deletion_requested_at, :utc_datetime_usec
+    field :source_names, {:array, :string}, virtual: true, default: []
+    field :last_observed_at, :utc_datetime_usec, virtual: true
 
     belongs_to :organization, Organization
     has_one :host, Host

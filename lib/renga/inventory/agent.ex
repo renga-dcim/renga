@@ -23,6 +23,7 @@ defmodule Renga.Inventory.Agent do
   schema "agents" do
     field :name, :string
     field :status, :string, default: "active"
+    field :installation_id, :binary_id
     field :version, :string
     field :capabilities, {:array, :string}, default: []
     field :metadata, :map, default: %{}
@@ -55,6 +56,9 @@ defmodule Renga.Inventory.Agent do
     |> assoc_constraint(:organization)
     |> assoc_constraint(:source, name: :agents_organization_source_fkey)
     |> unique_constraint([:organization_id, :source_id])
+    |> unique_constraint(:installation_id,
+      name: :agents_organization_installation_id_index
+    )
   end
 
   defp validate_capabilities(changeset) do

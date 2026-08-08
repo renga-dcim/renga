@@ -8,6 +8,8 @@ defmodule Renga.Inventory do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
@@ -39,6 +41,7 @@ defmodule Renga.Inventory do
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
   @resource_revision_lock_key 1_380_271_687
+  @operational_resource_page_size 50
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -48,6 +51,48 @@ defmodule Renga.Inventory do
     |> where([source], source.organization_id == ^organization_id)
     |> order_by([source], asc: source.name)
     |> Repo.all()
+  end
+
+  @doc """
+  Lists sources with registered agents and leases for operational views.
+  """
+  def list_operational_sources(%Scope{organization_id: organization_id}) do
+    agents_query = from(agent in Agent, order_by: [agent.name, agent.id], preload: [:lease])
+
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> order_by([source], asc: source.name, asc: source.id)
+    |> preload(agents: ^agents_query)
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns the most recently observed resource attributed to each scoped source.
+
+  Host collectors currently bind to one installation, while provenance remains
+  general enough for future sources that may report more than one resource.
+  """
+  def latest_resources_by_source(%Scope{organization_id: organization_id}) do
+    ResourceIdentifierClaim
+    |> join(:inner, [claim], resource in Resource, on: resource.id == claim.resource_id)
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> distinct([claim], claim.source_id)
+    |> order_by([claim], [claim.source_id, desc: claim.last_seen_at, desc: claim.id])
+    |> select([claim, resource], {claim.source_id, resource})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  Returns each scoped source's latest accepted inventory timestamp.
+  """
+  def latest_observation_times(%Scope{organization_id: organization_id}) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> group_by([observation], observation.source_id)
+    |> select([observation], {observation.source_id, max(observation.observed_at)})
+    |> Repo.all()
+    |> Map.new()
   end
 
   @doc """
@@ -93,6 +138,27 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Creates a one-installation host collector for an organization administrator.
+  """
+  def create_collector_with_token(%Scope{} = scope, attrs) do
+    collector_management_transaction(scope, fn ->
+      attrs =
+        attrs
+        |> put_attr(:kind, "host_agent")
+        |> put_attr(:status, "active")
+
+      create_source_with_token(scope, attrs)
+    end)
+  end
+
+  @doc """
+  Returns whether the current human organization scope can manage collectors.
+  """
+  def collector_manager?(%Scope{user: user, roles: roles}) do
+    not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
+  end
+
+  @doc """
   Updates source metadata while keeping token lifecycle separate.
   """
   def update_source(%Scope{} = scope, %Source{} = source, attrs) do
@@ -128,6 +194,25 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Replaces a host collector credential without changing its installation binding.
+  """
+  def rotate_collector_token(%Scope{} = scope, source_id) do
+    collector_management_transaction(scope, fn ->
+      source = lock_host_collector_or_rollback(scope.organization_id, source_id)
+      rotate_host_collector_token(source)
+    end)
+  end
+
+  defp rotate_host_collector_token(source) do
+    token = generate_source_token()
+
+    case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
+      {:ok, source} -> {:ok, {source, token}}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  @doc """
   Revokes source token authentication without deleting source provenance.
   """
   def revoke_source_token(%Scope{} = scope, source_id) do
@@ -135,6 +220,100 @@ defmodule Renga.Inventory do
     |> get_source!(source_id)
     |> Source.revoke_changeset()
     |> Repo.update()
+  end
+
+  @doc """
+  Revokes one host collector credential while retaining its provenance.
+  """
+  def revoke_collector_token(%Scope{} = scope, source_id) do
+    collector_management_transaction(scope, fn ->
+      source = lock_host_collector_or_rollback(scope.organization_id, source_id)
+      source |> Source.revoke_changeset() |> Repo.update()
+    end)
+  end
+
+  @doc """
+  Removes a collector's runtime binding and replaces its credential.
+
+  Source provenance and observations remain intact; only the renewable agent
+  registration is removed so a new installation can claim the credential.
+  """
+  def reset_collector_enrollment(
+        %Scope{organization_id: organization_id} = scope,
+        source_id
+      ) do
+    collector_management_transaction(scope, fn ->
+      token = generate_source_token()
+      source = lock_host_collector_or_rollback(organization_id, source_id)
+
+      Agent
+      |> where([agent], agent.organization_id == ^organization_id)
+      |> where([agent], agent.source_id == ^source.id)
+      |> Repo.delete_all()
+
+      source =
+        source
+        |> Source.token_changeset(hash_source_token(token))
+        |> update_or_rollback()
+
+      {source, token}
+    end)
+  end
+
+  defp lock_host_collector_or_rollback(organization_id, source_id) do
+    case lock_host_collector(organization_id, source_id) do
+      %Source{} = source -> source
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp collector_management_transaction(%Scope{} = scope, mutation) do
+    Repo.transaction(fn ->
+      ensure_collector_organization_active_or_rollback(scope.organization_id)
+      authorize_current_collector_manager_or_rollback(scope)
+
+      case mutation.() do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+        result -> result
+      end
+    end)
+  end
+
+  defp authorize_current_collector_manager_or_rollback(%Scope{
+         membership_id: membership_id,
+         user: %{id: user_id},
+         organization_id: organization_id
+       })
+       when not is_nil(membership_id) do
+    authorized? =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active")
+      |> where([membership], membership.role in ["owner", "admin"])
+      |> select([membership], membership.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> is_binary()
+
+    unless authorized?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_current_collector_manager_or_rollback(%Scope{}),
+    do: Repo.rollback(:forbidden)
+
+  defp ensure_collector_organization_active_or_rollback(organization_id) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> select([organization], organization.status)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+    |> case do
+      "active" -> :ok
+      _inactive_or_missing -> Repo.rollback(:forbidden)
+    end
   end
 
   @doc """
@@ -173,6 +352,70 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
+    do_record_agent_check_in(organization_id, source, attrs, nil)
+  end
+
+  @doc """
+  Registers or renews an agent only while its authenticated credential remains current.
+
+  Rechecking the token hash under the source row lock prevents an in-flight
+  request authenticated before rotation or reset from recreating a binding.
+  """
+  def record_authenticated_agent_check_in(
+        %Scope{organization_id: organization_id} = scope,
+        %Source{} = authenticated_source,
+        attrs \\ %{}
+      ) do
+    source = get_source!(scope, authenticated_source.id)
+    do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
+  end
+
+  @doc """
+  Atomically checks in an authenticated agent and accepts its raw observation.
+
+  The authentication state is revalidated under database locks so credential
+  or tenant lifecycle changes cannot race either persistent side effect.
+  """
+  def ingest_authenticated_observation(
+        %Scope{organization_id: organization_id} = scope,
+        %Source{} = authenticated_source,
+        agent_attrs,
+        observation_attrs
+      ) do
+    now = Renga.Time.utc_now_ms()
+    installation_id = get_attr(agent_attrs, :installation_id)
+    registration_attrs = agent_registration_attrs(authenticated_source, agent_attrs, now)
+
+    Repo.transaction(fn ->
+      ensure_organization_active!(organization_id)
+      source = lock_source_for_agent!(organization_id, authenticated_source.id)
+      ensure_source_credential_current!(source, authenticated_source.token_hash)
+      ensure_agent_installation!(organization_id, source.id, installation_id)
+      agent = upsert_agent!(organization_id, source.id, registration_attrs)
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+
+      case accept_observation(scope, source.id, observation_attrs) do
+        {:ok, observation, disposition} ->
+          {agent, lease, observation, disposition}
+
+        {:error, :idempotency_conflict, observation} ->
+          Repo.rollback({:idempotency_conflict, observation})
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:error, {:idempotency_conflict, observation}} ->
+        {:error, :idempotency_conflict, observation}
+
+      result ->
+        result
+    end
+  end
+
+  defp do_record_agent_check_in(organization_id, source, attrs, expected_token_hash) do
+    installation_id = get_attr(attrs, :installation_id)
 
     now =
       attrs
@@ -185,10 +428,67 @@ defmodule Renga.Inventory do
     agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
+      ensure_organization_active!(organization_id)
+      locked_source = lock_source_for_agent!(organization_id, source.id)
+      ensure_source_credential_current!(locked_source, expected_token_hash)
+      ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
+  end
+
+  defp ensure_source_credential_current!(_source, nil), do: :ok
+
+  defp ensure_source_credential_current!(source, expected_token_hash) do
+    if source.status == "active" and not is_nil(source.token_hash) and
+         source.token_hash == expected_token_hash do
+      :ok
+    else
+      Repo.rollback(:source_credential_changed)
+    end
+  end
+
+  defp ensure_organization_active!(organization_id) do
+    status =
+      Organization
+      |> where([organization], organization.id == ^organization_id)
+      |> select([organization], organization.status)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    if status == "active", do: :ok, else: Repo.rollback(:source_credential_changed)
+  end
+
+  defp lock_source_for_agent!(organization_id, source_id) do
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> where([source], source.id == ^source_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
+  end
+
+  defp lock_host_collector(organization_id, source_id) do
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> where([source], source.id == ^source_id and source.kind == "host_agent")
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp ensure_agent_installation!(_organization_id, _source_id, nil), do: :ok
+
+  defp ensure_agent_installation!(organization_id, source_id, installation_id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.source_id == ^source_id)
+    |> select([agent], agent.installation_id)
+    |> Repo.one()
+    |> case do
+      nil -> :ok
+      ^installation_id -> :ok
+      _other_installation_id -> Repo.rollback(:installation_identity_mismatch)
+    end
   end
 
   @doc """
@@ -198,6 +498,17 @@ defmodule Renga.Inventory do
     Agent
     |> where([agent], agent.organization_id == ^organization_id)
     |> Repo.get!(id)
+  end
+
+  @doc """
+  Lists registered agents with their source and current lease for operational views.
+  """
+  def list_agents(%Scope{organization_id: organization_id}) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> order_by([agent], asc: agent.name, asc: agent.id)
+    |> preload([:source, :lease])
+    |> Repo.all()
   end
 
   @doc """
@@ -232,6 +543,157 @@ defmodule Renga.Inventory do
     |> where([resource], resource.organization_id == ^organization_id)
     |> order_by([resource], asc: resource.name, asc: resource.id)
     |> Repo.all()
+  end
+
+  @doc """
+  Lists resources with operational projections and bounded provenance summaries.
+
+  Full identifier claim history is intentionally reserved for the resource
+  detail loader.
+  """
+  def list_operational_resources(%Scope{} = scope) do
+    scope
+    |> list_operational_resources(page: 1)
+    |> Map.fetch!(:entries)
+  end
+
+  def list_operational_resources(%Scope{organization_id: organization_id}, options) do
+    page = max(Keyword.get(options, :page, 1), 1)
+
+    entries =
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> maybe_filter_stale_resources(organization_id, Keyword.get(options, :stale_only?, false))
+      |> order_by([resource], asc: resource.name, asc: resource.id)
+      |> select_merge([resource], %{
+        source_names:
+          fragment(
+            "COALESCE((SELECT array_agg(DISTINCT sources.name ORDER BY sources.name) FROM resource_identifier_claims AS claims JOIN sources ON sources.id = claims.source_id WHERE claims.resource_id = ? AND claims.organization_id = ?), ARRAY[]::varchar[])",
+            resource.id,
+            type(^organization_id, :binary_id)
+          ),
+        last_observed_at:
+          type(
+            fragment(
+              "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
+              resource.id,
+              type(^organization_id, :binary_id)
+            ),
+            :utc_datetime_usec
+          )
+      })
+      |> limit(^(@operational_resource_page_size + 1))
+      |> offset(^((page - 1) * @operational_resource_page_size))
+      |> preload([:host, :conditions])
+      |> Repo.all()
+
+    %{
+      entries: Enum.take(entries, @operational_resource_page_size),
+      has_next?: length(entries) > @operational_resource_page_size,
+      page: page
+    }
+  end
+
+  defp maybe_filter_stale_resources(query, _organization_id, false), do: query
+
+  defp maybe_filter_stale_resources(query, organization_id, true) do
+    stale_resource_ids =
+      ResourceCondition
+      |> where([condition], condition.organization_id == ^organization_id)
+      |> where([condition], condition.type == "InventoryCurrent")
+      |> where([condition], condition.status == "false")
+      |> select([condition], condition.resource_id)
+
+    where(query, [resource], resource.id in subquery(stale_resource_ids))
+  end
+
+  @doc """
+  Returns organization-scoped dashboard counts using aggregate SQL.
+  """
+  def operational_resource_counts(%Scope{organization_id: organization_id}) do
+    lifecycle =
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> group_by([resource], resource.lifecycle_state)
+      |> select([resource], {resource.lifecycle_state, count(resource.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    freshness =
+      Resource
+      |> join(:left, [resource], condition in ResourceCondition,
+        on: condition.resource_id == resource.id and condition.type == "InventoryCurrent"
+      )
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> group_by([_resource, condition], condition.status)
+      |> select([resource, condition], {condition.status, count(resource.id)})
+      |> Repo.all()
+      |> Enum.reduce(%{}, fn
+        {"true", count}, counts -> Map.update(counts, :current, count, &(&1 + count))
+        {"false", count}, counts -> Map.update(counts, :stale, count, &(&1 + count))
+        {_status, count}, counts -> Map.update(counts, :unknown, count, &(&1 + count))
+      end)
+
+    %{lifecycle: lifecycle, freshness: freshness, total: Enum.sum(Map.values(lifecycle))}
+  end
+
+  @doc """
+  Fetches the complete current operational projection for one scoped resource.
+
+  Raw observations remain separate; this aggregate contains desired state,
+  canonical projections, source claims, conditions, and bounded audit history.
+  """
+  def get_operational_resource!(%Scope{} = scope, id) do
+    conditions_query = from(condition in ResourceCondition, order_by: condition.type)
+
+    identifiers_query =
+      from(identifier in ResourceIdentifier, order_by: [identifier.kind, identifier.value])
+
+    claims_query =
+      from(claim in ResourceIdentifierClaim,
+        distinct: [claim.source_id, claim.kind, claim.normalized_value],
+        windows: [
+          claim_history: [
+            partition_by: [claim.source_id, claim.kind, claim.normalized_value]
+          ]
+        ],
+        select_merge: %{
+          observation_count: over(count(claim.id), :claim_history)
+        },
+        order_by: [
+          claim.source_id,
+          claim.kind,
+          claim.normalized_value,
+          desc: claim.last_seen_at,
+          desc: claim.id
+        ],
+        preload: [:source]
+      )
+
+    events_query =
+      from(event in ChangeEvent,
+        order_by: [desc: event.occurred_at, desc: event.id],
+        limit: 20,
+        preload: [:source]
+      )
+
+    resource =
+      scope
+      |> get_resource!(id)
+      |> Repo.preload([
+        :host,
+        conditions: conditions_query,
+        identifiers: identifiers_query,
+        identifier_claims: claims_query,
+        change_events: events_query
+      ])
+
+    interfaces =
+      scope
+      |> list_interfaces(resource.id)
+      |> Repo.preload(:addresses)
+
+    %{resource | interfaces: interfaces}
   end
 
   @doc """
@@ -1326,12 +1788,14 @@ defmodule Renga.Inventory do
       name: get_attr(attrs, :name) || source.name,
       registered_at: now
     }
+    |> maybe_put(:installation_id, get_attr(attrs, :installation_id))
     |> maybe_put(:version, get_attr(attrs, :version) || metadata_version(metadata))
     |> maybe_put(:capabilities, get_attr(attrs, :capabilities))
     |> maybe_put(:metadata, metadata)
   end
 
   defp upsert_agent!(organization_id, source_id, attrs) do
+    bind_installation? = Map.has_key?(attrs, :installation_id)
     update_version? = Map.has_key?(attrs, :version)
     update_capabilities? = Map.has_key?(attrs, :capabilities)
     merge_metadata? = Map.has_key?(attrs, :metadata)
@@ -1345,6 +1809,13 @@ defmodule Renga.Inventory do
                 "CASE WHEN EXCLUDED.updated_at >= ? THEN EXCLUDED.name ELSE ? END",
                 agent.updated_at,
                 agent.name
+              ),
+            installation_id:
+              fragment(
+                "CASE WHEN ? AND ? IS NULL THEN EXCLUDED.installation_id ELSE ? END",
+                ^bind_installation?,
+                agent.installation_id,
+                agent.installation_id
               ),
             version:
               fragment(
@@ -1384,6 +1855,15 @@ defmodule Renga.Inventory do
       |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
 
     changeset =
+      case Map.fetch(attrs, :installation_id) do
+        {:ok, installation_id} ->
+          Ecto.Changeset.put_change(changeset, :installation_id, installation_id)
+
+        :error ->
+          changeset
+      end
+
+    changeset =
       if merge_metadata? do
         existing_agent =
           Agent
@@ -1411,9 +1891,26 @@ defmodule Renga.Inventory do
       )
 
     case result do
-      {:ok, agent} -> agent
-      {:error, changeset} -> Repo.rollback(changeset)
+      {:ok, agent} ->
+        agent
+
+      {:error, changeset} ->
+        if installation_id_conflict?(changeset) do
+          Repo.rollback(:installation_identity_conflict)
+        else
+          Repo.rollback(changeset)
+        end
     end
+  end
+
+  defp installation_id_conflict?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:installation_id, {_message, options}} ->
+        options[:constraint_name] == "agents_organization_installation_id_index"
+
+      _other_error ->
+        false
+    end)
   end
 
   defp validate_agent_metadata_merge(changeset, attrs, existing_agent) do

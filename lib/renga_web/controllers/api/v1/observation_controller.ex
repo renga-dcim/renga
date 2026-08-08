@@ -3,13 +3,17 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
+  alias Renga.Inventory.ObservationReconciliation
 
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
-         {:ok, {_agent, _lease}} <-
-           Inventory.record_agent_check_in(conn.assigns.current_scope, source.id),
-         {:ok, observation, disposition} <-
-           Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs) do
+         {:ok, {_agent, _lease, observation, disposition}} <-
+           Inventory.ingest_authenticated_observation(
+             conn.assigns.current_scope,
+             source,
+             %{installation_id: conn.assigns.current_installation_id},
+             attrs
+           ) do
       reconciliation =
         reconcile_observation(conn.assigns.current_scope, observation, disposition)
 
@@ -27,6 +31,25 @@ defmodule RengaWeb.Api.V1.ObservationController do
         }
       })
     else
+      {:error, :source_credential_changed} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{status: "rejected", errors: [%{path: "authorization", message: "is invalid"}]})
+
+      {:error, reason}
+      when reason in [:installation_identity_mismatch, :installation_identity_conflict] ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          status: "rejected",
+          errors: [
+            %{
+              path: "installation_id",
+              message: "collector credential is already enrolled by another installation"
+            }
+          ]
+        })
+
       {:error, :idempotency_conflict, observation} ->
         conn
         |> put_status(:conflict)
@@ -67,15 +90,18 @@ defmodule RengaWeb.Api.V1.ObservationController do
       {:ok, resource, _discovered?} ->
         %{status: "succeeded", matched_resource_id: resource.id}
 
-      {:error, result} when disposition == :duplicate ->
+      {:error, %ObservationReconciliation{} = result} when disposition == :duplicate ->
         %{
           status: "failed",
           matched_resource_id: result.matched_resource_id,
           errors: result.errors
         }
 
-      {:error, result} ->
+      {:error, %ObservationReconciliation{} = result} ->
         %{status: "failed", errors: result.errors}
+
+      {:error, _reason} ->
+        %{status: "failed", errors: %{"processing" => "reconciliation_failed"}}
     end
   end
 

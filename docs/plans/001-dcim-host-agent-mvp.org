@@ -54,6 +54,8 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 - Resource envelopes own desired state, lifecycle, and revisions; typed canonical projections provide the current query view.
 - Manual corrections are explicit field-level overrides that preserve observed facts, while normal operator intent belongs in desired state.
 - Agent registration and lease health are separate from source credentials and inventory freshness.
+- Manually creating a collector credential before agent registration is an MVP bootstrap path, not the target fleet-enrollment model.
+- Automated enrollment is deferred to [[file:002-provider-neutral-collector-enrollment.org][Plan 002]].
 
 * Milestones
 
@@ -97,6 +99,7 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 
 - [X] Add JSON routes under =/api= for agent check-ins and observations.
 - [X] Add bearer-token authentication plug for sources.
+- [X] Bind each host-agent source credential to the first stable installation UUID and reject mismatched installations on every agent API endpoint.
 - [X] Implement =POST /api/v1/agent/checkins=.
 - [X] Implement =POST /api/v1/observations= for one host resource per request.
 - [X] Store accepted raw observations before reconciliation.
@@ -104,6 +107,11 @@ match the millisecond timestamp encoded in their UUIDv7 primary key.
 - [X] Validate payload shape, source kind, timestamps, identifiers, interfaces, and size limits.
 - [X] Return structured acceptance and validation responses.
 - [X] Add controller tests for auth, tenant isolation, validation, idempotency, and happy-path ingestion.
+
+Deployment note: roll out the installation-identity agent release before the
+strict server release. Older servers ignore the additional request header, but
+older agents cannot report to a strict server because observations previously
+carried no installation identity.
 
 ** 4. Inventory Model Rebuild
 
@@ -160,18 +168,20 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 - [X] Collect CPU, memory, disks, host filesystems from PID 1's =mountinfo= through =procfs= when accessible, NICs, MAC addresses, and IP addresses.
 - [X] Detect basic virtualization hints: bare metal, VM guest, container host.
 - [X] POST observations and check-ins with retry and backoff.
+- [X] Send the stable installation UUID with every authenticated agent request.
 - [X] Add agent unit tests for config, payload serialization, collectors, and retry behavior.
 
 ** 7. Operational UI MVP
 
-- [ ] Add authenticated, organization-scoped LiveView routes.
-- [ ] Add inventory dashboard with lifecycle, inventory freshness, and agent connectivity counts.
-- [ ] Add resource list with kind, hostname, vendor/model, lifecycle, conditions, source provenance, and last observed time.
-- [ ] Add resource detail view with desired state, canonical projections, identifier claims, interfaces, addresses, source provenance, conditions, and recent change events.
-- [ ] Add source and agent lists with credential state, lease health, last inventory, kind, and capabilities.
-- [ ] Add stale-inventory and disconnected-agent filters.
-- [ ] Add stable DOM IDs for dashboard, resource list, resource detail, source list, and filters.
-- [ ] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
+- [X] Add authenticated, organization-scoped LiveView routes.
+- [X] Add inventory dashboard with lifecycle, inventory freshness, and agent connectivity counts.
+- [X] Add resource list with kind, hostname, vendor/model, lifecycle, conditions, source provenance, and last observed time.
+- [X] Add resource detail view with desired state, canonical projections, identifier claims, interfaces, addresses, source provenance, conditions, and recent change events.
+- [X] Present each host-agent source credential and bound installation as one collector with connection, enrollment, credential, resource, and inventory state.
+- [X] Add an owner/admin-only collector creation and credential lifecycle flow that reveals tokens and installation UUIDs once.
+- [X] Add stale-inventory and disconnected-agent filters.
+- [X] Add stable DOM IDs for dashboard, resource list, resource detail, collector list, and filters.
+- [X] Add LiveView tests using =Phoenix.LiveViewTest= selectors.
 
 ** 8. Packaging And Smoke Test
 
@@ -206,6 +216,7 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 
 - Durable jobs and agent capabilities.
 - Phoenix Channels control acceleration.
+- [[file:002-provider-neutral-collector-enrollment.org][Provider-neutral automated enrollment and key-bound agent credentials]].
 - Renga-native operational live queries.
 - Libvirt/KVM read-only VM inventory.
 - Cloud-hypervisor inventory support.

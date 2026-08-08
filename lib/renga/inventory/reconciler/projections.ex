@@ -280,7 +280,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     address =
       scope
       |> Inventory.list_addresses(interface.id)
-      |> Enum.find(&(&1.address == cast_address))
+      |> Enum.find(&same_inet?(&1.address, cast_address))
 
     if address || allow_new_rows? do
       address =
@@ -938,9 +938,26 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp event_value(value), do: ChangeEvent.audit_value(value)
 
-  defp format_inet(%Postgrex.INET{address: address, netmask: netmask}) do
-    "#{address |> :inet.ntoa() |> to_string()}/#{netmask}"
+  defp format_inet(%Postgrex.INET{address: address} = inet) do
+    "#{address |> :inet.ntoa() |> to_string()}/#{inet_netmask(inet)}"
   end
+
+  # Postgrex decodes an INET host mask as nil, while casting the equivalent
+  # explicit /32 or /128 retains the integer. Treat both representations as
+  # the same address so repeated observations remain idempotent.
+  defp same_inet?(%Postgrex.INET{} = left, %Postgrex.INET{} = right) do
+    left.address == right.address and inet_netmask(left) == inet_netmask(right)
+  end
+
+  defp inet_netmask(%Postgrex.INET{address: address, netmask: nil})
+       when tuple_size(address) == 4,
+       do: 32
+
+  defp inet_netmask(%Postgrex.INET{address: address, netmask: nil})
+       when tuple_size(address) == 8,
+       do: 128
+
+  defp inet_netmask(%Postgrex.INET{netmask: netmask}), do: netmask
 
   defp cast_mac_address(%{"mac_address" => mac_address} = attrs) do
     {:ok, cast_mac_address} = MacAddress.cast(mac_address)

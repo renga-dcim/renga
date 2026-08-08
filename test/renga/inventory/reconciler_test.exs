@@ -300,6 +300,125 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert matched.id == resource.id
   end
 
+  test "retains virtual interface MACs as network evidence without identity claims" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{
+          "machine_id" => "machine-1",
+          "mac_address" => ["aa:bb:cc:dd:ee:01", "02:42:ac:11:00:01"]
+        },
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "mac_address" => "aa:bb:cc:dd:ee:01"
+          },
+          %{
+            "name" => "docker0",
+            "kind" => "virtual",
+            "mac_address" => "02:42:ac:11:00:01"
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert context.scope
+           |> Inventory.list_resource_identifier_claims(resource.id)
+           |> Enum.filter(&(&1.kind == "mac_address"))
+           |> Enum.map(& &1.normalized_value) == ["aa:bb:cc:dd:ee:01"]
+
+    assert resource.id
+           |> then(&Inventory.list_interfaces(context.scope, &1))
+           |> Enum.map(&{&1.name, &1.kind, &1.mac_address.address}) == [
+             {"docker0", "virtual", {2, 66, 172, 17, 0, 1}},
+             {"eth0", "ethernet", {170, 187, 204, 221, 238, 1}}
+           ]
+
+    physical_mac_only =
+      observation(
+        context,
+        "2",
+        %{"mac_address" => "aa:bb:cc:dd:ee:01"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "kind" => "ethernet",
+            "mac_address" => "aa:bb:cc:dd:ee:01"
+          }
+        ]
+      )
+
+    assert {:ok, matched_resource, false} =
+             Inventory.reconcile_observation(context.scope, physical_mac_only.id)
+
+    assert matched_resource.id == resource.id
+  end
+
+  test "retains bond and unknown MACs as evidence without claims or matching eligibility" do
+    for {kind, sequence} <- Enum.with_index(~w(bond unknown), 1) do
+      context = context()
+
+      first =
+        observation(
+          context,
+          Integer.to_string(sequence * 2 - 1),
+          %{"machine_id" => "machine-#{kind}"},
+          %{},
+          [
+            %{
+              "name" => "eth0",
+              "kind" => "ethernet",
+              "mac_address" => "aa:bb:cc:dd:ee:01"
+            },
+            %{
+              "name" => "#{kind}0",
+              "kind" => kind,
+              "mac_address" => "02:42:ac:11:00:01"
+            }
+          ]
+        )
+
+      assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+      assert context.scope
+             |> Inventory.list_resource_identifier_claims(resource.id)
+             |> Enum.filter(&(&1.kind == "mac_address"))
+             |> Enum.map(& &1.normalized_value) == ["aa:bb:cc:dd:ee:01"]
+
+      assert resource.id
+             |> then(&Inventory.list_interfaces(context.scope, &1))
+             |> Enum.map(&{&1.name, &1.kind})
+             |> Enum.sort() == Enum.sort([{kind <> "0", kind}, {"eth0", "ethernet"}])
+
+      ethernet_mac_only =
+        observation(
+          context,
+          Integer.to_string(sequence * 2),
+          %{"mac_address" => "aa:bb:cc:dd:ee:01"},
+          %{},
+          [
+            %{
+              "name" => "eth0",
+              "kind" => "ethernet",
+              "mac_address" => "aa:bb:cc:dd:ee:01"
+            }
+          ]
+        )
+
+      assert {:ok, matched_resource, false} =
+               Inventory.reconcile_observation(context.scope, ethernet_mac_only.id)
+
+      assert matched_resource.id == resource.id
+    end
+  end
+
   test "matches only the present MAC set after an interface is omitted" do
     context = context()
 
@@ -694,6 +813,27 @@ defmodule Renga.Inventory.ReconcilerTest do
              Inventory.list_change_events(context.scope, resource.id),
              &(&1.kind == "updated" and &1.field == "interfaces.eth0.status")
            )
+  end
+
+  test "explicit host masks remain idempotent after Postgrex decodes them as nil" do
+    context = context()
+
+    interface = %{
+      "name" => "lo",
+      "kind" => "loopback",
+      "status" => "up",
+      "addresses" => ["127.0.0.1/32", "::1/128"]
+    }
+
+    first = observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [interface])
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    second = observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [interface])
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+
+    [canonical_interface] = Inventory.list_interfaces(context.scope, resource.id)
+    assert length(Inventory.list_addresses(context.scope, canonical_interface.id)) == 2
+    assert Repo.aggregate(AddressEvidence, :count) == 4
   end
 
   test "partial interface reports preserve omitted canonical attributes and ownership" do
@@ -1141,6 +1281,24 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert result.errors["processing"]
 
     assert [%{status: "failed"}] =
+             Inventory.list_observation_reconciliations(context.scope, observation.id)
+  end
+
+  test "ingestion retains a terminal result when projection rolls back" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{"vendor" => %{"invalid" => true}}
+      )
+
+    assert {:error, %{status: "failed", errors: %{"processing" => "projection_failed"}}} =
+             Inventory.reconcile_observation_once(context.scope, observation.id)
+
+    assert [%{status: "failed", attempt: 1}] =
              Inventory.list_observation_reconciliations(context.scope, observation.id)
   end
 end

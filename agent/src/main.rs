@@ -70,7 +70,6 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let scheduler_epoch = Instant::now();
     let operations = RuntimeOperations {
         client: &client,
-        config: &config,
         stopped: &stopped,
     };
     let startup_failures = deliver_startup(&operations);
@@ -98,7 +97,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         for job in scheduler.due_until_cancelled(now, &stopped) {
             match job {
                 Job::CheckIn => {
-                    if let Err(failure) = send_checkin(&client, &config) {
+                    if let Err(failure) = send_checkin(&client) {
                         warn!(error = %failure, "check-in failed");
                     }
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
@@ -167,11 +166,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn send_checkin(client: &HttpClient, config: &Config) -> Result<(), Box<dyn Error>> {
-    client.post_checkin(&CheckIn::new(
-        config.installation_id,
-        collectors::capabilities(),
-    ))?;
+fn send_checkin(client: &HttpClient) -> Result<(), Box<dyn Error>> {
+    client.post_checkin(&CheckIn::new(collectors::capabilities()))?;
     info!("check-in posted");
     Ok(())
 }
@@ -190,13 +186,12 @@ trait Operations {
 
 struct RuntimeOperations<'a> {
     client: &'a HttpClient,
-    config: &'a Config,
     stopped: &'a Cancellation,
 }
 
 impl Operations for RuntimeOperations<'_> {
     fn checkin(&self) -> Result<(), Box<dyn Error>> {
-        send_checkin(self.client, self.config)
+        send_checkin(self.client)
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
         send_inventory(self.client, self.stopped)

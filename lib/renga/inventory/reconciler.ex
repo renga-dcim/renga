@@ -22,6 +22,7 @@ defmodule Renga.Inventory.Reconciler do
 
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
+  @identity_interface_kinds ~w(ethernet)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
@@ -44,26 +45,16 @@ defmodule Renga.Inventory.Reconciler do
       Inventory.lock_organization!(scope.organization_id)
 
       case latest_result(scope, observation.id) do
-        nil -> reconcile_first_attempt(scope, observation)
+        nil -> perform_reconciliation(scope, observation)
         result -> result_to_reconciliation(scope, result)
       end
     end)
     |> case do
       {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> record_unexpected_failure_once(scope, observation, reason)
     end
   rescue
     exception -> record_unexpected_failure_once(scope, observation, exception)
-  end
-
-  defp reconcile_first_attempt(scope, observation) do
-    Repo.transaction(fn -> perform_reconciliation(scope, observation) end, mode: :savepoint)
-    |> case do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
-    end
-  rescue
-    exception -> create_unexpected_failure(scope, observation, exception)
   end
 
   defp do_reconcile(scope, observation) do
@@ -127,22 +118,25 @@ defmodule Renga.Inventory.Reconciler do
 
   defp result_to_reconciliation(_scope, result), do: {:error, result}
 
-  defp record_unexpected_failure_once(scope, observation, exception) do
-    case latest_result(scope, observation.id) do
-      nil -> record_unexpected_failure(scope, observation, exception)
-      result -> result_to_reconciliation(scope, result)
+  defp record_unexpected_failure_once(scope, observation, reason) do
+    attrs = unexpected_failure_attrs(reason)
+
+    Repo.transaction(fn ->
+      Inventory.lock_organization!(scope.organization_id)
+
+      case latest_result(scope, observation.id) do
+        nil -> create_failure(scope, observation, attrs)
+        result -> result_to_reconciliation(scope, result)
+      end
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, error} -> {:error, error}
     end
   end
 
-  defp record_unexpected_failure(scope, observation, exception) do
-    record_serialized_failure(scope, observation, unexpected_failure_attrs(exception))
-  end
-
-  defp create_unexpected_failure(scope, observation, exception) do
-    attrs =
-      exception
-      |> unexpected_failure_attrs()
-      |> Map.put(:attempt, next_attempt(scope, observation.id))
+  defp create_failure(scope, observation, attrs) do
+    attrs = Map.put(attrs, :attempt, next_attempt(scope, observation.id))
 
     case Inventory.create_observation_reconciliation(scope, observation.id, attrs) do
       {:ok, result} -> {:error, result}
@@ -150,17 +144,28 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp unexpected_failure_attrs(exception) do
+  defp record_unexpected_failure(scope, observation, exception) do
+    record_serialized_failure(scope, observation, unexpected_failure_attrs(exception))
+  end
+
+  defp unexpected_failure_attrs(reason) do
     now = Renga.Time.utc_now_ms()
 
     %{
       status: "failed",
       errors: %{"processing" => "projection_failed"},
-      metadata: %{"exception" => exception.__struct__ |> Module.split() |> Enum.join(".")},
+      metadata: %{"exception" => failure_type(reason)},
       started_at: now,
       completed_at: now
     }
   end
+
+  defp failure_type(%{__struct__: module}) when is_atom(module) do
+    module |> Module.split() |> Enum.join(".")
+  end
+
+  defp failure_type(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_type(_reason), do: "unknown"
 
   defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do
     Repo.transaction(fn ->
@@ -335,10 +340,12 @@ defmodule Renga.Inventory.Reconciler do
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
     |> where([_resource, interface], interface.status != "not_present")
+    |> where([_resource, interface], interface.kind in ^@identity_interface_kinds)
     |> where([_resource, interface], not is_nil(interface.mac_address))
     |> join(:inner, [resource, _interface], candidate in Interface,
       on:
         candidate.resource_id == resource.id and candidate.status != "not_present" and
+          candidate.kind in ^@identity_interface_kinds and
           fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
     )
     |> select(
@@ -566,25 +573,43 @@ defmodule Renga.Inventory.Reconciler do
   defp observation_identifiers(payload) do
     resource = resource_payload(payload)
 
+    {identity_interface_macs, non_identity_interface_macs} =
+      resource
+      |> Map.get("interfaces", [])
+      |> Enum.reject(&(&1["status"] == "not_present"))
+      |> Enum.reduce({[], MapSet.new()}, &classify_interface_mac/2)
+
+    identity_mac_values = MapSet.new(identity_interface_macs, & &1.normalized_value)
+    excluded_mac_values = MapSet.difference(non_identity_interface_macs, identity_mac_values)
+
     identifiers =
       resource
       |> Map.get("identifiers", %{})
       |> Enum.flat_map(fn {kind, values} ->
         Enum.map(List.wrap(values), &identifier(kind, &1))
       end)
+      |> Enum.reject(
+        &(&1.kind == "mac_address" and
+            MapSet.member?(excluded_mac_values, &1.normalized_value))
+      )
 
-    interface_macs =
-      resource
-      |> Map.get("interfaces", [])
-      |> Enum.reject(&(&1["status"] == "not_present"))
-      |> Enum.flat_map(fn interface ->
-        case Map.get(interface, "mac_address") do
-          nil -> []
-          mac_address -> [identifier("mac_address", mac_address)]
+    Enum.uniq_by(identifiers ++ identity_interface_macs, &{&1.kind, &1.normalized_value})
+  end
+
+  defp classify_interface_mac(interface, {identity_macs, non_identity_macs}) do
+    case Map.get(interface, "mac_address") do
+      nil ->
+        {identity_macs, non_identity_macs}
+
+      mac_address ->
+        mac_identifier = identifier("mac_address", mac_address)
+
+        if Map.get(interface, "kind", "ethernet") in @identity_interface_kinds do
+          {[mac_identifier | identity_macs], non_identity_macs}
+        else
+          {identity_macs, MapSet.put(non_identity_macs, mac_identifier.normalized_value)}
         end
-      end)
-
-    Enum.uniq_by(identifiers ++ interface_macs, &{&1.kind, &1.normalized_value})
+    end
   end
 
   defp identifier(kind, value) do

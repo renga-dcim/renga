@@ -8,10 +8,12 @@ defmodule Renga.InventoryAgentConcurrencyTest do
   alias Renga.Inventory.AgentLease
   alias Renga.Repo
 
+  @timeout 5_000
+
   test "concurrent initial check-ins converge on one agent and lease" do
     with_source(fn scope, source ->
-      # A SHARE lock lets both lookups observe no row while holding their inserts
-      # until both transactions are ready to exercise the unique-index race.
+      parent = self()
+
       Repo.query!("BEGIN")
       Repo.query!("LOCK TABLE agents IN SHARE MODE")
 
@@ -19,8 +21,10 @@ defmodule Renga.InventoryAgentConcurrencyTest do
         for _attempt <- 1..2 do
           Task.async(fn ->
             :ok = Sandbox.checkout(Repo, sandbox: false)
+            %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
 
             try do
+              send(parent, {:ready, self(), backend_pid})
               Inventory.record_agent_check_in(scope, source.id)
             after
               Sandbox.checkin(Repo)
@@ -28,13 +32,22 @@ defmodule Renga.InventoryAgentConcurrencyTest do
           end)
         end
 
+      backend_pids =
+        Enum.map(tasks, fn task ->
+          assert_receive {:ready, task_pid, backend_pid} when task_pid == task.pid, @timeout
+          backend_pid
+        end)
+
       try do
-        await_blocked_inserts!("agents", 2, System.monotonic_time(:millisecond) + 2_000)
+        await_initial_check_in_boundary!(
+          backend_pids,
+          System.monotonic_time(:millisecond) + @timeout
+        )
       after
         Repo.query!("COMMIT")
       end
 
-      results = Task.await_many(tasks)
+      results = Task.await_many(tasks, @timeout)
 
       assert Enum.all?(results, &match?({:ok, {%Agent{}, %AgentLease{}}}, &1))
 
@@ -53,6 +66,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
 
       Repo.query!("BEGIN")
       Repo.query!("LOCK TABLE agent_leases IN SHARE MODE")
+      parent = self()
 
       tasks =
         for _attempt <- 1..2 do
@@ -60,6 +74,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
             :ok = Sandbox.checkout(Repo, sandbox: false)
 
             try do
+              send(parent, {:ready, self()})
               Inventory.renew_agent_lease(scope, agent.id)
             after
               Sandbox.checkin(Repo)
@@ -67,17 +82,19 @@ defmodule Renga.InventoryAgentConcurrencyTest do
           end)
         end
 
+      assert_ready_tasks!(tasks)
+
       try do
         await_blocked_inserts!(
           "agent_leases",
           2,
-          System.monotonic_time(:millisecond) + 2_000
+          System.monotonic_time(:millisecond) + @timeout
         )
       after
         Repo.query!("COMMIT")
       end
 
-      results = Task.await_many(tasks)
+      results = Task.await_many(tasks, @timeout)
 
       assert Enum.all?(results, &match?({:ok, %AgentLease{}}, &1))
       lease_ids = Enum.map(results, fn {:ok, renewed_lease} -> renewed_lease.id end)
@@ -91,7 +108,7 @@ defmodule Renga.InventoryAgentConcurrencyTest do
     {:ok, organization} =
       Accounts.create_organization(%{
         name: "Concurrent Agent Registration",
-        slug: "concurrent-agent-#{System.unique_integer([:positive])}"
+        slug: "concurrent-agent-#{Ecto.UUID.generate()}"
       })
 
     scope = Accounts.scope_for(organization)
@@ -125,11 +142,70 @@ defmodule Renga.InventoryAgentConcurrencyTest do
         :ok
 
       System.monotonic_time(:millisecond) < deadline ->
-        Process.sleep(10)
+        receive do
+        after
+          10 -> :ok
+        end
+
         await_blocked_inserts!(table, expected, deadline)
 
       true ->
         flunk("expected #{expected} blocked #{table} inserts, found #{blocked}")
     end
+  end
+
+  defp await_initial_check_in_boundary!(backend_pids, deadline) do
+    Repo.query!("SELECT pg_stat_clear_snapshot()")
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT pid, query
+        FROM pg_stat_activity
+        WHERE pid = ANY($1)
+          AND state = 'active'
+          AND wait_event_type = 'Lock'
+        """,
+        [backend_pids]
+      )
+
+    blocked_agent_insert? =
+      Enum.any?(rows, fn [_pid, query] -> query =~ ~s(INSERT INTO "agents") end)
+
+    organization_waiters =
+      for [pid, query] <- rows,
+          query =~ ~s(FROM "organizations"),
+          query =~ "FOR UPDATE",
+          do: pid
+
+    cond do
+      blocked_agent_insert? and length(organization_waiters) == 1 ->
+        assert hd(organization_waiters) in backend_pids
+
+      System.monotonic_time(:millisecond) < deadline ->
+        receive do
+        after
+          10 -> :ok
+        end
+
+        await_initial_check_in_boundary!(backend_pids, deadline)
+
+      true ->
+        flunk(
+          "expected specific backends #{inspect(backend_pids)} at Agent insert and Organization row boundaries, got #{inspect(rows)}"
+        )
+    end
+  end
+
+  defp assert_ready_tasks!(tasks) do
+    expected = tasks |> Enum.map(& &1.pid) |> MapSet.new()
+
+    ready =
+      Enum.reduce(tasks, MapSet.new(), fn _task, pids ->
+        assert_receive {:ready, task_pid}, @timeout
+        MapSet.put(pids, task_pid)
+      end)
+
+    assert ready == expected
   end
 end

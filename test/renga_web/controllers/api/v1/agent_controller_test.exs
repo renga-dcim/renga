@@ -1,9 +1,15 @@
 defmodule RengaWeb.Api.V1.AgentControllerTest do
   use RengaWeb.ConnCase, async: true
 
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
+
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
+
+  @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
+  @other_installation_id "8ea9ae04-bf9b-4c34-8192-4f617eade95e"
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
@@ -15,6 +21,9 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       })
 
     scope = Accounts.scope_for(organization)
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, %{role: "admin"})
+    admin_scope = Accounts.scope_for_user(admin, organization.id)
 
     {:ok, {source, token}} =
       Inventory.create_source_with_token(scope, %{
@@ -22,11 +31,19 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
         name: Map.get(attrs, :name, "compute-01-agent")
       })
 
-    %{organization: organization, scope: scope, source: source, token: token}
+    %{
+      organization: organization,
+      scope: scope,
+      admin_scope: admin_scope,
+      source: source,
+      token: token
+    }
   end
 
-  defp authorize(conn, token) do
-    put_req_header(conn, "authorization", "Bearer #{token}")
+  defp authorize(conn, token, installation_id \\ @installation_id) do
+    conn
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header("x-renga-installation-id", installation_id)
   end
 
   describe "POST /api/v1/agent/checkins" do
@@ -34,6 +51,23 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       conn = post(conn, ~p"/api/v1/agent/checkins", %{})
 
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+    end
+
+    test "requires a valid installation identity with the source token" do
+      %{token: token} = source_fixture()
+
+      for installation_id <- [nil, "not-a-uuid"] do
+        conn = put_req_header(build_conn(), "authorization", "Bearer #{token}")
+
+        conn =
+          if installation_id,
+            do: put_req_header(conn, "x-renga-installation-id", installation_id),
+            else: conn
+
+        conn = post(conn, ~p"/api/v1/agent/checkins", %{})
+
+        assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      end
     end
 
     test "records host-agent check-ins using authenticated source scope", %{conn: conn} do
@@ -67,10 +101,98 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
 
       agent = Inventory.get_agent!(scope, agent_id)
       assert agent.source_id == source.id
+      assert agent.installation_id == @installation_id
       assert agent.capabilities == ["host.inventory"]
       assert agent.version == "0.1.0"
       assert agent.metadata == %{"agent_version" => "0.1.0"}
       assert Inventory.get_agent_lease!(scope, agent.id).expires_at
+    end
+
+    test "binds a source token to its first installation identity", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      first_conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{"status" => "accepted"} = json_response(first_conn, 202)
+
+      conflicting_conn =
+        build_conn()
+        |> authorize(token, @other_installation_id)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "installation_id", "message" => message}]
+             } = json_response(conflicting_conn, 409)
+
+      assert message =~ "already enrolled"
+    end
+
+    test "does not allow one installation identity to enroll two source credentials", %{
+      conn: conn
+    } do
+      %{scope: scope, token: first_token} = source_fixture()
+
+      {:ok, {second_source, second_token}} =
+        Inventory.create_source_with_token(scope, %{
+          kind: "host_agent",
+          name: "compute-02-agent"
+        })
+
+      first_conn =
+        conn
+        |> authorize(first_token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{"status" => "accepted"} = json_response(first_conn, 202)
+
+      conflicting_conn =
+        build_conn()
+        |> authorize(second_token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{"status" => "rejected", "errors" => [%{"path" => "installation_id"}]} =
+               json_response(conflicting_conn, 409)
+
+      refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == second_source.id))
+    end
+
+    test "rejects a request authenticated before its credential was rotated" do
+      %{scope: scope, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, {_source, _new_token}} =
+               Inventory.rotate_source_token(scope, authenticated_source.id)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == authenticated_source.id))
+    end
+
+    test "an old authenticated request cannot recreate an agent after enrollment reset" do
+      %{scope: scope, admin_scope: admin_scope, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, {_agent, _lease}} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      assert {:ok, {_source, _new_token}} =
+               Inventory.reset_collector_enrollment(admin_scope, authenticated_source.id)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == authenticated_source.id))
     end
 
     test "accepts an optional source object without a kind", %{conn: conn} do

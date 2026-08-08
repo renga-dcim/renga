@@ -44,3 +44,6 @@ npm-debug.log
 
 /.direnv/
 /.nix/
+
+/dev/*
+!/dev/.keep

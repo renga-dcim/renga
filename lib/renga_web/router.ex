@@ -60,8 +60,15 @@ defmodule RengaWeb.Router do
       on_mount: [{RengaWeb.UserAuth, :require_authenticated}] do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
+      live "/organizations", OrganizationLive.Index, :index
+
+      live "/inventory", InventoryDashboardLive, :index
+      live "/inventory/resources", ResourceLive.Index, :index
+      live "/inventory/resources/:id", ResourceLive.Show, :show
+      live "/inventory/operations", InventoryOperationsLive, :index
     end
 
+    post "/organizations/select", OrganizationSessionController, :create
     post "/users/update-password", UserSessionController, :update_password
   end
 

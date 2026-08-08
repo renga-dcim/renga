@@ -2,6 +2,10 @@
 dev:
 	mix phx.server
 
+.PHONY: dev-agent
+dev-agent:
+	cargo run -p renga-agent -- --config ./dev/agent.toml
+
 .PHONY: test
 test: ex-test rs-test
 
@@ -46,4 +50,8 @@ migrate:
 
 .PHONY: db
 db:
-	psql -h 127.0.0.1 -U postgres -d textbin_dev -W
+	psql -h 127.0.0.1 -U postgres -d renga_dev -p 5435 -W
+
+.PHONY: console
+console:
+	iex -S mix

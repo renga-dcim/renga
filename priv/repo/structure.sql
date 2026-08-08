@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 41UTyxQQHG6qAPQOcbFvxDqAYz6JUxTtqnsYt1KQWZZzYuYv4z8iiukyR4yZZwB
+\restrict C45KmKfPaxB0Ogo7gTDsLYrdecXahj5QFr5Ucjz5aUPv9v95FyydkWVtmPNtMyt
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -134,6 +134,7 @@ CREATE TABLE public.agents (
     registered_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    installation_id uuid,
     CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
 );
 
@@ -890,6 +891,13 @@ CREATE INDEX agents_organization_id_status_index ON public.agents USING btree (o
 
 
 --
+-- Name: agents_organization_installation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agents_organization_installation_id_index ON public.agents USING btree (organization_id, installation_id) WHERE (installation_id IS NOT NULL);
+
+
+--
 -- Name: change_events_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1202,6 +1210,13 @@ CREATE UNIQUE INDEX resource_identifier_claims_observation_value_index ON public
 --
 
 CREATE INDEX resource_identifier_claims_organization_id_observation_id_index ON public.resource_identifier_claims USING btree (organization_id, observation_id);
+
+
+--
+-- Name: resource_identifier_claims_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_identifier_claims_organization_id_resource_id_index ON public.resource_identifier_claims USING btree (organization_id, resource_id);
 
 
 --
@@ -1996,7 +2011,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 41UTyxQQHG6qAPQOcbFvxDqAYz6JUxTtqnsYt1KQWZZzYuYv4z8iiukyR4yZZwB
+\unrestrict C45KmKfPaxB0Ogo7gTDsLYrdecXahj5QFr5Ucjz5aUPv9v95FyydkWVtmPNtMyt
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -2008,3 +2023,6 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260731183553);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731183943);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731231835);
+INSERT INTO public."schema_migrations" (version) VALUES (20260807183000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260808070000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260808110000);

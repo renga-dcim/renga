@@ -2,13 +2,19 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   use RengaWeb.ConnCase, async: true
 
   import Ecto.Query, only: [from: 2]
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
 
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Agent
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Source
   alias Renga.Repo
+
+  @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
+  @other_installation_id "8ea9ae04-bf9b-4c34-8192-4f617eade95e"
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
@@ -20,6 +26,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       })
 
     scope = Accounts.scope_for(organization)
+    admin = user_fixture()
+    organization_membership_fixture(admin, organization, %{role: "admin"})
+    admin_scope = Accounts.scope_for_user(admin, organization.id)
 
     {:ok, {source, token}} =
       Inventory.create_source_with_token(scope, %{
@@ -27,11 +36,19 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         name: Map.get(attrs, :name, "compute-01-agent")
       })
 
-    %{organization: organization, scope: scope, source: source, token: token}
+    %{
+      organization: organization,
+      scope: scope,
+      admin_scope: admin_scope,
+      source: source,
+      token: token
+    }
   end
 
-  defp authorize(conn, token) do
-    put_req_header(conn, "authorization", "Bearer #{token}")
+  defp authorize(conn, token, installation_id \\ @installation_id) do
+    conn
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header("x-renga-installation-id", installation_id)
   end
 
   defp valid_observation_payload(source, attrs \\ %{}) do
@@ -115,6 +132,95 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert resource.kind == "server"
       assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
+    end
+
+    test "stale authenticated requests cannot ingest after credential changes" do
+      for change <- [:rotation, :revocation, :enrollment_reset] do
+        %{
+          organization: organization,
+          scope: scope,
+          admin_scope: admin_scope,
+          source: source,
+          token: token
+        } =
+          source_fixture(%{name: "#{change}-agent"})
+
+        assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+        if change == :enrollment_reset do
+          assert {:ok, {_agent, _lease}} =
+                   Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                     installation_id: @installation_id
+                   })
+        end
+
+        mutation_scope = if change == :enrollment_reset, do: admin_scope, else: scope
+
+        assert {:ok, _changed_source} =
+                 change_credential(change, mutation_scope, authenticated_source)
+
+        payload = valid_observation_payload(source)
+        assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
+
+        assert {:error, :source_credential_changed} =
+                 Inventory.ingest_authenticated_observation(
+                   Accounts.scope_for(organization),
+                   authenticated_source,
+                   %{installation_id: @installation_id},
+                   attrs
+                 )
+
+        refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
+        refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
+      end
+    end
+
+    test "stale authenticated request cannot ingest after its organization is disabled" do
+      %{organization: organization, scope: scope, source: source, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, _organization} =
+               Accounts.update_organization(organization, %{status: "disabled"})
+
+      payload = valid_observation_payload(source)
+      assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.ingest_authenticated_observation(
+                 scope,
+                 authenticated_source,
+                 %{installation_id: @installation_id},
+                 attrs
+               )
+
+      refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
+      refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
+    end
+
+    test "rejects observations from a different installation after enrollment", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      enrolled_conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/agent/checkins", %{})
+
+      assert %{"status" => "accepted"} = json_response(enrolled_conn, 202)
+
+      payload = valid_observation_payload(source)
+
+      conflicting_conn =
+        build_conn()
+        |> authorize(token, @other_installation_id)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "rejected",
+               "errors" => [%{"path" => "installation_id", "message" => message}]
+             } = json_response(conflicting_conn, 409)
+
+      assert message =~ "already enrolled"
+      refute Repo.get_by(Observation, idempotency_key: payload["observation_id"])
     end
 
     test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do
@@ -411,6 +517,48 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"status" => "accepted"} = json_response(conn, 202)
     end
 
+    test "accepts physical MAC identity while retaining non-ethernet interface evidence", %{
+      conn: conn
+    } do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "identifiers", "mac_address"], [
+          "aa:bb:cc:dd:ee:ff"
+        ])
+        |> update_in(["resources", Access.at(0), "interfaces"], fn interfaces ->
+          interfaces ++
+            [
+              %{
+                "name" => "docker0",
+                "kind" => "virtual",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:01",
+                "addresses" => []
+              },
+              %{
+                "name" => "bond0",
+                "kind" => "bond",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:02",
+                "addresses" => []
+              },
+              %{
+                "name" => "unclassified0",
+                "kind" => "unknown",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:03",
+                "addresses" => []
+              }
+            ]
+        end)
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+      assert %{"status" => "accepted"} = json_response(conn, 202)
+    end
+
     test "rejects identity containing only matcher-unsupported identifiers before raw storage" do
       %{source: source, token: token} = source_fixture()
 
@@ -654,6 +802,44 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                Inventory.list_observation_reconciliations(scope, observation.id)
     end
 
+    test "returns a stable failed reconciliation for a duplicate terminal result", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source)
+      {:ok, attrs} = AgentPayload.validate_observation(payload, source)
+      {:ok, observation, :created} = Inventory.accept_observation(scope, source.id, attrs)
+      completed_at = Renga.Time.utc_now_ms()
+
+      {:ok, _result} =
+        Inventory.create_observation_reconciliation(scope, observation.id, %{
+          status: "failed",
+          attempt: 1,
+          errors: %{"processing" => "projection_failed"},
+          started_at: completed_at,
+          completed_at: completed_at
+        })
+
+      duplicate_conn =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "status" => "accepted",
+               "duplicate" => true,
+               "reconciliation" => %{
+                 "status" => "failed",
+                 "matched_resource_id" => nil,
+                 "errors" => %{"processing" => "projection_failed"}
+               },
+               "observation" => %{"id" => observation_id}
+             } = json_response(duplicate_conn, 200)
+
+      assert observation_id == observation.id
+
+      assert [%{attempt: 1, status: "failed"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
+    end
+
     test "accepts identical reports when their idempotency keys differ", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source, %{"observation_id" => "report-1"})
@@ -770,5 +956,20 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                "errors" => [%{"path" => "source.source_id"}]
              } = json_response(conn, 422)
     end
+  end
+
+  defp change_credential(:rotation, scope, source) do
+    with {:ok, {changed_source, _token}} <- Inventory.rotate_source_token(scope, source.id),
+         do: {:ok, changed_source}
+  end
+
+  defp change_credential(:revocation, scope, source) do
+    Inventory.revoke_source_token(scope, source.id)
+  end
+
+  defp change_credential(:enrollment_reset, scope, source) do
+    with {:ok, {changed_source, _token}} <-
+           Inventory.reset_collector_enrollment(scope, source.id),
+         do: {:ok, changed_source}
   end
 end

@@ -148,16 +148,14 @@ pub struct CheckIn {
 #[derive(Debug, Serialize)]
 pub struct AgentMetadata {
     pub agent_version: String,
-    pub installation_id: Uuid,
 }
 
 impl CheckIn {
-    pub fn new(installation_id: Uuid, capabilities: Vec<&'static str>) -> Self {
+    pub fn new(capabilities: Vec<&'static str>) -> Self {
         Self {
             capabilities,
             metadata: AgentMetadata {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
-                installation_id,
             },
         }
     }
@@ -233,12 +231,11 @@ mod tests {
     }
     #[test]
     fn checkin_has_capability_and_identity() {
-        let value =
-            serde_json::to_value(CheckIn::new(Uuid::nil(), vec!["host.inventory"])).unwrap();
+        let value = serde_json::to_value(CheckIn::new(vec!["host.inventory"])).unwrap();
         assert_eq!(value["capabilities"][0], "host.inventory");
         assert_eq!(
-            value["metadata"]["installation_id"],
-            Uuid::nil().to_string()
+            value["metadata"]["agent_version"],
+            env!("CARGO_PKG_VERSION")
         );
     }
 }
