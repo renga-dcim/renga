@@ -1,0 +1,186 @@
+#+title: Provider-Neutral Collector Enrollment
+#+status: Draft
+
+* Objective
+
+Make automated, policy-driven enrollment the default fleet path. An authorized
+installation creates the existing Collector aggregate: a durable
+=Source(kind: "host_agent")= provenance record and its =Agent= installation
+registration. Manual enrollment remains an optional development, static-host,
+and break-glass verifier rather than the default UI, packaging, or deployment
+workflow.
+
+* Architecture
+
+** Provider-Neutral Lifecycle
+
+Use one enrollment lifecycle with pluggable evidence verifiers. OIDC, SPIFFE,
+Kubernetes, AWS, GCP, Azure, TPM/private infrastructure, and manual grants are
+evidence sources, not separate lifecycles. The boundary is provider-neutral,
+but claims retain verifier-specific meaning; a policy inspecting provider claims
+is necessarily provider-specific.
+
+Each installation generates a stable UUID and keypair, obtains a short-lived
+challenge, submits evidence, and proves key possession. Renga verifies evidence,
+evaluates the organization's deployment-group policy, and transactionally
+creates the Source+Agent aggregate, allow decision, and key-bound runtime
+credential. That credential serves observations, check-ins, renewal, and
+optional re-attestation. No new persisted Collector entity is required absent a
+later ownership need. Images contain only a non-secret policy identifier.
+
+Identity is namespaced by organization, immutable verifier-configuration
+version, issuer, and subject; a bare subject is never globally unique. Verifiers
+declare subject cardinality. A singleton subject (for example, a verified cloud
+instance) requires an explicit replacement decision for a different key. Group
+subjects may authorize multiple keys under policy limits and rate controls.
+Retries proving the same key return the existing enrollment result.
+
+** Trust, Binding, And Atomicity
+
+Keep evidence verification, policy evaluation, and credential issuance
+separate. Verification authenticates signatures, issuer, audience, nonce,
+freshness, and replay controls and returns normalized claims. Policy decides
+whether that subject may perform =collector:enroll=. Issuance binds the accepted
+installation key to the new Collector and records the decision.
+
+Challenges are short-lived, single-use, and server-bound to organization,
+action, immutable policy and verifier-configuration versions, and key
+thumbprint. A policy selector is routing information and cannot select trust
+roots. Bind evidence to challenge and key where supported. For bearer formats
+that cannot embed them, enforce native audience, freshness, and replay controls,
+record lower assurance, and permit policy to reject it; key proof alone does not
+bind an unrelated bearer assertion.
+
+Challenge consumption, one-time grant consumption, Collector creation, decision
+persistence, and credential issuance are one atomic successful binding. A lost
+response is safely retried with the same key. Denials are audited without a
+Collector transaction.
+
+** Constrained ABAC And Provenance
+
+Enrollment policy is a default-deny, domain-specific ABAC admission decision,
+not evidence verification. Inputs are the normalized subject; action
+=collector:enroll=; organization and policy resource; trusted time, challenge,
+and request context; installation public key; and untrusted requested
+capabilities. Existing organization RBAC protects policy administration;
+enrolling agents may evaluate but not author policies. Broader ABAC is deferred.
+
+Use a typed evaluator with declared attribute types and equality, membership,
+existence, prefix, numeric comparison, and semantic-version comparison where
+valid. Do not expose scripts or commit stored policies to a vendor syntax. Keep
+issuer, keys, audience, and algorithms in verifier configuration; requests
+cannot choose trust roots and policy sees only verifier-returned claims.
+
+Retain provenance for every attribute:
+
+- *verified*: issuer, subject, account/project/subscription, instance, image,
+  deployment group, region, and equivalent authenticated claims;
+- *server-derived*: assurance, credential age, policy version, and values Renga
+  computes from trusted context;
+- *policy-assigned*: environment, role, owner team, and granted capabilities;
+- *self-reported*: hostname, OS facts, requested capabilities, and agent data.
+
+Admission may consume verified and server-derived values. Assigned attributes
+are outputs and cannot justify the decision assigning them; they may inform
+later runtime decisions. Self-reported values never authorize their reporter.
+Policies may map verified claims to assigned values and grant only a subset of
+requested capabilities. Security version/image restrictions require verified
+artifact identity; self-reported versions are informational only.
+
+Record outcome and stable reason; action, subject, organization, and policy;
+immutable policy and verifier versions; issuer and actual verification-key ID or
+thumbprint; matched/failed condition IDs; assignments and grants; verifier kind,
+assurance, claim provenance, safe evidence digest/reference, and evaluation
+time. Return safe denial detail only. Retain enough non-secret material for
+reproducible audits, never reusable bearer evidence, plaintext grants, private
+keys, or runtime credentials. Keep the decision boundary compatible with a
+future shared ABAC engine.
+
+** Verifier Envelope And Initial Path
+
+All verifiers return an envelope containing verifier identity/version, issuer
+namespace, subject and cardinality, issuance/expiry, assurance, provenance,
+optional instance identity, and typed verifier-specific claims. It is not a
+flattened universal claim set. Candidate adapters include generic OIDC workload
+identity, SPIFFE X.509/JWT SVID, Kubernetes projected service accounts, AWS
+instance/IAM identity, GCP metadata JWT, Azure managed identity, TPM attestation,
+one-time manual grants, and operator approval.
+
+The first user-visible automated path is an explicitly configured OIDC workload
+identity profile defining trusted issuer, audience, claim schema, and subject
+cardinality. Generic OIDC does not promise per-instance attestation. Add
+provider-specific adapters after challenge, decision, identity, and credential
+lifecycle are stable.
+
+Manual enrollment uses the same protocol. A one-time grant is hashed at rest,
+short-lived, authorizes one successful binding, and is consumed only after key
+proof; it never becomes the runtime credential. Alternatively, an operator may
+approve a short pending-challenge code. Approval creates server-side verified
+evidence bound to organization, policy version, challenge, and key; it neither
+bypasses policy nor directly creates a Collector. A manual internal test harness
+may precede the product path without making manual onboarding the default.
+
+** Credentials, Images, And Scaling
+
+The installation UUID is for display/correlation, not proof. Generate a private
+key on first boot; prefer TPM/non-exportable storage and support strictly
+permissioned filesystem keys. Runtime credentials must be key-bound, for example
+with mTLS, proof-of-possession tokens, or replay-protected signed requests; pick
+the mechanism independently of policy.
+
+Installation credentials are separate from =Source.token_hash=; Source remains
+the provenance anchor. Migration from MVP bearer tokens requires an explicit
+dual-authentication or cutover plan because existing agents lack keys, writable
+enrollment state, and renewal. Software cannot conclusively distinguish a full
+disk clone containing the same key; fresh evidence, subject binding,
+re-attestation, and hardware keys raise assurance, while other deployments
+record lower assurance.
+
+Image preparation removes UUIDs, keys, credentials, cached evidence, and lease
+state. Golden images contain only the binary, service, server URL, and non-secret
+policy selector; first boot generates fresh state. Never embed a shared
+permanent token in images, templates, cloud-init, or group variables.
+
+One policy may authorize many autoscaled installations. Every accepted
+installation has a unique key and receives one Collector and credential; unique
+instance claims exist only when supplied by the verifier. Group subjects require
+explicit limits. Policies may constrain active count, rate, images,
+accounts/projects/subscriptions, regions, groups, verified artifact identity,
+and re-attestation. Provider lifecycle may retire ephemeral Collectors later,
+but lease expiry must not implicitly delete them or provenance.
+
+** Policy And Credential Lifecycle
+
+Record the exact enrollment policy version; edits never rewrite history.
+Separate admission from continuous eligibility and optionally require fresh
+evidence for renewal or administrative re-evaluation. If an installation no
+longer qualifies, configurable actions include audit-only, renewal denial,
+quarantine, and revocation. Begin with explicit administration and auditability,
+not silent revocation after policy edits.
+
+* Milestones
+
+- [ ] Add versioned policies and verifier configurations, challenges, attempts, and structured decisions.
+- [ ] Generate installation keypairs and require challenge proof of possession.
+- [ ] Add idempotent atomic finalization that consumes an accepted attempt, creates Source+Agent, records the allow decision, and issues a key-bound credential.
+- [ ] Add runtime authentication, renewal, and administrative revocation; do not deploy short-lived credentials without renewal.
+- [ ] Deliver configured OIDC workload identity as the first user-visible automated path, with image preparation and first-boot enrollment.
+- [ ] Add manual grants and operator approval as optional development, static-infrastructure, and break-glass verifiers, not the default path.
+- [ ] Add re-attestation, quarantine, key replacement, and provider-lifecycle retirement workflows.
+- [ ] Add provider-specific and hardware-backed verifier adapters.
+- [ ] Revisit a shared ABAC engine only if enrollment requirements demonstrate broader need.
+
+* Acceptance Criteria
+
+- [ ] Accepted automated enrollment atomically creates one existing Source+Agent Collector aggregate and a separate key-bound credential.
+- [ ] Retry, singleton replacement, and group-subject behavior follow verifier-declared cardinality and key-bound idempotency rules.
+- [ ] Policy decisions use provenance-appropriate attributes and produce safe, reproducible audit records.
+- [ ] OIDC is the documented first automated deployment path; manual enrollment remains optional.
+- [ ] Images and horizontally scaled installations never share permanent Collector credentials.
+- [ ] Renewal, revocation, policy versioning, and MVP credential migration have explicit tested behavior.
+
+* Verification
+
+- [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete progress.
+- [ ] Run focused enrollment context, API, and agent tests introduced by each milestone.
+- [ ] Run =mix precommit= after implementation changes.
