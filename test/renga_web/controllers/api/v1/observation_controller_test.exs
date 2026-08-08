@@ -443,6 +443,32 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"status" => "accepted"} = json_response(conn, 202)
     end
 
+    test "accepts physical MAC identity while retaining virtual interface evidence", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "identifiers", "mac_address"], [
+          "aa:bb:cc:dd:ee:ff"
+        ])
+        |> update_in(["resources", Access.at(0), "interfaces"], fn interfaces ->
+          interfaces ++
+            [
+              %{
+                "name" => "docker0",
+                "kind" => "virtual",
+                "status" => "up",
+                "mac_address" => "02:42:ac:11:00:01",
+                "addresses" => []
+              }
+            ]
+        end)
+
+      conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
+      assert %{"status" => "accepted"} = json_response(conn, 202)
+    end
+
     test "rejects identity containing only matcher-unsupported identifiers before raw storage" do
       %{source: source, token: token} = source_fixture()
 
