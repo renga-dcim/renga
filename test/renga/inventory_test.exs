@@ -609,6 +609,16 @@ defmodule Renga.InventoryTest do
                freshness: %{stale: 1},
                total: 1
              }
+
+      assert %{rows: [[true]]} =
+               Repo.query!("""
+               SELECT EXISTS (
+                 SELECT 1
+                 FROM pg_indexes
+                 WHERE schemaname = current_schema()
+                   AND indexname = 'resource_identifier_claims_organization_id_resource_id_index'
+               )
+               """)
     end
 
     test "create_resource/2 validates kind and lifecycle state", %{scope: scope} do

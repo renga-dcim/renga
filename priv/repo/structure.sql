@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 8FgaXd1e2M3UrgfpfmFqhdb2x0EpBdDFDdubHu3WNQDzW7t9EGEuYmR2kEckgjg
+\restrict C45KmKfPaxB0Ogo7gTDsLYrdecXahj5QFr5Ucjz5aUPv9v95FyydkWVtmPNtMyt
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -1213,6 +1213,13 @@ CREATE INDEX resource_identifier_claims_organization_id_observation_id_index ON 
 
 
 --
+-- Name: resource_identifier_claims_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_identifier_claims_organization_id_resource_id_index ON public.resource_identifier_claims USING btree (organization_id, resource_id);
+
+
+--
 -- Name: resource_identifier_claims_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2004,7 +2011,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 8FgaXd1e2M3UrgfpfmFqhdb2x0EpBdDFDdubHu3WNQDzW7t9EGEuYmR2kEckgjg
+\unrestrict C45KmKfPaxB0Ogo7gTDsLYrdecXahj5QFr5Ucjz5aUPv9v95FyydkWVtmPNtMyt
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -2018,3 +2025,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260731184550);
 INSERT INTO public."schema_migrations" (version) VALUES (20260731231835);
 INSERT INTO public."schema_migrations" (version) VALUES (20260807183000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260808070000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260808110000);
