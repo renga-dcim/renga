@@ -7,9 +7,9 @@ defmodule RengaWeb.Api.V1.AgentController do
   def check_in(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_check_in(params, source),
          {:ok, {agent, lease}} <-
-           Inventory.record_agent_check_in(
+           Inventory.record_authenticated_agent_check_in(
              conn.assigns.current_scope,
-             source.id,
+             source,
              Map.put(attrs, :installation_id, conn.assigns.current_installation_id)
            ) do
       conn
@@ -29,6 +29,11 @@ defmodule RengaWeb.Api.V1.AgentController do
         }
       })
     else
+      {:error, :source_credential_changed} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{status: "rejected", errors: [%{path: "authorization", message: "is invalid"}]})
+
       {:error, reason}
       when reason in [:installation_identity_mismatch, :installation_identity_conflict] ->
         conn

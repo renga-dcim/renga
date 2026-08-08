@@ -64,6 +64,23 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Returns the most recently observed resource attributed to each scoped source.
+
+  Host collectors currently bind to one installation, while provenance remains
+  general enough for future sources that may report more than one resource.
+  """
+  def latest_resources_by_source(%Scope{organization_id: organization_id}) do
+    ResourceIdentifierClaim
+    |> join(:inner, [claim], resource in Resource, on: resource.id == claim.resource_id)
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> distinct([claim], claim.source_id)
+    |> order_by([claim], [claim.source_id, desc: claim.last_seen_at, desc: claim.id])
+    |> select([claim, resource], {claim.source_id, resource})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
   Returns each scoped source's latest accepted inventory timestamp.
   """
   def latest_observation_times(%Scope{organization_id: organization_id}) do
@@ -118,6 +135,27 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Creates a one-installation host collector for an organization administrator.
+  """
+  def create_collector_with_token(%Scope{} = scope, attrs) do
+    with :ok <- authorize_collector_management(scope) do
+      attrs =
+        attrs
+        |> put_attr(:kind, "host_agent")
+        |> put_attr(:status, "active")
+
+      create_source_with_token(scope, attrs)
+    end
+  end
+
+  @doc """
+  Returns whether the current human organization scope can manage collectors.
+  """
+  def collector_manager?(%Scope{user: user, roles: roles}) do
+    not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
+  end
+
+  @doc """
   Updates source metadata while keeping token lifecycle separate.
   """
   def update_source(%Scope{} = scope, %Source{} = source, attrs) do
@@ -153,6 +191,21 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Replaces a host collector credential without changing its installation binding.
+  """
+  def rotate_collector_token(%Scope{} = scope, source_id) do
+    with :ok <- authorize_collector_management(scope),
+         {:ok, source} <- fetch_host_collector(scope, source_id) do
+      token = generate_source_token()
+
+      case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
+        {:ok, source} -> {:ok, {source, token}}
+        {:error, changeset} -> {:error, changeset}
+      end
+    end
+  end
+
+  @doc """
   Revokes source token authentication without deleting source provenance.
   """
   def revoke_source_token(%Scope{} = scope, source_id) do
@@ -160,6 +213,55 @@ defmodule Renga.Inventory do
     |> get_source!(source_id)
     |> Source.revoke_changeset()
     |> Repo.update()
+  end
+
+  @doc """
+  Revokes one host collector credential while retaining its provenance.
+  """
+  def revoke_collector_token(%Scope{} = scope, source_id) do
+    with :ok <- authorize_collector_management(scope),
+         {:ok, source} <- fetch_host_collector(scope, source_id) do
+      source |> Source.revoke_changeset() |> Repo.update()
+    end
+  end
+
+  @doc """
+  Removes a collector's runtime binding and replaces its credential.
+
+  Source provenance and observations remain intact; only the renewable agent
+  registration is removed so a new installation can claim the credential.
+  """
+  def reset_collector_enrollment(
+        %Scope{organization_id: organization_id} = scope,
+        source_id
+      ) do
+    with :ok <- authorize_collector_management(scope) do
+      token = generate_source_token()
+
+      Repo.transaction(fn ->
+        source =
+          case lock_host_collector(organization_id, source_id) do
+            %Source{} = source -> source
+            nil -> Repo.rollback(:not_found)
+          end
+
+        Agent
+        |> where([agent], agent.organization_id == ^organization_id)
+        |> where([agent], agent.source_id == ^source.id)
+        |> Repo.delete_all()
+
+        source =
+          source
+          |> Source.token_changeset(hash_source_token(token))
+          |> update_or_rollback()
+
+        {source, token}
+      end)
+    end
+  end
+
+  defp authorize_collector_management(scope) do
+    if collector_manager?(scope), do: :ok, else: {:error, :forbidden}
   end
 
   @doc """
@@ -198,6 +300,25 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
+    do_record_agent_check_in(organization_id, source, attrs, nil)
+  end
+
+  @doc """
+  Registers or renews an agent only while its authenticated credential remains current.
+
+  Rechecking the token hash under the source row lock prevents an in-flight
+  request authenticated before rotation or reset from recreating a binding.
+  """
+  def record_authenticated_agent_check_in(
+        %Scope{organization_id: organization_id} = scope,
+        %Source{} = authenticated_source,
+        attrs \\ %{}
+      ) do
+    source = get_source!(scope, authenticated_source.id)
+    do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
+  end
+
+  defp do_record_agent_check_in(organization_id, source, attrs, expected_token_hash) do
     installation_id = get_attr(attrs, :installation_id)
 
     now =
@@ -211,12 +332,24 @@ defmodule Renga.Inventory do
     agent_attrs = agent_registration_attrs(source, attrs, now)
 
     Repo.transaction(fn ->
-      lock_source_for_agent!(organization_id, source.id)
+      locked_source = lock_source_for_agent!(organization_id, source.id)
+      ensure_source_credential_current!(locked_source, expected_token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
+  end
+
+  defp ensure_source_credential_current!(_source, nil), do: :ok
+
+  defp ensure_source_credential_current!(source, expected_token_hash) do
+    if source.status == "active" and not is_nil(source.token_hash) and
+         source.token_hash == expected_token_hash do
+      :ok
+    else
+      Repo.rollback(:source_credential_changed)
+    end
   end
 
   defp lock_source_for_agent!(organization_id, source_id) do
@@ -225,6 +358,24 @@ defmodule Renga.Inventory do
     |> where([source], source.id == ^source_id)
     |> lock("FOR UPDATE")
     |> Repo.one!()
+  end
+
+  defp lock_host_collector(organization_id, source_id) do
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> where([source], source.id == ^source_id and source.kind == "host_agent")
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp fetch_host_collector(%Scope{organization_id: organization_id}, source_id) do
+    source =
+      Source
+      |> where([source], source.organization_id == ^organization_id)
+      |> where([source], source.id == ^source_id and source.kind == "host_agent")
+      |> Repo.one()
+
+    if source, do: {:ok, source}, else: {:error, :not_found}
   end
 
   defp ensure_agent_installation!(_organization_id, _source_id, nil), do: :ok

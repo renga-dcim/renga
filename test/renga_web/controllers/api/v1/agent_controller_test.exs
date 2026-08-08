@@ -148,6 +148,43 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == second_source.id))
     end
 
+    test "rejects a request authenticated before its credential was rotated" do
+      %{scope: scope, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, {_source, _new_token}} =
+               Inventory.rotate_source_token(scope, authenticated_source.id)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == authenticated_source.id))
+    end
+
+    test "an old authenticated request cannot recreate an agent after enrollment reset" do
+      %{scope: scope, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, {_agent, _lease}} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      admin_scope = %{scope | user: %{}, roles: ["admin"]}
+
+      assert {:ok, {_source, _new_token}} =
+               Inventory.reset_collector_enrollment(admin_scope, authenticated_source.id)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                 installation_id: @installation_id
+               })
+
+      refute Enum.any?(Inventory.list_agents(scope), &(&1.source_id == authenticated_source.id))
+    end
+
     test "accepts an optional source object without a kind", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
