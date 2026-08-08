@@ -2,6 +2,10 @@
 dev:
 	mix phx.server
 
+.PHONY: dev-agent
+dev-agent:
+	cargo run -p renga-agent -- --config ./dev/agent.toml
+
 .PHONY: test
 test: ex-test rs-test
 
