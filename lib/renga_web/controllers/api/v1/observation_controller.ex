@@ -7,12 +7,13 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
-         {:ok, {_agent, _lease}} <-
-           Inventory.record_authenticated_agent_check_in(conn.assigns.current_scope, source, %{
-             installation_id: conn.assigns.current_installation_id
-           }),
-         {:ok, observation, disposition} <-
-           Inventory.accept_observation(conn.assigns.current_scope, source.id, attrs) do
+         {:ok, {_agent, _lease, observation, disposition}} <-
+           Inventory.ingest_authenticated_observation(
+             conn.assigns.current_scope,
+             source,
+             %{installation_id: conn.assigns.current_installation_id},
+             attrs
+           ) do
       reconciliation =
         reconcile_observation(conn.assigns.current_scope, observation, disposition)
 

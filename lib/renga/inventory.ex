@@ -8,6 +8,7 @@ defmodule Renga.Inventory do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
@@ -321,6 +322,50 @@ defmodule Renga.Inventory do
     do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
   end
 
+  @doc """
+  Atomically checks in an authenticated agent and accepts its raw observation.
+
+  The authentication state is revalidated under database locks so credential
+  or tenant lifecycle changes cannot race either persistent side effect.
+  """
+  def ingest_authenticated_observation(
+        %Scope{organization_id: organization_id} = scope,
+        %Source{} = authenticated_source,
+        agent_attrs,
+        observation_attrs
+      ) do
+    now = Renga.Time.utc_now_ms()
+    installation_id = get_attr(agent_attrs, :installation_id)
+    registration_attrs = agent_registration_attrs(authenticated_source, agent_attrs, now)
+
+    Repo.transaction(fn ->
+      source = lock_source_for_agent!(organization_id, authenticated_source.id)
+      ensure_source_credential_current!(source, authenticated_source.token_hash)
+      ensure_organization_active!(organization_id)
+      ensure_agent_installation!(organization_id, source.id, installation_id)
+      agent = upsert_agent!(organization_id, source.id, registration_attrs)
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+
+      case accept_observation(scope, source.id, observation_attrs) do
+        {:ok, observation, disposition} ->
+          {agent, lease, observation, disposition}
+
+        {:error, :idempotency_conflict, observation} ->
+          Repo.rollback({:idempotency_conflict, observation})
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:error, {:idempotency_conflict, observation}} ->
+        {:error, :idempotency_conflict, observation}
+
+      result ->
+        result
+    end
+  end
+
   defp do_record_agent_check_in(organization_id, source, attrs, expected_token_hash) do
     installation_id = get_attr(attrs, :installation_id)
 
@@ -353,6 +398,17 @@ defmodule Renga.Inventory do
     else
       Repo.rollback(:source_credential_changed)
     end
+  end
+
+  defp ensure_organization_active!(organization_id) do
+    status =
+      Organization
+      |> where([organization], organization.id == ^organization_id)
+      |> select([organization], organization.status)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    if status == "active", do: :ok, else: Repo.rollback(:source_credential_changed)
   end
 
   defp lock_source_for_agent!(organization_id, source_id) do

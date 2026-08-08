@@ -123,6 +123,60 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
     end
 
+    test "stale authenticated requests cannot ingest after credential changes" do
+      for change <- [:rotation, :revocation, :enrollment_reset] do
+        %{organization: organization, scope: scope, source: source, token: token} =
+          source_fixture(%{name: "#{change}-agent"})
+
+        assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+        if change == :enrollment_reset do
+          assert {:ok, {_agent, _lease}} =
+                   Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
+                     installation_id: @installation_id
+                   })
+        end
+
+        assert {:ok, _changed_source} = change_credential(change, scope, authenticated_source)
+
+        payload = valid_observation_payload(source)
+        assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
+
+        assert {:error, :source_credential_changed} =
+                 Inventory.ingest_authenticated_observation(
+                   Accounts.scope_for(organization),
+                   authenticated_source,
+                   %{installation_id: @installation_id},
+                   attrs
+                 )
+
+        refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
+        refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
+      end
+    end
+
+    test "stale authenticated request cannot ingest after its organization is disabled" do
+      %{organization: organization, scope: scope, source: source, token: token} = source_fixture()
+      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
+
+      assert {:ok, _organization} =
+               Accounts.update_organization(organization, %{status: "disabled"})
+
+      payload = valid_observation_payload(source)
+      assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
+
+      assert {:error, :source_credential_changed} =
+               Inventory.ingest_authenticated_observation(
+                 scope,
+                 authenticated_source,
+                 %{installation_id: @installation_id},
+                 attrs
+               )
+
+      refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
+      refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
+    end
+
     test "rejects observations from a different installation after enrollment", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
@@ -866,5 +920,22 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                "errors" => [%{"path" => "source.source_id"}]
              } = json_response(conn, 422)
     end
+  end
+
+  defp change_credential(:rotation, scope, source) do
+    with {:ok, {changed_source, _token}} <- Inventory.rotate_source_token(scope, source.id),
+         do: {:ok, changed_source}
+  end
+
+  defp change_credential(:revocation, scope, source) do
+    Inventory.revoke_source_token(scope, source.id)
+  end
+
+  defp change_credential(:enrollment_reset, scope, source) do
+    admin_scope = %{scope | user: %{}, roles: ["admin"]}
+
+    with {:ok, {changed_source, _token}} <-
+           Inventory.reset_collector_enrollment(admin_scope, source.id),
+         do: {:ok, changed_source}
   end
 end
