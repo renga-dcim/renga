@@ -17,6 +17,18 @@ ex-test:
 rs-test:
 	cargo test --workspace
 
+.PHONY: agent-packages
+agent-packages:
+	./agent/scripts/build-packages.sh
+
+.PHONY: verify-agent-packages
+verify-agent-packages:
+	./agent/scripts/verify-packages.sh
+
+.PHONY: changelog
+changelog:
+	git cliff -o CHANGELOG.md
+
 .PHONY: lint
 lint: ex-lint rs-lint rs-fmt
 

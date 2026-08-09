@@ -34,7 +34,8 @@ renga-*.tar
 # The directory Cargo will write compiled artifacts to.
 /target/
 
-# Versioned operator assets (the global dist/ ignore must not hide these).
+# Generated release artifacts. Keep versioned agent operator assets visible.
+/dist/
 !/agent/dist/
 !/agent/dist/*
 

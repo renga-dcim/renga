@@ -1,0 +1,73 @@
+---
+name: Tag merged release PR
+
+"on":
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Create release tag
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.ref == 'release/next' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: RELEASE
+    steps:
+      - name: Create release app token
+        id: release-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout merged release
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          token: ${{ steps.release-token.outputs.token }}
+
+      - name: Validate release and tag
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ ! "$PR_TITLE" =~ ^chore\(release\):\ v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Invalid release PR title: $PR_TITLE"
+            exit 1
+          fi
+
+          tag_name=${PR_TITLE#chore(release): }
+          mix_version=$(sed -nE 's/^[[:space:]]*version:[[:space:]]*"([^"]+)",?[[:space:]]*$/\1/p' mix.exs)
+          agent_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' agent/Cargo.toml | head -1)
+          if [ -z "$mix_version" ] || [ "$mix_version" != "$agent_version" ]; then
+            echo "::error::mix.exs and agent/Cargo.toml versions do not match"
+            exit 1
+          fi
+          if [ "$tag_name" != "v$mix_version" ]; then
+            echo "::error::Tag $tag_name does not match project version $mix_version"
+            exit 1
+          fi
+
+          git fetch --tags origin
+          if git rev-parse --verify --quiet "refs/tags/$tag_name"; then
+            existing_sha=$(git rev-parse "refs/tags/$tag_name^{commit}")
+            merge_sha=$(git rev-parse HEAD)
+            if [ "$existing_sha" != "$merge_sha" ]; then
+              echo "::error::Tag $tag_name points to $existing_sha, expected $merge_sha"
+              exit 1
+            fi
+            echo "Tag $tag_name already exists at the expected merge commit"
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag "$tag_name"
+          git push origin "$tag_name"
