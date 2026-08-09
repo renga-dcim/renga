@@ -1,5 +1,5 @@
 #+title: DCIM Host Agent MVP
-#+status: Draft
+#+status: Done
 
 * Objective
 
@@ -196,16 +196,16 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 
 * Acceptance Criteria
 
-- [ ] A new organization can create or receive a host-agent source with a scoped token.
-- [ ] A Rust service agent can run on Debian/Ubuntu under systemd.
-- [ ] The agent can collect host facts and POST a valid observation.
-- [ ] Renga stores the raw observation and reconciles it into canonical inventory.
-- [ ] Resource identifiers are preserved separately from canonical fields.
-- [ ] Repeated observations are idempotent.
-- [ ] Stale inventory and disconnected agents are visible as independent conditions without changing resource lifecycle intent.
-- [ ] The UI shows resources, desired state, canonical projections, source evidence, identifier claims, interfaces, addresses, conditions, agents, leases, change events, and freshness.
-- [ ] Tenant isolation tests prevent cross-organization access.
-- [ ] =mix precommit= passes.
+- [X] A new organization can create or receive a host-agent source with a scoped token.
+- [X] A Rust service agent can run on Debian/Ubuntu under systemd.
+- [X] The agent can collect host facts and POST a valid observation.
+- [X] Renga stores the raw observation and reconciles it into canonical inventory.
+- [X] Resource identifiers are preserved separately from canonical fields.
+- [X] Repeated observations are idempotent.
+- [X] Stale inventory and disconnected agents are visible as independent conditions without changing resource lifecycle intent.
+- [X] The UI shows resources, desired state, canonical projections, source evidence, identifier claims, interfaces, addresses, conditions, agents, leases, change events, and freshness.
+- [X] Tenant isolation tests prevent cross-organization access.
+- [X] =mix precommit= passes.
 
 * Verification
 
