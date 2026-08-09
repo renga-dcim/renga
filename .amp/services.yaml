@@ -1,0 +1,12 @@
+---
+services:
+  web:
+    command: >-
+      env -i HOME="$HOME" USER="$USER" LANG="${LANG:-C.UTF-8}"
+      PATH="/nix/var/nix/profiles/default/bin:/usr/bin:/bin" PORT="$PORT"
+      PUBLIC_URL="$PUBLIC_URL" nix develop --command mix phx.server
+    port: 4000
+    portal:
+      title: Renga
+      description: >-
+        Phoenix development server backed by the local PostgreSQL cluster.

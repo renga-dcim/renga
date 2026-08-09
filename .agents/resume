@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# shellcheck source=.agents/tailscale
+. "$repo_root/.agents/tailscale"
+
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   # shellcheck disable=SC1091
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -15,7 +18,6 @@ fi
 
 sudo chmod o+rx /nix/var/nix/daemon-socket
 
-export RENGA_NIX_DEV_ENV_ACTIVE=1
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 
@@ -37,4 +39,5 @@ else
 fi
 
 pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null
+tailscale_enroll_or_recover
 printf '[resume] Nix development shell and PostgreSQL are ready.\n'
