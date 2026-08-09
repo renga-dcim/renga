@@ -4,6 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if command -v tailscale >/dev/null 2>&1; then
+  if ! timeout 3s sudo systemctl restart tailscaled || \
+       ! timeout 3s sudo tailscale status --json | grep -q '"BackendState": "Running"'; then
+    echo "Tailscale did not reconnect during resume; run .agents/setup after verifying the tailnet trust policy." >&2
+    exit 1
+  fi
+fi
+
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   # shellcheck disable=SC1091
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -15,7 +23,6 @@ fi
 
 sudo chmod o+rx /nix/var/nix/daemon-socket
 
-export RENGA_NIX_DEV_ENV_ACTIVE=1
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 

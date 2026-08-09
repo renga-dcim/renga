@@ -8,6 +8,53 @@ step() {
   printf '\n[setup] %s\n' "$*"
 }
 
+tailscale_tag='tag:amp-demo'
+
+if [ -z "${TAILSCALE_CLIENT_ID:-}" ] || [ -z "${TAILSCALE_TRUST_AUDIENCE:-}" ]; then
+  echo "TAILSCALE_CLIENT_ID and TAILSCALE_TRUST_AUDIENCE must be configured for remote orbs." >&2
+  exit 1
+fi
+
+if ! command -v tailscale >/dev/null 2>&1; then
+  step "Installing Tailscale"
+  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg |
+    sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list |
+    sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y tailscale
+fi
+
+step "Starting Tailscale"
+sudo install -d /etc/systemd/system/tailscaled.service.d
+sudo tee /etc/systemd/system/tailscaled.service.d/amp-orb.conf >/dev/null <<'EOF'
+[Service]
+Environment=TS_ASSUME_NETWORK_UP_FOR_TEST=true
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable tailscaled
+sudo systemctl restart tailscaled
+
+if ! tailscale_identity_token="$(
+  amp orb id-token --audience "$TAILSCALE_TRUST_AUDIENCE" --ttl-seconds 600
+)"; then
+  echo "Amp workload identity is unavailable; rerun setup from an Amp-managed orb." >&2
+  exit 1
+fi
+
+if ! sudo tailscale up \
+  --client-id="${TAILSCALE_CLIENT_ID}?ephemeral=true&preauthorized=true" \
+  --id-token="$tailscale_identity_token" \
+  --advertise-tags="$tailscale_tag" \
+  --hostname="amp-renga-${HOSTNAME##*-}"; then
+  unset tailscale_identity_token
+  echo "Tailscale enrollment failed. Configure the Amp OIDC trust credential and $tailscale_tag policy before rerunning setup." >&2
+  exit 1
+fi
+
+unset tailscale_identity_token
+
 # A previous setup may have installed Nix but the current process may predate
 # the profile update.
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
@@ -51,17 +98,16 @@ if ! grep -qxF 'experimental-features = nix-command flakes' "$HOME/.config/nix/n
 fi
 
 step "Persisting the repository Nix development shell for future login shells"
-profile_marker='# renga Nix development shell'
+profile_marker='# renga Nix development shell v4'
 if ! grep -qxF "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
   cat >> "$HOME/.bash_profile" <<'EOF'
 
-# renga Nix development shell
+# renga Nix development shell v4
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 fi
-if command -v nix >/dev/null 2>&1 && [[ -z "${RENGA_NIX_DEV_ENV_ACTIVE:-}" && ( "${PWD}" == "__REPO_ROOT__" || "${PWD}" == "__REPO_ROOT__"/* ) ]]; then
-  export RENGA_NIX_DEV_ENV_ACTIVE=1
+if command -v nix >/dev/null 2>&1 && [[ "${PWD}" == "__REPO_ROOT__" || "${PWD}" == "__REPO_ROOT__"/* ]]; then
   eval "$(nix print-dev-env "__REPO_ROOT__")"
 fi
 EOF
@@ -69,7 +115,6 @@ EOF
 fi
 
 step "Activating the Nix development shell"
-export RENGA_NIX_DEV_ENV_ACTIVE=1
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 
@@ -81,7 +126,7 @@ step "Initializing the local PostgreSQL cluster"
 mkdir -p "$repo_root/dev"
 mkdir -p "$postgres_socket"
 if [ ! -f "$postgres_data/PG_VERSION" ]; then
-  initdb --auth=trust --username=postgres --pgdata="$postgres_data" >/dev/null
+  initdb --auth=trust --encoding=UTF8 --username=postgres --pgdata="$postgres_data" >/dev/null
   cat >> "$postgres_data/postgresql.conf" <<'EOF'
 listen_addresses = '127.0.0.1'
 port = 5435

@@ -1,0 +1,9 @@
+---
+services:
+  web:
+    command: mix phx.server
+    port: 4000
+    portal:
+      title: Renga
+      description: >-
+        Phoenix development server backed by the local PostgreSQL cluster.
