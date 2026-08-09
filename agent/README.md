@@ -24,6 +24,20 @@ cargo clippy --workspace --all-features -- -D warnings
 
 The repository-wide checks are `make lint` and `mix precommit`.
 
+Build a versioned Linux tarball and Debian package in `dist/`, then verify their
+contents and exercise the packaged binary's dry-run collector with:
+
+```sh
+make agent-packages
+make verify-agent-packages
+```
+
+The initial package target is x86-64 Linux. The build uses the version from
+`agent/Cargo.toml`, `Cargo.lock`, and a static musl target so artifacts do not
+depend on the build host's libc or Nix store. CI publishes the tarball, `.deb`,
+and `SHA256SUMS` as the `renga-agent-linux-amd64` workflow artifact. Set
+`SOURCE_DATE_EPOCH` to produce archives with a caller-selected timestamp.
+
 ## Configuration
 
 Copy [`dist/agent.toml.example`](dist/agent.toml.example) to
@@ -89,25 +103,31 @@ is currently no signal-triggered reload, so edit the file atomically or restart
 the service when an immediate change is required. Logs are structured JSON on
 stderr; systemd records them in the journal.
 
-## Debian/Ubuntu proof-of-concept service
+## Debian/Ubuntu package and smoke test
 
-These assets are operator examples, not a `.deb` package. The unit does not create
-the user/group, install the binary, or create configuration. After building, an
-operator can install them with:
+The `.deb` installs the binary, hardened systemd unit, example configuration,
+and dedicated unprivileged account. It deliberately does not enable or start
+the service because the packaged endpoint and credentials are placeholders.
+Install and configure it with:
 
 ```sh
-sudo groupadd --system renga-agent
-sudo useradd --system --gid renga-agent --home-dir /nonexistent \
-  --no-create-home --shell /usr/sbin/nologin renga-agent
-sudo install -o root -g root -m 0755 target/release/renga-agent /usr/bin/renga-agent
-sudo install -d -o root -g renga-agent -m 0750 /etc/renga
-sudo install -o root -g renga-agent -m 0640 agent/dist/agent.toml.example /etc/renga/agent.toml
-# Replace all placeholders in /etc/renga/agent.toml before starting the service.
-sudo install -o root -g root -m 0644 agent/dist/renga-agent.service /etc/systemd/system/renga-agent.service
-sudo systemctl daemon-reload
+sudo apt install ./dist/renga-agent_0.1.0_amd64.deb
+sudoedit /etc/renga/agent.toml
+sudo -u renga-agent renga-agent --once --dry-run | python3 -m json.tool >/dev/null
+sudo -u renga-agent renga-agent --once
 sudo systemctl enable --now renga-agent.service
+sudo systemctl status renga-agent.service
 sudo journalctl -u renga-agent.service -f
 ```
+
+Create the collector from Renga's authenticated **Collectors** page first, then
+copy the one-time token and installation UUID into `agent.toml`. `--dry-run`
+does not load that file or contact Renga; `--once` sends both the check-in and
+observation and fails if either request fails. After `--once`, verify the
+collector is connected and its resource is current on the dashboard, then
+leave the service running for at least two check-in intervals and verify its
+lease remains connected. The tarball contains the same binary, unit, example
+configuration, and this README for development installs without `dpkg`.
 
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no

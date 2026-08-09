@@ -63,3 +63,59 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  package:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl linker
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Build Linux packages
+        run: ./agent/scripts/build-packages.sh
+      - name: Verify Linux packages
+        run: ./agent/scripts/verify-packages.sh
+      - name: Verify reproducible packages
+        run: |
+          cp dist/SHA256SUMS /tmp/renga-agent-SHA256SUMS
+          ./agent/scripts/build-packages.sh
+          diff --unified /tmp/renga-agent-SHA256SUMS dist/SHA256SUMS
+      - name: Install Debian package
+        run: |
+          set -euo pipefail
+          trap 'sudo dpkg --purge renga-agent >/dev/null 2>&1 || true' EXIT
+          sudo dpkg --install dist/renga-agent_*_amd64.deb
+          test "$(stat --format=%U:%G /usr/bin/renga-agent)" = root:root
+          config_owner="$(sudo stat --format=%U:%G /etc/renga/agent.toml)"
+          test "${config_owner}" = root:renga-agent
+          test "$(sudo stat --format=%a /etc/renga/agent.toml)" = 640
+          state="$(systemctl show -p UnitFileState --value renga-agent.service)"
+          test "${state}" = disabled
+          state="$(systemctl show -p ActiveState --value renga-agent.service)"
+          test "${state}" = inactive
+          sudo env DPKG_MAINTSCRIPT_PACKAGE=renga-agent \
+            deb-systemd-helper debian-installed renga-agent.service
+          sudo -u renga-agent renga-agent --once --dry-run |
+            python3 -m json.tool >/dev/null
+          sudo systemctl enable renga-agent.service
+          sudo dpkg --remove renga-agent
+          test "$(readlink /etc/systemd/system/renga-agent.service)" = /dev/null
+          sudo dpkg --purge renga-agent
+          test ! -e /etc/systemd/system/renga-agent.service
+          wants=/etc/systemd/system/multi-user.target.wants
+          test ! -e "${wants}/renga-agent.service"
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: renga-agent-linux-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error

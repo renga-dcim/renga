@@ -34,7 +34,10 @@
             "clippy"
             "rustfmt"
           ];
+          targets = pkgs.lib.optionals pkgs.stdenv.isLinux [ "x86_64-unknown-linux-musl" ];
         };
+
+        musl-toolchain = pkgs.pkgsCross.musl64.stdenv.cc;
       in
       {
         devShells.default = pkgs.mkShell {
@@ -72,6 +75,7 @@
             export HEX_HOME="$repo_root/.nix/hex"
             export REBAR_CACHE_DIR="$repo_root/.nix/rebar3"
             export ERL_AFLAGS="-kernel shell_history enabled"
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="${musl-toolchain}/bin/x86_64-unknown-linux-musl-gcc"
 
             mkdir -p "$MIX_HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"
           '';

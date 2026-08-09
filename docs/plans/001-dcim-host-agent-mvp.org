@@ -185,14 +185,14 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 
 ** 8. Packaging And Smoke Test
 
-- [ ] Build a raw Linux agent binary or tarball for development.
-- [ ] Build an initial Debian/Ubuntu =.deb= package.
-- [ ] Install the agent on a local or test Debian/Ubuntu host.
-- [ ] Register a source and agent in Renga, then configure the agent token and installation ID.
-- [ ] Run =renga-agent --once --dry-run= and inspect JSON.
-- [ ] Run =renga-agent --once= and verify Renga receives the observation.
-- [ ] Enable the systemd service and verify periodic check-ins.
-- [ ] Verify the resource appears in the dashboard with source provenance and freshness state.
+- [X] Build a raw Linux agent binary or tarball for development.
+- [X] Build an initial Debian/Ubuntu =.deb= package.
+- [X] Install the agent on a local or test Debian/Ubuntu host.
+- [X] Register a source and agent in Renga, then configure the agent token and installation ID.
+- [X] Run =renga-agent --once --dry-run= and inspect JSON.
+- [X] Run =renga-agent --once= and verify Renga receives the observation.
+- [X] Enable the systemd service and verify periodic check-ins.
+- [X] Verify the resource appears in the dashboard with source provenance and freshness state.
 
 * Acceptance Criteria
 
