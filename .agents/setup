@@ -85,13 +85,23 @@ if [ ! -f "$postgres_data/PG_VERSION" ]; then
   cat >> "$postgres_data/postgresql.conf" <<'EOF'
 listen_addresses = '127.0.0.1'
 port = 5435
-fsync = off
-synchronous_commit = off
-full_page_writes = off
 EOF
 fi
 
-if ! pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null 2>&1; then
+# Remove unsafe values left by earlier orb setup revisions before restarting a
+# persistent development cluster.
+sed -i \
+  -e '/^fsync = off$/d' \
+  -e '/^synchronous_commit = off$/d' \
+  -e '/^full_page_writes = off$/d' \
+  "$postgres_data/postgresql.conf"
+
+if pg_ctl --pgdata="$postgres_data" status >/dev/null 2>&1; then
+  pg_ctl --pgdata="$postgres_data" reload >/dev/null
+elif pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null 2>&1; then
+  printf 'PostgreSQL port 5435 is already in use by a cluster outside %s.\n' "$postgres_data" >&2
+  exit 1
+else
   pg_ctl --pgdata="$postgres_data" --log="$postgres_log" --options="-p 5435 -k $postgres_socket" start >/dev/null
 fi
 
