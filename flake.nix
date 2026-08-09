@@ -56,6 +56,7 @@
             # Tools
             watchman
             docker-compose
+            inotify-tools
             yamllint
             pkg-config
             openssl
@@ -66,9 +67,10 @@
           ];
 
           shellHook = ''
-            export MIX_HOME="$PWD/.nix/mix"
-            export HEX_HOME="$PWD/.nix/hex"
-            export REBAR_CACHE_DIR="$PWD/.nix/rebar3"
+            repo_root="$(git rev-parse --show-toplevel)"
+            export MIX_HOME="$repo_root/.nix/mix"
+            export HEX_HOME="$repo_root/.nix/hex"
+            export REBAR_CACHE_DIR="$repo_root/.nix/rebar3"
             export ERL_AFLAGS="-kernel shell_history enabled"
 
             mkdir -p "$MIX_HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"

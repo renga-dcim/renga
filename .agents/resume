@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
+if ! sudo systemctl is-active --quiet nix-daemon.service; then
+  sudo systemctl start nix-daemon.service
+fi
+
+sudo chmod o+rx /nix/var/nix/daemon-socket
+
+export RENGA_NIX_DEV_ENV_ACTIVE=1
+nix_environment="$(nix print-dev-env "$repo_root")"
+eval "$nix_environment"
+
+postgres_data="$repo_root/dev/postgres"
+postgres_log="$repo_root/dev/postgres.log"
+postgres_socket="$repo_root/dev/postgres-socket"
+
+if [ ! -f "$postgres_data/PG_VERSION" ]; then
+  printf 'PostgreSQL cluster is not initialized; run .agents/setup first.\n' >&2
+  exit 1
+elif pg_ctl --pgdata="$postgres_data" status >/dev/null 2>&1; then
+  :
+elif pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null 2>&1; then
+  printf 'PostgreSQL port 5435 is already in use by a cluster outside %s.\n' "$postgres_data" >&2
+  exit 1
+else
+  mkdir -p "$postgres_socket"
+  pg_ctl --pgdata="$postgres_data" --log="$postgres_log" --options="-p 5435 -k $postgres_socket" start >/dev/null
+fi
+
+pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null
+printf '[resume] Nix development shell and PostgreSQL are ready.\n'

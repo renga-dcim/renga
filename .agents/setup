@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  printf '\n[setup] %s\n' "$*"
+}
+
+# A previous setup may have installed Nix but the current process may predate
+# the profile update.
+if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
+step "Installing a Nix release compatible with the pinned flake"
+if ! command -v nix >/dev/null 2>&1 || ! nix --version | awk '{print $3}' | awk -F. '$1 > 2 || ($1 == 2 && $2 >= 18) { found = 1 } END { exit !found }'; then
+  if dpkg -s nix-bin >/dev/null 2>&1; then
+    sudo apt-get purge -y nix-bin nix-setup-systemd
+    sudo rm -rf /nix
+
+    while IFS=: read -r build_user _; do
+      sudo userdel "$build_user"
+    done < <(getent passwd | awk -F: '$1 ~ /^nixbld[0-9]+$/ {print $1 ":"}')
+    sudo groupdel nixbld 2>/dev/null || true
+  fi
+
+  # The installer can report failure when systemd denies its initial start in
+  # an orb; the explicit readiness check below is authoritative.
+  curl --fail --location --retry 3 https://nixos.org/nix/install | sh -s -- --daemon --yes || true
+fi
+
+# The installer updates login profiles, not the process running setup.
+if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  # shellcheck disable=SC1091
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
+sudo systemctl daemon-reload
+sudo systemctl restart nix-daemon.service
+
+# Debian's daemon socket is group-restricted, while an already-running Amp
+# process does not pick up supplementary groups added during setup.
+sudo chmod o+rx /nix/var/nix/daemon-socket
+
+mkdir -p "$HOME/.config/nix"
+if ! grep -qxF 'experimental-features = nix-command flakes' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+  printf '%s\n' 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+fi
+
+step "Persisting the repository Nix development shell for future login shells"
+profile_marker='# renga Nix development shell'
+if ! grep -qxF "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<'EOF'
+
+# renga Nix development shell
+if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+fi
+if command -v nix >/dev/null 2>&1 && [[ -z "${RENGA_NIX_DEV_ENV_ACTIVE:-}" && ( "${PWD}" == "__REPO_ROOT__" || "${PWD}" == "__REPO_ROOT__"/* ) ]]; then
+  export RENGA_NIX_DEV_ENV_ACTIVE=1
+  eval "$(nix print-dev-env "__REPO_ROOT__")"
+fi
+EOF
+  sed -i "s|__REPO_ROOT__|$repo_root|g" "$HOME/.bash_profile"
+fi
+
+step "Activating the Nix development shell"
+export RENGA_NIX_DEV_ENV_ACTIVE=1
+nix_environment="$(nix print-dev-env "$repo_root")"
+eval "$nix_environment"
+
+postgres_data="$repo_root/dev/postgres"
+postgres_log="$repo_root/dev/postgres.log"
+postgres_socket="$repo_root/dev/postgres-socket"
+
+step "Initializing the local PostgreSQL cluster"
+mkdir -p "$repo_root/dev"
+mkdir -p "$postgres_socket"
+if [ ! -f "$postgres_data/PG_VERSION" ]; then
+  initdb --auth=trust --username=postgres --pgdata="$postgres_data" >/dev/null
+  cat >> "$postgres_data/postgresql.conf" <<'EOF'
+listen_addresses = '127.0.0.1'
+port = 5435
+EOF
+fi
+
+# Remove unsafe values left by earlier orb setup revisions before restarting a
+# persistent development cluster.
+sed -i \
+  -e '/^fsync = off$/d' \
+  -e '/^synchronous_commit = off$/d' \
+  -e '/^full_page_writes = off$/d' \
+  "$postgres_data/postgresql.conf"
+
+if pg_ctl --pgdata="$postgres_data" status >/dev/null 2>&1; then
+  pg_ctl --pgdata="$postgres_data" reload >/dev/null
+elif pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null 2>&1; then
+  printf 'PostgreSQL port 5435 is already in use by a cluster outside %s.\n' "$postgres_data" >&2
+  exit 1
+else
+  pg_ctl --pgdata="$postgres_data" --log="$postgres_log" --options="-p 5435 -k $postgres_socket" start >/dev/null
+fi
+
+until pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null 2>&1; do
+  sleep 1
+done
+
+if ! psql --host=127.0.0.1 --port=5435 --username=postgres --dbname=postgres --tuples-only --no-align \
+  --command="SELECT 1 FROM pg_database WHERE datname = 'renga_dev'" | grep -qx 1; then
+  createdb --host=127.0.0.1 --port=5435 --username=postgres renga_dev
+fi
+
+step "Installing Phoenix dependencies, assets, and database schema"
+mix local.hex --force
+mix local.rebar --force
+mix setup
+
+step "Finished in ${SECONDS}s"
