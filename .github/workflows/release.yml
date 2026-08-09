@@ -1,0 +1,291 @@
+---
+name: Release artifacts
+
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-artifacts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build agent packages
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.ref == 'release/next' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      publishing: ${{ github.event_name == 'push' }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout release candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Require release tag on the default branch
+        if: github.event_name == 'push'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch --no-tags origin \
+            "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor \
+            "$GITHUB_SHA" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+            echo "::error::Release tag is not reachable from $DEFAULT_BRANCH"
+            exit 1
+          fi
+
+      - name: Validate release version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          mix_version=$(sed -nE 's/^[[:space:]]*version:[[:space:]]*"([^"]+)",?[[:space:]]*$/\1/p' mix.exs)
+          agent_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' agent/Cargo.toml | head -1)
+          if [ -z "$mix_version" ] || [ "$mix_version" != "$agent_version" ]; then
+            echo "::error::mix.exs and agent/Cargo.toml versions do not match"
+            exit 1
+          fi
+          if [[ ! "$mix_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Project version is not stable SemVer: $mix_version"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if [[ ! "$PR_TITLE" =~ ^chore\(release\):\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              echo "::error::Invalid release PR title: $PR_TITLE"
+              exit 1
+            fi
+            release_tag="v${BASH_REMATCH[1]}"
+          else
+            release_tag=$REF_NAME
+          fi
+          if [ "$release_tag" != "v$mix_version" ]; then
+            echo "::error::$release_tag does not match project version $mix_version"
+            exit 1
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$mix_version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.96.0
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install package build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Build Linux packages
+        run: ./agent/scripts/build-packages.sh
+
+      - name: Verify Linux packages
+        run: ./agent/scripts/verify-packages.sh
+
+      - name: Verify packaged versions
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          binary=target/x86_64-unknown-linux-musl/release/renga-agent
+          reported_version=$("$binary" --version)
+          if [ "$reported_version" != "renga-agent $EXPECTED_VERSION" ]; then
+            echo "::error::Agent reports unexpected version: $reported_version"
+            exit 1
+          fi
+          package="dist/renga-agent_${EXPECTED_VERSION}_amd64.deb"
+          deb_version=$(dpkg-deb --field "$package" Version)
+          test "$deb_version" = "$EXPECTED_VERSION"
+
+      - name: Verify reproducible packages
+        run: |
+          cp dist/SHA256SUMS /tmp/renga-agent-SHA256SUMS
+          ./agent/scripts/build-packages.sh
+          diff --unified /tmp/renga-agent-SHA256SUMS dist/SHA256SUMS
+
+      - name: Verify Debian lifecycle
+        run: |
+          set -euo pipefail
+          trap 'sudo dpkg --purge renga-agent >/dev/null 2>&1 || true' EXIT
+          sudo dpkg --install dist/renga-agent_*_amd64.deb
+          test "$(stat --format=%U:%G /usr/bin/renga-agent)" = root:root
+          config_owner="$(sudo stat --format=%U:%G /etc/renga/agent.toml)"
+          test "$config_owner" = root:renga-agent
+          test "$(sudo stat --format=%a /etc/renga/agent.toml)" = 640
+          test "$(systemctl show -p UnitFileState --value renga-agent.service)" = disabled
+          test "$(systemctl show -p ActiveState --value renga-agent.service)" = inactive
+          sudo env DPKG_MAINTSCRIPT_PACKAGE=renga-agent \
+            deb-systemd-helper debian-installed renga-agent.service
+          sudo -u renga-agent renga-agent --once --dry-run |
+            python3 -m json.tool >/dev/null
+          sudo systemctl enable renga-agent.service
+          sudo dpkg --remove renga-agent
+          test "$(readlink /etc/systemd/system/renga-agent.service)" = /dev/null
+          sudo dpkg --purge renga-agent
+          test ! -e /etc/systemd/system/renga-agent.service
+          wants=/etc/systemd/system/multi-user.target.wants
+          test ! -e "${wants}/renga-agent.service"
+
+      - name: Upload release packages
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: artifacts-agent-packages
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  package-gate:
+    name: Package release gate
+    needs: package
+    if: always()
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Require package verification
+        env:
+          APPLICABLE: >-
+            ${{ github.event_name == 'push' ||
+            (github.event.pull_request.base.ref == github.event.repository.default_branch &&
+            github.event.pull_request.head.ref == 'release/next' &&
+            github.event.pull_request.head.repo.full_name == github.repository) }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          if [ "$APPLICABLE" != true ]; then
+            echo "Package release checks do not apply to this pull request"
+            exit 0
+          fi
+          if [ "$PACKAGE_RESULT" != success ]; then
+            echo "::error::Package release checks did not succeed: $PACKAGE_RESULT"
+            exit 1
+          fi
+
+  release:
+    name: Create GitHub release
+    needs: [package, package-gate]
+    if: github.event_name == 'push'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: RELEASE
+    steps:
+      - name: Checkout tagged release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Verify release tag target
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.package.outputs.tag }}
+        run: |
+          actual_sha=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::$RELEASE_TAG points to $actual_sha, expected $EXPECTED_SHA"
+            exit 1
+          fi
+
+      - name: Download release packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: artifacts-agent-packages
+          path: artifacts
+
+      - name: Generate conventional release notes
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Add tag comparison to release notes
+        env:
+          RELEASE_TAG: ${{ needs.package.outputs.tag }}
+        run: |
+          previous_tag=$(
+            git tag --merged "$RELEASE_TAG^" --list 'v*' --sort=-v:refname |
+              grep -Em1 '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true
+          )
+          cat RELEASE_NOTES.md > RELEASE_BODY.md
+          printf '\n## Compare\n\n' >> RELEASE_BODY.md
+          if [ -n "$previous_tag" ]; then
+            compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${previous_tag}...${RELEASE_TAG}"
+            # The variables are deliberately supplied as printf arguments.
+            # shellcheck disable=SC2016
+            printf '[`%s...%s`](%s)\n' \
+              "$previous_tag" "$RELEASE_TAG" "$compare_url" >> RELEASE_BODY.md
+          else
+            printf 'This is the first tagged release; no previous tag is available.\n' \
+              >> RELEASE_BODY.md
+          fi
+
+      - name: Create release app token
+        id: release-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TAG: ${{ needs.package.outputs.tag }}
+        run: |
+          release_state=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ "$release_state" = false ]; then
+            echo "Release is already published; verifying its artifacts"
+          elif [ "$release_state" = true ]; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Renga $RELEASE_TAG" \
+              --notes-file RELEASE_BODY.md
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --verify-tag \
+              --title "Renga $RELEASE_TAG" \
+              --notes-file RELEASE_BODY.md
+          fi
+
+          if [ "$release_state" != false ]; then
+            gh release upload "$RELEASE_TAG" \
+              artifacts/*.tar.gz \
+              artifacts/*.deb \
+              artifacts/SHA256SUMS \
+              --clobber
+          fi
+
+          expected_assets=$(for path in artifacts/*.tar.gz artifacts/*.deb artifacts/SHA256SUMS; do basename "$path"; done | sort)
+          actual_assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
+          if [ "$actual_assets" != "$expected_assets" ]; then
+            echo "::error::GitHub Release assets do not match the package build"
+            diff --unified <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets") || true
+            exit 1
+          fi
+
+          download_dir=$(mktemp -d)
+          trap 'rm -rf "$download_dir"' EXIT
+          gh release download "$RELEASE_TAG" --dir "$download_dir"
+          for path in artifacts/*.tar.gz artifacts/*.deb artifacts/SHA256SUMS; do
+            cmp "$path" "$download_dir/$(basename "$path")"
+          done
+
+          if [ "$release_state" != false ]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi

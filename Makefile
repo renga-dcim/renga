@@ -25,6 +25,10 @@ agent-packages:
 verify-agent-packages:
 	./agent/scripts/verify-packages.sh
 
+.PHONY: changelog
+changelog:
+	git cliff -o CHANGELOG.md
+
 .PHONY: lint
 lint: ex-lint rs-lint rs-fmt
 
