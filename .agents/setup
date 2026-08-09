@@ -8,52 +8,11 @@ step() {
   printf '\n[setup] %s\n' "$*"
 }
 
-tailscale_tag='tag:amp-demo'
+# shellcheck source=.agents/tailscale
+. "$repo_root/.agents/tailscale"
 
-if [ -z "${TAILSCALE_CLIENT_ID:-}" ] || [ -z "${TAILSCALE_TRUST_AUDIENCE:-}" ]; then
-  echo "TAILSCALE_CLIENT_ID and TAILSCALE_TRUST_AUDIENCE must be configured for remote orbs." >&2
-  exit 1
-fi
-
-if ! command -v tailscale >/dev/null 2>&1; then
-  step "Installing Tailscale"
-  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg |
-    sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list |
-    sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
-  sudo apt-get update
-  sudo apt-get install -y tailscale
-fi
-
-step "Starting Tailscale"
-sudo install -d /etc/systemd/system/tailscaled.service.d
-sudo tee /etc/systemd/system/tailscaled.service.d/amp-orb.conf >/dev/null <<'EOF'
-[Service]
-Environment=TS_ASSUME_NETWORK_UP_FOR_TEST=true
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable tailscaled
-sudo systemctl restart tailscaled
-
-if ! tailscale_identity_token="$(
-  amp orb id-token --audience "$TAILSCALE_TRUST_AUDIENCE" --ttl-seconds 600
-)"; then
-  echo "Amp workload identity is unavailable; rerun setup from an Amp-managed orb." >&2
-  exit 1
-fi
-
-if ! sudo tailscale up \
-  --client-id="${TAILSCALE_CLIENT_ID}?ephemeral=true&preauthorized=true" \
-  --id-token="$tailscale_identity_token" \
-  --advertise-tags="$tailscale_tag" \
-  --hostname="amp-renga-${HOSTNAME##*-}"; then
-  unset tailscale_identity_token
-  echo "Tailscale enrollment failed. Configure the Amp OIDC trust credential and $tailscale_tag policy before rerunning setup." >&2
-  exit 1
-fi
-
-unset tailscale_identity_token
+tailscale_require_configuration
+tailscale_install
 
 # A previous setup may have installed Nix but the current process may predate
 # the profile update.
@@ -98,21 +57,44 @@ if ! grep -qxF 'experimental-features = nix-command flakes' "$HOME/.config/nix/n
 fi
 
 step "Persisting the repository Nix development shell for future login shells"
-profile_marker='# renga Nix development shell v4'
-if ! grep -qxF "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
-  cat >> "$HOME/.bash_profile" <<'EOF'
+python3 - "$HOME/.bash_profile" "$repo_root" <<'PY'
+import re
+import shlex
+import sys
+from pathlib import Path
 
-# renga Nix development shell v4
+profile = Path(sys.argv[1])
+repo_root = sys.argv[2]
+legacy_block = re.compile(
+    r"\n?# renga Nix development shell(?: v\d+)?\n"
+    r"if \[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon\.sh \]; then\n"
+    r"  \. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon\.sh\n"
+    r"  export PATH=\"/nix/var/nix/profiles/default/bin:\$PATH\"\nfi\n"
+    r"if command -v nix >/dev/null 2>&1 && \[\[.*?\]\]; then\n"
+    r"(?:  export RENGA_NIX_DEV_ENV_ACTIVE=1\n)?"
+    r"  eval \"\$\(nix print-dev-env .*?\)\"\nfi\n",
+    re.DOTALL,
+)
+managed_block = re.compile(
+    r"\n?# >>> renga Nix development shell >>>\n.*?# <<< renga Nix development shell <<<\n",
+    re.DOTALL,
+)
+quoted_root = shlex.quote(repo_root)
+block = f'''\n# >>> renga Nix development shell >>>
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 fi
-if command -v nix >/dev/null 2>&1 && [[ "${PWD}" == "__REPO_ROOT__" || "${PWD}" == "__REPO_ROOT__"/* ]]; then
-  eval "$(nix print-dev-env "__REPO_ROOT__")"
+if command -v nix >/dev/null 2>&1 && [[ "${{PWD}}" == {quoted_root} || "${{PWD}}" == {quoted_root}/* ]]; then
+  eval "$(nix print-dev-env {quoted_root})"
 fi
-EOF
-  sed -i "s|__REPO_ROOT__|$repo_root|g" "$HOME/.bash_profile"
-fi
+# <<< renga Nix development shell <<<
+'''
+contents = profile.read_text() if profile.exists() else ""
+contents = legacy_block.sub("\n", contents)
+contents = managed_block.sub("\n", contents).rstrip() + block
+profile.write_text(contents)
+PY
 
 step "Activating the Nix development shell"
 nix_environment="$(nix print-dev-env "$repo_root")"
@@ -163,5 +145,8 @@ step "Installing Phoenix dependencies, assets, and database schema"
 mix local.hex --force
 mix local.rebar --force
 mix setup
+
+step "Enrolling Tailscale"
+tailscale_enroll_or_recover
 
 step "Finished in ${SECONDS}s"

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+
+tailscale_tag='tag:amp-demo'
+tailscale_state_file='/var/lib/tailscale/tailscaled.state'
+tailscale_thread_marker='/var/lib/tailscale/amp-orb-thread'
+
+tailscale_require_configuration() {
+  if [ -z "${TAILSCALE_CLIENT_ID:-}" ] || [ -z "${TAILSCALE_TRUST_AUDIENCE:-}" ]; then
+    echo "TAILSCALE_CLIENT_ID and TAILSCALE_TRUST_AUDIENCE must be configured for remote orbs." >&2
+    return 1
+  fi
+
+  if [ -z "${AMP_THREAD_ID:-}" ]; then
+    echo "AMP_THREAD_ID is required to enroll Tailscale in an Amp orb." >&2
+    return 1
+  fi
+}
+
+tailscale_version_supported() {
+  local version
+
+  version="$(tailscale version | awk 'NR == 1 { print $1 }')"
+  awk -v version="$version" 'BEGIN {
+    split(version, parts, ".")
+    exit !(parts[1] > 1 || (parts[1] == 1 && parts[2] >= 90))
+  }'
+}
+
+tailscale_install() {
+  if command -v tailscale >/dev/null 2>&1 && tailscale_version_supported; then
+    return
+  fi
+
+  step "Installing Tailscale"
+  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg |
+    sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list |
+    sudo tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y tailscale
+}
+
+tailscale_start_daemon() {
+  sudo install -d /etc/systemd/system/tailscaled.service.d
+  sudo tee /etc/systemd/system/tailscaled.service.d/amp-orb.conf >/dev/null <<'EOF'
+[Service]
+Environment=TS_ASSUME_NETWORK_UP_FOR_TEST=true
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable tailscaled
+
+  if ! sudo systemctl is-active --quiet tailscaled; then
+    sudo systemctl start tailscaled
+  fi
+}
+
+tailscale_backend_state() {
+  sudo tailscale status --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["BackendState"])'
+}
+
+tailscale_configure_serve() {
+  sudo tailscale serve --bg --tcp=4000 tcp://127.0.0.1:4000 >/dev/null
+}
+
+tailscale_enroll_or_recover() {
+  local current_thread='' tailscale_identity_token tailscale_hostname
+
+  tailscale_require_configuration
+  tailscale_start_daemon
+
+  if [ -f "$tailscale_thread_marker" ]; then
+    current_thread="$(sudo cat "$tailscale_thread_marker")"
+  fi
+
+  if [ "$current_thread" != "$AMP_THREAD_ID" ]; then
+    # Prepared-orb snapshots may contain another orb's node key. Remove only
+    # the local copy; `tailscale logout` would also revoke the original node.
+    sudo systemctl stop tailscaled
+    sudo rm -f "$tailscale_state_file" "$tailscale_thread_marker"
+    sudo systemctl start tailscaled
+  fi
+
+  if [ "$(tailscale_backend_state)" = 'Running' ]; then
+    tailscale_configure_serve
+    return
+  fi
+
+  if ! tailscale_identity_token="$(
+    amp orb id-token --audience "$TAILSCALE_TRUST_AUDIENCE" --ttl-seconds 600
+  )"; then
+    echo "Amp workload identity is unavailable; rerun from an Amp-managed orb." >&2
+    return 1
+  fi
+
+  tailscale_hostname="amp-renga-${AMP_THREAD_ID#T-}"
+
+  if ! sudo tailscale up \
+    --client-id="${TAILSCALE_CLIENT_ID}?ephemeral=true&preauthorized=true" \
+    --id-token="$tailscale_identity_token" \
+    --advertise-tags="$tailscale_tag" \
+    --hostname="$tailscale_hostname"; then
+    unset tailscale_identity_token
+    echo "Tailscale enrollment failed. Configure the Amp OIDC trust credential and $tailscale_tag policy before rerunning." >&2
+    return 1
+  fi
+
+  unset tailscale_identity_token
+  printf '%s\n' "$AMP_THREAD_ID" | sudo tee "$tailscale_thread_marker" >/dev/null
+  tailscale_configure_serve
+}

@@ -4,16 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-if command -v tailscale >/dev/null 2>&1; then
-  if ! sudo systemctl is-active --quiet tailscaled; then
-    timeout 3s sudo systemctl start tailscaled
-  fi
-
-  if ! timeout 3s sudo tailscale status --json | grep -q '"BackendState": "Running"'; then
-    echo "Tailscale did not reconnect during resume; run .agents/setup after verifying the tailnet trust policy." >&2
-    exit 1
-  fi
-fi
+# shellcheck source=.agents/tailscale
+. "$repo_root/.agents/tailscale"
 
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   # shellcheck disable=SC1091
@@ -47,4 +39,5 @@ else
 fi
 
 pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null
+tailscale_enroll_or_recover
 printf '[resume] Nix development shell and PostgreSQL are ready.\n'
