@@ -4,3 +4,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+
+# The profile used by cargo-dist for release archives and package binaries.
+[profile.dist]
+inherits = "release"
+lto = "thin"

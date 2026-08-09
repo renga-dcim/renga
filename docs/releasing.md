@@ -59,19 +59,25 @@ into the manifests. Afterward, git-cliff calculates the next stable semantic
 version. Review the generated version, changelog, notes, and comparison. Do not
 manually edit `release/next`; the next preparation run replaces it.
 
-The release PR builds the static x86-64 Linux agent, tarball, and Debian
-package. It verifies checksums, reproducibility, package versions, static ELF
-linkage, unprivileged dry-run collection, configuration permissions, and the
-systemd install/remove/purge lifecycle. A fresh package is deliberately left
-inactive and disabled because its endpoint and credentials are placeholders.
+The release PR uses cargo-dist to build static-musl archives for x86-64 and
+AArch64 on native runners. Repository-owned packaging then creates amd64 and
+arm64 Debian packages from those same binaries because cargo-dist does not
+model Debian metadata, conffiles, system users, or systemd maintainer scripts.
+Both architectures must pass checksum, reproducibility, package-version,
+static-linkage, unprivileged dry-run, configuration-permission, and systemd
+install/remove/purge checks. A fresh package is deliberately left inactive and
+disabled because its endpoint and credentials are placeholders.
 
 Merging the internal release PR creates `vMAJOR.MINOR.PATCH` at its merge
 commit after independently validating the PR source, title, and synchronized
 versions. The App-authenticated tag push then rebuilds the packages from tagged
 source and publishes a GitHub Release containing:
 
-- `renga-agent-MAJOR.MINOR.PATCH-linux-x86_64.tar.gz`
+- `renga-agent-x86_64-unknown-linux-musl.tar.gz`
+- `renga-agent-aarch64-unknown-linux-musl.tar.gz`
 - `renga-agent_MAJOR.MINOR.PATCH_amd64.deb`
+- `renga-agent_MAJOR.MINOR.PATCH_arm64.deb`
+- per-archive SHA-256 files
 - `SHA256SUMS`
 - generated Conventional Commit notes and a previous-tag comparison
 
@@ -84,8 +90,8 @@ main changes
 
 ## Local preview
 
-The Nix development shell includes git-cliff. Preview the complete changelog or
-the next version with:
+The Nix development shell includes cargo-dist and git-cliff. Preview the
+complete changelog or the next version with:
 
 ```bash
 make changelog

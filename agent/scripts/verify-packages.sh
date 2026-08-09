@@ -8,23 +8,45 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "${work_dir}"' EXIT
 package_id="$(cargo pkgid -p renga-agent)"
 version="${package_id##*@}"
-archive="${output_dir}/renga-agent-${version}-linux-x86_64.tar.gz"
-deb="${output_dir}/renga-agent_${version}_amd64.deb"
+
+case "${RENGA_AGENT_TARGET:-$(uname -m)}" in
+x86_64 | x86_64-unknown-linux-musl)
+	rust_target="x86_64-unknown-linux-musl"
+	deb_arch="amd64"
+	elf_machine="Advanced Micro Devices X86-64"
+	;;
+aarch64 | arm64 | aarch64-unknown-linux-musl)
+	rust_target="aarch64-unknown-linux-musl"
+	deb_arch="arm64"
+	elf_machine="AArch64"
+	;;
+*)
+	printf 'unsupported agent package target: %s\n' "${RENGA_AGENT_TARGET:-$(uname -m)}" >&2
+	exit 1
+	;;
+esac
+
+archive_name="renga-agent-${rust_target}"
+archive="${output_dir}/${archive_name}.tar.gz"
+archive_checksum="${archive}.sha256"
+deb="${output_dir}/renga-agent_${version}_${deb_arch}.deb"
 
 test -f "${archive}"
+test -f "${archive_checksum}"
 test -f "${deb}"
 
 (cd "${output_dir}" && sha256sum --check SHA256SUMS)
+(cd "${output_dir}" && sha256sum --check "$(basename "${archive_checksum}")")
 
 mkdir -p "${work_dir}/archive"
 tar --extract --gzip --file "${archive}" --directory "${work_dir}/archive"
 archive_root="$(find "${work_dir}/archive" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-test -x "${archive_root}/usr/bin/renga-agent"
-test -r "${archive_root}/etc/renga/agent.toml.example"
-test -r "${archive_root}/lib/systemd/system/renga-agent.service"
+test -x "${archive_root}/renga-agent"
+test -r "${archive_root}/README.md"
+test -r "${archive_root}/CHANGELOG.md"
 
 test "$(dpkg-deb --field "${deb}" Package)" = "renga-agent"
-test "$(dpkg-deb --field "${deb}" Architecture)" = "amd64"
+test "$(dpkg-deb --field "${deb}" Architecture)" = "${deb_arch}"
 dpkg-deb --extract "${deb}" "${work_dir}/deb"
 dpkg-deb --control "${deb}" "${work_dir}/control"
 test -x "${work_dir}/deb/usr/bin/renga-agent"
@@ -39,13 +61,13 @@ if readelf --dynamic "${work_dir}/deb/usr/bin/renga-agent" 2>/dev/null | grep -q
 	exit 1
 fi
 readelf --file-header "${work_dir}/deb/usr/bin/renga-agent" |
-	grep -q 'Machine:.*Advanced Micro Devices X86-64'
+	grep -q "Machine:.*${elf_machine}"
 sh -n "${work_dir}/control/postinst"
 sh -n "${work_dir}/control/prerm"
 sh -n "${work_dir}/control/postrm"
 
-"${archive_root}/usr/bin/renga-agent" --version
-"${archive_root}/usr/bin/renga-agent" --dry-run >"${work_dir}/observation.json"
+"${archive_root}/renga-agent" --version
+"${archive_root}/renga-agent" --dry-run >"${work_dir}/observation.json"
 python3 -c '
 import json
 import sys

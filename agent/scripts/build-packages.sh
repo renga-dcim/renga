@@ -4,17 +4,21 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 output_dir="${1:-${repo_root}/dist}"
+cargo metadata --manifest-path "${repo_root}/Cargo.toml" --locked --format-version 1 >/dev/null
 package_id="$(cargo pkgid -p renga-agent)"
 version="${package_id##*@}"
 
-case "$(uname -m)" in
-x86_64)
-	archive_arch="x86_64"
+case "${RENGA_AGENT_TARGET:-$(uname -m)}" in
+x86_64 | x86_64-unknown-linux-musl)
 	deb_arch="amd64"
 	rust_target="x86_64-unknown-linux-musl"
 	;;
+aarch64 | arm64 | aarch64-unknown-linux-musl)
+	deb_arch="arm64"
+	rust_target="aarch64-unknown-linux-musl"
+	;;
 *)
-	printf 'unsupported agent package architecture: %s (currently x86_64 only)\n' "$(uname -m)" >&2
+	printf 'unsupported agent package target: %s\n' "${RENGA_AGENT_TARGET:-$(uname -m)}" >&2
 	exit 1
 	;;
 esac
@@ -24,7 +28,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 	exit 1
 fi
 
-for command in cargo dpkg-deb readelf sha256sum tar; do
+for command in cargo dist dpkg-deb readelf sha256sum tar; do
 	if ! command -v "${command}" >/dev/null 2>&1; then
 		printf 'required packaging command not found: %s\n' "${command}" >&2
 		exit 1
@@ -33,7 +37,7 @@ done
 
 source_date_epoch="${SOURCE_DATE_EPOCH:-$(git -C "${repo_root}" log -1 --format=%ct 2>/dev/null || date +%s)}"
 export SOURCE_DATE_EPOCH="${source_date_epoch}"
-archive_name="renga-agent-${version}-linux-${archive_arch}"
+archive_name="renga-agent-${rust_target}"
 deb_name="renga-agent_${version}_${deb_arch}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "${work_dir}"' EXIT
@@ -41,12 +45,13 @@ trap 'rm -rf "${work_dir}"' EXIT
 mkdir -p "${output_dir}"
 rm -f \
 	"${output_dir}/${archive_name}.tar.gz" \
+	"${output_dir}/${archive_name}.tar.gz.sha256" \
 	"${output_dir}/${deb_name}.deb" \
 	"${output_dir}/SHA256SUMS"
 
-printf 'Building renga-agent %s for Linux %s...\n' "${version}" "${archive_arch}"
-cargo build --locked --release -p renga-agent --target "${rust_target}"
-binary="${repo_root}/target/${rust_target}/release/renga-agent"
+printf 'Building renga-agent %s for %s...\n' "${version}" "${rust_target}"
+dist build --artifacts=local --target "${rust_target}" --tag "v${version}"
+binary="${repo_root}/target/${rust_target}/dist/renga-agent"
 if readelf --program-headers "${binary}" | grep -q 'INTERP'; then
 	printf 'packaged agent binary must be statically linked\n' >&2
 	exit 1
@@ -56,27 +61,27 @@ if readelf --dynamic "${binary}" 2>/dev/null | grep -q 'NEEDED'; then
 	exit 1
 fi
 
-archive_root="${work_dir}/${archive_name}"
-install -D -m 0755 "${binary}" \
-	"${archive_root}/usr/bin/renga-agent"
-install -D -m 0644 "${repo_root}/agent/dist/renga-agent.service" \
-	"${archive_root}/lib/systemd/system/renga-agent.service"
-install -D -m 0640 "${repo_root}/agent/dist/agent.toml.example" \
-	"${archive_root}/etc/renga/agent.toml.example"
-install -D -m 0644 "${repo_root}/agent/README.md" \
-	"${archive_root}/README.md"
-
+dist_archive="${repo_root}/target/distrib/${archive_name}.tar.gz"
+mkdir -p "${work_dir}/cargo-dist"
+tar --extract --gzip --file "${dist_archive}" --directory "${work_dir}/cargo-dist"
 tar \
 	--create \
 	--gzip \
-	--file "${output_dir}/${archive_name}.tar.gz" \
-	--directory "${work_dir}" \
+	--file "${work_dir}/${archive_name}.tar.gz" \
+	--directory "${work_dir}/cargo-dist" \
 	--sort=name \
 	--mtime="@${source_date_epoch}" \
 	--owner=0 \
 	--group=0 \
 	--numeric-owner \
 	"${archive_name}"
+sha256sum "${work_dir}/${archive_name}.tar.gz" |
+	sed 's#  .*/# *#' >"${work_dir}/${archive_name}.tar.gz.sha256"
+
+install -m 0644 "${work_dir}/${archive_name}.tar.gz" \
+	"${output_dir}/${archive_name}.tar.gz"
+install -m 0644 "${work_dir}/${archive_name}.tar.gz.sha256" \
+	"${output_dir}/${archive_name}.tar.gz.sha256"
 
 deb_root="${work_dir}/${deb_name}"
 install -D -m 0755 "${binary}" \
@@ -189,7 +194,8 @@ dpkg-deb --root-owner-group --build "${deb_root}" "${output_dir}/${deb_name}.deb
 	sha256sum "${archive_name}.tar.gz" "${deb_name}.deb" >SHA256SUMS
 )
 
-printf 'Built:\n  %s\n  %s\n  %s\n' \
+printf 'Built:\n  %s\n  %s\n  %s\n  %s\n' \
 	"${output_dir}/${archive_name}.tar.gz" \
+	"${output_dir}/${archive_name}.tar.gz.sha256" \
 	"${output_dir}/${deb_name}.deb" \
 	"${output_dir}/SHA256SUMS"

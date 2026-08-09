@@ -27,6 +27,26 @@
           overlays = [ rust-overlay.overlays.default ];
         };
 
+        muslPkgs =
+          if system == "x86_64-linux" then
+            pkgs.pkgsCross.musl64
+          else if system == "aarch64-linux" then
+            pkgs.pkgsCross.aarch64-multiplatform-musl
+          else
+            null;
+        muslTarget =
+          if muslPkgs == null then null else muslPkgs.stdenv.hostPlatform.rust.rustcTargetSpec;
+        muslLinker =
+          if muslPkgs == null then
+            null
+          else
+            "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}cc";
+        muslLinkerEnv =
+          if muslTarget == null then
+            null
+          else
+            "CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] muslTarget)}_LINKER";
+
         rust-toolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [
             "rust-src"
@@ -34,10 +54,8 @@
             "clippy"
             "rustfmt"
           ];
-          targets = pkgs.lib.optionals pkgs.stdenv.isLinux [ "x86_64-unknown-linux-musl" ];
+          targets = pkgs.lib.optionals (muslTarget != null) [ muslTarget ];
         };
-
-        musl-toolchain = pkgs.pkgsCross.musl64.stdenv.cc;
       in
       {
         devShells.default = pkgs.mkShell {
@@ -65,6 +83,7 @@
             openssl
             shfmt
             shellcheck
+            cargo-dist
             git-cliff
             postgresql
           ];
@@ -75,7 +94,9 @@
             export HEX_HOME="$repo_root/.nix/hex"
             export REBAR_CACHE_DIR="$repo_root/.nix/rebar3"
             export ERL_AFLAGS="-kernel shell_history enabled"
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="${musl-toolchain}/bin/x86_64-unknown-linux-musl-gcc"
+            ${pkgs.lib.optionalString (muslLinker != null) ''
+              export ${muslLinkerEnv}="${muslLinker}"
+            ''}
 
             mkdir -p "$MIX_HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"
           '';

@@ -24,19 +24,22 @@ cargo clippy --workspace --all-features -- -D warnings
 
 The repository-wide checks are `make lint` and `mix precommit`.
 
-Build a versioned Linux tarball and Debian package in `dist/`, then verify their
-contents and exercise the packaged binary's dry-run collector with:
+Build a portable Linux archive and Debian package for the current CPU in
+`dist/`, then verify their contents and exercise the packaged binary's dry-run
+collector with:
 
 ```sh
 make agent-packages
 make verify-agent-packages
 ```
 
-The initial package target is x86-64 Linux. The build uses the version from
-`agent/Cargo.toml`, `Cargo.lock`, and a static musl target so artifacts do not
-depend on the build host's libc or Nix store. CI publishes the tarball, `.deb`,
-and `SHA256SUMS` as the `renga-agent-linux-amd64` workflow artifact. Set
-`SOURCE_DATE_EPOCH` to produce archives with a caller-selected timestamp.
+The build uses cargo-dist with the version from `agent/Cargo.toml`,
+`Cargo.lock`, and static musl targets so artifacts do not depend on the build
+host's libc or Nix store. Release CI builds native x86-64/amd64 and
+AArch64/arm64 archives and Debian packages. The repository script retains
+ownership of `.deb` metadata and systemd lifecycle hooks because cargo-dist
+does not generate Debian packages. Set `SOURCE_DATE_EPOCH` to produce archives
+with a caller-selected timestamp.
 
 ## Configuration
 
@@ -126,8 +129,9 @@ does not load that file or contact Renga; `--once` sends both the check-in and
 observation and fails if either request fails. After `--once`, verify the
 collector is connected and its resource is current on the dashboard, then
 leave the service running for at least two check-in intervals and verify its
-lease remains connected. The tarball contains the same binary, unit, example
-configuration, and this README for development installs without `dpkg`.
+lease remains connected. The portable tarball contains the standalone binary,
+this README, and the changelog. Use the Debian package when the systemd unit,
+example configuration, dedicated account, and lifecycle hooks are required.
 
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
