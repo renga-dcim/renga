@@ -110,4 +110,51 @@ defmodule Renga.EnrollmentTest do
     assert policy.organization_id == scope.organization_id
     assert policy.version == 1
   end
+
+  test "OIDC profile setup atomically creates scoped, fail-closed records", %{scope: scope} do
+    assert {:ok, profile} = Enrollment.create_oidc_profile(scope, oidc_profile_attrs())
+    assert profile.selector == "production"
+
+    [policy] = Enrollment.list_policies(scope)
+    [verifier] = Enrollment.list_verifier_configurations(scope)
+    assert policy.document["rule"]["attribute"] == ["verified", "claims", "role"]
+    assert policy.document["rule"]["value"] == "installer"
+
+    assert verifier.configuration["required_claims"] == [
+             %{"path" => ["role"], "type" => "string"}
+           ]
+
+    assert verifier.configuration["http_timeout_ms"] == 2_000
+    assert verifier.configuration["max_jwks_staleness_seconds"] == 3_600
+
+    other_user = user_fixture()
+    other_org = organization_fixture()
+    organization_membership_fixture(other_user, other_org, %{role: "owner"})
+    other_scope = Accounts.scope_for_user(other_user, other_org.id)
+    assert Enrollment.list_profiles(other_scope) == []
+  end
+
+  test "invalid OIDC profile setup leaves no partial versions", %{scope: scope} do
+    attrs = Map.put(oidc_profile_attrs(), :jwks_url, "http://insecure.example/jwks")
+    assert {:error, %Ecto.Changeset{}} = Enrollment.create_oidc_profile(scope, attrs)
+    assert Enrollment.list_profiles(scope) == []
+    assert Enrollment.list_policies(scope) == []
+    assert Enrollment.list_verifier_configurations(scope) == []
+  end
+
+  defp oidc_profile_attrs do
+    %{
+      name: "Production",
+      selector: "production",
+      issuer: "https://issuer.example",
+      audience: "renga-agent",
+      jwks_url: "https://issuer.example/jwks",
+      algorithm: "EdDSA",
+      subject_claim: "sub",
+      subject_cardinality: "singleton",
+      binding_mode: "challenge_bound",
+      required_claim_path: "role",
+      required_claim_value: "installer"
+    }
+  end
 end
