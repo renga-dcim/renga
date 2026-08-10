@@ -55,7 +55,7 @@ defmodule Renga.EnrollmentTest do
     {:ok, verifier} =
       Enrollment.create_verifier_configuration(scope, %{
         name: "workload",
-        kind: "oidc",
+        kind: "manual",
         subject_cardinality: "group",
         configuration: %{}
       })
