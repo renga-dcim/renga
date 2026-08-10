@@ -85,6 +85,7 @@
             shellcheck
             cargo-dist
             git-cliff
+            jujutsu
             postgresql
           ];
 
