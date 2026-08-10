@@ -44,18 +44,36 @@ with a caller-selected timestamp.
 ## Configuration
 
 Copy [`dist/agent.toml.example`](dist/agent.toml.example) to
-`/etc/renga/agent.toml`. Generate the installation identity once and keep it
-stable across restarts and upgrades:
+`/etc/renga/agent.toml`. Configured OIDC enrollment is the default. Set the
+Renga server URL, organization slug, enrollment profile, externally managed
+OIDC token path, and durable state directory:
 
-```sh
-uuidgen
+```toml
+renga_url = "https://renga.example.com"
+auth_mode = "enrolled"
+organization = "example-org"
+profile = "linux-production"
+oidc_token_file = "/run/secrets/renga-oidc-token"
+state_path = "/var/lib/renga-agent"
 ```
 
-The example documents every key and its default. `renga_url`, `token`, and
-`installation_id` are required. Environment variables override file values:
+On first boot the agent creates a random installation UUID and Ed25519 private
+key in `state_path`, then exchanges the OIDC workload evidence for a
+key-bound installation credential. Runtime requests and credential renewal are
+bound to that same key; the UUID, key, and credential survive restarts and
+ordinary package upgrades. Do not generate an installation UUID or copy an
+OIDC token into the state directory.
+
+The example documents every key and default. Environment variables override
+file values; all supported overrides are:
 
 * `RENGA_URL`
 * `RENGA_ALLOW_INSECURE_HTTP` (`true` or `false`, exactly)
+* `RENGA_AUTH_MODE` (`enrolled` or `legacy_token`)
+* `RENGA_ORGANIZATION`
+* `RENGA_PROFILE`
+* `RENGA_OIDC_TOKEN_FILE`
+* `RENGA_STATE_PATH`
 * `RENGA_TOKEN`
 * `RENGA_INSTALLATION_ID`
 * `RENGA_INVENTORY_INTERVAL_SECONDS`
@@ -67,7 +85,22 @@ The example documents every key and its default. `renga_url`, `token`, and
 `checkin_interval_seconds` must be between 1 and 60 seconds. The 60-second
 maximum keeps check-ins within the server's fixed 90-second lease while
 reserving a 25-second total check-in delivery budget. Request timeouts may not
-exceed 20 seconds and retry attempts may not exceed five.
+exceed 20 seconds, retry attempts may not exceed five, and configuration refresh
+may not exceed one hour (3,600 seconds).
+
+`legacy_token` is an explicit migration mode for existing installations only.
+It requires `token` and `installation_id` instead of the four enrolled fields:
+
+```toml
+auth_mode = "legacy_token"
+token = "one-time-existing-source-token"
+installation_id = "67e55044-10b1-426f-9247-bb680e5fe0c8"
+```
+
+An explicitly selected mode never falls back to the other mode when enrollment
+or authentication fails. For upgrade compatibility, an old configuration that
+omits `auth_mode` but contains `token` or `installation_id` is inferred as
+`legacy_token`; new configurations default to `enrolled`.
 
 HTTPS is required by default, and redirects are never followed. For deliberate
 local development only, `allow_insecure_http = true` (or the strict environment
@@ -77,8 +110,8 @@ to interception. Prefer a locally trusted HTTPS endpoint whenever possible.
 
 `RUST_LOG` controls log filtering and defaults to `info`; it is not an agent
 configuration field. The supplied unit optionally reads `/etc/renga/agent.env`,
-which may contain `KEY=value` overrides. Keep the token out of shell history and
-make configuration readable only by root and the service group:
+which may contain `KEY=value` overrides. Keep credentials out of shell history
+and make configuration readable only by root and the service group:
 
 ```sh
 sudo chown root:renga-agent /etc/renga/agent.toml
@@ -87,12 +120,22 @@ sudo chown root:renga-agent /etc/renga/agent.env  # if used
 sudo chmod 0640 /etc/renga/agent.env
 ```
 
+The OIDC token file belongs to the workload identity provider or secret
+manager. The agent rereads it when evidence is needed; it does not copy or
+retain it. Arrange rotation atomically and grant the `renga-agent` account read
+access only (for example `root:renga-agent` and mode `0640`); never make it
+world-readable. The state directory must be owned by `renga-agent`, mode
+`0700`, and its `state.json` and `state.lock` files are mode `0600`. Preserve
+the complete state directory across normal upgrades, rollback, and service
+restart: losing it creates a new installation identity and key.
+
 `--dry-run` collects once and prints pretty JSON without loading configuration or
 using the network. `--once` loads configuration and attempts both a check-in and
 an inventory observation; after both attempts it exits unsuccessfully if either
 failed and reports all failures. With neither option the agent attempts both at
-startup, logs either failure independently, then schedules periodic check-ins and inventory, and retries transient HTTP
-failures with backoff. SIGTERM/SIGINT stops retry attempts and backoff promptly,
+startup, logs either failure independently, then schedules periodic check-ins
+and inventory, and retries transient HTTP failures with backoff. SIGTERM/SIGINT
+stops retry attempts and backoff promptly,
 including during `--once`. A blocking request already in flight can continue up
 to `request_timeout_seconds` before the process exits. Collector subprocesses
 are separately bounded to two seconds and are killed and reaped on timeout or
@@ -116,6 +159,8 @@ Install and configure it with:
 ```sh
 sudo apt install ./dist/renga-agent_0.1.0_amd64.deb
 sudoedit /etc/renga/agent.toml
+sudo install -o root -g renga-agent -m 0640 /path/from/identity-provider/oidc-token \
+  /run/secrets/renga-oidc-token
 sudo -u renga-agent renga-agent --once --dry-run | python3 -m json.tool >/dev/null
 sudo -u renga-agent renga-agent --once
 sudo systemctl enable --now renga-agent.service
@@ -123,19 +168,27 @@ sudo systemctl status renga-agent.service
 sudo journalctl -u renga-agent.service -f
 ```
 
-Create the collector from Renga's authenticated **Collectors** page first, then
-copy the one-time token and installation UUID into `agent.toml`. `--dry-run`
-does not load that file or contact Renga; `--once` sends both the check-in and
-observation and fails if either request fails. After `--once`, verify the
-collector is connected and its resource is current on the dashboard, then
-leave the service running for at least two check-in intervals and verify its
-lease remains connected. The portable tarball contains the standalone binary,
-this README, and the changelog. Use the Debian package when the systemd unit,
-example configuration, dedicated account, and lifecycle hooks are required.
+Create an OIDC enrollment profile for the organization in Renga, configure the
+matching selectors and token file above, and run `--once`. The identity
+provider, not the package, must provision and rotate that file; the `install`
+command above is only a simple smoke-test example. `--dry-run` does not load
+configuration, create enrollment state, or contact Renga. `--once` enrolls if
+necessary, sends both the check-in and observation, and fails if any required
+operation fails. Verify `/var/lib/renga-agent` remains mode `0700`, its files
+are mode `0600`, and the newly enrolled collector and resource are current on
+the dashboard. Then leave the service running for at least two check-in
+intervals and verify its lease remains connected. The portable tarball contains
+the standalone binary, this README, and the changelog. Use the Debian package
+when the systemd unit, example configuration, dedicated account, and lifecycle
+hooks are required.
 
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
 capabilities and makes the host filesystem read-only to the service.
+`StateDirectory=renga-agent` is the narrow writable exception and creates
+`/var/lib/renga-agent` as the unprivileged account with mode `0700`; the Debian
+post-install script also creates it before first service start. Package upgrade,
+removal, and purge deliberately do not delete this identity state.
 Filesystem inventory is parsed through `procfs` from `/proc/1/mountinfo` so it
 describes the host rather than the service's sandboxed mount view. If that view
 is inaccessible or malformed, all filesystem components are omitted instead of
@@ -146,6 +199,28 @@ agent as root or weaken the sandbox to obtain those optional identifiers.
 The example unit allows 40 seconds for shutdown, above the maximum 20-second
 request timeout so an in-flight request can finish before systemd forcibly stops
 the service.
+
+## Preparing reusable images
+
+Never capture an enrolled machine as a reusable image. Immediately before
+sealing an image, stop the service and remove every per-installation artifact
+and externally supplied OIDC token (adjust the token path if configured
+differently):
+
+```sh
+sudo systemctl stop renga-agent.service
+sudo rm -rf -- /var/lib/renga-agent
+sudo rm -f -- /run/secrets/renga-oidc-token
+sudo install -d -o renga-agent -g renga-agent -m 0700 /var/lib/renga-agent
+```
+
+This removes the generated installation UUID, private key, credential, state
+lock, and OIDC evidence. Inspect any custom `state_path`, environment override,
+cloud-init staging location, and secret-manager cache too. A golden image may
+contain only the agent binary, service unit, server endpoint, and enrollment
+profile selectors; inject organization/workload selection and the OIDC token at
+deployment or first boot. Never clone `state.json`, `state.lock`, a legacy token,
+or an OIDC token.
 
 ## Collector scope, portability, and degradation
 

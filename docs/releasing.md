@@ -64,9 +64,10 @@ AArch64 on native runners. Repository-owned packaging then creates amd64 and
 arm64 Debian packages from those same binaries because cargo-dist does not
 model Debian metadata, conffiles, system users, or systemd maintainer scripts.
 Both architectures must pass checksum, reproducibility, package-version,
-static-linkage, unprivileged dry-run, configuration-permission, and systemd
-install/remove/purge checks. A fresh package is deliberately left inactive and
-disabled because its endpoint and credentials are placeholders.
+static-linkage, unprivileged dry-run, enrolled configuration defaults, state
+directory permissions and preservation, and systemd install/remove/purge
+checks. A fresh package is deliberately left inactive and disabled because its
+endpoint, organization, profile, and external OIDC token path are placeholders.
 
 Merging the internal release PR creates `vMAJOR.MINOR.PATCH` at its merge
 commit after independently validating the PR source, title, and synchronized
