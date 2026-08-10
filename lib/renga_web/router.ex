@@ -21,6 +21,10 @@ defmodule RengaWeb.Router do
     plug RengaWeb.SourceAuth
   end
 
+  pipeline :agent_credential_api do
+    plug RengaWeb.AgentCredentialAuth
+  end
+
   scope "/", RengaWeb do
     pipe_through :browser
 
@@ -32,6 +36,15 @@ defmodule RengaWeb.Router do
 
     post "/agent/checkins", AgentController, :check_in
     post "/observations", ObservationController, :create
+  end
+
+  scope "/api/v1/key", RengaWeb.Api.V1 do
+    # Key authentication is deliberately isolated from legacy bearer migration routes.
+    pipe_through [:api, :agent_credential_api]
+
+    post "/agent/checkins", AgentController, :check_in
+    post "/observations", ObservationController, :create
+    post "/agent/credentials/renew", AgentCredentialController, :renew
   end
 
   scope "/api/v1/enrollment", RengaWeb.Api.V1 do
