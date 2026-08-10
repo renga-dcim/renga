@@ -25,7 +25,7 @@ defmodule Renga.Enrollment.ManualGrant do
         :secret_hash,
         :expires_at
       ])
-      |> validate_length(:public_id, min: 16)
+      |> validate_length(:public_id, min: 16, count: :bytes)
       |> validate_format(:secret_hash, ~r/^\$argon2/)
       |> check_constraint(:public_id, name: :manual_grants_valid)
 end
