@@ -52,6 +52,24 @@ dpkg-deb --control "${deb}" "${work_dir}/control"
 test -x "${work_dir}/deb/usr/bin/renga-agent"
 test -r "${work_dir}/deb/etc/renga/agent.toml"
 test -r "${work_dir}/deb/lib/systemd/system/renga-agent.service"
+unit="${work_dir}/deb/lib/systemd/system/renga-agent.service"
+config="${work_dir}/deb/etc/renga/agent.toml"
+grep -qx 'User=renga-agent' "${unit}"
+grep -qx 'ProtectSystem=strict' "${unit}"
+grep -qx 'StateDirectory=renga-agent' "${unit}"
+grep -qx 'StateDirectoryMode=0700' "${unit}"
+grep -qx 'auth_mode = "enrolled"' "${config}"
+grep -qx 'organization = "replace-with-organization-slug"' "${config}"
+grep -qx 'profile = "replace-with-enrollment-profile"' "${config}"
+grep -qx 'oidc_token_file = "/run/secrets/renga-oidc-token"' "${config}"
+grep -qx 'state_path = "/var/lib/renga-agent"' "${config}"
+grep -q 'install -d -o renga-agent -g renga-agent -m 0700 /var/lib/renga-agent' \
+	"${work_dir}/control/postinst"
+if grep -Eq 'rm[^#]*(/var/lib/renga-agent|state\.json)' \
+	"${work_dir}/control/prerm" "${work_dir}/control/postrm"; then
+	printf 'Debian removal scripts must preserve enrolled state\n' >&2
+	exit 1
+fi
 if readelf --program-headers "${work_dir}/deb/usr/bin/renga-agent" | grep -q 'INTERP'; then
 	printf 'Debian package binary is not statically linked\n' >&2
 	exit 1
