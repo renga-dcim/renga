@@ -12,20 +12,60 @@ const CHECKIN_DEFAULT: u64 = 60;
 // The server lease is 90s; reserve the fixed delivery budget below for renewal.
 const CHECKIN_MAX: u64 = 60;
 const REFRESH_DEFAULT: u64 = 300;
+const REFRESH_MAX: u64 = 3_600;
 const TIMEOUT_DEFAULT: u64 = 20;
 const RETRIES_DEFAULT: u32 = 5;
 const TIMEOUT_MAX: u64 = 20;
 const RETRIES_MAX: u32 = 5;
 pub const DELIVERY_BUDGET: Duration = Duration::from_secs(25);
 
-/// Validated runtime configuration. The token is intentionally redacted from Debug.
+#[derive(Clone, PartialEq)]
+pub enum Auth {
+    LegacyToken {
+        token: String,
+        installation_id: uuid::Uuid,
+    },
+    Enrolled {
+        organization: String,
+        profile: String,
+        oidc_token_file: PathBuf,
+        state_path: PathBuf,
+    },
+}
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LegacyToken {
+                installation_id, ..
+            } => f
+                .debug_struct("LegacyToken")
+                .field("token", &"[REDACTED]")
+                .field("installation_id", installation_id)
+                .finish(),
+            Self::Enrolled {
+                organization,
+                profile,
+                oidc_token_file,
+                state_path,
+            } => f
+                .debug_struct("Enrolled")
+                .field("organization", organization)
+                .field("profile", profile)
+                .field("oidc_token_file", oidc_token_file)
+                .field("state_path", state_path)
+                .finish(),
+        }
+    }
+}
+
+/// Validated runtime configuration. Authentication secrets are intentionally redacted from Debug.
 #[derive(Clone)]
 pub struct Config {
     pub config_path: PathBuf,
     pub renga_url: String,
     pub allow_insecure_http: bool,
-    pub token: String,
-    pub installation_id: uuid::Uuid,
+    pub auth: Auth,
     pub inventory_interval: Duration,
     pub checkin_interval: Duration,
     pub config_refresh_interval: Duration,
@@ -39,8 +79,13 @@ impl fmt::Debug for Config {
             .field("config_path", &self.config_path)
             .field("renga_url", &self.renga_url)
             .field("allow_insecure_http", &self.allow_insecure_http)
-            .field("token", &"[REDACTED]")
-            .field("installation_id", &self.installation_id)
+            .field(
+                "auth",
+                &match self.auth {
+                    Auth::LegacyToken { .. } => "legacy_token [REDACTED]",
+                    Auth::Enrolled { .. } => "enrolled",
+                },
+            )
             .field("inventory_interval", &self.inventory_interval)
             .field("checkin_interval", &self.checkin_interval)
             .field("config_refresh_interval", &self.config_refresh_interval)
@@ -63,10 +108,15 @@ impl std::error::Error for ConfigError {}
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    auth_mode: Option<String>,
     renga_url: Option<String>,
     allow_insecure_http: Option<bool>,
     token: Option<String>,
     installation_id: Option<String>,
+    organization: Option<String>,
+    profile: Option<String>,
+    oidc_token_file: Option<PathBuf>,
+    state_path: Option<PathBuf>,
     inventory_interval_seconds: Option<u64>,
     checkin_interval_seconds: Option<u64>,
     config_refresh_interval_seconds: Option<u64>,
@@ -108,8 +158,17 @@ impl Config {
             };
         }
         string_env!("RENGA_URL", renga_url);
+        string_env!("RENGA_AUTH_MODE", auth_mode);
         string_env!("RENGA_TOKEN", token);
         string_env!("RENGA_INSTALLATION_ID", installation_id);
+        string_env!("RENGA_ORGANIZATION", organization);
+        string_env!("RENGA_PROFILE", profile);
+        if let Ok(v) = env::var("RENGA_OIDC_TOKEN_FILE") {
+            raw.oidc_token_file = Some(v.into());
+        }
+        if let Ok(v) = env::var("RENGA_STATE_PATH") {
+            raw.state_path = Some(v.into());
+        }
         if let Ok(value) = env::var("RENGA_ALLOW_INSECURE_HTTP") {
             raw.allow_insecure_http = Some(match value.as_str() {
                 "true" => true,
@@ -169,7 +228,6 @@ impl Config {
                 Ok(duration)
             }
         }
-        let installation = required(raw.installation_id, "installation_id")?;
         let renga_url = required(raw.renga_url, "renga_url")?
             .trim_end_matches('/')
             .to_owned();
@@ -197,24 +255,70 @@ impl Config {
                 "request_timeout_seconds must not exceed {TIMEOUT_MAX}"
             )));
         }
+        // Preserve pre-enrollment configurations during upgrades while making enrolled mode the
+        // default for new installations. Explicit modes remain strict and never fall back.
+        let inferred_mode =
+            if raw.auth_mode.is_none() && (raw.token.is_some() || raw.installation_id.is_some()) {
+                "legacy_token"
+            } else {
+                "enrolled"
+            };
+        let auth = match raw.auth_mode.as_deref().unwrap_or(inferred_mode) {
+            "legacy_token" => Auth::LegacyToken {
+                token: required(raw.token, "token")?,
+                installation_id: uuid::Uuid::parse_str(&required(
+                    raw.installation_id,
+                    "installation_id",
+                )?)
+                .map_err(|_| ConfigError("installation_id must be a UUID".into()))?,
+            },
+            "enrolled" => {
+                if raw.token.is_some() || raw.installation_id.is_some() {
+                    return Err(ConfigError(
+                        "token and installation_id are not valid in enrolled mode".into(),
+                    ));
+                }
+                Auth::Enrolled {
+                    organization: required(raw.organization, "organization")?,
+                    profile: required(raw.profile, "profile")?,
+                    oidc_token_file: raw
+                        .oidc_token_file
+                        .ok_or_else(|| ConfigError("oidc_token_file is required".into()))?,
+                    state_path: raw
+                        .state_path
+                        .ok_or_else(|| ConfigError("state_path is required".into()))?,
+                }
+            }
+            _ => {
+                return Err(ConfigError(
+                    "auth_mode must be enrolled or legacy_token".into(),
+                ))
+            }
+        };
         Ok(Self {
             config_path,
             renga_url,
             allow_insecure_http,
-            token: required(raw.token, "token")?,
-            installation_id: uuid::Uuid::parse_str(&installation)
-                .map_err(|_| ConfigError("installation_id must be a UUID".into()))?,
+            auth,
             inventory_interval: duration(
                 raw.inventory_interval_seconds,
                 INVENTORY_DEFAULT,
                 "inventory_interval_seconds",
             )?,
             checkin_interval: checkin_duration(raw.checkin_interval_seconds)?,
-            config_refresh_interval: duration(
-                raw.config_refresh_interval_seconds,
-                REFRESH_DEFAULT,
-                "config_refresh_interval_seconds",
-            )?,
+            config_refresh_interval: {
+                let value = duration(
+                    raw.config_refresh_interval_seconds,
+                    REFRESH_DEFAULT,
+                    "config_refresh_interval_seconds",
+                )?;
+                if value.as_secs() > REFRESH_MAX {
+                    return Err(ConfigError(format!(
+                        "config_refresh_interval_seconds must not exceed {REFRESH_MAX}"
+                    )));
+                }
+                value
+            },
             request_timeout,
             max_retry_attempts,
         })
@@ -228,6 +332,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     fn raw() -> RawConfig {
         RawConfig {
+            auth_mode: Some("legacy_token".into()),
             renga_url: Some("https://renga.test".into()),
             token: Some("secret".into()),
             installation_id: Some("67e55044-10b1-426f-9247-bb680e5fe0c8".into()),
@@ -242,11 +347,12 @@ mod tests {
         assert_eq!(c.inventory_interval, Duration::from_secs(3600));
         assert_eq!(c.renga_url, "https://renga.test");
         assert!(!format!("{c:?}").contains("secret"));
+        assert!(!format!("{:?}", c.auth).contains("secret"));
     }
     #[test]
     fn parses_toml_and_rejects_invalid_values() {
         let r: RawConfig =
-            toml::from_str("renga_url='https://renga.test'\ntoken='y'\ninstallation_id='bad'\n")
+            toml::from_str("auth_mode='legacy_token'\nrenga_url='https://renga.test'\ntoken='y'\ninstallation_id='bad'\n")
                 .unwrap();
         assert!(Config::from_raw("x".into(), r)
             .unwrap_err()
@@ -255,6 +361,21 @@ mod tests {
         let mut r = raw();
         r.request_timeout_seconds = Some(0);
         assert!(Config::from_raw("x".into(), r).is_err());
+    }
+
+    #[test]
+    fn legacy_configuration_without_mode_remains_valid_during_upgrade() {
+        let mut input = raw();
+        input.auth_mode = None;
+
+        assert!(matches!(
+            Config::from_raw("x".into(), input).unwrap().auth,
+            Auth::LegacyToken { .. }
+        ));
+
+        let mut explicit_enrolled = raw();
+        explicit_enrolled.auth_mode = Some("enrolled".into());
+        assert!(Config::from_raw("x".into(), explicit_enrolled).is_err());
     }
 
     #[test]
@@ -272,12 +393,19 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("between 1 and 5"));
+
+        let mut refresh = raw();
+        refresh.config_refresh_interval_seconds = Some(REFRESH_MAX + 1);
+        assert!(Config::from_raw("x".into(), refresh)
+            .unwrap_err()
+            .to_string()
+            .contains("must not exceed 3600"));
     }
     #[test]
     fn environment_wins_over_toml() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path,"renga_url='file'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+        fs::write(&path,"auth_mode='legacy_token'\nrenga_url='file'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
         env::set_var("RENGA_URL", "https://environment.test");
         let c = Config::load(&path).unwrap();
         env::remove_var("RENGA_URL");
@@ -291,7 +419,7 @@ mod tests {
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
         let config = |seconds| {
             format!(
-                "renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds={seconds}\n"
+                "auth_mode='legacy_token'\nrenga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds={seconds}\n"
             )
         };
 
@@ -311,7 +439,7 @@ mod tests {
     fn checkin_interval_rejects_oversized_environment_override_on_reload_path() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path,"renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds=60\n").unwrap();
+        fs::write(&path,"auth_mode='legacy_token'\nrenga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds=60\n").unwrap();
         env::set_var("RENGA_CHECKIN_INTERVAL_SECONDS", "61");
 
         let error = Config::load(&path).unwrap_err();
@@ -339,7 +467,7 @@ mod tests {
     fn insecure_http_environment_override_is_strict_and_wins_over_toml() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path, "renga_url='http://localhost:4000'\nallow_insecure_http=false\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+        fs::write(&path, "auth_mode='legacy_token'\nrenga_url='http://localhost:4000'\nallow_insecure_http=false\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
 
         env::set_var("RENGA_ALLOW_INSECURE_HTTP", "true");
         let config = Config::load(&path).unwrap();
