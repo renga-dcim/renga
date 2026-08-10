@@ -239,13 +239,13 @@ instead of copying it into state. It never silently falls back between modes.
 
 * Milestones
 
-- [ ] Add versioned profiles, policies, and verifier configurations; challenges,
+- [X] Add versioned profiles, policies, and verifier configurations; challenges,
   replay state, identities, bindings, attempts, and structured decisions.
-- [ ] Generate installation keypairs and require challenge proof of possession.
-- [ ] Add idempotent atomic finalization that consumes an accepted attempt, creates Source+Agent, records the allow decision, and issues a key-bound credential.
-- [ ] Add exact-body runtime authentication, renewal history, and administrative
+- [X] Generate installation keypairs and require challenge proof of possession.
+- [X] Add idempotent atomic finalization that consumes an accepted attempt, creates Source+Agent, records the allow decision, and issues a key-bound credential.
+- [X] Add exact-body runtime authentication, renewal history, and administrative
   revocation; do not deploy short-lived credentials without renewal.
-- [ ] Deliver configured OIDC workload identity as the first user-visible automated path, with image preparation and first-boot enrollment.
+- [X] Deliver configured OIDC workload identity as the first user-visible automated path, with image preparation and first-boot enrollment.
 - [ ] Add manual grants and operator approval as optional development, static-infrastructure, and break-glass verifiers, not the default path.
 - [ ] Add re-attestation, quarantine, key replacement, and provider-lifecycle retirement workflows.
 - [ ] Add provider-specific and hardware-backed verifier adapters.
@@ -253,20 +253,20 @@ instead of copying it into state. It never silently falls back between modes.
 
 * Acceptance Criteria
 
-- [ ] Accepted automated enrollment atomically creates one existing Source+Agent Collector aggregate and a separate key-bound credential.
-- [ ] Retry, singleton replacement, and group-subject behavior follow verifier-declared cardinality and key-bound idempotency rules.
-- [ ] Policy decisions use provenance-appropriate attributes and produce safe, reproducible audit records.
-- [ ] OIDC is the documented first automated deployment path; manual enrollment remains optional.
-- [ ] Images and horizontally scaled installations never share permanent Collector credentials.
-- [ ] Renewal, revocation, policy versioning, and MVP credential migration have explicit tested behavior.
+- [X] Accepted automated enrollment atomically creates one existing Source+Agent Collector aggregate and a separate key-bound credential.
+- [X] Retry, singleton replacement, and group-subject behavior follow verifier-declared cardinality and key-bound idempotency rules.
+- [X] Policy decisions use provenance-appropriate attributes and produce safe, reproducible audit records.
+- [X] OIDC is the documented first automated deployment path; manual enrollment remains optional.
+- [X] Images and horizontally scaled installations never share permanent Collector credentials.
+- [X] Renewal, revocation, policy versioning, and MVP credential migration have explicit tested behavior.
 
 * Verification
 
-- [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete progress.
-- [ ] Run focused enrollment context, API, and agent tests introduced by each milestone.
-- [ ] Cover concurrent same/different submission retries, singleton and group
+- [X] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete progress.
+- [X] Run focused enrollment context, API, and agent tests introduced by each milestone.
+- [X] Cover concurrent same/different submission retries, singleton and group
   races, evidence replay, modified signed bodies, duplicate nonces, lifecycle
   changes between authentication and ingestion, and renewal/revocation races.
-- [ ] Cover OIDC algorithm, issuer, audience, freshness, unknown-key, stale-JWKS,
+- [X] Cover OIDC algorithm, issuer, audience, freshness, unknown-key, stale-JWKS,
   redirect, and response-size failures.
-- [ ] Run =mix precommit= after implementation changes.
+- [X] Run =mix precommit= after implementation changes.
