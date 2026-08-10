@@ -32,8 +32,19 @@ defmodule Renga.Enrollment.VerifierConfiguration do
       ])
       |> validate_length(:name, max: 255)
       |> validate_inclusion(:subject_cardinality, ~w(singleton group))
+      |> validate_inclusion(:kind, ~w(manual oidc))
       |> validate_number(:version, greater_than: 0)
+      |> validate_oidc_configuration()
       |> unique_constraint([:organization_id, :name, :version])
+
+  defp validate_oidc_configuration(changeset) do
+    if get_field(changeset, :kind) == "oidc" and
+         Renga.Enrollment.OIDC.validate_configuration(get_field(changeset, :configuration)) != :ok do
+      add_error(changeset, :configuration, "is not a valid immutable OIDC verifier configuration")
+    else
+      changeset
+    end
+  end
 
   def disable_changeset(row, now),
     do:
