@@ -16,6 +16,7 @@ defmodule Renga.EnrollmentProtocolTest do
     EnrollmentBinding,
     EnrollmentChallenge,
     EnrollmentDecision,
+    EnrollmentReplay,
     ManualGrant
   }
 
@@ -192,6 +193,73 @@ defmodule Renga.EnrollmentProtocolTest do
     assert Repo.get!(EnrollmentChallenge, fixture.challenge.id).status == "open"
   end
 
+  test "OIDC policy authorizes a typed claim and persists only safe key evidence" do
+    fixture = oidc_fixture()
+    submission = oidc_submission(fixture)
+    assert {:ok, %{status: "accepted"} = result} = submit(submission)
+
+    source = Repo.get!(Source, result.source_id)
+    binding = Repo.one!(EnrollmentBinding)
+    decision = Repo.one!(EnrollmentDecision)
+    assert source.token_hash == nil
+
+    assert decision.verifier_key_thumbprint ==
+             JOSE.JWK.thumbprint(fixture.oidc_key) |> Base.url_decode64!(padding: false)
+
+    assert decision.safe_public_jwk == fixture.oidc_public
+
+    refute inspect(binding) =~ submission.evidence["token"]
+    refute inspect(decision) =~ submission.evidence["token"]
+  end
+
+  test "exact OIDC retry is stable after token expiry and verifier key configuration changes" do
+    fixture = oidc_fixture()
+    submission = oidc_submission(fixture)
+    assert {:ok, first} = submit(submission)
+    past = DateTime.add(Renga.Time.utc_now_ms(), -60, :second)
+    replacement = oidc_public(JOSE.JWK.generate_key({:okp, :Ed25519}), "replacement")
+
+    Repo.update_all(from(c in EnrollmentChallenge, where: c.id == ^fixture.challenge.id),
+      set: [expires_at: past]
+    )
+
+    Repo.query!("ALTER TABLE verifier_configurations DISABLE TRIGGER USER")
+
+    Repo.update_all(
+      from(v in Enrollment.VerifierConfiguration, where: v.id == ^fixture.verifier.id),
+      set: [configuration: Map.put(fixture.verifier.configuration, "jwks", [replacement])]
+    )
+
+    Repo.query!("ALTER TABLE verifier_configurations ENABLE TRIGGER USER")
+
+    assert {:ok, retried} = submit(submission)
+    assert retried["credential_id"] == first.credential_id
+    assert Repo.aggregate(EnrollmentBinding, :count) == 1
+  end
+
+  test "bearer-unbound OIDC replay and policy denial both consume the digest" do
+    for policy <- [oidc_allow_policy(), deny_policy()] do
+      fixture = oidc_fixture(binding_mode: "bearer_unbound", policy: policy)
+      token = oidc_token(fixture, false)
+      first = oidc_submission(fixture, token)
+      second_challenge = challenge_fixture(fixture, Ecto.UUID.generate())
+      second = oidc_submission(%{fixture | challenge: second_challenge}, token)
+
+      assert {:ok, _} = submit(first)
+      assert {:error, :invalid_evidence} = submit(second)
+
+      assert Repo.aggregate(
+               from(r in EnrollmentReplay, where: r.organization_id == ^fixture.organization.id),
+               :count
+             ) == 1
+
+      assert Repo.aggregate(
+               from(b in EnrollmentBinding, where: b.organization_id == ^fixture.organization.id),
+               :count
+             ) <= 1
+    end
+  end
+
   # Manual grants have unique subjects, so singleton/group cardinality cannot be
   # meaningfully exercised without fabricating verifier semantics.
   defp enrollment_fixture(opts \\ []) do
@@ -242,6 +310,118 @@ defmodule Renga.EnrollmentProtocolTest do
 
     Map.put(fixture, :challenge, challenge_fixture(fixture, Ecto.UUID.generate()))
   end
+
+  defp oidc_fixture(opts \\ []) do
+    key = JOSE.JWK.generate_key({:okp, :Ed25519})
+    public = oidc_public(key, "oidc-#{System.unique_integer([:positive])}")
+    base = enrollment_fixture(policy: Keyword.get(opts, :policy, oidc_allow_policy()))
+    configuration = oidc_config(public, Keyword.get(opts, :binding_mode, "challenge_bound"))
+
+    {:ok, verifier} =
+      Enrollment.create_verifier_configuration(base.scope, %{
+        name: "oidc",
+        kind: "oidc",
+        subject_cardinality: "singleton",
+        configuration: configuration
+      })
+
+    {:ok, profile} =
+      Enrollment.create_profile(base.scope, %{
+        selector: "oidc-#{System.unique_integer([:positive])}",
+        name: "OIDC",
+        enrollment_policy_id: base.policy.id,
+        verifier_configuration_id: verifier.id
+      })
+
+    fixture =
+      %{base | verifier: verifier, profile: profile}
+      |> Map.merge(%{oidc_key: key, oidc_public: public})
+
+    %{fixture | challenge: challenge_fixture(fixture, Ecto.UUID.generate())}
+  end
+
+  defp oidc_submission(fixture, token \\ nil) do
+    evidence = %{"kind" => "oidc", "token" => token || oidc_token(fixture, true)}
+    metadata = %{"agent_version" => "test"}
+
+    transcript =
+      Enrollment.proof_transcript(
+        fixture.challenge,
+        fixture.challenge.decoded_nonce,
+        evidence,
+        [],
+        metadata
+      )
+
+    %{
+      challenge: fixture.challenge,
+      nonce: fixture.challenge.decoded_nonce,
+      evidence: evidence,
+      requested: [],
+      metadata: metadata,
+      proof: :crypto.sign(:eddsa, :none, transcript, [fixture.private, :ed25519])
+    }
+  end
+
+  defp oidc_token(fixture, bound?) do
+    now = System.system_time(:second)
+
+    claims = %{
+      "iss" => "https://issuer.example",
+      "aud" => "renga-agent",
+      "sub" => "subject-1",
+      "role" => "installer",
+      "iat" => now,
+      "nbf" => now,
+      "exp" => now + 300
+    }
+
+    claims =
+      if bound?,
+        do:
+          Map.merge(claims, %{
+            "nonce" => Base.url_encode64(fixture.challenge.decoded_nonce, padding: false),
+            "cnf" => %{"jkt" => installation_thumbprint(fixture.public)}
+          }),
+        else: claims
+
+    fixture.oidc_key
+    |> JOSE.JWT.sign(%{"alg" => "EdDSA", "kid" => fixture.oidc_public["kid"]}, claims)
+    |> JOSE.JWS.compact()
+    |> elem(1)
+  end
+
+  defp oidc_config(public, mode),
+    do: %{
+      "issuer" => "https://issuer.example",
+      "audiences" => ["renga-agent"],
+      "algorithms" => ["EdDSA"],
+      "subject_claim" => ["sub"],
+      "max_token_age_seconds" => 300,
+      "max_token_lifetime_seconds" => 600,
+      "clock_skew_seconds" => 0,
+      "binding_mode" => mode,
+      "required_claims" => [%{"path" => ["role"], "type" => "string"}],
+      "jwks" => [public]
+    }
+
+  defp oidc_public(key, kid),
+    do:
+      key
+      |> JOSE.JWK.to_public()
+      |> JOSE.JWK.to_map()
+      |> elem(1)
+      |> Map.merge(%{"kid" => kid, "alg" => "EdDSA"})
+
+  defp installation_thumbprint(public),
+    do:
+      JOSE.JWK.thumbprint(
+        JOSE.JWK.from_map(%{
+          "kty" => "OKP",
+          "crv" => "Ed25519",
+          "x" => Base.url_encode64(public, padding: false)
+        })
+      )
 
   defp challenge_fixture(fixture, installation_id) do
     {:ok, contract} =
@@ -327,6 +507,16 @@ defmodule Renga.EnrollmentProtocolTest do
         "attribute" => ["server", "profile"],
         "operator" => "eq",
         "value" => "never"
+      }
+    }
+
+  defp oidc_allow_policy,
+    do: %{
+      "rule" => %{
+        "id" => "role",
+        "attribute" => ["verified", "claims", "role"],
+        "operator" => "eq",
+        "value" => "installer"
       }
     }
 end
