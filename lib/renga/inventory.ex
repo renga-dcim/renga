@@ -11,6 +11,7 @@ defmodule Renga.Inventory do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Enrollment.AgentCredential
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
@@ -370,6 +371,77 @@ defmodule Renga.Inventory do
     do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
   end
 
+  @doc "Checks in only the exact agent and key established by enrollment."
+  def record_credential_agent_check_in(
+        %Scope{organization_id: organization_id},
+        %Source{} = authenticated_source,
+        %Agent{} = authenticated_agent,
+        %AgentCredential{} = authenticated_credential,
+        attrs
+      ) do
+    now = Renga.Time.utc_now_ms()
+
+    Repo.transaction(fn ->
+      {_source, agent, _credential} =
+        lock_active_agent_credential!(
+          organization_id,
+          authenticated_source,
+          authenticated_agent,
+          authenticated_credential,
+          now
+        )
+
+      agent =
+        agent
+        |> Agent.changeset(agent_registration_attrs(authenticated_source, attrs, now))
+        |> Repo.update!()
+
+      {agent, put_agent_lease!(organization_id, agent.id, now, 90_000)}
+    end)
+  end
+
+  @doc "Accepts an observation only for the exact enrolled agent and current key."
+  def ingest_credential_observation(
+        %Scope{organization_id: organization_id} = scope,
+        %Source{} = authenticated_source,
+        %Agent{} = authenticated_agent,
+        %AgentCredential{} = authenticated_credential,
+        observation_attrs
+      ) do
+    now = Renga.Time.utc_now_ms()
+
+    Repo.transaction(fn ->
+      {source, agent, _credential} =
+        lock_active_agent_credential!(
+          organization_id,
+          authenticated_source,
+          authenticated_agent,
+          authenticated_credential,
+          now
+        )
+
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+
+      case accept_observation(scope, source.id, observation_attrs) do
+        {:ok, observation, disposition} ->
+          {agent, lease, observation, disposition}
+
+        {:error, :idempotency_conflict, observation} ->
+          Repo.rollback({:idempotency_conflict, observation})
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:error, {:idempotency_conflict, observation}} ->
+        {:error, :idempotency_conflict, observation}
+
+      result ->
+        result
+    end
+  end
+
   @doc """
   Atomically checks in an authenticated agent and accepts its raw observation.
 
@@ -466,6 +538,65 @@ defmodule Renga.Inventory do
     |> where([source], source.id == ^source_id)
     |> lock("FOR UPDATE")
     |> Repo.one!()
+  end
+
+  defp lock_active_agent_credential!(
+         organization_id,
+         expected_source,
+         expected_agent,
+         expected_credential,
+         now
+       ) do
+    organization =
+      Organization
+      |> where([organization], organization.id == ^organization_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(organization) or organization.status != "active",
+      do: Repo.rollback(:agent_credential_changed)
+
+    source =
+      Source
+      |> where([source], source.organization_id == ^organization_id)
+      |> where([source], source.id == ^expected_source.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(source), do: Repo.rollback(:agent_credential_changed)
+
+    agent =
+      Agent
+      |> where(
+        [a],
+        a.organization_id == ^organization_id and a.source_id == ^source.id and
+          a.id == ^expected_agent.id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(agent), do: Repo.rollback(:agent_credential_changed)
+
+    credential =
+      AgentCredential
+      |> where(
+        [c],
+        c.organization_id == ^organization_id and c.source_id == ^source.id and
+          c.agent_id == ^agent.id and c.id == ^expected_credential.id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(credential), do: Repo.rollback(:agent_credential_changed)
+
+    unless source.status == "active" and agent.status == "active" and
+             agent.installation_id == expected_agent.installation_id and
+             credential.status == "active" and DateTime.compare(credential.expires_at, now) == :gt and
+             credential.credential_id == expected_credential.credential_id and
+             credential.public_key == expected_credential.public_key,
+           do: Repo.rollback(:agent_credential_changed)
+
+    {source, agent, credential}
   end
 
   defp lock_host_collector(organization_id, source_id) do

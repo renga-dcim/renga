@@ -26,6 +26,8 @@ defmodule Renga.Enrollment do
   alias Renga.Inventory.{Agent, Source}
   alias Renga.Repo
 
+  @credential_ttl_seconds 86_400
+
   def list_profiles(%Scope{organization_id: id}),
     do: scoped(EnrollmentProfile, id) |> order_by([r], r.selector) |> Repo.all()
 
@@ -49,6 +51,160 @@ defmodule Renga.Enrollment do
 
   def get_verifier_configuration!(%Scope{organization_id: id}, row_id),
     do: scoped(VerifierConfiguration, id) |> Repo.get!(row_id)
+
+  def list_agent_credentials(%Scope{organization_id: id}) do
+    scoped(AgentCredential, id) |> order_by([c], desc: c.inserted_at) |> Repo.all()
+  end
+
+  def get_agent_credential!(%Scope{organization_id: id}, credential_id),
+    do: scoped(AgentCredential, id) |> Repo.get!(credential_id)
+
+  @doc "Renews the same authenticated, active key without moving beyond the server horizon."
+  def renew_agent_credential(
+        %Scope{} = scope,
+        %Source{} = source,
+        %Agent{} = agent,
+        %AgentCredential{} = credential
+      ) do
+    credential_transaction(scope.organization_id, source.id, agent.id, credential.id, fn locked,
+                                                                                         now ->
+      unless locked.status == "active" and DateTime.compare(locked.expires_at, now) == :gt and
+               locked.credential_id == credential.credential_id and
+               locked.public_key == credential.public_key,
+             do: Repo.rollback(:agent_credential_changed)
+
+      horizon = DateTime.add(now, @credential_ttl_seconds, :second)
+
+      if DateTime.compare(locked.expires_at, horizon) == :gt,
+        do: Repo.rollback(:credential_horizon_invalid)
+
+      previous_expiry = locked.expires_at
+      renewed = locked |> Ecto.Changeset.change(expires_at: horizon) |> Repo.update!()
+
+      put_credential_event!(renewed, "renewed", now, %{
+        "previous_expires_at" => DateTime.to_iso8601(previous_expiry),
+        "expires_at" => DateTime.to_iso8601(horizon)
+      })
+
+      renewed
+    end)
+  end
+
+  def revoke_agent_credential(%Scope{} = scope, credential_id),
+    do: administer_credential(scope, credential_id, :revoke)
+
+  def quarantine_agent_credential(%Scope{} = scope, credential_id),
+    do: administer_credential(scope, credential_id, :quarantine)
+
+  def unquarantine_agent_credential(%Scope{} = scope, credential_id),
+    do: administer_credential(scope, credential_id, :unquarantine)
+
+  defp administer_credential(scope, credential_id, action) do
+    admin_transaction(scope, fn ->
+      credential = scoped(AgentCredential, scope.organization_id) |> Repo.get(credential_id)
+      if is_nil(credential), do: Repo.rollback(:not_found)
+
+      credential_transaction(
+        scope.organization_id,
+        credential.source_id,
+        credential.agent_id,
+        credential.id,
+        fn locked, now ->
+          case {action, locked.status, DateTime.compare(locked.expires_at, now)} do
+            {:revoke, "revoked", _} ->
+              locked
+
+            {:revoke, _, _} ->
+              updated =
+                locked
+                |> Ecto.Changeset.change(status: "revoked", revoked_at: now)
+                |> Repo.update!()
+
+              put_credential_event!(updated, "revoked", now)
+              updated
+
+            {:quarantine, "active", :gt} ->
+              updated = locked |> Ecto.Changeset.change(status: "quarantined") |> Repo.update!()
+              put_credential_event!(updated, "quarantined", now)
+              updated
+
+            {:quarantine, "quarantined", :gt} ->
+              locked
+
+            {:unquarantine, "quarantined", :gt} ->
+              updated = locked |> Ecto.Changeset.change(status: "active") |> Repo.update!()
+              put_credential_event!(updated, "unquarantined", now)
+              updated
+
+            _ ->
+              Repo.rollback(:invalid_credential_state)
+          end
+        end
+      )
+      |> case do
+        {:ok, row} -> row
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp credential_transaction(organization_id, source_id, agent_id, credential_id, operation) do
+    Repo.transaction(fn ->
+      organization =
+        Organization |> where([o], o.id == ^organization_id) |> lock("FOR UPDATE") |> Repo.one()
+
+      if is_nil(organization), do: Repo.rollback(:agent_credential_changed)
+
+      source =
+        Source
+        |> where([s], s.id == ^source_id and s.organization_id == ^organization.id)
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      if is_nil(source), do: Repo.rollback(:agent_credential_changed)
+
+      agent =
+        Agent
+        |> where(
+          [a],
+          a.id == ^agent_id and a.source_id == ^source.id and
+            a.organization_id == ^organization.id
+        )
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      if is_nil(agent), do: Repo.rollback(:agent_credential_changed)
+
+      credential =
+        AgentCredential
+        |> where(
+          [c],
+          c.id == ^credential_id and c.agent_id == ^agent.id and c.source_id == ^source.id and
+            c.organization_id == ^organization.id
+        )
+        |> lock("FOR UPDATE")
+        |> Repo.one()
+
+      if is_nil(credential), do: Repo.rollback(:agent_credential_changed)
+
+      now = Renga.Time.utc_now_ms()
+
+      unless organization.status == "active" and source.status == "active" and
+               agent.status == "active",
+             do: Repo.rollback(:agent_credential_changed)
+
+      operation.(credential, now)
+    end)
+  end
+
+  defp put_credential_event!(credential, kind, now, metadata \\ %{}) do
+    %CredentialEvent{
+      organization_id: credential.organization_id,
+      agent_credential_id: credential.id
+    }
+    |> CredentialEvent.changeset(%{kind: kind, occurred_at: now, metadata: metadata})
+    |> Repo.insert!()
+  end
 
   @doc "Creates an optional, one-use manual verifier grant. The plaintext secret is returned only here."
   def create_manual_grant(%Scope{} = scope, profile_id, opts \\ []) do
@@ -672,7 +828,9 @@ defmodule Renga.Enrollment do
         public_key: challenge.public_key,
         key_thumbprint: challenge.key_thumbprint
       }
-      |> AgentCredential.changeset(%{expires_at: DateTime.add(now, 86_400, :second)})
+      |> AgentCredential.changeset(%{
+        expires_at: DateTime.add(now, @credential_ttl_seconds, :second)
+      })
       |> Repo.insert!()
 
     %CredentialEvent{
