@@ -45,6 +45,8 @@ defmodule RengaWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
+    length: 300_000,
+    body_reader: {RengaWeb.BodyDigestReader, :read_body, []},
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride
