@@ -31,9 +31,7 @@ defmodule RengaWeb.Api.V1.EnrollmentController do
          {:ok, _} <- Ecto.UUID.cast(challenge_id),
          {:ok, nonce64} <- string(params, "nonce", 43, 44),
          {:ok, nonce} <- decode(nonce64, 32),
-         %{"kind" => "manual"} = evidence when map_size(evidence) == 3 <- params["evidence"],
-         {:ok, _} <- string(evidence, "public_id", 22, 128),
-         {:ok, _} <- string(evidence, "secret", 32, 128),
+         {:ok, evidence} <- evidence(params["evidence"]),
          requested when is_list(requested) and length(requested) <= 64 <-
            Map.get(params, "requested_capabilities", []),
          true <- Enum.all?(requested, &(is_binary(&1) and byte_size(&1) <= 255)),
@@ -52,10 +50,25 @@ defmodule RengaWeb.Api.V1.EnrollmentController do
       {:error, reason} when reason in [:invalid_proof, :invalid_request, :invalid_evidence] ->
         safe_error(conn, :unprocessable_entity, "enrollment_denied")
 
+      {:error, :unavailable} ->
+        safe_error(conn, :service_unavailable, "verifier_unavailable")
+
       _ ->
         safe_error(conn, :not_found, "enrollment_not_available")
     end
   end
+
+  defp evidence(%{"kind" => "manual"} = evidence) when map_size(evidence) == 3 do
+    with {:ok, _} <- string(evidence, "public_id", 22, 128),
+         {:ok, _} <- string(evidence, "secret", 32, 128),
+         do: {:ok, evidence}
+  end
+
+  defp evidence(%{"kind" => "oidc", "token" => token} = evidence)
+       when map_size(evidence) == 2 and is_binary(token) and byte_size(token) <= 32_768,
+       do: {:ok, evidence}
+
+  defp evidence(_), do: :error
 
   defp string(map, key, min, max) do
     case Map.get(map, key) do

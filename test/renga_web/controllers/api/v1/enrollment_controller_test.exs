@@ -109,6 +109,38 @@ defmodule RengaWeb.Api.V1.EnrollmentControllerTest do
     assert response == %{"status" => "denied", "error" => "submission_conflict"}
   end
 
+  test "valid OIDC challenge and attempt is accepted without returning the JWT", %{
+    conn: conn,
+    fixture: base
+  } do
+    fixture = oidc_fixture(base)
+    {contract, challenge} = request_challenge(conn, fixture)
+    token = oidc_token(fixture, contract)
+    params = oidc_attempt_params(fixture, contract, challenge, token)
+
+    response =
+      conn |> recycle() |> post(~p"/api/v1/enrollment/attempts", params) |> json_response(200)
+
+    assert response["status"] == "accepted"
+    refute inspect(response) =~ token
+    refute Map.has_key?(response, "evidence")
+  end
+
+  test "malformed OIDC evidence returns the generic denial and never echoes it", %{
+    conn: conn,
+    fixture: base
+  } do
+    fixture = oidc_fixture(base)
+    {contract, challenge} = request_challenge(conn, fixture)
+    params = oidc_attempt_params(fixture, contract, challenge, "malformed.jwt")
+
+    response =
+      conn |> recycle() |> post(~p"/api/v1/enrollment/attempts", params) |> json_response(422)
+
+    assert response == %{"status" => "denied", "error" => "enrollment_denied"}
+    refute inspect(response) =~ "malformed.jwt"
+  end
+
   defp enrollment_fixture do
     user = user_fixture()
     organization = organization_fixture()
@@ -147,11 +179,111 @@ defmodule RengaWeb.Api.V1.EnrollmentControllerTest do
 
     %{
       organization: organization,
+      scope: scope,
       profile: profile,
       secret: secret,
       public: public,
       private: private,
       installation_id: Ecto.UUID.generate()
+    }
+  end
+
+  defp oidc_fixture(base) do
+    key = JOSE.JWK.generate_key({:okp, :Ed25519})
+
+    public =
+      key
+      |> JOSE.JWK.to_public()
+      |> JOSE.JWK.to_map()
+      |> elem(1)
+      |> Map.merge(%{"kid" => "controller-oidc", "alg" => "EdDSA"})
+
+    configuration = %{
+      "issuer" => "https://issuer.example",
+      "audiences" => ["renga-agent"],
+      "algorithms" => ["EdDSA"],
+      "subject_claim" => ["sub"],
+      "max_token_age_seconds" => 300,
+      "max_token_lifetime_seconds" => 600,
+      "clock_skew_seconds" => 0,
+      "binding_mode" => "challenge_bound",
+      "jwks" => [public]
+    }
+
+    {:ok, verifier} =
+      Enrollment.create_verifier_configuration(base.scope, %{
+        name: "controller oidc",
+        kind: "oidc",
+        subject_cardinality: "singleton",
+        configuration: configuration
+      })
+
+    {:ok, policy} =
+      Enrollment.create_policy(base.scope, %{
+        name: "controller oidc",
+        document: %{
+          "rule" => %{
+            "id" => "oidc",
+            "attribute" => ["verified", "assurance"],
+            "operator" => "eq",
+            "value" => "oidc_challenge_bound"
+          }
+        }
+      })
+
+    {:ok, profile} =
+      Enrollment.create_profile(base.scope, %{
+        selector: "controller-oidc",
+        name: "OIDC",
+        enrollment_policy_id: policy.id,
+        verifier_configuration_id: verifier.id
+      })
+
+    %{base | profile: profile}
+    |> Map.merge(%{oidc_key: key, oidc_public: public, installation_id: Ecto.UUID.generate()})
+  end
+
+  defp oidc_token(fixture, contract) do
+    now = System.system_time(:second)
+
+    installation =
+      JOSE.JWK.from_map(%{
+        "kty" => "OKP",
+        "crv" => "Ed25519",
+        "x" => Base.url_encode64(fixture.public, padding: false)
+      })
+
+    claims = %{
+      "iss" => "https://issuer.example",
+      "aud" => "renga-agent",
+      "sub" => "controller",
+      "iat" => now,
+      "nbf" => now,
+      "exp" => now + 300,
+      "nonce" => contract["nonce"],
+      "cnf" => %{"jkt" => JOSE.JWK.thumbprint(installation)}
+    }
+
+    fixture.oidc_key
+    |> JOSE.JWT.sign(%{"alg" => "EdDSA", "kid" => fixture.oidc_public["kid"]}, claims)
+    |> JOSE.JWS.compact()
+    |> elem(1)
+  end
+
+  defp oidc_attempt_params(fixture, contract, challenge, token) do
+    nonce = Base.url_decode64!(contract["nonce"], padding: false)
+    evidence = %{"kind" => "oidc", "token" => token}
+    metadata = %{"client" => "test"}
+    transcript = Enrollment.proof_transcript(challenge, nonce, evidence, [], metadata)
+    proof = :crypto.sign(:eddsa, :none, transcript, [fixture.private, :ed25519])
+
+    %{
+      "challenge_id" => challenge.id,
+      "nonce" => contract["nonce"],
+      "evidence" => evidence,
+      "requested_capabilities" => [],
+      "metadata" => metadata,
+      "proof" => Base.url_encode64(proof, padding: false)
     }
   end
 
