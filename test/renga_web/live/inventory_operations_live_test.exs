@@ -7,6 +7,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
   import Renga.InventoryFixtures
 
   alias Renga.Inventory
+  alias Renga.Enrollment.AgentCredential
   alias Renga.Inventory.AgentLease
   alias Renga.Repo
 
@@ -238,6 +239,39 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert Inventory.get_agent!(scope, agent.id).installation_id == @connected_installation_id
   end
 
+  test "manages key credentials while preserving legacy token controls", %{
+    conn: conn,
+    connected_source: source,
+    connected_agent: agent,
+    disconnected_agent: legacy_agent
+  } do
+    credential = agent_credential_fixture(source, agent)
+
+    Repo.update_all(from(s in Renga.Inventory.Source, where: s.id == ^source.id),
+      set: [token_hash: nil]
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+
+    assert has_element?(view, "#agent-credential-state-#{credential.id}", "active")
+    assert has_element?(view, "#agent-credential-state-#{credential.id}", "Expires")
+    refute has_element?(view, "#rotate-collector-#{source.id}")
+    refute has_element?(view, "#reset-collector-#{source.id}")
+    refute has_element?(view, "#revoke-collector-#{source.id}")
+    assert has_element?(view, "#rotate-collector-#{legacy_agent.source_id}")
+
+    view |> element("#quarantine-agent-credential-#{credential.id}") |> render_click()
+    assert has_element?(view, "#agent-credential-state-#{credential.id}", "quarantined")
+    assert has_element?(view, "#unquarantine-agent-credential-#{credential.id}")
+
+    view |> element("#unquarantine-agent-credential-#{credential.id}") |> render_click()
+    assert has_element?(view, "#agent-credential-state-#{credential.id}", "active")
+
+    view |> element("#revoke-agent-credential-#{credential.id}") |> render_click()
+    assert has_element?(view, "#agent-credential-state-#{credential.id}", "revoked")
+    refute has_element?(view, "#revoke-agent-credential-#{credential.id}")
+  end
+
   test "resets enrollment while retaining the collector source", %{
     conn: conn,
     scope: scope,
@@ -352,5 +386,22 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     current_source = Inventory.get_source!(scope, manual_source.id)
     assert current_source.status == original_source.status
     assert current_source.token_hash == original_source.token_hash
+  end
+
+  defp agent_credential_fixture(source, agent) do
+    {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519)
+
+    %AgentCredential{
+      organization_id: source.organization_id,
+      source_id: source.id,
+      agent_id: agent.id,
+      credential_id: :crypto.strong_rand_bytes(32),
+      public_key: public_key,
+      key_thumbprint: :crypto.hash(:sha256, public_key)
+    }
+    |> AgentCredential.changeset(%{
+      expires_at: DateTime.add(Renga.Time.utc_now_ms(), 3_600, :second)
+    })
+    |> Repo.insert!()
   end
 end
