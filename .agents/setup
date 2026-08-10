@@ -100,6 +100,21 @@ step "Activating the Nix development shell"
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 
+step "Preparing the colocated Jujutsu workspace"
+if [ ! -d "$repo_root/.jj" ]; then
+  jj git init --colocate "$repo_root"
+fi
+
+git_user_name="$(git config --get user.name || true)"
+git_user_email="$(git config --get user.email || true)"
+if [ -n "$git_user_name" ]; then
+  jj config set --repo user.name "$git_user_name"
+fi
+if [ -n "$git_user_email" ]; then
+  jj config set --repo user.email "$git_user_email"
+fi
+jj --version
+
 postgres_data="$repo_root/dev/postgres"
 postgres_log="$repo_root/dev/postgres.log"
 postgres_socket="$repo_root/dev/postgres-socket"
