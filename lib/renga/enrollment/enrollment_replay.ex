@@ -19,6 +19,6 @@ defmodule Renga.Enrollment.EnrollmentReplay do
       |> cast(attrs, [:kind, :value_hash, :expires_at])
       |> validate_required([:organization_id, :kind, :value_hash, :expires_at])
       |> validate_inclusion(:kind, ~w(oidc_digest oidc_jti runtime_nonce))
-      |> validate_length(:value_hash, is: 32)
+      |> validate_length(:value_hash, is: 32, count: :bytes)
       |> check_constraint(:kind, name: :enrollment_replays_owner_and_hash)
 end

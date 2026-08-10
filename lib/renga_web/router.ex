@@ -34,6 +34,14 @@ defmodule RengaWeb.Router do
     post "/observations", ObservationController, :create
   end
 
+  scope "/api/v1/enrollment", RengaWeb.Api.V1 do
+    # Enrollment proves a new key and must never inherit human or Source authentication.
+    pipe_through :api
+
+    post "/challenges", EnrollmentController, :challenge
+    post "/attempts", EnrollmentController, :attempt
+  end
+
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:renga, :dev_routes) do
     # If you want to use the LiveDashboard in production, you should put

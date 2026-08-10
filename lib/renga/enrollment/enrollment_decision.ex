@@ -46,6 +46,6 @@ defmodule Renga.Enrollment.EnrollmentDecision do
         :evaluated_at
       ])
       |> validate_inclusion(:outcome, ~w(allow deny))
-      |> validate_length(:verifier_key_thumbprint, is: 32)
+      |> validate_length(:verifier_key_thumbprint, is: 32, count: :bytes)
       |> check_constraint(:safe_public_jwk, name: :enrollment_decisions_valid)
 end

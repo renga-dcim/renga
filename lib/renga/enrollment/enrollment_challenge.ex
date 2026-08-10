@@ -37,7 +37,7 @@ defmodule Renga.Enrollment.EnrollmentChallenge do
         :nonce_hash,
         :expires_at
       ])
-      |> validate_length(:public_key, is: 32)
-      |> validate_length(:key_thumbprint, is: 32)
-      |> validate_length(:nonce_hash, is: 32)
+      |> validate_length(:public_key, is: 32, count: :bytes)
+      |> validate_length(:key_thumbprint, is: 32, count: :bytes)
+      |> validate_length(:nonce_hash, is: 32, count: :bytes)
 end
