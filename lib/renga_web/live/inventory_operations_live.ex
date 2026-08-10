@@ -3,6 +3,7 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Enrollment
   alias Renga.Inventory
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.Source
@@ -140,6 +141,18 @@ defmodule RengaWeb.InventoryOperationsLive do
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Could not revoke collector credential")}
     end
+  end
+
+  def handle_event("quarantine_agent_credential", %{"id" => credential_id}, socket) do
+    administer_agent_credential(socket, credential_id, :quarantine)
+  end
+
+  def handle_event("unquarantine_agent_credential", %{"id" => credential_id}, socket) do
+    administer_agent_credential(socket, credential_id, :unquarantine)
+  end
+
+  def handle_event("revoke_agent_credential", %{"id" => credential_id}, socket) do
+    administer_agent_credential(socket, credential_id, :revoke)
   end
 
   @impl true
@@ -352,7 +365,10 @@ defmodule RengaWeb.InventoryOperationsLive do
                     </td>
                     <td class="px-5 py-4">
                       <div class="flex flex-wrap items-center gap-2">
-                        <.credential_pill source={source} />
+                        <.credential_pill
+                          source={source}
+                          credential={Map.get(@credential_by_source, source.id)}
+                        />
                         <span
                           :if={collector_agent(source)}
                           class="font-mono text-[11px] text-base-content/40"
@@ -366,7 +382,10 @@ defmodule RengaWeb.InventoryOperationsLive do
                     </td>
                     <td class="px-5 py-4">
                       <div
-                        :if={Inventory.collector_manager?(@current_scope)}
+                        :if={
+                          Inventory.collector_manager?(@current_scope) &&
+                            is_nil(Map.get(@credential_by_source, source.id))
+                        }
                         class="flex justify-end gap-1"
                       >
                         <button
@@ -396,6 +415,46 @@ defmodule RengaWeb.InventoryOperationsLive do
                           phx-click="revoke_collector"
                           phx-value-id={source.id}
                           data-confirm="Revoke this collector credential? Existing inventory is retained."
+                          class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-500/10 dark:text-rose-400"
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                      <div
+                        :if={
+                          Inventory.collector_manager?(@current_scope) &&
+                            Map.get(@credential_by_source, source.id)
+                        }
+                        class="flex justify-end gap-1"
+                      >
+                        <% credential = Map.fetch!(@credential_by_source, source.id) %>
+                        <button
+                          :if={credential.state == :active}
+                          id={"quarantine-agent-credential-#{credential.id}"}
+                          type="button"
+                          phx-click="quarantine_agent_credential"
+                          phx-value-id={credential.id}
+                          class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/10 dark:text-amber-400"
+                        >
+                          Quarantine
+                        </button>
+                        <button
+                          :if={credential.state == :quarantined}
+                          id={"unquarantine-agent-credential-#{credential.id}"}
+                          type="button"
+                          phx-click="unquarantine_agent_credential"
+                          phx-value-id={credential.id}
+                          class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-500/10 dark:text-emerald-400"
+                        >
+                          Unquarantine
+                        </button>
+                        <button
+                          :if={credential.state != :revoked}
+                          id={"revoke-agent-credential-#{credential.id}"}
+                          type="button"
+                          phx-click="revoke_agent_credential"
+                          phx-value-id={credential.id}
+                          data-confirm="Permanently revoke this key credential? This cannot be undone."
                           class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-500/10 dark:text-rose-400"
                         >
                           Revoke
@@ -440,16 +499,33 @@ defmodule RengaWeb.InventoryOperationsLive do
   end
 
   attr :source, :map, required: true
+  attr :credential, :map, default: nil
 
   defp credential_pill(assigns) do
     ~H"""
-    <span class={[
-      "rounded-full px-2.5 py-1 text-xs font-medium",
-      @source.status == "active" && not is_nil(@source.token_hash) &&
-        "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-      (@source.status != "active" || is_nil(@source.token_hash)) &&
-        "bg-base-content/10 text-base-content/55"
-    ]}>
+    <div :if={@credential} id={"agent-credential-state-#{@credential.id}"} class="space-y-1">
+      <span class={[
+        "rounded-full px-2.5 py-1 text-xs font-medium",
+        @credential.state == :active && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+        @credential.state == :quarantined && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+        @credential.state in [:revoked, :expired] && "bg-rose-500/10 text-rose-700 dark:text-rose-400"
+      ]}>
+        {humanize(Atom.to_string(@credential.state))}
+      </span>
+      <p class="font-mono text-[11px] text-base-content/40">
+        Expires {format_time(@credential.expires_at)}
+      </p>
+    </div>
+    <span
+      :if={is_nil(@credential)}
+      class={[
+        "rounded-full px-2.5 py-1 text-xs font-medium",
+        @source.status == "active" && not is_nil(@source.token_hash) &&
+          "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+        (@source.status != "active" || is_nil(@source.token_hash)) &&
+          "bg-base-content/10 text-base-content/55"
+      ]}
+    >
       {credential_state(@source)}
     </span>
     """
@@ -468,6 +544,17 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp load_operations(socket) do
     scope = socket.assigns.current_scope
 
+    credential_by_source =
+      scope
+      |> Enrollment.list_agent_credentials()
+      |> Enum.reduce(%{}, fn credential, credentials ->
+        Map.put_new(credentials, credential.source_id, %{
+          id: credential.id,
+          expires_at: credential.expires_at,
+          state: effective_credential_state(credential)
+        })
+      end)
+
     sources =
       scope
       |> Inventory.list_operational_sources()
@@ -479,10 +566,47 @@ defmodule RengaWeb.InventoryOperationsLive do
         else: sources
 
     socket
+    |> assign(:credential_by_source, credential_by_source)
     |> assign(:last_inventory_by_source, Inventory.latest_observation_times(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
     |> stream(:sources, sources, reset: true)
   end
+
+  defp administer_agent_credential(socket, credential_id, action) do
+    result =
+      case action do
+        :quarantine ->
+          Enrollment.quarantine_agent_credential(socket.assigns.current_scope, credential_id)
+
+        :unquarantine ->
+          Enrollment.unquarantine_agent_credential(socket.assigns.current_scope, credential_id)
+
+        :revoke ->
+          Enrollment.revoke_agent_credential(socket.assigns.current_scope, credential_id)
+      end
+
+    case result do
+      {:ok, _credential} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Key credential #{action_label(action)}")
+         |> load_operations()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not update key credential")}
+    end
+  end
+
+  defp effective_credential_state(%{status: status, expires_at: expires_at}) do
+    if status not in ["revoked", "expired"] &&
+         DateTime.compare(expires_at, Renga.Time.utc_now_ms()) != :gt,
+       do: :expired,
+       else: String.to_existing_atom(status)
+  end
+
+  defp action_label(:quarantine), do: "quarantined"
+  defp action_label(:unquarantine), do: "unquarantined"
+  defp action_label(:revoke), do: "revoked"
 
   defp schedule_refresh(socket) do
     if connected?(socket), do: Process.send_after(self(), :refresh, @refresh_interval)
