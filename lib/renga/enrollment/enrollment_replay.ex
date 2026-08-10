@@ -21,4 +21,6 @@ defmodule Renga.Enrollment.EnrollmentReplay do
       |> validate_inclusion(:kind, ~w(oidc_digest oidc_jti runtime_nonce))
       |> validate_length(:value_hash, is: 32, count: :bytes)
       |> check_constraint(:kind, name: :enrollment_replays_owner_and_hash)
+      |> unique_constraint(:value_hash, name: :enrollment_replays_verifier_index)
+      |> unique_constraint(:value_hash, name: :enrollment_replays_credential_index)
 end

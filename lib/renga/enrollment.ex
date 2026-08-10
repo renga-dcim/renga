@@ -16,7 +16,9 @@ defmodule Renga.Enrollment do
     EnrollmentIdentity,
     EnrollmentPolicy,
     EnrollmentProfile,
+    EnrollmentReplay,
     ManualGrant,
+    OIDC,
     Policy,
     VerifierConfiguration
   }
@@ -99,7 +101,8 @@ defmodule Renga.Enrollment do
              EnrollmentProfile
              |> where([p], p.organization_id == ^org.id and p.selector == ^selector and p.enabled)
              |> Repo.one(),
-           %VerifierConfiguration{kind: "manual", enabled: true} = verifier <-
+           %VerifierConfiguration{kind: kind, enabled: true} = verifier
+           when kind in ~w(manual oidc) <-
              Repo.get(VerifierConfiguration, profile.verifier_configuration_id),
            %EnrollmentPolicy{} = policy <-
              Repo.get(EnrollmentPolicy, profile.enrollment_policy_id) do
@@ -162,11 +165,74 @@ defmodule Renga.Enrollment do
           "proof" => proof
         })
 
-      finalize(challenge, digest, evidence, requested, metadata)
+      case terminal_result(challenge, digest) do
+        {:terminal, result} -> {:ok, result}
+        :conflict -> {:error, :submission_conflict}
+        :open -> verify_then_finalize(challenge, digest, nonce, evidence, requested, metadata)
+      end
     else
       {:error, :invalid_request} -> {:error, :invalid_request}
       _ -> {:error, :invalid_proof}
     end
+  end
+
+  defp terminal_result(%EnrollmentChallenge{status: "open"}, _digest), do: :open
+
+  defp terminal_result(
+         %EnrollmentChallenge{submission_digest: digest, safe_result: result},
+         digest
+       ),
+       do: {:terminal, result}
+
+  defp terminal_result(_, _), do: :conflict
+
+  defp verify_then_finalize(
+         challenge,
+         digest,
+         nonce,
+         %{"kind" => "oidc", "token" => token},
+         requested,
+         metadata
+       )
+       when is_binary(token) do
+    with %VerifierConfiguration{kind: "oidc"} = verifier <-
+           Repo.get(VerifierConfiguration, challenge.verifier_configuration_id),
+         {:ok, verified} <-
+           OIDC.verify(verifier.configuration, token, nonce, challenge.public_key) do
+      finalize(challenge, digest, {:oidc_verified, verified}, requested, metadata)
+    else
+      {:error, reason} -> recover_terminal_result(challenge, digest, reason)
+      _ -> recover_terminal_result(challenge, digest, :invalid_evidence)
+    end
+  end
+
+  defp verify_then_finalize(challenge, digest, _nonce, evidence, requested, metadata),
+    do: finalize(challenge, digest, evidence, requested, metadata)
+
+  defp recover_terminal_result(challenge, digest, verifier_error) do
+    Repo.transaction(fn ->
+      Organization
+      |> where([o], o.id == ^challenge.organization_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+      EnrollmentProfile
+      |> where([p], p.id == ^challenge.enrollment_profile_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+      locked =
+        EnrollmentChallenge
+        |> where([c], c.id == ^challenge.id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
+
+      case terminal_result(locked, digest) do
+        {:terminal, result} -> result
+        :conflict -> Repo.rollback(:submission_conflict)
+        :open -> Repo.rollback(verifier_error)
+      end
+    end)
   end
 
   defp verify_attempt_proof(challenge, nonce, evidence, requested, metadata, proof) do
@@ -242,7 +308,71 @@ defmodule Renga.Enrollment do
         Repo.rollback(:unavailable)
 
       true ->
-        verify_manual(challenge, profile, verifier, policy, digest, evidence, requested, metadata)
+        case {verifier.kind, evidence} do
+          {"manual", evidence} ->
+            verify_manual(
+              challenge,
+              profile,
+              verifier,
+              policy,
+              digest,
+              evidence,
+              requested,
+              metadata
+            )
+
+          {"oidc", {:oidc_verified, verified}} ->
+            finalize_oidc(challenge, profile, verifier, policy, digest, verified, requested)
+
+          _ ->
+            Repo.rollback(:invalid_evidence)
+        end
+    end
+  end
+
+  defp finalize_oidc(challenge, profile, verifier, policy, digest, verified, requested) do
+    replay = verified.replay_digest
+
+    if replay, do: consume_oidc_replay(challenge, verifier, verified, replay)
+
+    decision =
+      Policy.evaluate(
+        policy.document,
+        %{"verified" => verified.envelope, "server" => %{"profile" => profile.selector}},
+        requested
+      )
+
+    persist_decision(
+      challenge,
+      verifier,
+      policy,
+      nil,
+      verified.envelope,
+      verified.evidence_digest,
+      digest,
+      decision,
+      Renga.Time.utc_now_ms()
+    )
+  end
+
+  defp consume_oidc_replay(challenge, verifier, verified, replay) do
+    %EnrollmentReplay{
+      organization_id: challenge.organization_id,
+      verifier_configuration_id: verifier.id
+    }
+    |> EnrollmentReplay.changeset(%{
+      kind: "oidc_digest",
+      value_hash: replay,
+      expires_at:
+        DateTime.from_unix!(
+          verified.envelope["expires_at"] + verifier.configuration["clock_skew_seconds"],
+          :second
+        )
+    })
+    |> Repo.insert()
+    |> case do
+      {:ok, replay} -> replay
+      {:error, %Ecto.Changeset{}} -> Repo.rollback(:invalid_evidence)
     end
   end
 
@@ -378,7 +508,9 @@ defmodule Renga.Enrollment do
       condition_ids: Map.get(final_result, :condition_ids, []),
       assignments: Map.get(final_result, :assignments, %{}),
       grants: Map.get(final_result, :grants, []),
-      verifier_key_thumbprint: :crypto.hash(:sha256, verifier.id),
+      verifier_key_thumbprint:
+        decode_thumbprint(envelope["verifier_key_thumbprint"]) ||
+          :crypto.hash(:sha256, verifier.id),
       safe_public_jwk: envelope["verifier_key"],
       evaluated_at: now
     }
@@ -595,6 +727,7 @@ defmodule Renga.Enrollment do
       |> Repo.update!()
 
   defp consume_grant(%ManualGrant{}, _binding, _now), do: :ok
+  defp consume_grant(nil, _binding, _now), do: :ok
 
   defp terminalize(challenge, status, digest, response, now),
     do:
@@ -728,4 +861,13 @@ defmodule Renga.Enrollment do
 
   defp user_id(%Scope{user: %{id: id}}), do: id
   defp user_id(_scope), do: nil
+
+  defp decode_thumbprint(value) when is_binary(value) do
+    case Base.url_decode64(value, padding: false) do
+      {:ok, decoded} when byte_size(decoded) == 32 -> decoded
+      _ -> nil
+    end
+  end
+
+  defp decode_thumbprint(_value), do: nil
 end
