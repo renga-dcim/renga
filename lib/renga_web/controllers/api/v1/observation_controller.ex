@@ -5,6 +5,38 @@ defmodule RengaWeb.Api.V1.ObservationController do
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ObservationReconciliation
 
+  def create(%{assigns: %{agent_auth_kind: :credential}} = conn, params) do
+    source = conn.assigns.current_source
+
+    with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
+         {:ok, {_agent, _lease, observation, disposition}} <-
+           Inventory.ingest_credential_observation(
+             conn.assigns.current_scope,
+             source,
+             conn.assigns.current_agent,
+             conn.assigns.current_agent_credential,
+             attrs
+           ) do
+      render_accepted(conn, observation, disposition)
+    else
+      {:error, :agent_credential_changed} ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{status: "rejected", errors: [%{path: "authorization", message: "is invalid"}]})
+
+      {:error, :idempotency_conflict, observation} ->
+        conflict(conn, observation)
+
+      {:error, errors} when is_list(errors) ->
+        conn |> put_status(:unprocessable_entity) |> json(%{status: "rejected", errors: errors})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{status: "rejected", errors: changeset_errors(changeset, "agent")})
+    end
+  end
+
   def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
          {:ok, {_agent, _lease, observation, disposition}} <-
@@ -14,22 +46,7 @@ defmodule RengaWeb.Api.V1.ObservationController do
              %{installation_id: conn.assigns.current_installation_id},
              attrs
            ) do
-      reconciliation =
-        reconcile_observation(conn.assigns.current_scope, observation, disposition)
-
-      conn
-      |> put_status(status_for(disposition))
-      |> json(%{
-        status: "accepted",
-        duplicate: disposition == :duplicate,
-        reconciliation: reconciliation,
-        observation: %{
-          id: observation.id,
-          observation_id: observation.idempotency_key,
-          observed_at: DateTime.to_iso8601(observation.observed_at),
-          source_id: observation.source_id
-        }
-      })
+      render_accepted(conn, observation, disposition)
     else
       {:error, :source_credential_changed} ->
         conn
@@ -84,6 +101,39 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   defp status_for(:created), do: :accepted
   defp status_for(:duplicate), do: :ok
+
+  defp render_accepted(conn, observation, disposition) do
+    reconciliation = reconcile_observation(conn.assigns.current_scope, observation, disposition)
+
+    conn
+    |> put_status(status_for(disposition))
+    |> json(%{
+      status: "accepted",
+      duplicate: disposition == :duplicate,
+      reconciliation: reconciliation,
+      observation: %{
+        id: observation.id,
+        observation_id: observation.idempotency_key,
+        observed_at: DateTime.to_iso8601(observation.observed_at),
+        source_id: observation.source_id
+      }
+    })
+  end
+
+  defp conflict(conn, observation),
+    do:
+      conn
+      |> put_status(:conflict)
+      |> json(%{
+        status: "rejected",
+        errors: [
+          %{
+            path: "observation_id",
+            message: "has already been used for a different payload",
+            observation_id: observation.id
+          }
+        ]
+      })
 
   defp reconcile_observation(scope, observation, disposition) do
     case Inventory.reconcile_observation_once(scope, observation.id) do
