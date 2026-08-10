@@ -72,6 +72,12 @@ defmodule RengaWeb.Layouts do
             Collectors
           </.link>
           <.link
+            navigate={~p"/inventory/enrollment"}
+            class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/65 transition hover:bg-base-200 hover:text-base-content"
+          >
+            Enrollment
+          </.link>
+          <.link
             navigate={~p"/organizations"}
             class="rounded-lg px-3 py-2 text-sm font-medium text-base-content/45 transition hover:bg-base-200 hover:text-base-content"
           >

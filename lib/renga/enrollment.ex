@@ -19,6 +19,7 @@ defmodule Renga.Enrollment do
     EnrollmentReplay,
     ManualGrant,
     OIDC,
+    OIDCProfileSetup,
     Policy,
     VerifierConfiguration
   }
@@ -943,6 +944,67 @@ defmodule Renga.Enrollment do
     admin_transaction(scope, fn ->
       %EnrollmentProfile{organization_id: scope.organization_id}
       |> EnrollmentProfile.changeset(attrs)
+      |> Repo.insert()
+    end)
+  end
+
+  @doc "Atomically creates immutable policy/verifier versions and their mutable profile selector."
+  def create_oidc_profile(%Scope{} = scope, attrs) do
+    admin_transaction(scope, fn ->
+      setup_changeset = OIDCProfileSetup.changeset(%OIDCProfileSetup{}, attrs)
+
+      if not setup_changeset.valid?, do: Repo.rollback(setup_changeset)
+
+      setup = Ecto.Changeset.apply_changes(setup_changeset)
+      claim_path = OIDCProfileSetup.path(setup.required_claim_path)
+
+      policy_document = %{
+        "rule" => %{
+          "id" => "required-oidc-claim",
+          "attribute" => ["verified", "claims" | claim_path],
+          "operator" => "eq",
+          "value" => setup.required_claim_value
+        }
+      }
+
+      policy_document =
+        if setup.subject_cardinality == "group",
+          do: Map.put(policy_document, "limits", %{"max_active" => setup.group_max}),
+          else: policy_document
+
+      policy =
+        %EnrollmentPolicy{
+          organization_id: scope.organization_id,
+          created_by_membership_id: scope.membership_id
+        }
+        |> EnrollmentPolicy.changeset(%{
+          name: setup.name,
+          version: next_version(EnrollmentPolicy, scope.organization_id, setup.name),
+          document: policy_document
+        })
+        |> Repo.insert!()
+
+      verifier =
+        %VerifierConfiguration{
+          organization_id: scope.organization_id,
+          created_by_membership_id: scope.membership_id
+        }
+        |> VerifierConfiguration.changeset(%{
+          name: setup.name,
+          version: next_version(VerifierConfiguration, scope.organization_id, setup.name),
+          kind: "oidc",
+          subject_cardinality: setup.subject_cardinality,
+          configuration: OIDCProfileSetup.configuration(setup_changeset)
+        })
+        |> Repo.insert!()
+
+      %EnrollmentProfile{organization_id: scope.organization_id}
+      |> EnrollmentProfile.changeset(%{
+        name: setup.name,
+        selector: setup.selector,
+        enrollment_policy_id: policy.id,
+        verifier_configuration_id: verifier.id
+      })
       |> Repo.insert()
     end)
   end

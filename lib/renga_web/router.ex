@@ -87,6 +87,7 @@ defmodule RengaWeb.Router do
       live "/inventory/resources", ResourceLive.Index, :index
       live "/inventory/resources/:id", ResourceLive.Show, :show
       live "/inventory/operations", InventoryOperationsLive, :index
+      live "/inventory/enrollment", EnrollmentSettingsLive, :index
     end
 
     post "/organizations/select", OrganizationSessionController, :create
