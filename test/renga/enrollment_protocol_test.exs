@@ -260,6 +260,48 @@ defmodule Renga.EnrollmentProtocolTest do
     end
   end
 
+  test "singleton OIDC identity serializes distinct installation challenges" do
+    sandbox_owner = self()
+    fixture = oidc_fixture()
+    submissions = distinct_oidc_submissions(fixture, 2)
+
+    results = concurrently(sandbox_owner, submissions)
+
+    assert Enum.count(results, &match?({:ok, %{status: "accepted"}}, &1)) == 1
+
+    assert [{:ok, %{status: "denied", reason: "identity_cardinality_exceeded"}} = denied] =
+             Enum.filter(results, &match?({:ok, %{status: "denied"}}, &1))
+
+    denied_index = Enum.find_index(results, &(&1 == denied))
+    denied_submission = Enum.at(submissions, denied_index)
+
+    assert {:ok, %{"status" => "denied", "reason" => "identity_cardinality_exceeded"}} =
+             submit(denied_submission)
+
+    assert Repo.aggregate(from(b in EnrollmentBinding, where: b.status == "active"), :count) == 1
+  end
+
+  test "group OIDC identity races never exceed the policy active-binding limit" do
+    sandbox_owner = self()
+    policy = put_in(oidc_allow_policy(), ["limits"], %{"max_active" => 2})
+    fixture = oidc_fixture(policy: policy, subject_cardinality: "group")
+    submissions = distinct_oidc_submissions(fixture, 3)
+
+    results = concurrently(sandbox_owner, submissions)
+
+    assert Enum.count(results, &match?({:ok, %{status: "accepted"}}, &1)) == 2
+
+    assert Enum.count(
+             results,
+             &match?(
+               {:ok, %{status: "denied", reason: "identity_cardinality_exceeded"}},
+               &1
+             )
+           ) == 1
+
+    assert Repo.aggregate(from(b in EnrollmentBinding, where: b.status == "active"), :count) == 2
+  end
+
   # Manual grants have unique subjects, so singleton/group cardinality cannot be
   # meaningfully exercised without fabricating verifier semantics.
   defp enrollment_fixture(opts \\ []) do
@@ -321,7 +363,7 @@ defmodule Renga.EnrollmentProtocolTest do
       Enrollment.create_verifier_configuration(base.scope, %{
         name: "oidc",
         kind: "oidc",
-        subject_cardinality: "singleton",
+        subject_cardinality: Keyword.get(opts, :subject_cardinality, "singleton"),
         configuration: configuration
       })
 
@@ -361,6 +403,19 @@ defmodule Renga.EnrollmentProtocolTest do
       metadata: metadata,
       proof: :crypto.sign(:eddsa, :none, transcript, [fixture.private, :ed25519])
     }
+  end
+
+  defp distinct_oidc_submissions(fixture, count) do
+    for _ <- 1..count do
+      {public, private} = :crypto.generate_key(:eddsa, :ed25519)
+
+      challenge_fixture =
+        fixture
+        |> Map.merge(%{public: public, private: private})
+        |> then(&Map.put(&1, :challenge, challenge_fixture(&1, Ecto.UUID.generate())))
+
+      oidc_submission(challenge_fixture)
+    end
   end
 
   defp oidc_token(fixture, bound?) do
@@ -481,7 +536,7 @@ defmodule Renga.EnrollmentProtocolTest do
         assert Sandbox.allow(Repo, owner, self()) in [:ok, :not_found]
         submit(submission)
       end,
-      max_concurrency: 2,
+      max_concurrency: length(submissions),
       timeout: 10_000,
       ordered: true
     )
