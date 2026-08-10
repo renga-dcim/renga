@@ -4,6 +4,8 @@ pub mod cancellation;
 pub mod collectors;
 pub mod command;
 pub mod config;
+pub mod enrollment;
 pub mod payload;
 pub mod scheduler;
+pub mod state;
 pub mod transport;
