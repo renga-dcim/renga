@@ -1,17 +1,21 @@
 # Renga server base URL. Required; no default. Replace this placeholder.
 renga_url = "https://renga.example.invalid"
 
+# Automated enrollment is the default when omitted. Use "legacy_token" only
+# during migration; modes never fall back to one another.
+auth_mode = "enrolled"
+
 # SECURITY: Keep false in production. Setting true permits plaintext HTTP, which
 # exposes the bearer token and inventory to network interception. Use only for
 # deliberate local development against a trusted loopback service.
 allow_insecure_http = false
 
-# Source bearer token. Required; no default. This placeholder is not a secret.
-token = "replace-with-source-token"
+organization = "replace-with-organization-slug"
+profile = "replace-with-enrollment-profile"
+oidc_token_file = "/run/secrets/renga-oidc-token"
+state_path = "/var/lib/renga-agent"
 
-# Stable identity for this installation. Required; no default. Generate once with
-# `uuidgen`, store it here, and preserve it across upgrades.
-installation_id = "00000000-0000-4000-8000-000000000000"
+# For migration instead set auth_mode="legacy_token", token, and installation_id.
 
 # Optional intervals and transport policy, all expressed in seconds.
 # Omitted values use the defaults shown below; every value must be greater than zero.
