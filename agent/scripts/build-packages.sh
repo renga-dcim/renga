@@ -130,6 +130,10 @@ if [ -f /etc/renga/agent.toml ]; then
     chown root:renga-agent /etc/renga/agent.toml
     chmod 0640 /etc/renga/agent.toml
 fi
+# Also provision state for systems where the unit has not run yet. systemd's
+# StateDirectory settings enforce the same owner and mode at service startup.
+# This directory is intentionally retained by every package removal path.
+install -d -o renga-agent -g renga-agent -m 0700 /var/lib/renga-agent
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
