@@ -28,6 +28,6 @@ defmodule Renga.Enrollment.EnrollmentAttempt do
         :status
       ])
       |> validate_inclusion(:status, ~w(received verified rejected unavailable))
-      |> validate_length(:evidence_digest, is: 32)
+      |> validate_length(:evidence_digest, is: 32, count: :bytes)
       |> check_constraint(:status, name: :enrollment_attempts_valid)
 end

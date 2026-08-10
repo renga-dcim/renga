@@ -29,8 +29,8 @@ defmodule Renga.Enrollment.AgentCredential do
         :key_thumbprint,
         :expires_at
       ])
-      |> validate_length(:credential_id, min: 32)
-      |> validate_length(:public_key, is: 32)
-      |> validate_length(:key_thumbprint, is: 32)
+      |> validate_length(:credential_id, min: 32, count: :bytes)
+      |> validate_length(:public_key, is: 32, count: :bytes)
+      |> validate_length(:key_thumbprint, is: 32, count: :bytes)
       |> validate_inclusion(:status, ~w(active quarantined revoked expired))
 end
