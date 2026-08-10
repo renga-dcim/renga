@@ -158,12 +158,93 @@ longer qualifies, configurable actions include audit-only, renewal denial,
 quarantine, and revocation. Begin with explicit administration and auditability,
 not silent revocation after policy edits.
 
+** Implementation Contract
+
+Enrollment profiles are mutable organization-scoped selectors that point to one
+immutable policy version and one immutable verifier-configuration version.
+Disabling a profile or verifier is an emergency control checked both when a
+challenge is created and when it is finalized. Version rows are never edited in
+place. Database foreign keys preserve organization scope across profiles,
+challenges, identities, bindings, decisions, Collectors, and credentials.
+
+A challenge has one terminal transition: =open -> accepted=, =open -> denied=,
+or =open -> expired=. The first valid proof submission records a digest of the
+complete submission and its stable response. A retry with the same key and
+submission digest returns that response without re-verifying evidence; any
+different submission conflicts. Invalid key proof and unavailable verifiers do
+not consume a challenge. A policy denial is terminal only after its audit record
+commits. Manual grants are consumed only by an accepted binding; verified
+unbound bearer evidence is replay-protected by token digest or =jti= and is
+consumed by any terminal policy decision.
+
+Finalization locks records in the order organization, profile and challenge,
+replay material, enrollment identity, binding, Collector, and credential. It
+rechecks challenge expiry and emergency controls in the transaction. An
+=EnrollmentIdentity= owns the normalized organization, verifier configuration,
+issuer, and subject namespace. An =EnrollmentBinding= connects that identity to
+the accepted Source, Agent, installation UUID, key, assignments, and grants.
+Verifier configuration, not submitted evidence, declares subject cardinality.
+Singleton replacement requires an explicit replacement decision; group limits
+and rates serialize on the identity. Same-identity, same-installation, same-key
+retries are idempotent across challenges.
+
+The runtime authentication transcript is versioned and domain-separated. It
+binds credential ID, installation UUID, method, canonical request target,
+timestamp, random nonce, content type, and SHA-256 of the exact request bytes.
+Phoenix records the bounded raw-body digest before JSON decoding. Authentication
+strictly parses one value for each signed header, verifies the signature, then
+atomically rechecks organization, Source, Agent, and credential status and
+consumes a hashed nonce. Business transactions repeat those lifecycle checks
+under locks before side effects. A consumed nonce remains consumed if later
+business validation fails; a retry uses a fresh nonce and signature.
+
+Enrollment key proof uses a separate versioned transcript and binds the
+challenge, key, installation UUID, evidence digest, requested capabilities, and
+other submitted metadata. Key-authenticated runtime requests require the exact
+pre-enrolled Agent and never invoke the legacy first-check-in upsert behavior.
+New automatically enrolled Sources have no bearer token. Legacy bearer routes
+remain an explicit migration mode and never serve as fallback for malformed key
+authentication.
+
+OIDC verification uses a maintained JOSE implementation and =Req= for bounded
+HTTPS discovery and JWKS retrieval. Configuration fixes issuer, audience,
+authorized-party rules, asymmetric algorithms, claim types, subject extraction,
+cardinality, freshness, clock skew, challenge-binding mode, and outbound URLs.
+Tokens cannot supply trust URLs or algorithms. Redirects, URL credentials, and
+unbounded/stale key sets are rejected. Persist the actual verification-key
+thumbprint and safe public JWK material, never the JWT. Unbound bearer profiles
+record lower assurance and must explicitly permit it.
+
+Policy conditions have stable IDs, explicit =all=/=any= structure, bounded
+depth and size, no implicit coercion, and fail closed for missing attributes,
+unknown operators, or type errors. Admission conditions can read only verified
+and server-derived attributes. Policy assignments and grants are stored apart
+from self-reported Agent metadata and capabilities; requested capabilities may
+only narrow policy output.
+
+Credential renewal locks the credential and appends a credential event. It is
+monotonic, server-time bounded, and allowed only for the same active unexpired
+key. Revocation wins races and is irreversible. Re-attestation uses a new
+challenge; key replacement requires old-and-new proof or an explicit scoped
+administrator decision. Source status controls the whole Collector, Agent
+status controls the installation, and credential status controls one key; all
+must be active for runtime requests. Lease expiry does not revoke or delete any
+of them.
+
+The agent uses explicit =enrolled= and =legacy_token= authentication modes. It
+creates installation UUID and key only while holding a state lock, persists
+state with directory mode =0700= and file mode =0600= using a symlink-safe
+atomic write and durable rename, and rereads externally managed OIDC evidence
+instead of copying it into state. It never silently falls back between modes.
+
 * Milestones
 
-- [ ] Add versioned policies and verifier configurations, challenges, attempts, and structured decisions.
+- [ ] Add versioned profiles, policies, and verifier configurations; challenges,
+  replay state, identities, bindings, attempts, and structured decisions.
 - [ ] Generate installation keypairs and require challenge proof of possession.
 - [ ] Add idempotent atomic finalization that consumes an accepted attempt, creates Source+Agent, records the allow decision, and issues a key-bound credential.
-- [ ] Add runtime authentication, renewal, and administrative revocation; do not deploy short-lived credentials without renewal.
+- [ ] Add exact-body runtime authentication, renewal history, and administrative
+  revocation; do not deploy short-lived credentials without renewal.
 - [ ] Deliver configured OIDC workload identity as the first user-visible automated path, with image preparation and first-boot enrollment.
 - [ ] Add manual grants and operator approval as optional development, static-infrastructure, and break-glass verifiers, not the default path.
 - [ ] Add re-attestation, quarantine, key replacement, and provider-lifecycle retirement workflows.
@@ -183,4 +264,9 @@ not silent revocation after policy edits.
 
 - [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete progress.
 - [ ] Run focused enrollment context, API, and agent tests introduced by each milestone.
+- [ ] Cover concurrent same/different submission retries, singleton and group
+  races, evidence replay, modified signed bodies, duplicate nonces, lifecycle
+  changes between authentication and ingestion, and renewal/revocation races.
+- [ ] Cover OIDC algorithm, issuer, audience, freshness, unknown-key, stale-JWKS,
+  redirect, and response-size failures.
 - [ ] Run =mix precommit= after implementation changes.
