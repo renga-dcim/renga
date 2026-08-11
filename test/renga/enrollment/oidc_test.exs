@@ -6,6 +6,15 @@ defmodule Renga.Enrollment.OIDCTest do
   setup do
     JWKSCache.clear()
     Req.Test.set_req_test_to_shared(OIDC)
+    previous_resolver = Application.get_env(:renga, :oidc_resolver)
+    Application.put_env(:renga, :oidc_resolver, fn _host -> {:ok, [{8, 8, 8, 8}]} end)
+
+    on_exit(fn ->
+      if previous_resolver,
+        do: Application.put_env(:renga, :oidc_resolver, previous_resolver),
+        else: Application.delete_env(:renga, :oidc_resolver)
+    end)
+
     key = JOSE.JWK.generate_key({:okp, :Ed25519})
     public = public_jwk(key, "key-#{System.unique_integer([:positive])}")
     nonce = :crypto.strong_rand_bytes(32)
@@ -96,6 +105,18 @@ defmodule Renga.Enrollment.OIDCTest do
     assert_invalid(f, Map.delete(claims(f), "roles"), %{"required_claims" => required})
   end
 
+  test "nested claim paths fail closed when an intermediate value is a scalar", f do
+    claims = Map.put(claims(f), "identity", "unexpected-scalar")
+
+    assert_invalid(f, claims, %{"subject_claim" => ["identity", "sub"]})
+
+    assert_invalid(f, claims, %{
+      "required_claims" => [%{"path" => ["identity", "role"], "type" => "string"}]
+    })
+
+    assert_invalid(f, Map.put(claims, "cnf", "unexpected-scalar"))
+  end
+
   test "rejects wrong nonce and installation key thumbprint", f do
     assert_invalid(f, Map.put(claims(f), "nonce", "wrong"))
     assert_invalid(f, put_in(claims(f), ["cnf", "jkt"], "wrong"))
@@ -125,6 +146,54 @@ defmodule Renga.Enrollment.OIDCTest do
     assert_config_invalid(
       remote_config(f, %{"http_timeout_ms" => 0, "max_jwks_staleness_seconds" => 60})
     )
+  end
+
+  test "configuration rejects unsafe JWKS URL literals and ports", f do
+    for url <- [
+          "https://127.0.0.1/jwks",
+          "https://[::1]/jwks",
+          "https://10.2.3.4/jwks",
+          "https://169.254.1.2/jwks",
+          "https://[::ffff:192.168.1.2]/jwks",
+          "https://issuer.example:8443/jwks"
+        ] do
+      assert_config_invalid(remote_config(f, %{"jwks_url" => url, "allow_insecure_http" => nil}))
+    end
+  end
+
+  test "resolver rejects private and mixed DNS answers", f do
+    config = remote_config(f)
+
+    for answers <- [[{10, 0, 0, 1}], [{8, 8, 8, 8}, {192, 168, 1, 1}]] do
+      JWKSCache.clear()
+      Application.put_env(:renga, :oidc_resolver, fn "issuer.example" -> {:ok, answers} end)
+      assert {:error, :unavailable} = verify(f, claims(f), config)
+    end
+  end
+
+  test "public DNS answer pins the request while retaining the original Host", f do
+    Application.put_env(:renga, :oidc_resolver, fn "issuer.example" -> {:ok, [{8, 8, 4, 4}]} end)
+
+    Req.Test.expect(OIDC, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "host") == ["issuer.example"]
+      assert conn.request_path == "/jwks"
+      Req.Test.json(conn, %{"keys" => [f.public]})
+    end)
+
+    assert {:ok, _} = verify(f, claims(f), remote_config(f))
+  end
+
+  test "issuer and normalized subject are bounded by UTF-8 byte length", f do
+    prefix = "https://issuer.example/"
+    issuer_255 = prefix <> String.duplicate("a", 255 - byte_size(prefix))
+    issuer_256 = issuer_255 <> "a"
+    assert :ok = OIDC.validate_configuration(config(f, %{"issuer" => issuer_255}))
+    assert_config_invalid(config(f, %{"issuer" => issuer_256}))
+
+    assert {:ok, _} = verify(f, Map.put(claims(f), "sub", String.duplicate("a", 255)))
+    assert_invalid(f, Map.put(claims(f), "sub", String.duplicate("a", 256)))
+    assert {:ok, _} = verify(f, Map.put(claims(f), "sub", String.duplicate("é", 127)))
+    assert_invalid(f, Map.put(claims(f), "sub", String.duplicate("é", 128)))
   end
 
   test "rejects malformed and oversized compact tokens without leaking them", f do
@@ -158,12 +227,12 @@ defmodule Renga.Enrollment.OIDCTest do
     Req.Test.stub(OIDC, fn conn -> Req.Test.json(conn, %{"keys" => [f.public]}) end)
     assert {:ok, _} = verify(f, claims(f), config)
 
-    [{url, keys, fetched}] = :ets.tab2list(JWKSCache)
-    :ets.insert(JWKSCache, {url, keys, fetched - 61})
+    [{url, _keys, _fetched}] = JWKSCache.entries()
+    JWKSCache.age(url, 61)
     Req.Test.stub(OIDC, fn conn -> Plug.Conn.send_resp(conn, 503, "down") end)
     assert {:ok, _} = verify(f, claims(f), config)
 
-    :ets.insert(JWKSCache, {url, keys, fetched - 121})
+    JWKSCache.age(url, 60)
     assert {:error, :unavailable} = verify(f, claims(f), config)
   end
 
@@ -179,9 +248,14 @@ defmodule Renga.Enrollment.OIDCTest do
     assert {:error, :unavailable} = verify(unknown, claims(f), config)
 
     assert [{_, [cached], _}] =
-             Enum.reject(:ets.tab2list(JWKSCache), &match?({{:forced_refresh, _}, _, _}, &1))
+             Enum.reject(JWKSCache.entries(), &match?({{:forced_refresh, _}, _, _}, &1))
 
     assert cached["kid"] == f.public["kid"]
+  end
+
+  test "non-owner processes cannot inject trusted cache entries" do
+    assert_raise ArgumentError, fn -> :ets.insert(JWKSCache, {"attacker", [], 0}) end
+    assert [] == JWKSCache.entries()
   end
 
   defp config(f, overrides \\ %{}) do

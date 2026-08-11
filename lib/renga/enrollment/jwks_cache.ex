@@ -13,7 +13,7 @@ defmodule Renga.Enrollment.JWKSCache do
 
   @impl true
   def init(:ok) do
-    :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    :ets.new(@table, [:named_table, :protected, :set, read_concurrency: true])
     {:ok, %{}}
   end
 
@@ -29,8 +29,32 @@ defmodule Renga.Enrollment.JWKSCache do
   end
 
   def clear do
+    GenServer.call(__MODULE__, :clear)
+  end
+
+  def entries, do: GenServer.call(__MODULE__, :entries)
+  def age(url, seconds), do: GenServer.call(__MODULE__, {:age, url, seconds})
+
+  @impl true
+  def handle_call(:clear, _from, state) do
     :ets.delete_all_objects(@table)
-    :ok
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:entries, _from, state), do: {:reply, :ets.tab2list(@table), state}
+
+  def handle_call({:age, url, seconds}, _from, state) do
+    case :ets.lookup(@table, url) do
+      [{^url, keys, fetched}] -> :ets.insert(@table, {url, keys, fetched - seconds})
+      [] -> :ok
+    end
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:insert, entry}, _from, state) do
+    :ets.insert(@table, entry)
+    {:reply, :ok, state}
   end
 
   defp refresh(config, previous, validator, force_refresh) do
@@ -63,16 +87,25 @@ defmodule Renga.Enrollment.JWKSCache do
         else: {:cont, {request, %{response | body: body}}}
     end
 
+    {:ok, pinned_url, original_host, address} = Renga.Enrollment.SafeURL.pin(config["jwks_url"])
+    transport = if tuple_size(address) == 8, do: [inet6: true], else: []
+
     options =
       [
-        url: config["jwks_url"],
+        url: pinned_url,
         method: :get,
+        headers: [{"host", original_host}],
         redirect: false,
         retry: false,
         raw: true,
         compressed: false,
         receive_timeout: min(config["http_timeout_ms"] || 2_000, 5_000),
-        connect_options: [timeout: min(config["http_timeout_ms"] || 2_000, 5_000)],
+        connect_options: [
+          hostname: original_host,
+          protocols: [:http1],
+          transport_opts: transport,
+          timeout: min(config["http_timeout_ms"] || 2_000, 5_000)
+        ],
         into: collector
       ] ++ Application.get_env(:renga, :oidc_req_options, [])
 
@@ -91,7 +124,7 @@ defmodule Renga.Enrollment.JWKSCache do
     with {:ok, %{"keys" => keys}} <- Jason.decode(body),
          {:ok, sanitized_keys} <- validator.(keys) do
       now = System.monotonic_time(:second)
-      :ets.insert(@table, {config["jwks_url"], sanitized_keys, now})
+      cache_insert({config["jwks_url"], sanitized_keys, now})
       record_forced_refresh(config["jwks_url"], force_refresh, :ok)
       {:ok, sanitized_keys, now}
     else
@@ -120,7 +153,9 @@ defmodule Renga.Enrollment.JWKSCache do
   defp record_forced_refresh(_url, false, _status), do: :ok
 
   defp record_forced_refresh(url, true, status),
-    do: :ets.insert(@table, {{:forced_refresh, url}, System.monotonic_time(:second), status})
+    do: cache_insert({{:forced_refresh, url}, System.monotonic_time(:second), status})
+
+  defp cache_insert(entry), do: GenServer.call(__MODULE__, {:insert, entry})
 
   defp stale_fallback(config, %{keys: keys, fetched_at: fetched_at}) do
     age = System.monotonic_time(:second) - fetched_at

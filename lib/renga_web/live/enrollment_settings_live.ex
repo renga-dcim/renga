@@ -113,8 +113,8 @@ defmodule RengaWeb.EnrollmentSettingsLive do
               type="select"
               label="Binding mode"
               options={[
-                {"Challenge bound (recommended)", "challenge_bound"},
-                {"Bearer unbound", "bearer_unbound"}
+                {"Bearer unbound (packaged agent)", "bearer_unbound"},
+                {"Challenge bound (custom token provider)", "challenge_bound"}
               ]}
             />
             <.input

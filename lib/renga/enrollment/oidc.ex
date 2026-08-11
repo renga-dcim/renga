@@ -71,7 +71,10 @@ defmodule Renga.Enrollment.OIDC do
        else: {:error, :invalid_configuration}
   end
 
-  defp issuer(value), do: validate_url(value, false)
+  defp issuer(value) when is_binary(value) and byte_size(value) <= 255,
+    do: Renga.Enrollment.SafeURL.validate(value, false)
+
+  defp issuer(_), do: {:error, :invalid_configuration}
 
   defp audiences(v) when is_list(v) and v != [] and length(v) <= 16,
     do:
@@ -144,23 +147,11 @@ defmodule Renga.Enrollment.OIDC do
         not Map.has_key?(c, "jwks") and
           is_integer(c["max_jwks_staleness_seconds"]) and
           c["max_jwks_staleness_seconds"] in 0..86_400,
-        do: validate_url(url, c["allow_insecure_http"] == true),
+        do: Renga.Enrollment.SafeURL.validate(url, c["allow_insecure_http"] == true),
         else: {:error, :invalid_configuration}
       )
 
   defp jwks_source(_), do: {:error, :invalid_configuration}
-
-  defp validate_url(value, allow_http) when is_binary(value) do
-    uri = URI.parse(value)
-    test_http = allow_http and Code.ensure_loaded?(Mix) and Mix.env() == :test
-
-    if uri.scheme in if(test_http, do: ["https", "http"], else: ["https"]) and is_binary(uri.host) and
-         uri.host != "" and is_nil(uri.userinfo) and is_nil(uri.query) and is_nil(uri.fragment),
-       do: :ok,
-       else: {:error, :invalid_configuration}
-  end
-
-  defp validate_url(_, _), do: {:error, :invalid_configuration}
 
   defp verification_key(%{"jwks" => keys}, header) do
     with {:ok, sanitized} <- sanitize_keys(keys), do: select_key(sanitized, header)
@@ -313,7 +304,8 @@ defmodule Renga.Enrollment.OIDC do
          true <- iat < exp and nbf < exp,
          true <- now - iat <= c["max_token_age_seconds"] + skew,
          true <- exp - iat <= c["max_token_lifetime_seconds"],
-         subject when is_binary(subject) and subject != "" <- get_in(claims, c["subject_claim"]),
+         subject when is_binary(subject) and subject != "" and byte_size(subject) <= 255 <-
+           claim_at(claims, c["subject_claim"]),
          :ok <- validate_required_claims(claims, Map.get(c, "required_claims", [])) do
       :ok
     else
@@ -350,7 +342,7 @@ defmodule Renga.Enrollment.OIDC do
 
   defp validate_required_claims(claims, requirements) do
     if Enum.all?(requirements, fn requirement ->
-         required_type?(get_in(claims, requirement["path"]), requirement["type"])
+         required_type?(claim_at(claims, requirement["path"]), requirement["type"])
        end),
        do: :ok,
        else: {:error, :invalid_claims}
@@ -379,7 +371,7 @@ defmodule Renga.Enrollment.OIDC do
 
     expected_jkt = JOSE.JWK.thumbprint(installation_jwk)
 
-    if claims["nonce"] == expected_nonce and get_in(claims, ["cnf", "jkt"]) == expected_jkt,
+    if claims["nonce"] == expected_nonce and claim_at(claims, ["cnf", "jkt"]) == expected_jkt,
       do: :ok,
       else: {:error, :binding}
   end
@@ -391,7 +383,7 @@ defmodule Renga.Enrollment.OIDC do
     {:ok,
      %{
        "issuer" => claims["iss"],
-       "subject" => get_in(claims, c["subject_claim"]),
+       "subject" => claim_at(claims, c["subject_claim"]),
        "issued_at" => claims["iat"],
        "expires_at" => claims["exp"],
        "assurance" =>
@@ -406,4 +398,11 @@ defmodule Renga.Enrollment.OIDC do
        "kid" => header["kid"]
      }}
   end
+
+  defp claim_at(value, []), do: value
+
+  defp claim_at(map, [key | rest]) when is_map(map) and is_binary(key),
+    do: claim_at(Map.get(map, key), rest)
+
+  defp claim_at(_value, _path), do: nil
 end

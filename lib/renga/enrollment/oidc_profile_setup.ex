@@ -14,7 +14,7 @@ defmodule Renga.Enrollment.OIDCProfileSetup do
     field :algorithm, :string, default: "RS256"
     field :subject_claim, :string, default: "sub"
     field :subject_cardinality, :string, default: "singleton"
-    field :binding_mode, :string, default: "challenge_bound"
+    field :binding_mode, :string, default: "bearer_unbound"
     field :authorized_party, :string
     field :required_claim_path, :string
     field :required_claim_value, :string
