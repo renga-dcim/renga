@@ -24,6 +24,8 @@ defmodule Renga.Enrollment.EnrollmentIdentity do
         :subject_cardinality
       ])
       |> validate_inclusion(:subject_cardinality, ~w(singleton group))
+      |> validate_length(:issuer, max: 255, count: :bytes)
+      |> validate_length(:subject, max: 255, count: :bytes)
       |> unique_constraint([:organization_id, :verifier_configuration_id, :issuer, :subject],
         name: :enrollment_identities_namespace_index
       )
