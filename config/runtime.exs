@@ -20,6 +20,13 @@ if System.get_env("PHX_SERVER") do
   config :renga, RengaWeb.Endpoint, server: true
 end
 
+# Set this only to the comma-separated CIDRs of reverse proxies that directly
+# connect to Renga. Those peers may supply X-Forwarded-For for the public
+# enrollment challenge rate limiter; all other forwarded headers are ignored.
+if trusted_proxy_cidrs = System.get_env("ENROLLMENT_TRUSTED_PROXY_CIDRS") do
+  config :renga, :enrollment_trusted_proxy_cidrs, String.split(trusted_proxy_cidrs, ",")
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

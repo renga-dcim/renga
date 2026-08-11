@@ -164,7 +164,8 @@ defmodule RengaWeb.AgentCredentialAuth do
       |> EnrollmentReplay.changeset(%{
         kind: "runtime_nonce",
         value_hash: :crypto.hash(:sha256, values.nonce),
-        expires_at: DateTime.add(now, @skew_seconds * 2, :second)
+        # Retain through the final whole second in which the signed timestamp is valid.
+        expires_at: DateTime.from_unix!(values.timestamp + @skew_seconds + 1, :second)
       })
       |> insert_runtime_nonce!()
 

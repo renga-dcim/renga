@@ -28,6 +28,13 @@ defmodule Renga.Enrollment do
   alias Renga.Repo
 
   @credential_ttl_seconds 86_400
+  @default_open_challenge_limit 100
+  @issuance_cleanup_batch_size 25
+
+  @doc "The conservative per-profile limit for open, unexpired public challenges."
+  def open_challenge_limit do
+    Application.get_env(:renga, :open_challenge_limit, @default_open_challenge_limit)
+  end
 
   def list_profiles(%Scope{organization_id: id}),
     do: scoped(EnrollmentProfile, id) |> order_by([r], r.selector) |> Repo.all()
@@ -75,19 +82,24 @@ defmodule Renga.Enrollment do
              do: Repo.rollback(:agent_credential_changed)
 
       horizon = DateTime.add(now, @credential_ttl_seconds, :second)
+      renewal_threshold = DateTime.add(now, div(@credential_ttl_seconds, 2), :second)
 
       if DateTime.compare(locked.expires_at, horizon) == :gt,
         do: Repo.rollback(:credential_horizon_invalid)
 
-      previous_expiry = locked.expires_at
-      renewed = locked |> Ecto.Changeset.change(expires_at: horizon) |> Repo.update!()
+      if DateTime.compare(locked.expires_at, renewal_threshold) in [:eq, :gt] do
+        locked
+      else
+        previous_expiry = locked.expires_at
+        renewed = locked |> Ecto.Changeset.change(expires_at: horizon) |> Repo.update!()
 
-      put_credential_event!(renewed, "renewed", now, %{
-        "previous_expires_at" => DateTime.to_iso8601(previous_expiry),
-        "expires_at" => DateTime.to_iso8601(horizon)
-      })
+        put_credential_event!(renewed, "renewed", now, %{
+          "previous_expires_at" => DateTime.to_iso8601(previous_expiry),
+          "expires_at" => DateTime.to_iso8601(horizon)
+        })
 
-      renewed
+        renewed
+      end
     end)
   end
 
@@ -253,16 +265,35 @@ defmodule Renga.Enrollment do
       with %Organization{} = org <-
              Organization
              |> where([o], o.slug == ^org_slug and o.status == "active")
+             # Public issuance follows the global organization -> profile lock order.
+             |> lock("FOR KEY SHARE")
              |> Repo.one(),
            %EnrollmentProfile{} = profile <-
              EnrollmentProfile
              |> where([p], p.organization_id == ^org.id and p.selector == ^selector and p.enabled)
+             |> lock("FOR UPDATE")
              |> Repo.one(),
            %VerifierConfiguration{kind: kind, enabled: true} = verifier
            when kind in ~w(manual oidc) <-
              Repo.get(VerifierConfiguration, profile.verifier_configuration_id),
            %EnrollmentPolicy{} = policy <-
              Repo.get(EnrollmentPolicy, profile.enrollment_policy_id) do
+        # Keep public issuance work bounded; the profile lock makes this count-and-insert
+        # authoritative even when many unauthenticated issuers arrive concurrently.
+        # TODO: Consider archiving historical terminal enrollment audit data to ClickHouse.
+        reclaim_expired_challenges(profile.id, now)
+
+        open_count =
+          EnrollmentChallenge
+          |> where(
+            [c],
+            c.enrollment_profile_id == ^profile.id and c.status == "open" and
+              is_nil(c.submission_digest) and c.expires_at > ^now
+          )
+          |> Repo.aggregate(:count)
+
+        if open_count >= open_challenge_limit(), do: Repo.rollback(:not_found)
+
         challenge =
           %EnrollmentChallenge{
             organization_id: org.id,
@@ -289,6 +320,28 @@ defmodule Renga.Enrollment do
         _ -> Repo.rollback(:not_found)
       end
     end)
+  end
+
+  defp reclaim_expired_challenges(profile_id, now) do
+    Repo.query!(
+      """
+      DELETE FROM enrollment_challenges
+      WHERE id IN (
+        SELECT id FROM enrollment_challenges
+        WHERE enrollment_profile_id = $1 AND status = 'open'
+          AND submission_digest IS NULL AND expires_at <= $2
+          AND NOT EXISTS (
+            SELECT 1 FROM enrollment_attempts
+            WHERE enrollment_attempts.organization_id = enrollment_challenges.organization_id
+              AND enrollment_attempts.enrollment_challenge_id = enrollment_challenges.id
+          )
+        ORDER BY expires_at
+        FOR UPDATE SKIP LOCKED
+        LIMIT $3
+      )
+      """,
+      [Ecto.UUID.dump!(profile_id), now, @issuance_cleanup_batch_size]
+    )
   end
 
   @doc "Builds the exact domain-separated byte transcript signed by an installation key."
@@ -368,26 +421,40 @@ defmodule Renga.Enrollment do
 
   defp recover_terminal_result(challenge, digest, verifier_error) do
     Repo.transaction(fn ->
-      Organization
-      |> where([o], o.id == ^challenge.organization_id)
-      |> lock("FOR UPDATE")
-      |> Repo.one!()
+      org =
+        Organization
+        |> where([o], o.id == ^challenge.organization_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one()
 
-      EnrollmentProfile
-      |> where([p], p.id == ^challenge.enrollment_profile_id)
-      |> lock("FOR UPDATE")
-      |> Repo.one!()
+      profile =
+        EnrollmentProfile
+        |> where([p], p.id == ^challenge.enrollment_profile_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one()
 
       locked =
         EnrollmentChallenge
         |> where([c], c.id == ^challenge.id)
         |> lock("FOR UPDATE")
-        |> Repo.one!()
+        |> Repo.one()
 
-      case terminal_result(locked, digest) do
-        {:terminal, result} -> result
-        :conflict -> Repo.rollback(:submission_conflict)
-        :open -> Repo.rollback(verifier_error)
+      case {org, profile, locked} do
+        {nil, _, _} ->
+          Repo.rollback(:not_found)
+
+        {_, nil, _} ->
+          Repo.rollback(:not_found)
+
+        {_, _, nil} ->
+          Repo.rollback(:expired)
+
+        {_, _, locked} ->
+          case terminal_result(locked, digest) do
+            {:terminal, result} -> result
+            :conflict -> Repo.rollback(:submission_conflict)
+            :open -> Repo.rollback(verifier_error)
+          end
       end
     end)
   end
@@ -415,22 +482,26 @@ defmodule Renga.Enrollment do
   end
 
   defp finalize_locked(id, digest, evidence, requested, metadata) do
-    challenge0 = Repo.get!(EnrollmentChallenge, id)
+    challenge0 = Repo.get(EnrollmentChallenge, id)
+    if is_nil(challenge0), do: Repo.rollback(:expired)
 
     org =
       Organization
       |> where([o], o.id == ^challenge0.organization_id)
       |> lock("FOR UPDATE")
-      |> Repo.one!()
+      |> Repo.one()
 
     profile =
       EnrollmentProfile
       |> where([p], p.id == ^challenge0.enrollment_profile_id)
       |> lock("FOR UPDATE")
-      |> Repo.one!()
+      |> Repo.one()
 
     challenge =
-      EnrollmentChallenge |> where([c], c.id == ^id) |> lock("FOR UPDATE") |> Repo.one!()
+      EnrollmentChallenge |> where([c], c.id == ^id) |> lock("FOR UPDATE") |> Repo.one()
+
+    if is_nil(org) or is_nil(profile), do: Repo.rollback(:not_found)
+    if is_nil(challenge), do: Repo.rollback(:expired)
 
     verifier =
       VerifierConfiguration
@@ -763,7 +834,8 @@ defmodule Renga.Enrollment do
           |> Map.put(:assignments, same.assignments)
           |> Map.put(:grants, same.grants)
 
-        {:allow, effective_result, fn -> stable_existing(challenge, grant, digest, same, now) end}
+        {:allow, effective_result,
+         fn -> stable_existing(challenge, verifier.kind, grant, digest, same, now) end}
 
       installation_binding ->
         {:deny, %{reason: "installation_already_bound", condition_ids: []}, nil}
@@ -857,12 +929,41 @@ defmodule Renga.Enrollment do
     response
   end
 
-  defp stable_existing(challenge, grant, digest, binding, now) do
+  defp stable_existing(challenge, verifier_kind, grant, digest, binding, now) do
+    source =
+      Source
+      |> where(
+        [s],
+        s.id == ^binding.source_id and s.organization_id == ^binding.organization_id and
+          s.status == "active"
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    agent =
+      Agent
+      |> where(
+        [a],
+        a.id == ^binding.agent_id and a.source_id == ^binding.source_id and
+          a.organization_id == ^binding.organization_id and a.status == "active"
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
     credential =
       AgentCredential
-      |> where([c], c.agent_id == ^binding.agent_id and c.status == "active")
-      |> Repo.one!()
+      |> where(
+        [c],
+        c.organization_id == ^binding.organization_id and c.source_id == ^binding.source_id and
+          c.agent_id == ^binding.agent_id and c.status == "active" and
+          c.public_key == ^binding.public_key and c.key_thumbprint == ^binding.key_thumbprint
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
 
+    if is_nil(source) or is_nil(agent) or is_nil(credential), do: Repo.rollback(:unavailable)
+
+    credential = reauthorize_expired_oidc_credential(credential, verifier_kind, now)
     consume_grant(grant, binding, now)
 
     response = %{
@@ -878,6 +979,24 @@ defmodule Renga.Enrollment do
     terminalize(challenge, "accepted", digest, response, now)
     response
   end
+
+  defp reauthorize_expired_oidc_credential(credential, "oidc", now) do
+    if DateTime.compare(credential.expires_at, now) in [:lt, :eq] do
+      expires_at = DateTime.add(now, @credential_ttl_seconds, :second)
+      reauthorized = credential |> Ecto.Changeset.change(expires_at: expires_at) |> Repo.update!()
+
+      put_credential_event!(reauthorized, "reauthorized", now, %{
+        "previous_expires_at" => DateTime.to_iso8601(credential.expires_at),
+        "expires_at" => DateTime.to_iso8601(expires_at)
+      })
+
+      reauthorized
+    else
+      credential
+    end
+  end
+
+  defp reauthorize_expired_oidc_credential(credential, _verifier_kind, _now), do: credential
 
   defp consume_grant(%ManualGrant{accepted_at: nil} = grant, binding, now),
     do:
@@ -1050,6 +1169,7 @@ defmodule Renga.Enrollment do
 
   defp admin_transaction(%Scope{} = scope, operation) do
     Repo.transaction(fn ->
+      # This organization row lock serializes every version allocation for the tenant.
       active_org =
         Organization
         |> where([o], o.id == ^scope.organization_id and o.status == "active")

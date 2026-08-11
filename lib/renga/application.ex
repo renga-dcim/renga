@@ -13,7 +13,9 @@ defmodule Renga.Application do
     children = [
       RengaWeb.Telemetry,
       Renga.Enrollment.JWKSCache,
+      Renga.Enrollment.ChallengeRateLimiter,
       Renga.Repo,
+      Renga.Enrollment.Cleanup,
       {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Renga.PubSub},
       # Keep the endpoint last so infrastructure dependencies are ready first.

@@ -260,6 +260,23 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "#revoke-collector-#{source.id}")
     assert has_element?(view, "#rotate-collector-#{legacy_agent.source_id}")
 
+    original_source = Repo.reload!(source)
+    original_agent = Repo.reload!(agent)
+    original_credential = Repo.reload!(credential)
+    render_hook(view, "reset_collector", %{"id" => source.id})
+    assert Process.alive?(view.pid)
+    assert has_element?(view, "#flash-error", "Could not reset collector enrollment")
+    assert Repo.reload!(source) == original_source
+    assert Repo.reload!(agent) == original_agent
+    assert Repo.reload!(credential) == original_credential
+
+    render_hook(view, "rotate_collector", %{"id" => source.id})
+    assert Process.alive?(view.pid)
+    assert has_element?(view, "#flash-error", "Could not rotate collector credential")
+    assert Repo.reload!(source) == original_source
+    assert Repo.reload!(agent) == original_agent
+    assert Repo.reload!(credential) == original_credential
+
     view |> element("#quarantine-agent-credential-#{credential.id}") |> render_click()
     assert has_element?(view, "#agent-credential-state-#{credential.id}", "quarantined")
     assert has_element?(view, "#unquarantine-agent-credential-#{credential.id}")

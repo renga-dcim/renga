@@ -25,6 +25,8 @@ defmodule Renga.EnrollmentProtocolTest do
 
   setup do
     Sandbox.mode(Repo, {:shared, self()})
+    Req.Test.set_req_test_to_shared(Enrollment.OIDC)
+    Application.put_env(:renga, :oidc_resolver, fn _ -> {:ok, [{8, 8, 8, 8}]} end)
     bundle = enrollment_fixture()
     Map.put(bundle, :sandbox_owner, self())
   end
@@ -52,6 +54,30 @@ defmodule Renga.EnrollmentProtocolTest do
     assert grant.accepted_at && grant.accepted_enrollment_binding_id == binding.id
   end
 
+  test "an enrolled collector cannot be reset or lose enrollment provenance", fixture do
+    assert {:ok, %{status: "accepted", source_id: source_id}} =
+             fixture |> signed_submission(["inventory:read"]) |> submit()
+
+    source = Repo.get!(Source, source_id)
+    agent = Repo.one!(Agent)
+    binding = Repo.one!(EnrollmentBinding)
+    credential = Repo.one!(AgentCredential)
+
+    assert {:error, :key_bound_enrollment} =
+             Renga.Inventory.reset_collector_enrollment(fixture.scope, source.id)
+
+    assert {:error, :key_bound_enrollment} =
+             Renga.Inventory.rotate_collector_token(fixture.scope, source.id)
+
+    assert {:error, :key_bound_enrollment} =
+             Renga.Inventory.rotate_source_token(fixture.scope, source.id)
+
+    assert Repo.reload!(source) == source
+    assert Repo.reload!(agent) == agent
+    assert Repo.reload!(binding) == binding
+    assert Repo.reload!(credential) == credential
+  end
+
   test "policy deny is terminal and audited without consuming the grant" do
     fixture = enrollment_fixture(policy: deny_policy())
     assert {:ok, %{status: "denied"}} = fixture |> signed_submission([]) |> submit()
@@ -69,6 +95,50 @@ defmodule Renga.EnrollmentProtocolTest do
     assert {:error, :invalid_proof} = submit(submission)
     assert Repo.get!(EnrollmentChallenge, fixture.challenge.id).status == "open"
     assert Repo.aggregate(EnrollmentAttempt, :count) == 0
+  end
+
+  test "concurrent public issuance at the profile cap cannot overrun it", fixture do
+    limit = Enrollment.open_challenge_limit()
+
+    existing =
+      Repo.aggregate(
+        from(c in EnrollmentChallenge, where: c.enrollment_profile_id == ^fixture.profile.id),
+        :count
+      )
+
+    for _ <- 1..(limit - existing) do
+      assert {:ok, _} = issue_challenge(fixture)
+    end
+
+    results =
+      1..4
+      |> Enum.map(fn _ -> fn -> issue_challenge(fixture) end end)
+      |> concurrently_calls(fixture.sandbox_owner)
+
+    assert Enum.all?(results, &match?({:error, :not_found}, &1))
+
+    assert Repo.aggregate(
+             from(c in EnrollmentChallenge,
+               where: c.enrollment_profile_id == ^fixture.profile.id and c.status == "open"
+             ),
+             :count
+           ) == limit
+  end
+
+  test "expired open challenges are reclaimed before applying the cap", fixture do
+    limit = Enrollment.open_challenge_limit()
+
+    for _ <- 1..(limit - 1), do: assert({:ok, _} = issue_challenge(fixture))
+
+    expired_id = fixture.challenge.id
+    past = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(from(c in EnrollmentChallenge, where: c.id == ^expired_id),
+      set: [expires_at: past]
+    )
+
+    assert {:ok, _} = issue_challenge(fixture)
+    refute Repo.get(EnrollmentChallenge, expired_id)
   end
 
   test "exact terminal retry is stable despite expiry while a changed signed request conflicts",
@@ -237,6 +307,103 @@ defmodule Renga.EnrollmentProtocolTest do
     assert Repo.aggregate(EnrollmentBinding, :count) == 1
   end
 
+  test "OIDC re-enrollment reauthorizes the same key after its credential expires" do
+    fixture = oidc_fixture()
+    assert {:ok, first} = fixture |> oidc_submission() |> submit()
+    credential = Repo.one!(AgentCredential)
+    expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(from(c in AgentCredential, where: c.id == ^credential.id),
+      set: [expires_at: expired_at]
+    )
+
+    challenge = challenge_fixture(fixture, fixture.challenge.installation_id)
+    submission = oidc_submission(%{fixture | challenge: challenge})
+
+    assert {:ok, second} = submit(submission)
+    reauthorized = Repo.get!(AgentCredential, credential.id)
+
+    assert second.credential_id == first.credential_id
+    assert second.source_id == first.source_id
+    assert second.agent_id == first.agent_id
+    assert DateTime.compare(reauthorized.expires_at, Renga.Time.utc_now_ms()) == :gt
+    assert Repo.aggregate(EnrollmentBinding, :count) == 1
+
+    assert Enum.map(Repo.all(from e in CredentialEvent, order_by: e.inserted_at), & &1.kind) ==
+             ["issued", "reauthorized"]
+  end
+
+  test "OIDC re-enrollment rejects inactive or key-mismatched existing aggregates" do
+    for invalid <- [:source, :agent, :credential_key] do
+      fixture = oidc_fixture()
+      assert {:ok, first} = fixture |> oidc_submission() |> submit()
+      binding = Repo.get_by!(EnrollmentBinding, agent_id: first.agent_id)
+      credential = Repo.get_by!(AgentCredential, agent_id: first.agent_id)
+      expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+      Repo.update_all(from(c in AgentCredential, where: c.id == ^credential.id),
+        set: [expires_at: expired_at]
+      )
+
+      case invalid do
+        :source ->
+          Repo.update_all(from(s in Source, where: s.id == ^binding.source_id),
+            set: [status: "revoked"]
+          )
+
+        :agent ->
+          Repo.update_all(from(a in Agent, where: a.id == ^binding.agent_id),
+            set: [status: "disabled"]
+          )
+
+        :credential_key ->
+          Repo.update_all(from(c in AgentCredential, where: c.id == ^credential.id),
+            set: [public_key: :crypto.strong_rand_bytes(32)]
+          )
+      end
+
+      challenge = challenge_fixture(fixture, fixture.challenge.installation_id)
+      assert {:error, :unavailable} = submit(oidc_submission(%{fixture | challenge: challenge}))
+      assert Repo.get!(AgentCredential, credential.id).expires_at == expired_at
+
+      assert Repo.aggregate(
+               from(e in CredentialEvent, where: e.agent_credential_id == ^credential.id),
+               :count
+             ) == 1
+    end
+  end
+
+  test "cleanup deleting an expired challenge during remote verification returns a safe error" do
+    fixture = oidc_fixture(remote: true)
+    submission = oidc_submission(fixture)
+    parent = self()
+    sandbox_owner = self()
+
+    Req.Test.expect(Enrollment.OIDC, fn conn ->
+      send(parent, :verification_paused)
+      assert_receive :resume_verification, 5_000
+      Req.Test.json(conn, %{"keys" => [fixture.oidc_public]})
+    end)
+
+    task =
+      Task.async(fn ->
+        assert Sandbox.allow(Repo, sandbox_owner, self()) in [:ok, :not_found]
+        submit(submission)
+      end)
+
+    assert_receive :verification_paused, 5_000
+    past = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(from(c in EnrollmentChallenge, where: c.id == ^fixture.challenge.id),
+      set: [expires_at: past]
+    )
+
+    assert %{challenges: 1} = Enrollment.Cleanup.cleanup_once()
+    send(task.pid, :resume_verification)
+    assert {:error, :expired} = Task.await(task, 5_000)
+    refute Repo.get(EnrollmentChallenge, fixture.challenge.id)
+  end
+
   test "bearer-unbound OIDC replay and policy denial both consume the digest" do
     for policy <- [oidc_allow_policy(), deny_policy()] do
       fixture = oidc_fixture(binding_mode: "bearer_unbound", policy: policy)
@@ -357,7 +524,20 @@ defmodule Renga.EnrollmentProtocolTest do
     key = JOSE.JWK.generate_key({:okp, :Ed25519})
     public = oidc_public(key, "oidc-#{System.unique_integer([:positive])}")
     base = enrollment_fixture(policy: Keyword.get(opts, :policy, oidc_allow_policy()))
-    configuration = oidc_config(public, Keyword.get(opts, :binding_mode, "challenge_bound"))
+
+    configuration =
+      if Keyword.get(opts, :remote, false) do
+        public
+        |> oidc_config(Keyword.get(opts, :binding_mode, "challenge_bound"))
+        |> Map.delete("jwks")
+        |> Map.merge(%{
+          "jwks_url" => "https://issuer.example/jwks",
+          "http_timeout_ms" => 2_000,
+          "max_jwks_staleness_seconds" => 60
+        })
+      else
+        oidc_config(public, Keyword.get(opts, :binding_mode, "challenge_bound"))
+      end
 
     {:ok, verifier} =
       Enrollment.create_verifier_configuration(base.scope, %{
@@ -489,6 +669,26 @@ defmodule Renga.EnrollmentProtocolTest do
 
     Repo.get!(EnrollmentChallenge, contract.id)
     |> Map.put(:decoded_nonce, Base.url_decode64!(contract.nonce, padding: false))
+  end
+
+  defp issue_challenge(fixture) do
+    Enrollment.create_challenge(
+      fixture.organization.slug,
+      fixture.profile.selector,
+      Ecto.UUID.generate(),
+      fixture.public
+    )
+  end
+
+  defp concurrently_calls(calls, caller) do
+    calls
+    |> Enum.map(fn call ->
+      Task.async(fn ->
+        Sandbox.allow(Repo, caller, self())
+        call.()
+      end)
+    end)
+    |> Task.await_many(10_000)
   end
 
   defp signed_submission(fixture, requested, opts \\ []) do

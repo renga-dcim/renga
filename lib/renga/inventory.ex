@@ -11,7 +11,7 @@ defmodule Renga.Inventory do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
-  alias Renga.Enrollment.AgentCredential
+  alias Renga.Enrollment.{AgentCredential, EnrollmentBinding}
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
@@ -181,16 +181,16 @@ defmodule Renga.Inventory do
   """
   def rotate_source_token(%Scope{} = scope, source_id) do
     source = get_source!(scope, source_id)
-    token = generate_source_token()
 
-    result =
-      source
-      |> Source.token_changeset(hash_source_token(token))
-      |> Repo.update()
+    if key_bound_source?(scope.organization_id, source.id) do
+      {:error, :key_bound_enrollment}
+    else
+      token = generate_source_token()
 
-    case result do
-      {:ok, source} -> {:ok, {source, token}}
-      {:error, changeset} -> {:error, changeset}
+      case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
+        {:ok, source} -> {:ok, {source, token}}
+        {:error, changeset} -> {:error, changeset}
+      end
     end
   end
 
@@ -200,6 +200,10 @@ defmodule Renga.Inventory do
   def rotate_collector_token(%Scope{} = scope, source_id) do
     collector_management_transaction(scope, fn ->
       source = lock_host_collector_or_rollback(scope.organization_id, source_id)
+
+      if key_bound_source?(scope.organization_id, source.id),
+        do: Repo.rollback(:key_bound_enrollment)
+
       rotate_host_collector_token(source)
     end)
   end
@@ -247,9 +251,19 @@ defmodule Renga.Inventory do
       token = generate_source_token()
       source = lock_host_collector_or_rollback(organization_id, source_id)
 
+      agents =
+        Agent
+        |> where([agent], agent.organization_id == ^organization_id)
+        |> where([agent], agent.source_id == ^source.id)
+        |> lock("FOR UPDATE")
+        |> Repo.all()
+
+      agent_ids = Enum.map(agents, & &1.id)
+
+      if key_bound_source?(organization_id, source.id), do: Repo.rollback(:key_bound_enrollment)
+
       Agent
-      |> where([agent], agent.organization_id == ^organization_id)
-      |> where([agent], agent.source_id == ^source.id)
+      |> where([agent], agent.id in ^agent_ids)
       |> Repo.delete_all()
 
       source =
@@ -266,6 +280,20 @@ defmodule Renga.Inventory do
       %Source{} = source -> source
       nil -> Repo.rollback(:not_found)
     end
+  end
+
+  defp key_bound_source?(organization_id, source_id) do
+    Repo.exists?(
+      from(binding in EnrollmentBinding,
+        where: binding.organization_id == ^organization_id and binding.source_id == ^source_id
+      )
+    ) or
+      Repo.exists?(
+        from(credential in AgentCredential,
+          where:
+            credential.organization_id == ^organization_id and credential.source_id == ^source_id
+        )
+      )
   end
 
   defp collector_management_transaction(%Scope{} = scope, mutation) do

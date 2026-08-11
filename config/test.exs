@@ -29,6 +29,7 @@ config :renga, RengaWeb.Endpoint,
 # In test we don't send emails
 config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test
 config :renga, :oidc_req_options, plug: {Req.Test, Renga.Enrollment.OIDC}
+config :renga, Renga.Enrollment.ChallengeRateLimiter, tuple_limit: 3, source_limit: 5
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
