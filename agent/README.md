@@ -64,6 +64,13 @@ bound to that same key; the UUID, key, and credential survive restarts and
 ordinary package upgrades. Do not generate an installation UUID or copy an
 OIDC token into the state directory.
 
+The packaged agent reads a provider-managed token that exists before it requests
+an enrollment challenge, so its enrollment profile must use `bearer_unbound`.
+The server still requires proof of the generated installation key and consumes
+the OIDC token replay digest. `challenge_bound` is reserved for custom clients
+that mint a new token containing the returned nonce and installation key
+thumbprint after requesting each challenge.
+
 The example documents every key and default. Environment variables override
 file values; all supported overrides are:
 

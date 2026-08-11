@@ -18,6 +18,18 @@ pub struct State {
     pub private_key: [u8; 32],
     pub credential_id: Option<String>,
     pub credential_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub pending_enrollment: Option<PendingEnrollment>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PendingEnrollment {
+    pub challenge_id: String,
+    pub nonce: String,
+    pub proof: String,
+    pub requested_capabilities: serde_json::Value,
+    pub metadata: serde_json::Value,
+    pub token_sha256: String,
 }
 
 impl fmt::Debug for State {
@@ -27,6 +39,10 @@ impl fmt::Debug for State {
             .field("private_key", &"[REDACTED]")
             .field("credential_id", &"[REDACTED]")
             .field("credential_expires_at", &self.credential_expires_at)
+            .field(
+                "pending_enrollment",
+                &self.pending_enrollment.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -37,12 +53,37 @@ impl State {
     }
 
     pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
-        match (&self.credential_id, self.credential_expires_at) {
-            (None, None) => Ok(()),
-            (Some(id), Some(_expiry)) if canonical_credential(id) => Ok(()),
+        match (
+            &self.credential_id,
+            self.credential_expires_at,
+            &self.pending_enrollment,
+        ) {
+            (None, None, None) => Ok(()),
+            (Some(id), Some(_expiry), None) if canonical_credential(id) => Ok(()),
+            (None, None, Some(pending)) if pending.valid() => Ok(()),
             _ => Err("invalid or expired enrollment state".into()),
         }
     }
+}
+
+impl PendingEnrollment {
+    fn valid(&self) -> bool {
+        uuid::Uuid::parse_str(&self.challenge_id)
+            .ok()
+            .is_some_and(|id| id.to_string() == self.challenge_id)
+            && canonical_bytes(&self.nonce, 32)
+            && canonical_bytes(&self.proof, 64)
+            && canonical_bytes(&self.token_sha256, 32)
+            && self.requested_capabilities.is_array()
+            && self.metadata.is_object()
+    }
+}
+
+fn canonical_bytes(value: &str, size: usize) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()
+        .is_some_and(|bytes| bytes.len() == size && URL_SAFE_NO_PAD.encode(bytes) == value)
 }
 
 pub fn canonical_credential(value: &str) -> bool {
@@ -107,6 +148,7 @@ impl Store {
                     private_key: SigningKey::generate(&mut OsRng).to_bytes(),
                     credential_id: None,
                     credential_expires_at: None,
+                    pending_enrollment: None,
                 };
                 store.save(&state)?;
                 state
@@ -237,6 +279,7 @@ impl Store {
                     private_key: SigningKey::generate(&mut OsRng).to_bytes(),
                     credential_id: None,
                     credential_expires_at: None,
+                    pending_enrollment: None,
                 };
                 store.save(&state)?;
                 state
@@ -281,6 +324,33 @@ mod tests {
         assert!(Store::open(&d).is_err());
         std::fs::remove_dir_all(d).unwrap();
     }
+
+    #[test]
+    fn pending_state_is_backward_compatible_and_mutually_exclusive_with_credentials() {
+        let d = dir();
+        let (store, mut state) = Store::open(&d).unwrap();
+        let old_json = serde_json::to_value(&state).unwrap();
+        let mut old_json = old_json.as_object().unwrap().clone();
+        old_json.remove("pending_enrollment");
+        let old_state: State = serde_json::from_value(old_json.into()).unwrap();
+        assert!(old_state.pending_enrollment.is_none());
+
+        state.pending_enrollment = Some(PendingEnrollment {
+            challenge_id: uuid::Uuid::new_v4().to_string(),
+            nonce: URL_SAFE_NO_PAD.encode([1_u8; 32]),
+            proof: URL_SAFE_NO_PAD.encode([2_u8; 64]),
+            requested_capabilities: serde_json::json!([]),
+            metadata: serde_json::json!({}),
+            token_sha256: URL_SAFE_NO_PAD.encode([3_u8; 32]),
+        });
+        assert!(state.validate().is_ok());
+        state.credential_id = Some(URL_SAFE_NO_PAD.encode([4_u8; 32]));
+        state.credential_expires_at = Some(chrono::Utc::now());
+        assert!(state.validate().is_err());
+        assert!(store.save(&state).is_err());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_state_and_directory_symlinks() {

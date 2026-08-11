@@ -16,6 +16,7 @@ use reqwest::{
     StatusCode, Url,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{fmt, io::Read, thread, time::Duration};
 
 const MAX_ERROR_BODY: usize = 512;
@@ -112,67 +113,71 @@ impl HttpClient {
             .redirect(Policy::none())
             .build()
             .map_err(|e| TransportError::new(format!("cannot build HTTP client: {e}"), false))?;
-        let (checkin_path, observation_path, authorization, installation, signing) =
-            match &config.auth {
-                Auth::LegacyToken {
-                    token,
-                    installation_id,
-                } => (
-                    CHECKIN_PATH,
-                    OBSERVATION_PATH,
-                    format!("Bearer {token}"),
-                    *installation_id,
-                    None,
-                ),
-                Auth::Enrolled {
-                    organization,
-                    profile,
-                    oidc_token_file,
-                    state_path,
-                } => {
-                    let (store, mut state) =
-                        crate::state::Store::open(state_path).map_err(|_| {
-                            TransportError::new("cannot open enrollment state".into(), false)
-                        })?;
-                    if state.credential_id.is_none() {
-                        enroll(
-                            &client,
-                            &base_url,
-                            organization,
-                            profile,
-                            oidc_token_file,
-                            &store,
-                            &mut state,
-                            config.max_retry_attempts,
-                            enrollment_sleep,
-                            &cancellation,
-                        )?;
-                    }
-                    if state.credential_expires_at.is_some_and(|expiry| {
-                        expiry < chrono::Utc::now() + chrono::Duration::hours(12)
-                    }) {
-                        renew(
-                            &client,
-                            &base_url,
-                            &store,
-                            &mut state,
-                            config.max_retry_attempts,
-                            config.request_timeout,
-                            &cancellation,
-                        )?;
-                    }
-                    let credential = state.credential_id.clone().ok_or_else(|| {
-                        TransportError::new("enrollment did not issue a credential".into(), false)
-                    })?;
-                    (
-                        KEY_CHECKIN_PATH,
-                        KEY_OBSERVATION_PATH,
-                        format!("RengaKey {credential}"),
-                        state.installation_id,
-                        Some(state.signing_key()),
-                    )
+        let (checkin_path, observation_path, authorization, installation, signing) = match &config
+            .auth
+        {
+            Auth::LegacyToken {
+                token,
+                installation_id,
+            } => (
+                CHECKIN_PATH,
+                OBSERVATION_PATH,
+                format!("Bearer {token}"),
+                *installation_id,
+                None,
+            ),
+            Auth::Enrolled {
+                organization,
+                profile,
+                oidc_token_file,
+                state_path,
+            } => {
+                let (store, mut state) = crate::state::Store::open(state_path).map_err(|_| {
+                    TransportError::new("cannot open enrollment state".into(), false)
+                })?;
+                let now = chrono::Utc::now();
+                let credential_expired = state
+                    .credential_expires_at
+                    .is_some_and(|expiry| expiry <= now);
+                if state.credential_id.is_none() || credential_expired {
+                    enroll(
+                        &client,
+                        &base_url,
+                        organization,
+                        profile,
+                        oidc_token_file,
+                        &store,
+                        &mut state,
+                        config.max_retry_attempts,
+                        enrollment_sleep,
+                        &cancellation,
+                    )?;
+                } else if state
+                    .credential_expires_at
+                    .is_some_and(|expiry| expiry < now + chrono::Duration::hours(12))
+                {
+                    renew(
+                        &client,
+                        &base_url,
+                        &store,
+                        &mut state,
+                        config.max_retry_attempts,
+                        config.request_timeout,
+                        &cancellation,
+                    )?;
                 }
-            };
+                let credential = state.credential_id.clone().ok_or_else(|| {
+                    TransportError::new("enrollment did not issue a credential".into(), false)
+                })?;
+                (
+                    KEY_CHECKIN_PATH,
+                    KEY_OBSERVATION_PATH,
+                    format!("RengaKey {credential}"),
+                    state.installation_id,
+                    Some(state.signing_key()),
+                )
+            }
+        };
         let checkin_url = endpoint_url(&base_url, checkin_path)?;
         let observation_url = endpoint_url(&base_url, observation_path)?;
         let mut authorization = HeaderValue::from_str(&authorization)
@@ -340,37 +345,72 @@ fn enroll(
     cancellation: &Cancellation,
 ) -> Result<(), TransportError> {
     let key = state.signing_key();
-    let response = client.post(endpoint_url(base,"/api/v1/enrollment/challenges")?)
-        .json(&serde_json::json!({"organization":organization,"profile":profile,"installation_id":state.installation_id,"public_key":URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes())}))
-        .send().map_err(request_error)?;
-    let challenge: ChallengeResponse = protocol_response(response)?;
-    let challenge_uuid = uuid::Uuid::parse_str(&challenge.challenge_id)
-        .map_err(|_| invalid_protocol("enrollment challenge"))?;
-    if challenge_uuid.to_string() != challenge.challenge_id
-        || challenge.expires_at <= chrono::Utc::now()
-        || challenge.proof.version != "renga-enrollment-proof-v1"
-        || challenge.proof.algorithm != "Ed25519"
-        || challenge.proof.canonicalization != "renga-canonical-v1"
-    {
-        return Err(invalid_protocol("enrollment challenge"));
-    }
-    let nonce = canonical_bytes(&challenge.nonce, 32)
-        .ok_or_else(|| invalid_protocol("enrollment challenge"))?;
     let token = std::fs::read_to_string(token_file)
         .map_err(|_| TransportError::new("cannot read OIDC token file".into(), false))?;
-    let evidence = serde_json::json!({"kind":"oidc","token":token.trim()});
-    let requested = serde_json::json!([]);
-    let metadata = serde_json::json!({"agent_version":env!("CARGO_PKG_VERSION")});
-    let signature = proof(
-        &key,
-        &challenge.challenge_id,
-        &nonce,
-        state.installation_id,
-        &evidence,
-        &requested,
-        &metadata,
-    );
-    let attempt_body = serde_json::to_vec(&serde_json::json!({"challenge_id":challenge.challenge_id,"nonce":challenge.nonce,"evidence":evidence,"requested_capabilities":requested,"metadata":metadata,"proof":signature}))
+    let token = token.trim();
+    let token_sha256 = URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()));
+
+    if state
+        .pending_enrollment
+        .as_ref()
+        .is_some_and(|pending| pending.token_sha256 != token_sha256)
+    {
+        let mut next = state.clone();
+        next.pending_enrollment = None;
+        store.save(&next).map_err(|_| {
+            TransportError::new("cannot clear pending enrollment state".into(), false)
+        })?;
+        *state = next;
+    }
+
+    if state.pending_enrollment.is_none() {
+        let response = client.post(endpoint_url(base,"/api/v1/enrollment/challenges")?)
+            .json(&serde_json::json!({"organization":organization,"profile":profile,"installation_id":state.installation_id,"public_key":URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes())}))
+            .send().map_err(request_error)?;
+        let challenge: ChallengeResponse = protocol_response(response)?;
+        let challenge_uuid = uuid::Uuid::parse_str(&challenge.challenge_id)
+            .map_err(|_| invalid_protocol("enrollment challenge"))?;
+        if challenge_uuid.to_string() != challenge.challenge_id
+            || challenge.expires_at <= chrono::Utc::now()
+            || challenge.proof.version != "renga-enrollment-proof-v1"
+            || challenge.proof.algorithm != "Ed25519"
+            || challenge.proof.canonicalization != "renga-canonical-v1"
+        {
+            return Err(invalid_protocol("enrollment challenge"));
+        }
+        let nonce = canonical_bytes(&challenge.nonce, 32)
+            .ok_or_else(|| invalid_protocol("enrollment challenge"))?;
+        let evidence = serde_json::json!({"kind":"oidc","token":token});
+        let requested_capabilities = serde_json::json!([]);
+        let metadata = serde_json::json!({"agent_version":env!("CARGO_PKG_VERSION")});
+        let pending = crate::state::PendingEnrollment {
+            challenge_id: challenge.challenge_id,
+            nonce: challenge.nonce,
+            proof: proof(
+                &key,
+                &challenge_uuid.to_string(),
+                &nonce,
+                state.installation_id,
+                &evidence,
+                &requested_capabilities,
+                &metadata,
+            ),
+            requested_capabilities,
+            metadata,
+            token_sha256,
+        };
+        let mut next = state.clone();
+        next.credential_id = None;
+        next.credential_expires_at = None;
+        next.pending_enrollment = Some(pending);
+        store.save(&next).map_err(|_| {
+            TransportError::new("cannot persist pending enrollment state".into(), false)
+        })?;
+        *state = next;
+    }
+
+    let pending = state.pending_enrollment.as_ref().unwrap();
+    let attempt_body = serde_json::to_vec(&serde_json::json!({"challenge_id":pending.challenge_id,"nonce":pending.nonce,"evidence":{"kind":"oidc","token":token},"requested_capabilities":pending.requested_capabilities,"metadata":pending.metadata,"proof":pending.proof}))
         .map_err(|_| invalid_protocol("enrollment attempt"))?;
     let accepted: AcceptedResponse = retry_unbudgeted(
         attempts,
@@ -401,6 +441,7 @@ fn enroll(
     let mut next = state.clone();
     next.credential_id = Some(accepted.credential_id);
     next.credential_expires_at = Some(accepted.credential_expires_at);
+    next.pending_enrollment = None;
     store
         .save(&next)
         .map_err(|_| TransportError::new("cannot persist enrollment state".into(), false))?;
@@ -683,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn enrolled_startup_retries_an_incomplete_acceptance_with_identical_body() {
+    fn enrolled_startup_recovers_an_acceptance_lost_before_credential_save() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let credential = URL_SAFE_NO_PAD.encode([9_u8; 32]);
@@ -743,13 +784,24 @@ mod tests {
         std::fs::write(&token_path, "test-oidc-token\n").unwrap();
         let mut enrolled = config(&format!("http://{address}"), "unused");
         enrolled.allow_insecure_http = true;
-        enrolled.max_retry_attempts = 2;
+        enrolled.max_retry_attempts = 1;
         enrolled.auth = Auth::Enrolled {
             organization: "test-org".into(),
             profile: "default".into(),
             oidc_token_file: token_path,
             state_path: state_path.clone(),
         };
+
+        let first =
+            HttpClient::new_with_enrollment_sleep(&enrolled, Cancellation::default(), |_| {});
+        assert!(first.is_err());
+        let serialized = std::fs::read(state_path.join("state.json")).unwrap();
+        assert!(!serialized
+            .windows(b"test-oidc-token".len())
+            .any(|window| window == b"test-oidc-token"));
+        let (_, pending_state) = crate::state::Store::open(&state_path).unwrap();
+        assert!(pending_state.pending_enrollment.is_some());
+        drop(pending_state);
 
         let client =
             HttpClient::new_with_enrollment_sleep(&enrolled, Cancellation::default(), |_| {})
@@ -762,9 +814,116 @@ mod tests {
         assert_eq!(attempts.len(), 2);
         assert_eq!(attempts[0], attempts[1]);
         let (_, state) = crate::state::Store::open(&state_path).unwrap();
+        assert!(state.pending_enrollment.is_none());
         assert_eq!(
             state.credential_id.as_deref(),
             Some(expected_credential.as_str())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_enrollment_reuses_identity_and_key_and_installs_new_credential() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let installation_id = uuid::Uuid::new_v4();
+        let private_key = [23_u8; 32];
+        let public_key = URL_SAFE_NO_PAD.encode(
+            SigningKey::from_bytes(&private_key)
+                .verifying_key()
+                .as_bytes(),
+        );
+        let old_credential = URL_SAFE_NO_PAD.encode([8_u8; 32]);
+        let new_credential = URL_SAFE_NO_PAD.encode([9_u8; 32]);
+        let expected_new_credential = new_credential.clone();
+        let challenge = serde_json::to_vec(&json!({
+            "challenge_id": uuid::Uuid::new_v4().to_string(),
+            "nonce": URL_SAFE_NO_PAD.encode([4_u8; 32]),
+            "expires_at": chrono::Utc::now() + chrono::Duration::hours(1),
+            "proof": {
+                "version": "renga-enrollment-proof-v1",
+                "algorithm": "Ed25519",
+                "canonicalization": "renga-canonical-v1"
+            }
+        }))
+        .unwrap();
+        let accepted = serde_json::to_vec(&json!({
+            "status": "accepted",
+            "source_id": uuid::Uuid::new_v4().to_string(),
+            "agent_id": uuid::Uuid::new_v4().to_string(),
+            "credential_id": new_credential,
+            "credential_expires_at": chrono::Utc::now() + chrono::Duration::days(2),
+            "assignments": [],
+            "grants": []
+        }))
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let mut enrollment_bodies = Vec::new();
+            for response in [&challenge, &accepted] {
+                let (mut stream, _) = listener.accept().unwrap();
+                enrollment_bodies.push(read_request(&mut stream));
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                stream.write_all(response).unwrap();
+            }
+            enrollment_bodies
+        });
+
+        let root = std::env::temp_dir().join(format!("renga-expired-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let state_path = root.join("state");
+        let (store, mut state) = crate::state::Store::open(&state_path).unwrap();
+        state.installation_id = installation_id;
+        state.private_key = private_key;
+        state.credential_id = Some(old_credential);
+        state.credential_expires_at = Some(chrono::DateTime::UNIX_EPOCH);
+        store.save(&state).unwrap();
+        drop(store);
+        let token_path = root.join("oidc-token");
+        std::fs::write(&token_path, "replacement-oidc-token\n").unwrap();
+        let mut enrolled = config(&format!("http://{address}"), "unused");
+        enrolled.allow_insecure_http = true;
+        enrolled.auth = Auth::Enrolled {
+            organization: "test-org".into(),
+            profile: "default".into(),
+            oidc_token_file: token_path,
+            state_path: state_path.clone(),
+        };
+
+        let client =
+            HttpClient::new_with_enrollment_sleep(&enrolled, Cancellation::default(), |_| {})
+                .unwrap();
+        assert_eq!(
+            client.installation_id.to_str().unwrap(),
+            installation_id.to_string()
+        );
+        assert_eq!(client.signing.as_ref().unwrap().to_bytes(), private_key);
+        assert_eq!(
+            client.authorization.to_str().unwrap(),
+            format!("RengaKey {expected_new_credential}")
+        );
+        let bodies = server.join().unwrap();
+        let challenge_request: serde_json::Value = serde_json::from_slice(&bodies[0]).unwrap();
+        assert_eq!(
+            challenge_request["installation_id"],
+            installation_id.to_string()
+        );
+        assert_eq!(challenge_request["public_key"], public_key);
+        assert_eq!(
+            bodies.len(),
+            2,
+            "expired credentials must not use signed renewal"
+        );
+        let (_, persisted) = crate::state::Store::open(&state_path).unwrap();
+        assert_eq!(persisted.installation_id, installation_id);
+        assert_eq!(persisted.private_key, private_key);
+        assert_eq!(
+            persisted.credential_id.as_deref(),
+            Some(expected_new_credential.as_str())
         );
         std::fs::remove_dir_all(root).unwrap();
     }
