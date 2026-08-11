@@ -6,10 +6,12 @@ defmodule RengaWeb.Api.V1.EnrollmentControllerTest do
 
   alias Renga.Accounts
   alias Renga.Enrollment
+  alias Renga.Enrollment.ChallengeRateLimiter
   alias Renga.Enrollment.EnrollmentChallenge
   alias Renga.Repo
 
   setup do
+    :ok = ChallengeRateLimiter.reset_for_test()
     fixture = enrollment_fixture()
     %{fixture: fixture}
   end
@@ -46,6 +48,105 @@ defmodule RengaWeb.Api.V1.EnrollmentControllerTest do
 
       assert response == %{"status" => "denied", "error" => "enrollment_not_available"}
     end
+  end
+
+  test "challenge issuance limits a source and organization/profile tuple", %{
+    conn: conn,
+    fixture: fixture
+  } do
+    for _ <- 1..3 do
+      assert conn
+             |> recycle()
+             |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+             |> response(200)
+    end
+
+    response =
+      conn
+      |> recycle()
+      |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+      |> json_response(429)
+
+    assert response == %{"status" => "denied", "error" => "enrollment_not_available"}
+  end
+
+  test "challenge guard separates forwarded clients only behind a trusted proxy", %{
+    conn: conn,
+    fixture: fixture
+  } do
+    previous = Application.get_env(:renga, :enrollment_trusted_proxy_cidrs)
+    Application.put_env(:renga, :enrollment_trusted_proxy_cidrs, ["10.0.0.0/8"])
+
+    on_exit(fn ->
+      Application.put_env(:renga, :enrollment_trusted_proxy_cidrs, previous)
+    end)
+
+    for _ <- 1..3 do
+      assert conn
+             |> recycle()
+             |> Map.put(:remote_ip, {10, 0, 0, 2})
+             |> put_req_header("x-forwarded-for", "198.51.100.1")
+             |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+             |> response(200)
+    end
+
+    assert conn
+           |> recycle()
+           |> Map.put(:remote_ip, {10, 0, 0, 2})
+           |> put_req_header("x-forwarded-for", "198.51.100.2")
+           |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+           |> response(200)
+  end
+
+  test "challenge issuance has a global per-source ceiling across profiles", %{
+    conn: conn,
+    fixture: fixture
+  } do
+    for index <- 1..5 do
+      params = %{challenge_params(fixture) | "profile" => "missing-#{index}"}
+      assert conn |> recycle() |> post(~p"/api/v1/enrollment/challenges", params) |> response(404)
+    end
+
+    params = %{challenge_params(fixture) | "profile" => "another-missing"}
+    assert conn |> recycle() |> post(~p"/api/v1/enrollment/challenges", params) |> response(429)
+  end
+
+  test "rate window resets using the limiter test clock", %{conn: conn, fixture: fixture} do
+    for _ <- 1..3 do
+      assert conn
+             |> recycle()
+             |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+             |> response(200)
+    end
+
+    assert conn
+           |> recycle()
+           |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+           |> response(429)
+
+    :ok = ChallengeRateLimiter.advance_for_test(:timer.minutes(1))
+
+    assert conn
+           |> recycle()
+           |> post(~p"/api/v1/enrollment/challenges", challenge_params(fixture))
+           |> response(200)
+  end
+
+  test "attempt submissions are not rate limited", %{conn: conn, fixture: fixture} do
+    {contract, challenge} = request_challenge(conn, fixture)
+
+    for index <- 1..5 do
+      params = %{challenge_params(fixture) | "profile" => "rate-fill-#{index}"}
+      conn |> recycle() |> post(~p"/api/v1/enrollment/challenges", params)
+    end
+
+    params = attempt_params(fixture, contract, challenge)
+
+    assert %{"status" => "accepted"} =
+             conn
+             |> recycle()
+             |> post(~p"/api/v1/enrollment/attempts", params)
+             |> json_response(200)
   end
 
   test "valid challenge and attempt return only the safe accepted result", %{

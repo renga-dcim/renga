@@ -25,6 +25,10 @@ defmodule RengaWeb.Router do
     plug RengaWeb.AgentCredentialAuth
   end
 
+  pipeline :enrollment_challenge_rate_guard do
+    plug RengaWeb.Plugs.EnrollmentChallengeRateGuard
+  end
+
   scope "/", RengaWeb do
     pipe_through :browser
 
@@ -49,9 +53,15 @@ defmodule RengaWeb.Router do
 
   scope "/api/v1/enrollment", RengaWeb.Api.V1 do
     # Enrollment proves a new key and must never inherit human or Source authentication.
-    pipe_through :api
+    # Edge rate limiting remains recommended when deploying multiple application nodes.
+    pipe_through [:api, :enrollment_challenge_rate_guard]
 
     post "/challenges", EnrollmentController, :challenge
+  end
+
+  scope "/api/v1/enrollment", RengaWeb.Api.V1 do
+    pipe_through :api
+
     post "/attempts", EnrollmentController, :attempt
   end
 

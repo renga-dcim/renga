@@ -28,6 +28,26 @@ config :renga, Renga.Repo,
   migration_primary_key: [name: :id, type: :binary_id],
   migration_foreign_key: [type: :binary_id]
 
+# Public issuance is serialized per profile and capped in its database transaction.
+config :renga, :open_challenge_limit, 100
+
+# Trust no reverse proxy by default. Adding a CIDR delegates the security-sensitive
+# enrollment rate-limit source identity to peers in that network.
+config :renga, :enrollment_trusted_proxy_cidrs, []
+
+# This bounded guard is node-local; the database cap above is authoritative.
+config :renga, Renga.Enrollment.ChallengeRateLimiter,
+  tuple_limit: 20,
+  source_limit: 100,
+  window: :timer.minutes(1),
+  prune_interval: :timer.minutes(1),
+  max_keys: 10_000
+
+config :renga, Renga.Enrollment.Cleanup,
+  interval: :timer.minutes(5),
+  batch_size: 500,
+  max_batches_per_tick: 4
+
 # Configures the endpoint
 config :renga, RengaWeb.Endpoint,
   url: [host: "localhost"],

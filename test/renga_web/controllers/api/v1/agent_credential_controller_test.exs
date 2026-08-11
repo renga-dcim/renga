@@ -136,6 +136,19 @@ defmodule RengaWeb.Api.V1.AgentCredentialControllerTest do
     assert Repo.aggregate(EnrollmentReplay, :count) == 1
   end
 
+  test "retains a future-timestamp nonce beyond its final accepted second", fixture do
+    timestamp = now() + 60
+
+    assert fixture
+           |> signed_post("/api/v1/key/agent/checkins", "{}", timestamp: timestamp)
+           |> response(202)
+
+    replay = Repo.one!(EnrollmentReplay)
+
+    assert DateTime.compare(replay.expires_at, DateTime.from_unix!(timestamp + 61, :second)) ==
+             :eq
+  end
+
   test "two concurrent requests with one runtime nonce accept exactly once", fixture do
     runtime_nonce = nonce()
 
@@ -358,6 +371,10 @@ defmodule RengaWeb.Api.V1.AgentCredentialControllerTest do
     issued_at = DateTime.add(Renga.Time.utc_now_ms(), -10, :second)
     issued = event!(fixture, "issued", issued_at)
 
+    Repo.update_all(from(c in AgentCredential, where: c.id == ^fixture.credential.id),
+      set: [expires_at: DateTime.add(Renga.Time.utc_now_ms(), 3_600, :second)]
+    )
+
     conn = signed_post(fixture, "/api/v1/key/agent/credentials/renew", "{}")
 
     assert %{"credential_id" => credential_id, "expires_at" => expires_at} =
@@ -370,6 +387,10 @@ defmodule RengaWeb.Api.V1.AgentCredentialControllerTest do
     events = Repo.all(from e in CredentialEvent, order_by: e.inserted_at)
     assert Enum.map(events, & &1.kind) == ["issued", "renewed"]
     assert Repo.get!(CredentialEvent, issued.id).occurred_at == issued_at
+
+    second = signed_post(fixture, "/api/v1/key/agent/credentials/renew", "{}")
+    assert json_response(second, 200)["expires_at"] == expires_at
+    assert Repo.aggregate(CredentialEvent, :count) == 2
 
     too_far = DateTime.add(Renga.Time.utc_now_ms(), 86_500, :second)
 
