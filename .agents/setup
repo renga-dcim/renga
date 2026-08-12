@@ -100,6 +100,11 @@ step "Activating the Nix development shell"
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 
+step "Initializing colocated Jujutsu repository"
+if ! jj root >/dev/null 2>&1; then
+  jj git init --colocate "$repo_root"
+fi
+
 postgres_data="$repo_root/dev/postgres"
 postgres_log="$repo_root/dev/postgres.log"
 postgres_socket="$repo_root/dev/postgres-socket"
