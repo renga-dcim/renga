@@ -1,5 +1,5 @@
 #+title: Organization Intake Keys And Automatic Collector Registration
-#+status: Draft
+#+status: Active
 
 * Objective
 
@@ -195,9 +195,9 @@ be generated and deployed.
 
 ** 1. Organization Intake And Automatic Registration
 
-- [ ] Add the organization-scoped =IntakeApiKey= schema, constraints, context
+- [X] Add the organization-scoped =IntakeApiKey= schema, constraints, context
   functions, and owner/admin authorization checks.
-- [ ] Generate random prefixed keys, store only hashes, reveal plaintext once,
+- [X] Generate random prefixed keys, store only hashes, reveal plaintext once,
   and support multiple active keys plus independent revocation.
 - [ ] Change agent API authentication to resolve an active intake key and active
   organization rather than a Source credential.
@@ -262,7 +262,7 @@ be generated and deployed.
 
 * Verification
 
-- [ ] Add context tests for key hashing, one-time reveal, tenant isolation,
+- [X] Add context tests for key hashing, one-time reveal, tenant isolation,
   authorization, multiple active keys, and revocation.
 - [ ] Add API tests for shared-key authentication, organization isolation,
   automatic registration, UUID reuse, malformed identity, and revoked keys.

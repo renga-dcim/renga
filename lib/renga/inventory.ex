@@ -22,6 +22,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.InterfaceRelationshipEvidence
+  alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Prefix
@@ -40,6 +41,8 @@ defmodule Renga.Inventory do
 
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
+  @intake_api_key_prefix "renga_intake_"
+  @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
 
@@ -157,6 +160,72 @@ defmodule Renga.Inventory do
   def collector_manager?(%Scope{user: user, roles: roles}) do
     not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
   end
+
+  @doc """
+  Lists organization intake keys without exposing credential material.
+  """
+  def list_intake_api_keys(%Scope{organization_id: organization_id}) do
+    IntakeApiKey
+    |> where([key], key.organization_id == ^organization_id)
+    |> order_by([key], desc: key.inserted_at, asc: key.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates an organization intake key and returns its one-time plaintext value.
+
+  Authorization is rechecked against current membership and organization state
+  inside the transaction so a stale browser scope cannot issue credentials.
+  """
+  def create_intake_api_key(%Scope{} = scope, attrs) do
+    collector_management_transaction(scope, fn ->
+      token = generate_intake_api_key()
+
+      case %IntakeApiKey{organization_id: scope.organization_id}
+           |> IntakeApiKey.create_changeset(attrs, hash_intake_api_key(token))
+           |> Repo.insert() do
+        {:ok, key} -> {:ok, {key, token}}
+        {:error, changeset} -> {:error, changeset}
+      end
+    end)
+  end
+
+  @doc """
+  Revokes one scoped intake key without deleting collectors or provenance.
+  """
+  def revoke_intake_api_key(%Scope{} = scope, key_id) do
+    collector_management_transaction(scope, fn ->
+      IntakeApiKey
+      |> where([key], key.organization_id == ^scope.organization_id)
+      |> where([key], key.id == ^key_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> case do
+        %IntakeApiKey{} = key -> key |> IntakeApiKey.revoke_changeset() |> Repo.update()
+        nil -> {:error, :not_found}
+      end
+    end)
+  end
+
+  @doc """
+  Authenticates an active organization intake key for agent intake endpoints.
+  """
+  def authenticate_intake_api_key(@intake_api_key_prefix <> _rest = token) do
+    token_hash = hash_intake_api_key(token)
+
+    IntakeApiKey
+    |> join(:inner, [key], organization in assoc(key, :organization))
+    |> where([key], key.token_hash == ^token_hash and key.status == "active")
+    |> where([_key, organization], organization.status == "active")
+    |> preload([_key, organization], organization: organization)
+    |> Repo.one()
+    |> case do
+      %IntakeApiKey{} = key -> {:ok, key}
+      nil -> :error
+    end
+  end
+
+  def authenticate_intake_api_key(_token), do: :error
 
   @doc """
   Updates source metadata while keeping token lifecycle separate.
@@ -1716,9 +1785,17 @@ defmodule Renga.Inventory do
       Base.url_encode64(:crypto.strong_rand_bytes(@source_token_bytes), padding: false)
   end
 
+  defp generate_intake_api_key do
+    @intake_api_key_prefix <>
+      Base.url_encode64(:crypto.strong_rand_bytes(@intake_api_key_bytes), padding: false)
+  end
+
   # SHA-256 is sufficient here because source tokens are high-entropy random
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
+
+  # Intake keys have equivalent high entropy and do not require password hashing.
+  defp hash_intake_api_key(token), do: :crypto.hash(:sha256, token)
 
   defp next_resource_revision! do
     # Hold allocation order until commit so a watch cursor cannot pass an
