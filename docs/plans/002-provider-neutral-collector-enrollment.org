@@ -1,186 +1,279 @@
-#+title: Provider-Neutral Collector Enrollment
+#+title: Organization Intake Keys And Automatic Collector Registration
 #+status: Draft
 
 * Objective
 
-Make automated, policy-driven enrollment the default fleet path. An authorized
-installation creates the existing Collector aggregate: a durable
-=Source(kind: "host_agent")= provenance record and its =Agent= installation
-registration. Manual enrollment remains an optional development, static-host,
-and break-glass verifier rather than the default UI, packaging, or deployment
-workflow.
+Make host-agent installation simple enough for the product's current stage:
 
-* Architecture
+1. An organization owner or administrator creates an intake API key.
+2. The same key may be deployed to every agent in that organization.
+3. Each agent generates and persists its own installation UUID on first boot.
+4. Renga automatically creates the existing =Source(kind: "host_agent")= and
+   =Agent= records when that installation first checks in.
+5. Observations remain attributable to the installation's Source even though
+   the API key authenticates the organization rather than an individual agent.
 
-** Provider-Neutral Lifecycle
+Use a Datadog-style intake trust model as the default. Do not require an
+enrollment protocol, OIDC, keypairs, proof of possession, short-lived runtime
+credentials, or admission policy before the inventory service has demonstrated
+a need for them.
 
-Use one enrollment lifecycle with pluggable evidence verifiers. OIDC, SPIFFE,
-Kubernetes, AWS, GCP, Azure, TPM/private infrastructure, and manual grants are
-evidence sources, not separate lifecycles. The boundary is provider-neutral,
-but claims retain verifier-specific meaning; a policy inspecting provider claims
-is necessarily provider-specific.
+* Scope
 
-Each installation generates a stable UUID and keypair, obtains a short-lived
-challenge, submits evidence, and proves key possession. Renga verifies evidence,
-evaluates the organization's deployment-group policy, and transactionally
-creates the Source+Agent aggregate, allow decision, and key-bound runtime
-credential. That credential serves observations, check-ins, renewal, and
-optional re-attestation. No new persisted Collector entity is required absent a
-later ownership need. Images contain only a non-secret policy identifier.
+** In Scope
 
-Identity is namespaced by organization, immutable verifier-configuration
-version, issuer, and subject; a bare subject is never globally unique. Verifiers
-declare subject cardinality. A singleton subject (for example, a verified cloud
-instance) requires an explicit replacement decision for a different key. Group
-subjects may authorize multiple keys under policy limits and rate controls.
-Retries proving the same key return the existing enrollment result.
+- Organization-level intake API keys stored as hashes and revealed once.
+- Multiple simultaneously active keys so fleets can rotate without downtime.
+- Owner/admin key creation and revocation in the existing authenticated,
+  organization-selected operations UI.
+- Shared-key authentication for agent check-ins and observations.
+- Automatic Source+Agent registration from an organization-scoped installation
+  UUID.
+- Agent generation and durable storage of its installation UUID on first boot.
+- Preservation of per-installation provenance, lease health, and inventory
+  freshness.
+- A direct migration from current per-Source credentials, or a temporary
+  compatibility window if deployed agents require one.
 
-** Trust, Binding, And Atomicity
+** Out Of Scope
 
-Keep evidence verification, policy evaluation, and credential issuance
-separate. Verification authenticates signatures, issuer, audience, nonce,
-freshness, and replay controls and returns normalized claims. Policy decides
-whether that subject may perform =collector:enroll=. Issuance binds the accepted
-installation key to the new Collector and records the decision.
+- OIDC, workload identity federation, SPIFFE, cloud identity, or TPM
+  attestation.
+- Enrollment challenges, grants, attempts, approvals, or proof of key
+  possession.
+- ABAC or enrollment-policy evaluation.
+- Per-agent API keys.
+- Deployment-group API keys or key scopes.
+- API-key expiration or automatic credential renewal.
+- Using the intake key for terminal sessions, command execution, desired-state
+  mutation, organization reads, or collector administration.
 
-Challenges are short-lived, single-use, and server-bound to organization,
-action, immutable policy and verifier-configuration versions, and key
-thumbprint. A policy selector is routing information and cannot select trust
-roots. Bind evidence to challenge and key where supported. For bearer formats
-that cannot embed them, enforce native audience, freshness, and replay controls,
-record lower assurance, and permit policy to reject it; key proof alone does not
-bind an unrelated bearer assertion.
+Group-scoped and per-agent credentials may be added later when requested by
+real deployments. They are optional reductions in credential blast radius, not
+requirements for the initial intake model.
 
-Challenge consumption, one-time grant consumption, Collector creation, decision
-persistence, and credential issuance are one atomic successful binding. A lost
-response is safely retried with the same key. Denials are audited without a
-Collector transaction.
+* Design Decisions
 
-** Constrained ABAC And Provenance
+** Authentication And Identity
 
-Enrollment policy is a default-deny, domain-specific ABAC admission decision,
-not evidence verification. Inputs are the normalized subject; action
-=collector:enroll=; organization and policy resource; trusted time, challenge,
-and request context; installation public key; and untrusted requested
-capabilities. Existing organization RBAC protects policy administration;
-enrolling agents may evaluate but not author policies. Broader ABAC is deferred.
+An intake API key authenticates one active organization. It does not
+cryptographically authenticate an individual installation. The agent's
+=x-renga-installation-id= identifies the reporting installation within that
+organization and is accepted as a correlation identifier under the shared-key
+trust model.
 
-Use a typed evaluator with declared attribute types and equality, membership,
-existence, prefix, numeric comparison, and semantic-version comparison where
-valid. Do not expose scripts or commit stored policies to a vendor syntax. Keep
-issuer, keys, audience, and algorithms in verifier configuration; requests
-cannot choose trust roots and policy sees only verifier-returned claims.
+Anyone possessing an organization's intake key can submit inventory for that
+organization and can impersonate an installation whose UUID they know. This is
+an explicit simplicity tradeoff. Require HTTPS, restrict intake keys to agent
+intake endpoints, store only hashes, redact keys from logs and diagnostics, and
+allow independent key revocation.
 
-Retain provenance for every attribute:
+The intake key may authorize only:
 
-- *verified*: issuer, subject, account/project/subscription, instance, image,
-  deployment group, region, and equivalent authenticated claims;
-- *server-derived*: assurance, credential age, policy version, and values Renga
-  computes from trusted context;
-- *policy-assigned*: environment, role, owner team, and granted capabilities;
-- *self-reported*: hostname, OS facts, requested capabilities, and agent data.
+- =POST /api/v1/agent/checkins=
+- =POST /api/v1/observations=
 
-Admission may consume verified and server-derived values. Assigned attributes
-are outputs and cannot justify the decision assigning them; they may inform
-later runtime decisions. Self-reported values never authorize their reporter.
-Policies may map verified claims to assigned values and grant only a subset of
-requested capabilities. Security version/image restrictions require verified
-artifact identity; self-reported versions are informational only.
+Future privileged control-plane operations must use a separate authorization
+design rather than expanding the intake key's authority.
 
-Record outcome and stable reason; action, subject, organization, and policy;
-immutable policy and verifier versions; issuer and actual verification-key ID or
-thumbprint; matched/failed condition IDs; assignments and grants; verifier kind,
-assurance, claim provenance, safe evidence digest/reference, and evaluation
-time. Return safe denial detail only. Retain enough non-secret material for
-reproducible audits, never reusable bearer evidence, plaintext grants, private
-keys, or runtime credentials. Keep the decision boundary compatible with a
-future shared ABAC engine.
+** Credential Model
 
-** Verifier Envelope And Initial Path
+Add an organization-scoped =IntakeApiKey= model with the minimum fields needed
+for issuance, authentication, rotation, and revocation:
 
-All verifiers return an envelope containing verifier identity/version, issuer
-namespace, subject and cardinality, issuance/expiry, assurance, provenance,
-optional instance identity, and typed verifier-specific claims. It is not a
-flattened universal claim set. Candidate adapters include generic OIDC workload
-identity, SPIFFE X.509/JWT SVID, Kubernetes projected service accounts, AWS
-instance/IAM identity, GCP metadata JWT, Azure managed identity, TPM attestation,
-one-time manual grants, and operator approval.
+- =organization_id=
+- =name=
+- =token_hash=
+- =status=: =active= or =revoked=
+- timestamps
 
-The first user-visible automated path is an explicitly configured OIDC workload
-identity profile defining trusted issuer, audience, claim schema, and subject
-cardinality. Generic OIDC does not promise per-instance attestation. Add
-provider-specific adapters after challenge, decision, identity, and credential
-lifecycle are stable.
+Token hashes must be unique. Plaintext keys are returned only at creation and
+cannot be reconstructed. An organization may have multiple active keys so an
+operator can create a replacement, deploy it, and revoke the old key after the
+fleet switches.
 
-Manual enrollment uses the same protocol. A one-time grant is hashed at rest,
-short-lived, authorizes one successful binding, and is consumed only after key
-proof; it never becomes the runtime credential. Alternatively, an operator may
-approve a short pending-challenge code. Approval creates server-side verified
-evidence bound to organization, policy version, challenge, and key; it neither
-bypasses policy nor directly creates a Collector. A manual internal test harness
-may precede the product path without making manual onboarding the default.
+Do not add scopes, deployment groups, expiry, usage counts, policy selectors,
+or per-agent ownership until a concrete requirement needs them.
 
-** Credentials, Images, And Scaling
+** Source, Agent, And Provenance
 
-The installation UUID is for display/correlation, not proof. Generate a private
-key on first boot; prefer TPM/non-exportable storage and support strictly
-permissioned filesystem keys. Runtime credentials must be key-bound, for example
-with mTLS, proof-of-possession tokens, or replay-protected signed requests; pick
-the mechanism independently of policy.
+Keep =Source= as the producer and provenance anchor for observations, evidence,
+and reconciliation. Keep =Agent= as the runtime installation record and
+=AgentLease= as its independent connection-liveness record.
 
-Installation credentials are separate from =Source.token_hash=; Source remains
-the provenance anchor. Migration from MVP bearer tokens requires an explicit
-dual-authentication or cutover plan because existing agents lack keys, writable
-enrollment state, and renewal. Software cannot conclusively distinguish a full
-disk clone containing the same key; fresh evidence, subject binding,
-re-attestation, and hardware keys raise assurance, while other deployments
-record lower assurance.
+For host agents, one automatically registered installation receives one Source
+and one Agent:
 
-Image preparation removes UUIDs, keys, credentials, cached evidence, and lease
-state. Golden images contain only the binary, service, server URL, and non-secret
-policy selector; first boot generates fresh state. Never embed a shared
-permanent token in images, templates, cloud-init, or group variables.
+- the intake key authenticates the organization;
+- the installation UUID resolves the Agent within that organization;
+- the Agent points to its per-installation Source;
+- observations and derived evidence continue to point to that Source.
 
-One policy may authorize many autoscaled installations. Every accepted
-installation has a unique key and receives one Collector and credential; unique
-instance claims exist only when supplied by the verifier. Group subjects require
-explicit limits. Policies may constrain active count, rate, images,
-accounts/projects/subscriptions, regions, groups, verified artifact identity,
-and re-attestation. Provider lifecycle may retire ephemeral Collectors later,
-but lease expiry must not implicitly delete them or provenance.
+This preserves per-installation provenance without issuing per-installation
+credentials. Source names must be generated from a stable server-controlled
+scheme using the installation UUID, not from self-reported hostname alone.
 
-** Policy And Credential Lifecycle
+First check-in and first observation must converge safely when concurrent. The
+registration transaction revalidates the active organization and intake key,
+finds or creates the installation's Source+Agent records, renews its lease, and,
+for observation ingestion, stores the observation against the resolved Source.
 
-Record the exact enrollment policy version; edits never rewrite history.
-Separate admission from continuous eligibility and optionally require fresh
-evidence for renewal or administrative re-evaluation. If an installation no
-longer qualifies, configurable actions include audit-only, renewal denial,
-quarantine, and revocation. Begin with explicit administration and auditability,
-not silent revocation after policy edits.
+Keep organization-scoped uniqueness for =Agent.installation_id=. Remove the
+one-Agent-per-Source assumption only if implementation requires it; automatic
+registration should still create one dedicated Source for each Agent.
 
-* Milestones
+** Agent State
 
-- [ ] Add versioned policies and verifier configurations, challenges, attempts, and structured decisions.
-- [ ] Generate installation keypairs and require challenge proof of possession.
-- [ ] Add idempotent atomic finalization that consumes an accepted attempt, creates Source+Agent, records the allow decision, and issues a key-bound credential.
-- [ ] Add runtime authentication, renewal, and administrative revocation; do not deploy short-lived credentials without renewal.
-- [ ] Deliver configured OIDC workload identity as the first user-visible automated path, with image preparation and first-boot enrollment.
-- [ ] Add manual grants and operator approval as optional development, static-infrastructure, and break-glass verifiers, not the default path.
-- [ ] Add re-attestation, quarantine, key replacement, and provider-lifecycle retirement workflows.
-- [ ] Add provider-specific and hardware-backed verifier adapters.
-- [ ] Revisit a shared ABAC engine only if enrollment requirements demonstrate broader need.
+The agent generates a UUID on first startup and persists it in a strictly
+permissioned state directory, expected to be under =/var/lib/renga=. It reuses
+that UUID across service restarts and package upgrades.
+
+Normal configuration contains only the Renga URL, intake API key, intervals,
+and existing collection settings. An explicitly configured installation UUID
+may remain temporarily for compatibility, but is not part of the default setup.
+
+Golden images and templates may share an organization intake key as an explicit
+property of this trust model. They must not contain a pre-generated installation
+UUID or copied agent state; every clone generates a distinct UUID on first boot.
+
+** Rotation And Revocation
+
+Rotation uses overlapping organization keys rather than an in-place replacement:
+
+1. Create and reveal a new intake key.
+2. Deploy it to the fleet.
+3. Confirm the old key is no longer needed using available operational evidence.
+4. Revoke the old key.
+
+Revoking a key affects every agent still using it. It does not delete Sources,
+Agents, observations, or provenance. Disabling an Agent remains an operational
+lifecycle action; with a shared organization key, it is not an authentication
+barrier against a caller that deliberately reuses that installation UUID.
+
+* Deprecated MVP Behavior
+
+Deprecate the following behavior introduced by the host-agent MVP:
+
+- =Source.token_hash= as the default credential store.
+- One credential created for each manually created host-agent Source.
+- =create_source_with_token/2= and collector-specific token issuance.
+- Per-Source token rotation and revocation for host agents.
+- Manual creation of an installation UUID in the collector UI.
+- The requirement to configure =installation_id= in =agent.toml=.
+- Exclusive binding of a Source credential to one installation.
+- Collector enrollment reset, where deleting the Agent lets another
+  installation claim that Source credential.
+- "Enrollment token" terminology for ordinary agent intake.
+
+Do not deprecate =Source=, =Agent=, =AgentLease=, =Observation=, =SyncRun=, or
+the source-linked evidence models. Their provenance and operational roles remain
+valid under organization-level authentication.
+
+* Migration
+
+If there are no deployed agents or production data requiring compatibility,
+update the development migrations and reset development/test databases rather
+than preserving the superseded Source-token model.
+
+If deployed agents require a compatibility window:
+
+1. Add organization intake keys and make them the default setup path.
+2. Temporarily authenticate either an organization intake key or a legacy
+   Source token.
+3. When an existing installation switches to an organization key, resolve its
+   existing Agent and Source by organization and installation UUID so history
+   remains attached.
+4. Expose enough usage information to identify remaining legacy authentication.
+5. Remove legacy Source-token authentication and =sources.token_hash= after its
+   use reaches zero.
+
+Because only Source token hashes are stored, existing plaintext credentials
+cannot be converted into organization intake keys. A new organization key must
+be generated and deployed.
+
+* Phases
+
+** 1. Organization Intake And Automatic Registration
+
+- [ ] Add the organization-scoped =IntakeApiKey= schema, constraints, context
+  functions, and owner/admin authorization checks.
+- [ ] Generate random prefixed keys, store only hashes, reveal plaintext once,
+  and support multiple active keys plus independent revocation.
+- [ ] Change agent API authentication to resolve an active intake key and active
+  organization rather than a Source credential.
+- [ ] Resolve an existing Agent by organization and installation UUID.
+- [ ] Atomically create a per-installation Source+Agent when the UUID is first
+  seen, including safe concurrent first check-ins and observations.
+- [ ] Continue storing observations and evidence against the resolved
+  per-installation Source.
+- [ ] Replace collector credential creation and actions with organization intake
+  key management in the existing authenticated =live_session
+  :require_authenticated_user= and organization-selected operations UI because
+  these credentials grant organization intake access.
+- [ ] Keep key mutations restricted to active organization owners/admins and
+  recheck authorization in the context transaction.
+- [ ] Update the collector list to show automatically registered installations,
+  lease state, resource provenance, and inventory freshness without implying
+  that each collector owns a credential.
+- [ ] Choose direct migration or temporary legacy authentication based on actual
+  deployed-agent compatibility needs.
+
+** 2. Agent State And Legacy Cleanup
+
+- [ ] Generate an installation UUID on first boot when no persisted identity
+  exists.
+- [ ] Persist the UUID in a strictly permissioned writable state directory and
+  retain it across restart and package upgrade.
+- [ ] Update systemd and Debian packaging to create and protect the state
+  directory.
+- [ ] Rename normal agent configuration from source/enrollment token language to
+  organization intake API key language.
+- [ ] Remove =installation_id= from the default configuration and installation
+  instructions, retaining a temporary override only if migration needs it.
+- [ ] Verify cloned images generate distinct installation UUIDs even when they
+  share the organization's intake key.
+- [ ] Remove legacy Source-token authentication, =Source.token_hash=, collector
+  enrollment reset, obsolete context functions, UI controls, and tests after
+  migration requirements are satisfied.
+- [ ] Update agent, operator, packaging, and deployment documentation.
 
 * Acceptance Criteria
 
-- [ ] Accepted automated enrollment atomically creates one existing Source+Agent Collector aggregate and a separate key-bound credential.
-- [ ] Retry, singleton replacement, and group-subject behavior follow verifier-declared cardinality and key-bound idempotency rules.
-- [ ] Policy decisions use provenance-appropriate attributes and produce safe, reproducible audit records.
-- [ ] OIDC is the documented first automated deployment path; manual enrollment remains optional.
-- [ ] Images and horizontally scaled installations never share permanent Collector credentials.
-- [ ] Renewal, revocation, policy versioning, and MVP credential migration have explicit tested behavior.
+- [ ] An owner/admin can create an organization intake key, see it once, and
+  revoke it without deleting inventory or provenance.
+- [ ] Multiple organization intake keys can remain active during fleet rotation.
+- [ ] The same intake key can authenticate check-ins and observations from many
+  installation UUIDs in one organization.
+- [ ] First contact from each new installation creates exactly one dedicated
+  Source+Agent aggregate, including under concurrent requests.
+- [ ] Each observation is attributed to the Source associated with the reporting
+  installation UUID.
+- [ ] The agent generates and persists its installation UUID without requiring
+  an operator to configure one.
+- [ ] Restart and package upgrade preserve installation identity, while cloned
+  images without persisted state generate distinct identities.
+- [ ] An intake key cannot access browser, administration, organization-read, or
+  future privileged control-plane endpoints.
+- [ ] Revoked keys and keys belonging to disabled organizations are rejected.
+- [ ] Existing deployed agents either migrate without losing Source provenance
+  or the project explicitly uses a clean development reset.
+- [ ] No OIDC, verifier, challenge, ABAC, keypair, runtime-credential renewal,
+  group-key, or per-agent-key model is introduced by this plan.
 
 * Verification
 
-- [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete progress.
-- [ ] Run focused enrollment context, API, and agent tests introduced by each milestone.
+- [ ] Add context tests for key hashing, one-time reveal, tenant isolation,
+  authorization, multiple active keys, and revocation.
+- [ ] Add API tests for shared-key authentication, organization isolation,
+  automatic registration, UUID reuse, malformed identity, and revoked keys.
+- [ ] Add concurrency tests proving first check-in and first observation create
+  one Source+Agent per organization/installation UUID.
+- [ ] Add LiveView tests for intake-key creation, one-time reveal, revocation,
+  role enforcement, and automatically registered collector display.
+- [ ] Add Rust tests for generated identity persistence, restart reuse, explicit
+  migration override if retained, and secret redaction.
+- [ ] Add packaging tests for state-directory ownership and upgrade persistence.
+- [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete
+  progress.
+- [ ] Run focused server and agent tests introduced by each phase.
 - [ ] Run =mix precommit= after implementation changes.

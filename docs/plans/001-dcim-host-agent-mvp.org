@@ -54,8 +54,8 @@ This MVP proves the core product model before adding switch polling, VM lifecycl
 - Resource envelopes own desired state, lifecycle, and revisions; typed canonical projections provide the current query view.
 - Manual corrections are explicit field-level overrides that preserve observed facts, while normal operator intent belongs in desired state.
 - Agent registration and lease health are separate from source credentials and inventory freshness.
-- Manually creating a collector credential before agent registration is an MVP bootstrap path, not the target fleet-enrollment model.
-- Automated enrollment is deferred to [[file:002-provider-neutral-collector-enrollment.org][Plan 002]].
+- Manually creating a credential for each collector is an MVP bootstrap path, not the target shared organization-intake model.
+- Organization intake keys and automatic collector registration are deferred to [[file:002-provider-neutral-collector-enrollment.org][Plan 002]].
 
 * Milestones
 
@@ -216,7 +216,7 @@ desired state, observed evidence, provenance, and lifecycle boundaries.
 
 - Durable jobs and agent capabilities.
 - Phoenix Channels control acceleration.
-- [[file:002-provider-neutral-collector-enrollment.org][Provider-neutral automated enrollment and key-bound agent credentials]].
+- [[file:002-provider-neutral-collector-enrollment.org][Organization intake keys and automatic collector registration]].
 - Renga-native operational live queries.
 - Libvirt/KVM read-only VM inventory.
 - Cloud-hypervisor inventory support.
