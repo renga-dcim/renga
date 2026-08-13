@@ -201,10 +201,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
                   agent.toml
                 </p>
-                <code
-                  phx-no-curly-interpolation
-                  class="block whitespace-pre-wrap break-all font-mono text-xs leading-6"
-                >
+                <code class="block whitespace-pre-wrap break-all font-mono text-xs leading-6">
                   {"renga_url = \"#{RengaWeb.Endpoint.url()}\"\ntoken = \"#{@issued_token}\"\ninstallation_id = \"UNIQUE_INSTALLATION_UUID\""}
                 </code>
               </div>

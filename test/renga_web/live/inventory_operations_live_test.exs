@@ -73,6 +73,15 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
     assert has_element?(view, "#intake-key-credentials")
     assert has_element?(view, "#issued-intake-key", "renga_intake_")
+
+    assert has_element?(
+             view,
+             "#intake-key-credentials code",
+             ~s(renga_url = "http://localhost:4002")
+           )
+
+    assert has_element?(view, "#intake-key-credentials code", ~s(token = "renga_intake_))
+    refute has_element?(view, "#intake-key-credentials code", "@issued_token")
     assert has_element?(view, "#intake-api-keys", "Replacement fleet")
     assert Enum.any?(Inventory.list_intake_api_keys(scope), &(&1.name == "Replacement fleet"))
 
