@@ -154,4 +154,27 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "#intake-key-#{foreign_key.id}")
     refute has_element?(view, "#intake-api-keys", "Secret")
   end
+
+  test "shows server-recorded legacy authentication usage", %{
+    conn: conn,
+    scope: scope,
+    source: source,
+    agent: agent
+  } do
+    legacy_authenticated_at = ~U[2026-08-13 08:00:00.000000Z]
+
+    agent
+    |> Ecto.Changeset.change(
+      last_auth_method: "legacy_source_token",
+      last_legacy_authenticated_at: legacy_authenticated_at
+    )
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    assert has_element?(view, "#collector-#{source.id}", "Legacy source token")
+    assert has_element?(view, "#collector-#{source.id}", "2026-08-13 08:00 UTC")
+
+    assert Inventory.get_agent!(scope, agent.id).last_legacy_authenticated_at ==
+             legacy_authenticated_at
+  end
 end

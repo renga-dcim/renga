@@ -126,6 +126,88 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     assert length(Inventory.list_sources(scope)) == 1
   end
 
+  test "requests authenticated before key revocation create no collector", %{
+    scope: scope,
+    key: key,
+    token: token
+  } do
+    assert {:ok, authenticated_key} = Inventory.authenticate_intake_api_key(token)
+    assert {:ok, _revoked_key} = Inventory.revoke_intake_api_key(scope, key.id)
+
+    assert {:error, :intake_credential_changed} =
+             Inventory.record_intake_agent_check_in(
+               scope,
+               authenticated_key,
+               @first_installation_id
+             )
+
+    assert Inventory.list_sources(scope) == []
+    assert Inventory.list_agents(scope) == []
+  end
+
+  test "requests authenticated before organization disable create no collector", %{
+    scope: scope,
+    token: token
+  } do
+    assert {:ok, authenticated_key} = Inventory.authenticate_intake_api_key(token)
+
+    assert {:ok, _organization} =
+             Accounts.update_organization(scope.organization, %{status: "disabled"})
+
+    assert {:error, :intake_credential_changed} =
+             Inventory.record_intake_agent_check_in(
+               scope,
+               authenticated_key,
+               @first_installation_id
+             )
+
+    assert Inventory.list_sources(scope) == []
+    assert Inventory.list_agents(scope) == []
+  end
+
+  test "legacy source-token installations retain provenance when switching to an intake key", %{
+    conn: conn,
+    scope: scope,
+    token: intake_token
+  } do
+    {:ok, {legacy_source, legacy_token}} =
+      Inventory.create_source_with_token(scope, %{kind: "host_agent", name: "legacy-agent"})
+
+    legacy_conn =
+      conn
+      |> authorize(legacy_token, @first_installation_id)
+      |> post_check_in()
+
+    assert %{
+             "source" => %{"id" => source_id},
+             "agent" => %{"id" => agent_id}
+           } = json_response(legacy_conn, 202)
+
+    assert source_id == legacy_source.id
+    legacy_agent = Inventory.get_agent!(scope, agent_id)
+    assert legacy_agent.last_auth_method == "legacy_source_token"
+    assert legacy_agent.last_legacy_authenticated_at
+
+    intake_conn =
+      build_conn()
+      |> authorize(intake_token, @first_installation_id)
+      |> post(~p"/api/v1/observations", valid_observation_payload())
+
+    assert %{"observation" => %{"id" => observation_id, "source_id" => ^source_id}} =
+             json_response(intake_conn, 202)
+
+    migrated_agent = Inventory.get_agent!(scope, agent_id)
+    assert migrated_agent.source_id == legacy_source.id
+    assert migrated_agent.last_auth_method == "intake_api_key"
+
+    assert migrated_agent.last_legacy_authenticated_at ==
+             legacy_agent.last_legacy_authenticated_at
+
+    assert Repo.get!(Renga.Inventory.Observation, observation_id).source_id == legacy_source.id
+    assert length(Inventory.list_sources(scope)) == 1
+    assert length(Inventory.list_agents(scope)) == 1
+  end
+
   defp authorize(conn, token, installation_id) do
     conn
     |> put_req_header("authorization", "Bearer #{token}")

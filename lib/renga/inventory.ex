@@ -478,7 +478,7 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
-    do_record_agent_check_in(organization_id, source, attrs, nil)
+    do_record_agent_check_in(organization_id, source, attrs, nil, nil)
   end
 
   @doc """
@@ -493,7 +493,14 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, authenticated_source.id)
-    do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
+
+    do_record_agent_check_in(
+      organization_id,
+      source,
+      attrs,
+      authenticated_source.token_hash,
+      "legacy_source_token"
+    )
   end
 
   @doc """
@@ -518,6 +525,7 @@ defmodule Renga.Inventory do
       ensure_source_credential_current!(source, authenticated_source.token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, registration_attrs)
+      agent = record_agent_authentication!(agent, "legacy_source_token", now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
 
       case accept_observation(scope, source.id, observation_attrs) do
@@ -540,7 +548,13 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp do_record_agent_check_in(organization_id, source, attrs, expected_token_hash) do
+  defp do_record_agent_check_in(
+         organization_id,
+         source,
+         attrs,
+         expected_token_hash,
+         auth_method
+       ) do
     installation_id = get_attr(attrs, :installation_id)
 
     now =
@@ -559,6 +573,7 @@ defmodule Renga.Inventory do
       ensure_source_credential_current!(locked_source, expected_token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
+      agent = maybe_record_agent_authentication!(agent, auth_method, now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
@@ -597,16 +612,29 @@ defmodule Renga.Inventory do
     attrs = put_attr(attrs, :installation_id, installation_id)
 
     Repo.transaction(fn ->
-      ensure_organization_active!(organization_id)
+      ensure_intake_organization_active!(organization_id)
       ensure_intake_api_key_current!(organization_id, intake_api_key)
       lock_intake_installation!(organization_id, installation_id)
 
       {source, agent} =
         find_or_create_intake_installation!(organization_id, installation_id, attrs, now)
 
+      agent = record_agent_authentication!(agent, "intake_api_key", now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       operation.(agent, lease, source)
     end)
+  end
+
+  defp ensure_intake_organization_active!(organization_id) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> select([organization], organization.status)
+    |> lock("FOR SHARE")
+    |> Repo.one!()
+    |> case do
+      "active" -> :ok
+      _inactive -> Repo.rollback(:intake_credential_changed)
+    end
   end
 
   defp ensure_intake_api_key_current!(organization_id, authenticated_key) do
@@ -614,7 +642,7 @@ defmodule Renga.Inventory do
     |> where([key], key.organization_id == ^organization_id)
     |> where([key], key.id == ^authenticated_key.id)
     |> select([key], {key.status, key.token_hash})
-    |> lock("FOR UPDATE")
+    |> lock("FOR SHARE")
     |> Repo.one()
     |> case do
       {"active", token_hash} when token_hash == authenticated_key.token_hash -> :ok
@@ -655,6 +683,18 @@ defmodule Renga.Inventory do
       status: "active"
     })
     |> insert_or_rollback()
+  end
+
+  defp maybe_record_agent_authentication!(agent, nil, _authenticated_at), do: agent
+
+  defp maybe_record_agent_authentication!(agent, auth_method, authenticated_at) do
+    record_agent_authentication!(agent, auth_method, authenticated_at)
+  end
+
+  defp record_agent_authentication!(agent, auth_method, authenticated_at) do
+    agent
+    |> Agent.authentication_changeset(auth_method, authenticated_at)
+    |> Repo.update!()
   end
 
   defp lock_source_for_agent!(organization_id, source_id) do
