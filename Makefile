@@ -62,7 +62,7 @@ migrate:
 
 .PHONY: db
 db:
-	psql -h 127.0.0.1 -U postgres -d renga_dev -p 5435 -W
+	psql -h 127.0.0.1 -U postgres -d renga_dev -p 5434 -W
 
 .PHONY: console
 console:
