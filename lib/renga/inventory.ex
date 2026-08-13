@@ -22,6 +22,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.InterfaceRelationshipEvidence
+  alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Prefix
@@ -40,6 +41,8 @@ defmodule Renga.Inventory do
 
   @source_token_prefix "renga_src_"
   @source_token_bytes 32
+  @intake_api_key_prefix "renga_intake_"
+  @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
 
@@ -156,6 +159,129 @@ defmodule Renga.Inventory do
   """
   def collector_manager?(%Scope{user: user, roles: roles}) do
     not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
+  end
+
+  @doc """
+  Lists organization intake keys without exposing credential material.
+  """
+  def list_intake_api_keys(%Scope{organization_id: organization_id}) do
+    IntakeApiKey
+    |> where([key], key.organization_id == ^organization_id)
+    |> order_by([key], desc: key.inserted_at, asc: key.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Creates an organization intake key and returns its one-time plaintext value.
+
+  Authorization is rechecked against current membership and organization state
+  inside the transaction so a stale browser scope cannot issue credentials.
+  """
+  def create_intake_api_key(%Scope{} = scope, attrs) do
+    collector_management_transaction(scope, fn ->
+      token = generate_intake_api_key()
+
+      case %IntakeApiKey{organization_id: scope.organization_id}
+           |> IntakeApiKey.create_changeset(attrs, hash_intake_api_key(token))
+           |> Repo.insert() do
+        {:ok, key} -> {:ok, {key, token}}
+        {:error, changeset} -> {:error, changeset}
+      end
+    end)
+  end
+
+  @doc """
+  Revokes one scoped intake key without deleting collectors or provenance.
+  """
+  def revoke_intake_api_key(%Scope{} = scope, key_id) do
+    collector_management_transaction(scope, fn ->
+      IntakeApiKey
+      |> where([key], key.organization_id == ^scope.organization_id)
+      |> where([key], key.id == ^key_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> case do
+        %IntakeApiKey{} = key -> key |> IntakeApiKey.revoke_changeset() |> Repo.update()
+        nil -> {:error, :not_found}
+      end
+    end)
+  end
+
+  @doc """
+  Authenticates an active organization intake key for agent intake endpoints.
+  """
+  def authenticate_intake_api_key(@intake_api_key_prefix <> _rest = token) do
+    token_hash = hash_intake_api_key(token)
+
+    IntakeApiKey
+    |> join(:inner, [key], organization in assoc(key, :organization))
+    |> where([key], key.token_hash == ^token_hash and key.status == "active")
+    |> where([_key, organization], organization.status == "active")
+    |> preload([_key, organization], organization: organization)
+    |> Repo.one()
+    |> case do
+      %IntakeApiKey{} = key -> {:ok, key}
+      nil -> :error
+    end
+  end
+
+  def authenticate_intake_api_key(_token), do: :error
+
+  @doc """
+  Automatically registers or refreshes an intake-authenticated installation.
+
+  Registration locks the organization and credential before taking a stable
+  installation lock. Concurrent first requests therefore converge on one
+  dedicated Source and Agent aggregate.
+  """
+  def record_intake_agent_check_in(
+        %Scope{} = scope,
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        attrs \\ %{}
+      ) do
+    with_intake_installation(scope, intake_api_key, installation_id, attrs, fn agent,
+                                                                               lease,
+                                                                               _source ->
+      {agent, lease}
+    end)
+  end
+
+  @doc """
+  Automatically registers an intake-authenticated installation and stores its observation.
+  """
+  def ingest_intake_observation(
+        %Scope{} = scope,
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        agent_attrs,
+        observation_attrs
+      ) do
+    with_intake_installation(
+      scope,
+      intake_api_key,
+      installation_id,
+      agent_attrs,
+      fn agent, lease, source ->
+        case accept_observation(scope, source.id, observation_attrs) do
+          {:ok, observation, disposition} ->
+            {agent, lease, observation, disposition}
+
+          {:error, :idempotency_conflict, observation} ->
+            Repo.rollback({:idempotency_conflict, observation})
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end
+    )
+    |> case do
+      {:error, {:idempotency_conflict, observation}} ->
+        {:error, :idempotency_conflict, observation}
+
+      result ->
+        result
+    end
   end
 
   @doc """
@@ -352,7 +478,7 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
-    do_record_agent_check_in(organization_id, source, attrs, nil)
+    do_record_agent_check_in(organization_id, source, attrs, nil, nil)
   end
 
   @doc """
@@ -367,7 +493,14 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, authenticated_source.id)
-    do_record_agent_check_in(organization_id, source, attrs, authenticated_source.token_hash)
+
+    do_record_agent_check_in(
+      organization_id,
+      source,
+      attrs,
+      authenticated_source.token_hash,
+      "legacy_source_token"
+    )
   end
 
   @doc """
@@ -392,6 +525,7 @@ defmodule Renga.Inventory do
       ensure_source_credential_current!(source, authenticated_source.token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, registration_attrs)
+      agent = record_agent_authentication!(agent, "legacy_source_token", now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
 
       case accept_observation(scope, source.id, observation_attrs) do
@@ -414,7 +548,13 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp do_record_agent_check_in(organization_id, source, attrs, expected_token_hash) do
+  defp do_record_agent_check_in(
+         organization_id,
+         source,
+         attrs,
+         expected_token_hash,
+         auth_method
+       ) do
     installation_id = get_attr(attrs, :installation_id)
 
     now =
@@ -433,6 +573,7 @@ defmodule Renga.Inventory do
       ensure_source_credential_current!(locked_source, expected_token_hash)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
+      agent = maybe_record_agent_authentication!(agent, auth_method, now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
@@ -458,6 +599,102 @@ defmodule Renga.Inventory do
       |> Repo.one!()
 
     if status == "active", do: :ok, else: Repo.rollback(:source_credential_changed)
+  end
+
+  defp with_intake_installation(
+         %Scope{organization_id: organization_id},
+         %IntakeApiKey{} = intake_api_key,
+         installation_id,
+         attrs,
+         operation
+       ) do
+    now = Renga.Time.utc_now_ms()
+    attrs = put_attr(attrs, :installation_id, installation_id)
+
+    Repo.transaction(fn ->
+      ensure_intake_organization_active!(organization_id)
+      ensure_intake_api_key_current!(organization_id, intake_api_key)
+      lock_intake_installation!(organization_id, installation_id)
+
+      {source, agent} =
+        find_or_create_intake_installation!(organization_id, installation_id, attrs, now)
+
+      agent = record_agent_authentication!(agent, "intake_api_key", now)
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+      operation.(agent, lease, source)
+    end)
+  end
+
+  defp ensure_intake_organization_active!(organization_id) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> select([organization], organization.status)
+    |> lock("FOR SHARE")
+    |> Repo.one!()
+    |> case do
+      "active" -> :ok
+      _inactive -> Repo.rollback(:intake_credential_changed)
+    end
+  end
+
+  defp ensure_intake_api_key_current!(organization_id, authenticated_key) do
+    IntakeApiKey
+    |> where([key], key.organization_id == ^organization_id)
+    |> where([key], key.id == ^authenticated_key.id)
+    |> select([key], {key.status, key.token_hash})
+    |> lock("FOR SHARE")
+    |> Repo.one()
+    |> case do
+      {"active", token_hash} when token_hash == authenticated_key.token_hash -> :ok
+      _changed_or_missing -> Repo.rollback(:intake_credential_changed)
+    end
+  end
+
+  defp lock_intake_installation!(organization_id, installation_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      organization_id,
+      installation_id
+    ])
+  end
+
+  defp find_or_create_intake_installation!(organization_id, installation_id, attrs, now) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.installation_id == ^installation_id)
+    |> preload(:source)
+    |> Repo.one()
+    |> case do
+      %Agent{} = agent ->
+        agent_attrs = agent_registration_attrs(agent.source, attrs, now)
+        {agent.source, upsert_agent!(organization_id, agent.source_id, agent_attrs)}
+
+      nil ->
+        source = create_intake_source!(organization_id, installation_id)
+        agent_attrs = agent_registration_attrs(source, attrs, now)
+        {source, upsert_agent!(organization_id, source.id, agent_attrs)}
+    end
+  end
+
+  defp create_intake_source!(organization_id, installation_id) do
+    %Source{organization_id: organization_id}
+    |> Source.changeset(%{
+      kind: "host_agent",
+      name: "host-agent-#{installation_id}",
+      status: "active"
+    })
+    |> insert_or_rollback()
+  end
+
+  defp maybe_record_agent_authentication!(agent, nil, _authenticated_at), do: agent
+
+  defp maybe_record_agent_authentication!(agent, auth_method, authenticated_at) do
+    record_agent_authentication!(agent, auth_method, authenticated_at)
+  end
+
+  defp record_agent_authentication!(agent, auth_method, authenticated_at) do
+    agent
+    |> Agent.authentication_changeset(auth_method, authenticated_at)
+    |> Repo.update!()
   end
 
   defp lock_source_for_agent!(organization_id, source_id) do
@@ -1716,9 +1953,17 @@ defmodule Renga.Inventory do
       Base.url_encode64(:crypto.strong_rand_bytes(@source_token_bytes), padding: false)
   end
 
+  defp generate_intake_api_key do
+    @intake_api_key_prefix <>
+      Base.url_encode64(:crypto.strong_rand_bytes(@intake_api_key_bytes), padding: false)
+  end
+
   # SHA-256 is sufficient here because source tokens are high-entropy random
   # secrets, unlike user passwords that need slow Argon2 hashing.
   defp hash_source_token(token), do: :crypto.hash(:sha256, token)
+
+  # Intake keys have equivalent high entropy and do not require password hashing.
+  defp hash_intake_api_key(token), do: :crypto.hash(:sha256, token)
 
   defp next_resource_revision! do
     # Hold allocation order until commit so a watch cursor cannot pass an
