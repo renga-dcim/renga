@@ -228,6 +228,63 @@ defmodule Renga.Inventory do
   def authenticate_intake_api_key(_token), do: :error
 
   @doc """
+  Automatically registers or refreshes an intake-authenticated installation.
+
+  Registration locks the organization and credential before taking a stable
+  installation lock. Concurrent first requests therefore converge on one
+  dedicated Source and Agent aggregate.
+  """
+  def record_intake_agent_check_in(
+        %Scope{} = scope,
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        attrs \\ %{}
+      ) do
+    with_intake_installation(scope, intake_api_key, installation_id, attrs, fn agent,
+                                                                               lease,
+                                                                               _source ->
+      {agent, lease}
+    end)
+  end
+
+  @doc """
+  Automatically registers an intake-authenticated installation and stores its observation.
+  """
+  def ingest_intake_observation(
+        %Scope{} = scope,
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        agent_attrs,
+        observation_attrs
+      ) do
+    with_intake_installation(
+      scope,
+      intake_api_key,
+      installation_id,
+      agent_attrs,
+      fn agent, lease, source ->
+        case accept_observation(scope, source.id, observation_attrs) do
+          {:ok, observation, disposition} ->
+            {agent, lease, observation, disposition}
+
+          {:error, :idempotency_conflict, observation} ->
+            Repo.rollback({:idempotency_conflict, observation})
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end
+    )
+    |> case do
+      {:error, {:idempotency_conflict, observation}} ->
+        {:error, :idempotency_conflict, observation}
+
+      result ->
+        result
+    end
+  end
+
+  @doc """
   Updates source metadata while keeping token lifecycle separate.
   """
   def update_source(%Scope{} = scope, %Source{} = source, attrs) do
@@ -527,6 +584,77 @@ defmodule Renga.Inventory do
       |> Repo.one!()
 
     if status == "active", do: :ok, else: Repo.rollback(:source_credential_changed)
+  end
+
+  defp with_intake_installation(
+         %Scope{organization_id: organization_id},
+         %IntakeApiKey{} = intake_api_key,
+         installation_id,
+         attrs,
+         operation
+       ) do
+    now = Renga.Time.utc_now_ms()
+    attrs = put_attr(attrs, :installation_id, installation_id)
+
+    Repo.transaction(fn ->
+      ensure_organization_active!(organization_id)
+      ensure_intake_api_key_current!(organization_id, intake_api_key)
+      lock_intake_installation!(organization_id, installation_id)
+
+      {source, agent} =
+        find_or_create_intake_installation!(organization_id, installation_id, attrs, now)
+
+      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
+      operation.(agent, lease, source)
+    end)
+  end
+
+  defp ensure_intake_api_key_current!(organization_id, authenticated_key) do
+    IntakeApiKey
+    |> where([key], key.organization_id == ^organization_id)
+    |> where([key], key.id == ^authenticated_key.id)
+    |> select([key], {key.status, key.token_hash})
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+    |> case do
+      {"active", token_hash} when token_hash == authenticated_key.token_hash -> :ok
+      _changed_or_missing -> Repo.rollback(:intake_credential_changed)
+    end
+  end
+
+  defp lock_intake_installation!(organization_id, installation_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      organization_id,
+      installation_id
+    ])
+  end
+
+  defp find_or_create_intake_installation!(organization_id, installation_id, attrs, now) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.installation_id == ^installation_id)
+    |> preload(:source)
+    |> Repo.one()
+    |> case do
+      %Agent{} = agent ->
+        agent_attrs = agent_registration_attrs(agent.source, attrs, now)
+        {agent.source, upsert_agent!(organization_id, agent.source_id, agent_attrs)}
+
+      nil ->
+        source = create_intake_source!(organization_id, installation_id)
+        agent_attrs = agent_registration_attrs(source, attrs, now)
+        {source, upsert_agent!(organization_id, source.id, agent_attrs)}
+    end
+  end
+
+  defp create_intake_source!(organization_id, installation_id) do
+    %Source{organization_id: organization_id}
+    |> Source.changeset(%{
+      kind: "host_agent",
+      name: "host-agent-#{installation_id}",
+      status: "active"
+    })
+    |> insert_or_rollback()
   end
 
   defp lock_source_for_agent!(organization_id, source_id) do

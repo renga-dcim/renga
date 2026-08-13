@@ -1,6 +1,7 @@
 defmodule RengaWeb.SourceAuth do
   @moduledoc """
-  Authenticates source bearer tokens for the agent JSON API.
+  Authenticates organization intake keys or temporary legacy source tokens for
+  the agent JSON API.
   """
 
   import Phoenix.Controller
@@ -9,6 +10,7 @@ defmodule RengaWeb.SourceAuth do
   alias Renga.Accounts
   alias Renga.Accounts.Organization
   alias Renga.Inventory
+  alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Source
 
   def init(opts), do: opts
@@ -16,14 +18,13 @@ defmodule RengaWeb.SourceAuth do
   def call(conn, _opts) do
     with {:ok, token} <- bearer_token(conn),
          {:ok, installation_id} <- installation_id(conn),
-         {:ok, %Source{organization: %Organization{} = organization} = source} <-
-           Inventory.authenticate_source_token(token) do
-      scope = Accounts.scope_for(organization)
+         {:ok, credential, %Organization{} = organization} <- authenticate(token) do
+      conn =
+        conn
+        |> assign(:current_scope, Accounts.scope_for(organization))
+        |> assign(:current_installation_id, installation_id)
 
-      conn
-      |> assign(:current_source, source)
-      |> assign(:current_scope, scope)
-      |> assign(:current_installation_id, installation_id)
+      assign_credential(conn, credential)
     else
       _invalid ->
         conn
@@ -32,6 +33,24 @@ defmodule RengaWeb.SourceAuth do
         |> halt()
     end
   end
+
+  defp authenticate(token) do
+    case Inventory.authenticate_intake_api_key(token) do
+      {:ok, %IntakeApiKey{organization: organization} = key} ->
+        {:ok, key, organization}
+
+      :error ->
+        case Inventory.authenticate_source_token(token) do
+          {:ok, %Source{organization: organization} = source} -> {:ok, source, organization}
+          :error -> :error
+        end
+    end
+  end
+
+  defp assign_credential(conn, %IntakeApiKey{} = key),
+    do: assign(conn, :current_intake_api_key, key)
+
+  defp assign_credential(conn, %Source{} = source), do: assign(conn, :current_source, source)
 
   defp bearer_token(conn) do
     case get_req_header(conn, "authorization") do

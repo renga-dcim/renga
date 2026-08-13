@@ -1,9 +1,9 @@
 defmodule Renga.Inventory.Agent do
   @moduledoc """
-  Registered runtime agent that reports through a source credential.
+  Registered runtime agent that reports through an organization intake credential.
 
-  A source identifies provenance and authenticates requests; an agent identifies
-  one running reporter with its own version, capabilities, and liveness lease.
+  A source identifies provenance; an agent identifies one running reporter with
+  its own installation UUID, version, capabilities, and liveness lease.
   """
 
   use Ecto.Schema
