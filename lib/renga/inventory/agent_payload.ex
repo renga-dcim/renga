@@ -1,6 +1,6 @@
 defmodule Renga.Inventory.AgentPayload do
   @moduledoc """
-  Validation for source-authenticated agent API payloads.
+  Validation for organization-authenticated agent API payloads.
 
   The API stores accepted observations before reconciliation, so this module
   keeps the first gate focused on tenant/source identity and payload shape.

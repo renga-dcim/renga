@@ -31,7 +31,6 @@ defmodule Renga.Inventory.Source do
     field :kind, :string
     field :name, :string
     field :status, :string, default: "active"
-    field :token_hash, :binary
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
@@ -55,24 +54,5 @@ defmodule Renga.Inventory.Source do
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :name])
-  end
-
-  @doc """
-  Changes only the token authentication material for a source.
-
-  Keeping this separate from the public changeset prevents caller-controlled
-  attrs from setting token hashes directly.
-  """
-  def token_changeset(source, token_hash) when is_binary(token_hash) do
-    source
-    |> change(token_hash: token_hash, status: "active")
-    |> unique_constraint(:token_hash)
-  end
-
-  @doc """
-  Disables token authentication while retaining the source row for provenance.
-  """
-  def revoke_changeset(source) do
-    change(source, token_hash: nil, status: "revoked")
   end
 end

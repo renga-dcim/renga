@@ -682,7 +682,7 @@ Each source should define:
 ** Slice 2: Ingestion API
 
 - Add JSON API routes under =/api=.
-- Add source token authentication plug.
+- Add organization intake-key authentication plug.
 - Accept host-agent observation payloads.
 - Store raw observations.
 - Store processing outcomes outside immutable observations.

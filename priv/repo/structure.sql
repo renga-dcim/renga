@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict PIjKZcyyoiNHybxO8vuE2zH4oOja1vF3hVQfRm8gFhmc9c3MQ7DF4X3Z7Znd7TE
+\restrict 7R2HcTx5lHoek4odrWGINi2QMsDB26Fe0KPDa0KL8NYLDCAmGbHl7kxcDPV3ozm
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 18.4
@@ -135,9 +135,6 @@ CREATE TABLE public.agents (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     installation_id uuid,
-    last_auth_method character varying(255),
-    last_legacy_authenticated_at timestamp(3) without time zone,
-    CONSTRAINT agents_last_auth_method CHECK (((last_auth_method IS NULL) OR ((last_auth_method)::text = ANY ((ARRAY['intake_api_key'::character varying, 'legacy_source_token'::character varying])::text[])))),
     CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
 );
 
@@ -552,7 +549,6 @@ CREATE TABLE public.sources (
     kind character varying(255) NOT NULL,
     name character varying(255) NOT NULL,
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
-    token_hash bytea,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
@@ -1443,13 +1439,6 @@ CREATE INDEX sources_organization_id_status_index ON public.sources USING btree 
 
 
 --
--- Name: sources_token_hash_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX sources_token_hash_index ON public.sources USING btree (token_hash) WHERE (token_hash IS NOT NULL);
-
-
---
 -- Name: sync_runs_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2060,7 +2049,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict PIjKZcyyoiNHybxO8vuE2zH4oOja1vF3hVQfRm8gFhmc9c3MQ7DF4X3Z7Znd7TE
+\unrestrict 7R2HcTx5lHoek4odrWGINi2QMsDB26Fe0KPDa0KL8NYLDCAmGbHl7kxcDPV3ozm
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -2077,3 +2066,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260808070000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260808110000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260813072000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260813193000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260813210000);

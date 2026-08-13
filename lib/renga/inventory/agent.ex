@@ -17,7 +17,6 @@ defmodule Renga.Inventory.Agent do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @statuses ~w(active disabled)
-  @auth_methods ~w(intake_api_key legacy_source_token)
   @max_string_length 255
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
@@ -29,8 +28,6 @@ defmodule Renga.Inventory.Agent do
     field :capabilities, {:array, :string}, default: []
     field :metadata, :map, default: %{}
     field :registered_at, :utc_datetime_usec
-    field :last_auth_method, :string
-    field :last_legacy_authenticated_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source, Source
@@ -62,22 +59,6 @@ defmodule Renga.Inventory.Agent do
     |> unique_constraint(:installation_id,
       name: :agents_organization_installation_id_index
     )
-  end
-
-  @doc """
-  Records successful server-authenticated intake without exposing lifecycle
-  fields to caller-controlled agent attributes.
-  """
-  def authentication_changeset(agent, auth_method, authenticated_at)
-      when auth_method in @auth_methods do
-    changes = %{last_auth_method: auth_method}
-
-    changes =
-      if auth_method == "legacy_source_token",
-        do: Map.put(changes, :last_legacy_authenticated_at, authenticated_at),
-        else: changes
-
-    change(agent, changes)
   end
 
   defp validate_capabilities(changeset) do

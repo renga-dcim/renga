@@ -39,8 +39,6 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
 
-  @source_token_prefix "renga_src_"
-  @source_token_bytes 32
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
@@ -117,41 +115,6 @@ defmodule Renga.Inventory do
     %Source{organization_id: organization_id}
     |> Source.changeset(attrs)
     |> Repo.insert()
-  end
-
-  @doc """
-  Creates a source and returns its one-time plaintext token.
-
-  The database stores only the token hash; callers must show or persist the
-  returned token immediately because it cannot be reconstructed later.
-  """
-  def create_source_with_token(%Scope{organization_id: organization_id}, attrs) do
-    token = generate_source_token()
-
-    result =
-      %Source{organization_id: organization_id}
-      |> Source.changeset(attrs)
-      |> Ecto.Changeset.put_change(:token_hash, hash_source_token(token))
-      |> Repo.insert()
-
-    case result do
-      {:ok, source} -> {:ok, {source, token}}
-      {:error, changeset} -> {:error, changeset}
-    end
-  end
-
-  @doc """
-  Creates a one-installation host collector for an organization administrator.
-  """
-  def create_collector_with_token(%Scope{} = scope, attrs) do
-    collector_management_transaction(scope, fn ->
-      attrs =
-        attrs
-        |> put_attr(:kind, "host_agent")
-        |> put_attr(:status, "active")
-
-      create_source_with_token(scope, attrs)
-    end)
   end
 
   @doc """
@@ -301,98 +264,6 @@ defmodule Renga.Inventory do
     Source.changeset(source, attrs)
   end
 
-  @doc """
-  Replaces a source token and returns the new one-time plaintext value.
-  """
-  def rotate_source_token(%Scope{} = scope, source_id) do
-    source = get_source!(scope, source_id)
-    token = generate_source_token()
-
-    result =
-      source
-      |> Source.token_changeset(hash_source_token(token))
-      |> Repo.update()
-
-    case result do
-      {:ok, source} -> {:ok, {source, token}}
-      {:error, changeset} -> {:error, changeset}
-    end
-  end
-
-  @doc """
-  Replaces a host collector credential without changing its installation binding.
-  """
-  def rotate_collector_token(%Scope{} = scope, source_id) do
-    collector_management_transaction(scope, fn ->
-      source = lock_host_collector_or_rollback(scope.organization_id, source_id)
-      rotate_host_collector_token(source)
-    end)
-  end
-
-  defp rotate_host_collector_token(source) do
-    token = generate_source_token()
-
-    case source |> Source.token_changeset(hash_source_token(token)) |> Repo.update() do
-      {:ok, source} -> {:ok, {source, token}}
-      {:error, changeset} -> {:error, changeset}
-    end
-  end
-
-  @doc """
-  Revokes source token authentication without deleting source provenance.
-  """
-  def revoke_source_token(%Scope{} = scope, source_id) do
-    scope
-    |> get_source!(source_id)
-    |> Source.revoke_changeset()
-    |> Repo.update()
-  end
-
-  @doc """
-  Revokes one host collector credential while retaining its provenance.
-  """
-  def revoke_collector_token(%Scope{} = scope, source_id) do
-    collector_management_transaction(scope, fn ->
-      source = lock_host_collector_or_rollback(scope.organization_id, source_id)
-      source |> Source.revoke_changeset() |> Repo.update()
-    end)
-  end
-
-  @doc """
-  Removes a collector's runtime binding and replaces its credential.
-
-  Source provenance and observations remain intact; only the renewable agent
-  registration is removed so a new installation can claim the credential.
-  """
-  def reset_collector_enrollment(
-        %Scope{organization_id: organization_id} = scope,
-        source_id
-      ) do
-    collector_management_transaction(scope, fn ->
-      token = generate_source_token()
-      source = lock_host_collector_or_rollback(organization_id, source_id)
-
-      Agent
-      |> where([agent], agent.organization_id == ^organization_id)
-      |> where([agent], agent.source_id == ^source.id)
-      |> Repo.delete_all()
-
-      source =
-        source
-        |> Source.token_changeset(hash_source_token(token))
-        |> update_or_rollback()
-
-      {source, token}
-    end)
-  end
-
-  defp lock_host_collector_or_rollback(organization_id, source_id) do
-    case lock_host_collector(organization_id, source_id) do
-      %Source{} = source -> source
-      nil -> Repo.rollback(:not_found)
-    end
-  end
-
   defp collector_management_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       ensure_collector_organization_active_or_rollback(scope.organization_id)
@@ -443,34 +314,10 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Authenticates a bearer token from an inventory source.
-
-  A valid token identifies one active source and its organization. User auth is
-  deliberately separate from source auth because agents are not humans.
-  """
-  def authenticate_source_token(@source_token_prefix <> _rest = token) do
-    token_hash = hash_source_token(token)
-
-    Source
-    |> join(:inner, [source], organization in assoc(source, :organization))
-    |> where([source], source.token_hash == ^token_hash)
-    |> where([source, organization], source.status == "active")
-    |> where([source, organization], organization.status == "active")
-    |> preload([source, organization], organization: organization)
-    |> Repo.one()
-    |> case do
-      %Source{} = source -> {:ok, source}
-      nil -> :error
-    end
-  end
-
-  def authenticate_source_token(_token), do: :error
-
-  @doc """
   Registers or refreshes an agent and renews its independent liveness lease.
 
-  The source remains a credential/provenance record. Server time determines
-  lease liveness so a client clock cannot extend its own connection state.
+  The source remains a provenance record. Server time determines lease
+  liveness so a client clock cannot extend its own connection state.
   """
   def record_agent_check_in(
         %Scope{organization_id: organization_id} = scope,
@@ -478,83 +325,10 @@ defmodule Renga.Inventory do
         attrs \\ %{}
       ) do
     source = get_source!(scope, source_id)
-    do_record_agent_check_in(organization_id, source, attrs, nil, nil)
+    do_record_agent_check_in(organization_id, source, attrs)
   end
 
-  @doc """
-  Registers or renews an agent only while its authenticated credential remains current.
-
-  Rechecking the token hash under the source row lock prevents an in-flight
-  request authenticated before rotation or reset from recreating a binding.
-  """
-  def record_authenticated_agent_check_in(
-        %Scope{organization_id: organization_id} = scope,
-        %Source{} = authenticated_source,
-        attrs \\ %{}
-      ) do
-    source = get_source!(scope, authenticated_source.id)
-
-    do_record_agent_check_in(
-      organization_id,
-      source,
-      attrs,
-      authenticated_source.token_hash,
-      "legacy_source_token"
-    )
-  end
-
-  @doc """
-  Atomically checks in an authenticated agent and accepts its raw observation.
-
-  The authentication state is revalidated under database locks so credential
-  or tenant lifecycle changes cannot race either persistent side effect.
-  """
-  def ingest_authenticated_observation(
-        %Scope{organization_id: organization_id} = scope,
-        %Source{} = authenticated_source,
-        agent_attrs,
-        observation_attrs
-      ) do
-    now = Renga.Time.utc_now_ms()
-    installation_id = get_attr(agent_attrs, :installation_id)
-    registration_attrs = agent_registration_attrs(authenticated_source, agent_attrs, now)
-
-    Repo.transaction(fn ->
-      ensure_organization_active!(organization_id)
-      source = lock_source_for_agent!(organization_id, authenticated_source.id)
-      ensure_source_credential_current!(source, authenticated_source.token_hash)
-      ensure_agent_installation!(organization_id, source.id, installation_id)
-      agent = upsert_agent!(organization_id, source.id, registration_attrs)
-      agent = record_agent_authentication!(agent, "legacy_source_token", now)
-      lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
-
-      case accept_observation(scope, source.id, observation_attrs) do
-        {:ok, observation, disposition} ->
-          {agent, lease, observation, disposition}
-
-        {:error, :idempotency_conflict, observation} ->
-          Repo.rollback({:idempotency_conflict, observation})
-
-        {:error, reason} ->
-          Repo.rollback(reason)
-      end
-    end)
-    |> case do
-      {:error, {:idempotency_conflict, observation}} ->
-        {:error, :idempotency_conflict, observation}
-
-      result ->
-        result
-    end
-  end
-
-  defp do_record_agent_check_in(
-         organization_id,
-         source,
-         attrs,
-         expected_token_hash,
-         auth_method
-       ) do
+  defp do_record_agent_check_in(organization_id, source, attrs) do
     installation_id = get_attr(attrs, :installation_id)
 
     now =
@@ -569,25 +343,12 @@ defmodule Renga.Inventory do
 
     Repo.transaction(fn ->
       ensure_organization_active!(organization_id)
-      locked_source = lock_source_for_agent!(organization_id, source.id)
-      ensure_source_credential_current!(locked_source, expected_token_hash)
+      lock_source_for_agent!(organization_id, source.id)
       ensure_agent_installation!(organization_id, source.id, installation_id)
       agent = upsert_agent!(organization_id, source.id, agent_attrs)
-      agent = maybe_record_agent_authentication!(agent, auth_method, now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       {agent, lease}
     end)
-  end
-
-  defp ensure_source_credential_current!(_source, nil), do: :ok
-
-  defp ensure_source_credential_current!(source, expected_token_hash) do
-    if source.status == "active" and not is_nil(source.token_hash) and
-         source.token_hash == expected_token_hash do
-      :ok
-    else
-      Repo.rollback(:source_credential_changed)
-    end
   end
 
   defp ensure_organization_active!(organization_id) do
@@ -598,7 +359,7 @@ defmodule Renga.Inventory do
       |> lock("FOR UPDATE")
       |> Repo.one!()
 
-    if status == "active", do: :ok, else: Repo.rollback(:source_credential_changed)
+    if status == "active", do: :ok, else: Repo.rollback(:organization_inactive)
   end
 
   defp with_intake_installation(
@@ -619,7 +380,6 @@ defmodule Renga.Inventory do
       {source, agent} =
         find_or_create_intake_installation!(organization_id, installation_id, attrs, now)
 
-      agent = record_agent_authentication!(agent, "intake_api_key", now)
       lease = put_agent_lease!(organization_id, agent.id, now, 90_000)
       operation.(agent, lease, source)
     end)
@@ -685,32 +445,12 @@ defmodule Renga.Inventory do
     |> insert_or_rollback()
   end
 
-  defp maybe_record_agent_authentication!(agent, nil, _authenticated_at), do: agent
-
-  defp maybe_record_agent_authentication!(agent, auth_method, authenticated_at) do
-    record_agent_authentication!(agent, auth_method, authenticated_at)
-  end
-
-  defp record_agent_authentication!(agent, auth_method, authenticated_at) do
-    agent
-    |> Agent.authentication_changeset(auth_method, authenticated_at)
-    |> Repo.update!()
-  end
-
   defp lock_source_for_agent!(organization_id, source_id) do
     Source
     |> where([source], source.organization_id == ^organization_id)
     |> where([source], source.id == ^source_id)
     |> lock("FOR UPDATE")
     |> Repo.one!()
-  end
-
-  defp lock_host_collector(organization_id, source_id) do
-    Source
-    |> where([source], source.organization_id == ^organization_id)
-    |> where([source], source.id == ^source_id and source.kind == "host_agent")
-    |> lock("FOR UPDATE")
-    |> Repo.one()
   end
 
   defp ensure_agent_installation!(_organization_id, _source_id, nil), do: :ok
@@ -1948,19 +1688,10 @@ defmodule Renga.Inventory do
     if DateTime.compare(first, second) == :gt, do: second, else: first
   end
 
-  defp generate_source_token do
-    @source_token_prefix <>
-      Base.url_encode64(:crypto.strong_rand_bytes(@source_token_bytes), padding: false)
-  end
-
   defp generate_intake_api_key do
     @intake_api_key_prefix <>
       Base.url_encode64(:crypto.strong_rand_bytes(@intake_api_key_bytes), padding: false)
   end
-
-  # SHA-256 is sufficient here because source tokens are high-entropy random
-  # secrets, unlike user passwords that need slow Argon2 hashing.
-  defp hash_source_token(token), do: :crypto.hash(:sha256, token)
 
   # Intake keys have equivalent high entropy and do not require password hashing.
   defp hash_intake_api_key(token), do: :crypto.hash(:sha256, token)

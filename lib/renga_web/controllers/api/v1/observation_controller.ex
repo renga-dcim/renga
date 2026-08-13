@@ -24,21 +24,6 @@ defmodule RengaWeb.Api.V1.ObservationController do
     end
   end
 
-  def create(%{assigns: %{current_source: %{kind: "host_agent"} = source}} = conn, params) do
-    with {:ok, attrs} <- AgentPayload.validate_observation(params, source),
-         {:ok, {_agent, _lease, observation, disposition}} <-
-           Inventory.ingest_authenticated_observation(
-             conn.assigns.current_scope,
-             source,
-             %{installation_id: conn.assigns.current_installation_id},
-             attrs
-           ) do
-      respond_to_accepted_observation(conn, observation, disposition)
-    else
-      error -> observation_error(conn, error)
-    end
-  end
-
   def create(conn, _params) do
     conn
     |> put_status(:forbidden)
@@ -64,15 +49,13 @@ defmodule RengaWeb.Api.V1.ObservationController do
     })
   end
 
-  defp observation_error(conn, {:error, reason})
-       when reason in [:source_credential_changed, :intake_credential_changed] do
+  defp observation_error(conn, {:error, :intake_credential_changed}) do
     conn
     |> put_status(:unauthorized)
     |> json(%{status: "rejected", errors: [%{path: "authorization", message: "is invalid"}]})
   end
 
-  defp observation_error(conn, {:error, reason})
-       when reason in [:installation_identity_mismatch, :installation_identity_conflict] do
+  defp observation_error(conn, {:error, :installation_identity_conflict}) do
     conn
     |> put_status(:conflict)
     |> json(%{

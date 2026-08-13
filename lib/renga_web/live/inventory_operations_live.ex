@@ -203,8 +203,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 </p>
                 <code class="block break-all font-mono text-xs leading-6">
                   <span class="block">renga_url = "{RengaWeb.Endpoint.url()}"</span>
-                  <span class="block">token = "{@issued_token}"</span>
-                  <span class="block">installation_id = "UNIQUE_INSTALLATION_UUID"</span>
+                  <span class="block">intake_api_key = "{@issued_token}"</span>
                 </code>
               </div>
               <button
@@ -331,17 +330,6 @@ defmodule RengaWeb.InventoryOperationsLive do
                     </td>
                     <td class="px-5 py-4 font-mono text-xs text-base-content/55">
                       {short_installation_id(collector_agent(source).installation_id)}
-                      <p class="mt-1 font-sans text-[11px] text-base-content/40">
-                        {auth_method_label(collector_agent(source).last_auth_method)}
-                      </p>
-                      <p
-                        :if={collector_agent(source).last_legacy_authenticated_at}
-                        class="mt-1 font-sans text-[11px] text-amber-700 dark:text-amber-400"
-                      >
-                        Legacy source token last used {format_time(
-                          collector_agent(source).last_legacy_authenticated_at
-                        )}
-                      </p>
                     </td>
                     <td class="px-5 py-4 font-mono text-xs text-base-content/55">
                       {format_time(Map.get(@last_inventory_by_source, source.id))}
@@ -426,15 +414,11 @@ defmodule RengaWeb.InventoryOperationsLive do
     end
   end
 
-  defp short_installation_id(nil), do: "Legacy identity"
+  defp short_installation_id(nil), do: "Identity unavailable"
 
   defp short_installation_id(installation_id) do
     "#{String.slice(installation_id, 0, 8)}…#{String.slice(installation_id, -4, 4)}"
   end
-
-  defp auth_method_label("intake_api_key"), do: "Organization intake key"
-  defp auth_method_label("legacy_source_token"), do: "Legacy source token"
-  defp auth_method_label(nil), do: "Authentication unknown"
 
   defp format_time(nil), do: "Never"
   defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")

@@ -14,8 +14,6 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Repo
 
   @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
-  @other_installation_id "8ea9ae04-bf9b-4c34-8192-4f617eade95e"
-
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
 
   defp source_fixture(attrs \\ %{}) do
@@ -30,11 +28,15 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
     organization_membership_fixture(admin, organization, %{role: "admin"})
     admin_scope = Accounts.scope_for_user(admin, organization.id)
 
-    {:ok, {source, token}} =
-      Inventory.create_source_with_token(scope, %{
-        kind: Map.get(attrs, :kind, "host_agent"),
-        name: Map.get(attrs, :name, "compute-01-agent")
-      })
+    {:ok, {_key, token}} =
+      Inventory.create_intake_api_key(admin_scope, %{name: Map.get(attrs, :name, "Test fleet")})
+
+    {:ok, authenticated_key} = Inventory.authenticate_intake_api_key(token)
+
+    {:ok, {agent, _lease}} =
+      Inventory.record_intake_agent_check_in(scope, authenticated_key, @installation_id)
+
+    source = Inventory.get_source!(scope, agent.source_id)
 
     %{
       organization: organization,
@@ -51,12 +53,12 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
     |> put_req_header("x-renga-installation-id", installation_id)
   end
 
-  defp valid_observation_payload(source, attrs \\ %{}) do
+  defp valid_observation_payload(_source, attrs \\ %{}) do
     Map.merge(
       %{
         "observation_id" => "obs-#{System.unique_integer([:positive])}",
         "observed_at" => "2026-07-31T12:00:00Z",
-        "source" => %{"kind" => "host_agent", "source_id" => source.name},
+        "source" => %{"kind" => "host_agent"},
         "resources" => [
           %{
             "kind" => "server",
@@ -89,7 +91,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   end
 
   describe "POST /api/v1/observations" do
-    test "requires a valid source bearer token", %{conn: conn} do
+    test "requires a valid organization intake key", %{conn: conn} do
       conn = post(conn, ~p"/api/v1/observations", %{})
 
       assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
@@ -132,95 +134,6 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert resource.kind == "server"
       assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
-    end
-
-    test "stale authenticated requests cannot ingest after credential changes" do
-      for change <- [:rotation, :revocation, :enrollment_reset] do
-        %{
-          organization: organization,
-          scope: scope,
-          admin_scope: admin_scope,
-          source: source,
-          token: token
-        } =
-          source_fixture(%{name: "#{change}-agent"})
-
-        assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
-
-        if change == :enrollment_reset do
-          assert {:ok, {_agent, _lease}} =
-                   Inventory.record_authenticated_agent_check_in(scope, authenticated_source, %{
-                     installation_id: @installation_id
-                   })
-        end
-
-        mutation_scope = if change == :enrollment_reset, do: admin_scope, else: scope
-
-        assert {:ok, _changed_source} =
-                 change_credential(change, mutation_scope, authenticated_source)
-
-        payload = valid_observation_payload(source)
-        assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
-
-        assert {:error, :source_credential_changed} =
-                 Inventory.ingest_authenticated_observation(
-                   Accounts.scope_for(organization),
-                   authenticated_source,
-                   %{installation_id: @installation_id},
-                   attrs
-                 )
-
-        refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
-        refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
-      end
-    end
-
-    test "stale authenticated request cannot ingest after its organization is disabled" do
-      %{organization: organization, scope: scope, source: source, token: token} = source_fixture()
-      assert {:ok, authenticated_source} = Inventory.authenticate_source_token(token)
-
-      assert {:ok, _organization} =
-               Accounts.update_organization(organization, %{status: "disabled"})
-
-      payload = valid_observation_payload(source)
-      assert {:ok, attrs} = AgentPayload.validate_observation(payload, authenticated_source)
-
-      assert {:error, :source_credential_changed} =
-               Inventory.ingest_authenticated_observation(
-                 scope,
-                 authenticated_source,
-                 %{installation_id: @installation_id},
-                 attrs
-               )
-
-      refute Repo.get_by(Agent, organization_id: organization.id, source_id: source.id)
-      refute Repo.get_by(Observation, organization_id: organization.id, source_id: source.id)
-    end
-
-    test "rejects observations from a different installation after enrollment", %{conn: conn} do
-      %{source: source, token: token} = source_fixture()
-
-      enrolled_conn =
-        conn
-        |> authorize(token)
-        |> post(~p"/api/v1/agent/checkins", %{})
-
-      assert %{"status" => "accepted"} = json_response(enrolled_conn, 202)
-
-      payload = valid_observation_payload(source)
-
-      conflicting_conn =
-        build_conn()
-        |> authorize(token, @other_installation_id)
-        |> post(~p"/api/v1/observations", payload)
-
-      assert %{
-               "status" => "rejected",
-               "errors" => [%{"path" => "installation_id", "message" => message}]
-             } = json_response(conflicting_conn, 409)
-
-      assert message =~ "already enrolled"
-      refute Repo.get_by(Observation, idempotency_key: payload["observation_id"])
     end
 
     test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do
@@ -698,7 +611,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       payload =
         source
         |> valid_observation_payload()
-        |> put_in(["source"], %{"source_id" => source.name})
+        |> put_in(["source"], %{})
 
       conn =
         conn
@@ -956,20 +869,5 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                "errors" => [%{"path" => "source.source_id"}]
              } = json_response(conn, 422)
     end
-  end
-
-  defp change_credential(:rotation, scope, source) do
-    with {:ok, {changed_source, _token}} <- Inventory.rotate_source_token(scope, source.id),
-         do: {:ok, changed_source}
-  end
-
-  defp change_credential(:revocation, scope, source) do
-    Inventory.revoke_source_token(scope, source.id)
-  end
-
-  defp change_credential(:enrollment_reset, scope, source) do
-    with {:ok, {changed_source, _token}} <-
-           Inventory.reset_collector_enrollment(scope, source.id),
-         do: {:ok, changed_source}
   end
 end

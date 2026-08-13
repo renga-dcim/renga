@@ -1,5 +1,5 @@
 #+title: Organization Intake Keys And Automatic Collector Registration
-#+status: Active
+#+status: Done
 
 * Objective
 
@@ -224,22 +224,22 @@ the two agent intake endpoints until Phase 2 removes the legacy model.
 
 ** 2. Agent State And Legacy Cleanup
 
-- [ ] Generate an installation UUID on first boot when no persisted identity
+- [X] Generate an installation UUID on first boot when no persisted identity
   exists.
-- [ ] Persist the UUID in a strictly permissioned writable state directory and
+- [X] Persist the UUID in a strictly permissioned writable state directory and
   retain it across restart and package upgrade.
-- [ ] Update systemd and Debian packaging to create and protect the state
+- [X] Update systemd and Debian packaging to create and protect the state
   directory.
-- [ ] Rename normal agent configuration from source/enrollment token language to
+- [X] Rename normal agent configuration from source/enrollment token language to
   organization intake API key language.
-- [ ] Remove =installation_id= from the default configuration and installation
+- [X] Remove =installation_id= from the default configuration and installation
   instructions, retaining a temporary override only if migration needs it.
-- [ ] Verify cloned images generate distinct installation UUIDs even when they
+- [X] Verify cloned images generate distinct installation UUIDs even when they
   share the organization's intake key.
-- [ ] Remove legacy Source-token authentication, =Source.token_hash=, collector
+- [X] Remove legacy Source-token authentication, =Source.token_hash=, collector
   enrollment reset, obsolete context functions, UI controls, and tests after
   migration requirements are satisfied.
-- [ ] Update agent, operator, packaging, and deployment documentation.
+- [X] Update agent, operator, packaging, and deployment documentation.
 
 * Acceptance Criteria
 
@@ -252,9 +252,9 @@ the two agent intake endpoints until Phase 2 removes the legacy model.
   Source+Agent aggregate, including under concurrent requests.
 - [X] Each observation is attributed to the Source associated with the reporting
   installation UUID.
-- [ ] The agent generates and persists its installation UUID without requiring
+- [X] The agent generates and persists its installation UUID without requiring
   an operator to configure one.
-- [ ] Restart and package upgrade preserve installation identity, while cloned
+- [X] Restart and package upgrade preserve installation identity, while cloned
   images without persisted state generate distinct identities.
 - [X] An intake key cannot access browser, administration, organization-read, or
   future privileged control-plane endpoints.
@@ -274,10 +274,9 @@ the two agent intake endpoints until Phase 2 removes the legacy model.
   one Source+Agent per organization/installation UUID.
 - [X] Add LiveView tests for intake-key creation, one-time reveal, revocation,
   role enforcement, and automatically registered collector display.
-- [ ] Add Rust tests for generated identity persistence, restart reuse, explicit
+- [X] Add Rust tests for generated identity persistence, restart reuse, explicit
   migration override if retained, and secret redaction.
-- [ ] Add packaging tests for state-directory ownership and upgrade persistence.
-- [X] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete
-  progress.
+- [X] Add packaging tests for state-directory ownership and upgrade persistence.
+- [X] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports complete.
 - [X] Run focused server and agent tests introduced by each phase.
 - [X] Run =mix precommit= after implementation changes.
