@@ -126,6 +126,7 @@ if ! getent passwd renga-agent >/dev/null; then
 fi
 
 install -d -o root -g renga-agent -m 0750 /etc/renga
+install -d -o renga-agent -g renga-agent -m 0700 /var/lib/renga
 if [ -f /etc/renga/agent.toml ]; then
     chown root:renga-agent /etc/renga/agent.toml
     chmod 0640 /etc/renga/agent.toml

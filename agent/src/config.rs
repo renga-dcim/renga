@@ -1,5 +1,6 @@
 //! Configuration loading without transport-specific policy.
 
+use crate::identity;
 use serde::Deserialize;
 use std::{
     env, fmt, fs,
@@ -24,7 +25,7 @@ pub struct Config {
     pub config_path: PathBuf,
     pub renga_url: String,
     pub allow_insecure_http: bool,
-    pub token: String,
+    pub intake_api_key: String,
     pub installation_id: uuid::Uuid,
     pub inventory_interval: Duration,
     pub checkin_interval: Duration,
@@ -39,7 +40,7 @@ impl fmt::Debug for Config {
             .field("config_path", &self.config_path)
             .field("renga_url", &self.renga_url)
             .field("allow_insecure_http", &self.allow_insecure_http)
-            .field("token", &"[REDACTED]")
+            .field("intake_api_key", &"[REDACTED]")
             .field("installation_id", &self.installation_id)
             .field("inventory_interval", &self.inventory_interval)
             .field("checkin_interval", &self.checkin_interval)
@@ -65,7 +66,7 @@ impl std::error::Error for ConfigError {}
 struct RawConfig {
     renga_url: Option<String>,
     allow_insecure_http: Option<bool>,
-    token: Option<String>,
+    intake_api_key: Option<String>,
     installation_id: Option<String>,
     inventory_interval_seconds: Option<u64>,
     checkin_interval_seconds: Option<u64>,
@@ -77,7 +78,10 @@ struct RawConfig {
 impl Config {
     /// Loads TOML and then applies `RENGA_*` overrides. Durations are in seconds.
     /// Defaults: inventory 1h, check-in 1m, refresh 5m, timeout 20s, retries 5.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+    pub fn load(
+        path: impl AsRef<Path>,
+        state_directory: impl AsRef<Path>,
+    ) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let mut raw: RawConfig = match fs::read_to_string(path) {
             // TOML diagnostics can echo source lines, including the token.
@@ -108,7 +112,7 @@ impl Config {
             };
         }
         string_env!("RENGA_URL", renga_url);
-        string_env!("RENGA_TOKEN", token);
+        string_env!("RENGA_INTAKE_API_KEY", intake_api_key);
         string_env!("RENGA_INSTALLATION_ID", installation_id);
         if let Ok(value) = env::var("RENGA_ALLOW_INSECURE_HTTP") {
             raw.allow_insecure_http = Some(match value.as_str() {
@@ -142,10 +146,14 @@ impl Config {
             u64
         );
         number_env!("RENGA_MAX_RETRY_ATTEMPTS", max_retry_attempts, u32);
-        Self::from_raw(path.to_path_buf(), raw)
+        Self::from_raw(path.to_path_buf(), state_directory.as_ref(), raw)
     }
 
-    fn from_raw(config_path: PathBuf, raw: RawConfig) -> Result<Self, ConfigError> {
+    fn from_raw(
+        config_path: PathBuf,
+        state_directory: &Path,
+        raw: RawConfig,
+    ) -> Result<Self, ConfigError> {
         fn required(value: Option<String>, name: &str) -> Result<String, ConfigError> {
             value
                 .filter(|v| !v.trim().is_empty())
@@ -169,7 +177,9 @@ impl Config {
                 Ok(duration)
             }
         }
-        let installation = required(raw.installation_id, "installation_id")?;
+        let installation_id =
+            identity::load_or_create(state_directory, raw.installation_id.as_deref())
+                .map_err(|error| ConfigError(error.to_string()))?;
         let renga_url = required(raw.renga_url, "renga_url")?
             .trim_end_matches('/')
             .to_owned();
@@ -201,9 +211,8 @@ impl Config {
             config_path,
             renga_url,
             allow_insecure_http,
-            token: required(raw.token, "token")?,
-            installation_id: uuid::Uuid::parse_str(&installation)
-                .map_err(|_| ConfigError("installation_id must be a UUID".into()))?,
+            intake_api_key: required(raw.intake_api_key, "intake_api_key")?,
+            installation_id,
             inventory_interval: duration(
                 raw.inventory_interval_seconds,
                 INVENTORY_DEFAULT,
@@ -226,10 +235,19 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn state_directory() -> PathBuf {
+        env::temp_dir().join(format!("renga-config-state-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn from_raw(raw: RawConfig) -> Result<Config, ConfigError> {
+        Config::from_raw("x".into(), &state_directory(), raw)
+    }
+
     fn raw() -> RawConfig {
         RawConfig {
             renga_url: Some("https://renga.test".into()),
-            token: Some("secret".into()),
+            intake_api_key: Some("secret".into()),
             installation_id: Some("67e55044-10b1-426f-9247-bb680e5fe0c8".into()),
             ..Default::default()
         }
@@ -238,37 +256,35 @@ mod tests {
     fn defaults_are_sane_and_secret_is_redacted() {
         let mut input = raw();
         input.renga_url = Some("https://renga.test///".into());
-        let c = Config::from_raw("x".into(), input).unwrap();
+        let c = from_raw(input).unwrap();
         assert_eq!(c.inventory_interval, Duration::from_secs(3600));
         assert_eq!(c.renga_url, "https://renga.test");
         assert!(!format!("{c:?}").contains("secret"));
     }
     #[test]
     fn parses_toml_and_rejects_invalid_values() {
-        let r: RawConfig =
-            toml::from_str("renga_url='https://renga.test'\ntoken='y'\ninstallation_id='bad'\n")
-                .unwrap();
-        assert!(Config::from_raw("x".into(), r)
-            .unwrap_err()
-            .to_string()
-            .contains("UUID"));
+        let r: RawConfig = toml::from_str(
+            "renga_url='https://renga.test'\nintake_api_key='y'\ninstallation_id='bad'\n",
+        )
+        .unwrap();
+        assert!(from_raw(r).unwrap_err().to_string().contains("UUID"));
         let mut r = raw();
         r.request_timeout_seconds = Some(0);
-        assert!(Config::from_raw("x".into(), r).is_err());
+        assert!(from_raw(r).is_err());
     }
 
     #[test]
     fn bounds_transport_timeout_and_attempt_configuration() {
         let mut timeout = raw();
         timeout.request_timeout_seconds = Some(TIMEOUT_MAX + 1);
-        assert!(Config::from_raw("x".into(), timeout)
+        assert!(from_raw(timeout)
             .unwrap_err()
             .to_string()
             .contains("must not exceed 20"));
 
         let mut attempts = raw();
         attempts.max_retry_attempts = Some(RETRIES_MAX + 1);
-        assert!(Config::from_raw("x".into(), attempts)
+        assert!(from_raw(attempts)
             .unwrap_err()
             .to_string()
             .contains("between 1 and 5"));
@@ -277,9 +293,10 @@ mod tests {
     fn environment_wins_over_toml() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path,"renga_url='file'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+        let state = state_directory();
+        fs::write(&path,"renga_url='file'\nintake_api_key='file-key'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
         env::set_var("RENGA_URL", "https://environment.test");
-        let c = Config::load(&path).unwrap();
+        let c = Config::load(&path, &state).unwrap();
         env::remove_var("RENGA_URL");
         fs::remove_file(path).unwrap();
         assert_eq!(c.renga_url, "https://environment.test");
@@ -289,20 +306,21 @@ mod tests {
     fn checkin_interval_accepts_sixty_seconds_and_rejects_sixty_one_from_toml() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
         let config = |seconds| {
             format!(
-                "renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds={seconds}\n"
+                "renga_url='https://renga.test'\nintake_api_key='file-key'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds={seconds}\n"
             )
         };
 
         fs::write(&path, config(60)).unwrap();
         assert_eq!(
-            Config::load(&path).unwrap().checkin_interval,
+            Config::load(&path, &state).unwrap().checkin_interval,
             Duration::from_secs(60)
         );
 
         fs::write(&path, config(61)).unwrap();
-        let error = Config::load(&path).unwrap_err();
+        let error = Config::load(&path, &state).unwrap_err();
         assert!(error.to_string().contains("must not exceed 60"));
         fs::remove_file(path).unwrap();
     }
@@ -311,10 +329,11 @@ mod tests {
     fn checkin_interval_rejects_oversized_environment_override_on_reload_path() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path,"renga_url='https://renga.test'\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds=60\n").unwrap();
+        let state = state_directory();
+        fs::write(&path,"renga_url='https://renga.test'\nintake_api_key='file-key'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\ncheckin_interval_seconds=60\n").unwrap();
         env::set_var("RENGA_CHECKIN_INTERVAL_SECONDS", "61");
 
-        let error = Config::load(&path).unwrap_err();
+        let error = Config::load(&path, &state).unwrap_err();
 
         env::remove_var("RENGA_CHECKIN_INTERVAL_SECONDS");
         fs::remove_file(path).unwrap();
@@ -323,30 +342,31 @@ mod tests {
 
     #[test]
     fn requires_https_unless_insecure_http_is_explicitly_enabled() {
-        assert!(Config::from_raw("x".into(), raw()).is_ok());
+        assert!(from_raw(raw()).is_ok());
 
         let mut input = raw();
         input.renga_url = Some("http://localhost:4000".into());
-        assert!(Config::from_raw("x".into(), input).is_err());
+        assert!(from_raw(input).is_err());
 
         let mut input = raw();
         input.renga_url = Some("http://localhost:4000".into());
         input.allow_insecure_http = Some(true);
-        assert!(Config::from_raw("x".into(), input).is_ok());
+        assert!(from_raw(input).is_ok());
     }
 
     #[test]
     fn insecure_http_environment_override_is_strict_and_wins_over_toml() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
-        fs::write(&path, "renga_url='http://localhost:4000'\nallow_insecure_http=false\ntoken='file-token'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
+        let state = state_directory();
+        fs::write(&path, "renga_url='http://localhost:4000'\nallow_insecure_http=false\nintake_api_key='file-key'\ninstallation_id='67e55044-10b1-426f-9247-bb680e5fe0c8'\n").unwrap();
 
         env::set_var("RENGA_ALLOW_INSECURE_HTTP", "true");
-        let config = Config::load(&path).unwrap();
+        let config = Config::load(&path, &state).unwrap();
         assert!(config.allow_insecure_http);
 
         env::set_var("RENGA_ALLOW_INSECURE_HTTP", "TRUE");
-        let error = Config::load(&path).unwrap_err();
+        let error = Config::load(&path, &state).unwrap_err();
         assert!(error.to_string().contains("exactly true or false"));
 
         env::remove_var("RENGA_ALLOW_INSECURE_HTTP");

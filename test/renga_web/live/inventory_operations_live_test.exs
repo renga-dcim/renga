@@ -80,7 +80,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
              ~s(renga_url = "http://localhost:4002")
            )
 
-    assert has_element?(view, "#intake-key-credentials code", ~s(token = "renga_intake_))
+    assert has_element?(view, "#intake-key-credentials code", ~s(intake_api_key = "renga_intake_))
     refute has_element?(view, "#intake-key-credentials code", "@issued_token")
 
     assert has_element?(
@@ -92,13 +92,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert has_element?(
              view,
              "#intake-key-credentials code > span:nth-child(2)",
-             ~s(token = "renga_intake_)
-           )
-
-    assert has_element?(
-             view,
-             "#intake-key-credentials code > span:last-child",
-             ~s(installation_id = "UNIQUE_INSTALLATION_UUID")
+             ~s(intake_api_key = "renga_intake_)
            )
 
     assert has_element?(view, "#intake-api-keys", "Replacement fleet")
@@ -181,28 +175,5 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     {:ok, view, _html} = live(conn, ~p"/inventory/operations")
     refute has_element?(view, "#intake-key-#{foreign_key.id}")
     refute has_element?(view, "#intake-api-keys", "Secret")
-  end
-
-  test "shows server-recorded legacy authentication usage", %{
-    conn: conn,
-    scope: scope,
-    source: source,
-    agent: agent
-  } do
-    legacy_authenticated_at = ~U[2026-08-13 08:00:00.000000Z]
-
-    agent
-    |> Ecto.Changeset.change(
-      last_auth_method: "legacy_source_token",
-      last_legacy_authenticated_at: legacy_authenticated_at
-    )
-    |> Repo.update!()
-
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
-    assert has_element?(view, "#collector-#{source.id}", "Legacy source token")
-    assert has_element?(view, "#collector-#{source.id}", "2026-08-13 08:00 UTC")
-
-    assert Inventory.get_agent!(scope, agent.id).last_legacy_authenticated_at ==
-             legacy_authenticated_at
   end
 end

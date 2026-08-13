@@ -17,8 +17,8 @@ defmodule RengaWeb.Router do
     plug :accepts, ["json"]
   end
 
-  pipeline :source_api do
-    plug RengaWeb.SourceAuth
+  pipeline :intake_api do
+    plug RengaWeb.IntakeAuth
   end
 
   scope "/", RengaWeb do
@@ -28,7 +28,7 @@ defmodule RengaWeb.Router do
   end
 
   scope "/api/v1", RengaWeb.Api.V1 do
-    pipe_through [:api, :source_api]
+    pipe_through [:api, :intake_api]
 
     post "/agent/checkins", AgentController, :check_in
     post "/observations", ObservationController, :create
