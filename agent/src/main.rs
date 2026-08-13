@@ -21,6 +21,8 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     #[arg(long, default_value = "/etc/renga/agent.toml")]
     config: PathBuf,
+    #[arg(long, default_value = "/var/lib/renga")]
+    state_directory: PathBuf,
     #[arg(long)]
     once: bool,
     /// Collect and print an observation without loading config or using the network.
@@ -63,7 +65,7 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 }
 
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
-    let mut config = Config::load(&args.config)?;
+    let mut config = Config::load(&args.config, &args.state_directory)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
     // Anchor periodic deadlines before startup work so a slow initial inventory cannot postpone
     // the first lease renewal by another full check-in interval.
@@ -129,7 +131,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                 Job::Reload => {
                     let old_checkin_interval = config.checkin_interval;
                     let old_inventory_interval = config.inventory_interval;
-                    match reload(&args.config, stopped.clone()) {
+                    match reload(&args.config, &args.state_directory, stopped.clone()) {
                         Ok((new_config, new_client)) => {
                             config = new_config;
                             client = new_client;
@@ -218,9 +220,10 @@ fn aggregated_result(failures: Vec<String>) -> Result<(), Box<dyn Error>> {
 
 fn reload(
     path: &PathBuf,
+    state_directory: &PathBuf,
     cancellation: Cancellation,
 ) -> Result<(Config, HttpClient), Box<dyn Error>> {
-    let config = Config::load(path)?;
+    let config = Config::load(path, state_directory)?;
     let client = HttpClient::new(&config, cancellation)?;
     Ok((config, client))
 }

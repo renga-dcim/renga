@@ -93,8 +93,8 @@ impl HttpClient {
         }
         let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.token))
-            .map_err(|_| TransportError::new("invalid bearer token".into(), false))?;
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.intake_api_key))
+            .map_err(|_| TransportError::new("invalid intake API key".into(), false))?;
         authorization.set_sensitive(true);
         let installation_id = HeaderValue::from_str(&config.installation_id.to_string())
             .map_err(|_| TransportError::new("invalid installation ID".into(), false))?;
@@ -263,12 +263,12 @@ mod tests {
         path::PathBuf,
     };
 
-    fn config(renga_url: &str, token: &str) -> Config {
+    fn config(renga_url: &str, intake_api_key: &str) -> Config {
         Config {
             config_path: PathBuf::from("agent.toml"),
             renga_url: renga_url.into(),
             allow_insecure_http: false,
-            token: token.into(),
+            intake_api_key: intake_api_key.into(),
             installation_id: uuid::Uuid::nil(),
             inventory_interval: Duration::from_secs(300),
             checkin_interval: Duration::from_secs(60),

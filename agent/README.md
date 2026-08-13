@@ -44,20 +44,13 @@ with a caller-selected timestamp.
 ## Configuration
 
 Copy [`dist/agent.toml.example`](dist/agent.toml.example) to
-`/etc/renga/agent.toml`. Generate the installation identity once and keep it
-stable across restarts and upgrades:
-
-```sh
-uuidgen
-```
-
-The example documents every key and its default. `renga_url`, `token`, and
-`installation_id` are required. Environment variables override file values:
+`/etc/renga/agent.toml`. The example documents every key and its default.
+`renga_url` and `intake_api_key` are required. Environment variables override
+file values:
 
 * `RENGA_URL`
 * `RENGA_ALLOW_INSECURE_HTTP` (`true` or `false`, exactly)
-* `RENGA_TOKEN`
-* `RENGA_INSTALLATION_ID`
+* `RENGA_INTAKE_API_KEY`
 * `RENGA_INVENTORY_INTERVAL_SECONDS`
 * `RENGA_CHECKIN_INTERVAL_SECONDS`
 * `RENGA_CONFIG_REFRESH_INTERVAL_SECONDS`
@@ -77,8 +70,8 @@ to interception. Prefer a locally trusted HTTPS endpoint whenever possible.
 
 `RUST_LOG` controls log filtering and defaults to `info`; it is not an agent
 configuration field. The supplied unit optionally reads `/etc/renga/agent.env`,
-which may contain `KEY=value` overrides. Keep the token out of shell history and
-make configuration readable only by root and the service group:
+which may contain `KEY=value` overrides. Keep the intake key out of shell history
+and make configuration readable only by root and the service group:
 
 ```sh
 sudo chown root:renga-agent /etc/renga/agent.toml
@@ -86,6 +79,20 @@ sudo chmod 0640 /etc/renga/agent.toml
 sudo chown root:renga-agent /etc/renga/agent.env  # if used
 sudo chmod 0640 /etc/renga/agent.env
 ```
+
+On first configured startup, the agent generates an installation UUID and writes
+it to `/var/lib/renga/installation-id`. The directory is mode `0700`, the file is
+mode `0600`, and the Debian package and systemd unit assign both to the
+`renga-agent` account. Restarts, package upgrades, removal, and reinstallation
+reuse this state. A machine image must exclude `/var/lib/renga` so every clone
+generates a distinct identity even when all clones share one organization intake
+key.
+
+For migration only, an existing installation may temporarily set
+`installation_id` in TOML or `RENGA_INSTALLATION_ID`. The agent persists that UUID
+when state is absent, requires it to match existing state, and then no longer
+needs the override. Portable-tarball installations can select a writable path
+with `--state-directory`; its default is `/var/lib/renga`.
 
 `--dry-run` collects once and prints pretty JSON without loading configuration or
 using the network. `--once` loads configuration and attempts both a check-in and
@@ -123,9 +130,9 @@ sudo systemctl status renga-agent.service
 sudo journalctl -u renga-agent.service -f
 ```
 
-Create the collector from Renga's authenticated **Collectors** page first, then
-copy the one-time token and installation UUID into `agent.toml`. `--dry-run`
-does not load that file or contact Renga; `--once` sends both the check-in and
+Create an organization intake key from Renga's authenticated **Collectors** page,
+then copy the one-time key into `agent.toml`. The collector appears automatically
+on first contact. `--dry-run` does not load that file or contact Renga; `--once` sends both the check-in and
 observation and fails if either request fails. After `--once`, verify the
 collector is connected and its resource is current on the dashboard, then
 leave the service running for at least two check-in intervals and verify its
@@ -135,7 +142,8 @@ example configuration, dedicated account, and lifecycle hooks are required.
 
 The hardened unit allows outbound IPv4/IPv6, local sockets, and netlink while
 leaving `/proc`, `/proc/sys`, and `/sys` readable for inventory. It grants no
-capabilities and makes the host filesystem read-only to the service.
+capabilities, makes the host filesystem read-only to the service, and grants a
+single writable state directory at `/var/lib/renga`.
 Filesystem inventory is parsed through `procfs` from `/proc/1/mountinfo` so it
 describes the host rather than the service's sandboxed mount view. If that view
 is inaccessible or malformed, all filesystem components are omitted instead of

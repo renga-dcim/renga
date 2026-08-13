@@ -65,6 +65,14 @@ readelf --file-header "${work_dir}/deb/usr/bin/renga-agent" |
 sh -n "${work_dir}/control/postinst"
 sh -n "${work_dir}/control/prerm"
 sh -n "${work_dir}/control/postrm"
+grep -q 'StateDirectory=renga' "${work_dir}/deb/lib/systemd/system/renga-agent.service"
+grep -q 'StateDirectoryMode=0700' "${work_dir}/deb/lib/systemd/system/renga-agent.service"
+grep -q 'install -d -o renga-agent -g renga-agent -m 0700 /var/lib/renga' \
+	"${work_dir}/control/postinst"
+if grep -Eq 'rm .*/var/lib/renga|rm -r.*/var/lib/renga' "${work_dir}/control/postinst" "${work_dir}/control/postrm"; then
+	printf 'Debian maintainer scripts must preserve installation identity state\n' >&2
+	exit 1
+fi
 
 "${archive_root}/renga-agent" --version
 "${archive_root}/renga-agent" --dry-run >"${work_dir}/observation.json"
