@@ -21,6 +21,14 @@ pub fn load_or_create(
     state_directory: &Path,
     explicit: Option<&str>,
 ) -> Result<uuid::Uuid, IdentityError> {
+    load_or_create_with_before_persist(state_directory, explicit, || {})
+}
+
+fn load_or_create_with_before_persist(
+    state_directory: &Path,
+    explicit: Option<&str>,
+    before_persist: impl FnOnce(),
+) -> Result<uuid::Uuid, IdentityError> {
     prepare_state_directory(state_directory)?;
     let path = state_directory.join(IDENTITY_FILE);
     let explicit = explicit.map(parse_uuid).transpose()?;
@@ -36,6 +44,7 @@ pub fn load_or_create(
     }
 
     let candidate = explicit.unwrap_or_else(uuid::Uuid::new_v4);
+    before_persist();
     persist_new_identity(state_directory, &path, candidate)?;
     read_identity(&path)
 }
@@ -174,6 +183,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), IdentityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     fn state_directory() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("renga-identity-{}", uuid::Uuid::new_v4()))
@@ -236,6 +246,28 @@ mod tests {
         );
         assert_eq!(load_or_create(&state, None).unwrap(), explicit);
         assert!(load_or_create(&state, Some(&uuid::Uuid::new_v4().to_string())).is_err());
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn concurrent_different_migration_overrides_cannot_both_succeed() {
+        let state = state_directory();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let workers = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()].map(|explicit| {
+            let state = state.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                load_or_create_with_before_persist(&state, Some(&explicit.to_string()), || {
+                    barrier.wait();
+                })
+            })
+        });
+
+        let results = workers.map(|worker| worker.join().unwrap());
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
         fs::remove_dir_all(state).unwrap();
     }
 }
