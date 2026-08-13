@@ -35,22 +35,31 @@ fn load_or_create_with_before_persist(
 
     if path.exists() {
         let persisted = read_identity(&path)?;
-        if explicit.is_some_and(|value| value != persisted) {
-            return Err(IdentityError(
-                "installation_id does not match the persisted installation identity".into(),
-            ));
-        }
-        return Ok(persisted);
+        return ensure_override_matches(explicit, persisted);
     }
 
     let candidate = explicit.unwrap_or_else(uuid::Uuid::new_v4);
     before_persist();
     persist_new_identity(state_directory, &path, candidate)?;
-    read_identity(&path)
+    let persisted = read_identity(&path)?;
+    ensure_override_matches(explicit, persisted)
 }
 
 fn parse_uuid(value: &str) -> Result<uuid::Uuid, IdentityError> {
     uuid::Uuid::parse_str(value).map_err(|_| IdentityError("installation_id must be a UUID".into()))
+}
+
+fn ensure_override_matches(
+    explicit: Option<uuid::Uuid>,
+    persisted: uuid::Uuid,
+) -> Result<uuid::Uuid, IdentityError> {
+    if explicit.is_some_and(|value| value != persisted) {
+        Err(IdentityError(
+            "installation_id does not match the persisted installation identity".into(),
+        ))
+    } else {
+        Ok(persisted)
+    }
 }
 
 fn prepare_state_directory(path: &Path) -> Result<(), IdentityError> {
