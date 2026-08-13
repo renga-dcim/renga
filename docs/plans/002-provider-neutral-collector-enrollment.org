@@ -191,6 +191,10 @@ Because only Source token hashes are stored, existing plaintext credentials
 cannot be converted into organization intake keys. A new organization key must
 be generated and deployed.
 
+Phase 1 uses this temporary compatibility window: organization intake keys are
+the default setup path, while existing Source tokens remain accepted only by
+the two agent intake endpoints until Phase 2 removes the legacy model.
+
 * Phases
 
 ** 1. Organization Intake And Automatic Registration
@@ -206,16 +210,16 @@ be generated and deployed.
   seen, including safe concurrent first check-ins and observations.
 - [X] Continue storing observations and evidence against the resolved
   per-installation Source.
-- [ ] Replace collector credential creation and actions with organization intake
+- [X] Replace collector credential creation and actions with organization intake
   key management in the existing authenticated =live_session
   :require_authenticated_user= and organization-selected operations UI because
   these credentials grant organization intake access.
-- [ ] Keep key mutations restricted to active organization owners/admins and
+- [X] Keep key mutations restricted to active organization owners/admins and
   recheck authorization in the context transaction.
-- [ ] Update the collector list to show automatically registered installations,
+- [X] Update the collector list to show automatically registered installations,
   lease state, resource provenance, and inventory freshness without implying
   that each collector owns a credential.
-- [ ] Choose direct migration or temporary legacy authentication based on actual
+- [X] Choose direct migration or temporary legacy authentication based on actual
   deployed-agent compatibility needs.
 
 ** 2. Agent State And Legacy Cleanup
@@ -239,25 +243,25 @@ be generated and deployed.
 
 * Acceptance Criteria
 
-- [ ] An owner/admin can create an organization intake key, see it once, and
+- [X] An owner/admin can create an organization intake key, see it once, and
   revoke it without deleting inventory or provenance.
-- [ ] Multiple organization intake keys can remain active during fleet rotation.
-- [ ] The same intake key can authenticate check-ins and observations from many
+- [X] Multiple organization intake keys can remain active during fleet rotation.
+- [X] The same intake key can authenticate check-ins and observations from many
   installation UUIDs in one organization.
-- [ ] First contact from each new installation creates exactly one dedicated
+- [X] First contact from each new installation creates exactly one dedicated
   Source+Agent aggregate, including under concurrent requests.
-- [ ] Each observation is attributed to the Source associated with the reporting
+- [X] Each observation is attributed to the Source associated with the reporting
   installation UUID.
 - [ ] The agent generates and persists its installation UUID without requiring
   an operator to configure one.
 - [ ] Restart and package upgrade preserve installation identity, while cloned
   images without persisted state generate distinct identities.
-- [ ] An intake key cannot access browser, administration, organization-read, or
+- [X] An intake key cannot access browser, administration, organization-read, or
   future privileged control-plane endpoints.
-- [ ] Revoked keys and keys belonging to disabled organizations are rejected.
-- [ ] Existing deployed agents either migrate without losing Source provenance
+- [X] Revoked keys and keys belonging to disabled organizations are rejected.
+- [X] Existing deployed agents either migrate without losing Source provenance
   or the project explicitly uses a clean development reset.
-- [ ] No OIDC, verifier, challenge, ABAC, keypair, runtime-credential renewal,
+- [X] No OIDC, verifier, challenge, ABAC, keypair, runtime-credential renewal,
   group-key, or per-agent-key model is introduced by this plan.
 
 * Verification
@@ -268,12 +272,12 @@ be generated and deployed.
   automatic registration, UUID reuse, malformed identity, and revoked keys.
 - [X] Add concurrency tests proving first check-in and first observation create
   one Source+Agent per organization/installation UUID.
-- [ ] Add LiveView tests for intake-key creation, one-time reveal, revocation,
+- [X] Add LiveView tests for intake-key creation, one-time reveal, revocation,
   role enforcement, and automatically registered collector display.
 - [ ] Add Rust tests for generated identity persistence, restart reuse, explicit
   migration override if retained, and secret redaction.
 - [ ] Add packaging tests for state-directory ownership and upgrade persistence.
-- [ ] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete
+- [X] Run =./scripts/check-plan-status.sh= and confirm Plan 002 reports incomplete
   progress.
-- [ ] Run focused server and agent tests introduced by each phase.
-- [ ] Run =mix precommit= after implementation changes.
+- [X] Run focused server and agent tests introduced by each phase.
+- [X] Run =mix precommit= after implementation changes.
