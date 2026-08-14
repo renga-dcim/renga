@@ -46,7 +46,7 @@ defmodule RengaWeb.ResourceLive.Index do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:resources}>
       <section id="resource-list" class="space-y-6">
         <header class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>

@@ -19,7 +19,7 @@ defmodule RengaWeb.ResourceLive.Show do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:resources}>
       <article id="resource-detail" class="space-y-6">
         <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>

@@ -25,7 +25,7 @@ defmodule RengaWeb.InventoryDashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:overview}>
       <section id="inventory-dashboard" class="space-y-8">
         <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>

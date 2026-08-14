@@ -100,7 +100,7 @@ defmodule RengaWeb.InventoryOperationsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:collectors}>
       <main id="collector-operations" class="space-y-10">
         <header class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
