@@ -154,6 +154,8 @@ defmodule RengaWeb.Layouts do
       </main>
     </div>
 
+    <.command_palette :if={@current_scope && @current_scope.organization_id} />
+
     <div :if={is_nil(@current_scope) || is_nil(@current_scope.organization_id)}>
       <header class="border-b border-base-content/10 bg-base-100">
         <div class="mx-auto flex min-h-16 max-w-screen-xl items-center px-4 sm:px-6 lg:px-8">
@@ -189,6 +191,118 @@ defmodule RengaWeb.Layouts do
     </div>
 
     <.flash_group flash={@flash} />
+    """
+  end
+
+  defp command_palette(assigns) do
+    ~H"""
+    <div id="command-palette-root" phx-hook="CommandPalette" phx-update="ignore">
+      <dialog
+        id="command-palette"
+        class="m-auto w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-base-content/15 bg-base-200 p-0 text-base-content shadow-2xl backdrop:bg-black/60"
+        aria-label="Command palette"
+      >
+        <div class="border-b border-base-content/10 p-3">
+          <div class="relative [&_.fieldset]:!mb-0">
+            <.icon
+              name="hero-magnifying-glass"
+              class="pointer-events-none absolute left-3 top-2.5 z-10 size-4 text-base-content/40"
+            />
+            <.input
+              id="command-palette-input"
+              name="command_search"
+              type="search"
+              value=""
+              placeholder="Type a command or search resources..."
+              autocomplete="off"
+              class="h-9 w-full rounded-md border border-base-content/10 bg-base-100 py-0 pl-9 pr-12 text-xs outline-none placeholder:text-base-content/30 focus:border-orange-600/50"
+            />
+            <kbd class="pointer-events-none absolute right-2.5 top-2 rounded border border-base-content/10 bg-base-200 px-1.5 py-0.5 font-mono text-[10px] text-base-content/40">
+              Esc
+            </kbd>
+          </div>
+        </div>
+
+        <div class="max-h-[28rem] overflow-y-auto p-2">
+          <div id="command-resource-search" data-command-item data-search="" hidden>
+            <p class="px-2 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
+              Search
+            </p>
+            <a
+              href={~p"/inventory/resources"}
+              class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06]"
+            >
+              <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+              <span>Search resources</span>
+              <span class="ml-auto font-mono text-[10px] text-base-content/35">Enter</span>
+            </a>
+          </div>
+
+          <p class="px-2 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
+            Navigate
+          </p>
+          <.command_link navigate={~p"/inventory"} icon="hero-home" label="Overview" />
+          <.command_link navigate={~p"/inventory/resources"} icon="hero-cube" label="Resources" />
+          <.command_link
+            navigate={~p"/inventory/operations"}
+            icon="hero-circle-stack"
+            label="Collectors"
+          />
+
+          <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
+            Saved views
+          </p>
+          <.command_link
+            navigate={~p"/inventory/resources?stale=true"}
+            icon="hero-clock"
+            label="Stale inventory"
+          />
+          <.command_link
+            navigate={~p"/inventory/operations?disconnected=true"}
+            icon="hero-signal-slash"
+            label="Disconnected agents"
+          />
+
+          <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
+            Actions
+          </p>
+          <button
+            type="button"
+            data-command-item
+            data-search="switch theme light dark"
+            data-command-action="toggle-theme"
+            class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-base-content/65 outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06] focus:text-base-content"
+          >
+            <.icon name="hero-moon" class="size-4 text-base-content/45" />
+            <span>Switch theme</span>
+          </button>
+        </div>
+
+        <footer class="flex h-9 items-center gap-4 border-t border-base-content/10 px-4 text-[9px] text-base-content/35">
+          <span><kbd class="font-mono">↑↓</kbd> Navigate</span>
+          <span><kbd class="font-mono">Enter</kbd> Open</span>
+          <span><kbd class="font-mono">Esc</kbd> Close</span>
+        </footer>
+      </dialog>
+    </div>
+    """
+  end
+
+  attr :navigate, :string, required: true
+  attr :icon, :string, required: true
+  attr :label, :string, required: true
+
+  defp command_link(assigns) do
+    ~H"""
+    <.link
+      navigate={@navigate}
+      data-command-item
+      data-search={String.downcase(@label)}
+      class="flex h-10 items-center gap-3 rounded-md px-2.5 text-xs text-base-content/65 outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06] focus:text-base-content"
+    >
+      <.icon name={@icon} class="size-4 text-base-content/45" />
+      <span>{@label}</span>
+    </.link>
     """
   end
 

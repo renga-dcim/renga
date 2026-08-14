@@ -96,6 +96,8 @@ defmodule RengaWeb.ResourceLiveTest do
     {:ok, view, _html} = live(conn, ~p"/inventory/resources")
 
     assert has_element?(view, "#resource-list")
+    assert has_element?(view, "#app-sidebar")
+    assert has_element?(view, "#command-palette")
     assert has_element?(view, "#resource-filters")
     assert has_element?(view, "#resources")
     assert has_element?(view, "#resources-#{resource.id}", "compute-01")
