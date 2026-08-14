@@ -34,13 +34,9 @@
             pkgs.pkgsCross.aarch64-multiplatform-musl
           else
             null;
-        muslTarget =
-          if muslPkgs == null then null else muslPkgs.stdenv.hostPlatform.rust.rustcTargetSpec;
+        muslTarget = if muslPkgs == null then null else muslPkgs.stdenv.hostPlatform.rust.rustcTargetSpec;
         muslLinker =
-          if muslPkgs == null then
-            null
-          else
-            "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}cc";
+          if muslPkgs == null then null else "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}cc";
         muslLinkerEnv =
           if muslTarget == null then
             null
@@ -59,35 +55,37 @@
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            # Elixir
-            beam.packages.erlang_28.elixir_1_20
-            beam.packages.erlang_28.rebar3
-            erlang_28
+          packages =
+            with pkgs;
+            [
+              # Elixir
+              beam.packages.erlang_28.elixir_1_20
+              beam.packages.erlang_28.rebar3
+              beam28Packages.erlang
 
-            # Rust
-            rust-toolchain
+              # Rust
+              rust-toolchain
 
-            # LSPs
-            beamPackages.expert
-            erlang-language-platform
-            rust-analyzer
-            yaml-language-server
+              # LSPs
+              beamPackages.expert
+              erlang-language-platform
+              rust-analyzer
+              yaml-language-server
 
-            # Tools
-            watchman
-            docker-compose
-            inotify-tools
-            yamllint
-            pkg-config
-            openssl
-            shfmt
-            shellcheck
-            cargo-dist
-            git-cliff
-            jujutsu
-            postgresql
-          ];
+              # Tools
+              watchman
+              docker-compose
+              yamllint
+              pkg-config
+              openssl
+              shfmt
+              shellcheck
+              cargo-dist
+              git-cliff
+              jujutsu
+              postgresql
+            ]
+            ++ lib.optionals stdenv.isLinux [ inotify-tools ];
 
           shellHook = ''
             repo_root="$(git rev-parse --show-toplevel)"
