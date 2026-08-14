@@ -118,11 +118,13 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Returns whether the current human organization scope can manage collectors.
+  Returns whether the current human organization scope can manage organization inventory.
   """
-  def collector_manager?(%Scope{user: user, roles: roles}) do
+  def organization_manager?(%Scope{user: user, roles: roles}) do
     not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
   end
+
+  def collector_manager?(%Scope{} = scope), do: organization_manager?(scope)
 
   @doc """
   Lists organization intake keys without exposing credential material.
@@ -141,7 +143,7 @@ defmodule Renga.Inventory do
   inside the transaction so a stale browser scope cannot issue credentials.
   """
   def create_intake_api_key(%Scope{} = scope, attrs) do
-    collector_management_transaction(scope, fn ->
+    organization_management_transaction(scope, fn ->
       token = generate_intake_api_key()
 
       case %IntakeApiKey{organization_id: scope.organization_id}
@@ -157,7 +159,7 @@ defmodule Renga.Inventory do
   Revokes one scoped intake key without deleting collectors or provenance.
   """
   def revoke_intake_api_key(%Scope{} = scope, key_id) do
-    collector_management_transaction(scope, fn ->
+    organization_management_transaction(scope, fn ->
       IntakeApiKey
       |> where([key], key.organization_id == ^scope.organization_id)
       |> where([key], key.id == ^key_id)
@@ -264,10 +266,10 @@ defmodule Renga.Inventory do
     Source.changeset(source, attrs)
   end
 
-  defp collector_management_transaction(%Scope{} = scope, mutation) do
+  defp organization_management_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
-      ensure_collector_organization_active_or_rollback(scope.organization_id)
-      authorize_current_collector_manager_or_rollback(scope)
+      ensure_organization_active_or_rollback(scope.organization_id)
+      authorize_current_organization_manager_or_rollback(scope)
 
       case mutation.() do
         {:ok, result} -> result
@@ -277,7 +279,7 @@ defmodule Renga.Inventory do
     end)
   end
 
-  defp authorize_current_collector_manager_or_rollback(%Scope{
+  defp authorize_current_organization_manager_or_rollback(%Scope{
          membership_id: membership_id,
          user: %{id: user_id},
          organization_id: organization_id
@@ -298,10 +300,10 @@ defmodule Renga.Inventory do
     unless authorized?, do: Repo.rollback(:forbidden)
   end
 
-  defp authorize_current_collector_manager_or_rollback(%Scope{}),
+  defp authorize_current_organization_manager_or_rollback(%Scope{}),
     do: Repo.rollback(:forbidden)
 
-  defp ensure_collector_organization_active_or_rollback(organization_id) do
+  defp ensure_organization_active_or_rollback(organization_id) do
     Organization
     |> where([organization], organization.id == ^organization_id)
     |> select([organization], organization.status)
@@ -835,6 +837,24 @@ defmodule Renga.Inventory do
 
       resource
     end)
+  end
+
+  @doc """
+  Updates operator-owned lifecycle intent after rechecking current organization management access.
+  """
+  def update_resource_lifecycle(%Scope{} = scope, %Resource{} = resource, lifecycle_state) do
+    organization_management_transaction(scope, fn ->
+      update_resource(scope, resource, %{lifecycle_state: lifecycle_state})
+    end)
+    |> case do
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if Keyword.has_key?(changeset.errors, :resource_version),
+          do: {:error, :stale},
+          else: {:error, changeset}
+
+      result ->
+        result
+    end
   end
 
   @doc """

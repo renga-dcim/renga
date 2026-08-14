@@ -5,6 +5,13 @@ defmodule RengaWeb.ResourceLive.Show do
 
   alias Renga.Inventory
 
+  @lifecycle_options [
+    {"Active — in service", "active"},
+    {"Inactive — out of service", "inactive"},
+    {"Retired — no longer used", "retired"},
+    {"Unknown — not classified", "unknown"}
+  ]
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     resource = Inventory.get_operational_resource!(socket.assigns.current_scope, id)
@@ -12,8 +19,42 @@ defmodule RengaWeb.ResourceLive.Show do
     {:ok,
      assign(socket,
        page_title: resource.display_name || resource.name,
-       resource: resource
+       resource: resource,
+       lifecycle_options: @lifecycle_options,
+       lifecycle_form: lifecycle_form(resource),
+       can_manage_lifecycle?: Inventory.organization_manager?(socket.assigns.current_scope)
      )}
+  end
+
+  @impl true
+  def handle_event(
+        "update_lifecycle",
+        %{"lifecycle" => %{"lifecycle_state" => lifecycle_state}},
+        socket
+      ) do
+    case Inventory.update_resource_lifecycle(
+           socket.assigns.current_scope,
+           socket.assigns.resource,
+           lifecycle_state
+         ) do
+      {:ok, _resource} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Resource lifecycle updated")
+         |> reload_resource()}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Resource changed elsewhere; review the latest lifecycle and retry")
+         |> reload_resource()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "You are not allowed to manage resource lifecycle")}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "Select a valid lifecycle state")}
+    end
   end
 
   @impl true
@@ -43,9 +84,45 @@ defmodule RengaWeb.ResourceLive.Show do
               </div>
             </div>
           </div>
-          <span class="rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400">
-            {@resource.lifecycle_state}
-          </span>
+          <div class="flex max-w-sm flex-col items-start gap-1 sm:items-end">
+            <.form
+              :if={@can_manage_lifecycle?}
+              for={@lifecycle_form}
+              id="resource-lifecycle-form"
+              phx-submit="update_lifecycle"
+              class="flex items-end gap-2"
+            >
+              <.input
+                field={@lifecycle_form[:lifecycle_state]}
+                type="select"
+                label="Inventory lifecycle"
+                aria-describedby="resource-lifecycle-help"
+                options={@lifecycle_options}
+                class="h-10 min-w-36 rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm font-medium capitalize outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+              />
+              <button
+                id="resource-lifecycle-save"
+                type="submit"
+                phx-disable-with="Saving…"
+                class="h-10 self-end rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
+              >
+                Save
+              </button>
+            </.form>
+            <span
+              :if={!@can_manage_lifecycle?}
+              class={lifecycle_badge_class(@resource.lifecycle_state)}
+            >
+              {@resource.lifecycle_state}
+            </span>
+            <p
+              id="resource-lifecycle-help"
+              class="text-left text-xs leading-5 text-base-content/45 sm:text-right"
+            >
+              Classifies this resource for planning and filters. It does not control the device or
+              reflect agent connectivity.
+            </p>
+          </div>
         </header>
 
         <section id="resource-conditions" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -226,6 +303,38 @@ defmodule RengaWeb.ResourceLive.Show do
       </article>
     </Layouts.app>
     """
+  end
+
+  defp lifecycle_form(resource) do
+    to_form(%{"lifecycle_state" => resource.lifecycle_state}, as: :lifecycle)
+  end
+
+  defp reload_resource(socket) do
+    resource =
+      Inventory.get_operational_resource!(
+        socket.assigns.current_scope,
+        socket.assigns.resource.id
+      )
+
+    socket
+    |> assign(:resource, resource)
+    |> assign(:lifecycle_form, lifecycle_form(resource))
+  end
+
+  defp lifecycle_badge_class("active") do
+    "rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"
+  end
+
+  defp lifecycle_badge_class("inactive") do
+    "rounded-full bg-amber-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-amber-700 dark:text-amber-400"
+  end
+
+  defp lifecycle_badge_class("retired") do
+    "rounded-full bg-base-content/[0.07] px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
+  end
+
+  defp lifecycle_badge_class(_state) do
+    "rounded-full border border-base-content/15 px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
   end
 
   attr :id, :string, required: true
