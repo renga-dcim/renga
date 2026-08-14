@@ -157,15 +157,22 @@ the service.
 
 ## Collector scope, portability, and degradation
 
-The currently implemented backend supports Linux. A portable `sysinfo` baseline
-provides best-effort hostname, OS/kernel/architecture, CPU, memory, and visible
-disk entries. The Linux backend enriches that baseline with stable machine and
-DMI identity, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
+The currently implemented backends support Linux and macOS. A portable `sysinfo`
+baseline provides best-effort hostname, OS/kernel/architecture, CPU, memory, and
+visible disk entries. The Linux backend enriches that baseline with stable machine
+and DMI identity, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
 and virtualization hints from `/etc`, procfs, sysfs, and the `hostname` command.
 `/etc/hostname` remains authoritative when usable, with the portable
 hostname as a fallback. Missing firmware files, utilities, permissions, or
 unsupported platform facts omit only the affected optional values rather than
 failing the whole observation.
+
+The macOS backend adds the platform UUID, serial number, hardware model, Darwin
+interfaces and addresses, mounted filesystems, and native hypervisor status.
+Platform identity comes from `IOPlatformExpertDevice`, model and virtualization
+status come from `sysctl`, and filesystems come directly from `getmntinfo(3)`.
+Those optional sources degrade independently. A missing hostname still fails the
+observation because the server would have no safe reconciliation identity.
 
 Network inventory uses the unmodified `getifs` crate and describes interfaces
 visible in the agent's current network namespace. Because interface metadata and
@@ -180,12 +187,12 @@ must contain exactly six two-digit hexadecimal octets, must be nonzero, and must
 match the `getifs` value. Otherwise that interface's MAC is omitted.
 
 Disk components are the portable disk entries visible to the agent and can vary
-with operating-system APIs and service sandboxing. They are not the
-authoritative filesystem inventory: filesystem components continue to come
-only from Linux PID 1's mount namespace, parsed from `/proc/1/mountinfo` through
-the `procfs` crate, and are omitted when the complete view is inaccessible or
-malformed. The agent never falls back to its own potentially sandboxed mount
-namespace.
+with operating-system APIs and service sandboxing. On Linux, authoritative
+filesystem components come only from PID 1's mount namespace, parsed from
+`/proc/1/mountinfo` through the `procfs` crate, and are omitted when the complete
+view is inaccessible or malformed. The Linux agent never falls back to its own
+potentially sandboxed mount namespace. On macOS, filesystem components describe
+the native mount table visible to the process.
 
 Encoded observations are limited to 256,000 bytes, matching the Phoenix API.
 The agent rejects larger observations locally before opening a network request.
@@ -197,20 +204,26 @@ are instead rejected by the final encoded-size check.
 
 Collection is accessed through a platform-neutral facade rather than directly
 from the Linux backend. This keeps configuration, scheduling, payloads, retries,
-and transport shared across operating systems. Future macOS and Windows backends
-can collect the facts available on those systems and advertise a reduced
-capability set when they cannot provide the full Linux inventory surface. Until
-those backends are implemented, running on another operating system returns a
-clear unsupported-collector error instead of emitting an incomplete observation.
+and transport shared across operating systems. Running on a platform without a
+backend, including Windows, returns a clear unsupported-collector error instead
+of emitting an incomplete observation.
 
 The `virtualization` component reports an `environment`: `bare_metal`,
-`vm_guest`, `container_guest`, or `unknown`. `bare_metal` requires conclusive
-negative container and VM results from `systemd-detect-virt`; missing utilities,
-command failures, and absent DMI hints instead produce `unknown`. Positive DMI
-and container-marker evidence can still identify a guest. VM guests also report
-their detected `provider`; when the agent runs in a container on a VM,
-`container_guest` takes precedence while the underlying VM provider remains
-present, and a detector-provided container type is reported as `container_type`.
-`container_host` is reported only when a Docker, containerd, or Podman runtime
-socket is visible; container markers and cgroups describe agent execution, not
-hosting capability.
+`vm_guest`, `container_guest`, or `unknown`. On Linux, `bare_metal` requires
+conclusive negative container and VM results from `systemd-detect-virt`; missing
+utilities, command failures, and absent DMI hints instead produce `unknown`.
+Positive DMI and container-marker evidence can still identify a guest. VM guests
+also report their detected `provider`; when the Linux agent runs in a container
+on a VM, `container_guest` takes precedence while the underlying VM provider
+remains present, and a detector-provided container type is reported as
+`container_type`. `container_host` is reported only when a Docker, containerd,
+or Podman runtime socket is visible. On macOS, `kern.hv_vmm_present` provides the
+guest determination and the hardware model identifies common providers.
+
+For a safe native macOS smoke test that does not load credentials or contact the
+server, run:
+
+```sh
+cargo test -p renga-agent collectors::macos
+cargo run -p renga-agent -- --dry-run | python3 -m json.tool >/dev/null
+```
