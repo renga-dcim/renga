@@ -126,11 +126,41 @@ const CommandPalette = {
   },
 }
 
+const CopyToClipboard = {
+  mounted() {
+    this.onClick = async () => {
+      const target = document.querySelector(this.el.dataset.copyTarget)
+      if (!target) return
+
+      await navigator.clipboard.writeText(target.textContent.trim())
+      this.el.setAttribute("aria-label", "Copied")
+      this.el.querySelector("[data-copy-icon]").classList.add("hidden")
+      this.el.querySelector("[data-copied-icon]").classList.remove("hidden")
+
+      clearTimeout(this.resetTimer)
+      this.resetTimer = setTimeout(() => this.reset(), 2000)
+    }
+
+    this.el.addEventListener("click", this.onClick)
+  },
+
+  destroyed() {
+    clearTimeout(this.resetTimer)
+    this.el.removeEventListener("click", this.onClick)
+  },
+
+  reset() {
+    this.el.setAttribute("aria-label", "Copy intake API key")
+    this.el.querySelector("[data-copy-icon]").classList.remove("hidden")
+    this.el.querySelector("[data-copied-icon]").classList.add("hidden")
+  },
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CommandPalette},
+  hooks: {...colocatedHooks, CommandPalette, CopyToClipboard},
 })
 
 // Show progress bar on live navigation and form submits
