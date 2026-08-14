@@ -4,7 +4,7 @@ dev:
 
 .PHONY: dev-agent
 dev-agent:
-	cargo run -p renga-agent -- --config ./dev/agent.toml
+	cargo run -p renga-agent -- --config ./dev/agent.toml --state-directory ./dev/agent-state
 
 .PHONY: test
 test: ex-test rs-test
