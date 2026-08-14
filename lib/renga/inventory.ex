@@ -740,7 +740,30 @@ defmodule Renga.Inventory do
       |> list_interfaces(resource.id)
       |> Repo.preload(:addresses)
 
-    %{resource | interfaces: interfaces}
+    source_names =
+      resource.identifier_claims
+      |> Enum.map(& &1.source.name)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    last_observed_at =
+      Enum.reduce(resource.identifier_claims, nil, fn claim, latest ->
+        latest_datetime(claim.last_seen_at, latest)
+      end)
+
+    %{
+      resource
+      | interfaces: interfaces,
+        source_names: source_names,
+        last_observed_at: last_observed_at
+    }
+  end
+
+  defp latest_datetime(nil, latest), do: latest
+  defp latest_datetime(datetime, nil), do: datetime
+
+  defp latest_datetime(datetime, latest) do
+    if DateTime.after?(datetime, latest), do: datetime, else: latest
   end
 
   @doc """

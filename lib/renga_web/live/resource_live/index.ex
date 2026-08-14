@@ -85,6 +85,11 @@ defmodule RengaWeb.ResourceLive.Index do
      |> stream(:resources, result.entries, reset: true)}
   end
 
+  def handle_event("clear_stale", _params, socket) do
+    filters = %{socket.assigns.filters | stale_only?: false, page: 1}
+    {:noreply, push_patch(socket, to: workspace_path(filters, selected_id(socket)))}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -94,8 +99,8 @@ defmodule RengaWeb.ResourceLive.Index do
       active_nav={:resources}
       content_class="p-0"
     >
-      <section id="resource-list" class="flex h-screen min-h-0 flex-col">
-        <header class="flex h-[104px] shrink-0 items-end justify-between border-b border-base-content/10 px-6 pb-4">
+      <section id="resource-list" class="flex h-full min-h-0 flex-col">
+        <header class="flex h-[104px] shrink-0 items-end justify-between border-b border-base-content/10 px-4 pb-4 sm:px-6">
           <div>
             <p class="text-[11px] text-base-content/45">
               {@current_scope.organization.name} <span class="px-1.5">/</span> Resources
@@ -126,7 +131,7 @@ defmodule RengaWeb.ResourceLive.Index do
           for={@filter_form}
           id="resource-filters"
           phx-change="filter"
-          class="flex h-[70px] shrink-0 items-center gap-2 border-b border-base-content/10 px-6 [&_.fieldset]:!mb-0"
+          class="flex h-[70px] shrink-0 items-center gap-2 overflow-x-auto border-b border-base-content/10 px-4 sm:px-6 [&_.fieldset]:!mb-0"
         >
           <div class="relative min-w-52 flex-1">
             <.icon
@@ -160,12 +165,17 @@ defmodule RengaWeb.ResourceLive.Index do
             options={@source_options}
             class="h-9 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-xs outline-none transition focus:border-orange-600/50"
           />
-          <span
+          <button
             :if={@filters.stale_only?}
-            class="inline-flex h-9 items-center gap-1.5 rounded-md border border-amber-500/25 px-2.5 text-xs text-amber-700 dark:text-amber-400"
+            id="clear-stale-filter"
+            type="button"
+            phx-click="clear_stale"
+            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/25 px-2.5 text-xs text-amber-700 transition hover:bg-amber-500/5 dark:text-amber-400"
+            aria-label="Clear stale inventory filter"
           >
             <span class="size-1.5 rounded-full bg-amber-500" /> Stale only
-          </span>
+            <.icon name="hero-x-mark" class="size-3.5" />
+          </button>
         </.form>
 
         <div class="flex min-h-0 flex-1">
@@ -280,7 +290,8 @@ defmodule RengaWeb.ResourceLive.Index do
     ~H"""
     <aside
       id="resource-detail-panel"
-      class="w-96 shrink-0 overflow-y-auto border-l border-base-content/10 bg-base-200/25"
+      data-narrow-layout="overlay"
+      class="fixed inset-0 z-30 w-full shrink-0 overflow-y-auto border-l border-base-content/10 bg-base-100 lg:static lg:z-auto lg:w-96 lg:bg-base-200/25"
     >
       <header class="border-b border-base-content/10 px-5 pb-4 pt-5">
         <div class="flex items-start justify-between gap-3">

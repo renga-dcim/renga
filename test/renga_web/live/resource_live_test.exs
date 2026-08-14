@@ -97,6 +97,8 @@ defmodule RengaWeb.ResourceLiveTest do
 
     assert has_element?(view, "#resource-list")
     assert has_element?(view, "#app-sidebar")
+    assert has_element?(view, "#app-mobile-header")
+    assert has_element?(view, "#mobile-navigation-trigger")
     assert has_element?(view, "#command-palette")
     assert has_element?(view, "#resource-filters")
     assert has_element?(view, "#resources")
@@ -151,6 +153,9 @@ defmodule RengaWeb.ResourceLiveTest do
 
     assert has_element?(view, "#resource-detail-panel", "compute-01.example.net")
     assert has_element?(view, "#resource-detail-panel", "192.0.2.10/24")
+    assert has_element?(view, "#resource-detail-panel", "rack-agent")
+    assert has_element?(view, "#resource-detail-panel", "2026-08-07 10:00 UTC")
+    assert has_element?(view, "#resource-detail-panel[data-narrow-layout='overlay']")
     assert has_element?(view, "#panel-change-events", "discovered")
 
     view
@@ -172,10 +177,18 @@ defmodule RengaWeb.ResourceLiveTest do
         reason: "ObservationAccepted"
       })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources?stale=true")
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources?stale=true&q=compute")
 
     assert has_element?(view, "#resources-#{resource.id}")
     refute has_element?(view, "#resources-#{current_resource.id}")
+
+    view
+    |> element("#clear-stale-filter")
+    |> render_click()
+
+    assert has_element?(view, "#resources-#{resource.id}")
+    assert has_element?(view, "#resources-#{current_resource.id}")
+    assert has_element?(view, "#filters_search[value='compute']")
   end
 
   test "paginates the operational resource list", %{conn: conn, scope: scope} do

@@ -45,7 +45,7 @@ defmodule RengaWeb.Layouts do
     <div :if={@current_scope && @current_scope.organization_id} class="flex min-h-screen bg-base-100">
       <aside
         id="app-sidebar"
-        class="sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-base-content/10 bg-base-200/45 px-3 py-4"
+        class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-base-content/10 bg-base-200/45 px-3 py-4 lg:flex"
       >
         <.link
           navigate={~p"/inventory"}
@@ -149,8 +149,78 @@ defmodule RengaWeb.Layouts do
         </div>
       </aside>
 
-      <main id="app-content" class="min-w-0 flex-1 overflow-x-hidden bg-base-100">
-        <div class={@content_class}>{render_slot(@inner_block)}</div>
+      <main
+        id="app-content"
+        class="flex min-h-screen min-w-0 flex-1 flex-col overflow-x-hidden bg-base-100"
+      >
+        <header
+          id="app-mobile-header"
+          class="flex h-12 shrink-0 items-center gap-2 border-b border-base-content/10 bg-base-200/45 px-3 lg:hidden"
+        >
+          <details id="app-mobile-navigation" class="group relative">
+            <summary
+              id="mobile-navigation-trigger"
+              class="grid size-8 cursor-pointer list-none place-items-center rounded-md text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
+              aria-label="Open navigation"
+            >
+              <.icon name="hero-bars-3" class="size-5" />
+            </summary>
+            <div class="absolute left-0 top-10 z-40 w-64 rounded-lg border border-base-content/10 bg-base-200 p-2 shadow-xl">
+              <p class="truncate px-2 py-2 text-[10px] font-medium text-base-content/40">
+                {@current_scope.organization.name}
+              </p>
+              <nav class="space-y-1" aria-label="Mobile navigation">
+                <.sidebar_link
+                  navigate={~p"/inventory"}
+                  icon="hero-home"
+                  label="Overview"
+                  active?={@active_nav == :overview}
+                />
+                <.sidebar_link
+                  navigate={~p"/inventory/resources"}
+                  icon="hero-cube"
+                  label="Resources"
+                  active?={@active_nav == :resources}
+                />
+                <.sidebar_link
+                  navigate={~p"/inventory/operations"}
+                  icon="hero-circle-stack"
+                  label="Collectors"
+                  active?={@active_nav == :collectors}
+                />
+              </nav>
+              <div class="mt-2 border-t border-base-content/10 pt-2">
+                <.link
+                  navigate={~p"/organizations"}
+                  class="flex h-9 items-center gap-2.5 rounded-md px-2.5 text-xs text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
+                >
+                  <.icon name="hero-building-office-2" class="size-4" /> Switch organization
+                </.link>
+                <.link
+                  navigate={~p"/users/settings"}
+                  class="flex h-9 items-center gap-2.5 rounded-md px-2.5 text-xs text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
+                >
+                  <.icon name="hero-cog-6-tooth" class="size-4" /> Account settings
+                </.link>
+              </div>
+            </div>
+          </details>
+          <.link navigate={~p"/inventory"} class="flex items-center gap-2 text-sm font-semibold">
+            <.icon name="hero-server-stack-solid" class="size-5 text-orange-600" /> Renga
+          </.link>
+          <div class="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              phx-click={JS.dispatch("renga:open-command-palette")}
+              class="rounded-md p-2 text-base-content/45 transition hover:bg-base-content/[0.05] hover:text-base-content"
+              aria-label="Open command palette"
+            >
+              <.icon name="hero-magnifying-glass" class="size-4" />
+            </button>
+            <.theme_toggle />
+          </div>
+        </header>
+        <div class={["min-h-0 flex-1", @content_class]}>{render_slot(@inner_block)}</div>
       </main>
     </div>
 
