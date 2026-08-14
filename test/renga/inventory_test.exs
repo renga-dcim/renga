@@ -506,6 +506,21 @@ defmodule Renga.InventoryTest do
       assert summary.source_names == ["agent-a", "agent-b"]
       assert summary.last_observed_at == ~U[2026-08-07 10:11:00.000000Z]
 
+      for options <- [
+            [search: "COMPUTE"],
+            [lifecycle: "active"],
+            [condition: "InventoryCurrent"],
+            [source_id: source_a.id]
+          ] do
+        assert %{entries: [%{id: resource_id}], total: 1} =
+                 Inventory.list_operational_resources(scope, options)
+
+        assert resource_id == resource.id
+      end
+
+      assert %{entries: [], total: 0} =
+               Inventory.list_operational_resources(scope, lifecycle: "retired")
+
       assert Inventory.operational_resource_counts(scope) == %{
                lifecycle: %{"active" => 1},
                freshness: %{stale: 1},
