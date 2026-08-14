@@ -13,7 +13,7 @@ use crate::{
     },
 };
 use serde_json::{json, Value};
-use std::{io, process::Command, ptr, slice};
+use std::{io, mem, process::Command, ptr};
 
 const MAX_DISK_COMPONENTS: usize = 128;
 const MAX_FILESYSTEM_COMPONENTS: usize = 512;
@@ -91,16 +91,7 @@ struct DarwinFilesystemSource;
 
 impl FilesystemFactsSource for DarwinFilesystemSource {
     fn collect(&self) -> io::Result<Vec<FilesystemFacts>> {
-        let mut mounts: *mut libc::statfs = ptr::null_mut();
-        // SAFETY: getmntinfo returns a system-owned array valid until the next getmntinfo call.
-        // We copy every string before returning and never retain the pointer.
-        let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
-        if count <= 0 || mounts.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a positive return value is the number of initialized statfs entries.
-        let mounts = unsafe { slice::from_raw_parts(mounts, count as usize) };
-        mounts
+        load_filesystem_stats(mounted_filesystem_count, read_mounted_filesystems)?
             .iter()
             .map(|mount| {
                 let device = c_string(&mount.f_mntfromname).ok_or_else(|| {
@@ -122,6 +113,53 @@ impl FilesystemFactsSource for DarwinFilesystemSource {
     }
 }
 
+fn mounted_filesystem_count() -> io::Result<usize> {
+    // SAFETY: a null buffer with zero size asks getfsstat only for the mount count.
+    let count = unsafe { libc::getfsstat(ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    if count < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(count as usize)
+    }
+}
+
+fn read_mounted_filesystems(capacity: usize) -> io::Result<Vec<libc::statfs>> {
+    let byte_size = capacity
+        .checked_mul(mem::size_of::<libc::statfs>())
+        .and_then(|size| libc::c_int::try_from(size).ok())
+        .ok_or_else(|| io::Error::other("filesystem buffer is too large"))?;
+    let mut mounts = Vec::with_capacity(capacity);
+    // SAFETY: getfsstat may initialize at most byte_size bytes in caller-owned storage.
+    let count = unsafe { libc::getfsstat(mounts.as_mut_ptr(), byte_size, libc::MNT_NOWAIT) };
+    if count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let initialized = count as usize;
+    if initialized > capacity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "filesystem count exceeds allocated buffer",
+        ));
+    }
+    // SAFETY: getfsstat initialized the number of entries it returned.
+    unsafe { mounts.set_len(initialized) };
+    Ok(mounts)
+}
+
+fn load_filesystem_stats(
+    mut count: impl FnMut() -> io::Result<usize>,
+    mut read: impl FnMut(usize) -> io::Result<Vec<libc::statfs>>,
+) -> io::Result<Vec<libc::statfs>> {
+    loop {
+        let expected = count()?;
+        let mounts = read(expected)?;
+
+        if count()? <= mounts.len() {
+            return Ok(mounts);
+        }
+    }
+}
+
 fn c_string<const N: usize>(value: &[libc::c_char; N]) -> Option<String> {
     let bytes = value
         .iter()
@@ -130,7 +168,7 @@ fn c_string<const N: usize>(value: &[libc::c_char; N]) -> Option<String> {
         .collect::<Vec<_>>();
     String::from_utf8(bytes)
         .ok()
-        .and_then(|value| normalize(&value))
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize(value: &str) -> Option<String> {
@@ -506,6 +544,36 @@ mod tests {
         );
         assert_eq!(system_profiler_product_name("{}"), None);
         assert_eq!(system_profiler_product_name("not-json"), None);
+    }
+
+    #[test]
+    fn preserves_whitespace_in_c_filesystem_paths() {
+        let mut value = [0; 64];
+        let path = b"/Volumes/Archive ";
+        for (destination, source) in value.iter_mut().zip(path) {
+            *destination = *source as libc::c_char;
+        }
+
+        assert_eq!(c_string(&value).as_deref(), Some("/Volumes/Archive "));
+    }
+
+    #[test]
+    fn retries_filesystem_snapshot_when_mount_count_grows() {
+        use std::{cell::RefCell, collections::VecDeque};
+
+        let counts = RefCell::new(VecDeque::from([1, 2, 2, 2]));
+        let capacities = RefCell::new(Vec::new());
+        let mounts = load_filesystem_stats(
+            || Ok(counts.borrow_mut().pop_front().unwrap()),
+            |capacity| {
+                capacities.borrow_mut().push(capacity);
+                Ok((0..capacity).map(|_| unsafe { mem::zeroed() }).collect())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(capacities.into_inner(), [1, 2]);
+        assert_eq!(mounts.len(), 2);
     }
 
     #[test]
