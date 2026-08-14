@@ -169,10 +169,11 @@ failing the whole observation.
 
 The macOS backend adds the platform UUID, serial number, hardware model, Darwin
 interfaces and addresses, mounted filesystems, and native hypervisor status.
-Platform identity comes from `IOPlatformExpertDevice`, model and virtualization
-status come from `sysctl`, and filesystems come directly from `getmntinfo(3)`.
-Those optional sources degrade independently. A missing hostname still fails the
-observation because the server would have no safe reconciliation identity.
+Platform identity comes from `IOPlatformExpertDevice`, the human-readable product
+name comes from `system_profiler`, model and virtualization status come from
+`sysctl`, and filesystems come directly from `getmntinfo(3)`. Those optional
+sources degrade independently. A missing hostname still fails the observation
+because the server would have no safe reconciliation identity.
 
 Network inventory uses the unmodified `getifs` crate and describes interfaces
 visible in the agent's current network namespace. Because interface metadata and

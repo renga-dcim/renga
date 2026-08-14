@@ -20,6 +20,7 @@ const MAX_FILESYSTEM_COMPONENTS: usize = 512;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PlatformFacts {
+    product_name: Option<String>,
     model: Option<String>,
     platform_uuid: Option<String>,
     serial_number: Option<String>,
@@ -49,6 +50,12 @@ impl PlatformFactsSource for NativePlatformSource<'_> {
             .unwrap_or_default();
 
         PlatformFacts {
+            product_name: self
+                .output(
+                    "/usr/sbin/system_profiler",
+                    &["SPHardwareDataType", "-json"],
+                )
+                .and_then(|output| system_profiler_product_name(&output)),
             model: self
                 .output("/usr/sbin/sysctl", &["-n", "hw.model"])
                 .and_then(|value| normalize(&value)),
@@ -141,6 +148,28 @@ fn quoted_property(output: &str, key: &str) -> Option<String> {
     })
 }
 
+fn system_profiler_product_name(output: &str) -> Option<String> {
+    serde_json::from_str::<Value>(output)
+        .ok()?
+        .get("SPHardwareDataType")?
+        .as_array()?
+        .first()?
+        .get("machine_name")?
+        .as_str()
+        .and_then(normalize)
+}
+
+fn hardware_model(platform: &PlatformFacts) -> Option<String> {
+    match (&platform.product_name, &platform.model) {
+        (Some(product_name), Some(model)) if product_name != model => {
+            Some(format!("{product_name} ({model})"))
+        }
+
+        (Some(product_name), _) => Some(product_name.clone()),
+        (None, model) => model.clone(),
+    }
+}
+
 fn collect_from_sources(
     system_source: &dyn SystemFactsSource,
     platform_source: &dyn PlatformFactsSource,
@@ -149,6 +178,7 @@ fn collect_from_sources(
 ) -> Result<ServerResource, CollectError> {
     let system = system_source.collect();
     let platform = platform_source.collect();
+    let model = hardware_model(&platform);
     let hostname = system
         .hostname
         .as_deref()
@@ -202,7 +232,7 @@ fn collect_from_sources(
             hostname: Some(hostname),
             fqdn: platform.fqdn,
             vendor: Some("Apple Inc.".into()),
-            model: platform.model,
+            model,
             asset_tag: None,
         }),
         interfaces,
@@ -465,8 +495,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_system_profiler_product_name() {
+        let output = r#"{
+          "SPHardwareDataType": [{"machine_name": "MacBook Pro", "machine_model": "Mac16,5"}]
+        }"#;
+
+        assert_eq!(
+            system_profiler_product_name(output).as_deref(),
+            Some("MacBook Pro")
+        );
+        assert_eq!(system_profiler_product_name("{}"), None);
+        assert_eq!(system_profiler_product_name("not-json"), None);
+    }
+
+    #[test]
+    fn combines_product_name_with_model_identifier_and_preserves_fallbacks() {
+        assert_eq!(
+            hardware_model(&PlatformFacts {
+                product_name: Some("MacBook Pro".into()),
+                model: Some("Mac16,5".into()),
+                ..PlatformFacts::default()
+            })
+            .as_deref(),
+            Some("MacBook Pro (Mac16,5)")
+        );
+        assert_eq!(
+            hardware_model(&PlatformFacts {
+                model: Some("Mac16,5".into()),
+                ..PlatformFacts::default()
+            })
+            .as_deref(),
+            Some("Mac16,5")
+        );
+    }
+
+    #[test]
     fn maps_native_facts_to_inventory_contract() {
         let platform = FakePlatform(PlatformFacts {
+            product_name: Some("MacBook Pro".into()),
             model: Some("Mac16,1".into()),
             platform_uuid: Some("platform-id".into()),
             serial_number: Some("serial".into()),
@@ -506,7 +572,7 @@ mod tests {
             json!(["aa:bb:cc:dd:ee:ff"])
         );
         assert_eq!(value["attributes"]["vendor"], "Apple Inc.");
-        assert_eq!(value["attributes"]["model"], "Mac16,1");
+        assert_eq!(value["attributes"]["model"], "MacBook Pro (Mac16,1)");
         assert_eq!(value["interfaces"][0]["kind"], "ethernet");
         assert_eq!(
             value["interfaces"][0]["addresses"][0]["address"],
