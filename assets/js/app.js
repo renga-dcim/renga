@@ -130,15 +130,22 @@ const CopyToClipboard = {
   mounted() {
     this.onClick = async () => {
       const target = document.querySelector(this.el.dataset.copyTarget)
-      if (!target) return
+      const status = document.querySelector(this.el.dataset.copyStatus)
 
-      await navigator.clipboard.writeText(target.textContent.trim())
-      this.el.setAttribute("aria-label", "Copied")
-      this.el.querySelector("[data-copy-icon]").classList.add("hidden")
-      this.el.querySelector("[data-copied-icon]").classList.remove("hidden")
+      try {
+        if (!target || !navigator.clipboard?.writeText) throw new Error("clipboard unavailable")
+        await navigator.clipboard.writeText(target.textContent.trim())
+        this.el.setAttribute("aria-label", "Copied")
+        this.el.querySelector("[data-copy-icon]").classList.add("hidden")
+        this.el.querySelector("[data-copied-icon]").classList.remove("hidden")
+        if (status) status.textContent = "Intake API key copied."
+      } catch (_error) {
+        this.el.setAttribute("aria-label", "Copy failed")
+        if (status) status.textContent = "Could not copy. Select the key and copy it manually."
+      }
 
       clearTimeout(this.resetTimer)
-      this.resetTimer = setTimeout(() => this.reset(), 2000)
+      this.resetTimer = setTimeout(() => this.reset(status), 2000)
     }
 
     this.el.addEventListener("click", this.onClick)
@@ -149,10 +156,11 @@ const CopyToClipboard = {
     this.el.removeEventListener("click", this.onClick)
   },
 
-  reset() {
+  reset(status) {
     this.el.setAttribute("aria-label", "Copy intake API key")
     this.el.querySelector("[data-copy-icon]").classList.remove("hidden")
     this.el.querySelector("[data-copied-icon]").classList.add("hidden")
+    if (status) status.textContent = ""
   },
 }
 
