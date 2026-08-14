@@ -105,6 +105,60 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#resources-#{resource.id}", "2026-08-07 10:00 UTC")
   end
 
+  test "filters the dense workspace without leaving the index", %{conn: conn, resource: resource} do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+
+    view
+    |> form("#resource-filters", %{
+      "filters" => %{
+        "search" => "missing-host",
+        "lifecycle" => "",
+        "condition" => "",
+        "source_id" => ""
+      }
+    })
+    |> render_change()
+
+    assert has_element?(view, "#resources-empty")
+    refute has_element?(view, "#resources-#{resource.id}")
+
+    view
+    |> form("#resource-filters", %{
+      "filters" => %{
+        "search" => "compute-01",
+        "lifecycle" => "active",
+        "condition" => "InventoryCurrent",
+        "source_id" => ""
+      }
+    })
+    |> render_change()
+
+    assert has_element?(view, "#resources-#{resource.id}")
+    refute has_element?(view, "#resource-detail-panel")
+  end
+
+  test "opens and closes an organization-scoped contextual detail panel", %{
+    conn: conn,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+
+    view
+    |> element("#resources-#{resource.id} a")
+    |> render_click()
+
+    assert has_element?(view, "#resource-detail-panel", "compute-01.example.net")
+    assert has_element?(view, "#resource-detail-panel", "192.0.2.10/24")
+    assert has_element?(view, "#panel-change-events", "discovered")
+
+    view
+    |> element("#resource-detail-panel a[aria-label='Close resource details']")
+    |> render_click()
+
+    refute has_element?(view, "#resource-detail-panel")
+    assert has_element?(view, "#resources-#{resource.id}")
+  end
+
   test "filters to stale inventory", %{conn: conn, scope: scope, resource: resource} do
     {:ok, current_resource} =
       Inventory.create_resource(scope, %{kind: "server", name: "compute-02"})
