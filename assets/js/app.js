@@ -126,11 +126,171 @@ const CommandPalette = {
   },
 }
 
+const CopyToClipboard = {
+  mounted() {
+    this.onClick = async () => {
+      const target = document.querySelector(this.el.dataset.copyTarget)
+      const status = document.querySelector(this.el.dataset.copyStatus)
+
+      try {
+        if (!target || !navigator.clipboard?.writeText) throw new Error("clipboard unavailable")
+        await navigator.clipboard.writeText(target.textContent.trim())
+        this.el.setAttribute("aria-label", "Copied")
+        this.el.querySelector("[data-copy-icon]").classList.add("hidden")
+        this.el.querySelector("[data-copied-icon]").classList.remove("hidden")
+        if (status) status.textContent = "Intake API key copied."
+      } catch (_error) {
+        this.el.setAttribute("aria-label", "Copy failed")
+        if (status) status.textContent = "Could not copy. Select the key and copy it manually."
+      }
+
+      clearTimeout(this.resetTimer)
+      this.resetTimer = setTimeout(() => this.reset(status), 2000)
+    }
+
+    this.el.addEventListener("click", this.onClick)
+  },
+
+  destroyed() {
+    clearTimeout(this.resetTimer)
+    this.el.removeEventListener("click", this.onClick)
+  },
+
+  reset(status) {
+    this.el.setAttribute("aria-label", "Copy intake API key")
+    this.el.querySelector("[data-copy-icon]").classList.remove("hidden")
+    this.el.querySelector("[data-copied-icon]").classList.add("hidden")
+    if (status) status.textContent = ""
+  },
+}
+
+const ResizablePanel = {
+  mounted() {
+    this.handle = this.el.querySelector("[data-resize-handle]")
+    this.expandButton = this.el.querySelector("[data-expand-panel]")
+    this.desktop = window.matchMedia("(min-width: 1024px)")
+    this.minimumWidth = 384
+    this.storageKey = "renga:resource-detail-width"
+
+    this.onPointerDown = event => {
+      if (!this.desktop.matches) return
+      event.preventDefault()
+      this.dragging = true
+      this.startX = event.clientX
+      this.startWidth = this.el.getBoundingClientRect().width
+      this.handle.setPointerCapture(event.pointerId)
+      document.body.style.cursor = "col-resize"
+      document.body.style.userSelect = "none"
+    }
+    this.onPointerMove = event => {
+      if (!this.dragging) return
+      this.setWidth(this.startWidth + this.startX - event.clientX)
+    }
+    this.onPointerUp = () => this.stopDragging()
+    this.onHandleKeydown = event => {
+      if (!this.desktop.matches || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+      event.preventDefault()
+      const current = this.el.getBoundingClientRect().width
+      const width = {
+        ArrowLeft: current + 24,
+        ArrowRight: current - 24,
+        Home: this.minimumWidth,
+        End: this.maximumWidth(),
+      }[event.key]
+      this.setWidth(width)
+    }
+    this.onExpand = () => {
+      if (!this.desktop.matches) return
+      if (this.expanded) {
+        this.setWidth(this.widthBeforeExpand || this.minimumWidth)
+        this.setExpanded(false)
+      } else {
+        this.widthBeforeExpand = this.el.getBoundingClientRect().width
+        this.setWidth(this.maximumWidth(), false)
+        this.setExpanded(true)
+      }
+    }
+    this.onWindowResize = () => this.syncWidth()
+
+    this.handle.addEventListener("pointerdown", this.onPointerDown)
+    this.handle.addEventListener("pointermove", this.onPointerMove)
+    this.handle.addEventListener("pointerup", this.onPointerUp)
+    this.handle.addEventListener("pointercancel", this.onPointerUp)
+    this.handle.addEventListener("keydown", this.onHandleKeydown)
+    this.expandButton.addEventListener("click", this.onExpand)
+    window.addEventListener("resize", this.onWindowResize)
+    this.syncWidth()
+  },
+
+  destroyed() {
+    this.stopDragging()
+    this.handle.removeEventListener("pointerdown", this.onPointerDown)
+    this.handle.removeEventListener("pointermove", this.onPointerMove)
+    this.handle.removeEventListener("pointerup", this.onPointerUp)
+    this.handle.removeEventListener("pointercancel", this.onPointerUp)
+    this.handle.removeEventListener("keydown", this.onHandleKeydown)
+    this.expandButton.removeEventListener("click", this.onExpand)
+    window.removeEventListener("resize", this.onWindowResize)
+  },
+
+  maximumWidth() {
+    return Math.max(this.minimumWidth, Math.min(768, this.el.parentElement.clientWidth - 480))
+  },
+
+  setWidth(width, persist = true) {
+    const maximumWidth = this.maximumWidth()
+    const nextWidth = Math.round(Math.min(maximumWidth, Math.max(this.minimumWidth, width)))
+    this.el.style.width = `${nextWidth}px`
+    this.el.style.flexBasis = `${nextWidth}px`
+    this.handle.setAttribute("aria-valuemax", Math.round(maximumWidth))
+    this.handle.setAttribute("aria-valuenow", nextWidth)
+    if (persist) {
+      try {
+        localStorage.setItem(this.storageKey, nextWidth)
+      } catch (_error) {
+        // Storage is optional; resizing still works for the current page.
+      }
+      this.setExpanded(false)
+    }
+  },
+
+  syncWidth() {
+    if (!this.desktop.matches) {
+      this.el.style.removeProperty("width")
+      this.el.style.removeProperty("flex-basis")
+      return
+    }
+    let storedWidth
+    try {
+      storedWidth = Number(localStorage.getItem(this.storageKey))
+    } catch (_error) {
+      storedWidth = this.minimumWidth
+    }
+    this.setWidth(storedWidth >= this.minimumWidth ? storedWidth : this.minimumWidth, false)
+    this.setExpanded(false)
+  },
+
+  setExpanded(expanded) {
+    this.expanded = expanded
+    this.expandButton.setAttribute(
+      "aria-label",
+      expanded ? "Restore detail panel width" : "Expand detail panel",
+    )
+    this.expandButton.setAttribute("aria-pressed", expanded)
+  },
+
+  stopDragging() {
+    this.dragging = false
+    document.body.style.removeProperty("cursor")
+    document.body.style.removeProperty("user-select")
+  },
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CommandPalette},
+  hooks: {...colocatedHooks, CommandPalette, CopyToClipboard, ResizablePanel},
 })
 
 // Show progress bar on live navigation and form submits

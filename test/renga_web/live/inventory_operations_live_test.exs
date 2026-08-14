@@ -76,6 +76,16 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
     assert has_element?(
              view,
+             "#copy-intake-key[phx-hook='CopyToClipboard'][data-copy-target='#issued-intake-key'][data-copy-status='#copy-intake-key-status']"
+           )
+
+    assert has_element?(
+             view,
+             "#copy-intake-key-status[role='status'][aria-live='polite'][aria-atomic='true']"
+           )
+
+    assert has_element?(
+             view,
              "#intake-key-credentials code",
              ~s(renga_url = "http://localhost:4002")
            )

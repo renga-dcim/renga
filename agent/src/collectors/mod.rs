@@ -7,6 +7,8 @@ use std::fmt;
 mod filesystem_facts;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 mod network_facts;
 mod system_facts;
 
@@ -24,12 +26,12 @@ impl std::error::Error for CollectError {}
 /// Capabilities are selected by the active backend so future platforms can
 /// advertise a smaller supported inventory surface without changing transport.
 pub fn capabilities() -> Vec<&'static str> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         vec!["host.inventory"]
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Vec::new()
     }
@@ -41,7 +43,12 @@ pub fn collect(cancellation: &Cancellation) -> Result<ServerResource, CollectErr
         linux::collect(cancellation)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::collect(cancellation)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err(CollectError(format!(
             "no inventory collector is implemented for {} yet",
@@ -57,6 +64,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn linux_backend_advertises_host_inventory() {
+        assert_eq!(capabilities(), ["host.inventory"]);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_backend_advertises_host_inventory() {
         assert_eq!(capabilities(), ["host.inventory"]);
     }
 }

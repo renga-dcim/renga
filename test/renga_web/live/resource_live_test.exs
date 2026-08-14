@@ -155,7 +155,18 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#resource-detail-panel", "192.0.2.10/24")
     assert has_element?(view, "#resource-detail-panel", "rack-agent")
     assert has_element?(view, "#resource-detail-panel", "2026-08-07 10:00 UTC")
-    assert has_element?(view, "#resource-detail-panel[data-narrow-layout='overlay']")
+
+    assert has_element?(
+             view,
+             "#resource-detail-panel[data-narrow-layout='overlay'][phx-hook='ResizablePanel']"
+           )
+
+    assert has_element?(
+             view,
+             "#resource-detail-resize-handle[role='separator'][tabindex='0']"
+           )
+
+    assert has_element?(view, "#resource-detail-expand[aria-label='Expand detail panel']")
     assert has_element?(view, "#panel-change-events", "discovered")
 
     view

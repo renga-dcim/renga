@@ -189,13 +189,36 @@ defmodule RengaWeb.InventoryOperationsLive do
                   </p>
                 </div>
               </div>
-              <div class="rounded-xl bg-base-200/70 p-4">
-                <p class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                  Intake API key
-                </p>
-                <p id="issued-intake-key" class="mt-2 break-all font-mono text-xs">
-                  {@issued_token}
-                </p>
+              <div class="flex items-center gap-3 rounded-xl bg-base-200/70 p-4">
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+                    Intake API key
+                  </p>
+                  <p id="issued-intake-key" class="mt-2 break-all font-mono text-xs">
+                    {@issued_token}
+                  </p>
+                </div>
+                <button
+                  id="copy-intake-key"
+                  type="button"
+                  phx-hook="CopyToClipboard"
+                  data-copy-target="#issued-intake-key"
+                  data-copy-status="#copy-intake-key-status"
+                  aria-label="Copy intake API key"
+                  class="shrink-0 rounded-lg border border-base-content/10 bg-base-100 p-2 text-base-content/55 shadow-sm transition hover:border-base-content/20 hover:text-base-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
+                >
+                  <span data-copy-icon><.icon name="hero-clipboard" class="size-4" /></span>
+                  <span data-copied-icon class="hidden">
+                    <.icon name="hero-check" class="size-4 text-emerald-600" />
+                  </span>
+                </button>
+                <span
+                  id="copy-intake-key-status"
+                  class="sr-only"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                />
               </div>
               <div class="rounded-xl border border-base-content/10 bg-slate-950 p-4 text-slate-100">
                 <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
