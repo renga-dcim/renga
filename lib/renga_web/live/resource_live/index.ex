@@ -180,15 +180,15 @@ defmodule RengaWeb.ResourceLive.Index do
 
         <div class="flex min-h-0 flex-1">
           <div class="min-w-0 flex-1 overflow-auto">
-            <table class="w-full min-w-[820px] table-fixed text-left text-xs">
+            <table class="w-full min-w-[1100px] table-fixed text-left text-xs">
               <thead class="sticky top-0 z-10 border-b border-base-content/10 bg-base-200/70 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/40 backdrop-blur-sm">
                 <tr class="h-9">
-                  <th class="w-[25%] px-4 font-semibold">Resource</th>
-                  <th class="w-[23%] px-3 font-semibold">Hardware</th>
-                  <th class="w-[12%] px-3 font-semibold">Lifecycle</th>
-                  <th class="w-[17%] px-3 font-semibold">Conditions</th>
-                  <th class="w-[13%] px-3 font-semibold">Source</th>
-                  <th class="w-[10%] px-3 font-semibold">Observed</th>
+                  <th class="w-[22%] px-4 font-semibold">Resource</th>
+                  <th class="w-[22%] px-3 font-semibold">Hardware</th>
+                  <th class="w-[10%] px-3 font-semibold">Lifecycle</th>
+                  <th class="w-[14%] px-3 font-semibold">Conditions</th>
+                  <th class="w-[18%] px-3 font-semibold">Source</th>
+                  <th class="w-[14%] px-3 font-semibold">Observed</th>
                 </tr>
               </thead>
               <tbody id="resources" phx-update="stream" class="divide-y divide-base-content/[0.07]">
@@ -208,7 +208,12 @@ defmodule RengaWeb.ResourceLive.Index do
                       "bg-orange-500/[0.055] shadow-[inset_2px_0_0_0] shadow-orange-600"
                   ]}
                 >
-                  <td class="truncate px-4">
+                  <td
+                    class="truncate px-4"
+                    title={
+                      "#{resource.display_name || resource.name} · #{humanize(resource.kind)}"
+                    }
+                  >
                     <.link
                       patch={workspace_path(@filters, resource.id)}
                       class="block truncate font-medium outline-none group-hover:text-base-content focus:text-orange-600"
@@ -219,26 +224,34 @@ defmodule RengaWeb.ResourceLive.Index do
                       </span>
                     </.link>
                   </td>
-                  <td class="truncate px-3 text-base-content/60">{hardware_name(resource)}</td>
+                  <td
+                    class="truncate px-3 text-base-content/60"
+                    title={hardware_name(resource)}
+                  >
+                    {hardware_name(resource)}
+                  </td>
                   <td class="px-3">
                     <span class="inline-flex items-center gap-1.5 capitalize text-base-content/65">
                       <span class={lifecycle_dot(resource.lifecycle_state)} />
                       {resource.lifecycle_state}
                     </span>
                   </td>
-                  <td class="truncate px-3">
+                  <td class="truncate px-3" title={condition_summary(resource.conditions)}>
                     <span class="inline-flex max-w-full items-center gap-1.5 text-base-content/60">
                       <span class={condition_dot(resource.conditions)} />
                       <span class="truncate">{condition_summary(resource.conditions)}</span>
                     </span>
                   </td>
-                  <td class="truncate px-3 text-base-content/55">
+                  <td class="truncate px-3 text-base-content/55" title={source_names(resource)}>
                     <span class="inline-flex max-w-full items-center gap-1.5">
                       <.icon name="hero-circle-stack" class="size-3.5 shrink-0 text-base-content/35" />
                       <span class="truncate">{source_names(resource)}</span>
                     </span>
                   </td>
-                  <td class="truncate px-3 font-mono text-[10px] text-base-content/45">
+                  <td
+                    class="truncate px-3 font-mono text-[10px] text-base-content/45"
+                    title={format_time(last_observed_at(resource))}
+                  >
                     {format_time(last_observed_at(resource))}
                   </td>
                 </tr>
@@ -290,98 +303,138 @@ defmodule RengaWeb.ResourceLive.Index do
     ~H"""
     <aside
       id="resource-detail-panel"
+      phx-hook="ResizablePanel"
       data-narrow-layout="overlay"
-      class="fixed inset-0 z-30 w-full shrink-0 overflow-y-auto border-l border-base-content/10 bg-base-100 lg:static lg:z-auto lg:w-96 lg:bg-base-200/25"
+      class="fixed inset-0 z-30 w-full shrink-0 overflow-hidden border-l border-base-content/10 bg-base-100 lg:relative lg:inset-auto lg:z-auto lg:w-96 lg:bg-base-200/25"
     >
-      <header class="border-b border-base-content/10 px-5 pb-4 pt-5">
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex min-w-0 items-center gap-3">
-            <.icon name="hero-server-stack" class="size-7 shrink-0 text-base-content/55" />
-            <div class="min-w-0">
-              <h2 class="truncate text-lg font-semibold tracking-tight">
-                {@resource.display_name || @resource.name}
-              </h2>
-              <p class="mt-1 text-[10px] uppercase tracking-[0.1em] text-base-content/40">
-                {@resource.kind} <span class="px-1">·</span> {@resource.lifecycle_state}
+      <div
+        id="resource-detail-resize-handle"
+        data-resize-handle
+        role="separator"
+        tabindex="0"
+        aria-label="Resize detail panel"
+        aria-orientation="vertical"
+        aria-valuemin="384"
+        aria-valuemax="768"
+        aria-valuenow="384"
+        class="group absolute inset-y-0 left-0 z-20 hidden w-2 touch-none cursor-col-resize items-center justify-center outline-none lg:flex"
+      >
+        <span class="h-12 w-0.5 rounded-full bg-base-content/10 transition group-hover:bg-orange-500/50 group-focus:bg-orange-500/70" />
+      </div>
+      <div class="h-full overflow-y-auto">
+        <header class="border-b border-base-content/10 px-5 pb-4 pt-5">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-3">
+              <.icon name="hero-server-stack" class="size-7 shrink-0 text-base-content/55" />
+              <div class="min-w-0">
+                <h2
+                  class="truncate text-lg font-semibold tracking-tight"
+                  title={@resource.display_name || @resource.name}
+                >
+                  {@resource.display_name || @resource.name}
+                </h2>
+                <p class="mt-1 text-[10px] uppercase tracking-[0.1em] text-base-content/40">
+                  {@resource.kind} <span class="px-1">·</span> {@resource.lifecycle_state}
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center">
+              <button
+                id="resource-detail-expand"
+                type="button"
+                data-expand-panel
+                aria-label="Expand detail panel"
+                aria-pressed="false"
+                class="hidden rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content lg:block"
+              >
+                <.icon name="hero-arrows-pointing-out" class="size-4" />
+              </button>
+              <.link
+                navigate={~p"/inventory/resources/#{@resource.id}"}
+                class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
+                aria-label="Open full resource page"
+              >
+                <.icon name="hero-arrow-top-right-on-square" class="size-4" />
+              </.link>
+              <.link
+                patch={@close_path}
+                class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
+                aria-label="Close resource details"
+              >
+                <.icon name="hero-x-mark" class="size-4" />
+              </.link>
+            </div>
+          </div>
+
+          <div class="mt-5 grid grid-cols-3 gap-2">
+            <.status_summary
+              label="Inventory"
+              condition={find_condition(@resource, "InventoryCurrent")}
+            />
+            <.status_summary
+              label="Reachable"
+              condition={find_condition(@resource, "AgentConnected")}
+            />
+            <div class="rounded-md border border-base-content/10 px-2.5 py-2">
+              <p class="text-[9px] text-base-content/40">Observed</p>
+              <p
+                class="mt-1 truncate font-mono text-[10px] text-base-content/70"
+                title={format_time(@resource.last_observed_at)}
+              >
+                {format_time(@resource.last_observed_at)}
               </p>
             </div>
           </div>
-          <div class="flex items-center">
-            <.link
-              navigate={~p"/inventory/resources/#{@resource.id}"}
-              class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
-              aria-label="Open full resource page"
-            >
-              <.icon name="hero-arrow-top-right-on-square" class="size-4" />
-            </.link>
-            <.link
-              patch={@close_path}
-              class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
-              aria-label="Close resource details"
-            >
-              <.icon name="hero-x-mark" class="size-4" />
-            </.link>
-          </div>
+        </header>
+
+        <div class="border-b border-base-content/10 px-5">
+          <span class="inline-flex h-10 items-center border-b-2 border-orange-600 text-xs font-medium">
+            Details
+          </span>
+          <span class="ml-5 inline-flex h-10 items-center text-xs text-base-content/40">
+            Activity
+          </span>
         </div>
 
-        <div class="mt-5 grid grid-cols-3 gap-2">
-          <.status_summary
-            label="Inventory"
-            condition={find_condition(@resource, "InventoryCurrent")}
-          />
-          <.status_summary label="Reachable" condition={find_condition(@resource, "AgentConnected")} />
-          <div class="rounded-md border border-base-content/10 px-2.5 py-2">
-            <p class="text-[9px] text-base-content/40">Observed</p>
-            <p class="mt-1 truncate font-mono text-[10px] text-base-content/70">
-              {format_time(@resource.last_observed_at)}
-            </p>
-          </div>
+        <div class="divide-y divide-base-content/10 px-5">
+          <.detail_section title="Canonical projection">
+            <.detail_row label="FQDN" value={host_field(@resource, :fqdn)} />
+            <.detail_row label="Vendor" value={host_field(@resource, :vendor)} />
+            <.detail_row label="Model" value={host_field(@resource, :model)} />
+            <.detail_row label="Asset tag" value={host_field(@resource, :asset_tag)} />
+          </.detail_section>
+
+          <.detail_section title="Network">
+            <.detail_row label="Interface" value={interface_field(@resource, :name)} />
+            <.detail_row label="IP address" value={primary_address(@resource)} />
+            <.detail_row label="MAC address" value={interface_field(@resource, :mac_address)} />
+          </.detail_section>
+
+          <.detail_section title="Provenance">
+            <.detail_row label="Sources" value={source_names(@resource)} />
+            <.detail_row label="Generation" value={to_string(@resource.generation)} />
+            <.detail_row label="Identifiers" value={to_string(length(@resource.identifiers))} />
+          </.detail_section>
+
+          <.detail_section title="Recent changes">
+            <ol id="panel-change-events" class="space-y-3">
+              <li :for={event <- Enum.take(@resource.change_events, 5)} class="flex gap-2.5">
+                <span class="mt-1 size-1.5 shrink-0 rounded-full bg-base-content/30" />
+                <div class="min-w-0">
+                  <p class="break-words text-[11px] font-medium capitalize">
+                    {humanize(event.kind)}
+                  </p>
+                  <p class="mt-0.5 break-words text-[10px] text-base-content/40">
+                    {event.field || "Resource"} · {format_time(event.occurred_at)}
+                  </p>
+                </div>
+              </li>
+              <li :if={@resource.change_events == []} class="text-[11px] text-base-content/40">
+                No changes recorded.
+              </li>
+            </ol>
+          </.detail_section>
         </div>
-      </header>
-
-      <div class="border-b border-base-content/10 px-5">
-        <span class="inline-flex h-10 items-center border-b-2 border-orange-600 text-xs font-medium">
-          Details
-        </span>
-        <span class="ml-5 inline-flex h-10 items-center text-xs text-base-content/40">Activity</span>
-      </div>
-
-      <div class="divide-y divide-base-content/10 px-5">
-        <.detail_section title="Canonical projection">
-          <.detail_row label="FQDN" value={host_field(@resource, :fqdn)} />
-          <.detail_row label="Vendor" value={host_field(@resource, :vendor)} />
-          <.detail_row label="Model" value={host_field(@resource, :model)} />
-          <.detail_row label="Asset tag" value={host_field(@resource, :asset_tag)} />
-        </.detail_section>
-
-        <.detail_section title="Network">
-          <.detail_row label="Interface" value={interface_field(@resource, :name)} />
-          <.detail_row label="IP address" value={primary_address(@resource)} />
-          <.detail_row label="MAC address" value={interface_field(@resource, :mac_address)} />
-        </.detail_section>
-
-        <.detail_section title="Provenance">
-          <.detail_row label="Sources" value={source_names(@resource)} />
-          <.detail_row label="Generation" value={to_string(@resource.generation)} />
-          <.detail_row label="Identifiers" value={to_string(length(@resource.identifiers))} />
-        </.detail_section>
-
-        <.detail_section title="Recent changes">
-          <ol id="panel-change-events" class="space-y-3">
-            <li :for={event <- Enum.take(@resource.change_events, 5)} class="flex gap-2.5">
-              <span class="mt-1 size-1.5 shrink-0 rounded-full bg-base-content/30" />
-              <div class="min-w-0">
-                <p class="truncate text-[11px] font-medium capitalize">{humanize(event.kind)}</p>
-                <p class="mt-0.5 truncate text-[10px] text-base-content/40">
-                  {event.field || "Resource"} · {format_time(event.occurred_at)}
-                </p>
-              </div>
-            </li>
-            <li :if={@resource.change_events == []} class="text-[11px] text-base-content/40">
-              No changes recorded.
-            </li>
-          </ol>
-        </.detail_section>
       </div>
     </aside>
     """
@@ -394,7 +447,10 @@ defmodule RengaWeb.ResourceLive.Index do
     ~H"""
     <div class="rounded-md border border-base-content/10 px-2.5 py-2">
       <p class="text-[9px] text-base-content/40">{@label}</p>
-      <p class="mt-1 flex items-center gap-1.5 truncate text-[10px] text-base-content/70">
+      <p
+        class="mt-1 flex items-center gap-1.5 truncate text-[10px] text-base-content/70"
+        title={condition_value(@condition)}
+      >
         <span class={condition_status_dot(@condition)} />
         {condition_value(@condition)}
       </p>
@@ -421,9 +477,9 @@ defmodule RengaWeb.ResourceLive.Index do
 
   defp detail_row(assigns) do
     ~H"""
-    <div class="grid grid-cols-[7rem_1fr] gap-3 text-[11px]">
+    <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 text-[11px]">
       <dt class="text-base-content/40">{@label}</dt>
-      <dd class="min-w-0 truncate text-base-content/75">{@value}</dd>
+      <dd class="min-w-0 select-text break-words text-base-content/75">{@value}</dd>
     </div>
     """
   end
