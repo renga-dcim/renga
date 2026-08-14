@@ -25,15 +25,116 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/renga"
 import topbar from "../vendor/topbar"
 
+const CommandPalette = {
+  mounted() {
+    this.dialog = this.el.querySelector("#command-palette")
+    this.input = this.el.querySelector("#command-palette-input")
+    this.searchItem = this.el.querySelector("#command-resource-search")
+    this.activeIndex = 0
+
+    this.open = () => {
+      if (!this.dialog.open) this.dialog.showModal()
+      this.input.value = ""
+      this.updateItems()
+      requestAnimationFrame(() => this.input.focus())
+    }
+
+    this.onOpen = () => this.open()
+    this.onInput = () => this.updateItems()
+    this.onClick = event => {
+      if (event.target === this.dialog) this.dialog.close()
+
+      const item = event.target.closest("[data-command-item]")
+      if (!item) return
+
+      if (item.dataset.commandAction === "toggle-theme") {
+        window.dispatchEvent(new CustomEvent("phx:toggle-theme"))
+      }
+
+      this.dialog.close()
+    }
+
+    this.onKeydown = event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        this.open()
+        return
+      }
+
+      if (!this.dialog.open) return
+
+      if (event.key === "Escape") {
+        event.preventDefault()
+        this.dialog.close()
+        return
+      }
+
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault()
+        const offset = event.key === "ArrowDown" ? 1 : -1
+        this.activeIndex = (this.activeIndex + offset + this.items.length) % this.items.length
+        this.highlightActiveItem()
+        return
+      }
+
+      if (event.key === "Enter" && this.items.length > 0) {
+        event.preventDefault()
+        const item = this.items[this.activeIndex]
+        const control = item.matches("a, button") ? item : item.querySelector("a, button")
+        control?.click()
+      }
+    }
+
+    window.addEventListener("renga:open-command-palette", this.onOpen)
+    window.addEventListener("keydown", this.onKeydown)
+    this.input.addEventListener("input", this.onInput)
+    this.dialog.addEventListener("click", this.onClick)
+  },
+
+  destroyed() {
+    window.removeEventListener("renga:open-command-palette", this.onOpen)
+    window.removeEventListener("keydown", this.onKeydown)
+    this.input.removeEventListener("input", this.onInput)
+    this.dialog.removeEventListener("click", this.onClick)
+  },
+
+  updateItems() {
+    const query = this.input.value.trim().toLowerCase()
+    const searchLink = this.searchItem.querySelector("a")
+    const searchLabel = this.searchItem.querySelector("a > span")
+
+    this.searchItem.hidden = query === ""
+    searchLink.href = `/inventory/resources?q=${encodeURIComponent(query)}`
+    searchLabel.textContent = `Search resources for “${this.input.value.trim()}”`
+
+    this.el.querySelectorAll("[data-command-item]:not(#command-resource-search)").forEach(item => {
+      item.hidden = query !== "" && !item.dataset.search.includes(query)
+    })
+
+    this.items = Array.from(this.el.querySelectorAll("[data-command-item]:not([hidden])"))
+    this.activeIndex = 0
+    this.highlightActiveItem()
+  },
+
+  highlightActiveItem() {
+    this.items.forEach((item, index) => {
+      const control = item.matches("a, button") ? item : item.querySelector("a, button")
+      control?.classList.toggle("bg-base-content/[0.06]", index === this.activeIndex)
+    })
+    const active = this.items[this.activeIndex]
+    active?.scrollIntoView({block: "nearest"})
+  },
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, CommandPalette},
 })
 
 // Show progress bar on live navigation and form submits
-topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
+topbar.config({barColors: {0: "#ea580c"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
@@ -80,4 +181,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

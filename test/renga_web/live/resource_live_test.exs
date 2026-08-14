@@ -96,6 +96,10 @@ defmodule RengaWeb.ResourceLiveTest do
     {:ok, view, _html} = live(conn, ~p"/inventory/resources")
 
     assert has_element?(view, "#resource-list")
+    assert has_element?(view, "#app-sidebar")
+    assert has_element?(view, "#app-mobile-header")
+    assert has_element?(view, "#mobile-navigation-trigger")
+    assert has_element?(view, "#command-palette")
     assert has_element?(view, "#resource-filters")
     assert has_element?(view, "#resources")
     assert has_element?(view, "#resources-#{resource.id}", "compute-01")
@@ -103,6 +107,63 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#resources-#{resource.id}", "InventoryCurrent")
     assert has_element?(view, "#resources-#{resource.id}", "rack-agent")
     assert has_element?(view, "#resources-#{resource.id}", "2026-08-07 10:00 UTC")
+  end
+
+  test "filters the dense workspace without leaving the index", %{conn: conn, resource: resource} do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+
+    view
+    |> form("#resource-filters", %{
+      "filters" => %{
+        "search" => "missing-host",
+        "lifecycle" => "",
+        "condition" => "",
+        "source_id" => ""
+      }
+    })
+    |> render_change()
+
+    assert has_element?(view, "#resources-empty")
+    refute has_element?(view, "#resources-#{resource.id}")
+
+    view
+    |> form("#resource-filters", %{
+      "filters" => %{
+        "search" => "compute-01",
+        "lifecycle" => "active",
+        "condition" => "InventoryCurrent",
+        "source_id" => ""
+      }
+    })
+    |> render_change()
+
+    assert has_element?(view, "#resources-#{resource.id}")
+    refute has_element?(view, "#resource-detail-panel")
+  end
+
+  test "opens and closes an organization-scoped contextual detail panel", %{
+    conn: conn,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+
+    view
+    |> element("#resources-#{resource.id} a")
+    |> render_click()
+
+    assert has_element?(view, "#resource-detail-panel", "compute-01.example.net")
+    assert has_element?(view, "#resource-detail-panel", "192.0.2.10/24")
+    assert has_element?(view, "#resource-detail-panel", "rack-agent")
+    assert has_element?(view, "#resource-detail-panel", "2026-08-07 10:00 UTC")
+    assert has_element?(view, "#resource-detail-panel[data-narrow-layout='overlay']")
+    assert has_element?(view, "#panel-change-events", "discovered")
+
+    view
+    |> element("#resource-detail-panel a[aria-label='Close resource details']")
+    |> render_click()
+
+    refute has_element?(view, "#resource-detail-panel")
+    assert has_element?(view, "#resources-#{resource.id}")
   end
 
   test "filters to stale inventory", %{conn: conn, scope: scope, resource: resource} do
@@ -116,10 +177,18 @@ defmodule RengaWeb.ResourceLiveTest do
         reason: "ObservationAccepted"
       })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources?stale=true")
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources?stale=true&q=compute")
 
     assert has_element?(view, "#resources-#{resource.id}")
     refute has_element?(view, "#resources-#{current_resource.id}")
+
+    view
+    |> element("#clear-stale-filter")
+    |> render_click()
+
+    assert has_element?(view, "#resources-#{resource.id}")
+    assert has_element?(view, "#resources-#{current_resource.id}")
+    assert has_element?(view, "#filters_search[value='compute']")
   end
 
   test "paginates the operational resource list", %{conn: conn, scope: scope} do

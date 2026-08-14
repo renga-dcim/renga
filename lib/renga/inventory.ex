@@ -537,10 +537,19 @@ defmodule Renga.Inventory do
   def list_operational_resources(%Scope{organization_id: organization_id}, options) do
     page = max(Keyword.get(options, :page, 1), 1)
 
-    entries =
+    query =
       Resource
       |> where([resource], resource.organization_id == ^organization_id)
       |> maybe_filter_stale_resources(organization_id, Keyword.get(options, :stale_only?, false))
+      |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
+      |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
+      |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
+      |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
+
+    total = Repo.aggregate(query, :count, :id)
+
+    entries =
+      query
       |> order_by([resource], asc: resource.name, asc: resource.id)
       |> select_merge([resource], %{
         source_names:
@@ -567,7 +576,8 @@ defmodule Renga.Inventory do
     %{
       entries: Enum.take(entries, @operational_resource_page_size),
       has_next?: length(entries) > @operational_resource_page_size,
-      page: page
+      page: page,
+      total: total
     }
   end
 
@@ -582,6 +592,66 @@ defmodule Renga.Inventory do
       |> select([condition], condition.resource_id)
 
     where(query, [resource], resource.id in subquery(stale_resource_ids))
+  end
+
+  defp maybe_filter_resource_search(query, _organization_id, search)
+       when search in [nil, ""],
+       do: query
+
+  defp maybe_filter_resource_search(query, organization_id, search) do
+    pattern = "%#{String.trim(search)}%"
+
+    matching_host_ids =
+      Host
+      |> where([host], host.organization_id == ^organization_id)
+      |> where(
+        [host],
+        ilike(host.hostname, ^pattern) or ilike(host.fqdn, ^pattern) or
+          ilike(host.vendor, ^pattern) or ilike(host.model, ^pattern) or
+          ilike(host.asset_tag, ^pattern)
+      )
+      |> select([host], host.resource_id)
+
+    where(
+      query,
+      [resource],
+      ilike(resource.name, ^pattern) or ilike(resource.display_name, ^pattern) or
+        ilike(resource.kind, ^pattern) or resource.id in subquery(matching_host_ids)
+    )
+  end
+
+  defp maybe_filter_resource_lifecycle(query, lifecycle) when lifecycle in [nil, ""], do: query
+
+  defp maybe_filter_resource_lifecycle(query, lifecycle) do
+    where(query, [resource], resource.lifecycle_state == ^lifecycle)
+  end
+
+  defp maybe_filter_resource_condition(query, _organization_id, condition)
+       when condition in [nil, ""],
+       do: query
+
+  defp maybe_filter_resource_condition(query, organization_id, condition) do
+    matching_resource_ids =
+      ResourceCondition
+      |> where([item], item.organization_id == ^organization_id)
+      |> where([item], item.type == ^condition)
+      |> select([item], item.resource_id)
+
+    where(query, [resource], resource.id in subquery(matching_resource_ids))
+  end
+
+  defp maybe_filter_resource_source(query, _organization_id, source_id)
+       when source_id in [nil, ""],
+       do: query
+
+  defp maybe_filter_resource_source(query, organization_id, source_id) do
+    matching_resource_ids =
+      ResourceIdentifierClaim
+      |> where([claim], claim.organization_id == ^organization_id)
+      |> where([claim], claim.source_id == ^source_id)
+      |> select([claim], claim.resource_id)
+
+    where(query, [resource], resource.id in subquery(matching_resource_ids))
   end
 
   @doc """
@@ -670,7 +740,30 @@ defmodule Renga.Inventory do
       |> list_interfaces(resource.id)
       |> Repo.preload(:addresses)
 
-    %{resource | interfaces: interfaces}
+    source_names =
+      resource.identifier_claims
+      |> Enum.map(& &1.source.name)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    last_observed_at =
+      Enum.reduce(resource.identifier_claims, nil, fn claim, latest ->
+        latest_datetime(claim.last_seen_at, latest)
+      end)
+
+    %{
+      resource
+      | interfaces: interfaces,
+        source_names: source_names,
+        last_observed_at: last_observed_at
+    }
+  end
+
+  defp latest_datetime(nil, latest), do: latest
+  defp latest_datetime(datetime, nil), do: datetime
+
+  defp latest_datetime(datetime, latest) do
+    if DateTime.after?(datetime, latest), do: datetime, else: latest
   end
 
   @doc """
