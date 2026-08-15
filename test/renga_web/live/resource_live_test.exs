@@ -10,7 +10,7 @@ defmodule RengaWeb.ResourceLiveTest do
   setup %{conn: conn} do
     user = user_fixture()
     organization = organization_fixture()
-    organization_membership_fixture(user, organization)
+    membership = organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Renga.Accounts.scope_for_user(user, organization.id)
 
     conn =
@@ -86,7 +86,14 @@ defmodule RengaWeb.ResourceLiveTest do
         occurred_at: ~U[2026-08-07 10:00:00.000000Z]
       })
 
-    %{conn: conn, scope: scope, resource: resource, interface: interface}
+    %{
+      conn: conn,
+      scope: scope,
+      resource: resource,
+      interface: interface,
+      membership: membership,
+      organization: organization
+    }
   end
 
   test "lists canonical inventory with provenance and last observed time", %{
@@ -167,6 +174,25 @@ defmodule RengaWeb.ResourceLiveTest do
            )
 
     assert has_element?(view, "#resource-detail-expand[aria-label='Expand detail panel']")
+    assert has_element?(view, "#resource-panel-lifecycle-form")
+
+    assert has_element?(
+             view,
+             "#resource-panel-lifecycle-help",
+             "does not control the device"
+           )
+
+    assert has_element?(
+             view,
+             "#resource-panel-lifecycle-form select[aria-describedby='resource-panel-lifecycle-help']"
+           )
+
+    assert has_element?(
+             view,
+             "#resource-panel-lifecycle-form option[value='active']",
+             "Active — in service"
+           )
+
     assert has_element?(view, "#panel-change-events", "discovered")
 
     view
@@ -175,6 +201,156 @@ defmodule RengaWeb.ResourceLiveTest do
 
     refute has_element?(view, "#resource-detail-panel")
     assert has_element?(view, "#resources-#{resource.id}")
+  end
+
+  test "organization managers update lifecycle from the contextual panel", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+
+    view
+    |> form("#resource-panel-lifecycle-form", lifecycle: %{lifecycle_state: "inactive"})
+    |> render_submit()
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "inactive"
+    assert has_element?(view, "#resources-#{resource.id}", "inactive")
+
+    assert List.last(Inventory.list_resource_revisions(scope, resource.id)).snapshot[
+             "lifecycle_state"
+           ] == "inactive"
+
+    assert has_element?(
+             view,
+             "#resource-panel-lifecycle-form select option[value='inactive'][selected]"
+           )
+  end
+
+  test "organization managers update lifecycle from the full resource detail", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    view
+    |> form("#resource-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
+    |> render_submit()
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "retired"
+
+    assert has_element?(
+             view,
+             "#resource-lifecycle-form select option[value='retired'][selected]"
+           )
+
+    render_hook(view, "update_lifecycle", %{
+      "lifecycle" => %{"lifecycle_state" => "missing"}
+    })
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "retired"
+    assert has_element?(view, "#flash-error", "valid lifecycle")
+  end
+
+  test "contextual lifecycle edit reloads after a concurrent resource change", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+
+    assert {:ok, _resource} =
+             Inventory.update_resource(scope, resource, %{lifecycle_state: "inactive"})
+
+    view
+    |> form("#resource-panel-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
+    |> render_submit()
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "inactive"
+    assert has_element?(view, "#flash-error", "changed elsewhere")
+    assert has_element?(view, "#resources-#{resource.id}", "inactive")
+
+    assert has_element?(
+             view,
+             "#resource-panel-lifecycle-form select option[value='inactive'][selected]"
+           )
+  end
+
+  test "full lifecycle edit reloads after a concurrent resource change", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    assert {:ok, _resource} =
+             Inventory.update_resource(scope, resource, %{lifecycle_state: "inactive"})
+
+    view
+    |> form("#resource-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
+    |> render_submit()
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "inactive"
+    assert has_element?(view, "#flash-error", "changed elsewhere")
+
+    assert has_element?(
+             view,
+             "#resource-lifecycle-form select option[value='inactive'][selected]"
+           )
+  end
+
+  test "viewers cannot see or forge lifecycle changes", %{
+    organization: organization,
+    resource: resource,
+    scope: scope
+  } do
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+
+    conn =
+      build_conn()
+      |> log_in_user(viewer)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, index_view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+    refute has_element?(index_view, "#resource-panel-lifecycle-form")
+
+    assert has_element?(
+             index_view,
+             "#resource-panel-lifecycle-help",
+             "does not control the device"
+           )
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    refute has_element?(view, "#resource-lifecycle-form")
+    assert has_element?(view, "#resource-lifecycle-help", "does not control the device")
+
+    render_hook(view, "update_lifecycle", %{
+      "lifecycle" => %{"lifecycle_state" => "retired"}
+    })
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
+    assert has_element?(view, "#flash-error", "not allowed")
+  end
+
+  test "a stale admin scope cannot change lifecycle after role downgrade", %{
+    conn: conn,
+    scope: scope,
+    resource: resource,
+    membership: membership
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    {:ok, _membership} =
+      Renga.Accounts.update_organization_membership(membership, %{role: "viewer"})
+
+    view
+    |> form("#resource-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
+    |> render_submit()
+
+    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
+    assert has_element?(view, "#flash-error", "not allowed")
   end
 
   test "filters to stale inventory", %{conn: conn, scope: scope, resource: resource} do

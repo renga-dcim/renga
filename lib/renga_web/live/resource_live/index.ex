@@ -20,6 +20,12 @@ defmodule RengaWeb.ResourceLive.Index do
     {"Retired", "retired"},
     {"Unknown", "unknown"}
   ]
+  @lifecycle_edit_options [
+    {"Active — in service", "active"},
+    {"Inactive — out of service", "inactive"},
+    {"Retired — no longer used", "retired"},
+    {"Unknown — not classified", "unknown"}
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -29,6 +35,8 @@ defmodule RengaWeb.ResourceLive.Index do
      assign(socket,
        page_title: "Resources",
        lifecycle_options: @lifecycle_options,
+       lifecycle_edit_options: @lifecycle_edit_options,
+       can_manage_lifecycle?: Inventory.organization_manager?(socket.assigns.current_scope),
        condition_options: @condition_options,
        source_options: [{"Any source", ""} | Enum.map(sources, &{&1.name, &1.id})]
      )}
@@ -57,6 +65,7 @@ defmodule RengaWeb.ResourceLive.Index do
      |> assign(:has_next_page?, result.has_next?)
      |> assign(:resource_count, result.total)
      |> assign(:selected_resource, selected_resource)
+     |> assign(:lifecycle_form, lifecycle_form(selected_resource))
      |> stream(:resources, result.entries, reset: true)}
   end
 
@@ -88,6 +97,46 @@ defmodule RengaWeb.ResourceLive.Index do
   def handle_event("clear_stale", _params, socket) do
     filters = %{socket.assigns.filters | stale_only?: false, page: 1}
     {:noreply, push_patch(socket, to: workspace_path(filters, selected_id(socket)))}
+  end
+
+  def handle_event(
+        "update_lifecycle",
+        %{"lifecycle" => %{"lifecycle_state" => _lifecycle_state}},
+        %{assigns: %{selected_resource: nil}} = socket
+      ) do
+    {:noreply, socket}
+  end
+
+  def handle_event(
+        "update_lifecycle",
+        %{"lifecycle" => %{"lifecycle_state" => lifecycle_state}},
+        socket
+      ) do
+    resource = socket.assigns.selected_resource
+
+    case Inventory.update_resource_lifecycle(
+           socket.assigns.current_scope,
+           resource,
+           lifecycle_state
+         ) do
+      {:ok, _resource} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Resource lifecycle updated")
+         |> reload_workspace_resource(resource.id)}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Resource changed elsewhere; review the latest lifecycle and retry")
+         |> reload_workspace_resource(resource.id)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "You are not allowed to manage resource lifecycle")}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "Select a valid lifecycle state")}
+    end
   end
 
   @impl true
@@ -263,6 +312,9 @@ defmodule RengaWeb.ResourceLive.Index do
             :if={@selected_resource}
             resource={@selected_resource}
             close_path={workspace_path(@filters, nil)}
+            lifecycle_form={@lifecycle_form}
+            lifecycle_options={@lifecycle_edit_options}
+            can_manage_lifecycle?={@can_manage_lifecycle?}
           />
         </div>
 
@@ -298,6 +350,9 @@ defmodule RengaWeb.ResourceLive.Index do
 
   attr :resource, :map, required: true
   attr :close_path, :string, required: true
+  attr :lifecycle_form, :map, required: true
+  attr :lifecycle_options, :list, required: true
+  attr :can_manage_lifecycle?, :boolean, required: true
 
   defp resource_panel(assigns) do
     ~H"""
@@ -334,7 +389,10 @@ defmodule RengaWeb.ResourceLive.Index do
                   {@resource.display_name || @resource.name}
                 </h2>
                 <p class="mt-1 text-[10px] uppercase tracking-[0.1em] text-base-content/40">
-                  {@resource.kind} <span class="px-1">·</span> {@resource.lifecycle_state}
+                  {@resource.kind}
+                  <%= if !@can_manage_lifecycle? do %>
+                    <span class="px-1">·</span> {@resource.lifecycle_state}
+                  <% end %>
                 </p>
               </div>
             </div>
@@ -384,6 +442,53 @@ defmodule RengaWeb.ResourceLive.Index do
                 {format_time(@resource.last_observed_at)}
               </p>
             </div>
+          </div>
+
+          <div class="mt-4 flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-t border-base-content/10 pt-4">
+            <div class="min-w-48 flex-1">
+              <p class="text-[10px] font-semibold uppercase tracking-[0.1em] text-base-content/45">
+                Inventory lifecycle
+              </p>
+              <p
+                id="resource-panel-lifecycle-help"
+                class="mt-1 max-w-md text-[11px] leading-4 text-base-content/45"
+              >
+                Classifies this resource for planning and filters. It does not control the device or
+                reflect agent connectivity.
+              </p>
+            </div>
+            <.form
+              :if={@can_manage_lifecycle?}
+              for={@lifecycle_form}
+              id="resource-panel-lifecycle-form"
+              phx-submit="update_lifecycle"
+              class="flex w-72 shrink-0 items-start gap-2"
+            >
+              <div class="min-w-0 flex-1">
+                <.input
+                  field={@lifecycle_form[:lifecycle_state]}
+                  type="select"
+                  aria-label="Lifecycle state"
+                  aria-describedby="resource-panel-lifecycle-help"
+                  options={@lifecycle_options}
+                  class="h-9 w-full rounded-lg border border-base-content/15 bg-base-100 px-2.5 text-xs font-medium capitalize outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+                />
+              </div>
+              <button
+                id="resource-panel-lifecycle-save"
+                type="submit"
+                phx-disable-with="Saving…"
+                class="h-9 rounded-lg bg-orange-500 px-3 text-xs font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
+              >
+                Save
+              </button>
+            </.form>
+            <span
+              :if={!@can_manage_lifecycle?}
+              class="rounded-full border border-base-content/15 px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
+            >
+              {@resource.lifecycle_state}
+            </span>
           </div>
         </header>
 
@@ -538,6 +643,28 @@ defmodule RengaWeb.ResourceLive.Index do
 
   defp selected?(nil, _resource), do: false
   defp selected?(selected_resource, resource), do: selected_resource.id == resource.id
+
+  defp lifecycle_form(nil), do: nil
+
+  defp lifecycle_form(resource) do
+    to_form(%{"lifecycle_state" => resource.lifecycle_state}, as: :lifecycle)
+  end
+
+  defp reload_workspace_resource(socket, resource_id) do
+    selected_resource =
+      Inventory.get_operational_resource!(socket.assigns.current_scope, resource_id)
+
+    result = list_resources(socket.assigns.current_scope, socket.assigns.filters)
+
+    socket
+    |> assign(:selected_resource, selected_resource)
+    |> assign(:lifecycle_form, lifecycle_form(selected_resource))
+    |> assign(:resources_empty?, result.entries == [])
+    |> assign(:page, result.page)
+    |> assign(:has_next_page?, result.has_next?)
+    |> assign(:resource_count, result.total)
+    |> stream(:resources, result.entries, reset: true)
+  end
 
   defp parse_page(page) when is_binary(page) do
     case Integer.parse(page) do
