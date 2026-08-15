@@ -100,6 +100,10 @@ step "Activating the Nix development shell"
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
 
+step "Configuring the Git author identity"
+git config --global user.name "Darwin D Wu"
+git config --global user.email "darwin67@users.noreply.github.com"
+
 step "Initializing colocated Jujutsu repository"
 if ! jj root >/dev/null 2>&1; then
   jj git init --colocate "$repo_root"
