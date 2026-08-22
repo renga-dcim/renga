@@ -44,5 +44,6 @@ fi
 
 pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null
 "$repo_root/.agents/ensure-agent-target"
+"$repo_root/.agents/ensure-renga-agent"
 tailscale_enroll_or_recover
 printf '[resume] Nix development shell and PostgreSQL are ready.\n'

@@ -1,6 +1,4 @@
 if Mix.env() == :dev do
-  import Ecto.Query
-
   alias Renga.Accounts
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
@@ -13,6 +11,25 @@ if Mix.env() == :dev do
   email = "demo@renga.local"
   password = "renga-demo-password"
   now = Renga.Time.utc_now_ms()
+  agent_directory = Path.expand("../../dev/renga-agent", __DIR__)
+  intake_token_path = Path.join(agent_directory, "intake-key")
+
+  File.mkdir_p!(agent_directory)
+
+  intake_token =
+    case File.read(intake_token_path) do
+      {:ok, token} ->
+        String.trim(token)
+
+      {:error, :enoent} ->
+        token =
+          "renga_intake_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+        File.write!(intake_token_path, token <> "\n")
+        token
+    end
+
+  File.chmod!(intake_token_path, 0o600)
 
   {:ok, _seeded} =
     Repo.transaction(fn ->
@@ -74,13 +91,21 @@ if Mix.env() == :dev do
 
       {:ok, {_agent, _lease}} = Inventory.record_agent_check_in(scope, connected_source.id)
 
-      unless Repo.exists?(
-               from key in IntakeApiKey,
-                 where:
-                   key.organization_id == ^organization.id and key.name == "Orb demo collectors"
-             ) do
-        {:ok, {_key, _token}} =
-          Inventory.create_intake_api_key(scope, %{name: "Orb demo collectors"})
+      token_hash = :crypto.hash(:sha256, intake_token)
+
+      case Repo.get_by(IntakeApiKey,
+             organization_id: organization.id,
+             name: "Orb demo collectors"
+           ) do
+        nil ->
+          %IntakeApiKey{organization_id: organization.id}
+          |> IntakeApiKey.create_changeset(%{name: "Orb demo collectors"}, token_hash)
+          |> Repo.insert!()
+
+        key ->
+          key
+          |> Ecto.Changeset.change(status: "active", token_hash: token_hash)
+          |> Repo.update!()
       end
 
       seed_server = fn attrs ->
@@ -241,10 +266,26 @@ if Mix.env() == :dev do
       %{user: user, organization: organization}
     end)
 
+  agent_config_path = Path.join(agent_directory, "agent.toml")
+
+  File.write!(agent_config_path, """
+  renga_url = "http://127.0.0.1:4000"
+  allow_insecure_http = true
+  intake_api_key = "#{intake_token}"
+  inventory_interval_seconds = 60
+  checkin_interval_seconds = 10
+  config_refresh_interval_seconds = 60
+  request_timeout_seconds = 5
+  max_retry_attempts = 3
+  """)
+
+  File.chmod!(agent_config_path, 0o600)
+
   IO.puts("""
 
   Seeded Renga orb demo data.
     Login:    #{email}
     Password: #{password}
+    Agent:    configured in dev/renga-agent
   """)
 end
