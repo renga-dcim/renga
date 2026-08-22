@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+target="$repo_root/dev/agent-target"
+
+if git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  exit 0
+fi
+
+mkdir -p "$target"
+cat > "$target/README.md" <<'EOF'
+# Disposable agent target
+
+This local repository is intentionally ignored by the parent Renga checkout.
+Use it for coding-agent experiments; delete it whenever you want a clean target.
+Orb setup or resume will recreate it.
+EOF
+
+mkdir -p "$target/src"
+cat > "$target/src/greeting.txt" <<'EOF'
+Hello from the disposable agent target.
+EOF
+
+git -C "$target" init --quiet --initial-branch=main
+git -C "$target" add README.md src/greeting.txt
+git -C "$target" \
+  -c user.name="Renga Orb" \
+  -c user.email="orb@renga.invalid" \
+  commit --quiet --message="chore: initialize disposable target"
