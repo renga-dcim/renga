@@ -3,6 +3,7 @@ if Mix.env() == :dev do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
   alias Renga.Inventory
+  alias Renga.Inventory.Agent
   alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
@@ -80,31 +81,58 @@ if Mix.env() == :dev do
           end
       end
 
-      connected_source =
-        ensure_source.("host_agent", "orb-edge-collector", %{
-          "site" => "ashburn",
-          "environment" => "demo"
+      demo_source =
+        Repo.get_by(Source, organization_id: organization.id, name: "orb-edge-collector") ||
+          Repo.get_by(Source, organization_id: organization.id, name: "seeded-demo-inventory") ||
+          ensure_source.("manual", "seeded-demo-inventory", %{})
+
+      # Preserve the source ID so existing demo observations and claims retain their provenance.
+      demo_source =
+        demo_source
+        |> Source.changeset(%{
+          kind: "manual",
+          name: "seeded-demo-inventory",
+          metadata: %{
+            "description" => "Synthetic inventory created by the development seed",
+            "environment" => "demo"
+          }
         })
+        |> Repo.update!()
 
-      _poller_source =
-        ensure_source.("switch_poller", "core-network-poller", %{"site" => "ashburn"})
+      if agent = Repo.get_by(Agent, organization_id: organization.id, source_id: demo_source.id) do
+        Repo.delete!(agent)
+      end
 
-      {:ok, {_agent, _lease}} = Inventory.record_agent_check_in(scope, connected_source.id)
+      if poller =
+           Repo.get_by(Source, organization_id: organization.id, name: "core-network-poller") do
+        Repo.delete!(poller)
+      end
 
       token_hash = :crypto.hash(:sha256, intake_token)
 
-      case Repo.get_by(IntakeApiKey,
-             organization_id: organization.id,
-             name: "Orb demo collectors"
-           ) do
+      intake_key =
+        Repo.get_by(IntakeApiKey,
+          organization_id: organization.id,
+          name: "Local orb agent"
+        ) ||
+          Repo.get_by(IntakeApiKey,
+            organization_id: organization.id,
+            name: "Orb demo collectors"
+          )
+
+      case intake_key do
         nil ->
           %IntakeApiKey{organization_id: organization.id}
-          |> IntakeApiKey.create_changeset(%{name: "Orb demo collectors"}, token_hash)
+          |> IntakeApiKey.create_changeset(%{name: "Local orb agent"}, token_hash)
           |> Repo.insert!()
 
         key ->
           key
-          |> Ecto.Changeset.change(status: "active", token_hash: token_hash)
+          |> Ecto.Changeset.change(
+            name: "Local orb agent",
+            status: "active",
+            token_hash: token_hash
+          )
           |> Repo.update!()
       end
 
@@ -162,7 +190,7 @@ if Mix.env() == :dev do
           observed_at = DateTime.add(now, -attrs.observed_minutes, :minute)
 
           {:ok, observation} =
-            Inventory.create_observation(scope, connected_source.id, %{
+            Inventory.create_observation(scope, demo_source.id, %{
               observation_id: "orb-seed-#{attrs.name}",
               observed_at: observed_at,
               payload: %{"hostname" => attrs.name, "serial_number" => attrs.serial}
@@ -171,7 +199,7 @@ if Mix.env() == :dev do
           {:ok, _claim} =
             Inventory.create_resource_identifier_claim(
               scope,
-              connected_source.id,
+              demo_source.id,
               observation.id,
               %{
                 resource_id: resource.id,
@@ -194,7 +222,7 @@ if Mix.env() == :dev do
             Inventory.create_change_event(scope, %{
               kind: "discovered",
               resource_id: resource.id,
-              source_id: connected_source.id,
+              source_id: demo_source.id,
               observation_id: observation.id,
               occurred_at: observed_at
             })
