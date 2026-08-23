@@ -10,7 +10,7 @@ if Mix.env() == :dev do
   alias Renga.Repo
 
   email = "demo@renga.local"
-  password = "renga-demo-password"
+  password = "supersecure!"
   now = Renga.Time.utc_now_ms()
   agent_directory = Path.expand("../../dev/renga-agent", __DIR__)
   intake_token_path = Path.join(agent_directory, "intake-key")
