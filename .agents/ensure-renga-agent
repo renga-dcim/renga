@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+service_name="renga-agent"
+service_unit="amp-svc-${service_name}.service"
+agent_command="exec '$repo_root/target/debug/renga-agent' --config '$repo_root/dev/renga-agent/agent.toml' --state-directory '$repo_root/dev/renga-agent/state'"
+
+if [ ! -x "$repo_root/target/debug/renga-agent" ] || [ ! -f "$repo_root/dev/renga-agent/agent.toml" ]; then
+  printf 'Renga agent binary or configuration is missing; build and seed before starting it.\n' >&2
+  exit 1
+fi
+
+if amp orb service list | grep -q "^${service_unit}[[:space:]]"; then
+  amp orb service restart "$service_name" >/dev/null
+else
+  amp orb service start "$service_name" --cwd "$repo_root" --command "$agent_command" >/dev/null
+fi
+
+for _attempt in {1..10}; do
+  if systemctl is-active --quiet "$service_unit"; then
+    exit 0
+  fi
+
+  sleep 0.5
+done
+
+amp orb service status "$service_name" >&2 || true
+printf 'Renga agent service did not become active.\n' >&2
+exit 1

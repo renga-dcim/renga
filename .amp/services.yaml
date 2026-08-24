@@ -4,7 +4,9 @@ services:
     command: >-
       env -i HOME="$HOME" USER="$USER" LANG="${LANG:-C.UTF-8}"
       PATH="/nix/var/nix/profiles/default/bin:/usr/bin:/bin" PORT="$PORT"
-      PUBLIC_URL="$PUBLIC_URL" nix develop --command mix phx.server
+      PUBLIC_URL="$PUBLIC_URL" DATABASE_HOST="127.0.0.1" DATABASE_PORT="5435"
+      DATABASE_USER="postgres" DATABASE_NAME="renga_dev"
+      nix develop --command mix phx.server
     port: 4000
     portal:
       title: Renga
