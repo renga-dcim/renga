@@ -10,7 +10,7 @@ Implements [[file:README.adoc][RFD 1: Renga DCIM architecture]].
   while retaining per-installation provenance.
 - [ ] Add first-class DCIM location, rack, hardware component, cabling, and power
   projections.
-- [ ] Deliver first-class IP address management through a dedicated RFD.
+- [ ] Deliver IPAM under [[file:../0004/README.adoc][RFD 4]].
 - [ ] Add durable jobs and explicit agent capabilities with polling as the
   correctness path.
 - [ ] Add optional Phoenix Channels control acceleration.

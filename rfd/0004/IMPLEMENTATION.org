@@ -1,0 +1,28 @@
+#+TITLE: RFD 0004 implementation checklist
+
+Implements [[file:README.adoc][RFD 4: IP address management]].
+
+- [ ] Add organization-scoped VRF resource envelopes and typed projections,
+  including one default VRF per organization.
+- [ ] Replace `Prefix.vrf` text with a tenant-safe VRF association and preserve
+  existing prefix data during migration.
+- [ ] Enforce exact prefix uniqueness per VRF while supporting contained prefix
+  hierarchy through PostgreSQL CIDR operators and the GiST index.
+- [ ] Add authenticated, organization-scoped VRF and prefix LiveViews in the
+  existing `live_session :require_authenticated_user` router block.
+- [ ] Calculate prefix hierarchy and utilization without enumerating address
+  space or double-counting child prefixes.
+- [ ] Add managed IP-address resource envelopes and typed projections normalized
+  to IPv4 or IPv6 host masks.
+- [ ] Add optional and multi-interface managed assignments with tenant-safe
+  constraints and intentional shared-address roles.
+- [ ] Correlate active observed assignments to managed addresses only when VRF
+  context is known, defaulting rather than guessing when it is absent.
+- [ ] Surface unmanaged, outside-prefix, stale, duplicate, prefix-length, and
+  wrong-VRF findings with source evidence.
+- [ ] Resolve findings as observed state converges without deleting immutable
+  observation or change history.
+- [ ] Add context, constraint, query, reconciliation, authorization, concurrency,
+  and LiveView tests for IPv4 and IPv6 behavior.
+- [ ] Run `make check-rfds`, focused IPAM tests, and `mix precommit` before marking
+  the proposal implemented.

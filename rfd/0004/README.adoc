@@ -1,0 +1,198 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: ipam, inventory, network, software
+
+= RFD 4 IP address management
+
+== Goal
+
+Add organization-scoped IP address management that places managed network intent
+next to Renga's observed interface assignments. Operators should be able to
+model routing domains and prefixes, reserve or assign addresses, understand
+utilization, and see where observed reality disagrees with managed intent.
+
+The first release is inventory-assisted IPAM, not a DHCP server or a fully
+automatic allocator. Observation ingestion must not silently rewrite managed
+network intent.
+
+== Existing foundation
+
+Renga already stores observed interface assignments as PostgreSQL `inet` values,
+with immutable observations, source evidence, presence history, and stale
+handling. A minimal `Prefix` projection stores PostgreSQL `cidr`, and its GiST
+index supports containment and overlap queries. Resource kinds already reserve
+`prefix`, `vrf`, and `vlan` domain concepts.
+
+The current prefix's free-text `vrf` field is not a sufficient routing-domain
+identity. Observed `Address` rows are assignments to a specific resource and
+interface, so they cannot also represent an unassigned reservation or one
+managed address intentionally attached to several interfaces.
+
+== Domain boundary
+
+Managed intent and observed evidence remain separate:
+
+* `Vrf` defines the routing domain in which address uniqueness has meaning.
+* `Prefix` defines managed CIDR space and status inside a VRF.
+* `IpAddress` defines a managed host address, reservation, role, and lifecycle.
+* `IpAddressAssignment` associates a managed address with zero or more canonical
+  interfaces.
+* Existing `Address` and `AddressEvidence` records remain observed interface
+  assignments reported by collectors.
+* Correlation and findings compare managed addresses with active observed
+  assignments without erasing either side.
+
+VRFs, prefixes, and managed IP addresses use resource envelopes because they are
+independently addressable inventory objects that need desired state, lifecycle,
+revisions, and change history. Typed projections retain their constrained,
+queryable fields.
+
+== VRFs
+
+Every organization receives a default VRF. Prefixes and managed addresses have a
+non-null organization-scoped `vrf_id`; uniqueness is evaluated inside that VRF.
+This permits the same RFC 1918 prefix or host address in unrelated routing
+domains without treating it as a conflict.
+
+A VRF initially has a name, optional route distinguisher, description, status,
+and metadata. Names and non-null route distinguishers are unique within an
+organization. Import targets and route targets are deferred until a collector or
+operator workflow needs them.
+
+The existing free-text prefix VRF is migrated to first-class records, with blank
+or `default` values mapped to the organization's default VRF.
+
+== Prefixes
+
+A prefix has a canonical CIDR, VRF, status, description, optional role, and
+resource envelope. Exact duplicate CIDRs are rejected within a VRF. Contained
+prefixes are valid hierarchy rather than overlap errors.
+
+Parentage is derived using PostgreSQL containment and longest-prefix matching;
+it is not stored as an independently mutable parent ID. This avoids a second
+source of truth when prefixes are moved or resized. The GiST index remains the
+primary lookup path.
+
+Initial statuses are `active`, `reserved`, and `deprecated`. Roles are bounded
+product vocabulary introduced only for immediate workflows, rather than an
+unvalidated metadata convention. Site, VLAN, tenant, and aggregate relationships
+may be added independently without making them prerequisites for prefix use.
+
+== Managed addresses and assignments
+
+`IpAddress.address` uses PostgreSQL `inet` normalized to a host mask (`/32` for
+IPv4 and `/128` for IPv6). The selected containing prefix is derived by
+longest-prefix match in the same VRF rather than trusted from user input.
+
+An address initially carries status, role, optional DNS name, description, and
+metadata. Status distinguishes at least active, reserved, DHCP-managed, and
+deprecated records. Role distinguishes ordinary addresses from intentional
+shared identities such as VIP, anycast, or VRRP where duplicate attachment is
+expected.
+
+Assignments are separate rows so an address can be reserved with no interface,
+normally assigned once, or intentionally assigned to several interfaces. The
+database prevents duplicate copies of the same address-to-interface assignment.
+The application reports, rather than rejects, unexpected duplicate observations
+so conflicting real-world state remains visible.
+
+== Observation correlation
+
+Observed addresses are matched by normalized host address and VRF. Prefix length
+from the observation remains evidence and is compared with the most-specific
+managed prefix. A collector observation may establish VRF context only when the
+source explicitly reports a trusted interface-to-VRF relationship. Otherwise it
+is correlated only with the default VRF; Renga must not guess a non-default VRF
+from address text alone.
+
+The reconciliation layer produces queryable findings for:
+
+* an observed address with no managed address record;
+* an observed address outside every managed prefix;
+* a managed assignment not currently observed;
+* an unexpected duplicate active address across interfaces or resources;
+* an observed prefix length that disagrees with managed containment; and
+* a managed address observed in the wrong VRF when explicit VRF evidence exists.
+
+Intentional shared-address roles suppress only the corresponding duplicate
+finding. They do not suppress stale, wrong-VRF, or outside-prefix findings.
+Findings retain involved records and source evidence and resolve when subsequent
+state agrees; immutable observations and change events preserve history.
+
+== Utilization
+
+Prefix utilization is calculated from managed address records and active
+observations, with separate counts for assigned, reserved, DHCP-managed,
+observed-unmanaged, and available space. Child prefixes are reported separately
+so their space is not misleadingly presented as individually available in the
+parent.
+
+Neither IPv4 nor IPv6 utilization enumerates every possible address. Queries use
+counts and address arithmetic; IPv6 capacities may be displayed as counts or
+qualitative occupancy where a percentage would be meaningless. Network,
+broadcast, and other non-assignable address policy is explicit and family-aware.
+
+== User interaction
+
+The first browser surface provides VRF selection, a hierarchical prefix list,
+prefix detail and utilization, managed-address search, reservations and
+assignments, and observed conflict findings.
+
+Routes belong inside the existing `live_session
+:require_authenticated_user` block and `[:browser,
+:require_authenticated_user]` pipeline because IPAM contains organization
+inventory and every view requires login. The LiveViews use `current_scope` for
+all context calls and derive the user from `current_scope.user`.
+
+Initial routes are:
+
+* `/ipam`
+* `/ipam/vrfs`
+* `/ipam/prefixes`
+* `/ipam/prefixes/:id`
+* `/ipam/addresses`
+
+Mutations require an active selected organization and the same owner/admin
+policy used for other managed inventory changes. Read access follows existing
+organization membership policy. Stable DOM IDs and outcome-focused LiveView
+tests cover key lists, forms, filters, findings, and empty states.
+
+== Concurrency and authorization
+
+Context functions accept the current organization scope first and apply tenant
+filters in every query. Cross-organization VRFs, prefixes, addresses, interfaces,
+and assignments cannot be linked, with composite foreign keys enforcing the
+boundary where practical.
+
+Reservation and assignment mutations run transactionally. A future "next
+available" allocator must serialize competing allocation attempts and prove it
+cannot return the same address twice before it is exposed as a public API. That
+allocator is not required for the first UI milestone.
+
+== Initial exclusions
+
+The first implementation does not include DHCP or DNS writes, RIR workflows,
+NAT modeling, route-policy management, automatic renumbering, bulk automatic
+allocation, public allocation APIs, or bidirectional NetBox synchronization.
+CSV import/export and read-only external IPAM sync can follow once the canonical
+model and conflict semantics are established.
+
+VLANs are adjacent to IPAM but not required to deliver VRFs, prefixes, managed
+addresses, and observation findings. A VLAN RFD should define VLAN groups,
+site/location scope, VID uniqueness, and switch evidence before VLANs become a
+prefix prerequisite.
+
+== Rollout
+
+. Add first-class VRFs and migrate existing prefixes to a default VRF.
+. Deliver managed prefix CRUD, hierarchy, overlap queries, and utilization from
+  existing observed assignments.
+. Add managed IP addresses and explicit assignments.
+. Add durable correlation findings and conflict resolution behavior.
+. Add VLAN relationships, imports, and integrations through follow-up RFDs.
+
+== Implementation
+
+Progress against this proposal is tracked in the
+link:IMPLEMENTATION.org[RFD 4 implementation checklist].

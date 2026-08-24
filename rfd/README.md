@@ -9,6 +9,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [1: Renga DCIM architecture](0001/README.adoc) | Product principles, inventory model, collection, reconciliation, and control-plane direction |
 | [2: DCIM host agent MVP](0002/README.adoc) | The first complete host collection, reconciliation, and inventory UI loop |
 | [3: Organization intake keys](0003/README.adoc) | Shared organization intake credentials and automatic collector registration |
+| [4: IP address management](0004/README.adoc) | VRFs, managed prefixes and addresses, observed assignments, utilization, and conflict detection |
 
 ## Source format
 
