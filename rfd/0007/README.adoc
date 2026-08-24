@@ -71,16 +71,18 @@ groups do not collide with resource-level uniqueness.
 
 == Interface membership
 
-`InterfaceVlanAssignment` relates a canonical interface to a canonical VLAN with
-tagging mode `tagged` or `untagged`. An interface can have many tagged VLANs and
-at most one untagged VLAN within the effective Layer 2 context. Duplicate
-interface/VLAN membership is rejected. Interface operational mode such as
-access, trunk, or tagged-all is a typed desired field and is validated against
-explicit memberships.
+`DesiredInterfaceVlanAssignment` records intent and
+`CurrentInterfaceVlanMembership` records the reconciled projection. Each relates
+a canonical interface to a canonical VLAN with tagging mode `tagged` or
+`untagged`. Within each layer, an interface can have many tagged VLANs and at
+most one untagged VLAN in the effective Layer 2 context. Duplicate
+interface/VLAN membership is rejected within, not across, layers, so intended
+tagging and currently observed tagging can disagree and produce drift.
+Interface operational mode such as access, trunk, or tagged-all likewise has
+separate desired and current values with layer-local validation.
 
-Assignments represent canonical intent or reconciled current state according to
-their ownership. Per-source `InterfaceVlanEvidence` links source, observation,
-interface, VLAN source-local key, tagging mode, observed time, and metadata.
+Per-source `InterfaceVlanEvidence` links source, observation, interface, VLAN
+source-local key, tagging mode, observed time, and metadata.
 Source-local VLAN IDs are resolved only inside the source's mapped group/scope.
 An unresolved or ambiguous scope produces a finding instead of attaching the
 VID to an arbitrary VLAN.
@@ -110,12 +112,17 @@ updates the current projection while immutable evidence preserves history.
 
 == Physical cables
 
-`Cable` is operator-confirmed or imported desired physical state, distinct from
-observed adjacency. The first implementation connects two canonical interfaces
-and stores cable type, status, optional label, color, length and unit,
-description, tenant metadata, and change history. Endpoints must be distinct,
-organization-compatible, physically connectable, and not already terminated by
-another active cable.
+`CablePlan` records desired endpoint connectivity. `CableAssertion` attributes
+operator confirmation or imported claims. Reconciliation selects the current
+`Cable` projection without discarding assertions or a differing plan. The first
+implementation connects two canonical interfaces and stores cable type, status,
+optional label, color, length and unit, description, tenant metadata, and change
+history. Endpoints must be distinct, organization-compatible, and physically
+connectable.
+
+Only current `Cable` rows enforce one active physical termination per endpoint.
+A cable plan can disagree with current cabling and produces a feasibility or
+drift finding; it does not reserve a port or silently replace the current cable.
 
 Hardware port compatibility comes from RFD 6 when available. Unknown connector
 types may be recorded but require explicit confirmation. Virtual interfaces,
@@ -126,8 +133,9 @@ circuits, and traced paths. The first release does not pretend a direct cable is
 a full path through unmodeled infrastructure.
 
 LLDP/CDP evidence never creates or deletes a cable automatically. It can propose
-a candidate, confirm consistency, or open a drift finding. Cable removal remains
-an authorized desired-state mutation.
+a candidate assertion, confirm consistency, or open a drift finding. Creating or
+removing current cabling requires an authorized operator assertion or trusted
+import contract; desired plan mutation remains separate.
 
 == Prefix and routing relationships
 

@@ -81,6 +81,20 @@ The normal processing flow is:
 Manual corrections use explicit field overrides so observed evidence is retained.
 Normal operator intent belongs in resource desired state rather than overrides.
 
+== Collection contracts and freshness
+
+Every source defines its expected sync interval, stale-after duration, and
+whether each collection operation is a complete snapshot or a partial
+observation. Snapshot completeness may be declared per payload section when a
+collector refreshes different domains independently.
+
+Age can make source evidence stale regardless of snapshot mode. Omission can
+withdraw or stale previously current evidence only when the source contract and
+accepted observation declare that section complete. An omitted object in a
+partial, paginated, failed, or capability-limited collection remains unknown,
+not absent. Reconciliation retains the observation and source policy that caused
+each freshness transition.
+
 == Agent and collector direction
 
 The host agent is Rust, daemon-first, and maintained in this repository while
@@ -101,10 +115,22 @@ Persisted jobs are the durable control primitive. Agents poll, lease work, and
 append job events. A persistent socket may notify connected agents and stream
 output, but polling remains the fallback and recovery path.
 
+Jobs are stored before delivery, expire if not leased or completed in time, and
+survive server restarts, agent restarts, and disconnects. Every transition is an
+append-only job event. Agents lease work before execution and reject jobs outside
+both their advertised capabilities and locally enabled policy. Server-side
+authorization independently limits which users may target which resources and
+capabilities; neither side's check substitutes for the other.
+
 Live terminal, operational query, and VM placement features are deliberately
 later slices. They require capability advertisement, server and agent policy,
 bounded execution, cancellation, complete audit trails, and explicit operator
 authorization.
+
+Live terminal access is disabled by default and requires strong authentication,
+RBAC, agent-side allow/deny policy, short per-session leases, target-level access
+rules, and session recording or command logging. Operational queries are typed,
+read-only collector operations and never an alias for arbitrary shell execution.
 
 == Domain boundaries
 

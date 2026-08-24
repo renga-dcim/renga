@@ -38,6 +38,22 @@ Source names use a stable server-controlled scheme rather than trusting a
 reported hostname. Source, agent, lease, observation, sync-run, and evidence
 models retain their separate provenance and operational roles.
 
+== Migration history
+
+The rollout intentionally used two phases. Phase 1 made organization intake keys
+the default while the two agent intake endpoints temporarily accepted legacy
+per-source credentials. Existing installations switching credentials were
+resolved by organization and installation UUID so their Agent, Source,
+observations, and evidence retained provenance. Usage visibility identified
+remaining legacy callers.
+
+Phase 2 removed legacy source-token authentication, source token hashes,
+collector enrollment reset, configured installation IDs, and obsolete UI after
+legacy usage reached zero. Because only hashes had been stored, old plaintext
+credentials were not convertible; operators generated and deployed new
+organization keys. This compatibility window is historical behavior, not an
+authorization mode that may be re-enabled implicitly.
+
 == Agent identity
 
 The agent generates a UUID on first startup and persists it in a strictly

@@ -39,8 +39,8 @@ The initial typed projections are:
 * `Location`: a recursively nested area inside exactly one site, such as a
   building, floor, room, row, cage, or zone;
 * `Rack`: a physical rack in exactly one site and optionally one location;
-* `ResourcePlacement`: the desired or confirmed placement of a physical resource;
-  and
+* `DesiredPlacement`: operator intent for a physical resource;
+* `CurrentPlacement`: the reconciled current placement projection; and
 * `PlacementEvidence`: a source and observation assertion about placement.
 
 Site groups, sites, locations, and racks receive resource envelopes because they
@@ -59,6 +59,11 @@ Recursive site-group and location writes reject self-parenting and cycles. Reads
 derive ancestry and descendants with recursive queries rather than trusting a
 client-supplied path. Cached depth or path values, if introduced for performance,
 are rebuildable projections rather than authoritative relationships.
+
+Hierarchy mutations serialize on an organization-and-hierarchy lock before
+checking ancestry and writing the parent. This prevents concurrent inverse-parent
+updates from each observing an acyclic snapshot and committing a cycle. Tests
+must cover that race for site groups and locations.
 
 == Sites, locations, and racks
 
@@ -83,17 +88,22 @@ installed in a rack. Rack installation records starting unit, positive rack-unit
 height, and face: front, rear, or full-depth. Zero-U and freestanding equipment
 may be assigned to a site/location/rack without consuming rack-unit occupancy.
 
-Canonical placement is desired or operator-confirmed state. Its site and
-location are derived or validated against its rack so three independently
-editable fields cannot disagree. A resource has at most one current canonical
-placement.
+Desired and current placement are separate. A resource may have at most one of
+each, allowing confirmed placement in rack A and an intended move to rack B to
+coexist. Desired placement is ordinary operator intent. Operator confirmation
+and imported or discovered claims are attributed assertions; deterministic
+reconciliation selects `CurrentPlacement` while retaining disagreement and
+provenance. Site and location are derived or validated against the selected rack
+within each layer so three independently editable fields cannot disagree.
 
 Rack occupancy uses subordinate face-specific rows with PostgreSQL integer
 ranges. A front- or rear-mounted device consumes one face; a full-depth device
 consumes both. An exclusion constraint rejects overlapping unit ranges on the
-same rack and face. Placement writes lock the rack, validate bounds, and update
-placement plus occupancy atomically. Resizing or moving equipment cannot leave
-partial occupancy behind.
+same rack and face. Only `CurrentPlacement` drives physical occupancy. A desired
+placement is checked for feasibility and can produce a blocked-move finding, but
+does not reserve units or displace current equipment. Current placement writes
+lock the rack, validate bounds, and update placement plus occupancy atomically.
+Resizing or moving equipment cannot leave partial occupancy behind.
 
 Hardware height from an assigned device type is the default, not immutable
 truth. An explicit placement height supports unknown or exceptional equipment,
@@ -115,8 +125,10 @@ resource reported in two places at the same effective time.
 Agent hostname, IP address, or network adjacency alone is not placement proof.
 Inference policies may propose a site or location and must record their inputs
 and confidence. They do not replace operator-confirmed placement automatically.
-Source omission marks that source's placement assertion stale; it does not clear
-desired or confirmed placement.
+Age can mark evidence stale. Source omission does so only when the source policy
+and accepted observation declare placement a complete snapshot; omission from a
+partial or capability-limited observation has no absence meaning. Neither case
+clears desired placement or another source's current evidence.
 
 == User interaction
 

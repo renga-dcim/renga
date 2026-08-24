@@ -8,16 +8,18 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
   namespace uniqueness, group-local uniqueness, and safe range changes.
 - [ ] Add optional typed site/location group scope after RFD 5, without generic
   cross-domain foreign keys.
-- [ ] Add canonical tagged/untagged interface membership, one effective untagged
-  VLAN rule, interface mode validation, and tenant-safe constraints.
+- [ ] Add separate desired and reconciled current tagged/untagged interface
+  membership, layer-local effective untagged VLAN rules, interface mode
+  validation, and tenant-safe constraints.
 - [ ] Add source-local VLAN mapping and observation-linked membership evidence
   with complete-versus-partial snapshot and stale semantics.
 - [ ] Extend logical interface relationship evidence without conflating host
   stacking, Layer 2 adjacency, and physical cabling.
 - [ ] Add LLDP/CDP evidence, stable remote endpoint matching, expiry, reciprocal
   confidence, unresolved endpoints, canonical adjacency, and findings.
-- [ ] Add direct physical cables with endpoint compatibility, single active
-  termination, desired-state authorization, and change history.
+- [ ] Add separate cable plans, attributed assertions, and reconciled current
+  direct cables with endpoint compatibility, current-only single active
+  termination, authorization, and change history.
 - [ ] Ensure neighbor evidence can propose or validate but never automatically
   create, delete, or move a cable.
 - [ ] Add optional tenant-safe prefix/VLAN relationships without making VLANs a

@@ -10,14 +10,16 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
   resources with ambiguity findings.
 - [ ] Materialize expected components separately from observations and support
   confirmed per-asset exceptions without mutating shared catalog types.
-- [ ] Add module bays, compatibility validation, one current module per bay,
-  cycle prevention, and transactional install/remove history.
-- [ ] Add nested inventory-only parts with tenant and cycle constraints and an
-  explicit path for promoting topology-bearing components.
+- [ ] Add module bays, compatibility validation, separate desired and current
+  module assignment per bay, concurrency-safe cycle prevention, and
+  transactional install/remove history.
+- [ ] Add nested inventory-only parts with tenant and concurrency-safe cycle
+  constraints and an explicit path for promoting topology-bearing components.
 - [ ] Promote high-value shape-open agent components into typed source evidence
   while preserving unknown kinds in immutable observations.
 - [ ] Reconcile expected and observed components into canonical projections and
-  missing, unexpected, ambiguous, identity, compatibility, and drift findings.
+  complete-snapshot-aware missing, unexpected, ambiguous, identity,
+  compatibility, and drift findings.
 - [ ] Link interface templates and NIC/port evidence to the existing canonical
   interface model rather than creating a parallel network endpoint model.
 - [ ] Add authenticated organization-scoped catalog, device hardware, module,

@@ -74,9 +74,10 @@ lifecycle, ownership, or reconciliation; a line card or replaceable module may
 receive a resource envelope while a CPU core does not.
 
 A module bay belongs to one device or module and accepts compatible module types.
-One current module may occupy a bay. Installation and removal are transactional,
-retain history through events and evidence, and reject recursive module
-containment. Disabled or incompatible bays cannot accept desired installations.
+Desired bay assignment and reconciled current installation remain separate; one
+of each may exist per bay. Current installation and removal are transactional
+and retain history through events and evidence. Disabled or incompatible bays
+cannot accept desired assignments or current installations.
 
 `InventoryItem` represents serialized or tracked physical parts that are useful
 for asset inventory but are not graph endpoints, such as DIMMs, CPUs, disks,
@@ -84,6 +85,11 @@ fans, and miscellaneous FRUs. Inventory items may nest for assembly structure
 but reject cycles. When a part becomes topology-bearing or independently
 managed, it is promoted through an explicit typed relationship rather than
 overloading inventory-item metadata.
+
+Module and inventory-item hierarchy mutations serialize on an owning-resource
+or organization-and-hierarchy lock before ancestry validation and the parent
+write. This closes concurrent inverse-parent races that snapshot-only cycle
+checks cannot prevent.
 
 == Expectations and evidence
 
@@ -102,8 +108,10 @@ Reconciliation matches observed components using stable serial or provider IDs,
 then slot/path plus part number, then weaker normalized attributes. It records
 missing expected, unexpected observed, ambiguous match, conflicting identity,
 incompatible module, and specification-drift findings. Source omission makes
-that source's component evidence stale; it does not immediately delete the
-canonical component or expected structure.
+that source's component evidence stale only when the source policy and accepted
+observation declare the component section a complete snapshot. Omission from a
+partial, paginated, failed, or capability-limited collection has no absence
+meaning and never deletes the canonical component or expected structure.
 
 == Interface ownership
 

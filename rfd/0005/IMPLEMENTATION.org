@@ -8,17 +8,19 @@ Implements [[file:README.adoc][RFD 5: Physical containment]].
   and reject recursive hierarchy cycles.
 - [ ] Add rack geometry, bounded dimensions, unit convention, and safe resize
   validation.
-- [ ] Add one canonical placement per physical resource with site/location/rack
-  consistency and support for unplaced, freestanding, and zero-U equipment.
+- [ ] Add separate desired and reconciled current placement per physical
+  resource with site/location/rack consistency and support for unplaced,
+  freestanding, and zero-U equipment.
 - [ ] Add face-specific PostgreSQL range occupancy with overlap exclusion and
-  transactional placement, move, resize, and removal operations.
+  transactional current placement, move, resize, and removal operations; desired
+  moves produce feasibility findings without reserving occupancy.
 - [ ] Add observation-linked placement evidence, source mapping, confidence,
-  staleness, and ambiguity/conflict findings without overwriting confirmed
-  placement.
+  complete-snapshot-aware staleness, and ambiguity/conflict findings without
+  overwriting desired placement.
 - [ ] Add authenticated organization-scoped site, location, rack elevation,
   unplaced-resource, and placement-finding LiveViews in the existing
   `live_session :require_authenticated_user` router block.
-- [ ] Add tenant, cycle, occupancy concurrency, geometry, evidence,
-  reconciliation, authorization, and LiveView tests.
+- [ ] Add tenant, inverse-parent cycle concurrency, occupancy concurrency,
+  geometry, evidence, reconciliation, authorization, and LiveView tests.
 - [ ] Run `make check-rfds`, focused DCIM tests, and `mix precommit` before marking
   the proposal implemented.

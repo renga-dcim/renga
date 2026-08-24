@@ -43,6 +43,12 @@ addresses, and topology relationships are canonical and source-neutral while
 retaining per-source evidence. PostgreSQL `macaddr`, `inet`, and `cidr` types
 preserve queryable network semantics.
 
+Observation timestamps use millisecond precision. `inserted_at` is generated
+from and must equal the millisecond encoded in the server-generated UUIDv7
+primary key; `observed_at` remains the source-reported event time. Observations
+have no `updated_at`, and processing never mutates these identity or timestamp
+facts.
+
 Agent registration, source provenance, lease connectivity, resource lifecycle,
 and inventory freshness are separate concepts. The initial manually issued
 collector credential was only a bootstrap path and was replaced by RFD 3.
