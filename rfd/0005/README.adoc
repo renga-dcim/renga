@@ -80,6 +80,10 @@ A rack has a name, status, facility ID, height in rack units, width, starting
 unit convention, optional outer dimensions, and metadata. Rack height must be
 positive. Width and dimension units use bounded choices. Changing height or
 unit convention cannot strand existing occupancy outside the resulting rack.
+Geometry and unit-convention mutations acquire the same rack lock used by
+current-placement writes, then revalidate every occupancy range before updating
+in the same transaction. This prevents a concurrent shrink and placement from
+committing out-of-bounds occupancy.
 
 == Placement and occupancy
 

@@ -5,7 +5,8 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 - [ ] Add resource envelopes and typed projections for VLAN groups and VLANs,
   including global operation without RFD 5 placement data.
 - [ ] Add non-overlapping valid VID ranges, bounded VLAN IDs, null-safe global
-  namespace uniqueness, group-local uniqueness, and safe range changes.
+  namespace uniqueness, group-local uniqueness, and transactionally safe range
+  changes under a shared group-level lock or equivalent deferred invariant.
 - [ ] Add optional typed site/location group scope after RFD 5, without generic
   cross-domain foreign keys.
 - [ ] Add separate desired and reconciled current tagged/untagged interface
@@ -27,7 +28,7 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 - [ ] Add authenticated organization-scoped VLAN, topology, cable, and finding
   LiveViews in the existing `live_session :require_authenticated_user` router
   block.
-- [ ] Add tenant, namespace, range, membership concurrency, evidence, matching,
-  cable, authorization, and LiveView tests.
+- [ ] Add tenant, namespace, VLAN/range race, membership concurrency, evidence,
+  matching, cable, authorization, and LiveView tests.
 - [ ] Run `make check-rfds`, focused topology tests, and `mix precommit` before
   marking the proposal implemented.

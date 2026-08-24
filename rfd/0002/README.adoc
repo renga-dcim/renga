@@ -53,6 +53,22 @@ Agent registration, source provenance, lease connectivity, resource lifecycle,
 and inventory freshness are separate concepts. The initial manually issued
 collector credential was only a bootstrap path and was replaced by RFD 3.
 
+== Delivery history
+
+The rollout introduced agent-generated, persisted installation UUIDs before the
+server required them on every machine request. Compatibility parsing remained
+only until capable agents were deployed, preventing strict validation from
+rejecting the previous agent population during the transition.
+
+The inventory model rebuild occurred before production compatibility was
+required. Development and test databases were reset, and the superseded schema
+was replaced directly rather than carrying compatibility migrations. This is
+historical rollout context, not permission to reset a deployed environment.
+
+The completed MVP delivers bounded in-memory transport retry, not a durable
+local observation queue. RFD 1 retains the queue as explicit follow-up work so a
+long outage exhausting retries is not mistaken for lossless delivery.
+
 == Ingestion and reconciliation
 
 The machine API accepts agent check-ins and one-host observations. It validates

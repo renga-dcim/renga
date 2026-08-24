@@ -56,7 +56,10 @@ and check constraints are preferred over a generic foreign key.
 A group has a name, slug, description, status, and one or more non-overlapping
 valid VID ranges. PostgreSQL multirange or validated range rows represent
 allocatable space without enumerating every VID. Range changes cannot strand an
-existing VLAN outside the group's allowed space.
+existing VLAN outside the group's allowed space. VLAN creation/update and range
+mutations acquire the same group-level lock, validate ranges and existing VLANs,
+and write in one transaction. An equivalent deferred database invariant is
+acceptable if it provides the same concurrency guarantee.
 
 `Vlan` has a group, VID, name, status, optional functional role, description,
 and metadata. VID is bounded to ordinary IEEE 802.1Q values; reserved values are

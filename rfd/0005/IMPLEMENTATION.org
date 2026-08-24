@@ -6,8 +6,8 @@ Implements [[file:README.adoc][RFD 5: Physical containment]].
   nested locations, and racks.
 - [ ] Enforce organization and same-site containment with composite foreign keys
   and reject recursive hierarchy cycles.
-- [ ] Add rack geometry, bounded dimensions, unit convention, and safe resize
-  validation.
+- [ ] Add rack geometry, bounded dimensions, unit convention, and transactional
+  safe-resize validation under the same lock as current placement.
 - [ ] Add separate desired and reconciled current placement per physical
   resource with site/location/rack consistency and support for unplaced,
   freestanding, and zero-U equipment.
@@ -20,7 +20,7 @@ Implements [[file:README.adoc][RFD 5: Physical containment]].
 - [ ] Add authenticated organization-scoped site, location, rack elevation,
   unplaced-resource, and placement-finding LiveViews in the existing
   `live_session :require_authenticated_user` router block.
-- [ ] Add tenant, inverse-parent cycle concurrency, occupancy concurrency,
-  geometry, evidence, reconciliation, authorization, and LiveView tests.
+- [ ] Add tenant, inverse-parent cycle concurrency, occupancy and geometry race,
+  evidence, reconciliation, authorization, and LiveView tests.
 - [ ] Run `make check-rfds`, focused DCIM tests, and `mix precommit` before marking
   the proposal implemented.

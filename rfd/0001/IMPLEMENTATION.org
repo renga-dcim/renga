@@ -20,5 +20,10 @@ Implements [[file:README.adoc][RFD 1: Renga DCIM architecture]].
   correctness path.
 - [ ] Add optional Phoenix Channels control acceleration.
 - [ ] Add read-only switch and virtualization provider collectors.
+- [ ] Add a bounded on-disk observation queue that survives agent restarts and
+  reports queue health without unbounded disk growth.
+- [ ] Preserve distinct latest-contact, accepted-inventory,
+  successfully-reconciled-inventory, and lease clocks in collection and UI
+  projections.
 - [ ] Design privileged live query, terminal, and VM lifecycle operations as
   separate RFDs before implementation.

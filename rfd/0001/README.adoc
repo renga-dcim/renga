@@ -95,11 +95,25 @@ partial, paginated, failed, or capability-limited collection remains unknown,
 not absent. Reconciliation retains the observation and source policy that caused
 each freshness transition.
 
+Four operational clocks remain distinct: latest authenticated API contact,
+latest accepted inventory observation, latest successfully reconciled inventory,
+and agent lease expiry/connectivity. A successful check-in must not imply fresh
+inventory, and accepted-but-failed reconciliation must not advance the last
+successful inventory clock.
+
 == Agent and collector direction
 
 The host agent is Rust, daemon-first, and maintained in this repository while
 the protocol evolves. It supports scheduled operation plus bounded `--once` and
 `--dry-run` modes. Debian and Ubuntu packages are the initial installation path.
+
+The durability target is a bounded local observation queue. The agent persists a
+collected payload before delivery, retries queued observations across process and
+network restarts, and removes an item only after server acceptance or a recorded
+permanent-rejection policy. Queue size, age, and disk use are bounded and visible.
+The delivered MVP currently uses bounded in-memory retry and may lose an
+observation after exhausting that budget; implementing the local queue remains
+open architecture work rather than an implied current guarantee.
 
 Switch collection should prefer protocol-first implementations. VM collection
 begins read-only, with libvirt/KVM before broader provider support. Every source
