@@ -186,6 +186,43 @@ read_base_state() {
   fi
 }
 
+list_base_entry_names() {
+  local base_entry
+
+  if [[ -n "${base_rfd_root}" ]]; then
+    shopt -s nullglob dotglob
+    for base_entry in "${base_rfd_root}"/*; do
+      basename "${base_entry}"
+    done
+    shopt -u nullglob dotglob
+    return
+  fi
+
+  if [[ -n "${base_ref}" ]] && git -C "${repo_root}" cat-file -e "${base_ref}:rfd" 2>/dev/null; then
+    git -C "${repo_root}" ls-tree --name-only "${base_ref}:rfd"
+  fi
+}
+
+rfd_changed_from_base() {
+  local entry_name="$1"
+
+  if [[ -n "${base_rfd_root}" ]]; then
+    if diff -qr "${base_rfd_root}/${entry_name}" "${rfd_root}/${entry_name}" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ -n "${base_ref}" ]]; then
+    if git -C "${repo_root}" diff --quiet "${base_ref}" -- "rfd/${entry_name}"; then
+      return 1
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
 valid_state_transition() {
   local previous="$1"
   local current="$2"
@@ -205,12 +242,36 @@ valid_state_transition() {
 
 read_checklist_counts() {
   awk '
-    BEGIN { complete = 0; total = 0 }
-    /^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\]/ {
+    BEGIN { complete = 0; total = 0; malformed = 0; org_block = 0; markdown_fence = 0 }
+    tolower($0) ~ /^[[:space:]]*#\+begin_/ { org_block++; next }
+    tolower($0) ~ /^[[:space:]]*#\+end_/ { if (org_block > 0) org_block--; next }
+    !org_block && $0 ~ /^[[:space:]]*(```|~~~)/ { markdown_fence = !markdown_fence; next }
+    org_block || markdown_fence { next }
+    /^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\][[:space:]]+[^[:space:]]/ {
       total++
       if ($0 ~ /\[[Xx]\]/) complete++
+      next
     }
-    END { printf "%d %d\n", complete, total }
+    /^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[^]]*\]([[:space:]]|$)/ {
+      malformed++
+    }
+    END { printf "%d %d %d\n", complete, total, malformed }
+  ' "$1"
+}
+
+read_design_checkbox_count() {
+  awk '
+    BEGIN { count = 0; org_block = 0; markdown_fence = 0; asciidoc_block = 0 }
+    tolower($0) ~ /^[[:space:]]*#\+begin_/ { org_block++; next }
+    tolower($0) ~ /^[[:space:]]*#\+end_/ { if (org_block > 0) org_block--; next }
+    !org_block && $0 ~ /^[[:space:]]*(```|~~~)/ { markdown_fence = !markdown_fence; next }
+    !org_block && !markdown_fence && $0 ~ /^[[:space:]]*(----|\.\.\.\.|====|____|\*\*\*\*)[[:space:]]*$/ {
+      asciidoc_block = !asciidoc_block
+      next
+    }
+    org_block || markdown_fence || asciidoc_block { next }
+    /^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\][[:space:]]+[^[:space:]]/ { count++ }
+    END { print count }
   ' "$1"
 }
 
@@ -221,13 +282,34 @@ failures=0
 found=0
 
 shopt -s nullglob dotglob
-entries=("${rfd_root}"/*)
+current_entries=("${rfd_root}"/*)
 shopt -u nullglob dotglob
 
-for entry in "${entries[@]}"; do
-  entry_name="$(basename "${entry}")"
+entry_names=()
+
+for entry in "${current_entries[@]}"; do
+  entry_names+=("$(basename "${entry}")")
+done
+
+while IFS= read -r base_entry_name; do
+  [[ -n "${base_entry_name}" ]] && entry_names+=("${base_entry_name}")
+done < <(list_base_entry_names)
+
+mapfile -t entry_names < <(printf '%s\n' "${entry_names[@]}" | sort -u)
+
+for entry_name in "${entry_names[@]}"; do
+  entry="${rfd_root}/${entry_name}"
 
   if [[ "${entry_name}" == "README.md" ]]; then
+    continue
+  fi
+
+  previous_state="$(read_base_state "${entry_name}")"
+
+  if [[ ! -e "${entry}" && -n "${previous_state}" ]]; then
+    printf "%shistorical RFD must not be deleted%s: %s\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
+    failures=$((failures + 1))
+    found=1
     continue
   fi
 
@@ -268,11 +350,9 @@ for entry in "${entries[@]}"; do
     case "${implementation_name}" in
     IMPLEMENTATION.org)
       expected_heading="#+TITLE: RFD ${entry_name} implementation checklist"
-      backlink="[[file:README.adoc]["
       ;;
     IMPLEMENTATION.md)
       expected_heading="# RFD ${entry_name} implementation checklist"
-      backlink="](README.adoc)"
       ;;
     esac
 
@@ -281,22 +361,38 @@ for entry in "${entries[@]}"; do
       failures=$((failures + 1))
     fi
 
-    if ! grep -Fq "${backlink}" "${implementation}"; then
+    case "${implementation_name}" in
+    IMPLEMENTATION.org)
+      backlink_pattern='\[\[file:README\.adoc\]\[[^]]+\]\]'
+      ;;
+    IMPLEMENTATION.md)
+      backlink_pattern='\[[^]]+\]\(README\.adoc\)'
+      ;;
+    esac
+
+    if ! grep -Eq "${backlink_pattern}" "${implementation}"; then
       printf "%simplementation checklist must link to its RFD%s: %s/%s\n" "${color_red}" "${color_reset}" "${entry_name}" "${implementation_name}" >&2
       failures=$((failures + 1))
     fi
 
-    if ! grep -Fq "link:${implementation_name}[" "${source}"; then
+    if ! grep -Eq "link:${implementation_name}\\[[^]]+\\]" "${source}"; then
       printf "%sRFD must link to its implementation checklist%s: %s/README.adoc\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
       failures=$((failures + 1))
     fi
 
     counts="$(read_checklist_counts "${implementation}")"
     complete_count="${counts%% *}"
-    total_count="${counts##* }"
+    remainder_counts="${counts#* }"
+    total_count="${remainder_counts%% *}"
+    malformed_count="${counts##* }"
+
+    if [[ "${malformed_count}" -gt 0 ]]; then
+      printf "%smalformed implementation task%s: %s/%s\n" "${color_red}" "${color_reset}" "${entry_name}" "${implementation_name}" >&2
+      failures=$((failures + 1))
+    fi
   fi
 
-  if grep -Eq '^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\]' "${source}"; then
+  if [[ "$(read_design_checkbox_count "${source}")" -gt 0 ]]; then
     printf "%simplementation checkboxes belong in a separate implementation document%s: %s/README.adoc\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
     failures=$((failures + 1))
   fi
@@ -320,10 +416,13 @@ for entry in "${entries[@]}"; do
     fi
   fi
 
-  previous_state="$(read_base_state "${entry_name}")"
-
   if [[ -n "${previous_state}" ]] && ! valid_state_transition "${previous_state}" "${state}"; then
     printf "%sinvalid RFD state transition%s: %s changed from %s to %s\n" "${color_red}" "${color_reset}" "${entry_name}" "${previous_state}" "${state}" >&2
+    failures=$((failures + 1))
+  fi
+
+  if [[ "${previous_state}" =~ ^(committed|abandoned)$ ]] && rfd_changed_from_base "${entry_name}"; then
+    printf "%sfinal RFD content is immutable%s: %s (%s)\n" "${color_red}" "${color_reset}" "${entry_name}" "${previous_state}" >&2
     failures=$((failures + 1))
   fi
 

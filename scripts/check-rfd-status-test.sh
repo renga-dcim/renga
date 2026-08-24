@@ -13,6 +13,7 @@ trap 'rm -rf "${test_root}"' EXIT
 
 reset_fixtures() {
   unset RFD_BASE_DIR
+  unset RFD_BASE_REF
   rm -rf "${rfd_root}" "${base_rfd_root}"
   mkdir -p "${rfd_root}"
   printf '# Test RFDs\n' >"${rfd_root}/README.md"
@@ -101,6 +102,11 @@ reset_fixtures
 write_valid_rfd prediscussion "" md
 run_success
 
+export RFD_BASE_REF=unresolvable-inherited-base
+reset_fixtures
+write_valid_rfd prediscussion ""
+run_success
+
 reset_fixtures
 write_valid_rfd prediscussion ""
 rm "${rfd_root}/0001/IMPLEMENTATION.org"
@@ -133,6 +139,21 @@ run_failure "committed RFD requires a non-empty implementation checklist"
 
 reset_fixtures
 write_valid_rfd committed https://example.com/pull/1
+sed -i.bak '/Complete the work/c\
+#+begin_example\
+- [X] Example only.\
+#+end_example' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+run_failure "committed RFD requires a non-empty implementation checklist"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/1
+sed -i.bak 's/- \[ \] Complete the work\./- [Y] Invalid task./' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+run_failure "malformed implementation task"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/1
 sed -i.bak 's/- \[ \]/- [X]/' "${rfd_root}/0001/IMPLEMENTATION.org"
 rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
 run_success
@@ -141,6 +162,29 @@ reset_fixtures
 write_valid_rfd prediscussion ""
 printf '# RFD 0001 implementation checklist\n\nImplements [RFD 1](README.adoc).\n' >"${rfd_root}/0001/IMPLEMENTATION.md"
 run_failure "multiple implementation checklist formats"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+sed -i.bak 's/link:IMPLEMENTATION.org\[implementation checklist\]/link:IMPLEMENTATION.org[/' "${rfd_root}/0001/README.adoc"
+rm "${rfd_root}/0001/README.adoc.bak"
+run_failure "RFD must link to its implementation checklist"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+sed -i.bak 's/\]\]\.$/]./' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+run_failure "implementation checklist must link to its RFD"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+cat >>"${rfd_root}/0001/README.adoc" <<'EOF'
+
+[source,text]
+----
+- [ ] Example task syntax.
+----
+EOF
+run_success
 
 reset_fixtures
 write_valid_rfd draft ""
@@ -190,5 +234,23 @@ sed -i.bak 's/:state: published/:state: discussion/' "${base_rfd_root}/0001/READ
 rm "${base_rfd_root}/0001/README.adoc.bak"
 export RFD_BASE_DIR="${base_rfd_root}"
 run_success
+
+reset_fixtures
+write_valid_rfd published https://example.com/pull/2
+mkdir -p "${base_rfd_root}"
+cp -R "${rfd_root}/0001" "${base_rfd_root}/0001"
+rm -rf "${rfd_root}/0001"
+export RFD_BASE_DIR="${base_rfd_root}"
+run_failure "historical RFD must not be deleted"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/2
+sed -i.bak 's/- \[ \]/- [X]/' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+mkdir -p "${base_rfd_root}"
+cp -R "${rfd_root}/0001" "${base_rfd_root}/0001"
+printf '\nRewritten final decision.\n' >>"${rfd_root}/0001/README.adoc"
+export RFD_BASE_DIR="${base_rfd_root}"
+run_failure "final RFD content is immutable"
 
 printf 'RFD checker tests passed.\n'
