@@ -1,0 +1,94 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: committed
+:discussion: https://github.com/renga-dcim/renga/pull/1
+:labels: agent, dcim, inventory, software
+
+= RFD 2 DCIM host agent MVP
+
+== Goal
+
+Deliver the smallest useful Renga inventory loop: run a Rust service agent on a
+Debian or Ubuntu host, collect host facts, submit an observation, reconcile it
+into canonical organization-scoped inventory, and display lifecycle, freshness,
+connectivity, and provenance in the UI.
+
+== Scope
+
+The MVP includes organization tenancy, source and agent identity, immutable raw
+observations, canonical resources, source evidence, explicit resource
+identifiers, interfaces and addresses, field-level overrides, agent leases,
+HTTP ingestion, reconciliation, a systemd service, Debian packaging, and an
+authenticated operational LiveView UI.
+
+It excludes terminal sessions, remote execution, VM lifecycle and placement,
+switch polling, gNMI/OpenConfig and SNMP implementation, cloud-hypervisor
+support, osquery compatibility, and an accelerated persistent control channel.
+
+== Design
+
+The Rust agent lives under `agent/`, is daemon-first, and provides `--once` and
+`--dry-run` for development and troubleshooting. HTTP POST is the durable
+inventory transport. The agent reports observations while central
+reconciliation owns identity matching, canonical state, conflict handling, and
+stale transitions.
+
+Resources separate canonical identifiers from source claims. Resource envelopes
+own desired state, lifecycle, generation, and revisions; typed projections own
+queryable current inventory. Manual corrections are explicit overrides and do
+not erase observed evidence.
+
+Observations are immutable, source-idempotent, time-sortable UUIDv7 records.
+Processing attempts and outcomes live separately. Interfaces, assigned
+addresses, and topology relationships are canonical and source-neutral while
+retaining per-source evidence. PostgreSQL `macaddr`, `inet`, and `cidr` types
+preserve queryable network semantics.
+
+Observation timestamps use millisecond precision. `inserted_at` is generated
+from and must equal the millisecond encoded in the server-generated UUIDv7
+primary key; `observed_at` remains the source-reported event time. Observations
+have no `updated_at`, and processing never mutates these identity or timestamp
+facts.
+
+Agent registration, source provenance, lease connectivity, resource lifecycle,
+and inventory freshness are separate concepts. The initial manually issued
+collector credential was only a bootstrap path and was replaced by RFD 3.
+
+== Delivery history
+
+The rollout introduced agent-generated, persisted installation UUIDs before the
+server required them on every machine request. Compatibility parsing remained
+only until capable agents were deployed, preventing strict validation from
+rejecting the previous agent population during the transition.
+
+The inventory model rebuild occurred before production compatibility was
+required. Development and test databases were reset, and the superseded schema
+was replaced directly rather than carrying compatibility migrations. This is
+historical rollout context, not permission to reset a deployed environment.
+
+The completed MVP delivers bounded in-memory transport retry, not a durable
+local observation queue. RFD 1 retains the queue as explicit follow-up work so a
+long outage exhausting retries is not mistaken for lossless delivery.
+
+== Ingestion and reconciliation
+
+The machine API accepts agent check-ins and one-host observations. It validates
+authentication, installation identity, timestamps, identifiers, interfaces,
+addresses, and payload limits before storing accepted raw observations.
+
+Reconciliation matches strong identifiers before weak hostname signals, records
+claims and disagreements, upserts canonical host/network projections, applies
+deterministic field ownership, and updates freshness independently from desired
+lifecycle and lease health.
+
+== User interaction
+
+Authenticated, organization-scoped inventory routes show dashboard counts,
+resource lists, resource details, collector health, source provenance,
+conditions, identifiers, interfaces, assigned addresses, recent changes, and
+stale/disconnected filters. Credential administration is restricted to active
+organization owners and administrators.
+
+== Implementation
+
+The completed delivery outcomes are recorded in the
+link:IMPLEMENTATION.org[RFD 2 implementation checklist].

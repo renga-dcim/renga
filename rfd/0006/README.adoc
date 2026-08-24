@@ -1,0 +1,169 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: dcim, hardware, inventory, software
+
+= RFD 6 Hardware catalog and components
+
+== Goal
+
+Separate reusable hardware definitions from actual assets, expected components,
+and observed hardware evidence. Renga should answer what equipment is expected,
+what was discovered, how observations map to physical slots, and where hardware
+is missing, unexpected, or ambiguous without manufacturing observed facts from
+a catalog template.
+
+This RFD owns manufacturers, hardware types, modules, bays, expected component
+structure, actual component projections, and inventory-only parts. Physical
+placement belongs to RFD 5; network and cable topology belong to RFD 7.
+
+== NetBox reference
+
+Renga adopts the type-versus-instance separation from NetBox's
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/devices.py[device
+models],
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/modules.py[module
+models], and
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/device_components.py[component
+models]. A device type describes reusable make/model structure; a device is an
+actual asset; a module occupies a compatible bay; and inventory items represent
+serialized hardware that is not necessarily a topology endpoint.
+
+Renga deliberately does not copy NetBox's automatic implication that components
+instantiated from templates are current hardware. Catalog structure creates
+expectations. Only observations or confirmed operator actions establish actual
+components.
+
+== Catalog model
+
+The initial catalog contains:
+
+* `Manufacturer`: normalized manufacturer identity, name, slug, description, and
+  external identifiers;
+* `HardwareType`: manufacturer-scoped model definition for a server, switch,
+  appliance, chassis, PDU, storage system, or other device class;
+* `ModuleType`: manufacturer-scoped definition for an installable line card,
+  supervisor, power supply, fan tray, transceiver, or similar module;
+* typed component templates for interfaces, module bays, power ports, power
+  outlets, console ports, device bays, and other topology-bearing components;
+  and
+* bounded specification data such as rack-unit height, width, depth class, part
+  number, airflow, and weight where the product uses it.
+
+Manufacturers, hardware types, and module types receive resource envelopes.
+Templates are versioned subordinate rows owned by their type. Manufacturer plus
+model is unique in its relevant type category. Manufacturer aliases and
+source-reported names are identifier claims rather than duplicate manufacturers.
+
+Frequently queried and invariant-bearing specifications use typed columns.
+Variable vendor data remains JSONB. A catalog revision changes expected
+structure prospectively; it does not rewrite historical evidence or silently
+replace confirmed exceptions on existing assets.
+
+== Asset and component model
+
+Physical device resources gain an optional `hardware_type_id`. Assignment may be
+operator-selected or reconciled from manufacturer, model, product ID, and other
+source claims. Ambiguous catalog matches remain findings and do not select the
+first candidate.
+
+Actual topology-bearing components use typed projections with stable identity,
+position or bay name, status, asset identifiers, and metadata. Components remain
+subordinate to their owning device or module unless they need independent
+lifecycle, ownership, or reconciliation; a line card or replaceable module may
+receive a resource envelope while a CPU core does not.
+
+A module bay belongs to one device or module and accepts compatible module types.
+Desired bay assignment and reconciled current installation remain separate; one
+of each may exist per bay. Current installation and removal are transactional
+and retain history through events and evidence. Disabled or incompatible bays
+cannot accept desired assignments or current installations.
+
+`InventoryItem` represents serialized or tracked physical parts that are useful
+for asset inventory but are not graph endpoints, such as DIMMs, CPUs, disks,
+fans, and miscellaneous FRUs. Inventory items may nest for assembly structure
+but reject cycles. When a part becomes topology-bearing or independently
+managed, it is promoted through an explicit typed relationship rather than
+overloading inventory-item metadata.
+
+Module and inventory-item hierarchy mutations serialize on an owning-resource
+or organization-and-hierarchy lock before ancestry validation and the parent
+write. This closes concurrent inverse-parent races that snapshot-only cycle
+checks cannot prevent.
+
+== Expectations and evidence
+
+Assigning a hardware or module type materializes versioned expected components,
+not observations. Each expectation references its originating type revision and
+template. Confirmed local exceptions can add, suppress, or alter expectations
+without mutating the shared catalog.
+
+Current agent `components` remain shape-open observation data. Product slices
+promote useful kinds into typed component evidence with source, observation,
+observed time, stable source-local identity, slot or path, serial and part
+numbers, attributes, and raw metadata. Unknown component kinds remain preserved
+in the immutable observation and do not block ingestion.
+
+Reconciliation matches observed components using stable serial or provider IDs,
+then slot/path plus part number, then weaker normalized attributes. It records
+missing expected, unexpected observed, ambiguous match, conflicting identity,
+incompatible module, and specification-drift findings. Source omission makes
+that source's component evidence stale only when the source policy and accepted
+observation declare the component section a complete snapshot. Omission from a
+partial, paginated, failed, or capability-limited collection has no absence
+meaning and never deletes the canonical component or expected structure.
+
+== Interface ownership
+
+Existing canonical interfaces remain the network projection used by IPAM and
+topology. Interface templates and observed NIC/port components may match and
+enrich an interface but must not create a second competing interface model.
+Template identity, component evidence, and canonical interface identity remain
+linked and explainable.
+
+The same rule applies to future power and console components: catalog templates
+describe expected endpoints, observations provide evidence, and one canonical
+typed endpoint participates in topology.
+
+== User interaction
+
+The first UI provides manufacturer and type catalogs, type detail with expected
+components, device hardware matching, module/bay inventory, inventory items, and
+component reconciliation findings. Users can distinguish catalog expectation,
+confirmed actual hardware, and current source evidence.
+
+Routes belong inside the existing `live_session
+:require_authenticated_user` block and `[:browser,
+:require_authenticated_user]` pipeline because hardware catalogs and assets are
+organization inventory and every view requires login. Reads follow organization
+membership. Catalog, matching, and exception mutations require the managed
+inventory owner/admin policy.
+
+Initial routes are:
+
+* `/dcim/manufacturers`
+* `/dcim/hardware-types`
+* `/dcim/hardware-types/:id`
+* `/inventory/resources/:id/hardware`
+* `/inventory/component-findings`
+
+== Initial exclusions
+
+The first implementation excludes procurement, purchase orders, depreciation,
+warranty workflows, stock warehouses, firmware distribution, automatic driver
+selection, and complete vendor-specific component taxonomies.
+
+== Rollout
+
+. Add manufacturers, hardware types, module types, and versioned templates.
+. Add optional device type matching and expected components.
+. Add module bays, modules, and inventory-only parts.
+. Promote high-value collector component kinds into typed evidence and canonical
+  projections.
+. Add reconciliation findings and connect rack dimensions to RFD 5 and network
+  endpoints to RFD 7.
+
+== Implementation
+
+Progress against this proposal is tracked in the
+link:IMPLEMENTATION.org[RFD 6 implementation checklist].

@@ -1,0 +1,22 @@
+#+TITLE: RFD 0002 implementation checklist
+
+Implements [[file:README.adoc][RFD 2: DCIM host agent MVP]].
+
+- [X] A new organization can provision host collection with an appropriately
+  scoped credential.
+- [X] A Rust service agent runs under systemd on Debian and Ubuntu.
+- [X] The agent collects host, operating system, hardware, storage, interface,
+  MAC-address, IP-address, and basic virtualization facts.
+- [X] The agent submits authenticated, bounded, idempotent observations and
+  independent check-ins with retry and backoff.
+- [X] Renga stores immutable observations and reconciles source-neutral canonical
+  resources, identifiers, interfaces, addresses, evidence, and conditions.
+- [X] Duplicate and conflicting identity claims remain representable and tested.
+- [X] Desired state, field overrides, observed evidence, lifecycle, freshness,
+  reconciliation, and lease connectivity remain distinct.
+- [X] The authenticated organization-scoped UI exposes inventory, provenance,
+  recent changes, stale resources, and disconnected collectors.
+- [X] Tenant isolation is enforced in contexts, ingestion, and LiveViews.
+- [X] Raw binaries, Debian packages, package verification, and installation smoke
+  tests are available.
+- [X] Server and agent test suites pass for the delivered host-agent loop.

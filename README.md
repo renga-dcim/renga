@@ -27,6 +27,11 @@ and state live under the ignored `dev/renga-agent` directory. The collector
 checks in every 10 seconds and reports inventory every minute, so it appears in
 the authenticated **Collectors** screen without manual enrollment.
 
+## Design proposals
+
+Product and architecture decisions live in [Requests for Discussion](rfd/README.md).
+Run `make check-rfds` after changing an RFD or its implementation checklist.
+
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
 ## Learn more

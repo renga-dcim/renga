@@ -1,0 +1,29 @@
+#+TITLE: RFD 0001 implementation checklist
+
+Implements [[file:README.adoc][RFD 1: Renga DCIM architecture]].
+
+- [X] Establish organization-scoped resource envelopes, typed projections,
+  source evidence, identifier claims, and immutable observations.
+- [X] Deliver host-agent collection, source-neutral reconciliation, freshness,
+  lease health, and the operational inventory UI.
+- [X] Replace per-collector bootstrap credentials with organization intake keys
+  while retaining per-installation provenance.
+- [ ] Deliver physical sites, locations, racks, and placement under
+  [[file:../0005/README.adoc][RFD 5]].
+- [ ] Deliver hardware catalog and component reconciliation under
+  [[file:../0006/README.adoc][RFD 6]].
+- [ ] Deliver Layer 2 topology and VLANs under
+  [[file:../0007/README.adoc][RFD 7]].
+- [ ] Define power inventory and topology in a dedicated RFD.
+- [ ] Deliver IPAM under [[file:../0004/README.adoc][RFD 4]].
+- [ ] Add durable jobs and explicit agent capabilities with polling as the
+  correctness path.
+- [ ] Add optional Phoenix Channels control acceleration.
+- [ ] Add read-only switch and virtualization provider collectors.
+- [ ] Add a bounded on-disk observation queue that survives agent restarts and
+  reports queue health without unbounded disk growth.
+- [ ] Preserve distinct latest-contact, accepted-inventory,
+  successfully-reconciled-inventory, and lease clocks in collection and UI
+  projections.
+- [ ] Design privileged live query, terminal, and VM lifecycle operations as
+  separate RFDs before implementation.

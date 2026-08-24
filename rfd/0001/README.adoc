@@ -1,0 +1,178 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: published
+:discussion: https://github.com/renga-dcim/renga/pull/1
+:labels: architecture, dcim, inventory, software
+
+= RFD 1 Renga DCIM architecture
+
+== Goal
+
+Build Renga into a DCIM system that keeps a live, queryable inventory of
+physical hosts, network switches, virtual machines, and related resources by
+syncing deployed agents and infrastructure integrations.
+
+The system should answer what resources exist, where they are located, what
+changed, which source reported each fact, and which records are stale,
+duplicated, missing, or conflicting.
+
+== Product principles
+
+* Inventory is observed first and manually corrected second.
+* Every fact retains provenance, observation time, confidence, and raw evidence
+  where useful.
+* Syncs are idempotent and safe to retry.
+* The central application reconciles state; collectors report observations.
+* Stale data remains visible instead of being silently trusted.
+* Basic inventory collection remains available when the control channel is not.
+* Privileged agent capabilities require explicit policy and audit history.
+* Renga is organization-scoped from collection through query and presentation.
+
+== System shape
+
+The Phoenix application owns identity, canonical inventory, desired state,
+reconciliation, audit history, and the web UI. External collectors submit
+immutable observations over HTTPS:
+
+* Rust host agents on bare-metal servers and VM guests;
+* network collectors using protocols such as SNMP, LLDP, and gNMI/OpenConfig;
+* virtualization and cloud provider syncers; and
+* optional out-of-band hardware collectors.
+
+Polling and HTTP remain the correctness path. Persisted jobs and a future
+Phoenix Channels connection may accelerate control operations, notifications,
+and streaming output without becoming required for inventory ingestion.
+
+== Inventory model
+
+The model has four layers:
+
+. Resource envelopes identify independently addressable and reconcilable
+  objects and carry lifecycle, desired specification, generation, and revision.
+. Typed canonical projections provide constrained, queryable current inventory.
+. Per-source evidence and identifier claims preserve provenance and disagreement.
+. Immutable observations preserve submitted source evidence.
+
+Canonical resources are source-neutral. Reconciliation records field ownership,
+conflicts, stale transitions, and meaningful changes without treating the change
+log as the source of truth. Resource lifecycle, inventory freshness, agent lease
+health, and reconciliation state remain independent.
+
+Stable values use typed PostgreSQL columns and domain types such as `macaddr`,
+`inet`, and `cidr`. JSONB is used for variable desired specification, raw
+observations, detailed evidence, and vendor-specific data rather than replacing
+typed projections.
+
+== Identity and reconciliation
+
+Strong identifiers such as provider IDs, serial numbers, machine IDs, DMI UUIDs,
+and MAC-address sets take precedence over hostnames. Hostname and FQDN are weak
+signals. Conflicting or duplicate claims remain representable; uncertainty must
+not be hidden by destructive uniqueness constraints.
+
+The normal processing flow is:
+
+. authenticate the organization-scoped producer;
+. store the immutable observation using source-scoped idempotency;
+. record or refresh source evidence and identifier claims;
+. match or create source-neutral resources;
+. project accepted values according to deterministic ownership rules; and
+. update conditions and append non-authoritative change events.
+
+Manual corrections use explicit field overrides so observed evidence is retained.
+Normal operator intent belongs in resource desired state rather than overrides.
+
+== Collection contracts and freshness
+
+Every source defines its expected sync interval, stale-after duration, and
+whether each collection operation is a complete snapshot or a partial
+observation. Snapshot completeness may be declared per payload section when a
+collector refreshes different domains independently.
+
+Age can make source evidence stale regardless of snapshot mode. Omission can
+withdraw or stale previously current evidence only when the source contract and
+accepted observation declare that section complete. An omitted object in a
+partial, paginated, failed, or capability-limited collection remains unknown,
+not absent. Reconciliation retains the observation and source policy that caused
+each freshness transition.
+
+Four operational clocks remain distinct: latest authenticated API contact,
+latest accepted inventory observation, latest successfully reconciled inventory,
+and agent lease expiry/connectivity. A successful check-in must not imply fresh
+inventory, and accepted-but-failed reconciliation must not advance the last
+successful inventory clock.
+
+== Agent and collector direction
+
+The host agent is Rust, daemon-first, and maintained in this repository while
+the protocol evolves. It supports scheduled operation plus bounded `--once` and
+`--dry-run` modes. Debian and Ubuntu packages are the initial installation path.
+
+The durability target is a bounded local observation queue. The agent persists a
+collected payload before delivery, retries queued observations across process and
+network restarts, and removes an item only after server acceptance or a recorded
+permanent-rejection policy. Queue size, age, and disk use are bounded and visible.
+The delivered MVP currently uses bounded in-memory retry and may lose an
+observation after exhausting that budget; implementing the local queue remains
+open architecture work rather than an implied current guarantee.
+
+Switch collection should prefer protocol-first implementations. VM collection
+begins read-only, with libvirt/KVM before broader provider support. Every source
+type emits the same transport-independent observation concept.
+
+Organization intake credentials authorize only machine intake. Future terminal,
+query, desired-state, or VM lifecycle operations require separately designed
+capabilities and authorization.
+
+== Control-plane direction
+
+Persisted jobs are the durable control primitive. Agents poll, lease work, and
+append job events. A persistent socket may notify connected agents and stream
+output, but polling remains the fallback and recovery path.
+
+Jobs are stored before delivery, expire if not leased or completed in time, and
+survive server restarts, agent restarts, and disconnects. Every transition is an
+append-only job event. Agents lease work before execution and reject jobs outside
+both their advertised capabilities and locally enabled policy. Server-side
+authorization independently limits which users may target which resources and
+capabilities; neither side's check substitutes for the other.
+
+Live terminal, operational query, and VM placement features are deliberately
+later slices. They require capability advertisement, server and agent policy,
+bounded execution, cancellation, complete audit trails, and explicit operator
+authorization.
+
+Live terminal access is disabled by default and requires strong authentication,
+RBAC, agent-side allow/deny policy, short per-session leases, target-level access
+rules, and session recording or command logging. Operational queries are typed,
+read-only collector operations and never an alias for arbitrary shell execution.
+
+== Domain boundaries
+
+Renga follows the useful separation established by systems such as NetBox:
+
+* DCIM owns sites, locations, racks, devices, components, cabling, and power.
+* IPAM owns VRFs, prefixes, ranges, managed addresses, and VLANs.
+* Virtualization owns clusters, hypervisors, VMs, and virtual attachments.
+* Tenancy owns organization and future business ownership boundaries.
+
+Renga differs by making agents, observations, reconciliation, freshness,
+desired-versus-observed state, and eventual control-plane jobs first-class.
+Discovery must provide useful inventory without requiring complete manual
+modeling first.
+
+== Security and verification
+
+Transport outside development uses TLS. Credentials are generated centrally,
+stored as hashes, scoped to the narrowest practical authority, rotatable, and
+redacted from diagnostics. Observation bodies and raw retention are bounded.
+Tenant isolation and capabilities are enforced in contexts and APIs, not only
+in presentation code.
+
+Context, controller, reconciliation, collector, and LiveView tests cover tenant
+isolation, identity ambiguity, retries, stale transitions, conflicts, payload
+validation, and key user workflows.
+
+== Implementation
+
+Progress against this direction is tracked in the
+link:IMPLEMENTATION.org[RFD 1 implementation checklist].
