@@ -9,7 +9,7 @@ name: rust
 
 jobs:
   lint:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Cache
@@ -28,7 +28,7 @@ jobs:
         run: cargo clippy --workspace --all-features -- -D warnings
 
   fmt:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Cache
@@ -47,7 +47,7 @@ jobs:
         run: cargo fmt --check
 
   test:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Cache

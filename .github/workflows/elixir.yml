@@ -19,7 +19,7 @@ env:
 
 jobs:
   lint:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -61,7 +61,7 @@ jobs:
         run: mix credo
 
   format:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -96,7 +96,7 @@ jobs:
         run: mix format --check-formatted
 
   test:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
 
     services:
       postgres:
