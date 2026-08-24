@@ -97,6 +97,15 @@ EOF
 reset_fixtures
 write_valid_rfd discussion https://example.com/pull/1
 run_success
+grep -Fq "RFD   State          Progress   Labels                                    Title" "${output}"
+grep -Fq "0001  discussion     0/1        software, process                         Valid RFD" "${output}"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+sed -i.bak 's/= RFD 1 Valid RFD/= RFD 1 A title long enough to exceed the old fixed-width title column without moving any later columns/' "${rfd_root}/0001/README.adoc"
+rm "${rfd_root}/0001/README.adoc.bak"
+run_success
+grep -Fq "software, process                         A title long enough to exceed the old fixed-width title column without moving any later columns" "${output}"
 
 reset_fixtures
 write_valid_rfd prediscussion "" md

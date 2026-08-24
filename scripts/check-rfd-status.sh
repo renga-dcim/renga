@@ -61,6 +61,20 @@ colorize_state() {
   esac
 }
 
+colorize_progress() {
+  local complete="$1"
+  local total="$2"
+  local padded="$3"
+
+  if [[ "${total}" -eq 0 || "${complete}" -eq 0 ]]; then
+    printf "%s%s%s" "${color_dim}" "${padded}" "${color_reset}"
+  elif [[ "${complete}" -eq "${total}" ]]; then
+    printf "%s%s%s" "${color_green}" "${padded}" "${color_reset}"
+  else
+    printf "%s%s%s" "${color_yellow}" "${padded}" "${color_reset}"
+  fi
+}
+
 read_rfd() {
   local source="$1"
   local source_name="$2"
@@ -275,8 +289,8 @@ read_design_checkbox_count() {
   ' "$1"
 }
 
-printf "%s%-4s  %-13s  %-42s  %s%s\n" "${color_bold}" "RFD" "State" "Title" "Labels" "${color_reset}"
-printf "%s%-4s  %-13s  %-42s  %s%s\n" "${color_dim}" "----" "-------------" "------------------------------------------" "--------------------" "${color_reset}"
+printf "%s%-4s  %-13s  %-9s  %-40s  %s%s\n" "${color_bold}" "RFD" "State" "Progress" "Labels" "Title" "${color_reset}"
+printf "%s%-4s  %-13s  %-9s  %-40s  %s%s\n" "${color_dim}" "----" "-------------" "---------" "----------------------------------------" "------------------------------" "${color_reset}"
 
 failures=0
 found=0
@@ -427,8 +441,10 @@ for entry_name in "${entry_names[@]}"; do
   fi
 
   state_field="$(printf '%-13s' "${state:-\(missing\)}")"
+  progress_field="$(printf '%-9s' "${complete_count}/${total_count}")"
   state_text="$(colorize_state "${state}" "${state_field}")"
-  printf "%-4s  %s  %-42s  %s\n" "${entry_name}" "${state_text}" "${title:-\(missing title\)}" "${labels:-\(missing labels\)}"
+  progress_text="$(colorize_progress "${complete_count}" "${total_count}" "${progress_field}")"
+  printf "%-4s  %s  %s  %-40s  %s\n" "${entry_name}" "${state_text}" "${progress_text}" "${labels:-\(missing labels\)}" "${title:-\(missing title\)}"
 done
 
 if [[ "${found}" -eq 0 ]]; then
