@@ -43,7 +43,10 @@ else
 fi
 
 pg_isready --host=127.0.0.1 --port=5435 --username=postgres >/dev/null
+mix ecto.migrate
+mix run priv/repo/seeds.exs
+cargo build --locked --package renga-agent
 "$repo_root/.agents/ensure-agent-target"
 "$repo_root/.agents/ensure-renga-agent"
 tailscale_enroll_or_recover
-printf '[resume] Nix development shell and PostgreSQL are ready.\n'
+printf '[resume] Database, disposable target, and host agent are ready.\n'

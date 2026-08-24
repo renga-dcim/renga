@@ -14,7 +14,7 @@ server and print its authenticated portal URL. `mix setup` seeds a development
 workspace with representative inventory:
 
 * Email: `demo@renga.local`
-* Password: `renga-demo-password`
+* Password: `supersecure!`
 * Organization: `Renga Labs`
 
 The orb lifecycle also creates an ignored, disposable Git repository at
