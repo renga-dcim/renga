@@ -4,6 +4,26 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 rfd_root="${RFD_DIR:-${repo_root}/rfd}"
+base_ref="${RFD_BASE_REF:-}"
+base_rfd_root="${RFD_BASE_DIR:-}"
+
+# GitHub uses an all-zero before SHA when a branch has no prior revision.
+[[ "${base_ref}" =~ ^0+$ ]] && base_ref=""
+
+if [[ -n "${base_ref}" && -n "${base_rfd_root}" ]]; then
+  printf "RFD_BASE_REF and RFD_BASE_DIR are mutually exclusive\n" >&2
+  exit 1
+fi
+
+if [[ -n "${base_ref}" ]] && ! git -C "${repo_root}" cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+  printf "cannot resolve RFD base revision: %s\n" "${base_ref}" >&2
+  exit 1
+fi
+
+if [[ -n "${base_rfd_root}" && ! -d "${base_rfd_root}" ]]; then
+  printf "RFD base directory not found: %s\n" "${base_rfd_root}" >&2
+  exit 1
+fi
 
 if [[ -z "${NO_COLOR:-}" && (-t 1 || -n "${FORCE_COLOR:-}") ]]; then
   color_reset=$'\033[0m'
@@ -139,15 +159,70 @@ read_rfd() {
   ' "${source}"
 }
 
+read_state() {
+  awk '
+    /^= RFD [0-9]+ .+/ { exit }
+    /^:state:[[:space:]]*/ {
+      sub(/^:state:[[:space:]]*/, "")
+      print
+      exit
+    }
+  '
+}
+
+read_base_state() {
+  local entry_name="$1"
+  local base_source
+
+  if [[ -n "${base_rfd_root}" ]]; then
+    base_source="${base_rfd_root}/${entry_name}/README.adoc"
+    [[ -f "${base_source}" ]] && read_state <"${base_source}"
+    return
+  fi
+
+  if [[ -n "${base_ref}" ]]; then
+    git -C "${repo_root}" show "${base_ref}:rfd/${entry_name}/README.adoc" 2>/dev/null |
+      read_state || true
+  fi
+}
+
+valid_state_transition() {
+  local previous="$1"
+  local current="$2"
+
+  [[ "${previous}" == "${current}" ]] && return 0
+
+  case "${previous}:${current}" in
+  prediscussion:ideation | prediscussion:discussion | prediscussion:published | prediscussion:committed | prediscussion:abandoned | \
+    ideation:prediscussion | ideation:discussion | ideation:published | ideation:committed | ideation:abandoned | \
+    discussion:published | discussion:committed | discussion:abandoned | \
+    published:committed | published:abandoned)
+    return 0
+    ;;
+  *) return 1 ;;
+  esac
+}
+
+read_checklist_counts() {
+  awk '
+    BEGIN { complete = 0; total = 0 }
+    /^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\]/ {
+      total++
+      if ($0 ~ /\[[Xx]\]/) complete++
+    }
+    END { printf "%d %d\n", complete, total }
+  ' "$1"
+}
+
 printf "%s%-4s  %-13s  %-42s  %s%s\n" "${color_bold}" "RFD" "State" "Title" "Labels" "${color_reset}"
 printf "%s%-4s  %-13s  %-42s  %s%s\n" "${color_dim}" "----" "-------------" "------------------------------------------" "--------------------" "${color_reset}"
 
 failures=0
 found=0
 
-shopt -s nullglob
+shopt -s nullglob dotglob
 entries=("${rfd_root}"/*)
-shopt -u nullglob
+shopt -u nullglob dotglob
 
 for entry in "${entries[@]}"; do
   entry_name="$(basename "${entry}")"
@@ -177,6 +252,8 @@ for entry in "${entries[@]}"; do
   implementations=()
   [[ -f "${entry}/IMPLEMENTATION.org" ]] && implementations+=("${entry}/IMPLEMENTATION.org")
   [[ -f "${entry}/IMPLEMENTATION.md" ]] && implementations+=("${entry}/IMPLEMENTATION.md")
+  complete_count=0
+  total_count=0
 
   if [[ "${#implementations[@]}" -eq 0 ]]; then
     printf "%smissing implementation checklist%s: %s/IMPLEMENTATION.org or IMPLEMENTATION.md\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
@@ -213,9 +290,13 @@ for entry in "${entries[@]}"; do
       printf "%sRFD must link to its implementation checklist%s: %s/README.adoc\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
       failures=$((failures + 1))
     fi
+
+    counts="$(read_checklist_counts "${implementation}")"
+    complete_count="${counts%% *}"
+    total_count="${counts##* }"
   fi
 
-  if grep -Eq '^\* \[[ xX]\]' "${source}"; then
+  if grep -Eq '^([[:space:]]*[-+*]|[[:space:]]*[0-9]+\.)[[:space:]]+\[[Xx ]\]' "${source}"; then
     printf "%simplementation checkboxes belong in a separate implementation document%s: %s/README.adoc\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
     failures=$((failures + 1))
   fi
@@ -228,6 +309,23 @@ for entry in "${entries[@]}"; do
   labels="${remainder%%$'\t'*}"
   parser_errors="${remainder##*$'\t'}"
   failures=$((failures + parser_errors))
+
+  if [[ "${state}" == "committed" ]]; then
+    if [[ "${total_count}" -eq 0 ]]; then
+      printf "%scommitted RFD requires a non-empty implementation checklist%s: %s\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
+      failures=$((failures + 1))
+    elif [[ "${complete_count}" -ne "${total_count}" ]]; then
+      printf "%scommitted RFD has incomplete implementation tasks%s: %s (%s/%s complete)\n" "${color_red}" "${color_reset}" "${entry_name}" "${complete_count}" "${total_count}" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+
+  previous_state="$(read_base_state "${entry_name}")"
+
+  if [[ -n "${previous_state}" ]] && ! valid_state_transition "${previous_state}" "${state}"; then
+    printf "%sinvalid RFD state transition%s: %s changed from %s to %s\n" "${color_red}" "${color_reset}" "${entry_name}" "${previous_state}" "${state}" >&2
+    failures=$((failures + 1))
+  fi
 
   state_field="$(printf '%-13s' "${state:-\(missing\)}")"
   state_text="$(colorize_state "${state}" "${state_field}")"

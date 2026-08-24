@@ -6,12 +6,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="${repo_root}/scripts/check-rfd-status.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/renga-rfd-check.XXXXXX")"
 rfd_root="${test_root}/rfd"
+base_rfd_root="${test_root}/base-rfd"
 output="${test_root}/output"
 
 trap 'rm -rf "${test_root}"' EXIT
 
 reset_fixtures() {
-  rm -rf "${rfd_root}"
+  unset RFD_BASE_DIR
+  rm -rf "${rfd_root}" "${base_rfd_root}"
   mkdir -p "${rfd_root}"
   printf '# Test RFDs\n' >"${rfd_root}/README.md"
 }
@@ -106,8 +108,34 @@ run_failure "missing implementation checklist"
 
 reset_fixtures
 write_valid_rfd prediscussion ""
-printf '\n* [ ] This belongs in the implementation document.\n' >>"${rfd_root}/0001/README.adoc"
+printf '\n  - [ ] This belongs in the implementation document.\n' >>"${rfd_root}/0001/README.adoc"
 run_failure "implementation checkboxes belong in a separate implementation document"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+printf '\n+ [ ] This also belongs in the implementation document.\n' >>"${rfd_root}/0001/README.adoc"
+run_failure "implementation checkboxes belong in a separate implementation document"
+
+reset_fixtures
+write_valid_rfd prediscussion ""
+printf '\n1. [X] This also belongs in the implementation document.\n' >>"${rfd_root}/0001/README.adoc"
+run_failure "implementation checkboxes belong in a separate implementation document"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/1
+run_failure "committed RFD has incomplete implementation tasks"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/1
+sed -i.bak '/Complete the work/d' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+run_failure "committed RFD requires a non-empty implementation checklist"
+
+reset_fixtures
+write_valid_rfd committed https://example.com/pull/1
+sed -i.bak 's/- \[ \]/- [X]/' "${rfd_root}/0001/IMPLEMENTATION.org"
+rm "${rfd_root}/0001/IMPLEMENTATION.org.bak"
+run_success
 
 reset_fixtures
 write_valid_rfd prediscussion ""
@@ -140,5 +168,27 @@ reset_fixtures
 mkdir -p "${rfd_root}/1"
 printf '= RFD 1 Invalid directory\n' >"${rfd_root}/1/README.adoc"
 run_failure "invalid RFD entry"
+
+reset_fixtures
+mkdir -p "${rfd_root}/.draft"
+run_failure "invalid RFD entry"
+
+reset_fixtures
+write_valid_rfd discussion https://example.com/pull/2
+mkdir -p "${base_rfd_root}"
+cp -R "${rfd_root}/0001" "${base_rfd_root}/0001"
+sed -i.bak 's/:state: discussion/:state: published/' "${base_rfd_root}/0001/README.adoc"
+rm "${base_rfd_root}/0001/README.adoc.bak"
+export RFD_BASE_DIR="${base_rfd_root}"
+run_failure "invalid RFD state transition"
+
+reset_fixtures
+write_valid_rfd published https://example.com/pull/2
+mkdir -p "${base_rfd_root}"
+cp -R "${rfd_root}/0001" "${base_rfd_root}/0001"
+sed -i.bak 's/:state: published/:state: discussion/' "${base_rfd_root}/0001/README.adoc"
+rm "${base_rfd_root}/0001/README.adoc.bak"
+export RFD_BASE_DIR="${base_rfd_root}"
+run_success
 
 printf 'RFD checker tests passed.\n'

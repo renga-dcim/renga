@@ -39,7 +39,9 @@ The RFD and checklist link to each other, keeping design and decision history
 stable while implementation tasks are checked off.
 
 Run `make check-rfds` to validate source layout, metadata, state, title, and the
-checker regression fixtures.
+checker regression fixtures. CI also supplies `RFD_BASE_REF` so the checker can
+reject lifecycle regressions against the pull-request or push base. A local
+review can do the same with `RFD_BASE_REF=<git-revision> make check-rfds`.
 
 ## States
 
@@ -51,8 +53,18 @@ checker regression fixtures.
 - `abandoned`: deliberately not proceeding or retained only for history.
 
 The usual path is `prediscussion` or `ideation` to `discussion`, then
-`published`, and eventually `committed`. `abandoned` is an off-ramp at any stage.
-Implementation checklist progress does not determine the RFD's state.
+`published`, and eventually `committed`. `abandoned` is an off-ramp before a
+final state.
+
+Checklist progress never changes state automatically, but `committed` requires a
+non-empty checklist with every task complete.
+
+`prediscussion` and `ideation` may move between each other or advance to any
+later state. `discussion` may advance to `published`, `committed`, or
+`abandoned`; `published` may advance to `committed` or `abandoned`. Published and
+committed decisions never regress to drafting states. A committed or abandoned
+RFD is immutable: replace or supersede it with another RFD rather than rewriting
+its lifecycle.
 
 ## Lifecycle
 
@@ -67,7 +79,8 @@ Before merging a proposal that represents project direction, move it to
 `published`. Once the described work is entirely implemented, update it to
 `committed`. Material changes to a published or committed RFD go through a new
 pull request and retain the original discussion link unless the RFD explicitly
-documents a replacement.
+documents a replacement. Changes that supersede a committed or abandoned RFD use
+a new RFD and cross-link the historical decision.
 
 ## Shared principles
 
