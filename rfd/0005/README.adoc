@@ -1,0 +1,161 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: dcim, inventory, location, software
+
+= RFD 5 Physical containment
+
+== Goal
+
+Model where physical inventory belongs: geographic or organizational groups,
+sites, nested locations, racks, rack positions, and unplaced resources. Renga
+must represent incomplete and conflicting placement evidence without inventing
+certainty, while preventing impossible canonical rack occupancy.
+
+This RFD owns physical containment and placement. Hardware dimensions come from
+RFD 6. Cables and Layer 2 topology belong to RFD 7. Power feeds, panels,
+outlets, and power paths require a later RFD.
+
+== NetBox reference
+
+Renga adopts the useful boundaries from NetBox's
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/sites.py[site
+and location models] and
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/racks.py[rack
+model]: sites represent campuses or facilities, locations form a hierarchy
+inside a site, and racks occupy one site and optionally one location. NetBox's
+same-site and rack-geometry validation are important invariants.
+
+Renga differs by preserving source assertions and reconciliation decisions.
+Discovery or import evidence does not silently become confirmed placement.
+
+== Containment model
+
+The initial typed projections are:
+
+* `SiteGroup`: an optional recursively nested grouping for region, business
+  geography, or another organization-defined site hierarchy;
+* `Site`: a campus, datacenter, office, or other independently managed facility;
+* `Location`: a recursively nested area inside exactly one site, such as a
+  building, floor, room, row, cage, or zone;
+* `Rack`: a physical rack in exactly one site and optionally one location;
+* `ResourcePlacement`: the desired or confirmed placement of a physical resource;
+  and
+* `PlacementEvidence`: a source and observation assertion about placement.
+
+Site groups, sites, locations, and racks receive resource envelopes because they
+need stable identity, lifecycle, labels, revisions, relationships, and change
+history. Add their kinds to the accepted resource vocabulary. Placement and
+occupancy remain subordinate typed records rather than resources.
+
+Every object and relationship carries `organization_id`. Composite foreign keys
+prevent cross-organization or cross-site containment. A location's parent must
+belong to the same site, and a rack's location must belong to the rack's site.
+Moving a location subtree to another site is rejected while it contains child
+locations, racks, or placements; an explicit transactional move operation may
+be designed later.
+
+Recursive site-group and location writes reject self-parenting and cycles. Reads
+derive ancestry and descendants with recursive queries rather than trusting a
+client-supplied path. Cached depth or path values, if introduced for performance,
+are rebuildable projections rather than authoritative relationships.
+
+== Sites, locations, and racks
+
+A site initially has a name, stable slug, status, description, physical address,
+time zone, and metadata. Coordinates and external facility identifiers are
+optional typed fields or identifiers when integrations require them.
+
+A location has a name, optional parent, status, description, and metadata. Its
+kind is intentionally organization vocabulary rather than a fixed hierarchy:
+one deployment may use building/floor/room while another uses campus/cage/row.
+Containment, not the kind label, establishes topology.
+
+A rack has a name, status, facility ID, height in rack units, width, starting
+unit convention, optional outer dimensions, and metadata. Rack height must be
+positive. Width and dimension units use bounded choices. Changing height or
+unit convention cannot strand existing occupancy outside the resulting rack.
+
+== Placement and occupancy
+
+A physical resource may be unplaced, placed only at a site or location, or
+installed in a rack. Rack installation records starting unit, positive rack-unit
+height, and face: front, rear, or full-depth. Zero-U and freestanding equipment
+may be assigned to a site/location/rack without consuming rack-unit occupancy.
+
+Canonical placement is desired or operator-confirmed state. Its site and
+location are derived or validated against its rack so three independently
+editable fields cannot disagree. A resource has at most one current canonical
+placement.
+
+Rack occupancy uses subordinate face-specific rows with PostgreSQL integer
+ranges. A front- or rear-mounted device consumes one face; a full-depth device
+consumes both. An exclusion constraint rejects overlapping unit ranges on the
+same rack and face. Placement writes lock the rack, validate bounds, and update
+placement plus occupancy atomically. Resizing or moving equipment cannot leave
+partial occupancy behind.
+
+Hardware height from an assigned device type is the default, not immutable
+truth. An explicit placement height supports unknown or exceptional equipment,
+and disagreement with the catalog becomes a finding rather than a corrupted
+rack range.
+
+== Placement evidence and reconciliation
+
+`PlacementEvidence` links organization, source, observation, resource, asserted
+site/location/rack identifiers, optional position/face, confidence, observed
+time, and metadata. Source-local facility IDs are mapped through normal resource
+identifier claims or explicit source mappings.
+
+Evidence may be complete, partial, or unresolved. Renga records findings for an
+unknown location, ambiguous facility identifier, disagreement between sources,
+catalog-height mismatch, evidence conflicting with confirmed placement, and a
+resource reported in two places at the same effective time.
+
+Agent hostname, IP address, or network adjacency alone is not placement proof.
+Inference policies may propose a site or location and must record their inputs
+and confidence. They do not replace operator-confirmed placement automatically.
+Source omission marks that source's placement assertion stale; it does not clear
+desired or confirmed placement.
+
+== User interaction
+
+The first UI provides site and location navigation, rack lists, rack elevations,
+unplaced-resource queues, and placement findings. Rack elevations show front and
+rear occupancy, lifecycle, freshness, and whether placement is confirmed,
+observed, or inferred.
+
+Routes belong inside the existing `live_session
+:require_authenticated_user` block and `[:browser,
+:require_authenticated_user]` pipeline because placement is organization
+inventory and every view requires login. All context calls accept
+`current_scope` first. Read access follows organization membership; placement
+mutations require the project's managed-inventory owner/admin policy.
+
+Initial routes are:
+
+* `/dcim/sites`
+* `/dcim/sites/:id`
+* `/dcim/locations/:id`
+* `/dcim/racks`
+* `/dcim/racks/:id`
+* `/dcim/placement-findings`
+
+== Initial exclusions
+
+The first implementation excludes floor-plan drawing, geofencing, warehouse
+stock movement, reservations for future rack occupants, cable paths, power
+topology, environmental sensors, and automatic placement from network data.
+
+== Rollout
+
+. Add sites and nested locations with tenant-safe containment.
+. Add racks, geometry, and rack elevations.
+. Add canonical placement and overlap-safe occupancy.
+. Add source placement evidence and reconciliation findings.
+. Integrate hardware dimensions from RFD 6 and topology navigation from RFD 7.
+
+== Implementation
+
+Progress against this proposal is tracked in the
+link:IMPLEMENTATION.org[RFD 5 implementation checklist].

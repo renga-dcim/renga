@@ -260,9 +260,9 @@ CSV import/export and read-only external IPAM sync can follow once the canonical
 model and conflict semantics are established.
 
 VLANs are adjacent to IPAM but not required to deliver VRFs, prefixes, managed
-addresses, and observation findings. A VLAN RFD should define VLAN groups,
-site/location scope, VID uniqueness, and switch evidence before VLANs become a
-prefix prerequisite.
+addresses, and observation findings. RFD 7 defines VLAN groups, scope, VID
+uniqueness, interface membership, and switch evidence; VLANs remain optional
+associations rather than prerequisites for prefixes.
 
 == Rollout
 
@@ -274,8 +274,8 @@ prefix prerequisite.
 . Change observed assignment identity to host-based matching while retaining
   submitted masks in evidence.
 . Add optional routing-domain claims/mappings and durable correlation findings.
-. Add VLAN relationships, ranges, imports, and integrations through follow-up
-  RFDs.
+. Add VLAN relationships under RFD 7 and ranges, imports, and integrations
+  through follow-up RFDs.
 
 == Implementation
 

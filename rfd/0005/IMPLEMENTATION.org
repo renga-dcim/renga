@@ -1,0 +1,24 @@
+#+TITLE: RFD 0005 implementation checklist
+
+Implements [[file:README.adoc][RFD 5: Physical containment]].
+
+- [ ] Add resource envelopes and typed projections for site groups, sites,
+  nested locations, and racks.
+- [ ] Enforce organization and same-site containment with composite foreign keys
+  and reject recursive hierarchy cycles.
+- [ ] Add rack geometry, bounded dimensions, unit convention, and safe resize
+  validation.
+- [ ] Add one canonical placement per physical resource with site/location/rack
+  consistency and support for unplaced, freestanding, and zero-U equipment.
+- [ ] Add face-specific PostgreSQL range occupancy with overlap exclusion and
+  transactional placement, move, resize, and removal operations.
+- [ ] Add observation-linked placement evidence, source mapping, confidence,
+  staleness, and ambiguity/conflict findings without overwriting confirmed
+  placement.
+- [ ] Add authenticated organization-scoped site, location, rack elevation,
+  unplaced-resource, and placement-finding LiveViews in the existing
+  `live_session :require_authenticated_user` router block.
+- [ ] Add tenant, cycle, occupancy concurrency, geometry, evidence,
+  reconciliation, authorization, and LiveView tests.
+- [ ] Run `make check-rfds`, focused DCIM tests, and `mix precommit` before marking
+  the proposal implemented.

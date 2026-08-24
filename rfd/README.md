@@ -10,6 +10,9 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [2: DCIM host agent MVP](0002/README.adoc) | The first complete host collection, reconciliation, and inventory UI loop |
 | [3: Organization intake keys](0003/README.adoc) | Shared organization intake credentials and automatic collector registration |
 | [4: IP address management](0004/README.adoc) | VRFs, managed prefixes and addresses, observed assignments, utilization, and conflict detection |
+| [5: Physical containment](0005/README.adoc) | Sites, nested locations, racks, placement, occupancy, and placement evidence |
+| [6: Hardware catalog and components](0006/README.adoc) | Manufacturers, reusable types, expected components, observed hardware, modules, and inventory items |
+| [7: Layer 2 topology and VLANs](0007/README.adoc) | VLAN namespaces, interface membership, observed adjacency, reconciled links, and physical cables |
 
 ## Source format
 

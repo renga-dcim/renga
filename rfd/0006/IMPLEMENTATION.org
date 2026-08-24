@@ -1,0 +1,29 @@
+#+TITLE: RFD 0006 implementation checklist
+
+Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
+
+- [ ] Add resource envelopes and typed projections for manufacturers, hardware
+  types, module types, and versioned typed component templates.
+- [ ] Keep catalog specifications typed where queried and preserve variable
+  vendor data without turning metadata into hidden invariants.
+- [ ] Add optional, provenance-aware hardware-type matching for physical device
+  resources with ambiguity findings.
+- [ ] Materialize expected components separately from observations and support
+  confirmed per-asset exceptions without mutating shared catalog types.
+- [ ] Add module bays, compatibility validation, one current module per bay,
+  cycle prevention, and transactional install/remove history.
+- [ ] Add nested inventory-only parts with tenant and cycle constraints and an
+  explicit path for promoting topology-bearing components.
+- [ ] Promote high-value shape-open agent components into typed source evidence
+  while preserving unknown kinds in immutable observations.
+- [ ] Reconcile expected and observed components into canonical projections and
+  missing, unexpected, ambiguous, identity, compatibility, and drift findings.
+- [ ] Link interface templates and NIC/port evidence to the existing canonical
+  interface model rather than creating a parallel network endpoint model.
+- [ ] Add authenticated organization-scoped catalog, device hardware, module,
+  inventory-item, and finding LiveViews in the existing
+  `live_session :require_authenticated_user` router block.
+- [ ] Add tenant, catalog revision, matching, module concurrency, evidence,
+  reconciliation, authorization, and LiveView tests.
+- [ ] Run `make check-rfds`, focused hardware tests, and `mix precommit` before
+  marking the proposal implemented.

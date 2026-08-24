@@ -1,0 +1,31 @@
+#+TITLE: RFD 0007 implementation checklist
+
+Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
+
+- [ ] Add resource envelopes and typed projections for VLAN groups and VLANs,
+  including global operation without RFD 5 placement data.
+- [ ] Add non-overlapping valid VID ranges, bounded VLAN IDs, null-safe global
+  namespace uniqueness, group-local uniqueness, and safe range changes.
+- [ ] Add optional typed site/location group scope after RFD 5, without generic
+  cross-domain foreign keys.
+- [ ] Add canonical tagged/untagged interface membership, one effective untagged
+  VLAN rule, interface mode validation, and tenant-safe constraints.
+- [ ] Add source-local VLAN mapping and observation-linked membership evidence
+  with complete-versus-partial snapshot and stale semantics.
+- [ ] Extend logical interface relationship evidence without conflating host
+  stacking, Layer 2 adjacency, and physical cabling.
+- [ ] Add LLDP/CDP evidence, stable remote endpoint matching, expiry, reciprocal
+  confidence, unresolved endpoints, canonical adjacency, and findings.
+- [ ] Add direct physical cables with endpoint compatibility, single active
+  termination, desired-state authorization, and change history.
+- [ ] Ensure neighbor evidence can propose or validate but never automatically
+  create, delete, or move a cable.
+- [ ] Add optional tenant-safe prefix/VLAN relationships without making VLANs a
+  prerequisite for IPAM.
+- [ ] Add authenticated organization-scoped VLAN, topology, cable, and finding
+  LiveViews in the existing `live_session :require_authenticated_user` router
+  block.
+- [ ] Add tenant, namespace, range, membership concurrency, evidence, matching,
+  cable, authorization, and LiveView tests.
+- [ ] Run `make check-rfds`, focused topology tests, and `mix precommit` before
+  marking the proposal implemented.

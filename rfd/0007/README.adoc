@@ -1,0 +1,182 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: inventory, network, topology, vlan
+
+= RFD 7 Layer 2 topology and VLANs
+
+== Goal
+
+Model Layer 2 intent and observed reality without conflating logical adjacency,
+interface stacking, VLAN membership, and confirmed physical cabling. Renga
+should represent VLAN namespaces, tagged and untagged membership, source
+evidence, reconciled neighbor links, and physical cables while preserving
+uncertainty and temporal changes.
+
+This RFD owns VLANs, VLAN groups, interface VLAN membership, Layer 2 neighbor
+evidence, canonical adjacency, and physical cables. IP prefixes and addresses
+belong to RFD 4. Physical sites, locations, and racks belong to RFD 5. Hardware
+port templates and modules belong to RFD 6.
+
+== Existing foundation
+
+Renga already has source-neutral canonical interfaces, observation-linked
+interface evidence, and directed interface relationships with kinds for parent,
+lower device, LAG member, bridge member, bridged, peer, VRF member, and backing
+links. Tenant-safe foreign keys prevent cross-organization endpoints, and
+relationships reject self-links and duplicate source/target/kind tuples.
+
+The host agent currently reports interface identity, status, MAC address, MTU,
+speed, and IP assignments. It does not report LLDP/CDP neighbors, switch MAC
+tables, VLAN membership, or physical cables. Existing relationship rows are a
+foundation, not proof of a physical connection.
+
+== NetBox reference
+
+Renga adopts the scoped VLAN and typed connection principles from NetBox's
+link:https://github.com/netbox-community/netbox/blob/main/netbox/ipam/models/vlans.py[VLAN
+models],
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/device_components.py[interface
+model], and
+link:https://github.com/netbox-community/netbox/blob/main/netbox/dcim/models/cables.py[cable
+model]. VLAN IDs are unique only in a meaningful group or scope; interfaces are
+real endpoints; and cables validate compatible, distinct terminations.
+
+Renga differs by preserving LLDP/CDP and collector reports as evidence. Neighbor
+evidence may propose adjacency but never silently creates an operator-confirmed
+physical cable.
+
+== VLAN namespace
+
+`VlanGroup` defines a VLAN-ID namespace and optional scope. The first scope kinds
+are organization-global, site, and location. Site/location scope depends on RFD
+5; global groups work without physical containment. Explicit typed scope fields
+and check constraints are preferred over a generic foreign key.
+
+A group has a name, slug, description, status, and one or more non-overlapping
+valid VID ranges. PostgreSQL multirange or validated range rows represent
+allocatable space without enumerating every VID. Range changes cannot strand an
+existing VLAN outside the group's allowed space.
+
+`Vlan` has a group, VID, name, status, optional functional role, description,
+and metadata. VID is bounded to ordinary IEEE 802.1Q values; reserved values are
+rejected unless a later protocol-specific design requires them. Group plus VID
+is unique. If ungrouped VLANs are supported, null group means one
+organization-global namespace with null-safe uniqueness; it does not mean
+unknown scope.
+
+VLAN groups and VLANs receive resource envelopes. Envelope names are
+server-generated or group-qualified so identical names and VIDs in different
+groups do not collide with resource-level uniqueness.
+
+== Interface membership
+
+`InterfaceVlanAssignment` relates a canonical interface to a canonical VLAN with
+tagging mode `tagged` or `untagged`. An interface can have many tagged VLANs and
+at most one untagged VLAN within the effective Layer 2 context. Duplicate
+interface/VLAN membership is rejected. Interface operational mode such as
+access, trunk, or tagged-all is a typed desired field and is validated against
+explicit memberships.
+
+Assignments represent canonical intent or reconciled current state according to
+their ownership. Per-source `InterfaceVlanEvidence` links source, observation,
+interface, VLAN source-local key, tagging mode, observed time, and metadata.
+Source-local VLAN IDs are resolved only inside the source's mapped group/scope.
+An unresolved or ambiguous scope produces a finding instead of attaching the
+VID to an arbitrary VLAN.
+
+Omission is authoritative only for a source and observation contract that
+declares a complete VLAN snapshot. Partial polling does not withdraw unseen
+memberships. Findings cover unexpected, missing, conflicting tagging mode,
+unknown VLAN, out-of-range VID, and ambiguous scope.
+
+== Logical interface topology
+
+Existing directed interface relationships continue to represent host and
+virtual topology such as bonds, bridges, peers, and lower-device stacking. Their
+evidence model is extended with authoritative snapshot and stale semantics.
+
+Layer 2 neighbor adjacency is a separate relationship kind and evidence shape.
+LLDP/CDP evidence stores local interface, remote chassis identifier, remote port
+identifier and description, protocol, source, observation, TTL or expiry,
+observed time, and raw metadata. It may remain unresolved when the remote device
+or interface cannot be matched.
+
+Reconciliation uses stable chassis and port identifiers before names. Reciprocal
+observations strengthen confidence but are not mandatory. Findings cover
+ambiguous remote identity, asymmetric reports, conflicting neighbors, expired
+adjacency, and adjacency inconsistent with confirmed cabling. A neighbor change
+updates the current projection while immutable evidence preserves history.
+
+== Physical cables
+
+`Cable` is operator-confirmed or imported desired physical state, distinct from
+observed adjacency. The first implementation connects two canonical interfaces
+and stores cable type, status, optional label, color, length and unit,
+description, tenant metadata, and change history. Endpoints must be distinct,
+organization-compatible, physically connectable, and not already terminated by
+another active cable.
+
+Hardware port compatibility comes from RFD 6 when available. Unknown connector
+types may be recorded but require explicit confirmation. Virtual interfaces,
+bridges, loopbacks, and other nonphysical endpoints cannot be cabled.
+
+Later cable-path work may add pass-through front/rear ports, patch panels,
+circuits, and traced paths. The first release does not pretend a direct cable is
+a full path through unmodeled infrastructure.
+
+LLDP/CDP evidence never creates or deletes a cable automatically. It can propose
+a candidate, confirm consistency, or open a drift finding. Cable removal remains
+an authorized desired-state mutation.
+
+== Prefix and routing relationships
+
+A prefix may optionally associate with one or more VLANs through an explicit
+tenant-safe relationship. Neither side owns the other, and a prefix does not
+require a VLAN. VRF, VLAN, and Layer 2 scope remain separate concepts; matching
+names or numeric identifiers do not imply a relationship.
+
+== User interaction
+
+The first UI provides VLAN group utilization, VLAN lists, interface membership,
+unresolved neighbor evidence, reconciled adjacency, cable inventory, and
+topology findings. Resource details link interfaces to their memberships,
+logical relationships, observed neighbors, and confirmed cables without
+presenting them as one undifferentiated connection.
+
+Routes belong inside the existing `live_session
+:require_authenticated_user` block and `[:browser,
+:require_authenticated_user]` pipeline because topology is organization
+inventory and every view requires login. All context calls accept
+`current_scope` first. Read access follows organization membership; VLAN and
+cable mutations require the managed-inventory owner/admin policy.
+
+Initial routes are:
+
+* `/ipam/vlan-groups`
+* `/ipam/vlans`
+* `/network/topology`
+* `/network/cables`
+* `/network/topology-findings`
+
+== Initial exclusions
+
+The first implementation excludes STP state, EVPN/VXLAN control-plane modeling,
+MAC forwarding tables, dynamic MAC learning, MLAG domain configuration, circuit
+paths, patch-panel traversal, cable reservations, and automatic switch
+configuration.
+
+== Rollout
+
+. Add global VLAN groups, VID ranges, VLANs, and utilization.
+. Add interface tagged/untagged membership and source evidence.
+. Add optional site/location VLAN scope after RFD 5 foundations exist.
+. Add LLDP/CDP evidence, remote endpoint matching, adjacency, and findings.
+. Add confirmed direct cables and drift comparison without automatic mutation.
+. Add prefix/VLAN relationships and later topology protocols through follow-up
+  RFDs.
+
+== Implementation
+
+Progress against this proposal is tracked in the
+link:IMPLEMENTATION.org[RFD 7 implementation checklist].
