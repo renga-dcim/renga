@@ -2,27 +2,42 @@
 
 Implements [[file:README.adoc][RFD 4: IP address management]].
 
-- [ ] Add organization-scoped VRF resource envelopes and typed projections,
-  including one default VRF per organization.
-- [ ] Replace `Prefix.vrf` text with a tenant-safe VRF association and preserve
-  existing prefix data during migration.
-- [ ] Enforce exact prefix uniqueness per VRF while supporting contained prefix
-  hierarchy through PostgreSQL CIDR operators and the GiST index.
+- [ ] Deliver global-table prefix CRUD, hierarchy, and utilization with no VRF
+  setup requirement.
+- [ ] Add optional organization-scoped VRF resource envelopes and typed
+  projections; null `vrf_id` remains the global routing table.
+- [ ] Replace `Prefix.vrf` text with a nullable tenant-safe VRF association,
+  mapping blank/default values to global and preserving every other valid legacy
+  routing domain.
+- [ ] Enforce exact managed-prefix uniqueness per global-or-VRF namespace while
+  supporting contained hierarchy through PostgreSQL CIDR operators and the GiST
+  index.
 - [ ] Add authenticated, organization-scoped VRF and prefix LiveViews in the
-  existing `live_session :require_authenticated_user` router block.
-- [ ] Calculate prefix hierarchy and utilization without enumerating address
-  space or double-counting child prefixes.
-- [ ] Add managed IP-address resource envelopes and typed projections normalized
-  to IPv4 or IPv6 host masks.
-- [ ] Add optional and multi-interface managed assignments with tenant-safe
-  constraints and intentional shared-address roles.
-- [ ] Correlate active observed assignments to managed addresses only when VRF
-  context is known, defaulting rather than guessing when it is absent.
+  existing `live_session :require_authenticated_user` router block, defaulting
+  the UI to the global table.
+- [ ] Calculate namespace-local hierarchy and utilization from distinct hosts and
+  interval unions without enumerating address space or double-counting child
+  prefixes, duplicate evidence, or shared assignments.
+- [ ] Add `ip_address` resource envelopes and typed projections that retain the
+  intended mask while enforcing managed identity by namespace and host value.
+- [ ] Keep lifecycle, allocation state, management mode, and shared-address role
+  orthogonal in the managed address model.
+- [ ] Add optional assignments with tenant-safe constraints, address-row locking,
+  ordinary single-assignment validation, and explicit shared-address roles.
+- [ ] Change observed-address identity to interface plus host value while
+  preserving every reported address and mask in observation evidence.
+- [ ] Add observation-linked routing-domain claims, authoritative source
+  capability, external-domain mapping, stale membership handling, and an
+  unmapped-domain outcome; absent claims remain global.
+- [ ] Define finding precedence and correlate active observed assignments by
+  resolved namespace and host value without treating same-address use in another
+  VRF as inherently wrong.
 - [ ] Surface unmanaged, outside-prefix, stale, duplicate, prefix-length, and
-  wrong-VRF findings with source evidence.
+  wrong-VRF findings with source evidence, plus unmapped routing domains.
 - [ ] Resolve findings as observed state converges without deleting immutable
   observation or change history.
 - [ ] Add context, constraint, query, reconciliation, authorization, concurrency,
-  and LiveView tests for IPv4 and IPv6 behavior.
+  migration, and LiveView tests for global, VRF-scoped, IPv4, IPv6, shared, and
+  conflicting behavior.
 - [ ] Run `make check-rfds`, focused IPAM tests, and `mix precommit` before marking
   the proposal implemented.

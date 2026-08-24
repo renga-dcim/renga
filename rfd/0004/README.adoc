@@ -25,86 +25,153 @@ index supports containment and overlap queries. Resource kinds already reserve
 `prefix`, `vrf`, and `vlan` domain concepts.
 
 The current prefix's free-text `vrf` field is not a sufficient routing-domain
-identity. Observed `Address` rows are assignments to a specific resource and
-interface, so they cannot also represent an unassigned reservation or one
-managed address intentionally attached to several interfaces.
+identity when overlapping routing tables need to be modeled. It is not required
+for ordinary global-table IPAM. Observed `Address` rows are assignments to a
+specific resource and interface, so they cannot also represent an unassigned
+reservation or managed assignment intent.
+
+== NetBox reference
+
+Renga adopts several useful NetBox IPAM semantics without copying its complete
+model:
+
+* A prefix or IP address may omit its VRF and thereby belong to the global
+  routing table. A VRF is needed only to model another routing namespace.
+* Prefix hierarchy is derived from address containment rather than a mutable
+  parent foreign key.
+* IP addresses retain their submitted prefix length, while duplicate detection
+  and utilization compare distinct host values.
+* Prefix status, prefix function, address allocation state, and shared-address
+  role are separate concerns.
+* Intentional shared identities use explicit roles such as VIP, anycast, or
+  VRRP rather than disabling duplicate checks for all addresses.
+
+The relevant upstream descriptions are
+link:https://netboxlabs.com/docs/netbox/models/ipam/vrf[NetBox's VRF model] and
+link:https://netboxlabs.com/docs/netbox/features/ipam[IPAM hierarchy and
+utilization]. Renga differs by retaining immutable observations and source
+evidence and by treating unexpected duplicates as reconciliation findings.
 
 == Domain boundary
 
 Managed intent and observed evidence remain separate:
 
-* `Vrf` defines the routing domain in which address uniqueness has meaning.
-* `Prefix` defines managed CIDR space and status inside a VRF.
-* `IpAddress` defines a managed host address, reservation, role, and lifecycle.
-* `IpAddressAssignment` associates a managed address with zero or more canonical
+* A null `vrf_id` identifies the global routing table. It is a real namespace,
+  not an unknown or invalid value.
+* `Vrf` optionally defines an additional isolated routing namespace.
+* `Prefix` defines managed CIDR space and status in the global table or one VRF.
+* `IpAddress` defines one managed host address, allocation state, management
+  mode, and role in the global table or one VRF.
+* `IpAddressAssignment` associates that managed address with canonical
   interfaces.
 * Existing `Address` and `AddressEvidence` records remain observed interface
   assignments reported by collectors.
 * Correlation and findings compare managed addresses with active observed
   assignments without erasing either side.
 
-VRFs, prefixes, and managed IP addresses use resource envelopes because they are
-independently addressable inventory objects that need desired state, lifecycle,
-revisions, and change history. Typed projections retain their constrained,
-queryable fields.
+VRFs, prefixes, and managed IP addresses use resource envelopes because they
+are independently addressable inventory objects that need desired state,
+lifecycle, revisions, and change history. Add `ip_address` to the accepted
+resource kinds. An IP-address envelope receives a server-generated stable name
+rather than using address text, because the same host address may validly exist
+in several VRFs. Typed projections retain their constrained, queryable fields.
 
 == VRFs
 
-Every organization receives a default VRF. Prefixes and managed addresses have a
-non-null organization-scoped `vrf_id`; uniqueness is evaluated inside that VRF.
-This permits the same RFC 1918 prefix or host address in unrelated routing
-domains without treating it as a conflict.
+VRF objects are optional. A null `vrf_id` means the global routing table, and an
+organization can use prefixes, managed addresses, assignments, utilization, and
+findings without creating any VRFs. Objects in the global table are assumed to
+share one routing namespace. If two isolated sites reuse `10.0.0.0/8` without
+modeling their isolation, Renga is expected to report conflicts.
+
+Creating a VRF introduces another organization-scoped namespace. The same CIDR
+or host address may exist independently in different VRFs and in the global
+table. There is no synthetic "default" VRF row.
 
 A VRF initially has a name, optional route distinguisher, description, status,
 and metadata. Names and non-null route distinguishers are unique within an
 organization. Import targets and route targets are deferred until a collector or
 operator workflow needs them.
 
-The existing free-text prefix VRF is migrated to first-class records, with blank
-or `default` values mapped to the organization's default VRF.
+The existing free-text prefix VRF is migrated without dropping distinctions.
+Blank values and the normalized value `default` become null and therefore
+global. Every other distinct normalized value creates one organization-scoped
+VRF and is replaced by its foreign key. Ambiguous or invalid values fail the
+migration with a remediation report rather than being silently mapped.
 
 == Prefixes
 
-A prefix has a canonical CIDR, VRF, status, description, optional role, and
-resource envelope. Exact duplicate CIDRs are rejected within a VRF. Contained
-prefixes are valid hierarchy rather than overlap errors.
+A prefix has a canonical CIDR, nullable VRF, status, description, optional role,
+and resource envelope. Exact duplicate managed CIDRs are rejected within the
+same namespace, including the global table. The same CIDR is valid in different
+VRFs. Contained prefixes are hierarchy rather than overlap errors.
 
 Parentage is derived using PostgreSQL containment and longest-prefix matching;
 it is not stored as an independently mutable parent ID. This avoids a second
 source of truth when prefixes are moved or resized. The GiST index remains the
 primary lookup path.
 
-Initial statuses are `active`, `reserved`, and `deprecated`. Roles are bounded
-product vocabulary introduced only for immediate workflows, rather than an
-unvalidated metadata convention. Site, VLAN, tenant, and aggregate relationships
-may be added independently without making them prerequisites for prefix use.
+Initial statuses are `container`, `active`, `reserved`, and `deprecated`.
+Container utilization is based on the union of child-prefix space; other prefix
+statuses use occupied host values and ranges. Prefix roles are bounded or
+user-managed functional categories introduced only for immediate workflows,
+rather than an unvalidated metadata convention. Site, VLAN, tenant, and
+aggregate relationships may be added independently without making them
+prerequisites for prefix use.
 
 == Managed addresses and assignments
 
-`IpAddress.address` uses PostgreSQL `inet` normalized to a host mask (`/32` for
-IPv4 and `/128` for IPv6). The selected containing prefix is derived by
-longest-prefix match in the same VRF rather than trusted from user input.
+`IpAddress.address` uses PostgreSQL `inet` and retains its intended prefix
+length. Managed uniqueness, matching, and utilization use the host portion, so
+`192.0.2.10/24` and `192.0.2.10/32` identify the same host in one namespace.
+The containing prefix is derived by longest-prefix match in that namespace
+rather than stored as an independently mutable association.
 
-An address initially carries status, role, optional DNS name, description, and
-metadata. Status distinguishes at least active, reserved, DHCP-managed, and
-deprecated records. Role distinguishes ordinary addresses from intentional
-shared identities such as VIP, anycast, or VRRP where duplicate attachment is
-expected.
+The resource envelope owns lifecycle. The typed address projection keeps
+orthogonal fields:
 
-Assignments are separate rows so an address can be reserved with no interface,
-normally assigned once, or intentionally assigned to several interfaces. The
-database prevents duplicate copies of the same address-to-interface assignment.
-The application reports, rather than rejects, unexpected duplicate observations
-so conflicting real-world state remains visible.
+* `allocation_state`: `allocated` or `reserved`;
+* `management_mode`: `static`, `dhcp`, or `slaac`;
+* `role`: ordinary, loopback, secondary, VIP, anycast, or a supported
+  first-hop-redundancy protocol; and
+* optional DNS name, description, and metadata.
+
+One canonical `IpAddress` exists for each managed host value and namespace.
+Assignments are separate rows so an address can be reserved or intentionally
+unassigned, normally assigned to one interface, or attached to several
+interfaces when its role explicitly permits sharing. The database prevents a
+duplicate address-to-interface pair. Assignment transactions lock the address
+row; ordinary roles reject a second assignment, and changing a shared role to
+an ordinary role is rejected while multiple assignments exist.
+
+Observed duplicate assignments are always accepted as evidence. An unexpected
+duplicate produces a finding rather than failing observation ingestion.
 
 == Observation correlation
 
-Observed addresses are matched by normalized host address and VRF. Prefix length
-from the observation remains evidence and is compared with the most-specific
-managed prefix. A collector observation may establish VRF context only when the
-source explicitly reports a trusted interface-to-VRF relationship. Otherwise it
-is correlated only with the default VRF; Renga must not guess a non-default VRF
-from address text alone.
+Canonical observed-address identity becomes interface plus host value rather
+than interface plus complete `inet`. The current reported mask remains on the
+canonical row, and every original address and mask remains in
+`AddressEvidence`. A changed mask updates one observed assignment instead of
+creating a second host assignment on the same interface.
+
+An observation with no routing-domain claim belongs to the global table. This
+matches the product's no-isolation default and may intentionally produce a
+duplicate finding when the operator has not modeled real isolation.
+
+Sources that can report routing domains submit a source-local domain key and
+interface membership as observation-linked evidence. A source capability marks
+whether it is authoritative for that membership. Source-local keys map to a
+managed VRF through a stable external identifier, route distinguisher, or an
+explicit organization-scoped source mapping. An explicit but unmapped key
+produces `unmapped_routing_domain` and is not silently treated as global.
+
+Correlation first resolves the namespace, then compares normalized host values.
+The reported prefix length remains evidence and is compared with the
+most-specific managed prefix in that namespace. A `wrong_vrf` finding requires
+an explicit managed assignment to the observed interface plus authoritative
+evidence that the interface is currently in another mapped namespace; the mere
+existence of the same host in another VRF is not a conflict.
 
 The reconciliation layer produces queryable findings for:
 
@@ -112,21 +179,30 @@ The reconciliation layer produces queryable findings for:
 * an observed address outside every managed prefix;
 * a managed assignment not currently observed;
 * an unexpected duplicate active address across interfaces or resources;
-* an observed prefix length that disagrees with managed containment; and
+* an observed prefix length that disagrees with managed containment;
+* an explicit source routing-domain key with no managed mapping; and
 * a managed address observed in the wrong VRF when explicit VRF evidence exists.
 
 Intentional shared-address roles suppress only the corresponding duplicate
 finding. They do not suppress stale, wrong-VRF, or outside-prefix findings.
 Findings retain involved records and source evidence and resolve when subsequent
 state agrees; immutable observations and change events preserve history.
+Duplicate findings group active evidence by namespace and distinct interface or
+resource, independent of reported mask. Unmapped-domain findings take precedence
+over namespace-dependent address findings because no safe namespace match exists.
 
 == Utilization
 
-Prefix utilization is calculated from managed address records and active
-observations, with separate counts for assigned, reserved, DHCP-managed,
-observed-unmanaged, and available space. Child prefixes are reported separately
-so their space is not misleadingly presented as individually available in the
-parent.
+Prefix utilization is namespace-local and calculated from distinct host values
+and unions of address ranges or child prefixes, never from row counts. Duplicate
+observations and intentionally shared assignments therefore consume one host.
+
+Utilization categories are mutually exclusive in this order: reserved managed
+hosts, assigned managed hosts, managed-but-unassigned hosts,
+observed-but-unmanaged hosts, then available space. Management mode is a filter
+or sub-count and does not compete with allocation categories. Child prefixes are
+reported separately so their space is not presented as individually available
+in the parent.
 
 Neither IPv4 nor IPv6 utilization enumerates every possible address. Queries use
 counts and address arithmetic; IPv6 capacities may be displayed as counts or
@@ -135,9 +211,10 @@ broadcast, and other non-assignable address policy is explicit and family-aware.
 
 == User interaction
 
-The first browser surface provides VRF selection, a hierarchical prefix list,
-prefix detail and utilization, managed-address search, reservations and
-assignments, and observed conflict findings.
+The first browser surface defaults to the global table and provides optional VRF
+selection, a hierarchical prefix list, prefix detail and utilization,
+managed-address search, reservations and assignments, and observed conflict
+findings. No VRF setup is required before creating global prefixes or addresses.
 
 Routes belong inside the existing `live_session
 :require_authenticated_user` block and `[:browser,
@@ -170,6 +247,10 @@ available" allocator must serialize competing allocation attempts and prove it
 cannot return the same address twice before it is exposed as a public API. That
 allocator is not required for the first UI milestone.
 
+Managed prefix and host uniqueness is enforced inside a namespace. Global-table
+rows require null-safe uniqueness, while VRF rows use their `vrf_id`. Observed
+rows deliberately do not use this managed uniqueness constraint.
+
 == Initial exclusions
 
 The first implementation does not include DHCP or DNS writes, RIR workflows,
@@ -185,12 +266,16 @@ prefix prerequisite.
 
 == Rollout
 
-. Add first-class VRFs and migrate existing prefixes to a default VRF.
-. Deliver managed prefix CRUD, hierarchy, overlap queries, and utilization from
-  existing observed assignments.
-. Add managed IP addresses and explicit assignments.
-. Add durable correlation findings and conflict resolution behavior.
-. Add VLAN relationships, imports, and integrations through follow-up RFDs.
+. Deliver global-table prefix CRUD, hierarchy, and utilization without requiring
+  a VRF.
+. Add optional VRFs and migrate nonblank legacy routing-domain names without
+  manufacturing a default VRF.
+. Add managed IP addresses and role-constrained assignments.
+. Change observed assignment identity to host-based matching while retaining
+  submitted masks in evidence.
+. Add optional routing-domain claims/mappings and durable correlation findings.
+. Add VLAN relationships, ranges, imports, and integrations through follow-up
+  RFDs.
 
 == Implementation
 
