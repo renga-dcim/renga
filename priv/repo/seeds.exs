@@ -3,9 +3,16 @@ if Mix.env() == :dev do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
   alias Renga.Inventory
+  alias Renga.Inventory.Address
   alias Renga.Inventory.Agent
+  alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Host
   alias Renga.Inventory.IntakeApiKey
+  alias Renga.Inventory.Interface
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Inventory.Source
   alias Renga.Repo
 
@@ -137,98 +144,172 @@ if Mix.env() == :dev do
       end
 
       seed_server = fn attrs ->
+        resource_attrs = %{
+          kind: "server",
+          name: attrs.name,
+          display_name: attrs.display_name,
+          lifecycle_state: attrs.lifecycle_state,
+          labels: %{"site" => attrs.site, "service" => attrs.service},
+          spec: %{"power" => attrs.power}
+        }
+
         resource =
-          Repo.get_by(Resource,
-            organization_id: organization.id,
-            kind: "server",
-            name: attrs.name
+          case Repo.get_by(Resource,
+                 organization_id: organization.id,
+                 kind: "server",
+                 name: attrs.name
+               ) do
+            nil ->
+              {:ok, resource} = Inventory.create_resource(scope, resource_attrs)
+              resource
+
+            resource ->
+              if Map.take(resource, Map.keys(resource_attrs)) == resource_attrs do
+                resource
+              else
+                {:ok, resource} = Inventory.update_resource(scope, resource, resource_attrs)
+                resource
+              end
+          end
+
+        host_attrs = %{
+          hostname: attrs.name,
+          fqdn: "#{attrs.name}.demo.renga.local",
+          vendor: attrs.vendor,
+          model: attrs.model,
+          asset_tag: attrs.asset_tag
+        }
+
+        case Repo.get_by(Host, organization_id: organization.id, resource_id: resource.id) do
+          nil ->
+            {:ok, _host} = Inventory.create_host(scope, resource.id, host_attrs)
+
+          host ->
+            host |> Host.changeset(host_attrs) |> Repo.update!()
+        end
+
+        identifier_attrs = %{kind: "serial_number", value: attrs.serial}
+
+        identifier =
+          case Repo.get_by(ResourceIdentifier,
+                 organization_id: organization.id,
+                 resource_id: resource.id,
+                 kind: "serial_number"
+               ) do
+            nil ->
+              {:ok, identifier} =
+                Inventory.create_resource_identifier(scope, resource.id, identifier_attrs)
+
+              identifier
+
+            identifier ->
+              identifier |> ResourceIdentifier.changeset(identifier_attrs) |> Repo.update!()
+          end
+
+        interface_attrs = %{
+          name: "eth0",
+          mac_address: attrs.mac,
+          status: attrs.interface_status,
+          speed_mbps: 10_000
+        }
+
+        interface =
+          case Repo.get_by(Interface,
+                 organization_id: organization.id,
+                 resource_id: resource.id,
+                 name: "eth0"
+               ) do
+            nil ->
+              {:ok, interface} =
+                Inventory.create_interface(scope, resource.id, interface_attrs)
+
+              interface
+
+            interface ->
+              interface |> Interface.changeset(interface_attrs) |> Repo.update!()
+          end
+
+        address_attrs = %{kind: "ipv4", address: attrs.address, scope: "global"}
+
+        case Repo.get_by(Address,
+               organization_id: organization.id,
+               interface_id: interface.id
+             ) do
+          nil ->
+            {:ok, _address} = Inventory.create_address(scope, interface.id, address_attrs)
+
+          address ->
+            address |> Address.changeset(address_attrs) |> Repo.update!()
+        end
+
+        observation_id = "orb-seed-#{attrs.name}"
+
+        if observation =
+             Repo.get_by(Observation,
+               organization_id: organization.id,
+               source_id: demo_source.id,
+               idempotency_key: observation_id
+             ) do
+          if event =
+               Repo.get_by(ChangeEvent,
+                 organization_id: organization.id,
+                 observation_id: observation.id
+               ) do
+            Repo.delete!(event)
+          end
+
+          if claim =
+               Repo.get_by(ResourceIdentifierClaim,
+                 organization_id: organization.id,
+                 observation_id: observation.id
+               ) do
+            Repo.delete!(claim)
+          end
+
+          Repo.delete!(observation)
+        end
+
+        observed_at = DateTime.add(now, -attrs.observed_minutes, :minute)
+
+        {:ok, observation} =
+          Inventory.create_observation(scope, demo_source.id, %{
+            observation_id: observation_id,
+            observed_at: observed_at,
+            payload: %{"hostname" => attrs.name, "serial_number" => attrs.serial}
+          })
+
+        {:ok, _claim} =
+          Inventory.create_resource_identifier_claim(
+            scope,
+            demo_source.id,
+            observation.id,
+            %{
+              resource_id: resource.id,
+              resource_identifier_id: identifier.id,
+              kind: "serial_number",
+              value: attrs.serial,
+              confidence: 100
+            }
           )
 
-        if resource do
-          resource
-        else
-          {:ok, resource} =
-            Inventory.create_resource(scope, %{
-              kind: "server",
-              name: attrs.name,
-              display_name: attrs.display_name,
-              lifecycle_state: attrs.lifecycle_state,
-              labels: %{"site" => attrs.site, "service" => attrs.service},
-              spec: %{"power" => attrs.power}
-            })
+        {:ok, _condition} =
+          Inventory.put_resource_condition(scope, resource.id, %{
+            type: "InventoryCurrent",
+            status: attrs.inventory_status,
+            reason: attrs.inventory_reason,
+            message: attrs.inventory_message
+          })
 
-          {:ok, _host} =
-            Inventory.create_host(scope, resource.id, %{
-              hostname: attrs.name,
-              fqdn: "#{attrs.name}.demo.renga.local",
-              vendor: attrs.vendor,
-              model: attrs.model,
-              asset_tag: attrs.asset_tag
-            })
+        {:ok, _event} =
+          Inventory.create_change_event(scope, %{
+            kind: "discovered",
+            resource_id: resource.id,
+            source_id: demo_source.id,
+            observation_id: observation.id,
+            occurred_at: observed_at
+          })
 
-          {:ok, identifier} =
-            Inventory.create_resource_identifier(scope, resource.id, %{
-              kind: "serial_number",
-              value: attrs.serial
-            })
-
-          {:ok, interface} =
-            Inventory.create_interface(scope, resource.id, %{
-              name: "eth0",
-              mac_address: attrs.mac,
-              status: attrs.interface_status,
-              speed_mbps: 10_000
-            })
-
-          {:ok, _address} =
-            Inventory.create_address(scope, interface.id, %{
-              kind: "ipv4",
-              address: attrs.address,
-              scope: "global"
-            })
-
-          observed_at = DateTime.add(now, -attrs.observed_minutes, :minute)
-
-          {:ok, observation} =
-            Inventory.create_observation(scope, demo_source.id, %{
-              observation_id: "orb-seed-#{attrs.name}",
-              observed_at: observed_at,
-              payload: %{"hostname" => attrs.name, "serial_number" => attrs.serial}
-            })
-
-          {:ok, _claim} =
-            Inventory.create_resource_identifier_claim(
-              scope,
-              demo_source.id,
-              observation.id,
-              %{
-                resource_id: resource.id,
-                resource_identifier_id: identifier.id,
-                kind: "serial_number",
-                value: attrs.serial,
-                confidence: 100
-              }
-            )
-
-          {:ok, _condition} =
-            Inventory.put_resource_condition(scope, resource.id, %{
-              type: "InventoryCurrent",
-              status: attrs.inventory_status,
-              reason: attrs.inventory_reason,
-              message: attrs.inventory_message
-            })
-
-          {:ok, _event} =
-            Inventory.create_change_event(scope, %{
-              kind: "discovered",
-              resource_id: resource.id,
-              source_id: demo_source.id,
-              observation_id: observation.id,
-              occurred_at: observed_at
-            })
-
-          resource
-        end
+        resource
       end
 
       seed_server.(%{
