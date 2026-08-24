@@ -1,0 +1,74 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: committed
+:discussion: https://github.com/renga-dcim/renga/pull/36
+:labels: agent, api, security, software
+
+= RFD 3 Organization intake keys and automatic collector registration
+
+== Goal
+
+Allow an organization owner or administrator to create one intake API key that
+can be deployed to many agents. Each installation generates a durable UUID, and
+Renga automatically creates its dedicated source and agent records on first
+contact while retaining per-installation provenance.
+
+== Trust boundary
+
+An intake key authenticates one active organization, not an individual machine.
+The installation UUID is a correlation identifier under this shared-key trust
+model, not cryptographic proof of installation identity. Anyone holding a key
+can submit inventory to its organization and may impersonate a known
+installation UUID.
+
+That tradeoff keeps early fleet installation simple. HTTPS is required outside
+development; only hashes are stored; keys are revealed once, independently
+revocable, and redacted from diagnostics. Intake authority is limited to agent
+check-ins and observations. It cannot authorize browser access, organization
+reads, administration, desired-state mutation, terminal sessions, or future
+control-plane operations.
+
+== Credential and registration model
+
+An organization may have multiple active named keys so rotation can overlap.
+First check-in and first observation resolve or atomically create one dedicated
+`Source(kind: "host_agent")` and `Agent` for the organization and installation
+UUID. Observations and evidence continue to reference that source.
+
+Source names use a stable server-controlled scheme rather than trusting a
+reported hostname. Source, agent, lease, observation, sync-run, and evidence
+models retain their separate provenance and operational roles.
+
+== Agent identity
+
+The agent generates a UUID on first startup and persists it in a strictly
+permissioned state directory under `/var/lib/renga`. Restarts and package
+upgrades preserve it. Golden images may share the organization key but must not
+contain generated agent state; each clone creates its own installation UUID.
+
+Normal configuration contains the Renga URL, organization intake key, intervals,
+and collection settings. Operators do not create an installation UUID manually.
+
+== Rotation and revocation
+
+Rotation creates a replacement key, deploys it, verifies migration using
+operational evidence, and then revokes the old key. Revocation affects every
+agent still using that key but does not delete sources, agents, observations, or
+provenance.
+
+Disabling an agent is an operational lifecycle action, not an authentication
+barrier against a caller that still possesses the organization key. Stronger
+per-agent or workload identity can be introduced by a later RFD when deployment
+requirements justify the additional protocol and operational complexity.
+
+== User interaction
+
+Key management belongs to the existing authenticated
+`live_session :require_authenticated_user` and organization-selected operations
+UI because keys grant intake access to the selected organization. Context
+transactions recheck active owner or administrator authority for every key
+mutation. Plaintext is displayed only on creation.
+
+== Implementation
+
+The completed rollout and legacy-cleanup outcomes are recorded in the
+link:IMPLEMENTATION.org[RFD 3 implementation checklist].

@@ -32,6 +32,11 @@ changelog:
 .PHONY: lint
 lint: ex-lint rs-lint rs-fmt
 
+.PHONY: check-rfds
+check-rfds:
+	@./scripts/check-rfd-status.sh
+	@./scripts/check-rfd-status-test.sh
+
 .PHONY: ex-lint
 ex-lint:
 	mix credo

@@ -1,0 +1,138 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: published
+:discussion: https://github.com/renga-dcim/renga/pull/1
+:labels: architecture, dcim, inventory, software
+
+= RFD 1 Renga DCIM architecture
+
+== Goal
+
+Build Renga into a DCIM system that keeps a live, queryable inventory of
+physical hosts, network switches, virtual machines, and related resources by
+syncing deployed agents and infrastructure integrations.
+
+The system should answer what resources exist, where they are located, what
+changed, which source reported each fact, and which records are stale,
+duplicated, missing, or conflicting.
+
+== Product principles
+
+* Inventory is observed first and manually corrected second.
+* Every fact retains provenance, observation time, confidence, and raw evidence
+  where useful.
+* Syncs are idempotent and safe to retry.
+* The central application reconciles state; collectors report observations.
+* Stale data remains visible instead of being silently trusted.
+* Basic inventory collection remains available when the control channel is not.
+* Privileged agent capabilities require explicit policy and audit history.
+* Renga is organization-scoped from collection through query and presentation.
+
+== System shape
+
+The Phoenix application owns identity, canonical inventory, desired state,
+reconciliation, audit history, and the web UI. External collectors submit
+immutable observations over HTTPS:
+
+* Rust host agents on bare-metal servers and VM guests;
+* network collectors using protocols such as SNMP, LLDP, and gNMI/OpenConfig;
+* virtualization and cloud provider syncers; and
+* optional out-of-band hardware collectors.
+
+Polling and HTTP remain the correctness path. Persisted jobs and a future
+Phoenix Channels connection may accelerate control operations, notifications,
+and streaming output without becoming required for inventory ingestion.
+
+== Inventory model
+
+The model has four layers:
+
+. Resource envelopes identify independently addressable and reconcilable
+  objects and carry lifecycle, desired specification, generation, and revision.
+. Typed canonical projections provide constrained, queryable current inventory.
+. Per-source evidence and identifier claims preserve provenance and disagreement.
+. Immutable observations preserve submitted source evidence.
+
+Canonical resources are source-neutral. Reconciliation records field ownership,
+conflicts, stale transitions, and meaningful changes without treating the change
+log as the source of truth. Resource lifecycle, inventory freshness, agent lease
+health, and reconciliation state remain independent.
+
+Stable values use typed PostgreSQL columns and domain types such as `macaddr`,
+`inet`, and `cidr`. JSONB is used for variable desired specification, raw
+observations, detailed evidence, and vendor-specific data rather than replacing
+typed projections.
+
+== Identity and reconciliation
+
+Strong identifiers such as provider IDs, serial numbers, machine IDs, DMI UUIDs,
+and MAC-address sets take precedence over hostnames. Hostname and FQDN are weak
+signals. Conflicting or duplicate claims remain representable; uncertainty must
+not be hidden by destructive uniqueness constraints.
+
+The normal processing flow is:
+
+. authenticate the organization-scoped producer;
+. store the immutable observation using source-scoped idempotency;
+. record or refresh source evidence and identifier claims;
+. match or create source-neutral resources;
+. project accepted values according to deterministic ownership rules; and
+. update conditions and append non-authoritative change events.
+
+Manual corrections use explicit field overrides so observed evidence is retained.
+Normal operator intent belongs in resource desired state rather than overrides.
+
+== Agent and collector direction
+
+The host agent is Rust, daemon-first, and maintained in this repository while
+the protocol evolves. It supports scheduled operation plus bounded `--once` and
+`--dry-run` modes. Debian and Ubuntu packages are the initial installation path.
+
+Switch collection should prefer protocol-first implementations. VM collection
+begins read-only, with libvirt/KVM before broader provider support. Every source
+type emits the same transport-independent observation concept.
+
+Organization intake credentials authorize only machine intake. Future terminal,
+query, desired-state, or VM lifecycle operations require separately designed
+capabilities and authorization.
+
+== Control-plane direction
+
+Persisted jobs are the durable control primitive. Agents poll, lease work, and
+append job events. A persistent socket may notify connected agents and stream
+output, but polling remains the fallback and recovery path.
+
+Live terminal, operational query, and VM placement features are deliberately
+later slices. They require capability advertisement, server and agent policy,
+bounded execution, cancellation, complete audit trails, and explicit operator
+authorization.
+
+== Domain boundaries
+
+Renga follows the useful separation established by systems such as NetBox:
+
+* DCIM owns sites, locations, racks, devices, components, cabling, and power.
+* IPAM owns VRFs, prefixes, ranges, managed addresses, and VLANs.
+* Virtualization owns clusters, hypervisors, VMs, and virtual attachments.
+* Tenancy owns organization and future business ownership boundaries.
+
+Renga differs by making agents, observations, reconciliation, freshness,
+desired-versus-observed state, and eventual control-plane jobs first-class.
+Discovery must provide useful inventory without requiring complete manual
+modeling first.
+
+== Security and verification
+
+Transport outside development uses TLS. Credentials are generated centrally,
+stored as hashes, scoped to the narrowest practical authority, rotatable, and
+redacted from diagnostics. Observation bodies and raw retention are bounded.
+Tenant isolation and capabilities are enforced in contexts and APIs, not only
+in presentation code.
+
+Context, controller, reconciliation, collector, and LiveView tests cover tenant
+isolation, identity ambiguity, retries, stale transitions, conflicts, payload
+validation, and key user workflows.
+
+== Implementation
+
+Progress against this direction is tracked in the
+link:IMPLEMENTATION.org[RFD 1 implementation checklist].

@@ -1,0 +1,21 @@
+#+TITLE: RFD 0003 implementation checklist
+
+Implements [[file:README.adoc][RFD 3: Organization intake keys and automatic collector registration]].
+
+- [X] Owners and administrators can create a hashed, one-time-reveal organization
+  intake key and revoke it without deleting inventory or provenance.
+- [X] Multiple active keys permit fleet rotation without downtime.
+- [X] One key authenticates many installation UUIDs in its organization and has no
+  authority outside the two agent intake endpoints.
+- [X] Concurrent first check-ins and observations create exactly one dedicated
+  source and agent for each organization and installation UUID.
+- [X] Every observation remains attributed to the installation's source.
+- [X] The agent generates and securely persists installation identity across
+  restart and package upgrade; state-free clones generate distinct identities.
+- [X] Revoked keys and keys for disabled organizations are rejected.
+- [X] Legacy per-source credentials, enrollment reset, obsolete UI, and default
+  configured installation IDs are removed without losing provenance.
+- [X] Context, API, concurrency, LiveView, Rust identity, and package persistence
+  tests cover the delivered behavior.
+- [X] OIDC, challenges, attestation, ABAC, keypairs, runtime credential renewal,
+  group keys, and per-agent keys remain outside this design.
