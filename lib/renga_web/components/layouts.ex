@@ -33,7 +33,7 @@ defmodule RengaWeb.Layouts do
 
   attr :active_nav, :atom,
     default: nil,
-    values: [nil, :overview, :resources, :collectors],
+    values: [nil, :overview, :resources, :collectors, :dcim],
     doc: "the active inventory navigation destination"
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
@@ -99,6 +99,12 @@ defmodule RengaWeb.Layouts do
             icon="hero-circle-stack"
             label="Collectors"
             active?={@active_nav == :collectors}
+          />
+          <.sidebar_link
+            navigate={~p"/dcim/sites"}
+            icon="hero-building-office-2"
+            label="Physical inventory"
+            active?={@active_nav == :dcim}
           />
         </nav>
 
@@ -187,6 +193,12 @@ defmodule RengaWeb.Layouts do
                   icon="hero-circle-stack"
                   label="Collectors"
                   active?={@active_nav == :collectors}
+                />
+                <.sidebar_link
+                  navigate={~p"/dcim/sites"}
+                  icon="hero-building-office-2"
+                  label="Physical inventory"
+                  active?={@active_nav == :dcim}
                 />
               </nav>
               <div class="mt-2 border-t border-base-content/10 pt-2">

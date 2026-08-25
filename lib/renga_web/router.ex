@@ -66,6 +66,13 @@ defmodule RengaWeb.Router do
       live "/inventory/resources", ResourceLive.Index, :index
       live "/inventory/resources/:id", ResourceLive.Show, :show
       live "/inventory/operations", InventoryOperationsLive, :index
+
+      live "/dcim/sites", DcimLive, :sites
+      live "/dcim/sites/:id", DcimLive, :site
+      live "/dcim/locations/:id", DcimLive, :location
+      live "/dcim/racks", DcimLive, :racks
+      live "/dcim/racks/:id", DcimLive, :rack
+      live "/dcim/placement-findings", DcimLive, :findings
     end
 
     post "/organizations/select", OrganizationSessionController, :create

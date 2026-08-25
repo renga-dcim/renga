@@ -8,7 +8,7 @@ Implements [[file:README.adoc][RFD 1: Renga DCIM architecture]].
   lease health, and the operational inventory UI.
 - [X] Replace per-collector bootstrap credentials with organization intake keys
   while retaining per-installation provenance.
-- [ ] Deliver physical sites, locations, racks, and placement under
+- [X] Deliver physical sites, locations, racks, and placement under
   [[file:../0005/README.adoc][RFD 5]].
 - [ ] Deliver hardware catalog and component reconciliation under
   [[file:../0006/README.adoc][RFD 6]].

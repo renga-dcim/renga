@@ -25,7 +25,7 @@ defmodule Renga.Inventory.Resource do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(server switch vm container pdu storage prefix vlan vrf unknown)
+  @kinds ~w(server switch vm container pdu storage prefix vlan vrf site_group site location rack unknown)
   @lifecycle_states ~w(active inactive retired unknown)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
