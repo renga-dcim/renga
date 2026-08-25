@@ -7,6 +7,7 @@ defmodule Renga.CatalogTest do
   alias Renga.Accounts
   alias Renga.Catalog
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.HardwareAssignment
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.Manufacturer
   alias Renga.Catalog.ModuleType
@@ -365,6 +366,166 @@ defmodule Renga.CatalogTest do
     end
   end
 
+  test "operator assignments pin the latest revision until explicitly changed", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "operator-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
+    {:ok, first_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:ok, assignment} =
+             Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+
+    assert assignment.origin == "operator"
+    assert assignment.catalog_type_revision_id == first_revision.id
+    assert assignment.provenance["user_id"] == scope.user.id
+
+    {:ok, _second_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert Catalog.get_hardware_assignment(scope, resource.id).catalog_type_revision_id ==
+             first_revision.id
+
+    assert {:ok, nil} = Catalog.clear_hardware_assignment(scope, resource.id)
+    refute Catalog.get_hardware_assignment(scope, resource.id)
+  end
+
+  test "reconciliation normalizes manufacturer/model facts and preserves provenance", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "matched-device")
+
+    {:ok, host} =
+      Inventory.create_host(scope, resource.id, %{
+        vendor: "  ACME, Inc. ",
+        model: " rs 42 ",
+        metadata: %{
+          "field_owners" => %{
+            "vendor" => %{"source_id" => "source-1"},
+            "model" => %{"source_id" => "source-2"}
+          }
+        }
+      })
+
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme Inc", "acme-inc")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
+    {:ok, revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.origin == "reconciled"
+    assert assignment.hardware_type_id == hardware_type.id
+    assert assignment.catalog_type_revision_id == revision.id
+    assert assignment.provenance["reported_vendor"] == host.vendor
+    assert assignment.provenance["matched_by"] == "model"
+    assert assignment.provenance["field_owners"]["model"]["source_id"] == "source-2"
+  end
+
+  test "reconciliation can match a reported product identifier to a revision part number", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "part-number-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Acme", model: "PN 123"})
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "Friendly name", "server")
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{part_number: "PN-123"})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.hardware_type_id == hardware_type.id
+    assert assignment.provenance["matched_by"] == "part_number"
+  end
+
+  test "ambiguous catalog matches remain findings and never select a candidate", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "ambiguous-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Shared", model: "X1"})
+
+    for suffix <- ["one", "two"] do
+      {:ok, manufacturer} =
+        Catalog.create_manufacturer(
+          scope,
+          %{name: "Shared #{suffix}", lifecycle_state: "active"},
+          %{slug: "shared-#{suffix}", metadata: %{"aliases" => ["Shared"]}}
+        )
+
+      {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+      {:ok, _revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+    end
+
+    assert {:ok, nil} = Catalog.reconcile_hardware_type(scope, resource.id)
+    refute Catalog.get_hardware_assignment(scope, resource.id)
+
+    assert [finding] = Catalog.list_hardware_match_findings(scope)
+    assert finding.kind == "ambiguous_catalog_match"
+    assert length(finding.details["candidate_hardware_type_ids"]) == 2
+  end
+
+  test "operator assignment wins over later matching and matching keeps its pinned revision", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "authoritative-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Observed", model: "O1"})
+
+    {:ok, observed_vendor} = manufacturer_fixture(scope, "Observed", "observed")
+    {:ok, observed_type} = hardware_type_fixture(scope, observed_vendor, "O1", "server")
+    {:ok, observed_revision} = Catalog.create_hardware_type_revision(scope, observed_type, %{})
+
+    assert {:ok, reconciled} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert reconciled.catalog_type_revision_id == observed_revision.id
+
+    {:ok, _new_revision} = Catalog.create_hardware_type_revision(scope, observed_type, %{})
+    assert {:ok, still_pinned} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert still_pinned.catalog_type_revision_id == observed_revision.id
+
+    {:ok, chosen_vendor} = manufacturer_fixture(scope, "Chosen", "chosen")
+    {:ok, chosen_type} = hardware_type_fixture(scope, chosen_vendor, "C1", "server")
+    {:ok, _chosen_revision} = Catalog.create_hardware_type_revision(scope, chosen_type, %{})
+    assert {:ok, operator} = Catalog.assign_hardware_type(scope, resource.id, chosen_type.id)
+
+    assert {:ok, unchanged} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert unchanged.id == operator.id
+    assert unchanged.hardware_type_id == chosen_type.id
+  end
+
+  test "assignment mutations enforce resource, tenant, revision, and authorization boundaries", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = physical_resource_fixture(scope, "bounded-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+    nonphysical = Catalog.get_manufacturer!(scope, manufacturer.id).resource
+
+    assert {:error, :unsupported_resource_kind} =
+             Catalog.assign_hardware_type(scope, nonphysical.id, hardware_type.id)
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.assign_hardware_type(member_scope, resource.id, hardware_type.id)
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    foreign_resource = physical_resource_fixture(other_scope, "foreign-device")
+
+    assert {:error, changeset} =
+             %HardwareAssignment{
+               organization_id: other_scope.organization_id,
+               resource_id: foreign_resource.id
+             }
+             |> HardwareAssignment.changeset(%{
+               hardware_type_id: hardware_type.id,
+               catalog_type_revision_id: revision.id,
+               origin: "operator"
+             })
+             |> Repo.insert()
+
+    assert errors_on(changeset) != %{}
+  end
+
   defp manufacturer_fixture(scope, name, slug) do
     Catalog.create_manufacturer(
       scope,
@@ -406,5 +567,12 @@ defmodule Renga.CatalogTest do
       ])
 
     {revision, List.first(revision.component_templates)}
+  end
+
+  defp physical_resource_fixture(scope, name) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})
+
+    resource
   end
 end
