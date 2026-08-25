@@ -25,7 +25,7 @@ defmodule Renga.Inventory.Resource do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(server switch vm container pdu storage prefix vlan vrf site_group site location rack unknown)
+  @kinds ~w(server switch vm container pdu storage prefix vlan vrf site_group site location rack manufacturer hardware_type module_type unknown)
   @lifecycle_states ~w(active inactive retired unknown)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
@@ -69,6 +69,7 @@ defmodule Renga.Inventory.Resource do
       :annotations,
       :deletion_requested_at
     ])
+    |> reject_kind_change()
     |> update_change(:name, &String.trim/1)
     |> update_change(:display_name, &trim_string/1)
     |> maybe_increment_generation()
@@ -82,6 +83,16 @@ defmodule Renga.Inventory.Resource do
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :kind, :name])
   end
+
+  defp reject_kind_change(%Ecto.Changeset{data: %{id: id}} = changeset) when not is_nil(id) do
+    if get_change(changeset, :kind) do
+      add_error(changeset, :kind, "cannot be changed")
+    else
+      changeset
+    end
+  end
+
+  defp reject_kind_change(changeset), do: changeset
 
   # Generation changes only when desired state changes, not for labels, status,
   # conditions, or observations. Controllers can use it as a reconciliation fence.
