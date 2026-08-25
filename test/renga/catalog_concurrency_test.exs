@@ -46,6 +46,58 @@ defmodule Renga.CatalogConcurrencyTest do
     end)
   end
 
+  test "concurrent inverse-parent updates cannot create an inventory item cycle" do
+    with_catalog(fn scope, _hardware_type ->
+      {:ok, owner} =
+        Renga.Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "Hierarchy owner",
+          lifecycle_state: "active"
+        })
+
+      {:ok, first} = Catalog.create_inventory_item(scope, owner.id, %{name: "First", kind: "fru"})
+
+      {:ok, second} =
+        Catalog.create_inventory_item(scope, owner.id, %{name: "Second", kind: "fru"})
+
+      test_process = self()
+
+      first_task =
+        concurrent(fn ->
+          Repo.transaction(fn ->
+            result = Catalog.update_inventory_item(scope, first, %{parent_id: second.id})
+            send(test_process, :first_parent_ready)
+
+            receive do
+              :release_first_parent -> result
+            end
+          end)
+        end)
+
+      assert_receive :first_parent_ready, 1_000
+
+      lock_probe =
+        concurrent(fn ->
+          Repo.query!("SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2))", [
+            scope.organization_id,
+            "catalog-inventory-item-hierarchy"
+          ])
+        end)
+
+      assert %Postgrex.Result{rows: [[false]]} = Task.await(lock_probe)
+
+      second_task =
+        concurrent(fn -> Catalog.update_inventory_item(scope, second, %{parent_id: first.id}) end)
+
+      assert Task.yield(second_task, 200) == nil
+      send(first_task.pid, :release_first_parent)
+
+      assert {:ok, {:ok, updated_first}} = Task.await(first_task)
+      assert updated_first.parent_id == second.id
+      assert {:error, :hierarchy_cycle} = Task.await(second_task)
+    end)
+  end
+
   defp concurrent(fun) do
     Task.async(fn ->
       :ok = Sandbox.checkout(Repo, sandbox: false)
