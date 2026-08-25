@@ -19,6 +19,7 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.HardwareAssignment
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.Catalog.HardwareType
+  alias Renga.Catalog.InventoryItem
   alias Renga.Catalog.Manufacturer
   alias Renga.Catalog.ModuleType
   alias Renga.Catalog.TypeRevision
@@ -28,6 +29,7 @@ defmodule Renga.Catalog do
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
+  @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -114,6 +116,24 @@ defmodule Renga.Catalog do
     |> Repo.all()
   end
 
+  def list_inventory_items(%Scope{organization_id: organization_id}, owner_resource_id) do
+    InventoryItem
+    |> where(
+      [item],
+      item.organization_id == ^organization_id and item.owner_resource_id == ^owner_resource_id
+    )
+    |> order_by([item], asc: item.name)
+    |> preload([:parent])
+    |> Repo.all()
+  end
+
+  def get_inventory_item!(%Scope{organization_id: organization_id}, id) do
+    InventoryItem
+    |> where([item], item.organization_id == ^organization_id and item.id == ^id)
+    |> preload([:parent, :children])
+    |> Repo.one!()
+  end
+
   def create_manufacturer(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
       create_projection(scope, Manufacturer, "manufacturer", resource_attrs, attrs)
@@ -148,6 +168,33 @@ defmodule Renga.Catalog do
         templates \\ []
       ) do
     create_type_revision(scope, ModuleType, module_type.id, attrs, templates)
+  end
+
+  def create_inventory_item(%Scope{} = scope, owner_resource_id, attrs) do
+    managed_transaction(scope, fn ->
+      lock_inventory_item_hierarchy(scope.organization_id)
+      owner = scoped_physical_resource!(scope.organization_id, owner_resource_id)
+      parent_id = attr(attrs, :parent_id)
+      validate_inventory_item_parent!(scope, nil, owner.id, parent_id)
+
+      %InventoryItem{
+        organization_id: scope.organization_id,
+        owner_resource_id: owner.id
+      }
+      |> InventoryItem.changeset(attrs)
+      |> insert_or_rollback()
+    end)
+  end
+
+  def update_inventory_item(%Scope{} = scope, %InventoryItem{} = item, attrs) do
+    managed_transaction(scope, fn ->
+      lock_inventory_item_hierarchy(scope.organization_id)
+      stored = scoped_lock!(InventoryItem, scope.organization_id, item.id)
+      changeset = InventoryItem.changeset(stored, attrs)
+      parent_id = Ecto.Changeset.get_field(changeset, :parent_id)
+      validate_inventory_item_parent!(scope, stored.id, stored.owner_resource_id, parent_id)
+      update_or_rollback(changeset)
+    end)
   end
 
   @doc """
@@ -357,6 +404,54 @@ defmodule Renga.Catalog do
     if resource.kind in @physical_device_kinds,
       do: resource,
       else: Repo.rollback(:unsupported_resource_kind)
+  end
+
+  defp scoped_physical_resource!(organization_id, resource_id) do
+    resource = scoped_get!(Resource, organization_id, resource_id)
+
+    if resource.kind in @physical_device_kinds,
+      do: resource,
+      else: Repo.rollback(:unsupported_resource_kind)
+  end
+
+  defp validate_inventory_item_parent!(_scope, _item_id, _owner_resource_id, nil), do: :ok
+
+  defp validate_inventory_item_parent!(scope, item_id, owner_resource_id, parent_id) do
+    parent = scoped_get!(InventoryItem, scope.organization_id, parent_id)
+    if parent.owner_resource_id != owner_resource_id, do: Repo.rollback(:parent_owner_mismatch)
+
+    if item_id && inventory_item_descendant?(scope.organization_id, item_id, parent_id),
+      do: Repo.rollback(:hierarchy_cycle)
+  end
+
+  defp inventory_item_descendant?(organization_id, parent_id, possible_descendant_id) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH RECURSIVE descendants AS (
+          SELECT id FROM inventory_items WHERE organization_id = $1 AND parent_id = $2
+          UNION ALL
+          SELECT child.id FROM inventory_items child
+          JOIN descendants descendant ON child.parent_id = descendant.id
+          WHERE child.organization_id = $1
+        )
+        SELECT 1 FROM descendants WHERE id = $3 LIMIT 1
+        """,
+        [
+          Ecto.UUID.dump!(organization_id),
+          Ecto.UUID.dump!(parent_id),
+          Ecto.UUID.dump!(possible_descendant_id)
+        ]
+      )
+
+    rows != []
+  end
+
+  defp lock_inventory_item_hierarchy(organization_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      organization_id,
+      @inventory_item_hierarchy_lock
+    ])
   end
 
   defp reconcile_unconfirmed_hardware_type(scope, resource, assignment) do
@@ -756,6 +851,12 @@ defmodule Renga.Catalog do
     schema
     |> where([record], record.organization_id == ^organization_id and record.id == ^id)
     |> lock("FOR UPDATE")
+    |> Repo.one!()
+  end
+
+  defp scoped_get!(schema, organization_id, id) do
+    schema
+    |> where([record], record.organization_id == ^organization_id and record.id == ^id)
     |> Repo.one!()
   end
 

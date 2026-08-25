@@ -21,8 +21,9 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 - [ ] Add module bays, compatibility validation, separate desired and current
   module assignment per bay, concurrency-safe cycle prevention, and
   transactional install/remove history.
-- [ ] Add nested inventory-only parts with tenant and concurrency-safe cycle
-  constraints and an explicit path for promoting topology-bearing components.
+- [X] Add nested inventory-only parts with tenant and concurrency-safe cycle
+  constraints.
+- [ ] Add an explicit path for promoting topology-bearing inventory parts.
 
 * Phase 4: Component evidence and reconciliation
 
