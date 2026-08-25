@@ -2,9 +2,9 @@
 
 Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
-- [ ] Add resource envelopes and typed projections for manufacturers, hardware
+- [X] Add resource envelopes and typed projections for manufacturers, hardware
   types, module types, and versioned typed component templates.
-- [ ] Keep catalog specifications typed where queried and preserve variable
+- [X] Keep catalog specifications typed where queried and preserve variable
   vendor data without turning metadata into hidden invariants.
 - [ ] Add optional, provenance-aware hardware-type matching for physical device
   resources with ambiguity findings.
