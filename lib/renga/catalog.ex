@@ -204,13 +204,12 @@ defmodule Renga.Catalog do
         assignment
       else
         host = scoped_host(scope.organization_id, resource.id)
-        candidates = hardware_match_candidates(scope.organization_id, host)
+        candidates = hardware_match_candidates(scope.organization_id, host, assignment)
 
         case candidates do
           [] ->
             resolve_match_finding(scope, resource.id)
-            delete_reconciled_assignment(assignment)
-            nil
+            assignment
 
           [{hardware_type, revision, matched_by}] ->
             resolve_match_finding(scope, resource.id)
@@ -227,8 +226,7 @@ defmodule Renga.Catalog do
 
           candidates ->
             put_ambiguous_match_finding(scope, resource.id, host, candidates)
-            delete_reconciled_assignment(assignment)
-            nil
+            assignment
         end
       end
     end)
@@ -246,25 +244,23 @@ defmodule Renga.Catalog do
       assignment = locked_assignment(scope.organization_id, resource.id)
       if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
 
-      template_id = attr(attrs, :component_template_id)
-      validate_exception_template!(scope, assignment, template_id, attr(attrs, :action))
-
       exception =
-        if template_id do
-          Repo.get_by(ExpectedComponentException,
-            organization_id: scope.organization_id,
-            hardware_assignment_id: assignment.id,
-            component_template_id: template_id
-          )
-        end ||
+        find_expected_component_exception(scope, assignment, attrs) ||
           %ExpectedComponentException{
             organization_id: scope.organization_id,
             hardware_assignment_id: assignment.id,
-            confirmed_by_user_id: scope.user.id
+            catalog_type_revision_id: assignment.catalog_type_revision_id
           }
 
+      template_id = attr(attrs, :component_template_id) || exception.component_template_id
+      validate_exception_template!(scope, assignment, template_id, attr(attrs, :action))
+
       exception =
-        exception
+        %{
+          exception
+          | catalog_type_revision_id: assignment.catalog_type_revision_id,
+            confirmed_by_user_id: scope.user.id
+        }
         |> ExpectedComponentException.changeset(attrs)
         |> upsert()
 
@@ -411,15 +407,7 @@ defmodule Renga.Catalog do
           resource_id: resource.id
         }
 
-    if assignment.id && assignment.catalog_type_revision_id != revision.id do
-      ExpectedComponent
-      |> where(
-        [component],
-        component.organization_id == ^scope.organization_id and
-          component.hardware_assignment_id == ^assignment.id
-      )
-      |> Repo.delete_all()
-    end
+    assignment = replace_changed_assignment(assignment, revision)
 
     assignment
     |> HardwareAssignment.changeset(%{
@@ -430,6 +418,24 @@ defmodule Renga.Catalog do
     })
     |> upsert()
   end
+
+  defp replace_changed_assignment(
+         %HardwareAssignment{catalog_type_revision_id: revision_id} = assignment,
+         %TypeRevision{id: revision_id}
+       ),
+       do: assignment
+
+  defp replace_changed_assignment(%HardwareAssignment{id: id} = assignment, _revision)
+       when not is_nil(id) do
+    Repo.delete!(assignment)
+
+    %HardwareAssignment{
+      organization_id: assignment.organization_id,
+      resource_id: assignment.resource_id
+    }
+  end
+
+  defp replace_changed_assignment(assignment, _revision), do: assignment
 
   defp locked_assignment(organization_id, resource_id) do
     HardwareAssignment
@@ -445,16 +451,16 @@ defmodule Renga.Catalog do
     Repo.get_by(Host, organization_id: organization_id, resource_id: resource_id)
   end
 
-  defp hardware_match_candidates(_organization_id, nil), do: []
+  defp hardware_match_candidates(_organization_id, nil, _assignment), do: []
 
-  defp hardware_match_candidates(organization_id, %Host{vendor: vendor, model: model})
+  defp hardware_match_candidates(organization_id, %Host{vendor: vendor, model: model}, assignment)
        when is_binary(vendor) and is_binary(model) do
     HardwareType
     |> where([type], type.organization_id == ^organization_id)
     |> preload([:resource, manufacturer: :resource, revisions: ^latest_revisions_query()])
     |> Repo.all()
     |> Enum.flat_map(fn hardware_type ->
-      revision = List.first(hardware_type.revisions)
+      revision = matching_revision(hardware_type, assignment)
 
       with true <- manufacturer_matches?(hardware_type.manufacturer, vendor),
            matched_by when not is_nil(matched_by) <- product_match(hardware_type, revision, model),
@@ -466,7 +472,19 @@ defmodule Renga.Catalog do
     end)
   end
 
-  defp hardware_match_candidates(_organization_id, _host), do: []
+  defp hardware_match_candidates(_organization_id, _host, _assignment), do: []
+
+  defp matching_revision(
+         %HardwareType{id: hardware_type_id, revisions: revisions},
+         %HardwareAssignment{
+           hardware_type_id: hardware_type_id,
+           catalog_type_revision_id: revision_id
+         }
+       ),
+       do: Enum.find(revisions, &(&1.id == revision_id))
+
+  defp matching_revision(%HardwareType{revisions: revisions}, _assignment),
+    do: List.first(revisions)
 
   defp latest_revisions_query do
     from revision in TypeRevision,
@@ -475,7 +493,11 @@ defmodule Renga.Catalog do
   end
 
   defp manufacturer_matches?(manufacturer, reported_vendor) do
-    aliases = Map.get(manufacturer.metadata, "aliases", [])
+    aliases =
+      case Map.get(manufacturer.metadata, "aliases", []) do
+        aliases when is_list(aliases) -> Enum.filter(aliases, &is_binary/1)
+        _invalid -> []
+      end
 
     [manufacturer.resource.name, manufacturer.slug | aliases]
     |> Enum.filter(&is_binary/1)
@@ -690,10 +712,31 @@ defmodule Renga.Catalog do
           finding.kind == "ambiguous_catalog_match" and finding.status == "open"
   end
 
-  defp delete_reconciled_assignment(%HardwareAssignment{origin: "reconciled"} = assignment),
-    do: Repo.delete!(assignment)
+  defp find_expected_component_exception(scope, assignment, attrs) do
+    case attr(attrs, :exception_id) do
+      nil ->
+        case attr(attrs, :component_template_id) do
+          nil ->
+            nil
 
-  defp delete_reconciled_assignment(_assignment), do: nil
+          template_id ->
+            Repo.get_by(ExpectedComponentException,
+              organization_id: scope.organization_id,
+              hardware_assignment_id: assignment.id,
+              component_template_id: template_id
+            )
+        end
+
+      exception_id ->
+        ExpectedComponentException
+        |> where(
+          [exception],
+          exception.id == ^exception_id and exception.organization_id == ^scope.organization_id and
+            exception.hardware_assignment_id == ^assignment.id
+        )
+        |> Repo.one!()
+    end
+  end
 
   defp next_revision(organization_id, owner_field, type_id) do
     TypeRevision

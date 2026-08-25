@@ -14,6 +14,7 @@ defmodule Renga.Catalog.ExpectedComponentException do
     field :name, :string
     field :changes, :map, default: %{}
     field :confirmed_by_user_id, :binary_id
+    field :catalog_type_revision_id, :binary_id
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :hardware_assignment, Renga.Catalog.HardwareAssignment
     belongs_to :component_template, Renga.Catalog.ComponentTemplate
@@ -27,6 +28,7 @@ defmodule Renga.Catalog.ExpectedComponentException do
     |> validate_required([
       :organization_id,
       :hardware_assignment_id,
+      :catalog_type_revision_id,
       :action,
       :confirmed_by_user_id
     ])
@@ -34,10 +36,10 @@ defmodule Renga.Catalog.ExpectedComponentException do
     |> validate_inclusion(:kind, @kinds)
     |> validate_shape()
     |> assoc_constraint(:hardware_assignment,
-      name: :expected_component_exceptions_assignment_fkey
+      name: :expected_component_exceptions_assignment_revision_fkey
     )
     |> assoc_constraint(:component_template,
-      name: :expected_component_exceptions_template_fkey
+      name: :expected_component_exceptions_template_revision_fkey
     )
     |> unique_constraint([:organization_id, :hardware_assignment_id, :component_template_id],
       name: :expected_component_exceptions_template_index

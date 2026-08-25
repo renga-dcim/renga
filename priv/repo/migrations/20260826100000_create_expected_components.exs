@@ -29,6 +29,8 @@ defmodule Renga.Repo.Migrations.CreateExpectedComponents do
           ),
           null: false
 
+      add :catalog_type_revision_id, :binary_id, null: false
+
       add :component_template_id,
           references(:component_templates,
             with: [organization_id: :organization_id],
@@ -48,6 +50,22 @@ defmodule Renga.Repo.Migrations.CreateExpectedComponents do
 
       timestamps(type: :"timestamp(3)")
     end
+
+    execute """
+    ALTER TABLE expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_assignment_revision_fkey
+    FOREIGN KEY (hardware_assignment_id, organization_id, catalog_type_revision_id)
+    REFERENCES hardware_assignments(id, organization_id, catalog_type_revision_id)
+    ON DELETE CASCADE
+    """
+
+    execute """
+    ALTER TABLE expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_template_revision_fkey
+    FOREIGN KEY (component_template_id, organization_id, catalog_type_revision_id)
+    REFERENCES component_templates(id, organization_id, catalog_type_revision_id)
+    ON DELETE RESTRICT
+    """
 
     create constraint(:expected_component_exceptions, :expected_component_exceptions_valid_shape,
              check: """
