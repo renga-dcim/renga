@@ -21,6 +21,7 @@ defmodule Renga.Catalog.TypeRevision do
     field :weight_kg, :decimal
     field :airflow, :string
     field :specifications, :map, default: %{}
+    field :finalized_at, :utc_datetime_usec
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :hardware_type, Renga.Catalog.HardwareType
     belongs_to :module_type, Renga.Catalog.ModuleType
@@ -42,6 +43,7 @@ defmodule Renga.Catalog.TypeRevision do
       :airflow,
       :specifications
     ])
+    |> reject_mutation()
     |> validate_required([:organization_id, :revision])
     |> validate_number(:revision, greater_than: 0)
     |> validate_number(:height_units, greater_than: 0)
@@ -61,6 +63,13 @@ defmodule Renga.Catalog.TypeRevision do
       name: :catalog_type_revisions_module_revision_index
     )
   end
+
+  defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
+       when not is_nil(id) and map_size(changes) > 0 do
+    add_error(changeset, :base, "catalog revision is immutable")
+  end
+
+  defp reject_mutation(changeset), do: changeset
 
   defp validate_map(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->

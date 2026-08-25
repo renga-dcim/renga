@@ -2,6 +2,25 @@ defmodule Renga.Repo.Migrations.CreateHardwareCatalog do
   use Ecto.Migration
 
   def up do
+    execute """
+    CREATE FUNCTION enforce_resource_kind_immutability() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.kind IS DISTINCT FROM OLD.kind THEN
+        RAISE EXCEPTION 'resource kind is immutable'
+          USING ERRCODE = '23514', CONSTRAINT = 'resources_kind_immutable';
+      END IF;
+
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """
+
+    execute """
+    CREATE TRIGGER resources_enforce_kind_immutability
+    BEFORE UPDATE OF kind ON resources
+    FOR EACH ROW EXECUTE FUNCTION enforce_resource_kind_immutability()
+    """
+
     create_projection(:manufacturers, fn ->
       add :slug, :string, null: false
       add :description, :text
@@ -83,6 +102,7 @@ defmodule Renga.Repo.Migrations.CreateHardwareCatalog do
       add :weight_kg, :decimal, precision: 10, scale: 3
       add :airflow, :string
       add :specifications, :map, null: false, default: %{}
+      add :finalized_at, :"timestamp(3)"
       timestamps(type: :"timestamp(3)", updated_at: false)
     end
 
@@ -142,9 +162,85 @@ defmodule Renga.Repo.Migrations.CreateHardwareCatalog do
            ])
 
     create index(:component_templates, [:organization_id, :kind])
+
+    execute """
+    CREATE FUNCTION enforce_catalog_type_revision_immutability() RETURNS trigger AS $$
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+          RETURN OLD;
+        END IF;
+      ELSIF OLD.finalized_at IS NULL
+            AND NEW.finalized_at IS NOT NULL
+            AND (to_jsonb(NEW) - 'finalized_at') = (to_jsonb(OLD) - 'finalized_at') THEN
+        RETURN NEW;
+      END IF;
+
+      RAISE EXCEPTION 'catalog revisions are immutable'
+        USING ERRCODE = '23514', CONSTRAINT = 'catalog_type_revisions_immutable';
+    END;
+    $$ LANGUAGE plpgsql
+    """
+
+    execute """
+    CREATE TRIGGER catalog_type_revisions_enforce_immutability
+    BEFORE UPDATE OR DELETE ON catalog_type_revisions
+    FOR EACH ROW EXECUTE FUNCTION enforce_catalog_type_revision_immutability()
+    """
+
+    execute """
+    CREATE FUNCTION enforce_component_template_immutability() RETURNS trigger AS $$
+    DECLARE
+      old_finalized_at timestamp;
+      new_finalized_at timestamp;
+    BEGIN
+      IF TG_OP = 'DELETE'
+         AND NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+        RETURN OLD;
+      END IF;
+
+      IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        SELECT finalized_at INTO old_finalized_at
+        FROM catalog_type_revisions
+        WHERE id = OLD.catalog_type_revision_id
+          AND organization_id = OLD.organization_id;
+      END IF;
+
+      IF TG_OP IN ('INSERT', 'UPDATE') THEN
+        SELECT finalized_at INTO new_finalized_at
+        FROM catalog_type_revisions
+        WHERE id = NEW.catalog_type_revision_id
+          AND organization_id = NEW.organization_id;
+      END IF;
+
+      IF old_finalized_at IS NOT NULL OR new_finalized_at IS NOT NULL THEN
+        RAISE EXCEPTION 'component templates are immutable after revision finalization'
+          USING ERRCODE = '23514', CONSTRAINT = 'component_templates_revision_finalized';
+      END IF;
+
+      RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END;
+    $$ LANGUAGE plpgsql
+    """
+
+    execute """
+    CREATE TRIGGER component_templates_enforce_immutability
+    BEFORE INSERT OR UPDATE OR DELETE ON component_templates
+    FOR EACH ROW EXECUTE FUNCTION enforce_component_template_immutability()
+    """
   end
 
   def down do
+    execute "DROP TRIGGER component_templates_enforce_immutability ON component_templates"
+    execute "DROP FUNCTION enforce_component_template_immutability()"
+    execute "DROP TRIGGER catalog_type_revisions_enforce_immutability ON catalog_type_revisions"
+    execute "DROP FUNCTION enforce_catalog_type_revision_immutability()"
+    execute "DROP TRIGGER resources_enforce_kind_immutability ON resources"
+    execute "DROP FUNCTION enforce_resource_kind_immutability()"
+
+    execute "DELETE FROM resources WHERE kind IN ('hardware_type', 'module_type')"
+    execute "DELETE FROM resources WHERE kind = 'manufacturer'"
+
     drop table(:component_templates)
     drop table(:catalog_type_revisions)
     drop table(:module_types)

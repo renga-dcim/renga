@@ -69,6 +69,7 @@ defmodule Renga.Inventory.Resource do
       :annotations,
       :deletion_requested_at
     ])
+    |> reject_kind_change()
     |> update_change(:name, &String.trim/1)
     |> update_change(:display_name, &trim_string/1)
     |> maybe_increment_generation()
@@ -82,6 +83,16 @@ defmodule Renga.Inventory.Resource do
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :kind, :name])
   end
+
+  defp reject_kind_change(%Ecto.Changeset{data: %{id: id}} = changeset) when not is_nil(id) do
+    if get_change(changeset, :kind) do
+      add_error(changeset, :kind, "cannot be changed")
+    else
+      changeset
+    end
+  end
+
+  defp reject_kind_change(changeset), do: changeset
 
   # Generation changes only when desired state changes, not for labels, status,
   # conditions, or observations. Controllers can use it as a reconciliation fence.

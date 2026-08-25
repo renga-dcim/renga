@@ -144,6 +144,15 @@ defmodule Renga.Catalog do
         |> insert_or_rollback()
       end)
 
+      finalized_at = Renga.Time.utc_now_ms()
+
+      {1, _} =
+        TypeRevision
+        |> where([stored], stored.id == ^revision.id and is_nil(stored.finalized_at))
+        |> Repo.update_all(set: [finalized_at: finalized_at])
+
+      revision = %{revision | finalized_at: finalized_at}
+
       Repo.preload(revision,
         component_templates: from(template in ComponentTemplate, order_by: template.name)
       )

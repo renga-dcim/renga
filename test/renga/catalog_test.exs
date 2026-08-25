@@ -6,6 +6,12 @@ defmodule Renga.CatalogTest do
 
   alias Renga.Accounts
   alias Renga.Catalog
+  alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.HardwareType
+  alias Renga.Catalog.Manufacturer
+  alias Renga.Catalog.ModuleType
+  alias Renga.Catalog.TypeRevision
+  alias Renga.Inventory
   alias Renga.Inventory.Resource
   alias Renga.Repo
 
@@ -67,6 +73,9 @@ defmodule Renga.CatalogTest do
 
     assert {:ok, _module_type} =
              module_type_fixture(scope, manufacturer, "RS-42", "line_card")
+
+    assert {:error, %Ecto.Changeset{errors: [model: {"has already been taken", _}]}} =
+             module_type_fixture(scope, manufacturer, "rs-42", "line_card")
   end
 
   test "revisions retain typed specifications and immutable component snapshots", %{scope: scope} do
@@ -149,8 +158,10 @@ defmodule Renga.CatalogTest do
   end
 
   test "catalog mutations require a current owner or admin membership", %{
+    scope: scope,
     organization: organization
   } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Managed", "managed")
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
@@ -163,6 +174,22 @@ defmodule Renga.CatalogTest do
              )
 
     refute Repo.get_by(Resource, kind: "manufacturer", name: "Forbidden")
+
+    assert {:error, :forbidden} =
+             Inventory.create_resource(member_scope, %{
+               kind: "manufacturer",
+               name: "Orphan envelope"
+             })
+
+    assert {:error, :forbidden} =
+             Inventory.update_resource(member_scope, manufacturer.resource, %{
+               name: "Bypassed catalog mutation"
+             })
+
+    assert {:error, changeset} =
+             Inventory.update_resource(scope, manufacturer.resource, %{kind: "server"})
+
+    assert %{kind: ["cannot be changed"]} = errors_on(changeset)
   end
 
   test "invalid templates roll back the entire revision", %{scope: scope} do
@@ -178,6 +205,164 @@ defmodule Renga.CatalogTest do
              )
 
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "database constraints reject every cross-tenant catalog relationship", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Private Vendor", "private-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "HW-1", "server")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "MOD-1", "line_card")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "interface", name: "eth0"}
+      ])
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    {:ok, foreign_resource} = Inventory.create_resource(other_scope, %{kind: "server", name: "x"})
+
+    assert {:error, manufacturer_changeset} =
+             %Manufacturer{
+               organization_id: scope.organization_id,
+               resource_id: foreign_resource.id
+             }
+             |> Manufacturer.changeset(%{slug: "foreign-envelope"})
+             |> Repo.insert()
+
+    assert %{resource: [_]} = errors_on(manufacturer_changeset)
+
+    assert {:error, %Ecto.Changeset{}} =
+             %HardwareType{
+               organization_id: scope.organization_id,
+               resource_id: foreign_resource.id
+             }
+             |> HardwareType.changeset(%{
+               manufacturer_id: manufacturer.id,
+               model: "Foreign envelope hardware",
+               device_class: "server"
+             })
+             |> Repo.insert()
+
+    assert {:error, %Ecto.Changeset{}} =
+             %ModuleType{
+               organization_id: scope.organization_id,
+               resource_id: foreign_resource.id
+             }
+             |> ModuleType.changeset(%{
+               manufacturer_id: manufacturer.id,
+               model: "Foreign envelope module",
+               module_class: "line_card"
+             })
+             |> Repo.insert()
+
+    assert {:error, %Ecto.Changeset{}} =
+             module_type_fixture(other_scope, manufacturer, "Foreign module", "line_card")
+
+    assert {:error, %Ecto.Changeset{}} =
+             %TypeRevision{
+               organization_id: other_scope.organization_id,
+               hardware_type_id: hardware_type.id,
+               revision: 1
+             }
+             |> TypeRevision.changeset(%{})
+             |> Repo.insert()
+
+    assert {:error, %Ecto.Changeset{}} =
+             %TypeRevision{
+               organization_id: other_scope.organization_id,
+               module_type_id: module_type.id,
+               revision: 1
+             }
+             |> TypeRevision.changeset(%{})
+             |> Repo.insert()
+
+    assert {:error, %Ecto.Changeset{}} =
+             %ComponentTemplate{
+               organization_id: other_scope.organization_id,
+               catalog_type_revision_id: revision.id
+             }
+             |> ComponentTemplate.changeset(%{kind: "interface", name: "foreign"})
+             |> Repo.insert()
+  end
+
+  test "published revisions and templates reject changesets", %{scope: scope} do
+    {revision, template} = revision_fixture(scope)
+
+    assert {:error, revision_changeset} =
+             revision
+             |> TypeRevision.changeset(%{part_number: "tampered"})
+             |> Repo.update()
+
+    assert %{base: ["catalog revision is immutable"]} = errors_on(revision_changeset)
+
+    assert {:error, template_changeset} =
+             template
+             |> ComponentTemplate.changeset(%{name: "tampered"})
+             |> Repo.update()
+
+    assert %{base: ["component template is immutable"]} = errors_on(template_changeset)
+  end
+
+  test "database rejects revision updates that bypass changesets", %{scope: scope} do
+    {revision, _template} = revision_fixture(scope)
+
+    assert_raise Postgrex.Error, ~r/catalog revisions are immutable/, fn ->
+      TypeRevision
+      |> where([stored], stored.id == ^revision.id)
+      |> Repo.update_all(set: [part_number: "tampered"])
+    end
+  end
+
+  test "database rejects late templates on finalized revisions", %{scope: scope} do
+    {revision, _template} = revision_fixture(scope)
+
+    assert {:error, changeset} =
+             %ComponentTemplate{
+               organization_id: scope.organization_id,
+               catalog_type_revision_id: revision.id
+             }
+             |> ComponentTemplate.changeset(%{kind: "interface", name: "late"})
+             |> Repo.insert()
+
+    assert %{catalog_type_revision: ["is finalized"]} = errors_on(changeset)
+  end
+
+  test "database rejects template updates that bypass changesets", %{scope: scope} do
+    {_revision, template} = revision_fixture(scope)
+
+    assert_raise Postgrex.Error, ~r/component templates are immutable/, fn ->
+      ComponentTemplate
+      |> where([stored], stored.id == ^template.id)
+      |> Repo.update_all(set: [name: "tampered"])
+    end
+  end
+
+  test "database rejects direct deletion of finalized revisions", %{scope: scope} do
+    {revision, _template} = revision_fixture(scope)
+
+    assert_raise Ecto.ConstraintError, ~r/catalog_type_revisions_immutable/, fn ->
+      Repo.delete!(revision)
+    end
+  end
+
+  test "database rejects direct deletion of finalized templates", %{scope: scope} do
+    {_revision, template} = revision_fixture(scope)
+
+    assert_raise Ecto.ConstraintError, ~r/component_templates_revision_finalized/, fn ->
+      Repo.delete!(template)
+    end
+  end
+
+  test "database rejects resource kind changes that bypass changesets", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Managed", "managed")
+
+    assert_raise Postgrex.Error, ~r/resource kind is immutable/, fn ->
+      Resource
+      |> where([stored], stored.id == ^manufacturer.resource_id)
+      |> Repo.update_all(set: [kind: "server"])
+    end
   end
 
   defp manufacturer_fixture(scope, name, slug) do
@@ -202,5 +387,24 @@ defmodule Renga.CatalogTest do
       %{name: "#{manufacturer.id}-module-#{model}", lifecycle_state: "active"},
       %{manufacturer_id: manufacturer.id, model: model, module_class: module_class}
     )
+  end
+
+  defp revision_fixture(scope) do
+    {:ok, manufacturer} =
+      manufacturer_fixture(
+        scope,
+        "Vendor #{System.unique_integer()}",
+        "vendor-#{System.unique_integer([:positive])}"
+      )
+
+    {:ok, hardware_type} =
+      hardware_type_fixture(scope, manufacturer, "HW-#{System.unique_integer()}", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{part_number: "original"}, [
+        %{kind: "interface", name: "eth0"}
+      ])
+
+    {revision, List.first(revision.component_templates)}
   end
 end

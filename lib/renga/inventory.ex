@@ -43,6 +43,7 @@ defmodule Renga.Inventory do
   @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -302,6 +303,13 @@ defmodule Renga.Inventory do
 
   defp authorize_current_organization_manager_or_rollback(%Scope{}),
     do: Repo.rollback(:forbidden)
+
+  defp authorize_managed_resource_kind!(scope, kind) when kind in @managed_resource_kinds do
+    ensure_organization_active_or_rollback(scope.organization_id)
+    authorize_current_organization_manager_or_rollback(scope)
+  end
+
+  defp authorize_managed_resource_kind!(_scope, _kind), do: :ok
 
   defp ensure_organization_active_or_rollback(organization_id) do
     Organization
@@ -783,8 +791,9 @@ defmodule Renga.Inventory do
   `organization_id` is assigned from the trusted scope so callers cannot create
   resources in another tenant by passing forged attrs.
   """
-  def create_resource(%Scope{organization_id: organization_id}, attrs) do
+  def create_resource(%Scope{organization_id: organization_id} = scope, attrs) do
     Repo.transaction(fn ->
+      authorize_managed_resource_kind!(scope, get_attr(attrs, :kind))
       revision = next_resource_revision!()
 
       resource =
@@ -802,7 +811,7 @@ defmodule Renga.Inventory do
   Updates canonical resource fields within the caller's organization scope.
   """
   def update_resource(
-        %Scope{organization_id: organization_id},
+        %Scope{organization_id: organization_id} = scope,
         %Resource{} = resource,
         attrs
       ) do
@@ -813,6 +822,8 @@ defmodule Renga.Inventory do
         |> where([stored], stored.organization_id == ^organization_id)
         |> lock("FOR UPDATE")
         |> Repo.one!()
+
+      authorize_managed_resource_kind!(scope, stored_resource.kind)
 
       if stored_resource.resource_version != resource.resource_version do
         stored_resource
