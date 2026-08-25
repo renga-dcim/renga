@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: blacksmith-2vcpu-ubuntu-2404
+          - runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
             deb_arch: amd64
           - runner: ubuntu-24.04-arm
@@ -180,7 +180,7 @@ jobs:
     name: Package release gate
     needs: package
     if: always()
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Require package verification
         env:
@@ -204,7 +204,7 @@ jobs:
     name: Create GitHub release
     needs: [package, package-gate]
     if: github.event_name == 'push'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     environment: RELEASE
     steps:
       - name: Checkout tagged release
