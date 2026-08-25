@@ -43,7 +43,7 @@ defmodule Renga.Inventory do
   @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module)
 
   @doc """
   Lists sources visible inside the caller's organization scope.

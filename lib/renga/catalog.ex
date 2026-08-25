@@ -21,6 +21,9 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.InventoryItem
   alias Renga.Catalog.Manufacturer
+  alias Renga.Catalog.Module
+  alias Renga.Catalog.ModuleBay
+  alias Renga.Catalog.ModuleBayCompatibleType
   alias Renga.Catalog.ModuleType
   alias Renga.Catalog.TypeRevision
   alias Renga.Inventory
@@ -83,6 +86,40 @@ defmodule Renga.Catalog do
     |> where([module_type], module_type.organization_id == ^organization_id)
     |> Repo.get!(id)
     |> preload_type()
+  end
+
+  def list_modules(%Scope{organization_id: organization_id}) do
+    Module
+    |> where([module], module.organization_id == ^organization_id)
+    |> join(:inner, [module], resource in assoc(module, :resource))
+    |> order_by([_module, resource], asc: resource.name)
+    |> preload([module, resource], resource: resource, module_type: [:resource, :manufacturer])
+    |> Repo.all()
+  end
+
+  def get_module!(%Scope{organization_id: organization_id}, id) do
+    Module
+    |> where([module], module.organization_id == ^organization_id and module.id == ^id)
+    |> preload([:resource, :catalog_type_revision, module_type: [:resource, :manufacturer]])
+    |> Repo.one!()
+  end
+
+  def list_module_bays(%Scope{organization_id: organization_id}, owner_resource_id) do
+    ModuleBay
+    |> where(
+      [bay],
+      bay.organization_id == ^organization_id and bay.owner_resource_id == ^owner_resource_id
+    )
+    |> order_by([bay], asc: bay.name)
+    |> preload([:owner_resource, compatible_module_types: [:resource, :manufacturer]])
+    |> Repo.all()
+  end
+
+  def get_module_bay!(%Scope{organization_id: organization_id}, id) do
+    ModuleBay
+    |> where([bay], bay.organization_id == ^organization_id and bay.id == ^id)
+    |> preload([:owner_resource, compatible_module_types: [:resource, :manufacturer]])
+    |> Repo.one!()
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
@@ -168,6 +205,69 @@ defmodule Renga.Catalog do
         templates \\ []
       ) do
     create_type_revision(scope, ModuleType, module_type.id, attrs, templates)
+  end
+
+  def create_module(%Scope{} = scope, %ModuleType{} = module_type, resource_attrs, attrs \\ %{}) do
+    managed_transaction(scope, fn ->
+      stored_type = scoped_lock!(ModuleType, scope.organization_id, module_type.id)
+      revision = latest_module_revision!(scope.organization_id, stored_type.id)
+
+      resource =
+        case Inventory.create_resource(scope, put_attr(resource_attrs, :kind, "module")) do
+          {:ok, resource} -> resource
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      %Module{
+        organization_id: scope.organization_id,
+        resource_id: resource.id,
+        module_type_id: stored_type.id,
+        catalog_type_revision_id: revision.id
+      }
+      |> Module.changeset(attrs)
+      |> insert_or_rollback()
+      |> Repo.preload([:resource, :catalog_type_revision, module_type: :resource])
+    end)
+  end
+
+  def create_module_bay(
+        %Scope{} = scope,
+        owner_resource_id,
+        attrs,
+        compatible_module_type_ids \\ []
+      ) do
+    managed_transaction(scope, fn ->
+      owner = scoped_module_bay_owner!(scope.organization_id, owner_resource_id)
+      module_types = scoped_module_types!(scope.organization_id, compatible_module_type_ids)
+
+      bay =
+        %ModuleBay{
+          organization_id: scope.organization_id,
+          owner_resource_id: owner.id,
+          owner_kind: owner.kind
+        }
+        |> ModuleBay.changeset(attrs)
+        |> insert_or_rollback()
+
+      replace_module_bay_compatibility(scope, bay, module_types)
+      get_module_bay!(scope, bay.id)
+    end)
+  end
+
+  def update_module_bay(%Scope{} = scope, %ModuleBay{} = bay, attrs) do
+    managed_transaction(scope, fn ->
+      stored = scoped_lock!(ModuleBay, scope.organization_id, bay.id)
+      stored |> ModuleBay.changeset(attrs) |> update_or_rollback()
+    end)
+  end
+
+  def set_module_bay_compatible_types(%Scope{} = scope, %ModuleBay{} = bay, module_type_ids) do
+    managed_transaction(scope, fn ->
+      stored = scoped_lock!(ModuleBay, scope.organization_id, bay.id)
+      module_types = scoped_module_types!(scope.organization_id, module_type_ids)
+      replace_module_bay_compatibility(scope, stored, module_types)
+      get_module_bay!(scope, stored.id)
+    end)
   end
 
   def create_inventory_item(%Scope{} = scope, owner_resource_id, attrs) do
@@ -497,6 +597,79 @@ defmodule Renga.Catalog do
       nil -> Repo.rollback(:hardware_type_has_no_revision)
       revision -> revision
     end
+  end
+
+  defp latest_module_revision!(organization_id, module_type_id) do
+    TypeRevision
+    |> where(
+      [revision],
+      revision.organization_id == ^organization_id and
+        revision.module_type_id == ^module_type_id and not is_nil(revision.finalized_at)
+    )
+    |> order_by([revision], desc: revision.revision)
+    |> limit(1)
+    |> Repo.one()
+    |> case do
+      nil -> Repo.rollback(:module_type_has_no_revision)
+      revision -> revision
+    end
+  end
+
+  defp scoped_module_bay_owner!(organization_id, resource_id) do
+    resource = scoped_get!(Resource, organization_id, resource_id)
+
+    cond do
+      resource.kind in @physical_device_kinds ->
+        resource
+
+      resource.kind == "module" and
+          Repo.exists?(
+            from module in Module,
+              where:
+                module.organization_id == ^organization_id and module.resource_id == ^resource.id
+          ) ->
+        resource
+
+      true ->
+        Repo.rollback(:unsupported_resource_kind)
+    end
+  end
+
+  defp scoped_module_types!(organization_id, module_type_ids) when is_list(module_type_ids) do
+    ids = Enum.uniq(module_type_ids)
+
+    module_types =
+      ModuleType
+      |> where([module_type], module_type.organization_id == ^organization_id)
+      |> where([module_type], module_type.id in ^ids)
+      |> Repo.all()
+
+    if length(module_types) == length(ids),
+      do: module_types,
+      else: Repo.rollback(:invalid_module_types)
+  end
+
+  defp scoped_module_types!(_organization_id, _module_type_ids),
+    do: Repo.rollback(:invalid_module_types)
+
+  defp replace_module_bay_compatibility(scope, bay, module_types) do
+    ModuleBayCompatibleType
+    |> where(
+      [compatibility],
+      compatibility.organization_id == ^scope.organization_id and
+        compatibility.module_bay_id == ^bay.id
+    )
+    |> Repo.delete_all()
+
+    Enum.each(module_types, fn module_type ->
+      %ModuleBayCompatibleType{
+        organization_id: scope.organization_id,
+        module_bay_id: bay.id,
+        module_type_id: module_type.id
+      }
+      |> ModuleBayCompatibleType.changeset()
+      |> insert_or_rollback()
+    end)
   end
 
   defp put_hardware_assignment(scope, resource, hardware_type, revision, origin, provenance) do
