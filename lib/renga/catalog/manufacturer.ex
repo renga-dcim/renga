@@ -25,6 +25,7 @@ defmodule Renga.Catalog.Manufacturer do
     |> validate_required([:organization_id, :resource_id, :slug])
     |> validate_format(:slug, ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
     |> validate_map(:metadata)
+    |> validate_aliases()
     |> assoc_constraint(:resource, name: :manufacturers_organization_resource_fkey)
     |> unique_constraint([:organization_id, :slug])
   end
@@ -33,5 +34,26 @@ defmodule Renga.Catalog.Manufacturer do
     validate_change(changeset, field, fn ^field, value ->
       if is_map(value), do: [], else: [{field, "must be a map"}]
     end)
+  end
+
+  defp validate_aliases(changeset) do
+    validate_change(changeset, :metadata, fn :metadata, metadata ->
+      case Map.fetch(metadata, "aliases") do
+        :error ->
+          []
+
+        {:ok, aliases} when is_list(aliases) ->
+          validate_alias_values(aliases)
+
+        {:ok, _invalid} ->
+          [metadata: "aliases must be a list of strings"]
+      end
+    end)
+  end
+
+  defp validate_alias_values(aliases) do
+    if Enum.all?(aliases, &(is_binary(&1) and String.trim(&1) != "")),
+      do: [],
+      else: [metadata: "aliases must contain only non-empty strings"]
   end
 end

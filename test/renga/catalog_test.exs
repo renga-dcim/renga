@@ -7,6 +7,9 @@ defmodule Renga.CatalogTest do
   alias Renga.Accounts
   alias Renga.Catalog
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.ExpectedComponent
+  alias Renga.Catalog.ExpectedComponentException
+  alias Renga.Catalog.HardwareAssignment
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.Manufacturer
   alias Renga.Catalog.ModuleType
@@ -365,6 +368,518 @@ defmodule Renga.CatalogTest do
     end
   end
 
+  test "operator assignments pin the latest revision until explicitly changed", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "operator-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
+    {:ok, first_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:ok, assignment} =
+             Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+
+    assert assignment.origin == "operator"
+    assert assignment.catalog_type_revision_id == first_revision.id
+    assert assignment.provenance["user_id"] == scope.user.id
+
+    {:ok, _second_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert Catalog.get_hardware_assignment(scope, resource.id).catalog_type_revision_id ==
+             first_revision.id
+
+    assert {:ok, nil} = Catalog.clear_hardware_assignment(scope, resource.id)
+    refute Catalog.get_hardware_assignment(scope, resource.id)
+  end
+
+  test "reconciliation normalizes manufacturer/model facts and preserves provenance", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "matched-device")
+
+    {:ok, host} =
+      Inventory.create_host(scope, resource.id, %{
+        vendor: "  ACME, Inc. ",
+        model: " rs 42 ",
+        metadata: %{
+          "field_owners" => %{
+            "vendor" => %{"source_id" => "source-1"},
+            "model" => %{"source_id" => "source-2"}
+          }
+        }
+      })
+
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme Inc", "acme-inc")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
+    {:ok, revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.origin == "reconciled"
+    assert assignment.hardware_type_id == hardware_type.id
+    assert assignment.catalog_type_revision_id == revision.id
+    assert assignment.provenance["reported_vendor"] == host.vendor
+    assert assignment.provenance["matched_by"] == "model"
+    assert assignment.provenance["field_owners"]["model"]["source_id"] == "source-2"
+  end
+
+  test "reconciliation can match a reported product identifier to a revision part number", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "part-number-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Acme", model: "PN 123"})
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "Friendly name", "server")
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{part_number: "PN-123"})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.hardware_type_id == hardware_type.id
+    assert assignment.provenance["matched_by"] == "part_number"
+  end
+
+  test "part-number matching keeps the assigned revision pinned after newer revisions publish", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "pinned-part-number-device")
+    {:ok, host} = Inventory.create_host(scope, resource.id, %{vendor: "Acme", model: "PN-1"})
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "Friendly", "server")
+
+    {:ok, first_revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{part_number: "PN-1"})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.catalog_type_revision_id == first_revision.id
+
+    {:ok, _second_revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{part_number: "PN-2"})
+
+    assert {:ok, pinned} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert pinned.id == assignment.id
+    assert pinned.catalog_type_revision_id == first_revision.id
+    assert pinned.provenance["reported_model"] == "PN-1"
+
+    host |> Renga.Inventory.Host.changeset(%{model: "PN-2"}) |> Repo.update!()
+
+    assert {:ok, still_pinned} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert still_pinned.id == assignment.id
+    assert still_pinned.catalog_type_revision_id == first_revision.id
+    assert still_pinned.provenance["reported_model"] == "PN-1"
+  end
+
+  test "ambiguous catalog matches remain findings and never select a candidate", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "ambiguous-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Shared", model: "X1"})
+
+    for suffix <- ["one", "two"] do
+      {:ok, manufacturer} =
+        Catalog.create_manufacturer(
+          scope,
+          %{name: "Shared #{suffix}", lifecycle_state: "active"},
+          %{slug: "shared-#{suffix}", metadata: %{"aliases" => ["Shared"]}}
+        )
+
+      {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+      {:ok, _revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+    end
+
+    assert {:ok, nil} = Catalog.reconcile_hardware_type(scope, resource.id)
+    refute Catalog.get_hardware_assignment(scope, resource.id)
+
+    assert [finding] = Catalog.list_hardware_match_findings(scope)
+    assert finding.kind == "ambiguous_catalog_match"
+    assert length(finding.details["candidate_hardware_type_ids"]) == 2
+  end
+
+  test "operator assignment wins over later matching and matching keeps its pinned revision", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "authoritative-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Observed", model: "O1"})
+
+    {:ok, observed_vendor} = manufacturer_fixture(scope, "Observed", "observed")
+    {:ok, observed_type} = hardware_type_fixture(scope, observed_vendor, "O1", "server")
+    {:ok, observed_revision} = Catalog.create_hardware_type_revision(scope, observed_type, %{})
+
+    assert {:ok, reconciled} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert reconciled.catalog_type_revision_id == observed_revision.id
+
+    {:ok, _new_revision} = Catalog.create_hardware_type_revision(scope, observed_type, %{})
+    assert {:ok, still_pinned} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert still_pinned.catalog_type_revision_id == observed_revision.id
+
+    {:ok, chosen_vendor} = manufacturer_fixture(scope, "Chosen", "chosen")
+    {:ok, chosen_type} = hardware_type_fixture(scope, chosen_vendor, "C1", "server")
+    {:ok, _chosen_revision} = Catalog.create_hardware_type_revision(scope, chosen_type, %{})
+    assert {:ok, operator} = Catalog.assign_hardware_type(scope, resource.id, chosen_type.id)
+
+    assert {:ok, unchanged} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert unchanged.id == operator.id
+    assert unchanged.hardware_type_id == chosen_type.id
+  end
+
+  test "assignment mutations enforce resource, tenant, revision, and authorization boundaries", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = physical_resource_fixture(scope, "bounded-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+    nonphysical = Catalog.get_manufacturer!(scope, manufacturer.id).resource
+
+    assert {:error, :unsupported_resource_kind} =
+             Catalog.assign_hardware_type(scope, nonphysical.id, hardware_type.id)
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.assign_hardware_type(member_scope, resource.id, hardware_type.id)
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    foreign_resource = physical_resource_fixture(other_scope, "foreign-device")
+
+    assert {:error, changeset} =
+             %HardwareAssignment{
+               organization_id: other_scope.organization_id,
+               resource_id: foreign_resource.id
+             }
+             |> HardwareAssignment.changeset(%{
+               hardware_type_id: hardware_type.id,
+               catalog_type_revision_id: revision.id,
+               origin: "operator"
+             })
+             |> Repo.insert()
+
+    assert errors_on(changeset) != %{}
+
+    assert {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    {:ok, newer_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:error, mismatched_revision_changeset} =
+             %ExpectedComponent{
+               organization_id: scope.organization_id,
+               hardware_assignment_id: assignment.id
+             }
+             |> ExpectedComponent.changeset(%{
+               catalog_type_revision_id: newer_revision.id,
+               kind: "interface",
+               name: "cross-revision",
+               required: true,
+               suppressed: false
+             })
+             |> Repo.insert()
+
+    assert %{hardware_assignment: [_]} = errors_on(mismatched_revision_changeset)
+  end
+
+  test "assignment materializes expectations from its pinned revision", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "expected-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "interface", name: "eth0", label: "Management", attributes: %{"speed" => 1_000}},
+        %{kind: "module_bay", name: "PSU1", position: "rear-left"}
+      ])
+
+    assert {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    components = Catalog.list_expected_components(scope, resource.id)
+    psu = Enum.find(components, &(&1.name == "PSU1"))
+    eth0 = Enum.find(components, &(&1.name == "eth0"))
+
+    assert psu.catalog_type_revision_id == revision.id
+    assert psu.component_template_id
+    assert psu.position == "rear-left"
+    assert eth0.label == "Management"
+    assert eth0.attributes == %{"speed" => 1_000}
+
+    {:ok, replacement_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+
+    {:ok, replacement_revision} =
+      Catalog.create_hardware_type_revision(scope, replacement_type, %{}, [
+        %{kind: "interface", name: "replacement0"}
+      ])
+
+    assert {:ok, _replacement_assignment} =
+             Catalog.assign_hardware_type(scope, resource.id, replacement_type.id)
+
+    assert [replacement] = Catalog.list_expected_components(scope, resource.id)
+    assert replacement.name == "replacement0"
+    assert replacement.catalog_type_revision_id == replacement_revision.id
+  end
+
+  test "confirmed add, suppress, and alter exceptions rematerialize local expectations", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "interface", name: "eth0", label: "Original", attributes: %{"speed" => 1_000}},
+        %{kind: "power_port", name: "PSU1"}
+      ])
+
+    eth0_template = Enum.find(revision.component_templates, &(&1.name == "eth0"))
+    psu_template = Enum.find(revision.component_templates, &(&1.name == "PSU1"))
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+
+    assert {:ok, altered} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "alter",
+               component_template_id: eth0_template.id,
+               changes: %{"label" => "Dedicated", "attributes" => %{"mtu" => 9_000}}
+             })
+
+    assert {:ok, _suppressed} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: psu_template.id
+             })
+
+    assert {:ok, added} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "add",
+               kind: "interface",
+               name: "eth1",
+               changes: %{"label" => "Local", "attributes" => %{"speed" => 10_000}}
+             })
+
+    components = Catalog.list_expected_components(scope, resource.id)
+    eth0 = Enum.find(components, &(&1.name == "eth0"))
+    eth1 = Enum.find(components, &(&1.name == "eth1"))
+    psu = Enum.find(components, &(&1.name == "PSU1"))
+
+    assert eth0.label == "Dedicated"
+    assert eth0.attributes == %{"speed" => 1_000, "mtu" => 9_000}
+    assert eth0.exception_id == altered.id
+    assert eth1.component_template_id == nil
+    assert eth1.exception_id == added.id
+    assert eth1.label == "Local"
+    assert psu.suppressed
+
+    assert {:ok, nil} =
+             Catalog.delete_expected_component_exception(scope, resource.id, altered.id)
+
+    reset_eth0 =
+      Enum.find(Catalog.list_expected_components(scope, resource.id), &(&1.name == "eth0"))
+
+    assert reset_eth0.label == "Original"
+    assert reset_eth0.attributes == %{"speed" => 1_000}
+  end
+
+  test "reassignment replaces assignment identity and removes its old exceptions", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "reassigned-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, first_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, second_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+
+    {:ok, first_revision} =
+      Catalog.create_hardware_type_revision(scope, first_type, %{}, [
+        %{kind: "interface", name: "old0"}
+      ])
+
+    {:ok, _second_revision} =
+      Catalog.create_hardware_type_revision(scope, second_type, %{}, [
+        %{kind: "interface", name: "new0"}
+      ])
+
+    {:ok, first_assignment} = Catalog.assign_hardware_type(scope, resource.id, first_type.id)
+    old_template = List.first(first_revision.component_templates)
+
+    {:ok, _exception} =
+      Catalog.put_expected_component_exception(scope, resource.id, %{
+        action: "suppress",
+        component_template_id: old_template.id
+      })
+
+    assert {:ok, second_assignment} =
+             Catalog.assign_hardware_type(scope, resource.id, second_type.id)
+
+    refute second_assignment.id == first_assignment.id
+    refute Repo.get(HardwareAssignment, first_assignment.id)
+    refute Repo.get_by(ExpectedComponentException, hardware_assignment_id: first_assignment.id)
+    assert Enum.map(Catalog.list_expected_components(scope, resource.id), & &1.name) == ["new0"]
+  end
+
+  test "exception updates support local additions and record the current confirmer", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = physical_resource_fixture(scope, "updated-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "power_port", name: "PSU1"}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+
+    {:ok, added} =
+      Catalog.put_expected_component_exception(scope, resource.id, %{
+        action: "add",
+        kind: "interface",
+        name: "eth1"
+      })
+
+    second_manager = user_fixture()
+    organization_membership_fixture(second_manager, organization, %{role: "admin"})
+    second_scope = Accounts.scope_for_user(second_manager, organization.id)
+
+    assert {:ok, updated} =
+             Catalog.put_expected_component_exception(second_scope, resource.id, %{
+               exception_id: added.id,
+               action: "add",
+               kind: "interface",
+               name: "eth2",
+               changes: %{"label" => "Updated"}
+             })
+
+    assert updated.id == added.id
+    assert updated.confirmed_by_user_id == second_manager.id
+
+    assert [%{name: "eth2", label: "Updated"}] =
+             Catalog.list_expected_components(scope, resource.id)
+             |> Enum.filter(&(&1.kind == "interface"))
+
+    template = List.first(revision.component_templates)
+
+    assert {:ok, suppressed} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: template.id
+             })
+
+    assert {:ok, altered} =
+             Catalog.put_expected_component_exception(second_scope, resource.id, %{
+               action: "alter",
+               component_template_id: template.id,
+               changes: %{"label" => "Replacement manager"}
+             })
+
+    assert altered.id == suppressed.id
+    assert altered.confirmed_by_user_id == second_manager.id
+  end
+
+  test "exceptions require management access and templates from the pinned revision", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = physical_resource_fixture(scope, "protected-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, first_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, second_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+
+    {:ok, _first_revision} =
+      Catalog.create_hardware_type_revision(scope, first_type, %{}, [
+        %{kind: "interface", name: "eth0"}
+      ])
+
+    {:ok, second_revision} =
+      Catalog.create_hardware_type_revision(scope, second_type, %{}, [
+        %{kind: "interface", name: "foreign-template"}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, first_type.id)
+    foreign_template = List.first(second_revision.component_templates)
+
+    assert {:error, :invalid_component_template} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: foreign_template.id
+             })
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.put_expected_component_exception(member_scope, resource.id, %{
+               action: "add",
+               kind: "interface",
+               name: "unauthorized"
+             })
+  end
+
+  test "database rejects exceptions whose template is from another revision", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "cross-revision-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, first_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, second_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+    {:ok, _first_revision} = Catalog.create_hardware_type_revision(scope, first_type, %{})
+
+    {:ok, second_revision} =
+      Catalog.create_hardware_type_revision(scope, second_type, %{}, [
+        %{kind: "interface", name: "foreign0"}
+      ])
+
+    {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, first_type.id)
+    foreign_template = List.first(second_revision.component_templates)
+
+    assert {:error, changeset} =
+             %ExpectedComponentException{
+               organization_id: scope.organization_id,
+               hardware_assignment_id: assignment.id,
+               catalog_type_revision_id: assignment.catalog_type_revision_id,
+               confirmed_by_user_id: scope.user.id
+             }
+             |> ExpectedComponentException.changeset(%{
+               action: "suppress",
+               component_template_id: foreign_template.id
+             })
+             |> Repo.insert()
+
+    assert %{component_template: [_]} = errors_on(changeset)
+  end
+
+  test "manufacturer aliases reject malformed values without breaking unrelated matching", %{
+    scope: scope
+  } do
+    assert {:error, changeset} =
+             Catalog.create_manufacturer(
+               scope,
+               %{name: "Malformed", lifecycle_state: "active"},
+               %{slug: "malformed", metadata: %{"aliases" => "not-a-list"}}
+             )
+
+    assert %{metadata: [_]} = errors_on(changeset)
+
+    for {suffix, aliases} <- [{"blank", [""]}, {"non-string", ["valid", 42]}] do
+      assert {:error, invalid_alias_changeset} =
+               Catalog.create_manufacturer(
+                 scope,
+                 %{name: "Malformed #{suffix}", lifecycle_state: "active"},
+                 %{slug: "malformed-#{suffix}", metadata: %{"aliases" => aliases}}
+               )
+
+      assert %{metadata: [_]} = errors_on(invalid_alias_changeset)
+    end
+
+    {:ok, malformed} = manufacturer_fixture(scope, "Malformed stored", "malformed-stored")
+
+    Manufacturer
+    |> where([manufacturer], manufacturer.id == ^malformed.id)
+    |> Repo.update_all(set: [metadata: %{"aliases" => %{"bad" => "shape"}}])
+
+    resource = physical_resource_fixture(scope, "unrelated-alias-device")
+    {:ok, _host} = Inventory.create_host(scope, resource.id, %{vendor: "Valid", model: "X1"})
+    {:ok, valid} = manufacturer_fixture(scope, "Valid", "valid")
+    {:ok, hardware_type} = hardware_type_fixture(scope, valid, "X1", "server")
+    {:ok, _revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:ok, assignment} = Catalog.reconcile_hardware_type(scope, resource.id)
+    assert assignment.hardware_type_id == hardware_type.id
+  end
+
   defp manufacturer_fixture(scope, name, slug) do
     Catalog.create_manufacturer(
       scope,
@@ -406,5 +921,12 @@ defmodule Renga.CatalogTest do
       ])
 
     {revision, List.first(revision.component_templates)}
+  end
+
+  defp physical_resource_fixture(scope, name) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})
+
+    resource
   end
 end
