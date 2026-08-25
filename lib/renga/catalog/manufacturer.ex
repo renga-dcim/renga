@@ -43,13 +43,17 @@ defmodule Renga.Catalog.Manufacturer do
           []
 
         {:ok, aliases} when is_list(aliases) ->
-          if Enum.all?(aliases, &(is_binary(&1) and String.trim(&1) != "")),
-            do: [],
-            else: [metadata: "aliases must contain only non-empty strings"]
+          validate_alias_values(aliases)
 
         {:ok, _invalid} ->
           [metadata: "aliases must be a list of strings"]
       end
     end)
+  end
+
+  defp validate_alias_values(aliases) do
+    if Enum.all?(aliases, &(is_binary(&1) and String.trim(&1) != "")),
+      do: [],
+      else: [metadata: "aliases must contain only non-empty strings"]
   end
 end

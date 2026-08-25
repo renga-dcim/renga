@@ -203,31 +203,7 @@ defmodule Renga.Catalog do
       if assignment && assignment.origin == "operator" do
         assignment
       else
-        host = scoped_host(scope.organization_id, resource.id)
-        candidates = hardware_match_candidates(scope.organization_id, host, assignment)
-
-        case candidates do
-          [] ->
-            resolve_match_finding(scope, resource.id)
-            assignment
-
-          [{hardware_type, revision, matched_by}] ->
-            resolve_match_finding(scope, resource.id)
-
-            put_hardware_assignment(
-              scope,
-              resource,
-              hardware_type,
-              revision_for_assignment(assignment, hardware_type, revision),
-              "reconciled",
-              matching_provenance(host, matched_by)
-            )
-            |> tap(&materialize_expected_components(scope, &1))
-
-          candidates ->
-            put_ambiguous_match_finding(scope, resource.id, host, candidates)
-            assignment
-        end
+        reconcile_unconfirmed_hardware_type(scope, resource, assignment)
       end
     end)
   end
@@ -381,6 +357,33 @@ defmodule Renga.Catalog do
     if resource.kind in @physical_device_kinds,
       do: resource,
       else: Repo.rollback(:unsupported_resource_kind)
+  end
+
+  defp reconcile_unconfirmed_hardware_type(scope, resource, assignment) do
+    host = scoped_host(scope.organization_id, resource.id)
+
+    case hardware_match_candidates(scope.organization_id, host, assignment) do
+      [] ->
+        resolve_match_finding(scope, resource.id)
+        assignment
+
+      [{hardware_type, revision, matched_by}] ->
+        resolve_match_finding(scope, resource.id)
+
+        put_hardware_assignment(
+          scope,
+          resource,
+          hardware_type,
+          revision_for_assignment(assignment, hardware_type, revision),
+          "reconciled",
+          matching_provenance(host, matched_by)
+        )
+        |> tap(&materialize_expected_components(scope, &1))
+
+      candidates ->
+        put_ambiguous_match_finding(scope, resource.id, host, candidates)
+        assignment
+    end
   end
 
   defp latest_hardware_revision!(organization_id, hardware_type_id) do
