@@ -11,7 +11,6 @@ step() {
 # shellcheck source=.agents/tailscale
 . "$repo_root/.agents/tailscale"
 
-tailscale_require_configuration
 tailscale_install
 
 # A previous setup may have installed Nix but the current process may predate
@@ -171,8 +170,5 @@ cargo build --locked --package renga-agent
 
 step "Creating the disposable coding-agent target repository"
 "$repo_root/.agents/ensure-agent-target"
-
-step "Enrolling Tailscale"
-tailscale_enroll_or_recover
 
 step "Finished in ${SECONDS}s"
