@@ -14,6 +14,8 @@ defmodule Renga.Catalog do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.CurrentModuleInstallation
+  alias Renga.Catalog.DesiredModuleAssignment
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.ExpectedComponentException
   alias Renga.Catalog.HardwareAssignment
@@ -24,6 +26,7 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.Module
   alias Renga.Catalog.ModuleBay
   alias Renga.Catalog.ModuleBayCompatibleType
+  alias Renga.Catalog.ModuleInstallationEvent
   alias Renga.Catalog.ModuleType
   alias Renga.Catalog.TypeRevision
   alias Renga.Inventory
@@ -33,6 +36,7 @@ defmodule Renga.Catalog do
 
   @physical_device_kinds ~w(server switch pdu storage)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
+  @module_hierarchy_lock "catalog-module-hierarchy"
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -120,6 +124,41 @@ defmodule Renga.Catalog do
     |> where([bay], bay.organization_id == ^organization_id and bay.id == ^id)
     |> preload([:owner_resource, compatible_module_types: [:resource, :manufacturer]])
     |> Repo.one!()
+  end
+
+  def get_desired_module_assignment(%Scope{organization_id: organization_id}, module_bay_id) do
+    DesiredModuleAssignment
+    |> where(
+      [assignment],
+      assignment.organization_id == ^organization_id and
+        assignment.module_bay_id == ^module_bay_id
+    )
+    |> preload([:module_type])
+    |> Repo.one()
+  end
+
+  def get_current_module_installation(%Scope{organization_id: organization_id}, module_bay_id) do
+    CurrentModuleInstallation
+    |> where(
+      [installation],
+      installation.organization_id == ^organization_id and
+        installation.module_bay_id == ^module_bay_id
+    )
+    |> preload([:module, :module_type])
+    |> Repo.one()
+  end
+
+  def list_module_installation_events(
+        %Scope{organization_id: organization_id},
+        module_bay_id
+      ) do
+    ModuleInstallationEvent
+    |> where(
+      [event],
+      event.organization_id == ^organization_id and event.module_bay_id == ^module_bay_id
+    )
+    |> order_by([event], asc: event.occurred_at, asc: event.sequence)
+    |> Repo.all()
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
@@ -257,7 +296,13 @@ defmodule Renga.Catalog do
   def update_module_bay(%Scope{} = scope, %ModuleBay{} = bay, attrs) do
     managed_transaction(scope, fn ->
       stored = scoped_lock!(ModuleBay, scope.organization_id, bay.id)
-      stored |> ModuleBay.changeset(attrs) |> update_or_rollback()
+      changeset = ModuleBay.changeset(stored, attrs)
+      status = Ecto.Changeset.get_field(changeset, :status)
+
+      if status != "active" and module_bay_in_use?(scope.organization_id, stored.id),
+        do: Repo.rollback(:module_bay_in_use)
+
+      update_or_rollback(changeset)
     end)
   end
 
@@ -265,8 +310,80 @@ defmodule Renga.Catalog do
     managed_transaction(scope, fn ->
       stored = scoped_lock!(ModuleBay, scope.organization_id, bay.id)
       module_types = scoped_module_types!(scope.organization_id, module_type_ids)
+      validate_compatibility_change!(scope.organization_id, stored.id, module_types)
       replace_module_bay_compatibility(scope, stored, module_types)
       get_module_bay!(scope, stored.id)
+    end)
+  end
+
+  def put_desired_module_assignment(%Scope{} = scope, module_bay_id, module_type_id, attrs \\ %{}) do
+    managed_transaction(scope, fn ->
+      bay = scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
+      validate_active_bay!(bay)
+      validate_module_type_compatibility!(scope.organization_id, bay.id, module_type_id)
+
+      assignment =
+        Repo.get_by(DesiredModuleAssignment,
+          organization_id: scope.organization_id,
+          module_bay_id: bay.id
+        ) ||
+          %DesiredModuleAssignment{
+            organization_id: scope.organization_id,
+            module_bay_id: bay.id
+          }
+
+      %{
+        assignment
+        | confirmed_by_user_id: scope.user.id
+      }
+      |> DesiredModuleAssignment.changeset(put_attr(attrs, :module_type_id, module_type_id))
+      |> upsert()
+    end)
+  end
+
+  def clear_desired_module_assignment(%Scope{} = scope, module_bay_id) do
+    managed_transaction(scope, fn ->
+      scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
+
+      DesiredModuleAssignment
+      |> where(
+        [assignment],
+        assignment.organization_id == ^scope.organization_id and
+          assignment.module_bay_id == ^module_bay_id
+      )
+      |> Repo.delete_all()
+
+      nil
+    end)
+  end
+
+  def install_module(%Scope{} = scope, module_bay_id, module_id, attrs \\ %{}) do
+    reconciliation_transaction(scope, fn ->
+      lock_module_hierarchy(scope.organization_id)
+      bay = scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
+      module = scoped_lock!(Module, scope.organization_id, module_id)
+      validate_active_bay!(bay)
+      validate_installable_module!(module)
+      validate_module_type_compatibility!(scope.organization_id, bay.id, module.module_type_id)
+      validate_module_installation_cycle!(scope.organization_id, bay, module)
+      do_install_module(scope, bay, module, attrs)
+    end)
+  end
+
+  def remove_module(%Scope{} = scope, module_bay_id, attrs \\ %{}) do
+    reconciliation_transaction(scope, fn ->
+      lock_module_hierarchy(scope.organization_id)
+      bay = scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
+
+      case locked_current_installation(scope.organization_id, bay.id) do
+        nil ->
+          nil
+
+        installation ->
+          Repo.delete!(installation)
+          insert_module_event!(scope, bay.id, installation.module_id, "removed", attrs)
+          nil
+      end
     end)
   end
 
@@ -670,6 +787,178 @@ defmodule Renga.Catalog do
       |> ModuleBayCompatibleType.changeset()
       |> insert_or_rollback()
     end)
+  end
+
+  defp validate_active_bay!(%ModuleBay{status: "active"}), do: :ok
+  defp validate_active_bay!(%ModuleBay{}), do: Repo.rollback(:module_bay_disabled)
+
+  defp validate_installable_module!(%Module{status: status}) when status in ~w(active spare),
+    do: :ok
+
+  defp validate_installable_module!(%Module{}), do: Repo.rollback(:module_not_installable)
+
+  defp validate_module_type_compatibility!(organization_id, module_bay_id, module_type_id) do
+    ModuleBayCompatibleType
+    |> where(
+      [compatibility],
+      compatibility.organization_id == ^organization_id and
+        compatibility.module_bay_id == ^module_bay_id and
+        compatibility.module_type_id == ^module_type_id
+    )
+    |> Repo.exists?()
+    |> if(do: :ok, else: Repo.rollback(:incompatible_module_type))
+  end
+
+  defp validate_compatibility_change!(organization_id, module_bay_id, module_types) do
+    retained_ids = MapSet.new(module_types, & &1.id)
+
+    used_ids =
+      [DesiredModuleAssignment, CurrentModuleInstallation]
+      |> Enum.flat_map(fn schema ->
+        schema
+        |> where(
+          [record],
+          record.organization_id == ^organization_id and record.module_bay_id == ^module_bay_id
+        )
+        |> select([record], record.module_type_id)
+        |> Repo.all()
+      end)
+
+    if Enum.all?(used_ids, &MapSet.member?(retained_ids, &1)),
+      do: :ok,
+      else: Repo.rollback(:compatibility_in_use)
+  end
+
+  defp module_bay_in_use?(organization_id, module_bay_id) do
+    Enum.any?([DesiredModuleAssignment, CurrentModuleInstallation], fn schema ->
+      Repo.exists?(
+        from record in schema,
+          where:
+            record.organization_id == ^organization_id and record.module_bay_id == ^module_bay_id
+      )
+    end)
+  end
+
+  defp do_install_module(scope, bay, module, attrs) do
+    current = locked_current_installation(scope.organization_id, bay.id)
+
+    cond do
+      current && current.module_id == module.id ->
+        current
+
+      module_installed?(scope.organization_id, module.id) ->
+        Repo.rollback(:module_already_installed)
+
+      true ->
+        if current do
+          Repo.delete!(current)
+          insert_module_event!(scope, bay.id, current.module_id, "removed", attrs)
+        end
+
+        installed_at = attr(attrs, :occurred_at) || Renga.Time.utc_now_ms()
+
+        installation =
+          %CurrentModuleInstallation{
+            organization_id: scope.organization_id,
+            module_bay_id: bay.id,
+            module_id: module.id,
+            module_type_id: module.module_type_id
+          }
+          |> CurrentModuleInstallation.changeset(%{
+            installed_at: installed_at,
+            metadata: attr(attrs, :metadata) || %{}
+          })
+          |> insert_or_rollback()
+
+        insert_module_event!(scope, bay.id, module.id, "installed", attrs)
+        installation
+    end
+  end
+
+  defp locked_current_installation(organization_id, module_bay_id) do
+    CurrentModuleInstallation
+    |> where(
+      [installation],
+      installation.organization_id == ^organization_id and
+        installation.module_bay_id == ^module_bay_id
+    )
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp module_installed?(organization_id, module_id) do
+    Repo.exists?(
+      from installation in CurrentModuleInstallation,
+        where:
+          installation.organization_id == ^organization_id and
+            installation.module_id == ^module_id
+    )
+  end
+
+  defp insert_module_event!(scope, module_bay_id, module_id, action, attrs) do
+    %ModuleInstallationEvent{
+      organization_id: scope.organization_id,
+      module_bay_id: module_bay_id,
+      module_id: module_id,
+      actor_user_id: scope.user && scope.user.id
+    }
+    |> ModuleInstallationEvent.changeset(%{
+      action: action,
+      occurred_at: attr(attrs, :occurred_at) || Renga.Time.utc_now_ms(),
+      metadata: attr(attrs, :metadata) || %{}
+    })
+    |> insert_or_rollback()
+  end
+
+  defp validate_module_installation_cycle!(organization_id, bay, module) do
+    owner_module =
+      Repo.get_by(Module, organization_id: organization_id, resource_id: bay.owner_resource_id)
+
+    if owner_module &&
+         (owner_module.id == module.id ||
+            module_descendant?(organization_id, module.id, owner_module.id)) do
+      Repo.rollback(:hierarchy_cycle)
+    end
+  end
+
+  defp module_descendant?(organization_id, parent_module_id, possible_descendant_id) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH RECURSIVE descendants AS (
+          SELECT installation.module_id
+          FROM modules parent
+          JOIN module_bays bay ON bay.owner_resource_id = parent.resource_id
+            AND bay.organization_id = parent.organization_id
+          JOIN current_module_installations installation ON installation.module_bay_id = bay.id
+            AND installation.organization_id = bay.organization_id
+          WHERE parent.organization_id = $1 AND parent.id = $2
+          UNION
+          SELECT installation.module_id
+          FROM descendants descendant
+          JOIN modules parent ON parent.id = descendant.module_id AND parent.organization_id = $1
+          JOIN module_bays bay ON bay.owner_resource_id = parent.resource_id
+            AND bay.organization_id = parent.organization_id
+          JOIN current_module_installations installation ON installation.module_bay_id = bay.id
+            AND installation.organization_id = bay.organization_id
+        )
+        SELECT 1 FROM descendants WHERE module_id = $3 LIMIT 1
+        """,
+        [
+          Ecto.UUID.dump!(organization_id),
+          Ecto.UUID.dump!(parent_module_id),
+          Ecto.UUID.dump!(possible_descendant_id)
+        ]
+      )
+
+    rows != []
+  end
+
+  defp lock_module_hierarchy(organization_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      organization_id,
+      @module_hierarchy_lock
+    ])
   end
 
   defp put_hardware_assignment(scope, resource, hardware_type, revision, origin, provenance) do

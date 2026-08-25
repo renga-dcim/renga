@@ -98,6 +98,67 @@ defmodule Renga.CatalogConcurrencyTest do
     end)
   end
 
+  test "concurrent inverse module installations cannot create a containment cycle" do
+    with_catalog(fn scope, hardware_type ->
+      {:ok, module_type} =
+        Catalog.create_module_type(
+          scope,
+          %{name: "Concurrency Module", lifecycle_state: "active"},
+          %{
+            manufacturer_id: hardware_type.manufacturer_id,
+            model: "MOD-1",
+            module_class: "line_card"
+          }
+        )
+
+      {:ok, _revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+      first = module_fixture(scope, module_type, "First module")
+      second = module_fixture(scope, module_type, "Second module")
+
+      {:ok, first_bay} =
+        Catalog.create_module_bay(scope, first.resource_id, %{name: "Child"}, [module_type.id])
+
+      {:ok, second_bay} =
+        Catalog.create_module_bay(scope, second.resource_id, %{name: "Child"}, [module_type.id])
+
+      test_process = self()
+
+      first_task =
+        concurrent(fn ->
+          Repo.transaction(fn ->
+            result = Catalog.install_module(scope, first_bay.id, second.id)
+            send(test_process, :first_installation_ready)
+
+            receive do
+              :release_first_installation -> result
+            end
+          end)
+        end)
+
+      assert_receive :first_installation_ready, 1_000
+
+      lock_probe =
+        concurrent(fn ->
+          Repo.query!("SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2))", [
+            scope.organization_id,
+            "catalog-module-hierarchy"
+          ])
+        end)
+
+      assert %Postgrex.Result{rows: [[false]]} = Task.await(lock_probe)
+
+      second_task =
+        concurrent(fn -> Catalog.install_module(scope, second_bay.id, first.id) end)
+
+      assert Task.yield(second_task, 200) == nil
+      send(first_task.pid, :release_first_installation)
+
+      assert {:ok, {:ok, first_installation}} = Task.await(first_task)
+      assert first_installation.module_id == second.id
+      assert {:error, :hierarchy_cycle} = Task.await(second_task)
+    end)
+  end
+
   defp concurrent(fun) do
     Task.async(fn ->
       :ok = Sandbox.checkout(Repo, sandbox: false)
@@ -138,5 +199,17 @@ defmodule Renga.CatalogConcurrencyTest do
       Repo.delete!(user)
       Sandbox.checkin(Repo)
     end
+  end
+
+  defp module_fixture(scope, module_type, name) do
+    {:ok, module} =
+      Catalog.create_module(
+        scope,
+        module_type,
+        %{name: name, lifecycle_state: "active"},
+        %{status: "active"}
+      )
+
+    module
   end
 end
