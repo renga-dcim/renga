@@ -14,6 +14,8 @@ defmodule Renga.Catalog do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.ExpectedComponent
+  alias Renga.Catalog.ExpectedComponentException
   alias Renga.Catalog.HardwareAssignment
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.Catalog.HardwareType
@@ -101,6 +103,17 @@ defmodule Renga.Catalog do
     |> Repo.all()
   end
 
+  def list_expected_components(%Scope{organization_id: organization_id}, resource_id) do
+    ExpectedComponent
+    |> join(:inner, [component], assignment in assoc(component, :hardware_assignment))
+    |> where(
+      [component, assignment],
+      component.organization_id == ^organization_id and assignment.resource_id == ^resource_id
+    )
+    |> order_by([component], asc: component.kind, asc: component.name)
+    |> Repo.all()
+  end
+
   def create_manufacturer(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
       create_projection(scope, Manufacturer, "manufacturer", resource_attrs, attrs)
@@ -155,6 +168,7 @@ defmodule Renga.Catalog do
         })
 
       resolve_match_finding(scope, resource.id)
+      materialize_expected_components(scope, assignment)
       assignment
     end)
   end
@@ -209,6 +223,7 @@ defmodule Renga.Catalog do
               "reconciled",
               matching_provenance(host, matched_by)
             )
+            |> tap(&materialize_expected_components(scope, &1))
 
           candidates ->
             put_ambiguous_match_finding(scope, resource.id, host, candidates)
@@ -216,6 +231,74 @@ defmodule Renga.Catalog do
             nil
         end
       end
+    end)
+  end
+
+  @doc """
+  Adds or replaces a confirmed per-asset exception and rematerializes expectations.
+
+  Suppress and alter exceptions must target a template in the assignment's pinned
+  revision. Add exceptions describe a local component without changing a template.
+  """
+  def put_expected_component_exception(%Scope{} = scope, resource_id, attrs) do
+    managed_transaction(scope, fn ->
+      resource = lock_physical_resource!(scope, resource_id)
+      assignment = locked_assignment(scope.organization_id, resource.id)
+      if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
+
+      template_id = attr(attrs, :component_template_id)
+      validate_exception_template!(scope, assignment, template_id, attr(attrs, :action))
+
+      exception =
+        if template_id do
+          Repo.get_by(ExpectedComponentException,
+            organization_id: scope.organization_id,
+            hardware_assignment_id: assignment.id,
+            component_template_id: template_id
+          )
+        end ||
+          %ExpectedComponentException{
+            organization_id: scope.organization_id,
+            hardware_assignment_id: assignment.id,
+            confirmed_by_user_id: scope.user.id
+          }
+
+      exception =
+        exception
+        |> ExpectedComponentException.changeset(attrs)
+        |> upsert()
+
+      materialize_expected_components(scope, assignment)
+      exception
+    end)
+  end
+
+  def delete_expected_component_exception(%Scope{} = scope, resource_id, exception_id) do
+    managed_transaction(scope, fn ->
+      resource = lock_physical_resource!(scope, resource_id)
+      assignment = locked_assignment(scope.organization_id, resource.id)
+      if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
+
+      exception =
+        ExpectedComponentException
+        |> where(
+          [exception],
+          exception.id == ^exception_id and exception.organization_id == ^scope.organization_id and
+            exception.hardware_assignment_id == ^assignment.id
+        )
+        |> Repo.one!()
+
+      ExpectedComponent
+      |> where(
+        [component],
+        component.organization_id == ^scope.organization_id and
+          component.exception_id == ^exception.id
+      )
+      |> Repo.delete_all()
+
+      Repo.delete!(exception)
+      materialize_expected_components(scope, assignment)
+      nil
     end)
   end
 
@@ -328,6 +411,16 @@ defmodule Renga.Catalog do
           resource_id: resource.id
         }
 
+    if assignment.id && assignment.catalog_type_revision_id != revision.id do
+      ExpectedComponent
+      |> where(
+        [component],
+        component.organization_id == ^scope.organization_id and
+          component.hardware_assignment_id == ^assignment.id
+      )
+      |> Repo.delete_all()
+    end
+
     assignment
     |> HardwareAssignment.changeset(%{
       hardware_type_id: hardware_type.id,
@@ -431,6 +524,122 @@ defmodule Renga.Catalog do
       "reported_model" => host.model,
       "field_owners" => Map.take(Map.get(host.metadata, "field_owners", %{}), ["vendor", "model"])
     }
+  end
+
+  defp validate_exception_template!(_scope, _assignment, nil, action)
+       when action in ["add", :add],
+       do: :ok
+
+  defp validate_exception_template!(scope, assignment, template_id, action)
+       when action in ["suppress", "alter", :suppress, :alter] and not is_nil(template_id) do
+    ComponentTemplate
+    |> where(
+      [template],
+      template.id == ^template_id and template.organization_id == ^scope.organization_id and
+        template.catalog_type_revision_id == ^assignment.catalog_type_revision_id
+    )
+    |> Repo.exists?()
+    |> if(do: :ok, else: Repo.rollback(:invalid_component_template))
+  end
+
+  defp validate_exception_template!(_scope, _assignment, _template_id, _action),
+    do: Repo.rollback(:invalid_exception)
+
+  defp materialize_expected_components(scope, assignment) do
+    ExpectedComponent
+    |> where(
+      [component],
+      component.organization_id == ^scope.organization_id and
+        component.hardware_assignment_id == ^assignment.id
+    )
+    |> Repo.delete_all()
+
+    templates =
+      ComponentTemplate
+      |> where(
+        [template],
+        template.organization_id == ^scope.organization_id and
+          template.catalog_type_revision_id == ^assignment.catalog_type_revision_id
+      )
+      |> order_by([template], asc: template.kind, asc: template.name)
+      |> Repo.all()
+
+    exceptions =
+      ExpectedComponentException
+      |> where(
+        [exception],
+        exception.organization_id == ^scope.organization_id and
+          exception.hardware_assignment_id == ^assignment.id
+      )
+      |> Repo.all()
+
+    by_template =
+      exceptions
+      |> Enum.reject(&is_nil(&1.component_template_id))
+      |> Map.new(&{&1.component_template_id, &1})
+
+    Enum.each(templates, fn template ->
+      exception = Map.get(by_template, template.id)
+
+      template
+      |> template_expectation_attrs(exception)
+      |> insert_expected_component(scope, assignment, template.id, exception)
+    end)
+
+    exceptions
+    |> Enum.filter(&(&1.action == "add"))
+    |> Enum.each(fn exception ->
+      attrs =
+        exception.changes
+        |> Map.take(~w(label position description required attributes))
+        |> Map.merge(%{"kind" => exception.kind, "name" => exception.name})
+
+      insert_expected_component(attrs, scope, assignment, nil, exception)
+    end)
+  end
+
+  defp template_expectation_attrs(template, exception) do
+    attrs = %{
+      "kind" => template.kind,
+      "name" => template.name,
+      "label" => template.label,
+      "position" => template.position,
+      "description" => template.description,
+      "required" => template.required,
+      "attributes" => template.attributes,
+      "suppressed" => not is_nil(exception) and exception.action == "suppress"
+    }
+
+    if exception && exception.action == "alter" do
+      changes =
+        Map.take(exception.changes, ~w(name label position description required attributes))
+
+      case Map.fetch(changes, "attributes") do
+        {:ok, attributes} when is_map(attributes) ->
+          Map.put(changes, "attributes", Map.merge(template.attributes, attributes))
+
+        _missing_or_invalid ->
+          changes
+      end
+      |> then(&Map.merge(attrs, &1))
+    else
+      attrs
+    end
+  end
+
+  defp insert_expected_component(attrs, scope, assignment, template_id, exception) do
+    attrs =
+      attrs
+      |> Map.put("catalog_type_revision_id", assignment.catalog_type_revision_id)
+      |> Map.put("component_template_id", template_id)
+      |> Map.put("exception_id", exception && exception.id)
+
+    %ExpectedComponent{
+      organization_id: scope.organization_id,
+      hardware_assignment_id: assignment.id
+    }
+    |> ExpectedComponent.changeset(attrs)
+    |> insert_or_rollback()
   end
 
   defp put_ambiguous_match_finding(scope, resource_id, host, candidates) do
@@ -587,6 +796,8 @@ defmodule Renga.Catalog do
 
   defp upsert(%Ecto.Changeset{data: %{id: nil}} = changeset), do: insert_or_rollback(changeset)
   defp upsert(changeset), do: update_or_rollback(changeset)
+
+  defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
 
   defp put_attr(attrs, key, value) do
     if Map.has_key?(attrs, Atom.to_string(key)) do

@@ -11,9 +11,9 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 * Phase 2: Asset matching and expectations
 
-- [ ] Add optional, provenance-aware hardware-type matching for physical device
+- [X] Add optional, provenance-aware hardware-type matching for physical device
   resources with ambiguity findings.
-- [ ] Materialize expected components separately from observations and support
+- [X] Materialize expected components separately from observations and support
   confirmed per-asset exceptions without mutating shared catalog types.
 
 * Phase 3: Modules and inventory-only parts

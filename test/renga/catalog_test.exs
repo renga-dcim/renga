@@ -7,6 +7,7 @@ defmodule Renga.CatalogTest do
   alias Renga.Accounts
   alias Renga.Catalog
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.HardwareAssignment
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.Manufacturer
@@ -524,6 +525,163 @@ defmodule Renga.CatalogTest do
              |> Repo.insert()
 
     assert errors_on(changeset) != %{}
+
+    assert {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    {:ok, newer_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
+
+    assert {:error, mismatched_revision_changeset} =
+             %ExpectedComponent{
+               organization_id: scope.organization_id,
+               hardware_assignment_id: assignment.id
+             }
+             |> ExpectedComponent.changeset(%{
+               catalog_type_revision_id: newer_revision.id,
+               kind: "interface",
+               name: "cross-revision",
+               required: true,
+               suppressed: false
+             })
+             |> Repo.insert()
+
+    assert %{hardware_assignment: [_]} = errors_on(mismatched_revision_changeset)
+  end
+
+  test "assignment materializes expectations from its pinned revision", %{scope: scope} do
+    resource = physical_resource_fixture(scope, "expected-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "interface", name: "eth0", label: "Management", attributes: %{"speed" => 1_000}},
+        %{kind: "module_bay", name: "PSU1", position: "rear-left"}
+      ])
+
+    assert {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    components = Catalog.list_expected_components(scope, resource.id)
+    psu = Enum.find(components, &(&1.name == "PSU1"))
+    eth0 = Enum.find(components, &(&1.name == "eth0"))
+
+    assert psu.catalog_type_revision_id == revision.id
+    assert psu.component_template_id
+    assert psu.position == "rear-left"
+    assert eth0.label == "Management"
+    assert eth0.attributes == %{"speed" => 1_000}
+
+    {:ok, replacement_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+
+    {:ok, replacement_revision} =
+      Catalog.create_hardware_type_revision(scope, replacement_type, %{}, [
+        %{kind: "interface", name: "replacement0"}
+      ])
+
+    assert {:ok, _replacement_assignment} =
+             Catalog.assign_hardware_type(scope, resource.id, replacement_type.id)
+
+    assert [replacement] = Catalog.list_expected_components(scope, resource.id)
+    assert replacement.name == "replacement0"
+    assert replacement.catalog_type_revision_id == replacement_revision.id
+  end
+
+  test "confirmed add, suppress, and alter exceptions rematerialize local expectations", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "interface", name: "eth0", label: "Original", attributes: %{"speed" => 1_000}},
+        %{kind: "power_port", name: "PSU1"}
+      ])
+
+    eth0_template = Enum.find(revision.component_templates, &(&1.name == "eth0"))
+    psu_template = Enum.find(revision.component_templates, &(&1.name == "PSU1"))
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+
+    assert {:ok, altered} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "alter",
+               component_template_id: eth0_template.id,
+               changes: %{"label" => "Dedicated", "attributes" => %{"mtu" => 9_000}}
+             })
+
+    assert {:ok, _suppressed} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: psu_template.id
+             })
+
+    assert {:ok, added} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "add",
+               kind: "interface",
+               name: "eth1",
+               changes: %{"label" => "Local", "attributes" => %{"speed" => 10_000}}
+             })
+
+    components = Catalog.list_expected_components(scope, resource.id)
+    eth0 = Enum.find(components, &(&1.name == "eth0"))
+    eth1 = Enum.find(components, &(&1.name == "eth1"))
+    psu = Enum.find(components, &(&1.name == "PSU1"))
+
+    assert eth0.label == "Dedicated"
+    assert eth0.attributes == %{"speed" => 1_000, "mtu" => 9_000}
+    assert eth0.exception_id == altered.id
+    assert eth1.component_template_id == nil
+    assert eth1.exception_id == added.id
+    assert eth1.label == "Local"
+    assert psu.suppressed
+
+    assert {:ok, nil} =
+             Catalog.delete_expected_component_exception(scope, resource.id, altered.id)
+
+    reset_eth0 =
+      Enum.find(Catalog.list_expected_components(scope, resource.id), &(&1.name == "eth0"))
+
+    assert reset_eth0.label == "Original"
+    assert reset_eth0.attributes == %{"speed" => 1_000}
+  end
+
+  test "exceptions require management access and templates from the pinned revision", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = physical_resource_fixture(scope, "protected-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, first_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+    {:ok, second_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
+
+    {:ok, _first_revision} =
+      Catalog.create_hardware_type_revision(scope, first_type, %{}, [
+        %{kind: "interface", name: "eth0"}
+      ])
+
+    {:ok, second_revision} =
+      Catalog.create_hardware_type_revision(scope, second_type, %{}, [
+        %{kind: "interface", name: "foreign-template"}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, first_type.id)
+    foreign_template = List.first(second_revision.component_templates)
+
+    assert {:error, :invalid_component_template} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: foreign_template.id
+             })
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.put_expected_component_exception(member_scope, resource.id, %{
+               action: "add",
+               kind: "interface",
+               name: "unauthorized"
+             })
   end
 
   defp manufacturer_fixture(scope, name, slug) do
