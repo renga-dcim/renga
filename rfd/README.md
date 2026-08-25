@@ -42,7 +42,9 @@ Run `make check-rfds` to validate source layout, metadata, state, title, and the
 checker regression fixtures. CI also supplies `RFD_BASE_REF` so the checker can
 reject lifecycle regressions, historical deletion, and changes to final RFDs
 against the pull-request or push base. A local review can do the same with
-`RFD_BASE_REF=<git-revision> make check-rfds`.
+`RFD_BASE_REF=<git-revision> make check-rfds`. The `Progress` column reports
+completed checklist tasks over total tasks; state describes the decision's
+lifecycle rather than duplicating that implementation count.
 
 ## States
 
