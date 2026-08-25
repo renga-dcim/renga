@@ -2,6 +2,10 @@ if Mix.env() == :dev do
   alias Renga.Accounts
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
+  alias Renga.DCIM
+  alias Renga.DCIM.Location
+  alias Renga.DCIM.Rack
+  alias Renga.DCIM.SiteGroup
   alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.Agent
@@ -312,65 +316,190 @@ if Mix.env() == :dev do
         resource
       end
 
-      seed_server.(%{
-        name: "compute-01",
-        display_name: "Primary compute node",
-        lifecycle_state: "active",
-        site: "ashburn",
-        service: "compute",
-        power: "on",
-        vendor: "Dell",
-        model: "PowerEdge R760",
-        asset_tag: "DC1-COMPUTE-001",
-        serial: "DEMO-COMP-001",
-        mac: "02:00:00:00:10:01",
-        interface_status: "up",
-        address: "192.0.2.11/24",
-        observed_minutes: 2,
-        inventory_status: "true",
-        inventory_reason: "ObservationReceived",
-        inventory_message: "Inventory is current."
-      })
+      compute =
+        seed_server.(%{
+          name: "compute-01",
+          display_name: "Primary compute node",
+          lifecycle_state: "active",
+          site: "ashburn",
+          service: "compute",
+          power: "on",
+          vendor: "Dell",
+          model: "PowerEdge R760",
+          asset_tag: "DC1-COMPUTE-001",
+          serial: "DEMO-COMP-001",
+          mac: "02:00:00:00:10:01",
+          interface_status: "up",
+          address: "192.0.2.11/24",
+          observed_minutes: 2,
+          inventory_status: "true",
+          inventory_reason: "ObservationReceived",
+          inventory_message: "Inventory is current."
+        })
 
-      seed_server.(%{
-        name: "database-01",
-        display_name: "PostgreSQL primary",
-        lifecycle_state: "active",
-        site: "ashburn",
-        service: "database",
-        power: "on",
-        vendor: "HPE",
-        model: "ProLiant DL380 Gen11",
-        asset_tag: "DC1-DATA-001",
-        serial: "DEMO-DATA-001",
-        mac: "02:00:00:00:20:01",
-        interface_status: "up",
-        address: "192.0.2.21/24",
-        observed_minutes: 8,
-        inventory_status: "true",
-        inventory_reason: "ObservationReceived",
-        inventory_message: "Inventory is current."
-      })
+      database =
+        seed_server.(%{
+          name: "database-01",
+          display_name: "PostgreSQL primary",
+          lifecycle_state: "active",
+          site: "ashburn",
+          service: "database",
+          power: "on",
+          vendor: "HPE",
+          model: "ProLiant DL380 Gen11",
+          asset_tag: "DC1-DATA-001",
+          serial: "DEMO-DATA-001",
+          mac: "02:00:00:00:20:01",
+          interface_status: "up",
+          address: "192.0.2.21/24",
+          observed_minutes: 8,
+          inventory_status: "true",
+          inventory_reason: "ObservationReceived",
+          inventory_message: "Inventory is current."
+        })
 
-      seed_server.(%{
-        name: "edge-legacy-01",
-        display_name: "Legacy edge node",
-        lifecycle_state: "inactive",
-        site: "chicago",
-        service: "edge",
-        power: "off",
-        vendor: "Supermicro",
-        model: "SYS-510T-MR",
-        asset_tag: "CHI-EDGE-009",
-        serial: "DEMO-EDGE-009",
-        mac: "02:00:00:00:30:09",
-        interface_status: "down",
-        address: "198.51.100.19/24",
-        observed_minutes: 180,
-        inventory_status: "false",
-        inventory_reason: "ObservationExpired",
-        inventory_message: "No recent inventory observation."
-      })
+      edge =
+        seed_server.(%{
+          name: "edge-legacy-01",
+          display_name: "Legacy edge node",
+          lifecycle_state: "inactive",
+          site: "chicago",
+          service: "edge",
+          power: "off",
+          vendor: "Supermicro",
+          model: "SYS-510T-MR",
+          asset_tag: "CHI-EDGE-009",
+          serial: "DEMO-EDGE-009",
+          mac: "02:00:00:00:30:09",
+          interface_status: "down",
+          address: "198.51.100.19/24",
+          observed_minutes: 180,
+          inventory_status: "false",
+          inventory_reason: "ObservationExpired",
+          inventory_message: "No recent inventory observation."
+        })
+
+      find_projection = fn schema, kind, name ->
+        case Repo.get_by(Resource,
+               organization_id: organization.id,
+               kind: kind,
+               name: name
+             ) do
+          nil ->
+            nil
+
+          resource ->
+            Repo.get_by(schema, organization_id: organization.id, resource_id: resource.id)
+        end
+      end
+
+      site_group =
+        find_projection.(SiteGroup, "site_group", "North America") ||
+          case DCIM.create_site_group(
+                 scope,
+                 %{name: "North America", lifecycle_state: "active"},
+                 %{description: "Seeded regional grouping for orb demo facilities"}
+               ) do
+            {:ok, site_group} -> site_group
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      ensure_site = fn name, slug, attrs ->
+        Repo.get_by(Renga.DCIM.Site, organization_id: organization.id, slug: slug) ||
+          case DCIM.create_site(
+                 scope,
+                 %{name: name, lifecycle_state: "active"},
+                 Map.merge(
+                   %{
+                     site_group_id: site_group.id,
+                     slug: slug,
+                     status: "active",
+                     time_zone: "Etc/UTC"
+                   },
+                   attrs
+                 )
+               ) do
+            {:ok, site} -> site
+            {:error, reason} -> raise inspect(reason)
+          end
+      end
+
+      ashburn =
+        ensure_site.("Ashburn DC1", "ashburn-dc1", %{
+          physical_address: "21700 Atlantic Boulevard, Sterling, VA",
+          description: "Primary seeded data center"
+        })
+
+      chicago =
+        ensure_site.("Chicago Edge", "chicago-edge", %{
+          physical_address: "350 East Cermak Road, Chicago, IL",
+          description: "Seeded edge facility"
+        })
+
+      ensure_location = fn site, name, kind ->
+        find_projection.(Location, "location", name) ||
+          case DCIM.create_location(
+                 scope,
+                 %{name: name, lifecycle_state: "active"},
+                 %{site_id: site.id, kind: kind, status: "active"}
+               ) do
+            {:ok, location} -> location
+            {:error, reason} -> raise inspect(reason)
+          end
+      end
+
+      ashburn_hall = ensure_location.(ashburn, "Ashburn Data Hall A", "data_hall")
+      chicago_room = ensure_location.(chicago, "Chicago Edge Room", "room")
+
+      ensure_rack = fn site, location, name, facility_id ->
+        find_projection.(Rack, "rack", name) ||
+          case DCIM.create_rack(
+                 scope,
+                 %{name: name, lifecycle_state: "active"},
+                 %{
+                   site_id: site.id,
+                   location_id: location.id,
+                   status: "active",
+                   facility_id: facility_id,
+                   height_units: 42,
+                   width: "19_inch",
+                   starting_unit: "bottom",
+                   outer_width: "600",
+                   outer_depth: "1200",
+                   dimension_unit: "mm"
+                 }
+               ) do
+            {:ok, rack} -> rack
+            {:error, reason} -> raise inspect(reason)
+          end
+      end
+
+      ashburn_rack_a01 = ensure_rack.(ashburn, ashburn_hall, "ASH-A01", "A01")
+      ashburn_rack_a02 = ensure_rack.(ashburn, ashburn_hall, "ASH-A02", "A02")
+      chicago_rack = ensure_rack.(chicago, chicago_room, "CHI-E01", "E01")
+
+      place_resource = fn resource, rack, position, height_units ->
+        placement = %{
+          rack_id: rack.id,
+          position: position,
+          height_units: height_units,
+          face: "front"
+        }
+
+        case DCIM.put_desired_placement(scope, resource.id, placement) do
+          {:ok, _placement} -> :ok
+          {:error, reason} -> raise inspect(reason)
+        end
+
+        case DCIM.put_current_placement(scope, resource.id, Map.put(placement, :confirmed, true)) do
+          {:ok, _placement} -> :ok
+          {:error, reason} -> raise inspect(reason)
+        end
+      end
+
+      place_resource.(compute, ashburn_rack_a01, 20, 2)
+      place_resource.(database, ashburn_rack_a02, 16, 2)
+      place_resource.(edge, chicago_rack, 10, 1)
 
       %{user: user, organization: organization}
     end)
