@@ -76,6 +76,16 @@ defmodule Renga.CatalogConcurrencyTest do
 
       assert_receive :first_parent_ready, 1_000
 
+      lock_probe =
+        concurrent(fn ->
+          Repo.query!("SELECT pg_try_advisory_xact_lock(hashtext($1), hashtext($2))", [
+            scope.organization_id,
+            "catalog-inventory-item-hierarchy"
+          ])
+        end)
+
+      assert %Postgrex.Result{rows: [[false]]} = Task.await(lock_probe)
+
       second_task =
         concurrent(fn -> Catalog.update_inventory_item(scope, second, %{parent_id: first.id}) end)
 

@@ -174,15 +174,17 @@ defmodule Renga.Catalog do
     managed_transaction(scope, fn ->
       lock_inventory_item_hierarchy(scope.organization_id)
       owner = scoped_physical_resource!(scope.organization_id, owner_resource_id)
-      parent_id = attr(attrs, :parent_id)
-      validate_inventory_item_parent!(scope, nil, owner.id, parent_id)
 
-      %InventoryItem{
-        organization_id: scope.organization_id,
-        owner_resource_id: owner.id
-      }
-      |> InventoryItem.changeset(attrs)
-      |> insert_or_rollback()
+      changeset =
+        %InventoryItem{
+          organization_id: scope.organization_id,
+          owner_resource_id: owner.id
+        }
+        |> InventoryItem.changeset(attrs)
+
+      parent_id = Ecto.Changeset.get_field(changeset, :parent_id)
+      validate_inventory_item_parent!(scope, nil, owner.id, parent_id)
+      insert_or_rollback(changeset)
     end)
   end
 

@@ -46,7 +46,10 @@ defmodule Renga.Catalog.InventoryItem do
       :asset_tag,
       :metadata
     ])
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, fn
+      value when is_binary(value) -> String.trim(value)
+      value -> value
+    end)
     |> trim_optional(:position)
     |> trim_optional(:serial_number)
     |> trim_optional(:part_number)

@@ -74,6 +74,27 @@ defmodule Renga.CatalogInventoryItemTest do
     refute Repo.get(InventoryItem, child.id)
   end
 
+  test "accepts a blank form parent as an unparented item", %{scope: scope} do
+    owner = resource_fixture(scope, "blank-parent-device")
+
+    assert {:ok, item} =
+             Catalog.create_inventory_item(scope, owner.id, %{
+               "parent_id" => "",
+               "name" => "Root part",
+               "kind" => "fru"
+             })
+
+    assert is_nil(item.parent_id)
+  end
+
+  test "blank required names return validation errors", %{scope: scope} do
+    owner = resource_fixture(scope, "blank-name-device")
+    {:ok, item} = item_fixture(scope, owner, "Named part")
+
+    assert {:error, changeset} = Catalog.update_inventory_item(scope, item, %{"name" => ""})
+    assert %{name: [_]} = errors_on(changeset)
+  end
+
   test "rejects cycles and parents owned by another resource", %{scope: scope} do
     first_owner = resource_fixture(scope, "first-parts-device")
     second_owner = resource_fixture(scope, "second-parts-device")
