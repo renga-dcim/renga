@@ -1,6 +1,6 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/50
 :labels: dcim, hardware, inventory, software
 
 = RFD 6 Hardware catalog and components
