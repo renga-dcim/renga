@@ -23,7 +23,7 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
   transactional install/remove history.
 - [X] Add nested inventory-only parts with tenant and concurrency-safe cycle
   constraints.
-- [ ] Add an explicit path for promoting topology-bearing inventory parts.
+- [X] Add an explicit path for promoting topology-bearing inventory parts.
 
 * Phase 4: Component evidence and reconciliation
 

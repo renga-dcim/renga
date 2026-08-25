@@ -29,6 +29,7 @@ defmodule Renga.Catalog.InventoryItem do
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :owner_resource, Renga.Inventory.Resource
     belongs_to :parent, __MODULE__
+    belongs_to :promoted_module, Renga.Catalog.Module
     has_many :children, __MODULE__, foreign_key: :parent_id
     timestamps()
   end
@@ -62,6 +63,13 @@ defmodule Renga.Catalog.InventoryItem do
     |> assoc_constraint(:parent, name: :inventory_items_owner_parent_fkey)
     |> check_constraint(:parent_id, name: :inventory_items_not_self_parent)
     |> unique_constraint(:name, name: :inventory_items_owner_name_index)
+  end
+
+  def promotion_changeset(item, module_id) do
+    item
+    |> change(promoted_module_id: module_id)
+    |> assoc_constraint(:promoted_module, name: :inventory_items_promoted_module_fkey)
+    |> unique_constraint(:promoted_module_id, name: :inventory_items_promoted_module_index)
   end
 
   defp trim_optional(changeset, field) do

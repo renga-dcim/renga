@@ -199,14 +199,14 @@ defmodule Renga.Catalog do
       item.organization_id == ^organization_id and item.owner_resource_id == ^owner_resource_id
     )
     |> order_by([item], asc: item.name)
-    |> preload([:parent])
+    |> preload([:parent, promoted_module: [:resource, :module_type]])
     |> Repo.all()
   end
 
   def get_inventory_item!(%Scope{organization_id: organization_id}, id) do
     InventoryItem
     |> where([item], item.organization_id == ^organization_id and item.id == ^id)
-    |> preload([:parent, :children])
+    |> preload([:parent, :children, promoted_module: [:resource, :module_type]])
     |> Repo.one!()
   end
 
@@ -249,23 +249,7 @@ defmodule Renga.Catalog do
   def create_module(%Scope{} = scope, %ModuleType{} = module_type, resource_attrs, attrs \\ %{}) do
     managed_transaction(scope, fn ->
       stored_type = scoped_lock!(ModuleType, scope.organization_id, module_type.id)
-      revision = latest_module_revision!(scope.organization_id, stored_type.id)
-
-      resource =
-        case Inventory.create_resource(scope, put_attr(resource_attrs, :kind, "module")) do
-          {:ok, resource} -> resource
-          {:error, reason} -> Repo.rollback(reason)
-        end
-
-      %Module{
-        organization_id: scope.organization_id,
-        resource_id: resource.id,
-        module_type_id: stored_type.id,
-        catalog_type_revision_id: revision.id
-      }
-      |> Module.changeset(attrs)
-      |> insert_or_rollback()
-      |> Repo.preload([:resource, :catalog_type_revision, module_type: :resource])
+      create_module_record(scope, stored_type, resource_attrs, attrs)
     end)
   end
 
@@ -413,6 +397,50 @@ defmodule Renga.Catalog do
       parent_id = Ecto.Changeset.get_field(changeset, :parent_id)
       validate_inventory_item_parent!(scope, stored.id, stored.owner_resource_id, parent_id)
       update_or_rollback(changeset)
+    end)
+  end
+
+  @doc """
+  Promotes an inventory-only part into an independently managed module.
+
+  The inventory item remains as assembly history and links explicitly to the
+  new module instead of acquiring topology behavior through metadata.
+  """
+  def promote_inventory_item_to_module(
+        %Scope{} = scope,
+        %InventoryItem{} = item,
+        %ModuleType{} = module_type,
+        resource_attrs \\ %{},
+        module_attrs \\ %{}
+      ) do
+    managed_transaction(scope, fn ->
+      stored_item = scoped_lock!(InventoryItem, scope.organization_id, item.id)
+
+      if stored_item.promoted_module_id,
+        do: Repo.rollback(:inventory_item_already_promoted)
+
+      stored_type = scoped_lock!(ModuleType, scope.organization_id, module_type.id)
+
+      resource_attrs =
+        resource_attrs
+        |> put_default_attr(:name, stored_item.name)
+        |> put_default_attr(:lifecycle_state, promoted_resource_lifecycle(stored_item.status))
+
+      module_attrs =
+        module_attrs
+        |> put_default_attr(:status, promoted_module_status(stored_item.status))
+        |> put_default_attr(:serial_number, stored_item.serial_number)
+        |> put_default_attr(:part_number, stored_item.part_number)
+        |> put_default_attr(:asset_tag, stored_item.asset_tag)
+        |> put_default_attr(:metadata, stored_item.metadata)
+
+      module = create_module_record(scope, stored_type, resource_attrs, module_attrs)
+
+      stored_item
+      |> InventoryItem.promotion_changeset(module.id)
+      |> update_or_rollback()
+
+      module
     end)
   end
 
@@ -605,6 +633,34 @@ defmodule Renga.Catalog do
     |> insert_or_rollback()
     |> Repo.preload(:resource)
   end
+
+  defp create_module_record(scope, module_type, resource_attrs, attrs) do
+    revision = latest_module_revision!(scope.organization_id, module_type.id)
+
+    resource =
+      case Inventory.create_resource(scope, put_attr(resource_attrs, :kind, "module")) do
+        {:ok, resource} -> resource
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+    %Module{
+      organization_id: scope.organization_id,
+      resource_id: resource.id,
+      module_type_id: module_type.id,
+      catalog_type_revision_id: revision.id
+    }
+    |> Module.changeset(attrs)
+    |> insert_or_rollback()
+    |> Repo.preload([:resource, :catalog_type_revision, module_type: :resource])
+  end
+
+  defp promoted_resource_lifecycle("removed"), do: "retired"
+  defp promoted_resource_lifecycle("unknown"), do: "unknown"
+  defp promoted_resource_lifecycle(_status), do: "active"
+
+  defp promoted_module_status("installed"), do: "active"
+  defp promoted_module_status(status) when status in ~w(spare failed unknown), do: status
+  defp promoted_module_status("removed"), do: "retired"
 
   defp preload_type(type) do
     revisions =
@@ -1409,6 +1465,10 @@ defmodule Renga.Catalog do
   defp upsert(changeset), do: update_or_rollback(changeset)
 
   defp attr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+
+  defp put_default_attr(attrs, key, value) do
+    if attr(attrs, key), do: attrs, else: put_attr(attrs, key, value)
+  end
 
   defp put_attr(attrs, key, value) do
     if Map.has_key?(attrs, Atom.to_string(key)) do
