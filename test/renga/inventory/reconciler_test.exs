@@ -199,7 +199,9 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert module.attributes == %{"manufacturer" => "Example Networks"}
     assert module.raw_metadata == %{"collector" => "bmc"}
     assert Catalog.list_actual_components(context.scope, resource.id) |> length() == 3
-    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert [%{kind: "module_bay_not_found"}] =
+             Catalog.list_component_findings(context.scope, resource.id)
 
     assert Enum.at(observation.payload["resources"], 0)["components"] == components
 
@@ -273,7 +275,15 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert Enum.at(reported.payload["resources"], 0)["components"] == components
     assert Catalog.list_actual_components(context.scope, resource.id) == []
-    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    findings = Catalog.list_component_findings(context.scope, resource.id)
+    assert length(findings) == 3
+    assert Enum.all?(findings, &(&1.kind == "module_bay_not_found"))
+
+    refute Enum.any?(
+             findings,
+             &(&1.kind in ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift))
+           )
   end
 
   test "duplicate module identities remain only in the immutable observation" do
@@ -330,6 +340,243 @@ defmodule Renga.Inventory.ReconcilerTest do
         observed_at: observation.observed_at
       })
     end
+  end
+
+  test "module evidence reports deterministic bay and type compatibility findings" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    {compatible_vendor, compatible_type} =
+      module_type_fixture(context.scope, "Compatible Networks", "LC-48", "PN-LC-48")
+
+    {incompatible_vendor, incompatible_type} =
+      module_type_fixture(context.scope, "Other Networks", "SUP-2", "PN-SUP-2")
+
+    {_first_ambiguous_vendor, first_ambiguous_type} =
+      module_type_fixture(context.scope, "First Ambiguous", "SHARED-MODEL", "PN-FIRST")
+
+    {_second_ambiguous_vendor, second_ambiguous_type} =
+      module_type_fixture(context.scope, "Second Ambiguous", "SHARED-MODEL", "PN-SECOND")
+
+    {:ok, compatible_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Compatible bay", position: "SLOT1"},
+        [compatible_type.id]
+      )
+
+    {:ok, incompatible_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Incompatible bay", position: "SLOT2"},
+        [compatible_type.id]
+      )
+
+    {:ok, _first_ambiguous_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "First duplicate bay", position: "DUPLICATE"},
+        [compatible_type.id]
+      )
+
+    {:ok, _second_ambiguous_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Second duplicate bay", position: "DUPLICATE"},
+        [compatible_type.id]
+      )
+
+    {:ok, unmatched_type_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Unknown type bay", position: "SLOT4"},
+        [compatible_type.id]
+      )
+
+    {:ok, ambiguous_type_bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Ambiguous type bay", position: "SLOT5"},
+        [first_ambiguous_type.id, second_ambiguous_type.id]
+      )
+
+    reported =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "compatible-card",
+            "slot" => "slot1",
+            "manufacturer" => compatible_vendor.resource.name,
+            "model" => "LC-48",
+            "part_number" => "PN-LC-48"
+          },
+          %{
+            "kind" => "module",
+            "id" => "incompatible-card",
+            "slot" => "SLOT2",
+            "manufacturer" => incompatible_vendor.resource.name,
+            "model" => incompatible_type.model
+          },
+          %{
+            "kind" => "module",
+            "id" => "missing-bay-card",
+            "slot" => "MISSING",
+            "model" => compatible_type.model
+          },
+          %{
+            "kind" => "module",
+            "id" => "ambiguous-bay-card",
+            "slot" => "duplicate",
+            "model" => compatible_type.model
+          },
+          %{
+            "kind" => "module",
+            "id" => "unknown-type-card",
+            "slot" => "SLOT4",
+            "model" => "UNKNOWN-MODULE"
+          },
+          %{
+            "kind" => "module",
+            "id" => "ambiguous-type-card",
+            "slot" => "SLOT5",
+            "model" => "SHARED MODEL"
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+
+    findings = Catalog.list_component_findings(context.scope, resource.id)
+
+    assert findings |> Enum.map(& &1.kind) |> Enum.sort() ==
+             ~w(ambiguous_module_bay ambiguous_module_type incompatible_module_type module_bay_not_found module_type_not_found)
+
+    incompatible = Enum.find(findings, &(&1.kind == "incompatible_module_type"))
+    assert incompatible.details["module_bay_id"] == incompatible_bay.id
+    assert incompatible.details["module_type_id"] == incompatible_type.id
+    assert incompatible.details["compatible_module_type_ids"] == [compatible_type.id]
+
+    ambiguous_type = Enum.find(findings, &(&1.kind == "ambiguous_module_type"))
+    assert ambiguous_type.details["module_bay_id"] == ambiguous_type_bay.id
+
+    assert Enum.sort(ambiguous_type.details["module_type_ids"]) ==
+             Enum.sort([first_ambiguous_type.id, second_ambiguous_type.id])
+
+    assert Enum.all?(
+             [compatible_bay, incompatible_bay, unmatched_type_bay, ambiguous_type_bay],
+             &is_nil(Catalog.get_current_module_installation(context.scope, &1.id))
+           )
+  end
+
+  test "newer compatible module evidence resolves findings without stale regression" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    {compatible_vendor, compatible_type} =
+      module_type_fixture(context.scope, "Compatible Lifecycle", "LC-LIFECYCLE", "PN-COMPATIBLE")
+
+    {incompatible_vendor, incompatible_type} =
+      module_type_fixture(context.scope, "Incompatible Lifecycle", "SUP-LIFECYCLE", "PN-WRONG")
+
+    {:ok, bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Lifecycle bay", position: "SLOT1"},
+        [compatible_type.id]
+      )
+
+    older =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "lifecycle-card",
+            "slot" => "SLOT1",
+            "manufacturer" => incompatible_vendor.resource.name,
+            "model" => incompatible_type.model
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, older.id)
+    assert [opened] = Catalog.list_component_findings(context.scope, resource.id)
+    assert opened.kind == "incompatible_module_type"
+
+    newer =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "lifecycle-card",
+            "slot" => "SLOT1",
+            "manufacturer" => compatible_vendor.resource.name,
+            "model" => compatible_type.model
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, newer.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert [%{id: resolved_id, kind: "incompatible_module_type"}] =
+             Catalog.list_component_findings(context.scope, resource.id, "resolved")
+
+    assert resolved_id == opened.id
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, older.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    recurrence =
+      observation(
+        context,
+        "4",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "lifecycle-card",
+            "slot" => "SLOT1",
+            "manufacturer" => incompatible_vendor.resource.name,
+            "model" => incompatible_type.model
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, recurrence.id)
+
+    assert [%{kind: "incompatible_module_type"} = reopened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    refute reopened.id == resolved_id
+    assert reopened.resolution_key == opened.resolution_key
+    assert is_nil(Catalog.get_current_module_installation(context.scope, bay.id))
   end
 
   test "nullable components remain raw without blocking reconciliation" do
@@ -2299,5 +2546,32 @@ defmodule Renga.Inventory.ReconcilerTest do
       Catalog.create_hardware_type_revision(scope, hardware_type, %{}, templates)
 
     hardware_type
+  end
+
+  defp module_type_fixture(scope, vendor_name, model, part_number) do
+    slug =
+      [vendor_name, model]
+      |> Enum.join("-")
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "-")
+
+    {:ok, manufacturer} =
+      Catalog.create_manufacturer(
+        scope,
+        %{name: vendor_name, lifecycle_state: "active"},
+        %{slug: slug}
+      )
+
+    {:ok, module_type} =
+      Catalog.create_module_type(
+        scope,
+        %{name: "Module type #{vendor_name} #{model}", lifecycle_state: "active"},
+        %{manufacturer_id: manufacturer.id, model: model, module_class: "line_card"}
+      )
+
+    {:ok, _revision} =
+      Catalog.create_module_type_revision(scope, module_type, %{part_number: part_number})
+
+    {manufacturer, module_type}
   end
 end
