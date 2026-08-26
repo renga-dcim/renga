@@ -37,7 +37,7 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
   without treating modules as CPU, memory, or disk projections.
 - [X] Resolve observed module installations against catalog bays and module
   types and add compatibility findings.
-- [ ] Add missing-component findings gated by explicit complete snapshots.
+- [X] Add missing-component findings gated by explicit complete snapshots.
 - [ ] Link interface templates and NIC/port evidence to the existing canonical
   interface model rather than creating a parallel network endpoint model.
 

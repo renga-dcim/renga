@@ -44,6 +44,8 @@ defmodule Renga.Catalog do
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
   @module_component_finding_kinds ~w(module_bay_not_found ambiguous_module_bay module_type_not_found ambiguous_module_type incompatible_module_type)
+  @cursor_authoritative_finding_kinds @module_component_finding_kinds ++
+                                        ~w(missing_expected_component)
   @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
                                       @module_component_finding_kinds
 
@@ -218,18 +220,39 @@ defmodule Renga.Catalog do
   def reconcile_component_findings(
         %Scope{} = scope,
         %Observation{} = observation,
-        %Resource{} = resource
+        %Resource{} = resource,
+        opts \\ []
       ) do
     resource = scoped_lock!(Resource, scope.organization_id, resource.id)
+    component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
+    component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
+
+    {expected_findings, observed_expectation_keys} =
+      expected_actual_findings(
+        scope,
+        observation,
+        resource,
+        component_snapshot_complete?,
+        component_snapshot_current?
+      )
 
     findings =
       ambiguous_identity_findings(scope, observation, resource) ++
-        expected_actual_findings(scope, observation, resource) ++
+        expected_findings ++
         module_installation_findings(scope, resource)
 
     finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
     Enum.each(findings, &put_component_finding(scope, resource, &1))
-    resolve_component_findings(scope, observation, resource, finding_keys)
+
+    resolve_component_findings(
+      scope,
+      observation,
+      resource,
+      finding_keys,
+      component_snapshot_complete?,
+      observed_expectation_keys
+    )
+
     :ok
   end
 
@@ -873,10 +896,16 @@ defmodule Renga.Catalog do
     normalize_catalog_value(evidence.slot || evidence.path)
   end
 
-  defp expected_actual_findings(scope, observation, resource) do
+  defp expected_actual_findings(
+         scope,
+         observation,
+         resource,
+         component_snapshot_complete?,
+         component_snapshot_current?
+       ) do
     case get_hardware_assignment(scope, resource.id) do
       nil ->
-        []
+        {[], MapSet.new()}
 
       _assignment ->
         expectations =
@@ -886,6 +915,13 @@ defmodule Renga.Catalog do
 
         actuals = list_actual_components(scope, resource.id)
         expected_candidates = Enum.map(expectations, &{&1, expected_candidates(&1, actuals)})
+
+        observed_actual_ids =
+          if component_snapshot_current? do
+            observed_actual_component_ids(scope.organization_id, resource.id, observation.id)
+          else
+            MapSet.new()
+          end
 
         candidate_frequencies =
           expected_candidates
@@ -909,8 +945,62 @@ defmodule Renga.Catalog do
           |> Enum.reject(&MapSet.member?(considered_ids, &1.id))
           |> Enum.map(&unexpected_actual_finding(&1, observation.observed_at))
 
-        expectation_findings ++ unexpected_findings
+        observed_expectation_keys =
+          expected_candidates
+          |> Enum.filter(fn {_expected, candidates} ->
+            Enum.any?(candidates, &MapSet.member?(observed_actual_ids, &1.id))
+          end)
+          |> MapSet.new(fn {expected, _candidates} ->
+            expected_finding_resolution_key(expected)
+          end)
+
+        missing_findings =
+          missing_expected_findings(
+            expected_candidates,
+            observed_actual_ids,
+            observation,
+            component_snapshot_complete?
+          )
+
+        {expectation_findings ++ unexpected_findings ++ missing_findings,
+         observed_expectation_keys}
     end
+  end
+
+  defp missing_expected_findings(_expected_candidates, _observed_actual_ids, _observation, false),
+    do: []
+
+  defp missing_expected_findings(
+         expected_candidates,
+         observed_actual_ids,
+         observation,
+         true
+       ) do
+    expected_candidates
+    |> Enum.filter(&required_expectation_missing?(&1, observed_actual_ids))
+    |> Enum.map(fn {expected, _candidates} ->
+      missing_expected_finding(expected, observation)
+    end)
+  end
+
+  defp required_expectation_missing?({expected, candidates}, observed_actual_ids) do
+    expected.required and
+      not Enum.any?(candidates, &MapSet.member?(observed_actual_ids, &1.id))
+  end
+
+  defp observed_actual_component_ids(organization_id, resource_id, observation_id) do
+    ActualComponentEvidenceMatch
+    |> where(
+      [match],
+      match.organization_id == ^organization_id and match.owner_resource_id == ^resource_id
+    )
+    |> join(:inner, [match], evidence in ComponentEvidence,
+      on: evidence.id == match.component_evidence_id
+    )
+    |> where([_match, evidence], evidence.observation_id == ^observation_id)
+    |> select([match], match.actual_component_id)
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   defp expected_candidate_findings(expected_candidates, candidate_frequencies, observed_at) do
@@ -1036,6 +1126,21 @@ defmodule Renga.Catalog do
     }
   end
 
+  defp missing_expected_finding(expected, observation) do
+    %{
+      kind: "missing_expected_component",
+      resolution_key: expected_finding_resolution_key(expected),
+      message: "Required catalog component is absent from a complete source snapshot",
+      details:
+        Map.merge(expected_finding_details(expected), %{
+          "component_kind" => expected.kind,
+          "source_id" => observation.source_id,
+          "observation_id" => observation.id
+        }),
+      last_observed_at: observation.observed_at
+    }
+  end
+
   defp unexpected_actual_finding(actual, observed_at) do
     %{
       kind: "unexpected_actual_component",
@@ -1086,7 +1191,7 @@ defmodule Renga.Catalog do
 
   defp finding_state_can_recur?(attrs, latest) do
     DateTime.after?(attrs.last_observed_at, latest.last_observed_at) or
-      (attrs.kind in @module_component_finding_kinds and
+      (attrs.kind in @cursor_authoritative_finding_kinds and
          DateTime.compare(attrs.last_observed_at, latest.last_observed_at) == :eq)
   end
 
@@ -1105,15 +1210,27 @@ defmodule Renga.Catalog do
     |> upsert()
   end
 
-  defp resolve_component_findings(scope, observation, resource, current_keys) do
+  defp resolve_component_findings(
+         scope,
+         observation,
+         resource,
+         current_keys,
+         component_snapshot_complete?,
+         observed_expectation_keys
+       ) do
     ComponentFinding
     |> where(
       [finding],
       finding.organization_id == ^scope.organization_id and finding.resource_id == ^resource.id and
-        finding.status == "open" and finding.kind in ^@presence_component_finding_kinds and
-        finding.last_observed_at <= ^observation.observed_at
+        finding.status == "open" and finding.last_observed_at <= ^observation.observed_at
     )
     |> Repo.all()
+    |> Enum.filter(fn finding ->
+      finding.kind in @presence_component_finding_kinds or
+        (finding.kind == "missing_expected_component" and
+           (component_snapshot_complete? or
+              MapSet.member?(observed_expectation_keys, finding.resolution_key)))
+    end)
     |> Enum.reject(&MapSet.member?(current_keys, {&1.kind, &1.resolution_key}))
     |> Enum.each(fn finding ->
       finding

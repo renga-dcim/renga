@@ -44,11 +44,21 @@ defmodule Renga.Inventory.ReconcilerTest do
          identifiers,
          attributes \\ %{},
          interfaces \\ [],
-         components \\ :absent
+         components \\ :absent,
+         section_completeness \\ :absent
        ) do
     observed_at = DateTime.add(~U[2026-08-01 12:00:00.000Z], String.to_integer(id), :second)
 
-    observation_at(context, id, observed_at, identifiers, attributes, interfaces, components)
+    observation_at(
+      context,
+      id,
+      observed_at,
+      identifiers,
+      attributes,
+      interfaces,
+      components,
+      section_completeness
+    )
   end
 
   defp observation_at(
@@ -58,7 +68,8 @@ defmodule Renga.Inventory.ReconcilerTest do
          identifiers,
          attributes,
          interfaces,
-         components \\ :absent
+         components \\ :absent,
+         section_completeness \\ :absent
        ) do
     resource_payload =
       %{
@@ -73,15 +84,23 @@ defmodule Renga.Inventory.ReconcilerTest do
         if components == :absent, do: payload, else: Map.put(payload, "components", components)
       end)
 
+    payload =
+      %{
+        "observation_id" => "observation-#{id}",
+        "observed_at" => DateTime.to_iso8601(observed_at),
+        "resources" => [resource_payload]
+      }
+      |> then(fn payload ->
+        if section_completeness == :absent,
+          do: payload,
+          else: Map.put(payload, "section_completeness", section_completeness)
+      end)
+
     {:ok, observation} =
       Inventory.create_observation(context.scope, context.source.id, %{
         idempotency_key: "observation-#{id}",
         observed_at: observed_at,
-        payload: %{
-          "observation_id" => "observation-#{id}",
-          "observed_at" => DateTime.to_iso8601(observed_at),
-          "resources" => [resource_payload]
-        }
+        payload: payload
       })
 
     observation
@@ -1421,6 +1440,13 @@ defmodule Renga.Inventory.ReconcilerTest do
 
   test "non-authoritative component sections do not infer missing findings" do
     context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
     first = observation(context, "1", %{"machine_id" => "machine-1"})
     assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
 
@@ -1432,8 +1458,26 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert {:ok, _assignment} =
              Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
 
-    for {id, components} <- [{"2", :absent}, {"3", nil}, {"4", []}] do
-      partial = observation(context, id, %{"machine_id" => "machine-1"}, %{}, [], components)
+    for {id, components, completeness} <- [
+          {"2", :absent, :absent},
+          {"3", nil, %{"components" => true}},
+          {"4", [], :absent},
+          {"5", [], %{"components" => false}},
+          {"6", [], true},
+          {"7", [], "complete"},
+          {"8", [], []}
+        ] do
+      partial =
+        observation(
+          context,
+          id,
+          %{"machine_id" => "machine-1"},
+          %{},
+          [],
+          components,
+          completeness
+        )
+
       assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
 
       refute Enum.any?(
@@ -1441,6 +1485,234 @@ defmodule Renga.Inventory.ReconcilerTest do
                &(&1.kind == "missing_expected_component")
              )
     end
+
+    {:ok, partial_source} = Inventory.update_source(context.scope, source, %{metadata: %{}})
+    context = %{context | source: partial_source}
+
+    untrusted_claim =
+      observation(
+        context,
+        "9",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [],
+        %{"components" => true}
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, untrusted_claim.id)
+
+    refute Enum.any?(
+             Catalog.list_component_findings(context.scope, resource.id),
+             &(&1.kind == "missing_expected_component")
+           )
+  end
+
+  test "complete component snapshots report only required expectations omitted by that source" do
+    context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "COMPLETE-COMPONENTS", [
+        %{kind: "cpu", name: "CPU1", position: "CPU1", required: true},
+        %{kind: "memory", name: "DIMM1", position: "DIMM1", required: false},
+        %{kind: "disk", name: "Disk 1", position: "BAY1", required: true}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    complete =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}],
+        %{"components" => true}
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, complete.id)
+
+    assert [%{kind: "missing_expected_component"} = missing] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    assert missing.details["component_kind"] == "disk"
+    assert missing.details["source_id"] == source.id
+    assert missing.details["observation_id"] == complete.id
+  end
+
+  test "fresh positive evidence resolves missing findings without partial omission or stale regression" do
+    context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "MISSING-LIFECYCLE", [
+        %{kind: "cpu", name: "CPU1", position: "CPU1", required: true}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    missing =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [],
+        %{"components" => true}
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, missing.id)
+    assert [opened] = Catalog.list_component_findings(context.scope, resource.id)
+    assert opened.kind == "missing_expected_component"
+
+    stale_presence =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, stale_presence.id)
+
+    assert [still_open] = Catalog.list_component_findings(context.scope, resource.id)
+    assert still_open.id == opened.id
+
+    partial_presence =
+      observation(
+        context,
+        "4",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, partial_presence.id)
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert [%{id: resolved_id, kind: "missing_expected_component"}] =
+             Catalog.list_component_findings(context.scope, resource.id, "resolved")
+
+    assert resolved_id == opened.id
+
+    recurrence =
+      observation(
+        context,
+        "5",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [],
+        %{"components" => true}
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, recurrence.id)
+
+    assert [%{kind: "missing_expected_component"} = reopened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    refute reopened.id == resolved_id
+  end
+
+  test "equal-time complete snapshots preserve missing finding recurrence order" do
+    context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "EQUAL-MISSING-LIFECYCLE", [
+        %{kind: "cpu", name: "CPU1", position: "CPU1", required: true}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    observed_at = ~U[2026-08-01 12:00:10.000Z]
+
+    missing =
+      observation_at(
+        context,
+        "2",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [],
+        %{"components" => true}
+      )
+
+    present =
+      observation_at(
+        context,
+        "3",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}]
+      )
+
+    recurrence =
+      observation_at(
+        context,
+        "4",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [],
+        %{"components" => true}
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, missing.id)
+
+    assert [%{kind: "missing_expected_component"} = opened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, present.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, recurrence.id)
+
+    assert [%{kind: "missing_expected_component"} = reopened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    refute reopened.id == opened.id
   end
 
   test "component finding reads are scoped to the organization" do
