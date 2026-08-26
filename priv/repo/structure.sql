@@ -353,6 +353,29 @@ CREATE TABLE public.component_evidence (
 
 
 --
+-- Name: component_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.component_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    resolution_key character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT component_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
+    CONSTRAINT component_findings_valid_kind CHECK (((kind)::text = ANY ((ARRAY['ambiguous_component_identity'::character varying, 'ambiguous_expected_component'::character varying, 'unexpected_actual_component'::character varying, 'component_drift'::character varying, 'missing_expected_component'::character varying])::text[]))),
+    CONSTRAINT component_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
+);
+
+
+--
 -- Name: component_templates; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1357,6 +1380,14 @@ ALTER TABLE ONLY public.component_evidence
 
 
 --
+-- Name: component_findings component_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_findings
+    ADD CONSTRAINT component_findings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: component_templates component_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1963,6 +1994,20 @@ CREATE UNIQUE INDEX component_evidence_observation_identity_index ON public.comp
 --
 
 CREATE INDEX component_evidence_resource_source_kind_index ON public.component_evidence USING btree (organization_id, resource_id, source_id, kind, observed_at);
+
+
+--
+-- Name: component_findings_open_resolution_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_findings_open_resolution_index ON public.component_findings USING btree (organization_id, resource_id, kind, resolution_key) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: component_findings_resource_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX component_findings_resource_status_index ON public.component_findings USING btree (organization_id, resource_id, status);
 
 
 --
@@ -3195,6 +3240,14 @@ ALTER TABLE ONLY public.component_evidence
 
 
 --
+-- Name: component_findings component_findings_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_findings
+    ADD CONSTRAINT component_findings_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: component_templates component_templates_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4122,3 +4175,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826140000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826150000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826160000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826170000);

@@ -9,6 +9,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Catalog
   alias Renga.Catalog.ActualComponent
   alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Inventory
@@ -109,6 +110,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
       reconcile_actual_component(scope, evidence, allow_position_match?)
     end)
+
+    Catalog.reconcile_component_findings(scope, observation, resource)
   end
 
   defp reconcile_actual_component(scope, evidence, allow_position_match?) do

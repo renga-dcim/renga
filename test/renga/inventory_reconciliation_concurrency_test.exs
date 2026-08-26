@@ -3,10 +3,66 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
+  alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Repo
 
   @timeout 5_000
+
+  test "component finding reconciliation waits for catalog resource mutations" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    suffix = System.unique_integer([:positive])
+
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Concurrent component findings #{suffix}",
+        slug: "concurrent-component-findings-#{suffix}"
+      })
+
+    scope = Accounts.scope_for(organization)
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
+    {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "host-#{suffix}"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "component-findings-#{suffix}",
+        observed_at: ~U[2026-08-01 12:00:00.000Z],
+        payload: %{}
+      })
+
+    Repo.query!("BEGIN")
+    Repo.query!("SELECT id FROM resources WHERE id::text = $1 FOR UPDATE", [resource.id])
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+
+        try do
+          Repo.transaction(fn ->
+            send(parent, {:ready, self()})
+            Catalog.reconcile_component_findings(scope, observation, resource)
+          end)
+        after
+          Sandbox.checkin(Repo)
+        end
+      end)
+
+    try do
+      assert_receive {:ready, task_pid}, @timeout
+      assert task_pid == task.pid
+      await_row_lock_waiters!(1, @timeout)
+    after
+      Repo.query!("COMMIT")
+    end
+
+    try do
+      assert {:ok, :ok} = Task.await(task, @timeout)
+    after
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
 
   test "manual overrides wait for organization reconciliation before materializing" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
@@ -347,6 +403,36 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
         end
 
         do_await_advisory_waiters!(expected, deadline)
+    end
+  end
+
+  defp await_row_lock_waiters!(expected, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_row_lock_waiters!(expected, deadline)
+  end
+
+  defp do_await_row_lock_waiters!(expected, deadline) do
+    [[count]] =
+      Repo.query!("""
+      SELECT count(*)
+      FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock'
+      """).rows
+
+    cond do
+      count >= expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("expected #{expected} resource row-lock waiters, found #{count}")
+
+      true ->
+        receive do
+        after
+          10 -> :ok
+        end
+
+        do_await_row_lock_waiters!(expected, deadline)
     end
   end
 end
