@@ -375,7 +375,7 @@ defmodule Renga.Inventory.ReconcilerTest do
         [compatible_type.id]
       )
 
-    {:ok, _first_ambiguous_bay} =
+    {:ok, first_ambiguous_bay} =
       Catalog.create_module_bay(
         context.scope,
         resource.id,
@@ -383,7 +383,7 @@ defmodule Renga.Inventory.ReconcilerTest do
         [compatible_type.id]
       )
 
-    {:ok, _second_ambiguous_bay} =
+    {:ok, second_ambiguous_bay} =
       Catalog.create_module_bay(
         context.scope,
         resource.id,
@@ -469,10 +469,15 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert incompatible.details["module_type_id"] == incompatible_type.id
     assert incompatible.details["compatible_module_type_ids"] == [compatible_type.id]
 
+    ambiguous_bay = Enum.find(findings, &(&1.kind == "ambiguous_module_bay"))
+
+    assert ambiguous_bay.details["module_bay_ids"] ==
+             Enum.sort([first_ambiguous_bay.id, second_ambiguous_bay.id])
+
     ambiguous_type = Enum.find(findings, &(&1.kind == "ambiguous_module_type"))
     assert ambiguous_type.details["module_bay_id"] == ambiguous_type_bay.id
 
-    assert Enum.sort(ambiguous_type.details["module_type_ids"]) ==
+    assert ambiguous_type.details["module_type_ids"] ==
              Enum.sort([first_ambiguous_type.id, second_ambiguous_type.id])
 
     assert Enum.all?(
@@ -577,6 +582,161 @@ defmodule Renga.Inventory.ReconcilerTest do
     refute reopened.id == resolved_id
     assert reopened.resolution_key == opened.resolution_key
     assert is_nil(Catalog.get_current_module_installation(context.scope, bay.id))
+  end
+
+  test "equal-time stale module evidence cannot regress compatibility findings" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    {compatible_vendor, compatible_type} =
+      module_type_fixture(context.scope, "Equal Time Compatible", "EQ-COMPAT", "PN-EQ-COMPAT")
+
+    {incompatible_vendor, incompatible_type} =
+      module_type_fixture(context.scope, "Equal Time Incompatible", "EQ-WRONG", "PN-EQ-WRONG")
+
+    {:ok, _bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Equal-time bay", position: "SLOT1"},
+        [compatible_type.id]
+      )
+
+    observed_at = ~U[2026-08-01 12:00:10.000Z]
+
+    stale =
+      observation_at(
+        context,
+        "2",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "equal-time-card",
+            "slot" => "SLOT1",
+            "manufacturer" => incompatible_vendor.resource.name,
+            "model" => incompatible_type.model
+          }
+        ]
+      )
+
+    current =
+      observation_at(
+        context,
+        "3",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "module",
+            "id" => "equal-time-card",
+            "slot" => "SLOT1",
+            "manufacturer" => compatible_vendor.resource.name,
+            "model" => compatible_type.model
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, current.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, stale.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "equal-time module finding transitions can recur in observation order" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    {compatible_vendor, compatible_type} =
+      module_type_fixture(context.scope, "Recurrence Compatible", "REC-COMPAT", "PN-REC-COMPAT")
+
+    {incompatible_vendor, incompatible_type} =
+      module_type_fixture(context.scope, "Recurrence Incompatible", "REC-WRONG", "PN-REC-WRONG")
+
+    {:ok, _bay} =
+      Catalog.create_module_bay(
+        context.scope,
+        resource.id,
+        %{name: "Recurrence bay", position: "SLOT1"},
+        [compatible_type.id]
+      )
+
+    observed_at = ~U[2026-08-01 12:00:10.000Z]
+
+    observations =
+      [
+        {"2", incompatible_vendor, incompatible_type},
+        {"3", compatible_vendor, compatible_type},
+        {"4", incompatible_vendor, incompatible_type}
+      ]
+      |> Enum.map(fn {id, vendor, module_type} ->
+        observation_at(
+          context,
+          id,
+          observed_at,
+          %{"machine_id" => "machine-1"},
+          %{},
+          [],
+          [
+            %{
+              "kind" => "module",
+              "id" => "recurrence-card",
+              "slot" => "SLOT1",
+              "manufacturer" => vendor.resource.name,
+              "model" => module_type.model
+            }
+          ]
+        )
+      end)
+
+    [incompatible, compatible, recurrence] = observations
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, incompatible.id)
+
+    assert [%{kind: "incompatible_module_type"} = opened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, compatible.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, recurrence.id)
+
+    assert [%{kind: "incompatible_module_type"} = reopened] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    refute reopened.id == opened.id
+  end
+
+  test "conflicting module positions remain only in immutable observations" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    modules = [
+      %{"kind" => "module", "id" => "first-card", "slot" => "SLOT-1", "model" => "A"},
+      %{"kind" => "module", "id" => "second-card", "slot" => "slot 1", "model" => "B"}
+    ]
+
+    conflict =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [], modules)
+
+    reversed =
+      observation(context, "3", %{"machine_id" => "machine-1"}, %{}, [], Enum.reverse(modules))
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, conflict.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reversed.id)
+
+    assert Inventory.list_component_evidence(context.scope, resource.id) == []
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+    assert Enum.at(conflict.payload["resources"], 0)["components"] == modules
+    assert Enum.at(reversed.payload["resources"], 0)["components"] == Enum.reverse(modules)
   end
 
   test "nullable components remain raw without blocking reconciliation" do

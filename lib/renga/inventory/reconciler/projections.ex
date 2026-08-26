@@ -84,10 +84,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.filter(&(&1["kind"] == "module"))
       |> Enum.frequencies_by(& &1["source_local_id"])
 
+    module_position_frequencies =
+      component_attrs
+      |> Enum.filter(&(&1["kind"] == "module"))
+      |> Enum.frequencies_by(&module_position_identity_key/1)
+
     component_attrs =
       Enum.reject(component_attrs, fn
-        %{"kind" => "module", "source_local_id" => source_local_id} ->
-          module_identity_frequencies[source_local_id] > 1
+        %{"kind" => "module", "source_local_id" => source_local_id} = module ->
+          module_identity_frequencies[source_local_id] > 1 or
+            module_position_frequencies[module_position_identity_key(module)] > 1
 
         _component ->
           false
@@ -235,6 +241,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
     if position && part_number do
       {attrs["kind"], String.downcase(position), String.downcase(part_number)}
     end
+  end
+
+  defp module_position_identity_key(module) do
+    module
+    |> then(&(&1["slot"] || &1["path"]))
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^[:alnum:]]+/u, " ")
+    |> String.trim()
   end
 
   defp actual_component_scope(query, organization_id, evidence) do

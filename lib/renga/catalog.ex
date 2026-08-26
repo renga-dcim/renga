@@ -43,7 +43,9 @@ defmodule Renga.Catalog do
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
-  @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift module_bay_not_found ambiguous_module_bay module_type_not_found ambiguous_module_type incompatible_module_type)
+  @module_component_finding_kinds ~w(module_bay_not_found ambiguous_module_bay module_type_not_found ambiguous_module_type incompatible_module_type)
+  @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
+                                      @module_component_finding_kinds
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -695,7 +697,7 @@ defmodule Renga.Catalog do
     |> order_by(
       [evidence],
       desc: evidence.observed_at,
-      desc: evidence.inserted_at,
+      desc: evidence.observation_id,
       desc: evidence.id
     )
     |> Repo.all()
@@ -754,7 +756,7 @@ defmodule Renga.Catalog do
           evidence,
           "ambiguous_module_bay",
           "Observed module position matches more than one catalog bay",
-          %{"module_bay_ids" => Enum.map(candidates, & &1.id)}
+          %{"module_bay_ids" => candidates |> Enum.map(& &1.id) |> Enum.sort()}
         )
     end
   end
@@ -790,7 +792,7 @@ defmodule Renga.Catalog do
           "Observed module matches more than one catalog module type",
           %{
             "module_bay_id" => bay.id,
-            "module_type_ids" => Enum.map(candidates, & &1.id)
+            "module_type_ids" => candidates |> Enum.map(& &1.id) |> Enum.sort()
           }
         )
     end
@@ -819,7 +821,7 @@ defmodule Renga.Catalog do
   end
 
   defp incompatible_module_finding(evidence, bay, module_type) do
-    compatible_type_ids = Enum.map(bay.compatible_module_types, & &1.id)
+    compatible_type_ids = bay.compatible_module_types |> Enum.map(& &1.id) |> Enum.sort()
 
     if module_type.id in compatible_type_ids do
       nil
@@ -1072,7 +1074,7 @@ defmodule Renga.Catalog do
         latest =
           query |> order_by([finding], desc: finding.last_observed_at) |> first() |> Repo.one()
 
-        if is_nil(latest) or DateTime.after?(attrs.last_observed_at, latest.last_observed_at) do
+        if is_nil(latest) or finding_state_can_recur?(attrs, latest) do
           %ComponentFinding{
             organization_id: scope.organization_id,
             resource_id: resource.id
@@ -1080,6 +1082,12 @@ defmodule Renga.Catalog do
           |> update_component_finding(attrs)
         end
     end
+  end
+
+  defp finding_state_can_recur?(attrs, latest) do
+    DateTime.after?(attrs.last_observed_at, latest.last_observed_at) or
+      (attrs.kind in @module_component_finding_kinds and
+         DateTime.compare(attrs.last_observed_at, latest.last_observed_at) == :eq)
   end
 
   defp component_finding_query(organization_id, resource_id, kind, resolution_key) do
