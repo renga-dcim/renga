@@ -85,6 +85,13 @@ defmodule RengaWeb.ResourceLive.Show do
             </div>
           </div>
           <div class="flex max-w-sm flex-col items-start gap-1 sm:items-end">
+            <.link
+              id="resource-hardware-link"
+              navigate={~p"/inventory/resources/#{@resource.id}/hardware"}
+              class="mb-2 inline-flex h-10 items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
+            >
+              <.icon name="hero-cpu-chip" class="size-4" /> Hardware inventory
+            </.link>
             <.form
               :if={@can_manage_lifecycle?}
               for={@lifecycle_form}

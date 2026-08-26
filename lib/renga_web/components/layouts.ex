@@ -33,7 +33,7 @@ defmodule RengaWeb.Layouts do
 
   attr :active_nav, :atom,
     default: nil,
-    values: [nil, :overview, :resources, :collectors, :dcim],
+    values: [nil, :overview, :resources, :collectors, :dcim, :catalog, :findings],
     doc: "the active inventory navigation destination"
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
@@ -105,6 +105,18 @@ defmodule RengaWeb.Layouts do
             icon="hero-building-office-2"
             label="Physical inventory"
             active?={@active_nav == :dcim}
+          />
+          <.sidebar_link
+            navigate={~p"/dcim/hardware-types"}
+            icon="hero-cpu-chip"
+            label="Hardware catalog"
+            active?={@active_nav == :catalog}
+          />
+          <.sidebar_link
+            navigate={~p"/inventory/component-findings"}
+            icon="hero-exclamation-triangle"
+            label="Component findings"
+            active?={@active_nav == :findings}
           />
         </nav>
 

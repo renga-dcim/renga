@@ -441,6 +441,12 @@ defmodule RengaWeb.ResourceLiveTest do
     {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
 
     assert has_element?(view, "#resource-detail")
+
+    assert has_element?(
+             view,
+             "#resource-hardware-link[href='/inventory/resources/#{resource.id}/hardware']"
+           )
+
     assert has_element?(view, "#desired-state", "power")
     assert has_element?(view, "#canonical-projection", "compute-01.example.net")
     assert has_element?(view, "#canonical-identifiers", "SN-123")
