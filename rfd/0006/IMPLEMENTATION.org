@@ -43,10 +43,10 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 * Phase 5: Product surface and completion
 
-- [ ] Add authenticated organization-scoped catalog, device hardware, module,
+- [X] Add authenticated organization-scoped catalog, device hardware, module,
   inventory-item, and finding LiveViews in the existing
   `live_session :require_authenticated_user` router block.
-- [ ] Add tenant, catalog revision, matching, module concurrency, evidence,
+- [X] Add tenant, catalog revision, matching, module concurrency, evidence,
   reconciliation, authorization, and LiveView tests.
-- [ ] Run `make check-rfds`, focused hardware tests, and `mix precommit` before
+- [X] Run `make check-rfds`, focused hardware tests, and `mix precommit` before
   marking the proposal implemented.
