@@ -160,9 +160,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp complete_component_snapshot?(source, observation, payload, current_snapshot?) do
     current_snapshot? and source.metadata["component_snapshot_policy"] == "complete" and
-      get_in(observation.payload, ["section_completeness", "components"]) == true and
+      components_declared_complete?(observation.payload) and
       is_list(Map.get(payload, "components"))
   end
+
+  defp components_declared_complete?(%{
+         "section_completeness" => %{"components" => true}
+       }),
+       do: true
+
+  defp components_declared_complete?(_payload), do: false
 
   defp reconcile_actual_component(scope, evidence, allow_position_match?) do
     case Repo.get_by(ActualComponentEvidenceMatch,

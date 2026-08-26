@@ -1462,7 +1462,10 @@ defmodule Renga.Inventory.ReconcilerTest do
           {"2", :absent, :absent},
           {"3", nil, %{"components" => true}},
           {"4", [], :absent},
-          {"5", [], %{"components" => false}}
+          {"5", [], %{"components" => false}},
+          {"6", [], true},
+          {"7", [], "complete"},
+          {"8", [], []}
         ] do
       partial =
         observation(
@@ -1489,7 +1492,7 @@ defmodule Renga.Inventory.ReconcilerTest do
     untrusted_claim =
       observation(
         context,
-        "6",
+        "9",
         %{"machine_id" => "machine-1"},
         %{},
         [],
