@@ -79,6 +79,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.filter(&supported_component?/1)
       |> Enum.map(&component_evidence_attrs/1)
 
+    module_identity_frequencies =
+      component_attrs
+      |> Enum.filter(&(&1["kind"] == "module"))
+      |> Enum.frequencies_by(& &1["source_local_id"])
+
+    component_attrs =
+      Enum.reject(component_attrs, fn
+        %{"kind" => "module", "source_local_id" => source_local_id} ->
+          module_identity_frequencies[source_local_id] > 1
+
+        _component ->
+          false
+      end)
+
     position_frequencies =
       component_attrs
       |> Enum.map(&position_identity_key/1)
@@ -299,8 +313,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp supported_component?(%{"kind" => "module"} = component) do
-    not is_nil(component_source_local_id(component)) and
-      not is_nil(optional_component_string(component["slot"] || component["path"]))
+    not is_nil(module_source_local_id(component)) and not is_nil(module_position(component))
   end
 
   defp supported_component?(_component), do: false
@@ -323,6 +336,9 @@ defmodule Renga.Inventory.Reconciler.Projections do
     }
   end
 
+  defp component_source_local_id(%{"kind" => "module"} = component),
+    do: module_source_local_id(component)
+
   defp component_source_local_id(component) do
     [
       component["source_local_id"],
@@ -337,13 +353,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
     |> Enum.find_value(&optional_component_string/1)
   end
 
+  defp module_source_local_id(component) do
+    [component["source_local_id"], component["id"], component["serial_number"]]
+    |> Enum.find_value(&optional_component_string/1)
+  end
+
+  defp module_position(component) do
+    optional_component_string(component["slot"]) || optional_component_string(component["path"])
+  end
+
   defp singleton_or_named_component_id(%{"kind" => kind}) when kind in ~w(cpu memory), do: kind
 
   defp singleton_or_named_component_id(%{"kind" => "disk"} = component) do
     component["name"] || component["path"] || component["device"]
   end
-
-  defp singleton_or_named_component_id(%{"kind" => "module"}), do: nil
 
   defp optional_component_string(value) when is_binary(value) do
     case String.trim(value) do

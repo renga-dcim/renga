@@ -66,6 +66,7 @@ defmodule Renga.Inventory.ComponentEvidence do
       :observed_at
     ])
     |> validate_inclusion(:kind, @kinds)
+    |> validate_module_position()
     |> validate_map(:attributes)
     |> validate_map(:raw_metadata)
     |> assoc_constraint(:organization)
@@ -73,6 +74,10 @@ defmodule Renga.Inventory.ComponentEvidence do
     |> assoc_constraint(:source, name: :component_evidence_tenant_source_fkey)
     |> assoc_constraint(:observation, name: :component_evidence_tenant_observation_fkey)
     |> check_constraint(:kind, name: :component_evidence_valid_kind)
+    |> check_constraint(:slot,
+      name: :component_evidence_module_position,
+      message: "slot or path is required for module evidence"
+    )
     |> unique_constraint([:organization_id, :observation_id, :kind, :source_local_id],
       name: :component_evidence_observation_identity_index
     )
@@ -94,6 +99,15 @@ defmodule Renga.Inventory.ComponentEvidence do
 
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value), do: value
+
+  defp validate_module_position(changeset) do
+    if get_field(changeset, :kind) == "module" and is_nil(get_field(changeset, :slot)) and
+         is_nil(get_field(changeset, :path)) do
+      add_error(changeset, :slot, "slot or path is required for module evidence")
+    else
+      changeset
+    end
+  end
 
   defp validate_map(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->
