@@ -9,6 +9,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Catalog.ActualComponent
+  alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
@@ -70,10 +72,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
         _absent_or_invalid -> []
       end
 
-    components
-    |> Enum.filter(&supported_component?/1)
-    |> Enum.each(fn component ->
-      attrs = component_evidence_attrs(component)
+    component_attrs =
+      components
+      |> Enum.filter(&supported_component?/1)
+      |> Enum.map(&component_evidence_attrs/1)
+
+    position_frequencies =
+      component_attrs
+      |> Enum.map(&position_identity_key/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.frequencies()
+
+    Enum.each(component_attrs, fn attrs ->
+      position_key = position_identity_key(attrs)
+      allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
 
       existing =
         Repo.get_by(ComponentEvidence,
@@ -83,17 +95,197 @@ defmodule Renga.Inventory.Reconciler.Projections do
           source_local_id: attrs["source_local_id"]
         )
 
-      unless existing do
-        {:ok, _evidence} =
-          Inventory.create_component_evidence(
-            scope,
-            source.id,
-            observation.id,
-            resource.id,
-            attrs
-          )
-      end
+      evidence =
+        existing ||
+          case Inventory.create_component_evidence(
+                 scope,
+                 source.id,
+                 observation.id,
+                 resource.id,
+                 attrs
+               ) do
+            {:ok, evidence} -> evidence
+          end
+
+      reconcile_actual_component(scope, evidence, allow_position_match?)
     end)
+  end
+
+  defp reconcile_actual_component(scope, evidence, allow_position_match?) do
+    case Repo.get_by(ActualComponentEvidenceMatch,
+           organization_id: scope.organization_id,
+           component_evidence_id: evidence.id
+         ) do
+      nil ->
+        case match_actual_component(scope.organization_id, evidence, allow_position_match?) do
+          {:ok, component, strategy} ->
+            put_actual_component_evidence_match(scope, component, evidence, strategy)
+            update_actual_component(component, evidence)
+
+          :none ->
+            component = create_actual_component(scope, evidence)
+            put_actual_component_evidence_match(scope, component, evidence, "discovered")
+
+          :ambiguous ->
+            :ok
+        end
+
+      _existing_match ->
+        :ok
+    end
+  end
+
+  defp match_actual_component(organization_id, evidence, allow_position_match?) do
+    [
+      {"serial_number", serial_component_matches(organization_id, evidence)},
+      {"provider_id", provider_component_matches(organization_id, evidence)},
+      {"position_part_number",
+       position_component_matches(organization_id, evidence, allow_position_match?)}
+    ]
+    |> Enum.find_value(:none, fn
+      {_strategy, []} -> false
+      {strategy, [component]} -> {:ok, component, strategy}
+      {_strategy, _ambiguous} -> :ambiguous
+    end)
+  end
+
+  defp serial_component_matches(_organization_id, %{serial_number: nil}), do: []
+
+  defp serial_component_matches(organization_id, evidence) do
+    ActualComponent
+    |> actual_component_scope(organization_id, evidence)
+    |> where(
+      [component],
+      fragment("lower(?)", component.serial_number) == ^String.downcase(evidence.serial_number)
+    )
+    |> Repo.all()
+  end
+
+  defp provider_component_matches(organization_id, evidence) do
+    ActualComponent
+    |> actual_component_scope(organization_id, evidence)
+    |> join(:inner, [component], match in ActualComponentEvidenceMatch,
+      on: match.actual_component_id == component.id
+    )
+    |> join(:inner, [_component, match], prior in ComponentEvidence,
+      on: prior.id == match.component_evidence_id
+    )
+    |> where(
+      [_component, _match, prior],
+      prior.source_id == ^evidence.source_id and
+        prior.kind == ^evidence.kind and
+        prior.source_local_id == ^evidence.source_local_id
+    )
+    |> distinct(true)
+    |> Repo.all()
+  end
+
+  defp position_component_matches(_organization_id, _evidence, false), do: []
+  defp position_component_matches(_organization_id, %{part_number: nil}, true), do: []
+
+  defp position_component_matches(organization_id, evidence, true) do
+    position = evidence.slot || evidence.path
+
+    if position do
+      ActualComponent
+      |> actual_component_scope(organization_id, evidence)
+      |> where(
+        [component],
+        fragment("lower(?)", component.part_number) == ^String.downcase(evidence.part_number)
+      )
+      |> position_match(evidence.slot, position)
+      |> Repo.all()
+    else
+      []
+    end
+  end
+
+  defp position_match(query, nil, path) do
+    where(query, [component], fragment("lower(?)", component.path) == ^String.downcase(path))
+  end
+
+  defp position_match(query, _slot, slot) do
+    where(query, [component], fragment("lower(?)", component.slot) == ^String.downcase(slot))
+  end
+
+  defp position_identity_key(attrs) do
+    position = attrs["slot"] || attrs["path"]
+    part_number = attrs["part_number"]
+
+    if position && part_number do
+      {attrs["kind"], String.downcase(position), String.downcase(part_number)}
+    end
+  end
+
+  defp actual_component_scope(query, organization_id, evidence) do
+    where(
+      query,
+      [component],
+      component.organization_id == ^organization_id and
+        component.owner_resource_id == ^evidence.resource_id and
+        component.kind == ^evidence.kind
+    )
+  end
+
+  defp create_actual_component(scope, evidence) do
+    %ActualComponent{
+      organization_id: scope.organization_id,
+      owner_resource_id: evidence.resource_id
+    }
+    |> ActualComponent.changeset(actual_component_attrs(evidence, nil))
+    |> Repo.insert!()
+  end
+
+  defp update_actual_component(component, evidence) do
+    if DateTime.before?(evidence.observed_at, component.last_observed_at) do
+      if DateTime.before?(evidence.observed_at, component.first_observed_at) do
+        component
+        |> ActualComponent.changeset(%{first_observed_at: evidence.observed_at})
+        |> Repo.update!()
+      else
+        component
+      end
+    else
+      component
+      |> ActualComponent.changeset(actual_component_attrs(evidence, component))
+      |> Repo.update!()
+    end
+  end
+
+  defp actual_component_attrs(evidence, component) do
+    canonical_fields =
+      Map.new(~w(name model slot path serial_number part_number)a, fn field ->
+        {field, Map.get(evidence, field) || actual_component_field(component, field)}
+      end)
+
+    Map.merge(canonical_fields, %{
+      kind: evidence.kind,
+      status: "present",
+      attributes:
+        Map.merge(actual_component_field(component, :attributes) || %{}, evidence.attributes),
+      metadata:
+        Map.merge(actual_component_field(component, :metadata) || %{}, %{
+          "last_source_id" => evidence.source_id,
+          "last_observation_id" => evidence.observation_id
+        }),
+      first_observed_at:
+        actual_component_field(component, :first_observed_at) || evidence.observed_at,
+      last_observed_at: evidence.observed_at
+    })
+  end
+
+  defp actual_component_field(nil, _field), do: nil
+  defp actual_component_field(component, field), do: Map.fetch!(component, field)
+
+  defp put_actual_component_evidence_match(scope, component, evidence, strategy) do
+    %ActualComponentEvidenceMatch{
+      organization_id: scope.organization_id,
+      owner_resource_id: evidence.resource_id,
+      actual_component_id: component.id,
+      component_evidence_id: evidence.id
+    }
+    |> ActualComponentEvidenceMatch.changeset(%{match_strategy: strategy})
+    |> Repo.insert!()
   end
 
   defp supported_component?(%{"kind" => kind} = component) when kind in ~w(cpu memory disk) do

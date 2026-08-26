@@ -6,7 +6,7 @@ defmodule Renga.Catalog.ExpectedComponentException do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
-  @kinds ~w(interface module_bay power_port power_outlet console_port device_bay)
+  @kinds ~w(interface module_bay power_port power_outlet console_port device_bay cpu memory disk)
 
   schema "expected_component_exceptions" do
     field :action, :string

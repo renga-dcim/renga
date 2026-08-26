@@ -2,6 +2,8 @@ defmodule Renga.Inventory.ReconcilerTest do
   use Renga.DataCase, async: true
 
   alias Renga.Accounts
+  alias Renga.Catalog
+  alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Inventory
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ComponentEvidence
@@ -231,6 +233,309 @@ defmodule Renga.Inventory.ReconcilerTest do
              Inventory.reconcile_observation(context.scope, observation.id)
 
     assert Repo.aggregate(ComponentEvidence, :count) == 4
+  end
+
+  test "canonical components match by serial, provider identity, then position and part number" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "cpu",
+            "id" => "provider-cpu",
+            "slot" => "CPU1",
+            "model" => "Original CPU",
+            "physical_count" => 1
+          },
+          %{
+            "kind" => "disk",
+            "id" => "provider-disk",
+            "serial_number" => "SERIAL-1",
+            "slot" => "BAY1",
+            "part_number" => "DISK-PN"
+          },
+          %{
+            "kind" => "memory",
+            "id" => "provider-memory",
+            "slot" => "DIMM1",
+            "part_number" => "MEM-PN"
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    provider_update =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "cpu",
+            "id" => "provider-cpu",
+            "slot" => "CPU1",
+            "model" => "Updated CPU",
+            "logical_count" => 16
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, provider_update.id)
+
+    {:ok, second_source} =
+      Inventory.create_source(context.scope, %{kind: "bmc", name: "component-bmc"})
+
+    second_context = %{context | source: second_source}
+
+    serial_and_position =
+      observation(
+        second_context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "disk",
+            "id" => "bmc-disk",
+            "serial_number" => "serial-1",
+            "slot" => "BAY9",
+            "part_number" => "OTHER-PN"
+          },
+          %{
+            "kind" => "memory",
+            "id" => "bmc-memory",
+            "slot" => "dimm1",
+            "part_number" => "mem-pn",
+            "model" => "Observed DIMM"
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, serial_and_position.id)
+
+    assert [cpu, disk, memory] = Catalog.list_actual_components(context.scope, resource.id)
+
+    assert cpu.model == "Updated CPU"
+    assert cpu.attributes == %{"logical_count" => 16, "physical_count" => 1}
+
+    assert Enum.map(cpu.evidence_matches, & &1.match_strategy) |> Enum.sort() ==
+             ~w(discovered provider_id)
+
+    assert disk.serial_number == "serial-1"
+    assert disk.slot == "BAY9"
+
+    assert Enum.map(disk.evidence_matches, & &1.match_strategy) |> Enum.sort() ==
+             ~w(discovered serial_number)
+
+    assert memory.model == "Observed DIMM"
+
+    assert Enum.map(memory.evidence_matches, & &1.match_strategy) |> Enum.sort() ==
+             ~w(discovered position_part_number)
+  end
+
+  test "older evidence links without regressing the canonical component projection" do
+    context = context()
+
+    newer =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "New model"}]
+      )
+
+    older =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "Old model"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, newer.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, older.id)
+
+    assert [component] = Catalog.list_actual_components(context.scope, resource.id)
+    assert component.model == "New model"
+    assert component.first_observed_at == older.observed_at
+    assert component.last_observed_at == newer.observed_at
+    assert length(component.evidence_matches) == 2
+  end
+
+  test "canonical component evidence links enforce resource and tenant ownership" do
+    first_context = context()
+    second_context = context()
+
+    first_observation =
+      observation(
+        first_context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1"}]
+      )
+
+    second_observation =
+      observation(
+        second_context,
+        "1",
+        %{"machine_id" => "machine-2"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-2"}]
+      )
+
+    assert {:ok, first_resource, true} =
+             Inventory.reconcile_observation(first_context.scope, first_observation.id)
+
+    assert {:ok, second_resource, true} =
+             Inventory.reconcile_observation(second_context.scope, second_observation.id)
+
+    [first_component] = Catalog.list_actual_components(first_context.scope, first_resource.id)
+
+    [foreign_evidence] =
+      Inventory.list_component_evidence(second_context.scope, second_resource.id)
+
+    ActualComponentEvidenceMatch
+    |> Repo.get_by!(component_evidence_id: foreign_evidence.id)
+    |> Repo.delete!()
+
+    assert {:error, changeset} =
+             %ActualComponentEvidenceMatch{
+               organization_id: first_context.scope.organization_id,
+               owner_resource_id: first_resource.id,
+               actual_component_id: first_component.id,
+               component_evidence_id: foreign_evidence.id
+             }
+             |> ActualComponentEvidenceMatch.changeset(%{match_strategy: "provider_id"})
+             |> Repo.insert()
+
+    assert %{component_evidence: [_]} = errors_on(changeset)
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Catalog.get_actual_component!(second_context.scope, first_component.id)
+    end
+  end
+
+  test "duplicate position and part identities in one snapshot do not merge components" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "disk",
+            "id" => "disk-a",
+            "slot" => "BAY1",
+            "part_number" => "PN1"
+          },
+          %{
+            "kind" => "disk",
+            "id" => "disk-b",
+            "slot" => "BAY1",
+            "part_number" => "PN1"
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
+
+    {:ok, second_source} =
+      Inventory.create_source(context.scope, %{kind: "bmc", name: "ambiguous-component-bmc"})
+
+    second_context = %{context | source: second_source}
+
+    ambiguous =
+      observation(
+        second_context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "disk",
+            "id" => "bmc-disk",
+            "slot" => "bay1",
+            "part_number" => "pn1"
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, ambiguous.id)
+
+    [ambiguous_evidence] =
+      Inventory.list_component_evidence(context.scope, resource.id)
+      |> Enum.filter(&(&1.observation_id == ambiguous.id))
+
+    refute Repo.get_by(ActualComponentEvidenceMatch,
+             component_evidence_id: ambiguous_evidence.id
+           )
+
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
+  end
+
+  test "retrying already-linked equal-time evidence does not overwrite canonical state" do
+    context = context()
+    observed_at = ~U[2026-08-01 12:00:00.000Z]
+
+    first =
+      observation_at(
+        context,
+        "1",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "Model A"}]
+      )
+
+    second =
+      observation_at(
+        context,
+        "2",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "Model B"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+    assert [before_retry] = Catalog.list_actual_components(context.scope, resource.id)
+    assert before_retry.model == "Model B"
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, first.id)
+
+    assert [after_retry] = Catalog.list_actual_components(context.scope, resource.id)
+    assert after_retry.model == "Model B"
+    assert after_retry.updated_at == before_retry.updated_at
+    assert length(after_retry.evidence_matches) == 2
   end
 
   test "strong identity keeps a resource stable across hostname changes" do

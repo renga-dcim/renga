@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict E8y5T4qjlpA4XMfJlWjwdLpOds0ZzseXkl2Jm5d78Eq5w1zYoOhg0UPQ0aTddeL
+\restrict bCB6wXvLo6QfK10CgJh9Z9pdrars64wGGguhgaQNA672ZqhJyUtUNukzQiytopK
 
--- Dumped from database version 17.10
+-- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
 
 SET statement_timeout = 0;
@@ -20,6 +20,20 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION btree_gist; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION btree_gist IS 'support for indexing common datatypes in GiST';
+
+
+--
 -- Name: citext; Type: EXTENSION; Schema: -; Owner: -
 --
 
@@ -31,6 +45,88 @@ CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings';
+
+
+--
+-- Name: enforce_catalog_type_revision_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_catalog_type_revision_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+      RETURN OLD;
+    END IF;
+  ELSIF OLD.finalized_at IS NULL
+        AND NEW.finalized_at IS NOT NULL
+        AND (to_jsonb(NEW) - 'finalized_at') = (to_jsonb(OLD) - 'finalized_at') THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'catalog revisions are immutable'
+    USING ERRCODE = '23514', CONSTRAINT = 'catalog_type_revisions_immutable';
+END;
+$$;
+
+
+--
+-- Name: enforce_component_template_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_component_template_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  old_finalized_at timestamp;
+  new_finalized_at timestamp;
+BEGIN
+  IF TG_OP = 'DELETE'
+     AND NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+    RETURN OLD;
+  END IF;
+
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    SELECT finalized_at INTO old_finalized_at
+    FROM catalog_type_revisions
+    WHERE id = OLD.catalog_type_revision_id
+      AND organization_id = OLD.organization_id;
+  END IF;
+
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    SELECT finalized_at INTO new_finalized_at
+    FROM catalog_type_revisions
+    WHERE id = NEW.catalog_type_revision_id
+      AND organization_id = NEW.organization_id;
+  END IF;
+
+  IF old_finalized_at IS NOT NULL OR new_finalized_at IS NOT NULL THEN
+    RAISE EXCEPTION 'component templates are immutable after revision finalization'
+      USING ERRCODE = '23514', CONSTRAINT = 'component_templates_revision_finalized';
+  END IF;
+
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+
+--
+-- Name: enforce_resource_kind_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_resource_kind_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.kind IS DISTINCT FROM OLD.kind THEN
+    RAISE EXCEPTION 'resource kind is immutable'
+      USING ERRCODE = '23514', CONSTRAINT = 'resources_kind_immutable';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -64,6 +160,50 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: actual_component_evidence_matches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.actual_component_evidence_matches (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    owner_resource_id uuid NOT NULL,
+    actual_component_id uuid NOT NULL,
+    component_evidence_id uuid CONSTRAINT actual_component_evidence_matche_component_evidence_id_not_null NOT NULL,
+    match_strategy character varying(255) NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT actual_component_evidence_matches_valid_strategy CHECK (((match_strategy)::text = ANY ((ARRAY['discovered'::character varying, 'serial_number'::character varying, 'provider_id'::character varying, 'position_part_number'::character varying])::text[])))
+);
+
+
+--
+-- Name: actual_components; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.actual_components (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    owner_resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'present'::character varying NOT NULL,
+    name character varying(255),
+    model character varying(255),
+    slot character varying(255),
+    path character varying(255),
+    serial_number character varying(255),
+    part_number character varying(255),
+    attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    first_observed_at timestamp(3) without time zone NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT actual_components_observation_order CHECK ((first_observed_at <= last_observed_at)),
+    CONSTRAINT actual_components_valid_kind CHECK (((kind)::text = ANY ((ARRAY['cpu'::character varying, 'memory'::character varying, 'disk'::character varying])::text[]))),
+    CONSTRAINT actual_components_valid_status CHECK (((status)::text = ANY ((ARRAY['present'::character varying, 'missing'::character varying, 'unknown'::character varying])::text[])))
+);
+
 
 --
 -- Name: address_evidence; Type: TABLE; Schema: public; Owner: -
@@ -140,6 +280,30 @@ CREATE TABLE public.agents (
 
 
 --
+-- Name: catalog_type_revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.catalog_type_revisions (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    hardware_type_id uuid,
+    module_type_id uuid,
+    revision integer NOT NULL,
+    part_number character varying(255),
+    height_units integer,
+    width_mm numeric(10,2),
+    depth_mm numeric(10,2),
+    weight_kg numeric(10,3),
+    airflow character varying(255),
+    specifications jsonb DEFAULT '{}'::jsonb NOT NULL,
+    finalized_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT catalog_type_revisions_one_owner CHECK ((((hardware_type_id IS NOT NULL) AND (module_type_id IS NULL)) OR ((hardware_type_id IS NULL) AND (module_type_id IS NOT NULL)))),
+    CONSTRAINT catalog_type_revisions_valid_dimensions CHECK (((revision > 0) AND ((height_units IS NULL) OR (height_units > 0)) AND ((width_mm IS NULL) OR (width_mm > (0)::numeric)) AND ((depth_mm IS NULL) OR (depth_mm > (0)::numeric)) AND ((weight_kg IS NULL) OR (weight_kg > (0)::numeric))))
+);
+
+
+--
 -- Name: change_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -156,6 +320,228 @@ CREATE TABLE public.change_events (
     new_value jsonb,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     occurred_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: component_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.component_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    source_local_id character varying(255) NOT NULL,
+    name character varying(255),
+    model character varying(255),
+    slot character varying(255),
+    path character varying(255),
+    serial_number character varying(255),
+    part_number character varying(255),
+    attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    raw_metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT component_evidence_valid_kind CHECK (((kind)::text = ANY ((ARRAY['cpu'::character varying, 'memory'::character varying, 'disk'::character varying])::text[])))
+);
+
+
+--
+-- Name: component_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.component_templates (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    catalog_type_revision_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    label character varying(255),
+    "position" character varying(255),
+    description text,
+    required boolean DEFAULT true NOT NULL,
+    attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: current_module_installations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_module_installations (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    module_bay_id uuid NOT NULL,
+    module_id uuid NOT NULL,
+    module_type_id uuid NOT NULL,
+    installed_at timestamp(3) without time zone NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: current_placements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_placements (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    location_id uuid,
+    rack_id uuid,
+    "position" integer,
+    height_units integer,
+    face character varying(255),
+    confirmed boolean DEFAULT false NOT NULL,
+    provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT current_placements_valid_rack_position CHECK ((((rack_id IS NULL) AND ("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR ((rack_id IS NOT NULL) AND ((("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR (("position" > 0) AND (height_units > 0) AND ((face)::text = ANY ((ARRAY['front'::character varying, 'rear'::character varying, 'full'::character varying])::text[])))))))
+);
+
+
+--
+-- Name: desired_module_assignments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.desired_module_assignments (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    module_bay_id uuid NOT NULL,
+    module_type_id uuid NOT NULL,
+    confirmed_by_user_id uuid NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: desired_placements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.desired_placements (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    location_id uuid,
+    rack_id uuid,
+    "position" integer,
+    height_units integer,
+    face character varying(255),
+    confirmed boolean DEFAULT false NOT NULL,
+    provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT desired_placements_valid_rack_position CHECK ((((rack_id IS NULL) AND ("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR ((rack_id IS NOT NULL) AND ((("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR (("position" > 0) AND (height_units > 0) AND ((face)::text = ANY ((ARRAY['front'::character varying, 'rear'::character varying, 'full'::character varying])::text[])))))))
+);
+
+
+--
+-- Name: expected_component_exceptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.expected_component_exceptions (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    hardware_assignment_id uuid NOT NULL,
+    catalog_type_revision_id uuid NOT NULL,
+    component_template_id uuid,
+    action character varying(255) NOT NULL,
+    kind character varying(255),
+    name character varying(255),
+    changes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    confirmed_by_user_id uuid NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT expected_component_exceptions_valid_shape CHECK (((((action)::text = 'add'::text) AND (component_template_id IS NULL) AND (kind IS NOT NULL) AND (name IS NOT NULL)) OR (((action)::text = ANY ((ARRAY['suppress'::character varying, 'alter'::character varying])::text[])) AND (component_template_id IS NOT NULL))))
+);
+
+
+--
+-- Name: expected_components; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.expected_components (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    hardware_assignment_id uuid NOT NULL,
+    catalog_type_revision_id uuid NOT NULL,
+    component_template_id uuid,
+    exception_id uuid,
+    kind character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    label character varying(255),
+    "position" character varying(255),
+    description text,
+    required boolean NOT NULL,
+    suppressed boolean DEFAULT false NOT NULL,
+    attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: hardware_assignments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.hardware_assignments (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    hardware_type_id uuid NOT NULL,
+    catalog_type_revision_id uuid NOT NULL,
+    origin character varying(255) NOT NULL,
+    provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT hardware_assignments_valid_origin CHECK (((origin)::text = ANY ((ARRAY['operator'::character varying, 'reconciled'::character varying])::text[])))
+);
+
+
+--
+-- Name: hardware_match_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.hardware_match_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: hardware_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.hardware_types (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    manufacturer_id uuid NOT NULL,
+    model character varying(255) NOT NULL,
+    device_class character varying(255) NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
 );
@@ -227,7 +613,7 @@ CREATE TABLE public.interface_evidence (
 CREATE TABLE public.interface_relationship_evidence (
     id uuid NOT NULL,
     organization_id uuid NOT NULL,
-    interface_relationship_id uuid NOT NULL,
+    interface_relationship_id uuid CONSTRAINT interface_relationship_evide_interface_relationship_id_not_null NOT NULL,
     source_id uuid NOT NULL,
     observation_id uuid NOT NULL,
     kind character varying(255) NOT NULL,
@@ -273,6 +659,173 @@ CREATE TABLE public.interfaces (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT interfaces_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
+);
+
+
+--
+-- Name: inventory_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventory_items (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    owner_resource_id uuid NOT NULL,
+    parent_id uuid,
+    name character varying(255) NOT NULL,
+    kind character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'unknown'::character varying NOT NULL,
+    "position" character varying(255),
+    serial_number character varying(255),
+    part_number character varying(255),
+    asset_tag character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    promoted_module_id uuid,
+    CONSTRAINT inventory_items_not_self_parent CHECK (((parent_id IS NULL) OR (parent_id <> id)))
+);
+
+
+--
+-- Name: locations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.locations (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    parent_id uuid,
+    kind character varying(255),
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT locations_not_self_parent CHECK (((parent_id IS NULL) OR (parent_id <> id)))
+);
+
+
+--
+-- Name: manufacturers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.manufacturers (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    slug character varying(255) NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: module_bay_compatible_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_bay_compatible_types (
+    organization_id uuid NOT NULL,
+    module_bay_id uuid NOT NULL,
+    module_type_id uuid NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: module_bays; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_bays (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    owner_resource_id uuid NOT NULL,
+    owner_kind character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    label character varying(255),
+    "position" character varying(255),
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT module_bays_valid_owner_kind CHECK (((owner_kind)::text = ANY ((ARRAY['server'::character varying, 'switch'::character varying, 'pdu'::character varying, 'storage'::character varying, 'module'::character varying])::text[])))
+);
+
+
+--
+-- Name: module_installation_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_installation_events (
+    id uuid NOT NULL,
+    sequence bigint NOT NULL,
+    organization_id uuid NOT NULL,
+    module_bay_id uuid NOT NULL,
+    module_id uuid NOT NULL,
+    action character varying(255) NOT NULL,
+    occurred_at timestamp(3) without time zone NOT NULL,
+    actor_user_id uuid,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: module_installation_events_sequence_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.module_installation_events_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: module_installation_events_sequence_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.module_installation_events_sequence_seq OWNED BY public.module_installation_events.sequence;
+
+
+--
+-- Name: module_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_types (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    manufacturer_id uuid NOT NULL,
+    model character varying(255) NOT NULL,
+    module_class character varying(255) NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: modules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.modules (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    module_type_id uuid NOT NULL,
+    catalog_type_revision_id uuid NOT NULL,
+    status character varying(255) DEFAULT 'unknown'::character varying NOT NULL,
+    serial_number character varying(255),
+    part_number character varying(255),
+    asset_tag character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -347,6 +900,48 @@ CREATE TABLE public.organizations (
 
 
 --
+-- Name: placement_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.placement_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_identifier character varying(255),
+    location_identifier character varying(255),
+    rack_identifier character varying(255),
+    "position" integer,
+    height_units integer,
+    face character varying(255),
+    confidence integer DEFAULT 50 NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    stale_at timestamp(3) without time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: placement_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.placement_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: prefixes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -361,6 +956,47 @@ CREATE TABLE public.prefixes (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: rack_occupancies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rack_occupancies (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    current_placement_id uuid NOT NULL,
+    rack_id uuid NOT NULL,
+    face character varying(255) NOT NULL,
+    units int4range NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: racks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.racks (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    location_id uuid,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    facility_id character varying(255),
+    height_units integer DEFAULT 42 NOT NULL,
+    width character varying(255) DEFAULT '19_inch'::character varying NOT NULL,
+    starting_unit character varying(255) DEFAULT 'bottom'::character varying NOT NULL,
+    outer_width numeric,
+    outer_depth numeric,
+    dimension_unit character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT racks_valid_geometry CHECK (((height_units > 0) AND ((outer_width IS NULL) OR (outer_width > (0)::numeric)) AND ((outer_depth IS NULL) OR (outer_depth > (0)::numeric))))
 );
 
 
@@ -540,6 +1176,43 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: site_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.site_groups (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    parent_id uuid,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT site_groups_not_self_parent CHECK (((parent_id IS NULL) OR (parent_id <> id)))
+);
+
+
+--
+-- Name: sites; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sites (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_group_id uuid,
+    slug character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    description text,
+    physical_address text,
+    time_zone character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: sources; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -605,6 +1278,29 @@ CREATE TABLE public.users_tokens (
 
 
 --
+-- Name: module_installation_events sequence; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_installation_events ALTER COLUMN sequence SET DEFAULT nextval('public.module_installation_events_sequence_seq'::regclass);
+
+
+--
+-- Name: actual_component_evidence_matches actual_component_evidence_matches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actual_component_evidence_matches
+    ADD CONSTRAINT actual_component_evidence_matches_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: actual_components actual_components_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actual_components
+    ADD CONSTRAINT actual_components_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: address_evidence address_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -637,11 +1333,107 @@ ALTER TABLE ONLY public.agents
 
 
 --
+-- Name: catalog_type_revisions catalog_type_revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.catalog_type_revisions
+    ADD CONSTRAINT catalog_type_revisions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: change_events change_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.change_events
     ADD CONSTRAINT change_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: component_evidence component_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_evidence
+    ADD CONSTRAINT component_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: component_templates component_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_templates
+    ADD CONSTRAINT component_templates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: current_module_installations current_module_installations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_module_installations
+    ADD CONSTRAINT current_module_installations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: current_placements current_placements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_placements
+    ADD CONSTRAINT current_placements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: desired_module_assignments desired_module_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_module_assignments
+    ADD CONSTRAINT desired_module_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: desired_placements desired_placements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_placements
+    ADD CONSTRAINT desired_placements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: expected_components expected_components_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_components
+    ADD CONSTRAINT expected_components_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: hardware_assignments hardware_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_assignments
+    ADD CONSTRAINT hardware_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: hardware_match_findings hardware_match_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_match_findings
+    ADD CONSTRAINT hardware_match_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: hardware_types hardware_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_types
+    ADD CONSTRAINT hardware_types_pkey PRIMARY KEY (id);
 
 
 --
@@ -693,6 +1485,70 @@ ALTER TABLE ONLY public.interfaces
 
 
 --
+-- Name: inventory_items inventory_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_items
+    ADD CONSTRAINT inventory_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: locations locations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: manufacturers manufacturers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.manufacturers
+    ADD CONSTRAINT manufacturers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: module_bay_compatible_types module_bay_compatible_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_bay_compatible_types
+    ADD CONSTRAINT module_bay_compatible_types_pkey PRIMARY KEY (module_bay_id, module_type_id);
+
+
+--
+-- Name: module_bays module_bays_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_bays
+    ADD CONSTRAINT module_bays_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: module_installation_events module_installation_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_installation_events
+    ADD CONSTRAINT module_installation_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: module_types module_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_types
+    ADD CONSTRAINT module_types_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: modules modules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.modules
+    ADD CONSTRAINT modules_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: observation_reconciliations observation_reconciliations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -725,11 +1581,51 @@ ALTER TABLE ONLY public.organizations
 
 
 --
+-- Name: placement_evidence placement_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.placement_evidence
+    ADD CONSTRAINT placement_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: placement_findings placement_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.placement_findings
+    ADD CONSTRAINT placement_findings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: prefixes prefixes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prefixes
     ADD CONSTRAINT prefixes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: rack_occupancies rack_occupancies_no_overlap; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rack_occupancies
+    ADD CONSTRAINT rack_occupancies_no_overlap EXCLUDE USING gist (rack_id WITH =, face WITH =, units WITH &&);
+
+
+--
+-- Name: rack_occupancies rack_occupancies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rack_occupancies
+    ADD CONSTRAINT rack_occupancies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: racks racks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.racks
+    ADD CONSTRAINT racks_pkey PRIMARY KEY (id);
 
 
 --
@@ -805,6 +1701,22 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: site_groups site_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.site_groups
+    ADD CONSTRAINT site_groups_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sites sites_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sites
+    ADD CONSTRAINT sites_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sources sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -834,6 +1746,48 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.users_tokens
     ADD CONSTRAINT users_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: actual_component_evidence_matches_component_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX actual_component_evidence_matches_component_index ON public.actual_component_evidence_matches USING btree (organization_id, owner_resource_id, actual_component_id);
+
+
+--
+-- Name: actual_component_evidence_matches_evidence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX actual_component_evidence_matches_evidence_index ON public.actual_component_evidence_matches USING btree (component_evidence_id);
+
+
+--
+-- Name: actual_components_evidence_owner_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX actual_components_evidence_owner_index ON public.actual_components USING btree (id, organization_id, owner_resource_id);
+
+
+--
+-- Name: actual_components_owner_kind_path_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX actual_components_owner_kind_path_index ON public.actual_components USING btree (organization_id, owner_resource_id, kind, path);
+
+
+--
+-- Name: actual_components_owner_kind_slot_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX actual_components_owner_kind_slot_index ON public.actual_components USING btree (organization_id, owner_resource_id, kind, slot);
+
+
+--
+-- Name: actual_components_serial_identity_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX actual_components_serial_identity_index ON public.actual_components USING btree (organization_id, owner_resource_id, kind, lower((serial_number)::text)) WHERE (serial_number IS NOT NULL);
 
 
 --
@@ -921,6 +1875,41 @@ CREATE UNIQUE INDEX agents_organization_installation_id_index ON public.agents U
 
 
 --
+-- Name: catalog_type_revisions_hardware_assignment_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_hardware_assignment_index ON public.catalog_type_revisions USING btree (id, organization_id, hardware_type_id);
+
+
+--
+-- Name: catalog_type_revisions_hardware_revision_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_hardware_revision_index ON public.catalog_type_revisions USING btree (organization_id, hardware_type_id, revision) WHERE (hardware_type_id IS NOT NULL);
+
+
+--
+-- Name: catalog_type_revisions_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_id_organization_id_index ON public.catalog_type_revisions USING btree (id, organization_id);
+
+
+--
+-- Name: catalog_type_revisions_module_assignment_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_module_assignment_index ON public.catalog_type_revisions USING btree (id, organization_id, module_type_id);
+
+
+--
+-- Name: catalog_type_revisions_module_revision_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_module_revision_index ON public.catalog_type_revisions USING btree (organization_id, module_type_id, revision) WHERE (module_type_id IS NOT NULL);
+
+
+--
 -- Name: change_events_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -953,6 +1942,195 @@ CREATE INDEX change_events_organization_id_source_id_index ON public.change_even
 --
 
 CREATE INDEX change_events_organization_id_sync_run_id_index ON public.change_events USING btree (organization_id, sync_run_id);
+
+
+--
+-- Name: component_evidence_actual_component_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_evidence_actual_component_index ON public.component_evidence USING btree (id, organization_id, resource_id);
+
+
+--
+-- Name: component_evidence_observation_identity_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_evidence_observation_identity_index ON public.component_evidence USING btree (organization_id, observation_id, kind, source_local_id);
+
+
+--
+-- Name: component_evidence_resource_source_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX component_evidence_resource_source_kind_index ON public.component_evidence USING btree (organization_id, resource_id, source_id, kind, observed_at);
+
+
+--
+-- Name: component_templates_expectation_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_templates_expectation_index ON public.component_templates USING btree (id, organization_id, catalog_type_revision_id);
+
+
+--
+-- Name: component_templates_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_templates_id_organization_id_index ON public.component_templates USING btree (id, organization_id);
+
+
+--
+-- Name: component_templates_organization_id_catalog_type_revision_id_ki; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX component_templates_organization_id_catalog_type_revision_id_ki ON public.component_templates USING btree (organization_id, catalog_type_revision_id, kind, name);
+
+
+--
+-- Name: component_templates_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX component_templates_organization_id_kind_index ON public.component_templates USING btree (organization_id, kind);
+
+
+--
+-- Name: current_module_installations_bay_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_module_installations_bay_index ON public.current_module_installations USING btree (organization_id, module_bay_id);
+
+
+--
+-- Name: current_module_installations_module_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_module_installations_module_index ON public.current_module_installations USING btree (organization_id, module_id);
+
+
+--
+-- Name: current_placements_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_placements_id_organization_id_index ON public.current_placements USING btree (id, organization_id);
+
+
+--
+-- Name: current_placements_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_placements_organization_id_resource_id_index ON public.current_placements USING btree (organization_id, resource_id);
+
+
+--
+-- Name: desired_module_assignments_bay_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_module_assignments_bay_index ON public.desired_module_assignments USING btree (organization_id, module_bay_id);
+
+
+--
+-- Name: desired_placements_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_placements_id_organization_id_index ON public.desired_placements USING btree (id, organization_id);
+
+
+--
+-- Name: desired_placements_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_placements_organization_id_resource_id_index ON public.desired_placements USING btree (organization_id, resource_id);
+
+
+--
+-- Name: expected_component_exceptions_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX expected_component_exceptions_id_organization_id_index ON public.expected_component_exceptions USING btree (id, organization_id);
+
+
+--
+-- Name: expected_component_exceptions_template_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX expected_component_exceptions_template_index ON public.expected_component_exceptions USING btree (organization_id, hardware_assignment_id, component_template_id) WHERE (component_template_id IS NOT NULL);
+
+
+--
+-- Name: expected_components_assignment_kind_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX expected_components_assignment_kind_name_index ON public.expected_components USING btree (organization_id, hardware_assignment_id, kind, name);
+
+
+--
+-- Name: expected_components_assignment_suppressed_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX expected_components_assignment_suppressed_index ON public.expected_components USING btree (organization_id, hardware_assignment_id, suppressed);
+
+
+--
+-- Name: hardware_assignments_expectation_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_assignments_expectation_index ON public.hardware_assignments USING btree (id, organization_id, catalog_type_revision_id);
+
+
+--
+-- Name: hardware_assignments_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_assignments_id_organization_id_index ON public.hardware_assignments USING btree (id, organization_id);
+
+
+--
+-- Name: hardware_assignments_organization_id_hardware_type_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX hardware_assignments_organization_id_hardware_type_id_index ON public.hardware_assignments USING btree (organization_id, hardware_type_id);
+
+
+--
+-- Name: hardware_assignments_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_assignments_organization_id_resource_id_index ON public.hardware_assignments USING btree (organization_id, resource_id);
+
+
+--
+-- Name: hardware_match_findings_open_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_match_findings_open_kind_index ON public.hardware_match_findings USING btree (organization_id, resource_id, kind) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: hardware_match_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX hardware_match_findings_organization_id_status_kind_index ON public.hardware_match_findings USING btree (organization_id, status, kind);
+
+
+--
+-- Name: hardware_types_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_types_id_organization_id_index ON public.hardware_types USING btree (id, organization_id);
+
+
+--
+-- Name: hardware_types_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_types_organization_id_resource_id_index ON public.hardware_types USING btree (organization_id, resource_id);
+
+
+--
+-- Name: hardware_types_organization_manufacturer_model_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX hardware_types_organization_manufacturer_model_index ON public.hardware_types USING btree (organization_id, manufacturer_id, lower((model)::text));
 
 
 --
@@ -1096,6 +2274,174 @@ CREATE UNIQUE INDEX interfaces_organization_id_resource_id_name_index ON public.
 
 
 --
+-- Name: inventory_items_id_organization_id_owner_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX inventory_items_id_organization_id_owner_resource_id_index ON public.inventory_items USING btree (id, organization_id, owner_resource_id);
+
+
+--
+-- Name: inventory_items_organization_id_serial_number_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX inventory_items_organization_id_serial_number_index ON public.inventory_items USING btree (organization_id, serial_number);
+
+
+--
+-- Name: inventory_items_owner_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX inventory_items_owner_name_index ON public.inventory_items USING btree (organization_id, owner_resource_id, lower((name)::text));
+
+
+--
+-- Name: inventory_items_owner_parent_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX inventory_items_owner_parent_index ON public.inventory_items USING btree (organization_id, owner_resource_id, parent_id);
+
+
+--
+-- Name: inventory_items_promoted_module_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX inventory_items_promoted_module_index ON public.inventory_items USING btree (organization_id, promoted_module_id) WHERE (promoted_module_id IS NOT NULL);
+
+
+--
+-- Name: locations_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX locations_id_organization_id_index ON public.locations USING btree (id, organization_id);
+
+
+--
+-- Name: locations_id_organization_id_site_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX locations_id_organization_id_site_id_index ON public.locations USING btree (id, organization_id, site_id);
+
+
+--
+-- Name: locations_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX locations_organization_id_resource_id_index ON public.locations USING btree (organization_id, resource_id);
+
+
+--
+-- Name: locations_organization_id_site_id_parent_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX locations_organization_id_site_id_parent_id_index ON public.locations USING btree (organization_id, site_id, parent_id);
+
+
+--
+-- Name: manufacturers_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX manufacturers_id_organization_id_index ON public.manufacturers USING btree (id, organization_id);
+
+
+--
+-- Name: manufacturers_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX manufacturers_organization_id_resource_id_index ON public.manufacturers USING btree (organization_id, resource_id);
+
+
+--
+-- Name: manufacturers_organization_id_slug_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX manufacturers_organization_id_slug_index ON public.manufacturers USING btree (organization_id, slug);
+
+
+--
+-- Name: module_bay_compatible_types_assignment_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_bay_compatible_types_assignment_index ON public.module_bay_compatible_types USING btree (module_bay_id, organization_id, module_type_id);
+
+
+--
+-- Name: module_bay_compatible_types_type_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX module_bay_compatible_types_type_index ON public.module_bay_compatible_types USING btree (organization_id, module_type_id);
+
+
+--
+-- Name: module_bays_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_bays_id_organization_id_index ON public.module_bays USING btree (id, organization_id);
+
+
+--
+-- Name: module_bays_owner_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_bays_owner_name_index ON public.module_bays USING btree (organization_id, owner_resource_id, lower((name)::text));
+
+
+--
+-- Name: module_installation_events_bay_sequence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX module_installation_events_bay_sequence_index ON public.module_installation_events USING btree (organization_id, module_bay_id, sequence);
+
+
+--
+-- Name: module_types_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_types_id_organization_id_index ON public.module_types USING btree (id, organization_id);
+
+
+--
+-- Name: module_types_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_types_organization_id_resource_id_index ON public.module_types USING btree (organization_id, resource_id);
+
+
+--
+-- Name: module_types_organization_manufacturer_model_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX module_types_organization_manufacturer_model_index ON public.module_types USING btree (organization_id, manufacturer_id, lower((model)::text));
+
+
+--
+-- Name: modules_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX modules_id_organization_id_index ON public.modules USING btree (id, organization_id);
+
+
+--
+-- Name: modules_installation_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX modules_installation_index ON public.modules USING btree (id, organization_id, module_type_id);
+
+
+--
+-- Name: modules_organization_id_module_type_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX modules_organization_id_module_type_id_index ON public.modules USING btree (organization_id, module_type_id);
+
+
+--
+-- Name: modules_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX modules_organization_id_resource_id_index ON public.modules USING btree (organization_id, resource_id);
+
+
+--
 -- Name: observation_reconciliations_matched_resource_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1194,6 +2540,34 @@ CREATE INDEX organizations_status_index ON public.organizations USING btree (sta
 
 
 --
+-- Name: placement_evidence_organization_id_resource_id_observed_at_inde; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX placement_evidence_organization_id_resource_id_observed_at_inde ON public.placement_evidence USING btree (organization_id, resource_id, observed_at);
+
+
+--
+-- Name: placement_evidence_organization_id_source_id_observation_id_ind; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX placement_evidence_organization_id_source_id_observation_id_ind ON public.placement_evidence USING btree (organization_id, source_id, observation_id);
+
+
+--
+-- Name: placement_findings_open_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX placement_findings_open_kind_index ON public.placement_findings USING btree (organization_id, resource_id, kind) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: placement_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX placement_findings_organization_id_status_kind_index ON public.placement_findings USING btree (organization_id, status, kind);
+
+
+--
 -- Name: prefixes_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1205,6 +2579,48 @@ CREATE UNIQUE INDEX prefixes_organization_id_resource_id_index ON public.prefixe
 --
 
 CREATE INDEX prefixes_prefix_gist_index ON public.prefixes USING gist (prefix inet_ops);
+
+
+--
+-- Name: rack_occupancies_current_placement_id_face_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX rack_occupancies_current_placement_id_face_index ON public.rack_occupancies USING btree (current_placement_id, face);
+
+
+--
+-- Name: rack_occupancies_organization_id_rack_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX rack_occupancies_organization_id_rack_id_index ON public.rack_occupancies USING btree (organization_id, rack_id);
+
+
+--
+-- Name: racks_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX racks_id_organization_id_index ON public.racks USING btree (id, organization_id);
+
+
+--
+-- Name: racks_id_organization_id_site_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX racks_id_organization_id_site_id_index ON public.racks USING btree (id, organization_id, site_id);
+
+
+--
+-- Name: racks_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX racks_organization_id_resource_id_index ON public.racks USING btree (organization_id, resource_id);
+
+
+--
+-- Name: racks_organization_id_site_id_location_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX racks_organization_id_site_id_location_id_index ON public.racks USING btree (organization_id, site_id, location_id);
 
 
 --
@@ -1383,6 +2799,13 @@ CREATE INDEX resources_labels_index ON public.resources USING gin (labels);
 
 
 --
+-- Name: resources_module_owner_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resources_module_owner_index ON public.resources USING btree (id, organization_id, kind);
+
+
+--
 -- Name: resources_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1408,6 +2831,55 @@ CREATE INDEX resources_organization_id_lifecycle_state_index ON public.resources
 --
 
 CREATE INDEX resources_organization_id_resource_version_index ON public.resources USING btree (organization_id, resource_version);
+
+
+--
+-- Name: site_groups_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX site_groups_id_organization_id_index ON public.site_groups USING btree (id, organization_id);
+
+
+--
+-- Name: site_groups_organization_id_parent_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX site_groups_organization_id_parent_id_index ON public.site_groups USING btree (organization_id, parent_id);
+
+
+--
+-- Name: site_groups_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX site_groups_organization_id_resource_id_index ON public.site_groups USING btree (organization_id, resource_id);
+
+
+--
+-- Name: sites_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sites_id_organization_id_index ON public.sites USING btree (id, organization_id);
+
+
+--
+-- Name: sites_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sites_organization_id_resource_id_index ON public.sites USING btree (organization_id, resource_id);
+
+
+--
+-- Name: sites_organization_id_site_group_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sites_organization_id_site_group_id_index ON public.sites USING btree (organization_id, site_group_id);
+
+
+--
+-- Name: sites_organization_id_slug_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sites_organization_id_slug_index ON public.sites USING btree (organization_id, slug);
 
 
 --
@@ -1495,10 +2967,55 @@ CREATE INDEX users_tokens_user_id_index ON public.users_tokens USING btree (user
 
 
 --
+-- Name: catalog_type_revisions catalog_type_revisions_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER catalog_type_revisions_enforce_immutability BEFORE DELETE OR UPDATE ON public.catalog_type_revisions FOR EACH ROW EXECUTE FUNCTION public.enforce_catalog_type_revision_immutability();
+
+
+--
+-- Name: component_templates component_templates_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER component_templates_enforce_immutability BEFORE INSERT OR DELETE OR UPDATE ON public.component_templates FOR EACH ROW EXECUTE FUNCTION public.enforce_component_template_immutability();
+
+
+--
 -- Name: observations observations_reject_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations FOR EACH ROW EXECUTE FUNCTION public.reject_observation_update();
+
+
+--
+-- Name: resources resources_enforce_kind_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER resources_enforce_kind_immutability BEFORE UPDATE OF kind ON public.resources FOR EACH ROW EXECUTE FUNCTION public.enforce_resource_kind_immutability();
+
+
+--
+-- Name: actual_component_evidence_matches actual_component_evidence_matches_component_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actual_component_evidence_matches
+    ADD CONSTRAINT actual_component_evidence_matches_component_fkey FOREIGN KEY (actual_component_id, organization_id, owner_resource_id) REFERENCES public.actual_components(id, organization_id, owner_resource_id) ON DELETE CASCADE;
+
+
+--
+-- Name: actual_component_evidence_matches actual_component_evidence_matches_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actual_component_evidence_matches
+    ADD CONSTRAINT actual_component_evidence_matches_evidence_fkey FOREIGN KEY (component_evidence_id, organization_id, owner_resource_id) REFERENCES public.component_evidence(id, organization_id, resource_id) ON DELETE CASCADE;
+
+
+--
+-- Name: actual_components actual_components_owner_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actual_components
+    ADD CONSTRAINT actual_components_owner_resource_fkey FOREIGN KEY (owner_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -1590,6 +3107,22 @@ ALTER TABLE ONLY public.agents
 
 
 --
+-- Name: catalog_type_revisions catalog_type_revisions_hardware_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.catalog_type_revisions
+    ADD CONSTRAINT catalog_type_revisions_hardware_type_fkey FOREIGN KEY (hardware_type_id, organization_id) REFERENCES public.hardware_types(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: catalog_type_revisions catalog_type_revisions_module_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.catalog_type_revisions
+    ADD CONSTRAINT catalog_type_revisions_module_type_fkey FOREIGN KEY (module_type_id, organization_id) REFERENCES public.module_types(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: change_events change_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1627,6 +3160,278 @@ ALTER TABLE ONLY public.change_events
 
 ALTER TABLE ONLY public.change_events
     ADD CONSTRAINT change_events_tenant_sync_run_fkey FOREIGN KEY (sync_run_id, organization_id) REFERENCES public.sync_runs(id, organization_id) ON DELETE SET NULL (sync_run_id);
+
+
+--
+-- Name: component_evidence component_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_evidence
+    ADD CONSTRAINT component_evidence_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: component_evidence component_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_evidence
+    ADD CONSTRAINT component_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: component_evidence component_evidence_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_evidence
+    ADD CONSTRAINT component_evidence_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: component_evidence component_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_evidence
+    ADD CONSTRAINT component_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: component_templates component_templates_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.component_templates
+    ADD CONSTRAINT component_templates_revision_fkey FOREIGN KEY (catalog_type_revision_id, organization_id) REFERENCES public.catalog_type_revisions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_module_installations current_module_installations_bay_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_module_installations
+    ADD CONSTRAINT current_module_installations_bay_fkey FOREIGN KEY (module_bay_id, organization_id) REFERENCES public.module_bays(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_module_installations current_module_installations_compatibility_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_module_installations
+    ADD CONSTRAINT current_module_installations_compatibility_fkey FOREIGN KEY (module_bay_id, organization_id, module_type_id) REFERENCES public.module_bay_compatible_types(module_bay_id, organization_id, module_type_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: current_module_installations current_module_installations_module_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_module_installations
+    ADD CONSTRAINT current_module_installations_module_fkey FOREIGN KEY (module_id, organization_id, module_type_id) REFERENCES public.modules(id, organization_id, module_type_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: current_placements current_placements_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_placements
+    ADD CONSTRAINT current_placements_location_fkey FOREIGN KEY (location_id, organization_id, site_id) REFERENCES public.locations(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: current_placements current_placements_rack_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_placements
+    ADD CONSTRAINT current_placements_rack_fkey FOREIGN KEY (rack_id, organization_id, site_id) REFERENCES public.racks(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: current_placements current_placements_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_placements
+    ADD CONSTRAINT current_placements_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_placements current_placements_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_placements
+    ADD CONSTRAINT current_placements_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_module_assignments desired_module_assignments_bay_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_module_assignments
+    ADD CONSTRAINT desired_module_assignments_bay_fkey FOREIGN KEY (module_bay_id, organization_id) REFERENCES public.module_bays(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: desired_module_assignments desired_module_assignments_compatibility_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_module_assignments
+    ADD CONSTRAINT desired_module_assignments_compatibility_fkey FOREIGN KEY (module_bay_id, organization_id, module_type_id) REFERENCES public.module_bay_compatible_types(module_bay_id, organization_id, module_type_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: desired_module_assignments desired_module_assignments_confirmed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_module_assignments
+    ADD CONSTRAINT desired_module_assignments_confirmed_by_user_id_fkey FOREIGN KEY (confirmed_by_user_id) REFERENCES public.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_placements desired_placements_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_placements
+    ADD CONSTRAINT desired_placements_location_fkey FOREIGN KEY (location_id, organization_id, site_id) REFERENCES public.locations(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_placements desired_placements_rack_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_placements
+    ADD CONSTRAINT desired_placements_rack_fkey FOREIGN KEY (rack_id, organization_id, site_id) REFERENCES public.racks(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_placements desired_placements_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_placements
+    ADD CONSTRAINT desired_placements_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: desired_placements desired_placements_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_placements
+    ADD CONSTRAINT desired_placements_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_assignment_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_assignment_fkey FOREIGN KEY (hardware_assignment_id, organization_id) REFERENCES public.hardware_assignments(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_assignment_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_assignment_revision_fkey FOREIGN KEY (hardware_assignment_id, organization_id, catalog_type_revision_id) REFERENCES public.hardware_assignments(id, organization_id, catalog_type_revision_id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_confirmed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_confirmed_by_user_id_fkey FOREIGN KEY (confirmed_by_user_id) REFERENCES public.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_template_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_template_fkey FOREIGN KEY (component_template_id, organization_id) REFERENCES public.component_templates(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_template_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_template_revision_fkey FOREIGN KEY (component_template_id, organization_id, catalog_type_revision_id) REFERENCES public.component_templates(id, organization_id, catalog_type_revision_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: expected_components expected_components_assignment_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_components
+    ADD CONSTRAINT expected_components_assignment_fkey FOREIGN KEY (hardware_assignment_id, organization_id) REFERENCES public.hardware_assignments(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_components expected_components_assignment_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_components
+    ADD CONSTRAINT expected_components_assignment_revision_fkey FOREIGN KEY (hardware_assignment_id, organization_id, catalog_type_revision_id) REFERENCES public.hardware_assignments(id, organization_id, catalog_type_revision_id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_components expected_components_exception_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_components
+    ADD CONSTRAINT expected_components_exception_fkey FOREIGN KEY (exception_id, organization_id) REFERENCES public.expected_component_exceptions(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: expected_components expected_components_template_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_components
+    ADD CONSTRAINT expected_components_template_fkey FOREIGN KEY (component_template_id, organization_id, catalog_type_revision_id) REFERENCES public.component_templates(id, organization_id, catalog_type_revision_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: hardware_assignments hardware_assignments_hardware_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_assignments
+    ADD CONSTRAINT hardware_assignments_hardware_type_fkey FOREIGN KEY (hardware_type_id, organization_id) REFERENCES public.hardware_types(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: hardware_assignments hardware_assignments_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_assignments
+    ADD CONSTRAINT hardware_assignments_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: hardware_assignments hardware_assignments_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_assignments
+    ADD CONSTRAINT hardware_assignments_revision_fkey FOREIGN KEY (catalog_type_revision_id, organization_id, hardware_type_id) REFERENCES public.catalog_type_revisions(id, organization_id, hardware_type_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: hardware_match_findings hardware_match_findings_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_match_findings
+    ADD CONSTRAINT hardware_match_findings_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: hardware_types hardware_types_organization_manufacturer_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_types
+    ADD CONSTRAINT hardware_types_organization_manufacturer_fkey FOREIGN KEY (manufacturer_id, organization_id) REFERENCES public.manufacturers(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: hardware_types hardware_types_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.hardware_types
+    ADD CONSTRAINT hardware_types_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -1758,6 +3563,150 @@ ALTER TABLE ONLY public.interfaces
 
 
 --
+-- Name: inventory_items inventory_items_owner_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_items
+    ADD CONSTRAINT inventory_items_owner_parent_fkey FOREIGN KEY (parent_id, organization_id, owner_resource_id) REFERENCES public.inventory_items(id, organization_id, owner_resource_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_items inventory_items_owner_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_items
+    ADD CONSTRAINT inventory_items_owner_resource_fkey FOREIGN KEY (owner_resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: inventory_items inventory_items_promoted_module_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_items
+    ADD CONSTRAINT inventory_items_promoted_module_fkey FOREIGN KEY (promoted_module_id, organization_id) REFERENCES public.modules(id, organization_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: locations locations_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: locations locations_organization_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_organization_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: locations locations_site_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_site_parent_fkey FOREIGN KEY (parent_id, organization_id, site_id) REFERENCES public.locations(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: manufacturers manufacturers_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.manufacturers
+    ADD CONSTRAINT manufacturers_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_bay_compatible_types module_bay_compatible_types_bay_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_bay_compatible_types
+    ADD CONSTRAINT module_bay_compatible_types_bay_fkey FOREIGN KEY (module_bay_id, organization_id) REFERENCES public.module_bays(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_bay_compatible_types module_bay_compatible_types_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_bay_compatible_types
+    ADD CONSTRAINT module_bay_compatible_types_type_fkey FOREIGN KEY (module_type_id, organization_id) REFERENCES public.module_types(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_bays module_bays_owner_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_bays
+    ADD CONSTRAINT module_bays_owner_resource_fkey FOREIGN KEY (owner_resource_id, organization_id, owner_kind) REFERENCES public.resources(id, organization_id, kind) ON DELETE CASCADE;
+
+
+--
+-- Name: module_installation_events module_installation_events_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_installation_events
+    ADD CONSTRAINT module_installation_events_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: module_installation_events module_installation_events_bay_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_installation_events
+    ADD CONSTRAINT module_installation_events_bay_fkey FOREIGN KEY (module_bay_id, organization_id) REFERENCES public.module_bays(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_installation_events module_installation_events_module_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_installation_events
+    ADD CONSTRAINT module_installation_events_module_fkey FOREIGN KEY (module_id, organization_id) REFERENCES public.modules(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_types module_types_organization_manufacturer_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_types
+    ADD CONSTRAINT module_types_organization_manufacturer_fkey FOREIGN KEY (manufacturer_id, organization_id) REFERENCES public.manufacturers(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: module_types module_types_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_types
+    ADD CONSTRAINT module_types_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: modules modules_module_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.modules
+    ADD CONSTRAINT modules_module_type_fkey FOREIGN KEY (module_type_id, organization_id) REFERENCES public.module_types(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: modules modules_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.modules
+    ADD CONSTRAINT modules_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: modules modules_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.modules
+    ADD CONSTRAINT modules_revision_fkey FOREIGN KEY (catalog_type_revision_id, organization_id, module_type_id) REFERENCES public.catalog_type_revisions(id, organization_id, module_type_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: observation_reconciliations observation_reconciliations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1822,6 +3771,30 @@ ALTER TABLE ONLY public.organization_memberships
 
 
 --
+-- Name: placement_evidence placement_evidence_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.placement_evidence
+    ADD CONSTRAINT placement_evidence_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: placement_evidence placement_evidence_source_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.placement_evidence
+    ADD CONSTRAINT placement_evidence_source_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE CASCADE;
+
+
+--
+-- Name: placement_findings placement_findings_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.placement_findings
+    ADD CONSTRAINT placement_findings_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: prefixes prefixes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1835,6 +3808,46 @@ ALTER TABLE ONLY public.prefixes
 
 ALTER TABLE ONLY public.prefixes
     ADD CONSTRAINT prefixes_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: rack_occupancies rack_occupancies_placement_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rack_occupancies
+    ADD CONSTRAINT rack_occupancies_placement_fkey FOREIGN KEY (current_placement_id, organization_id) REFERENCES public.current_placements(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: rack_occupancies rack_occupancies_rack_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rack_occupancies
+    ADD CONSTRAINT rack_occupancies_rack_fkey FOREIGN KEY (rack_id, organization_id) REFERENCES public.racks(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: racks racks_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.racks
+    ADD CONSTRAINT racks_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: racks racks_organization_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.racks
+    ADD CONSTRAINT racks_organization_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: racks racks_site_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.racks
+    ADD CONSTRAINT racks_site_location_fkey FOREIGN KEY (location_id, organization_id, site_id) REFERENCES public.locations(id, organization_id, site_id) ON DELETE RESTRICT;
 
 
 --
@@ -2014,6 +4027,38 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: site_groups site_groups_organization_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.site_groups
+    ADD CONSTRAINT site_groups_organization_parent_fkey FOREIGN KEY (parent_id, organization_id) REFERENCES public.site_groups(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: site_groups site_groups_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.site_groups
+    ADD CONSTRAINT site_groups_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: sites sites_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sites
+    ADD CONSTRAINT sites_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: sites sites_organization_site_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sites
+    ADD CONSTRAINT sites_organization_site_group_fkey FOREIGN KEY (site_group_id, organization_id) REFERENCES public.site_groups(id, organization_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: sources sources_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2049,7 +4094,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict E8y5T4qjlpA4XMfJlWjwdLpOds0ZzseXkl2Jm5d78Eq5w1zYoOhg0UPQ0aTddeL
+\unrestrict bCB6wXvLo6QfK10CgJh9Z9pdrars64wGGguhgaQNA672ZqhJyUtUNukzQiytopK
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -2067,3 +4112,13 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260808110000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260813072000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260813193000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260813210000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260825170000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260825200000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826100000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826110000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826140000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826150000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826160000);

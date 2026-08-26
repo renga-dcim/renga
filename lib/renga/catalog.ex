@@ -13,6 +13,7 @@ defmodule Renga.Catalog do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Catalog.ActualComponent
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
@@ -159,6 +160,35 @@ defmodule Renga.Catalog do
     )
     |> order_by([event], asc: event.sequence)
     |> Repo.all()
+  end
+
+  def list_actual_components(%Scope{organization_id: organization_id}, owner_resource_id) do
+    ActualComponent
+    |> where(
+      [component],
+      component.organization_id == ^organization_id and
+        component.owner_resource_id == ^owner_resource_id
+    )
+    |> order_by(
+      [component],
+      asc: component.kind,
+      asc: component.slot,
+      asc: component.path,
+      asc: component.name,
+      asc: component.id
+    )
+    |> preload(evidence_matches: :component_evidence)
+    |> Repo.all()
+  end
+
+  def get_actual_component!(%Scope{organization_id: organization_id}, id) do
+    ActualComponent
+    |> where(
+      [component],
+      component.organization_id == ^organization_id and component.id == ^id
+    )
+    |> preload(evidence_matches: :component_evidence)
+    |> Repo.one!()
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
