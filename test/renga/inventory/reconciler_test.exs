@@ -4,6 +4,7 @@ defmodule Renga.Inventory.ReconcilerTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.ResourceIdentifierClaim
 
@@ -29,13 +30,28 @@ defmodule Renga.Inventory.ReconcilerTest do
     %{scope: scope, source: source}
   end
 
-  defp observation(context, id, identifiers, attributes \\ %{}, interfaces \\ []) do
+  defp observation(
+         context,
+         id,
+         identifiers,
+         attributes \\ %{},
+         interfaces \\ [],
+         components \\ :absent
+       ) do
     observed_at = DateTime.add(~U[2026-08-01 12:00:00.000Z], String.to_integer(id), :second)
 
-    observation_at(context, id, observed_at, identifiers, attributes, interfaces)
+    observation_at(context, id, observed_at, identifiers, attributes, interfaces, components)
   end
 
-  defp observation_at(context, id, observed_at, identifiers, attributes, interfaces) do
+  defp observation_at(
+         context,
+         id,
+         observed_at,
+         identifiers,
+         attributes,
+         interfaces,
+         components \\ :absent
+       ) do
     resource_payload =
       %{
         "kind" => "server",
@@ -44,6 +60,9 @@ defmodule Renga.Inventory.ReconcilerTest do
       }
       |> then(fn payload ->
         if interfaces == :absent, do: payload, else: Map.put(payload, "interfaces", interfaces)
+      end)
+      |> then(fn payload ->
+        if components == :absent, do: payload, else: Map.put(payload, "components", components)
       end)
 
     {:ok, observation} =
@@ -97,6 +116,65 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert [%{type: "InventoryCurrent", status: "true"}] =
              Inventory.list_resource_conditions(context.scope, resource.id)
+  end
+
+  test "promotes supported shape-open components into typed immutable evidence" do
+    context = context()
+
+    components = [
+      %{"kind" => "os", "name" => "Example OS"},
+      %{"kind" => "cpu", "model" => "Example CPU", "logical_count" => 8},
+      %{"kind" => "memory", "total_bytes" => 16_384},
+      %{
+        "kind" => "disk",
+        "name" => "disk0",
+        "serial_number" => "SERIAL-1",
+        "part_number" => "PART-1",
+        "slot" => "bay-1",
+        "size_bytes" => 1_000_000,
+        "metadata" => %{"collector" => "portable"}
+      },
+      %{"kind" => "disk", "name" => %{"malformed" => true}}
+    ]
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        components
+      )
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert [cpu, disk, memory] = Inventory.list_component_evidence(context.scope, resource.id)
+
+    assert %{kind: "cpu", source_local_id: "cpu", model: "Example CPU"} = cpu
+    assert cpu.attributes == %{"logical_count" => 8}
+
+    assert %{
+             kind: "disk",
+             source_local_id: "SERIAL-1",
+             name: "disk0",
+             slot: "bay-1",
+             serial_number: "SERIAL-1",
+             part_number: "PART-1"
+           } = disk
+
+    assert disk.attributes == %{"size_bytes" => 1_000_000}
+    assert disk.raw_metadata == %{"collector" => "portable"}
+    assert %{kind: "memory", source_local_id: "memory"} = memory
+    assert memory.attributes == %{"total_bytes" => 16_384}
+
+    assert Enum.at(observation.payload["resources"], 0)["components"] == components
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert Repo.aggregate(ComponentEvidence, :count) == 3
   end
 
   test "strong identity keeps a resource stable across hostname changes" do

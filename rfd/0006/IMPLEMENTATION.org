@@ -27,7 +27,7 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 * Phase 4: Component evidence and reconciliation
 
-- [ ] Promote high-value shape-open agent components into typed source evidence
+- [X] Promote high-value shape-open agent components into typed source evidence
   while preserving unknown kinds in immutable observations.
 - [ ] Reconcile expected and observed components into canonical projections and
   complete-snapshot-aware missing, unexpected, ambiguous, identity,

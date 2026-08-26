@@ -13,6 +13,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
@@ -39,6 +40,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     allow_new_rows? = Keyword.get(opts, :allow_new_rows?, true)
 
     reconcile_host(scope, source, observation, resource, payload, overrides)
+    reconcile_component_evidence(scope, source, observation, resource, payload)
 
     interfaces_authoritative? = Map.has_key?(payload, "interfaces")
     interfaces = Map.get(payload, "interfaces", [])
@@ -60,6 +62,87 @@ defmodule Renga.Inventory.Reconciler.Projections do
       reconcile_network_omissions(scope, source, observation, resource, interfaces, overrides)
     end
   end
+
+  defp reconcile_component_evidence(scope, source, observation, resource, payload) do
+    payload
+    |> Map.get("components", [])
+    |> Enum.filter(&supported_component?/1)
+    |> Enum.each(fn component ->
+      attrs = component_evidence_attrs(component)
+
+      existing =
+        Repo.get_by(ComponentEvidence,
+          organization_id: scope.organization_id,
+          observation_id: observation.id,
+          kind: attrs["kind"],
+          source_local_id: attrs["source_local_id"]
+        )
+
+      unless existing do
+        {:ok, _evidence} =
+          Inventory.create_component_evidence(
+            scope,
+            source.id,
+            observation.id,
+            resource.id,
+            attrs
+          )
+      end
+    end)
+  end
+
+  defp supported_component?(%{"kind" => kind} = component) when kind in ~w(cpu memory disk) do
+    not is_nil(component_source_local_id(component))
+  end
+
+  defp supported_component?(_component), do: false
+
+  defp component_evidence_attrs(component) do
+    known_fields =
+      ~w(kind source_local_id id name model slot path serial_number part_number metadata)
+
+    %{
+      "kind" => component["kind"],
+      "source_local_id" => component_source_local_id(component),
+      "name" => optional_component_string(component["name"]),
+      "model" => optional_component_string(component["model"]),
+      "slot" => optional_component_string(component["slot"]),
+      "path" => optional_component_string(component["path"]),
+      "serial_number" => optional_component_string(component["serial_number"]),
+      "part_number" => optional_component_string(component["part_number"]),
+      "attributes" => Map.drop(component, known_fields),
+      "raw_metadata" => component_metadata(component)
+    }
+  end
+
+  defp component_source_local_id(component) do
+    [
+      component["source_local_id"],
+      component["id"],
+      component["serial_number"],
+      singleton_or_named_component_id(component)
+    ]
+    |> Enum.find_value(&optional_component_string/1)
+  end
+
+  defp singleton_or_named_component_id(%{"kind" => kind}) when kind in ~w(cpu memory), do: kind
+
+  defp singleton_or_named_component_id(%{"kind" => "disk"} = component) do
+    component["name"] || component["path"] || component["device"]
+  end
+
+  defp optional_component_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed when byte_size(trimmed) > 255 -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp optional_component_string(_value), do: nil
+
+  defp component_metadata(%{"metadata" => metadata}) when is_map(metadata), do: metadata
+  defp component_metadata(_component), do: %{}
 
   defp reconcile_host(scope, source, observation, resource, payload, overrides) do
     identifiers = Map.get(payload, "identifiers", %{})
