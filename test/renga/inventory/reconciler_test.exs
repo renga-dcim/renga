@@ -434,6 +434,110 @@ defmodule Renga.Inventory.ReconcilerTest do
     end
   end
 
+  test "duplicate position and part identities in one snapshot do not merge components" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "disk",
+            "id" => "disk-a",
+            "slot" => "BAY1",
+            "part_number" => "PN1"
+          },
+          %{
+            "kind" => "disk",
+            "id" => "disk-b",
+            "slot" => "BAY1",
+            "part_number" => "PN1"
+          }
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
+
+    {:ok, second_source} =
+      Inventory.create_source(context.scope, %{kind: "bmc", name: "ambiguous-component-bmc"})
+
+    second_context = %{context | source: second_source}
+
+    ambiguous =
+      observation(
+        second_context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "disk",
+            "id" => "bmc-disk",
+            "slot" => "bay1",
+            "part_number" => "pn1"
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, ambiguous.id)
+
+    [ambiguous_evidence] =
+      Inventory.list_component_evidence(context.scope, resource.id)
+      |> Enum.filter(&(&1.observation_id == ambiguous.id))
+
+    refute Repo.get_by(ActualComponentEvidenceMatch,
+             component_evidence_id: ambiguous_evidence.id
+           )
+
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
+  end
+
+  test "retrying already-linked equal-time evidence does not overwrite canonical state" do
+    context = context()
+    observed_at = ~U[2026-08-01 12:00:00.000Z]
+
+    first =
+      observation_at(
+        context,
+        "1",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "Model A"}]
+      )
+
+    second =
+      observation_at(
+        context,
+        "2",
+        observed_at,
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "model" => "Model B"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, second.id)
+    assert [before_retry] = Catalog.list_actual_components(context.scope, resource.id)
+    assert before_retry.model == "Model B"
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, first.id)
+
+    assert [after_retry] = Catalog.list_actual_components(context.scope, resource.id)
+    assert after_retry.model == "Model B"
+    assert after_retry.updated_at == before_retry.updated_at
+    assert length(after_retry.evidence_matches) == 2
+  end
+
   test "strong identity keeps a resource stable across hostname changes" do
     context = context()
 

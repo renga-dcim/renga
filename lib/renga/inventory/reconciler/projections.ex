@@ -72,10 +72,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
         _absent_or_invalid -> []
       end
 
-    components
-    |> Enum.filter(&supported_component?/1)
-    |> Enum.each(fn component ->
-      attrs = component_evidence_attrs(component)
+    component_attrs =
+      components
+      |> Enum.filter(&supported_component?/1)
+      |> Enum.map(&component_evidence_attrs/1)
+
+    position_frequencies =
+      component_attrs
+      |> Enum.map(&position_identity_key/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.frequencies()
+
+    Enum.each(component_attrs, fn attrs ->
+      position_key = position_identity_key(attrs)
+      allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
 
       existing =
         Repo.get_by(ComponentEvidence,
@@ -97,17 +107,17 @@ defmodule Renga.Inventory.Reconciler.Projections do
             {:ok, evidence} -> evidence
           end
 
-      reconcile_actual_component(scope, evidence)
+      reconcile_actual_component(scope, evidence, allow_position_match?)
     end)
   end
 
-  defp reconcile_actual_component(scope, evidence) do
+  defp reconcile_actual_component(scope, evidence, allow_position_match?) do
     case Repo.get_by(ActualComponentEvidenceMatch,
            organization_id: scope.organization_id,
            component_evidence_id: evidence.id
          ) do
       nil ->
-        case match_actual_component(scope.organization_id, evidence) do
+        case match_actual_component(scope.organization_id, evidence, allow_position_match?) do
           {:ok, component, strategy} ->
             put_actual_component_evidence_match(scope, component, evidence, strategy)
             update_actual_component(component, evidence)
@@ -120,19 +130,17 @@ defmodule Renga.Inventory.Reconciler.Projections do
             :ok
         end
 
-      match ->
-        match
-        |> Repo.preload(:actual_component)
-        |> Map.fetch!(:actual_component)
-        |> update_actual_component(evidence)
+      _existing_match ->
+        :ok
     end
   end
 
-  defp match_actual_component(organization_id, evidence) do
+  defp match_actual_component(organization_id, evidence, allow_position_match?) do
     [
       {"serial_number", serial_component_matches(organization_id, evidence)},
       {"provider_id", provider_component_matches(organization_id, evidence)},
-      {"position_part_number", position_component_matches(organization_id, evidence)}
+      {"position_part_number",
+       position_component_matches(organization_id, evidence, allow_position_match?)}
     ]
     |> Enum.find_value(:none, fn
       {_strategy, []} -> false
@@ -172,9 +180,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
     |> Repo.all()
   end
 
-  defp position_component_matches(_organization_id, %{part_number: nil}), do: []
+  defp position_component_matches(_organization_id, _evidence, false), do: []
+  defp position_component_matches(_organization_id, %{part_number: nil}, true), do: []
 
-  defp position_component_matches(organization_id, evidence) do
+  defp position_component_matches(organization_id, evidence, true) do
     position = evidence.slot || evidence.path
 
     if position do
@@ -197,6 +206,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp position_match(query, _slot, slot) do
     where(query, [component], fragment("lower(?)", component.slot) == ^String.downcase(slot))
+  end
+
+  defp position_identity_key(attrs) do
+    position = attrs["slot"] || attrs["path"]
+    part_number = attrs["part_number"]
+
+    if position && part_number do
+      {attrs["kind"], String.downcase(position), String.downcase(part_number)}
+    end
   end
 
   defp actual_component_scope(query, organization_id, evidence) do
