@@ -622,15 +622,91 @@ defmodule Renga.Inventory.Reconciler.Projections do
         |> cast_mac_address()
         |> Map.put("metadata", Map.get(raw_attrs, "metadata", %{}))
 
+      catalog_match = catalog_interface_match(scope, interface, evidence_attrs)
+
       {:ok, _evidence} =
         Inventory.create_interface_evidence(
           scope,
           source.id,
           observation.id,
           interface.id,
-          evidence_attrs
+          evidence_attrs,
+          catalog_match
         )
     end
+  end
+
+  defp catalog_interface_match(scope, interface, evidence_attrs) do
+    expectations =
+      scope
+      |> Catalog.list_expected_components(interface.resource_id)
+      |> Enum.filter(fn expected ->
+        expected.kind == "interface" and not expected.suppressed and
+          not is_nil(expected.component_template_id)
+      end)
+
+    case evidence_attrs["mac_address"] do
+      %Postgrex.MACADDR{} = reported_mac ->
+        match_interface_by_mac(expectations, reported_mac, interface.name)
+
+      _missing_mac ->
+        match_interface_by_name(expectations, interface.name)
+    end
+  end
+
+  defp match_interface_by_mac(expectations, reported_mac, reported_name) do
+    case Enum.filter(expectations, &expected_interface_mac_matches?(&1, reported_mac)) do
+      [] ->
+        expectations
+        |> Enum.filter(&expected_interface_mac_compatible?(&1, reported_mac))
+        |> match_interface_by_name(reported_name)
+
+      matches ->
+        catalog_interface_match_result(matches, "mac_address")
+    end
+  end
+
+  defp match_interface_by_name(expectations, reported_name) do
+    normalized_name = normalize_interface_template_value(reported_name)
+
+    expectations
+    |> Enum.filter(fn expected ->
+      Enum.any?([expected.position, expected.name], fn candidate ->
+        is_binary(candidate) and normalize_interface_template_value(candidate) == normalized_name
+      end)
+    end)
+    |> catalog_interface_match_result("name")
+  end
+
+  defp catalog_interface_match_result([], _strategy), do: %{status: "unmatched"}
+
+  defp catalog_interface_match_result([expected], strategy) do
+    %{
+      status: "matched",
+      strategy: strategy,
+      component_template_id: expected.component_template_id
+    }
+  end
+
+  defp catalog_interface_match_result(_ambiguous, _strategy), do: %{status: "ambiguous"}
+
+  defp expected_interface_mac_matches?(expected, reported_mac) do
+    MacAddress.cast(expected.attributes["mac_address"]) == {:ok, reported_mac}
+  end
+
+  defp expected_interface_mac_compatible?(expected, reported_mac) do
+    case MacAddress.cast(expected.attributes["mac_address"]) do
+      {:ok, expected_mac} -> expected_mac == reported_mac
+      :error -> true
+    end
+  end
+
+  defp normalize_interface_template_value(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^[:alnum:]]+/u, " ")
+    |> String.trim()
   end
 
   defp reconcile_address(

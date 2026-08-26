@@ -2470,6 +2470,141 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "interface evidence links catalog templates to the canonical IPAM interface" do
+    context = context()
+
+    first =
+      observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [
+        %{
+          "name" => "eno1",
+          "mac_address" => "aa:bb:cc:dd:ee:ff",
+          "addresses" => ["192.0.2.10/24"]
+        }
+      ])
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [canonical] = Inventory.list_interfaces(context.scope, resource.id)
+
+    initial_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: first.id,
+        interface_id: canonical.id
+      )
+
+    assert initial_evidence.catalog_match_status == "unmatched"
+    assert is_nil(initial_evidence.component_template_id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "INTERFACE-LINK", [
+        %{
+          kind: "interface",
+          name: "Management port",
+          position: "mgmt0",
+          attributes: %{"mac_address" => "AA-BB-CC-DD-EE-FF"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    [expected] =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.filter(&(&1.kind == "interface"))
+
+    reported =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{
+          "name" => "eno1",
+          "mac_address" => "aa:bb:cc:dd:ee:ff",
+          "addresses" => ["192.0.2.10/24"]
+        }
+      ])
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+
+    assert [%{id: canonical_id, name: "eno1"}] =
+             Inventory.list_interfaces(context.scope, resource.id)
+
+    assert canonical_id == canonical.id
+    assert [_address] = Inventory.list_addresses(context.scope, canonical.id)
+
+    evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: canonical.id
+      )
+
+    assert Map.get(evidence, :component_template_id) == expected.component_template_id
+    assert Map.get(evidence, :catalog_match_status) == "matched"
+    assert Map.get(evidence, :catalog_match_strategy) == "mac_address"
+    assert Catalog.list_actual_components(context.scope, resource.id) == []
+  end
+
+  test "ambiguous interface template matches never select the first candidate" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "AMBIGUOUS-INTERFACE-LINK", [
+        %{kind: "interface", name: "First port", position: "eth0"},
+        %{kind: "interface", name: "Second port", position: "ETH0"},
+        %{kind: "interface", name: "Third port", position: "eth1"},
+        %{
+          kind: "interface",
+          name: "Out of band port",
+          position: "oob0",
+          attributes: %{"mac_address" => "00:11:22:33:44:55"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    expected_eth1 =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.find(&(&1.position == "eth1"))
+
+    reported =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up"},
+        %{
+          "name" => "eth1",
+          "status" => "up",
+          "mac_address" => "66:77:88:99:aa:bb"
+        }
+      ])
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+    [eth0, eth1] = Inventory.list_interfaces(context.scope, resource.id)
+
+    ambiguous_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: eth0.id
+      )
+
+    assert ambiguous_evidence.catalog_match_status == "ambiguous"
+    assert is_nil(ambiguous_evidence.component_template_id)
+    assert is_nil(ambiguous_evidence.catalog_match_strategy)
+
+    matched_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: eth1.id
+      )
+
+    assert matched_evidence.catalog_match_status == "matched"
+    assert matched_evidence.catalog_match_strategy == "name"
+    assert matched_evidence.component_template_id == expected_eth1.component_template_id
+  end
+
   test "explicit host masks remain idempotent after Postgrex decodes them as nil" do
     context = context()
 
