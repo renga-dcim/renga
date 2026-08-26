@@ -1262,7 +1262,8 @@ defmodule Renga.Inventory do
         source_id,
         observation_id,
         interface_id,
-        attrs
+        attrs,
+        catalog_match \\ %{}
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     interface = get_interface!(scope, interface_id)
@@ -1272,7 +1273,10 @@ defmodule Renga.Inventory do
       organization_id: organization_id,
       source_id: source.id,
       observation_id: observation.id,
-      interface_id: interface.id
+      interface_id: interface.id,
+      component_template_id: Map.get(catalog_match, :component_template_id),
+      catalog_match_status: Map.get(catalog_match, :status),
+      catalog_match_strategy: Map.get(catalog_match, :strategy)
     }
     |> InterfaceEvidence.changeset(attrs)
     |> Repo.insert()
