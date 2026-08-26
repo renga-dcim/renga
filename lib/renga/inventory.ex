@@ -11,6 +11,8 @@ defmodule Renga.Inventory do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Catalog.ExpectedComponent
+  alias Renga.Catalog.HardwareAssignment
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
@@ -39,6 +41,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
+  alias Renga.Types.MacAddress
 
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
@@ -1256,18 +1259,21 @@ defmodule Renga.Inventory do
 
   @doc """
   Stores one source observation of a canonical interface.
+
+  Catalog linkage is derived from the scoped canonical interface and observed
+  attributes so callers cannot attach evidence to an arbitrary template.
   """
   def create_interface_evidence(
         %Scope{organization_id: organization_id} = scope,
         source_id,
         observation_id,
         interface_id,
-        attrs,
-        catalog_match \\ %{}
+        attrs
       ) do
     {source, observation} = source_observation!(scope, source_id, observation_id)
     interface = get_interface!(scope, interface_id)
     attrs = put_attr(attrs, :observed_at, observation.observed_at)
+    catalog_match = catalog_interface_match(scope, interface, attrs)
 
     %InterfaceEvidence{
       organization_id: organization_id,
@@ -1280,6 +1286,87 @@ defmodule Renga.Inventory do
     }
     |> InterfaceEvidence.changeset(attrs)
     |> Repo.insert()
+  end
+
+  defp catalog_interface_match(%Scope{organization_id: organization_id}, interface, attrs) do
+    expectations =
+      ExpectedComponent
+      |> join(:inner, [expected], assignment in HardwareAssignment,
+        on: assignment.id == expected.hardware_assignment_id
+      )
+      |> where(
+        [expected, assignment],
+        expected.organization_id == ^organization_id and
+          assignment.resource_id == ^interface.resource_id and
+          expected.kind == "interface" and not expected.suppressed and
+          not is_nil(expected.component_template_id)
+      )
+      |> Repo.all()
+
+    reported_name = get_attr(attrs, :name) || interface.name
+
+    case MacAddress.cast(get_attr(attrs, :mac_address)) do
+      {:ok, reported_mac} ->
+        match_interface_by_mac(expectations, reported_mac, reported_name)
+
+      :error ->
+        match_interface_by_name(expectations, reported_name)
+    end
+  end
+
+  defp match_interface_by_mac(expectations, reported_mac, reported_name) do
+    case Enum.filter(expectations, &expected_interface_mac_matches?(&1, reported_mac)) do
+      [expected] ->
+        catalog_interface_match_result([expected], "mac_address")
+
+      _zero_or_ambiguous ->
+        expectations
+        |> Enum.filter(&expected_interface_mac_compatible?(&1, reported_mac))
+        |> match_interface_by_name(reported_name)
+    end
+  end
+
+  defp match_interface_by_name(expectations, reported_name) do
+    normalized_name = normalize_interface_template_value(reported_name)
+
+    expectations
+    |> Enum.filter(fn expected ->
+      Enum.any?([expected.position, expected.name], fn candidate ->
+        is_binary(candidate) and normalize_interface_template_value(candidate) == normalized_name
+      end)
+    end)
+    |> catalog_interface_match_result("name")
+  end
+
+  defp catalog_interface_match_result([], _strategy), do: %{status: "unmatched"}
+
+  defp catalog_interface_match_result([expected], strategy) do
+    %{
+      status: "matched",
+      strategy: strategy,
+      component_template_id: expected.component_template_id
+    }
+  end
+
+  defp catalog_interface_match_result(_ambiguous, _strategy), do: %{status: "ambiguous"}
+
+  defp expected_interface_mac_matches?(expected, reported_mac) do
+    MacAddress.cast(expected.attributes["mac_address"]) == {:ok, reported_mac}
+  end
+
+  defp expected_interface_mac_compatible?(expected, reported_mac) do
+    case MacAddress.cast(expected.attributes["mac_address"]) do
+      {:ok, expected_mac} -> expected_mac == reported_mac
+      :error -> true
+    end
+  end
+
+  defp normalize_interface_template_value(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/[^[:alnum:]]+/u, " ")
+    |> String.trim()
   end
 
   @doc "Stores one typed physical-component report from an immutable observation."

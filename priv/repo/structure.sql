@@ -629,7 +629,7 @@ CREATE TABLE public.interface_evidence (
     component_template_id uuid,
     catalog_match_status character varying(255),
     catalog_match_strategy character varying(255),
-    CONSTRAINT interface_evidence_catalog_match_shape CHECK ((((catalog_match_status IS NULL) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL)) OR (((catalog_match_status)::text = 'matched'::text) AND (component_template_id IS NOT NULL) AND ((catalog_match_strategy)::text = ANY ((ARRAY['mac_address'::character varying, 'name'::character varying])::text[]))) OR (((catalog_match_status)::text = ANY ((ARRAY['unmatched'::character varying, 'ambiguous'::character varying])::text[])) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL)))),
+    CONSTRAINT interface_evidence_catalog_match_shape CHECK (((((catalog_match_status IS NULL) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL)) OR (((catalog_match_status)::text = 'matched'::text) AND (component_template_id IS NOT NULL) AND ((catalog_match_strategy)::text = ANY ((ARRAY['mac_address'::character varying, 'name'::character varying])::text[]))) OR (((catalog_match_status)::text = ANY ((ARRAY['unmatched'::character varying, 'ambiguous'::character varying])::text[])) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL))) IS TRUE)),
     CONSTRAINT interface_evidence_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
 );
 

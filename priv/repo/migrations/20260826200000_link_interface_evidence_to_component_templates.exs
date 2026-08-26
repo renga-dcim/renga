@@ -21,9 +21,11 @@ defmodule Renga.Repo.Migrations.LinkInterfaceEvidenceToComponentTemplates do
 
     create constraint(:interface_evidence, :interface_evidence_catalog_match_shape,
              check: """
-             (catalog_match_status IS NULL AND component_template_id IS NULL AND catalog_match_strategy IS NULL)
-             OR (catalog_match_status = 'matched' AND component_template_id IS NOT NULL AND catalog_match_strategy IN ('mac_address', 'name'))
-             OR (catalog_match_status IN ('unmatched', 'ambiguous') AND component_template_id IS NULL AND catalog_match_strategy IS NULL)
+             (
+               (catalog_match_status IS NULL AND component_template_id IS NULL AND catalog_match_strategy IS NULL)
+               OR (catalog_match_status = 'matched' AND component_template_id IS NOT NULL AND catalog_match_strategy IN ('mac_address', 'name'))
+               OR (catalog_match_status IN ('unmatched', 'ambiguous') AND component_template_id IS NULL AND catalog_match_strategy IS NULL)
+             ) IS TRUE
              """
            )
   end
