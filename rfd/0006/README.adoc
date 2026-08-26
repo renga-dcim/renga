@@ -124,6 +124,9 @@ topology. Interface templates and observed NIC/port components may match and
 enrich an interface but must not create a second competing interface model.
 Template identity, component evidence, and canonical interface identity remain
 linked and explainable.
+The initial implementation treats entries in the existing `interfaces` payload
+section and their `InterfaceEvidence` rows as NIC/port evidence; it does not add
+an `interface` kind to the shape-open `components` section.
 
 The same rule applies to future power and console components: catalog templates
 describe expected endpoints, observations provide evidence, and one canonical
