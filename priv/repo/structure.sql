@@ -371,7 +371,7 @@ CREATE TABLE public.component_findings (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT component_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
-    CONSTRAINT component_findings_valid_kind CHECK (((kind)::text = ANY ((ARRAY['ambiguous_component_identity'::character varying, 'ambiguous_expected_component'::character varying, 'unexpected_actual_component'::character varying, 'component_drift'::character varying, 'missing_expected_component'::character varying])::text[]))),
+    CONSTRAINT component_findings_valid_kind CHECK (((kind)::text = ANY ((ARRAY['ambiguous_component_identity'::character varying, 'ambiguous_expected_component'::character varying, 'unexpected_actual_component'::character varying, 'component_drift'::character varying, 'missing_expected_component'::character varying, 'module_bay_not_found'::character varying, 'ambiguous_module_bay'::character varying, 'module_type_not_found'::character varying, 'ambiguous_module_type'::character varying, 'incompatible_module_type'::character varying])::text[]))),
     CONSTRAINT component_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
 );
 
@@ -4178,3 +4178,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826150000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826160000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826170000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826180000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826190000);
