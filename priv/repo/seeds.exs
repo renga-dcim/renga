@@ -2,6 +2,12 @@ if Mix.env() == :dev do
   alias Renga.Accounts
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
+  alias Renga.Catalog
+  alias Renga.Catalog.HardwareType
+  alias Renga.Catalog.InventoryItem
+  alias Renga.Catalog.Manufacturer
+  alias Renga.Catalog.ModuleBay
+  alias Renga.Catalog.ModuleType
   alias Renga.DCIM
   alias Renga.DCIM.Location
   alias Renga.DCIM.Rack
@@ -392,6 +398,142 @@ if Mix.env() == :dev do
             Repo.get_by(schema, organization_id: organization.id, resource_id: resource.id)
         end
       end
+
+      dell =
+        find_projection.(Manufacturer, "manufacturer", "Dell Technologies") ||
+          case Catalog.create_manufacturer(
+                 scope,
+                 %{name: "Dell Technologies", lifecycle_state: "active"},
+                 %{
+                   slug: "dell-technologies",
+                   description: "Seeded manufacturer for the orb hardware catalog"
+                 }
+               ) do
+            {:ok, manufacturer} -> manufacturer
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      poweredge =
+        find_projection.(HardwareType, "hardware_type", "Dell PowerEdge R760") ||
+          case Catalog.create_hardware_type(
+                 scope,
+                 %{name: "Dell PowerEdge R760", lifecycle_state: "active"},
+                 %{
+                   manufacturer_id: dell.id,
+                   model: "PowerEdge R760",
+                   device_class: "server",
+                   description: "Two-socket 2U compute platform"
+                 }
+               ) do
+            {:ok, hardware_type} -> hardware_type
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      if Catalog.get_hardware_type!(scope, poweredge.id).revisions == [] do
+        {:ok, _revision} =
+          Catalog.create_hardware_type_revision(
+            scope,
+            poweredge,
+            %{
+              part_number: "R760-DEMO",
+              height_units: 2,
+              width_mm: "482.0",
+              depth_mm: "772.0",
+              weight_kg: "28.6",
+              airflow: "front_to_rear",
+              specifications: %{"cpu_sockets" => 2, "memory_slots" => 32}
+            },
+            [
+              %{kind: "cpu", name: "CPU 1", position: "CPU1"},
+              %{kind: "cpu", name: "CPU 2", position: "CPU2"},
+              %{kind: "memory", name: "DIMM A1", position: "A1"},
+              %{kind: "disk", name: "Boot disk 1", position: "Bay 1"},
+              %{
+                kind: "interface",
+                name: "Management interface",
+                position: "eth0",
+                attributes: %{"mac_address" => "02:00:00:00:10:01"}
+              },
+              %{kind: "module_bay", name: "BOSS slot", position: "internal"}
+            ]
+          )
+      end
+
+      {:ok, _assignment} = Catalog.assign_hardware_type(scope, compute.id, poweredge.id)
+
+      boss_type =
+        find_projection.(ModuleType, "module_type", "Dell BOSS-N1") ||
+          case Catalog.create_module_type(
+                 scope,
+                 %{name: "Dell BOSS-N1", lifecycle_state: "active"},
+                 %{
+                   manufacturer_id: dell.id,
+                   model: "BOSS-N1",
+                   module_class: "other",
+                   description: "Internal boot optimized storage module"
+                 }
+               ) do
+            {:ok, module_type} -> module_type
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      if Catalog.get_module_type!(scope, boss_type.id).revisions == [] do
+        {:ok, _revision} =
+          Catalog.create_module_type_revision(scope, boss_type, %{part_number: "BOSS-N1-DEMO"})
+      end
+
+      boss_module =
+        Enum.find(Catalog.list_modules(scope), &(&1.resource.name == "compute-01 BOSS module")) ||
+          case Catalog.create_module(
+                 scope,
+                 boss_type,
+                 %{name: "compute-01 BOSS module", lifecycle_state: "active"},
+                 %{status: "active", serial_number: "DEMO-BOSS-001"}
+               ) do
+            {:ok, module} -> module
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      boss_bay =
+        Repo.get_by(ModuleBay,
+          organization_id: organization.id,
+          owner_resource_id: compute.id,
+          name: "boss-slot"
+        ) ||
+          case Catalog.create_module_bay(
+                 scope,
+                 compute.id,
+                 %{name: "boss-slot", label: "BOSS slot", position: "internal"},
+                 [boss_type.id]
+               ) do
+            {:ok, bay} -> bay
+            {:error, reason} -> raise inspect(reason)
+          end
+
+      if is_nil(Catalog.get_desired_module_assignment(scope, boss_bay.id)) do
+        {:ok, _desired} =
+          Catalog.put_desired_module_assignment(scope, boss_bay.id, boss_type.id)
+      end
+
+      if is_nil(Catalog.get_current_module_installation(scope, boss_bay.id)) do
+        {:ok, _installation} = Catalog.install_module(scope, boss_bay.id, boss_module.id)
+      end
+
+      Repo.get_by(InventoryItem,
+        organization_id: organization.id,
+        owner_resource_id: compute.id,
+        name: "Cooling fan 1"
+      ) ||
+        case Catalog.create_inventory_item(scope, compute.id, %{
+               name: "Cooling fan 1",
+               kind: "fan",
+               status: "installed",
+               position: "fan-1",
+               part_number: "R760-FAN-DEMO"
+             }) do
+          {:ok, item} -> item
+          {:error, reason} -> raise inspect(reason)
+        end
 
       site_group =
         find_projection.(SiteGroup, "site_group", "North America") ||
