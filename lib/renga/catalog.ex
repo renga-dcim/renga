@@ -43,7 +43,9 @@ defmodule Renga.Catalog do
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
-  @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift)
+  @module_component_finding_kinds ~w(module_bay_not_found ambiguous_module_bay module_type_not_found ambiguous_module_type incompatible_module_type)
+  @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
+                                      @module_component_finding_kinds
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -222,7 +224,8 @@ defmodule Renga.Catalog do
 
     findings =
       ambiguous_identity_findings(scope, observation, resource) ++
-        expected_actual_findings(scope, observation, resource)
+        expected_actual_findings(scope, observation, resource) ++
+        module_installation_findings(scope, resource)
 
     finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
     Enum.each(findings, &put_component_finding(scope, resource, &1))
@@ -674,6 +677,202 @@ defmodule Renga.Catalog do
     end)
   end
 
+  defp module_installation_findings(scope, resource) do
+    bays = module_bays_for_findings(scope.organization_id, resource.id)
+    module_types = module_types_for_findings(scope.organization_id)
+
+    scope.organization_id
+    |> current_module_evidence(resource.id)
+    |> Enum.map(&module_installation_finding(&1, bays, module_types))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp current_module_evidence(organization_id, resource_id) do
+    ComponentEvidence
+    |> where(
+      [evidence],
+      evidence.organization_id == ^organization_id and evidence.resource_id == ^resource_id and
+        evidence.kind == "module"
+    )
+    |> order_by(
+      [evidence],
+      desc: evidence.observed_at,
+      desc: evidence.observation_id,
+      desc: evidence.id
+    )
+    |> Repo.all()
+    |> Enum.reduce({[], MapSet.new(), MapSet.new()}, fn evidence,
+                                                        {current, identities, positions} ->
+      identity_key = {evidence.source_id, evidence.source_local_id}
+      position_key = {evidence.source_id, normalized_module_position(evidence)}
+
+      if MapSet.member?(identities, identity_key) or MapSet.member?(positions, position_key) do
+        {current, identities, positions}
+      else
+        {
+          [evidence | current],
+          MapSet.put(identities, identity_key),
+          MapSet.put(positions, position_key)
+        }
+      end
+    end)
+    |> elem(0)
+  end
+
+  defp module_bays_for_findings(organization_id, owner_resource_id) do
+    ModuleBay
+    |> where(
+      [bay],
+      bay.organization_id == ^organization_id and bay.owner_resource_id == ^owner_resource_id
+    )
+    |> lock("FOR UPDATE")
+    |> preload([:compatible_module_types])
+    |> Repo.all()
+  end
+
+  defp module_types_for_findings(organization_id) do
+    ModuleType
+    |> where([module_type], module_type.organization_id == ^organization_id)
+    |> preload([:resource, manufacturer: :resource, revisions: ^latest_revisions_query()])
+    |> Repo.all()
+    |> Enum.reject(&(&1.revisions == []))
+  end
+
+  defp module_installation_finding(evidence, bays, module_types) do
+    case module_bay_candidates(evidence, bays) do
+      [] ->
+        module_finding(
+          evidence,
+          "module_bay_not_found",
+          "Observed module position does not match a catalog bay",
+          %{}
+        )
+
+      [bay] ->
+        module_type_finding(evidence, bay, module_types)
+
+      candidates ->
+        module_finding(
+          evidence,
+          "ambiguous_module_bay",
+          "Observed module position matches more than one catalog bay",
+          %{"module_bay_ids" => candidates |> Enum.map(& &1.id) |> Enum.sort()}
+        )
+    end
+  end
+
+  defp module_bay_candidates(evidence, bays) do
+    reported_position = normalized_module_position(evidence)
+
+    Enum.filter(bays, fn bay ->
+      Enum.any?([bay.position, bay.name], fn catalog_position ->
+        not is_nil(catalog_position) and
+          normalize_catalog_value(catalog_position) == reported_position
+      end)
+    end)
+  end
+
+  defp module_type_finding(evidence, bay, module_types) do
+    case Enum.filter(module_types, &module_type_matches?(&1, evidence)) do
+      [] ->
+        module_finding(
+          evidence,
+          "module_type_not_found",
+          "Observed module does not match a catalog module type",
+          %{"module_bay_id" => bay.id}
+        )
+
+      [module_type] ->
+        incompatible_module_finding(evidence, bay, module_type)
+
+      candidates ->
+        module_finding(
+          evidence,
+          "ambiguous_module_type",
+          "Observed module matches more than one catalog module type",
+          %{
+            "module_bay_id" => bay.id,
+            "module_type_ids" => candidates |> Enum.map(& &1.id) |> Enum.sort()
+          }
+        )
+    end
+  end
+
+  defp module_type_matches?(module_type, evidence) do
+    reported_manufacturer = evidence.attributes["manufacturer"] || evidence.attributes["vendor"]
+
+    manufacturer_matches =
+      is_nil(reported_manufacturer) or
+        manufacturer_matches?(module_type.manufacturer, reported_manufacturer)
+
+    product_matches =
+      [
+        evidence.model &&
+          normalize_catalog_value(module_type.model) == normalize_catalog_value(evidence.model),
+        evidence.part_number &&
+          Enum.any?(module_type.revisions, fn revision ->
+            normalize_catalog_value(revision.part_number) ==
+              normalize_catalog_value(evidence.part_number)
+          end)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    manufacturer_matches and product_matches != [] and Enum.all?(product_matches)
+  end
+
+  defp incompatible_module_finding(evidence, bay, module_type) do
+    compatible_type_ids = bay.compatible_module_types |> Enum.map(& &1.id) |> Enum.sort()
+
+    if module_type.id in compatible_type_ids do
+      nil
+    else
+      module_finding(
+        evidence,
+        "incompatible_module_type",
+        "Observed module type is incompatible with its catalog bay",
+        %{
+          "module_bay_id" => bay.id,
+          "module_type_id" => module_type.id,
+          "compatible_module_type_ids" => compatible_type_ids
+        }
+      )
+    end
+  end
+
+  defp module_finding(evidence, kind, message, details) do
+    %{
+      kind: kind,
+      resolution_key: module_finding_resolution_key(evidence),
+      message: message,
+      details:
+        Map.merge(details, %{
+          "component_evidence_id" => evidence.id,
+          "source_id" => evidence.source_id,
+          "source_local_id" => evidence.source_local_id,
+          "reported_position" => evidence.slot || evidence.path,
+          "reported_manufacturer" =>
+            evidence.attributes["manufacturer"] || evidence.attributes["vendor"],
+          "reported_model" => evidence.model,
+          "reported_part_number" => evidence.part_number
+        }),
+      last_observed_at: evidence.observed_at
+    }
+  end
+
+  defp module_finding_resolution_key(evidence) do
+    position_digest =
+      evidence
+      |> normalized_module_position()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.url_encode64(padding: false)
+
+    "module:#{evidence.source_id}:#{position_digest}"
+  end
+
+  defp normalized_module_position(evidence) do
+    normalize_catalog_value(evidence.slot || evidence.path)
+  end
+
   defp expected_actual_findings(scope, observation, resource) do
     case get_hardware_assignment(scope, resource.id) do
       nil ->
@@ -875,7 +1074,7 @@ defmodule Renga.Catalog do
         latest =
           query |> order_by([finding], desc: finding.last_observed_at) |> first() |> Repo.one()
 
-        if is_nil(latest) or DateTime.after?(attrs.last_observed_at, latest.last_observed_at) do
+        if is_nil(latest) or finding_state_can_recur?(attrs, latest) do
           %ComponentFinding{
             organization_id: scope.organization_id,
             resource_id: resource.id
@@ -883,6 +1082,12 @@ defmodule Renga.Catalog do
           |> update_component_finding(attrs)
         end
     end
+  end
+
+  defp finding_state_can_recur?(attrs, latest) do
+    DateTime.after?(attrs.last_observed_at, latest.last_observed_at) or
+      (attrs.kind in @module_component_finding_kinds and
+         DateTime.compare(attrs.last_observed_at, latest.last_observed_at) == :eq)
   end
 
   defp component_finding_query(organization_id, resource_id, kind, resolution_key) do
@@ -1137,7 +1342,7 @@ defmodule Renga.Catalog do
   end
 
   defp scoped_module_bay_owner!(organization_id, resource_id) do
-    resource = scoped_get!(Resource, organization_id, resource_id)
+    resource = scoped_lock!(Resource, organization_id, resource_id)
 
     cond do
       resource.kind in @physical_device_kinds ->

@@ -7,7 +7,7 @@ defmodule Renga.Catalog.ComponentFinding do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift missing_expected_component)
+  @kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift missing_expected_component module_bay_not_found ambiguous_module_bay module_type_not_found ambiguous_module_type incompatible_module_type)
   @statuses ~w(open resolved)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
