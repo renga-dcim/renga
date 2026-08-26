@@ -12,7 +12,7 @@ defmodule Renga.Inventory.ComponentEvidence do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(cpu memory disk)
+  @kinds ~w(cpu memory disk module)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "component_evidence" do

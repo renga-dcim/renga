@@ -42,6 +42,7 @@ defmodule Renga.Catalog do
   @physical_device_kinds ~w(server switch pdu storage)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
+  @canonical_component_kinds ~w(cpu memory disk)
   @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift)
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
@@ -655,7 +656,7 @@ defmodule Renga.Catalog do
     |> join(:left, [evidence], match in ActualComponentEvidenceMatch,
       on: match.component_evidence_id == evidence.id
     )
-    |> where([_evidence, match], is_nil(match.id))
+    |> where([evidence, match], evidence.kind in ^@canonical_component_kinds and is_nil(match.id))
     |> Repo.all()
     |> Enum.map(fn evidence ->
       %{
@@ -682,7 +683,7 @@ defmodule Renga.Catalog do
         expectations =
           scope
           |> list_expected_components(resource.id)
-          |> Enum.filter(&(&1.kind in ~w(cpu memory disk) and not &1.suppressed))
+          |> Enum.filter(&(&1.kind in @canonical_component_kinds and not &1.suppressed))
 
         actuals = list_actual_components(scope, resource.id)
         expected_candidates = Enum.map(expectations, &{&1, expected_candidates(&1, actuals)})

@@ -142,6 +142,16 @@ defmodule Renga.Inventory.ReconcilerTest do
         "size_bytes" => 1_000_000,
         "metadata" => %{"collector" => "portable"}
       },
+      %{
+        "kind" => "module",
+        "id" => "line-card-1",
+        "slot" => "SLOT1",
+        "model" => "LC-48",
+        "part_number" => "PN-LC",
+        "manufacturer" => "Example Networks",
+        "metadata" => %{"collector" => "bmc"}
+      },
+      %{"kind" => "module", "id" => "unpositioned-module"},
       %{"kind" => "disk", "name" => %{"malformed" => true}}
     ]
 
@@ -158,7 +168,8 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert {:ok, resource, true} =
              Inventory.reconcile_observation(context.scope, observation.id)
 
-    assert [cpu, disk, memory] = Inventory.list_component_evidence(context.scope, resource.id)
+    assert [cpu, disk, memory, module] =
+             Inventory.list_component_evidence(context.scope, resource.id)
 
     assert %{kind: "cpu", source_local_id: "cpu", model: "Example CPU"} = cpu
     assert cpu.attributes == %{"logical_count" => 8}
@@ -177,12 +188,25 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert %{kind: "memory", source_local_id: "memory"} = memory
     assert memory.attributes == %{"total_bytes" => 16_384}
 
+    assert %{
+             kind: "module",
+             source_local_id: "line-card-1",
+             slot: "SLOT1",
+             model: "LC-48",
+             part_number: "PN-LC"
+           } = module
+
+    assert module.attributes == %{"manufacturer" => "Example Networks"}
+    assert module.raw_metadata == %{"collector" => "bmc"}
+    assert Catalog.list_actual_components(context.scope, resource.id) |> length() == 3
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
     assert Enum.at(observation.payload["resources"], 0)["components"] == components
 
     assert {:ok, ^resource, false} =
              Inventory.reconcile_observation(context.scope, observation.id)
 
-    assert Repo.aggregate(ComponentEvidence, :count) == 3
+    assert Repo.aggregate(ComponentEvidence, :count) == 4
   end
 
   test "nullable components remain raw without blocking reconciliation" do

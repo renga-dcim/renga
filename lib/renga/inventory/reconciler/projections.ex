@@ -29,6 +29,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   @host_fields ~w(hostname fqdn vendor model asset_tag)
   @interface_fields ~w(name mac_address kind status mtu speed_mbps)
+  @canonical_component_kinds ~w(cpu memory disk)
 
   @doc false
   def reconcile(
@@ -108,7 +109,9 @@ defmodule Renga.Inventory.Reconciler.Projections do
             {:ok, evidence} -> evidence
           end
 
-      reconcile_actual_component(scope, evidence, allow_position_match?)
+      if evidence.kind in @canonical_component_kinds do
+        reconcile_actual_component(scope, evidence, allow_position_match?)
+      end
     end)
 
     Catalog.reconcile_component_findings(scope, observation, resource)
@@ -295,6 +298,11 @@ defmodule Renga.Inventory.Reconciler.Projections do
     not is_nil(component_source_local_id(component))
   end
 
+  defp supported_component?(%{"kind" => "module"} = component) do
+    not is_nil(component_source_local_id(component)) and
+      not is_nil(optional_component_string(component["slot"] || component["path"]))
+  end
+
   defp supported_component?(_component), do: false
 
   defp component_evidence_attrs(component) do
@@ -334,6 +342,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
   defp singleton_or_named_component_id(%{"kind" => "disk"} = component) do
     component["name"] || component["path"] || component["device"]
   end
+
+  defp singleton_or_named_component_id(%{"kind" => "module"}), do: nil
 
   defp optional_component_string(value) when is_binary(value) do
     case String.trim(value) do
