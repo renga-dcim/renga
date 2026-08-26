@@ -142,6 +142,16 @@ defmodule Renga.Inventory.ReconcilerTest do
         "size_bytes" => 1_000_000,
         "metadata" => %{"collector" => "portable"}
       },
+      %{
+        "kind" => "module",
+        "id" => "line-card-1",
+        "slot" => "SLOT1",
+        "model" => "LC-48",
+        "part_number" => "PN-LC",
+        "manufacturer" => "Example Networks",
+        "metadata" => %{"collector" => "bmc"}
+      },
+      %{"kind" => "module", "id" => "unpositioned-module"},
       %{"kind" => "disk", "name" => %{"malformed" => true}}
     ]
 
@@ -158,7 +168,8 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert {:ok, resource, true} =
              Inventory.reconcile_observation(context.scope, observation.id)
 
-    assert [cpu, disk, memory] = Inventory.list_component_evidence(context.scope, resource.id)
+    assert [cpu, disk, memory, module] =
+             Inventory.list_component_evidence(context.scope, resource.id)
 
     assert %{kind: "cpu", source_local_id: "cpu", model: "Example CPU"} = cpu
     assert cpu.attributes == %{"logical_count" => 8}
@@ -177,12 +188,148 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert %{kind: "memory", source_local_id: "memory"} = memory
     assert memory.attributes == %{"total_bytes" => 16_384}
 
+    assert %{
+             kind: "module",
+             source_local_id: "line-card-1",
+             slot: "SLOT1",
+             model: "LC-48",
+             part_number: "PN-LC"
+           } = module
+
+    assert module.attributes == %{"manufacturer" => "Example Networks"}
+    assert module.raw_metadata == %{"collector" => "bmc"}
+    assert Catalog.list_actual_components(context.scope, resource.id) |> length() == 3
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
     assert Enum.at(observation.payload["resources"], 0)["components"] == components
 
     assert {:ok, ^resource, false} =
              Inventory.reconcile_observation(context.scope, observation.id)
 
-    assert Repo.aggregate(ComponentEvidence, :count) == 3
+    assert Repo.aggregate(ComponentEvidence, :count) == 4
+  end
+
+  test "module evidence requires stable identity and a normalized bay address" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "MODULE-EVIDENCE", [
+        %{kind: "module_bay", name: "Slot 1", position: "SLOT1"}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    components = [
+      %{"kind" => "module", "id" => "card-id", "slot" => "SLOT1"},
+      %{
+        "kind" => "module",
+        "source_local_id" => "card-path",
+        "slot" => "  ",
+        "path" => "/chassis/slot-2"
+      },
+      %{
+        "kind" => "module",
+        "serial_number" => "SERIAL-3",
+        "slot" => %{"malformed" => true},
+        "path" => "/chassis/slot-3"
+      },
+      %{"kind" => "module", "slot" => "SLOT4"},
+      %{"kind" => "module", "name" => "Named only", "path" => "/chassis/slot-5"}
+    ]
+
+    reported =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        components
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+
+    evidence_by_identity =
+      context.scope
+      |> Inventory.list_component_evidence(resource.id)
+      |> Map.new(&{&1.source_local_id, &1})
+
+    assert Map.keys(evidence_by_identity) |> Enum.sort() == ~w(SERIAL-3 card-id card-path)
+    assert evidence_by_identity["card-id"].slot == "SLOT1"
+    assert evidence_by_identity["card-path"].slot == nil
+    assert evidence_by_identity["card-path"].path == "/chassis/slot-2"
+    assert evidence_by_identity["SERIAL-3"].path == "/chassis/slot-3"
+
+    for evidence <- Map.values(evidence_by_identity) do
+      assert evidence.organization_id == context.scope.organization_id
+      assert evidence.resource_id == resource.id
+      assert evidence.source_id == context.source.id
+      assert evidence.observation_id == reported.id
+      assert evidence.observed_at == reported.observed_at
+    end
+
+    assert Enum.at(reported.payload["resources"], 0)["components"] == components
+    assert Catalog.list_actual_components(context.scope, resource.id) == []
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "duplicate module identities remain only in the immutable observation" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    components = [
+      %{"kind" => "module", "id" => "duplicate-card", "slot" => "SLOT1"},
+      %{"kind" => "module", "id" => "duplicate-card", "slot" => "SLOT2"}
+    ]
+
+    conflicting =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        components
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, conflicting.id)
+
+    assert Inventory.list_component_evidence(context.scope, resource.id) == []
+    assert Enum.at(conflicting.payload["resources"], 0)["components"] == components
+  end
+
+  test "module evidence persistence requires a bay address" do
+    context = context()
+    observation = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert {:error, changeset} =
+             Inventory.create_component_evidence(
+               context.scope,
+               context.source.id,
+               observation.id,
+               resource.id,
+               %{kind: "module", source_local_id: "card-1"}
+             )
+
+    assert "slot or path is required for module evidence" in errors_on(changeset).slot
+
+    assert_raise Ecto.ConstraintError, ~r/component_evidence_module_position/, fn ->
+      Repo.insert!(%ComponentEvidence{
+        organization_id: context.scope.organization_id,
+        resource_id: resource.id,
+        source_id: context.source.id,
+        observation_id: observation.id,
+        kind: "module",
+        source_local_id: "card-2",
+        observed_at: observation.observed_at
+      })
+    end
   end
 
   test "nullable components remain raw without blocking reconciliation" do

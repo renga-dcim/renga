@@ -29,6 +29,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   @host_fields ~w(hostname fqdn vendor model asset_tag)
   @interface_fields ~w(name mac_address kind status mtu speed_mbps)
+  @canonical_component_kinds ~w(cpu memory disk)
 
   @doc false
   def reconcile(
@@ -78,6 +79,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.filter(&supported_component?/1)
       |> Enum.map(&component_evidence_attrs/1)
 
+    module_identity_frequencies =
+      component_attrs
+      |> Enum.filter(&(&1["kind"] == "module"))
+      |> Enum.frequencies_by(& &1["source_local_id"])
+
+    component_attrs =
+      Enum.reject(component_attrs, fn
+        %{"kind" => "module", "source_local_id" => source_local_id} ->
+          module_identity_frequencies[source_local_id] > 1
+
+        _component ->
+          false
+      end)
+
     position_frequencies =
       component_attrs
       |> Enum.map(&position_identity_key/1)
@@ -108,7 +123,9 @@ defmodule Renga.Inventory.Reconciler.Projections do
             {:ok, evidence} -> evidence
           end
 
-      reconcile_actual_component(scope, evidence, allow_position_match?)
+      if evidence.kind in @canonical_component_kinds do
+        reconcile_actual_component(scope, evidence, allow_position_match?)
+      end
     end)
 
     Catalog.reconcile_component_findings(scope, observation, resource)
@@ -295,6 +312,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
     not is_nil(component_source_local_id(component))
   end
 
+  defp supported_component?(%{"kind" => "module"} = component) do
+    not is_nil(module_source_local_id(component)) and not is_nil(module_position(component))
+  end
+
   defp supported_component?(_component), do: false
 
   defp component_evidence_attrs(component) do
@@ -315,6 +336,9 @@ defmodule Renga.Inventory.Reconciler.Projections do
     }
   end
 
+  defp component_source_local_id(%{"kind" => "module"} = component),
+    do: module_source_local_id(component)
+
   defp component_source_local_id(component) do
     [
       component["source_local_id"],
@@ -327,6 +351,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
       singleton_or_named_component_id(component)
     ]
     |> Enum.find_value(&optional_component_string/1)
+  end
+
+  defp module_source_local_id(component) do
+    [component["source_local_id"], component["id"], component["serial_number"]]
+    |> Enum.find_value(&optional_component_string/1)
+  end
+
+  defp module_position(component) do
+    optional_component_string(component["slot"]) || optional_component_string(component["path"])
   end
 
   defp singleton_or_named_component_id(%{"kind" => kind}) when kind in ~w(cpu memory), do: kind

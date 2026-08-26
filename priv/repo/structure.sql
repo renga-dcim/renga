@@ -348,7 +348,8 @@ CREATE TABLE public.component_evidence (
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT component_evidence_valid_kind CHECK (((kind)::text = ANY ((ARRAY['cpu'::character varying, 'memory'::character varying, 'disk'::character varying])::text[])))
+    CONSTRAINT component_evidence_module_position CHECK ((((kind)::text <> 'module'::text) OR (NULLIF(btrim((slot)::text), ''::text) IS NOT NULL) OR (NULLIF(btrim((path)::text), ''::text) IS NOT NULL))),
+    CONSTRAINT component_evidence_valid_kind CHECK (((kind)::text = ANY ((ARRAY['cpu'::character varying, 'memory'::character varying, 'disk'::character varying, 'module'::character varying])::text[])))
 );
 
 
@@ -4176,3 +4177,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826140000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826150000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826160000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826170000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826180000);
