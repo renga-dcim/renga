@@ -6,6 +6,7 @@ defmodule Renga.CatalogTest do
 
   alias Renga.Accounts
   alias Renga.Catalog
+  alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.ExpectedComponentException
@@ -390,6 +391,48 @@ defmodule Renga.CatalogTest do
     refute Catalog.get_hardware_assignment(scope, resource.id)
   end
 
+  test "clearing an assignment removes exception-backed expectations and resolves findings", %{
+    scope: scope
+  } do
+    resource = physical_resource_fixture(scope, "cleared-exception-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "X1", "server")
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "cpu", name: "CPU1"},
+        %{kind: "disk", name: "Disk1"}
+      ])
+
+    {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    cpu_template = Enum.find(revision.component_templates, &(&1.name == "CPU1"))
+
+    assert {:ok, _suppressed} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: cpu_template.id
+             })
+
+    assert {:ok, _added} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "add",
+               kind: "memory",
+               name: "DIMM1"
+             })
+
+    finding_ids = insert_assignment_findings(scope, resource, assignment)
+
+    assert {:ok, nil} = Catalog.clear_hardware_assignment(scope, resource.id)
+    refute Catalog.get_hardware_assignment(scope, resource.id)
+    assert Catalog.list_expected_components(scope, resource.id) == []
+    refute Repo.get_by(ExpectedComponentException, hardware_assignment_id: assignment.id)
+    assert Catalog.list_component_findings(scope, resource.id, "open") == []
+
+    assert Catalog.list_component_findings(scope, resource.id, "resolved")
+           |> Enum.map(& &1.id)
+           |> MapSet.new() == MapSet.new(finding_ids)
+  end
+
   test "reconciliation normalizes manufacturer/model facts and preserves provenance", %{
     scope: scope
   } do
@@ -721,6 +764,8 @@ defmodule Renga.CatalogTest do
         component_template_id: old_template.id
       })
 
+    finding_ids = insert_assignment_findings(scope, resource, first_assignment)
+
     assert {:ok, second_assignment} =
              Catalog.assign_hardware_type(scope, resource.id, second_type.id)
 
@@ -728,6 +773,11 @@ defmodule Renga.CatalogTest do
     refute Repo.get(HardwareAssignment, first_assignment.id)
     refute Repo.get_by(ExpectedComponentException, hardware_assignment_id: first_assignment.id)
     assert Enum.map(Catalog.list_expected_components(scope, resource.id), & &1.name) == ["new0"]
+    assert Catalog.list_component_findings(scope, resource.id, "open") == []
+
+    assert Catalog.list_component_findings(scope, resource.id, "resolved")
+           |> Enum.map(& &1.id)
+           |> MapSet.new() == MapSet.new(finding_ids)
   end
 
   test "exception updates support local additions and record the current confirmer", %{
@@ -949,5 +999,26 @@ defmodule Renga.CatalogTest do
       Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})
 
     resource
+  end
+
+  defp insert_assignment_findings(scope, resource, assignment) do
+    observed_at = ~U[2026-08-26 12:00:00.000000Z]
+
+    ~w(ambiguous_expected_component component_drift missing_expected_component unexpected_actual_component)
+    |> Enum.map(fn kind ->
+      %ComponentFinding{
+        organization_id: scope.organization_id,
+        resource_id: resource.id
+      }
+      |> ComponentFinding.changeset(%{
+        kind: kind,
+        resolution_key: "assignment:#{assignment.id}:#{kind}",
+        message: "Assignment-dependent test finding",
+        details: %{"hardware_assignment_id" => assignment.id},
+        last_observed_at: observed_at
+      })
+      |> Repo.insert!()
+      |> Map.fetch!(:id)
+    end)
   end
 end

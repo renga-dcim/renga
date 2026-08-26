@@ -65,6 +65,8 @@ defmodule RengaWeb.Router do
       live "/inventory", InventoryDashboardLive, :index
       live "/inventory/resources", ResourceLive.Index, :index
       live "/inventory/resources/:id", ResourceLive.Show, :show
+      live "/inventory/resources/:id/hardware", ResourceHardwareLive, :show
+      live "/inventory/component-findings", ComponentFindingLive, :index
       live "/inventory/operations", InventoryOperationsLive, :index
 
       live "/dcim/sites", DcimLive, :sites
@@ -73,6 +75,9 @@ defmodule RengaWeb.Router do
       live "/dcim/racks", DcimLive, :racks
       live "/dcim/racks/:id", DcimLive, :rack
       live "/dcim/placement-findings", DcimLive, :findings
+      live "/dcim/manufacturers", CatalogLive, :manufacturers
+      live "/dcim/hardware-types", CatalogLive, :hardware_types
+      live "/dcim/hardware-types/:id", CatalogLive, :hardware_type
     end
 
     post "/organizations/select", OrganizationSessionController, :create

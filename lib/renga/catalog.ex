@@ -48,6 +48,9 @@ defmodule Renga.Catalog do
                                         ~w(missing_expected_component)
   @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
                                       @module_component_finding_kinds
+  @assignment_component_finding_kinds ~w(ambiguous_expected_component component_drift missing_expected_component unexpected_actual_component)
+
+  def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -187,7 +190,7 @@ defmodule Renga.Catalog do
       asc: component.name,
       asc: component.id
     )
-    |> preload(evidence_matches: :component_evidence)
+    |> preload(evidence_matches: [component_evidence: :source])
     |> Repo.all()
   end
 
@@ -197,7 +200,7 @@ defmodule Renga.Catalog do
       [component],
       component.organization_id == ^organization_id and component.id == ^id
     )
-    |> preload(evidence_matches: :component_evidence)
+    |> preload(evidence_matches: [component_evidence: :source])
     |> Repo.one!()
   end
 
@@ -213,6 +216,20 @@ defmodule Renga.Catalog do
         finding.status == ^status
     )
     |> order_by([finding], asc: finding.kind, asc: finding.resolution_key)
+    |> Repo.all()
+  end
+
+  def list_organization_component_findings(
+        %Scope{organization_id: organization_id},
+        status \\ "open"
+      ) do
+    ComponentFinding
+    |> where(
+      [finding],
+      finding.organization_id == ^organization_id and finding.status == ^status
+    )
+    |> order_by([finding], desc: finding.last_observed_at, asc: finding.kind)
+    |> preload(:resource)
     |> Repo.all()
   end
 
@@ -565,14 +582,9 @@ defmodule Renga.Catalog do
   def clear_hardware_assignment(%Scope{} = scope, resource_id) do
     managed_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
+      assignment = locked_assignment(scope.organization_id, resource.id)
 
-      HardwareAssignment
-      |> where(
-        [assignment],
-        assignment.organization_id == ^scope.organization_id and
-          assignment.resource_id == ^resource.id
-      )
-      |> Repo.delete_all()
+      if assignment, do: delete_hardware_assignment(scope, assignment)
 
       nil
     end)
@@ -1346,7 +1358,7 @@ defmodule Renga.Catalog do
   defp lock_physical_resource!(scope, resource_id) do
     resource = scoped_lock!(Resource, scope.organization_id, resource_id)
 
-    if resource.kind in @physical_device_kinds,
+    if hardware_assignable_resource?(resource),
       do: resource,
       else: Repo.rollback(:unsupported_resource_kind)
   end
@@ -1354,7 +1366,7 @@ defmodule Renga.Catalog do
   defp scoped_physical_resource!(organization_id, resource_id) do
     resource = scoped_get!(Resource, organization_id, resource_id)
 
-    if resource.kind in @physical_device_kinds,
+    if hardware_assignable_resource?(resource),
       do: resource,
       else: Repo.rollback(:unsupported_resource_kind)
   end
@@ -1695,7 +1707,7 @@ defmodule Renga.Catalog do
           resource_id: resource.id
         }
 
-    assignment = replace_changed_assignment(assignment, revision)
+    assignment = replace_changed_assignment(scope, assignment, revision)
 
     assignment
     |> HardwareAssignment.changeset(%{
@@ -1708,14 +1720,15 @@ defmodule Renga.Catalog do
   end
 
   defp replace_changed_assignment(
+         _scope,
          %HardwareAssignment{catalog_type_revision_id: revision_id} = assignment,
          %TypeRevision{id: revision_id}
        ),
        do: assignment
 
-  defp replace_changed_assignment(%HardwareAssignment{id: id} = assignment, _revision)
+  defp replace_changed_assignment(scope, %HardwareAssignment{id: id} = assignment, _revision)
        when not is_nil(id) do
-    Repo.delete!(assignment)
+    delete_hardware_assignment(scope, assignment)
 
     %HardwareAssignment{
       organization_id: assignment.organization_id,
@@ -1723,7 +1736,32 @@ defmodule Renga.Catalog do
     }
   end
 
-  defp replace_changed_assignment(assignment, _revision), do: assignment
+  defp replace_changed_assignment(_scope, assignment, _revision), do: assignment
+
+  defp delete_hardware_assignment(scope, assignment) do
+    resolved_at = Renga.Time.utc_now_ms()
+
+    ComponentFinding
+    |> where(
+      [finding],
+      finding.organization_id == ^scope.organization_id and
+        finding.resource_id == ^assignment.resource_id and finding.status == "open" and
+        finding.kind in ^@assignment_component_finding_kinds
+    )
+    |> Repo.update_all(
+      set: [status: "resolved", resolved_at: resolved_at, updated_at: resolved_at]
+    )
+
+    ExpectedComponent
+    |> where(
+      [component],
+      component.organization_id == ^scope.organization_id and
+        component.hardware_assignment_id == ^assignment.id
+    )
+    |> Repo.delete_all()
+
+    Repo.delete!(assignment)
+  end
 
   defp locked_assignment(organization_id, resource_id) do
     HardwareAssignment

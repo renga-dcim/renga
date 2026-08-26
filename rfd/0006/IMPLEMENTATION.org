@@ -41,12 +41,21 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 - [X] Link interface templates and NIC/port evidence to the existing canonical
   interface model rather than creating a parallel network endpoint model.
 
-* Phase 5: Product surface and completion
+* Phase 5: Product browsing
 
-- [ ] Add authenticated organization-scoped catalog, device hardware, module,
-  inventory-item, and finding LiveViews in the existing
+- [X] Add authenticated organization-scoped read-only catalog browsing plus
+  device hardware, module, inventory-item, and finding LiveViews in the existing
   `live_session :require_authenticated_user` router block.
-- [ ] Add tenant, catalog revision, matching, module concurrency, evidence,
+- [X] Add tenant, catalog revision, matching, module concurrency, evidence,
   reconciliation, authorization, and LiveView tests.
-- [ ] Run `make check-rfds`, focused hardware tests, and `mix precommit` before
-  marking the proposal implemented.
+- [X] Run `make check-rfds`, focused hardware tests, and `mix precommit` for the
+  completed browsing and resource-management surfaces.
+
+* Phase 6: Catalog authoring and completion
+
+- [ ] Add owner/admin catalog authoring for manufacturers, hardware and module
+  types, immutable revisions, and typed component templates while preserving
+  read-only access for other organization roles.
+- [ ] Add tenant, authorization, validation, revision immutability, and LiveView
+  interaction tests, then run `make check-rfds`, focused hardware tests, and
+  `mix precommit` before marking the proposal implemented.
