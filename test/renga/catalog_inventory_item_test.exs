@@ -155,11 +155,89 @@ defmodule Renga.CatalogInventoryItemTest do
     assert %{owner_resource: [_]} = errors_on(foreign_owner_changeset)
   end
 
+  test "promotes an inventory item to a revision-pinned managed module", %{scope: scope} do
+    owner = resource_fixture(scope, "promotion-owner")
+    module_type = module_type_fixture(scope, "PROMOTED-1")
+    {:ok, revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+
+    {:ok, item} =
+      Catalog.create_inventory_item(scope, owner.id, %{
+        name: "Line card asset",
+        kind: "fru",
+        status: "installed",
+        serial_number: "SERIAL-1",
+        part_number: "PART-1",
+        asset_tag: "ASSET-1",
+        metadata: %{"source" => "operator"}
+      })
+
+    assert {:ok, module} = Catalog.promote_inventory_item_to_module(scope, item, module_type)
+    assert module.catalog_type_revision_id == revision.id
+    assert module.resource.name == item.name
+    assert module.resource.kind == "module"
+    assert module.resource.lifecycle_state == "active"
+    assert module.status == "active"
+    assert module.serial_number == "SERIAL-1"
+    assert module.part_number == "PART-1"
+    assert module.asset_tag == "ASSET-1"
+    assert module.metadata == %{"source" => "operator"}
+
+    stored_item = Catalog.get_inventory_item!(scope, item.id)
+    assert stored_item.promoted_module_id == module.id
+    assert stored_item.promoted_module.resource_id == module.resource_id
+
+    assert {:ok, bay} =
+             Catalog.create_module_bay(scope, module.resource_id, %{name: "Daughter slot"}, [
+               module_type.id
+             ])
+
+    assert bay.owner_kind == "module"
+
+    assert {:error, :inventory_item_already_promoted} =
+             Catalog.promote_inventory_item_to_module(scope, item, module_type)
+  end
+
+  test "promotion is atomic and enforces tenant relationships", %{scope: scope} do
+    owner = resource_fixture(scope, "bounded-promotion-owner")
+    module_type = module_type_fixture(scope, "BOUNDED-PROMOTION")
+    {:ok, _revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+    {:ok, item} = item_fixture(scope, owner, "Promotion collision")
+    existing_module_count = length(Catalog.list_modules(scope))
+
+    {:ok, _resource} =
+      Inventory.create_resource(scope, %{
+        kind: "module",
+        name: item.name,
+        lifecycle_state: "active"
+      })
+
+    assert {:error, promotion_changeset} =
+             Catalog.promote_inventory_item_to_module(scope, item, module_type)
+
+    assert %{organization_id: [_]} = errors_on(promotion_changeset)
+    assert length(Catalog.list_modules(scope)) == existing_module_count
+    refute Catalog.get_inventory_item!(scope, item.id).promoted_module_id
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    foreign_type = module_type_fixture(other_scope, "FOREIGN-PROMOTION")
+    {:ok, _revision} = Catalog.create_module_type_revision(other_scope, foreign_type, %{})
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Catalog.promote_inventory_item_to_module(scope, item, foreign_type)
+    end
+  end
+
   test "mutations require current management access and a physical owner", %{
     scope: scope,
     membership: membership
   } do
     owner = resource_fixture(scope, "managed-parts-device")
+    module_type = module_type_fixture(scope, "MANAGED-PROMOTION")
+    {:ok, _revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+    {:ok, item} = item_fixture(scope, owner, "Managed promotion")
 
     {:ok, manufacturer} =
       Catalog.create_manufacturer(
@@ -178,6 +256,9 @@ defmodule Renga.CatalogInventoryItemTest do
 
     assert {:error, :forbidden} =
              Catalog.create_inventory_item(scope, owner.id, %{name: "Forbidden", kind: "fru"})
+
+    assert {:error, :forbidden} =
+             Catalog.promote_inventory_item_to_module(scope, item, module_type)
   end
 
   defp resource_fixture(scope, name) do
@@ -193,5 +274,25 @@ defmodule Renga.CatalogInventoryItemTest do
       kind: "fru",
       parent_id: parent_id
     })
+  end
+
+  defp module_type_fixture(scope, model) do
+    slug = model |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
+
+    {:ok, manufacturer} =
+      Catalog.create_manufacturer(
+        scope,
+        %{name: "Vendor #{model}", lifecycle_state: "active"},
+        %{slug: "vendor-#{slug}"}
+      )
+
+    {:ok, module_type} =
+      Catalog.create_module_type(
+        scope,
+        %{name: "Module type #{model}", lifecycle_state: "active"},
+        %{manufacturer_id: manufacturer.id, model: model, module_class: "line_card"}
+      )
+
+    module_type
   end
 end

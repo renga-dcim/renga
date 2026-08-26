@@ -18,16 +18,16 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 * Phase 3: Modules and inventory-only parts
 
-- [ ] Add module bays, compatibility validation, separate desired and current
+- [X] Add module bays, compatibility validation, separate desired and current
   module assignment per bay, concurrency-safe cycle prevention, and
   transactional install/remove history.
 - [X] Add nested inventory-only parts with tenant and concurrency-safe cycle
   constraints.
-- [ ] Add an explicit path for promoting topology-bearing inventory parts.
+- [X] Add an explicit path for promoting topology-bearing inventory parts.
 
 * Phase 4: Component evidence and reconciliation
 
-- [ ] Promote high-value shape-open agent components into typed source evidence
+- [X] Promote high-value shape-open agent components into typed source evidence
   while preserving unknown kinds in immutable observations.
 - [ ] Reconcile expected and observed components into canonical projections and
   complete-snapshot-aware missing, unexpected, ambiguous, identity,

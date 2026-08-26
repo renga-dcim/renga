@@ -17,6 +17,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
@@ -43,7 +44,7 @@ defmodule Renga.Inventory do
   @intake_api_key_bytes 32
   @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -1275,6 +1276,42 @@ defmodule Renga.Inventory do
     }
     |> InterfaceEvidence.changeset(attrs)
     |> Repo.insert()
+  end
+
+  @doc "Stores one typed physical-component report from an immutable observation."
+  def create_component_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        source_id,
+        observation_id,
+        resource_id,
+        attrs
+      ) do
+    {source, observation} = source_observation!(scope, source_id, observation_id)
+    resource = get_resource!(scope, resource_id)
+    attrs = put_attr(attrs, :observed_at, observation.observed_at)
+
+    %ComponentEvidence{
+      organization_id: organization_id,
+      source_id: source.id,
+      observation_id: observation.id,
+      resource_id: resource.id
+    }
+    |> ComponentEvidence.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def list_component_evidence(%Scope{organization_id: organization_id}, resource_id) do
+    ComponentEvidence
+    |> where(
+      [evidence],
+      evidence.organization_id == ^organization_id and evidence.resource_id == ^resource_id
+    )
+    |> order_by([evidence],
+      asc: evidence.observed_at,
+      asc: evidence.kind,
+      asc: evidence.source_local_id
+    )
+    |> Repo.all()
   end
 
   @doc """
