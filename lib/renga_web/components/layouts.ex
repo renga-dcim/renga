@@ -212,6 +212,18 @@ defmodule RengaWeb.Layouts do
                   label="Physical inventory"
                   active?={@active_nav == :dcim}
                 />
+                <.sidebar_link
+                  navigate={~p"/dcim/hardware-types"}
+                  icon="hero-cpu-chip"
+                  label="Hardware catalog"
+                  active?={@active_nav == :catalog}
+                />
+                <.sidebar_link
+                  navigate={~p"/inventory/component-findings"}
+                  icon="hero-exclamation-triangle"
+                  label="Component findings"
+                  active?={@active_nav == :findings}
+                />
               </nav>
               <div class="mt-2 border-t border-base-content/10 pt-2">
                 <.link
@@ -341,6 +353,16 @@ defmodule RengaWeb.Layouts do
             navigate={~p"/inventory/operations"}
             icon="hero-circle-stack"
             label="Collectors"
+          />
+          <.command_link
+            navigate={~p"/dcim/hardware-types"}
+            icon="hero-cpu-chip"
+            label="Hardware catalog"
+          />
+          <.command_link
+            navigate={~p"/inventory/component-findings"}
+            icon="hero-exclamation-triangle"
+            label="Component findings"
           />
 
           <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">

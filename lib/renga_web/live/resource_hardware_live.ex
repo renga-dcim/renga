@@ -22,16 +22,44 @@ defmodule RengaWeb.ResourceHardwareLive do
         %{"hardware" => %{"hardware_type_id" => hardware_type_id}},
         socket
       ) do
-    if Enum.any?(socket.assigns.hardware_type_options, &(elem(&1, 1) == hardware_type_id)) do
-      case Catalog.assign_hardware_type(
+    cond do
+      not socket.assigns.hardware_assignable? ->
+        {:noreply, put_flash(socket, :error, assignment_error(:unsupported_resource_kind))}
+
+      Enum.any?(socket.assigns.hardware_type_options, &(elem(&1, 1) == hardware_type_id)) ->
+        case Catalog.assign_hardware_type(
+               socket.assigns.current_scope,
+               socket.assigns.resource.id,
+               hardware_type_id
+             ) do
+          {:ok, _assignment} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Hardware type assigned")
+             |> load_hardware()}
+
+          {:error, :forbidden} ->
+            {:noreply, put_flash(socket, :error, "You are not allowed to manage hardware")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, assignment_error(reason))}
+        end
+
+      true ->
+        {:noreply, put_flash(socket, :error, "Select a hardware type from this organization")}
+    end
+  end
+
+  def handle_event("clear_hardware_type", _params, socket) do
+    if socket.assigns.hardware_assignable? do
+      case Catalog.clear_hardware_assignment(
              socket.assigns.current_scope,
-             socket.assigns.resource.id,
-             hardware_type_id
+             socket.assigns.resource.id
            ) do
-        {:ok, _assignment} ->
+        {:ok, nil} ->
           {:noreply,
            socket
-           |> put_flash(:info, "Hardware type assigned")
+           |> put_flash(:info, "Hardware type assignment cleared")
            |> load_hardware()}
 
         {:error, :forbidden} ->
@@ -41,26 +69,7 @@ defmodule RengaWeb.ResourceHardwareLive do
           {:noreply, put_flash(socket, :error, assignment_error(reason))}
       end
     else
-      {:noreply, put_flash(socket, :error, "Select a hardware type from this organization")}
-    end
-  end
-
-  def handle_event("clear_hardware_type", _params, socket) do
-    case Catalog.clear_hardware_assignment(
-           socket.assigns.current_scope,
-           socket.assigns.resource.id
-         ) do
-      {:ok, nil} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Hardware type assignment cleared")
-         |> load_hardware()}
-
-      {:error, :forbidden} ->
-        {:noreply, put_flash(socket, :error, "You are not allowed to manage hardware")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, assignment_error(reason))}
+      {:noreply, put_flash(socket, :error, assignment_error(:unsupported_resource_kind))}
     end
   end
 
@@ -160,11 +169,18 @@ defmodule RengaWeb.ResourceHardwareLive do
             </button>
           </div>
           <div
-            :if={!@can_manage_hardware?}
+            :if={@hardware_assignable? and !@can_manage_hardware?}
             id="hardware-read-only"
             class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
           >
             Read-only access. An organization owner or admin manages catalog assignments.
+          </div>
+          <div
+            :if={!@hardware_assignable?}
+            id="hardware-unsupported"
+            class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
+          >
+            This resource kind does not support hardware catalog assignments.
           </div>
         </section>
 
@@ -189,8 +205,7 @@ defmodule RengaWeb.ResourceHardwareLive do
                 <div>
                   <p class="font-semibold">{component.label || component.name}</p>
                   <p class="mt-1 text-xs text-base-content/45">
-                    {component.position || "No position"} · {(component.required && "required") ||
-                      "optional"}
+                    {component.position || "No position"} · {expectation_status(component)}
                   </p>
                 </div>
                 <span class="rounded-full bg-base-100 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-base-content/55">
@@ -337,6 +352,7 @@ defmodule RengaWeb.ResourceHardwareLive do
     resource = socket.assigns.resource
     hardware_types = Catalog.list_hardware_types(scope)
     assignment = Catalog.get_hardware_assignment(scope, resource.id)
+    hardware_assignable? = Catalog.hardware_assignable_resource?(resource)
 
     module_bays =
       scope
@@ -354,7 +370,8 @@ defmodule RengaWeb.ResourceHardwareLive do
     |> assign(
       page_title: "#{resource.display_name || resource.name} hardware",
       assignment: assignment,
-      can_manage_hardware?: Inventory.organization_manager?(scope),
+      hardware_assignable?: hardware_assignable?,
+      can_manage_hardware?: hardware_assignable? and Inventory.organization_manager?(scope),
       hardware_type_options: hardware_type_options(hardware_types),
       hardware_form: hardware_form(assignment)
     )
@@ -392,7 +409,14 @@ defmodule RengaWeb.ResourceHardwareLive do
   defp assignment_error(:hardware_type_has_no_revision),
     do: "The selected hardware type has no finalized revision"
 
+  defp assignment_error(:unsupported_resource_kind),
+    do: "This resource kind does not support hardware assignments"
+
   defp assignment_error(_reason), do: "Hardware assignment could not be updated"
+
+  defp expectation_status(%{suppressed: true}), do: "suppressed for this asset"
+  defp expectation_status(%{required: true}), do: "required"
+  defp expectation_status(_component), do: "optional"
 
   attr :id, :string, required: true
   attr :title, :string, required: true

@@ -65,6 +65,61 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     assert has_element?(view, "#hardware-assignment-clear")
   end
 
+  test "labels asset-suppressed expectations instead of presenting them as required", %{
+    conn: conn,
+    resource: resource,
+    scope: scope
+  } do
+    manufacturer = manufacturer_fixture(scope, "suppressed-ui")
+
+    {:ok, hardware_type} =
+      Catalog.create_hardware_type(
+        scope,
+        %{name: "suppressed-ui-type", lifecycle_state: "active"},
+        %{manufacturer_id: manufacturer.id, model: "SUPPRESSED-UI", device_class: "server"}
+      )
+
+    {:ok, revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "cpu", name: "CPU 1", position: "CPU1"}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    template = List.first(revision.component_templates)
+
+    assert {:ok, _exception} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "suppress",
+               component_template_id: template.id
+             })
+
+    expected = Enum.find(Catalog.list_expected_components(scope, resource.id), & &1.suppressed)
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+
+    assert has_element?(view, "#expected-component-#{expected.id}", "suppressed for this asset")
+    refute has_element?(view, "#expected-component-#{expected.id}", "required")
+  end
+
+  test "unsupported resources expose no hardware assignment controls", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, vm} = Inventory.create_resource(scope, %{kind: "vm", name: "unsupported-vm"})
+    hardware_type = hardware_type_fixture(scope, "VM-INVALID", [])
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{vm.id}/hardware")
+
+    assert has_element?(view, "#hardware-unsupported")
+    refute has_element?(view, "#hardware-assignment-form")
+
+    render_hook(view, "assign_hardware_type", %{
+      "hardware" => %{"hardware_type_id" => hardware_type.id}
+    })
+
+    assert is_nil(Catalog.get_hardware_assignment(scope, vm.id))
+    assert has_element?(view, "#flash-error", "does not support hardware assignments")
+  end
+
   test "shows desired and current module state separately from inventory-only parts", %{
     conn: conn,
     resource: resource,

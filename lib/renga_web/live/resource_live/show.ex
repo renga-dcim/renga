@@ -3,6 +3,7 @@ defmodule RengaWeb.ResourceLive.Show do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Catalog
   alias Renga.Inventory
 
   @lifecycle_options [
@@ -22,6 +23,7 @@ defmodule RengaWeb.ResourceLive.Show do
        resource: resource,
        lifecycle_options: @lifecycle_options,
        lifecycle_form: lifecycle_form(resource),
+       hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
        can_manage_lifecycle?: Inventory.organization_manager?(socket.assigns.current_scope)
      )}
   end
@@ -86,6 +88,7 @@ defmodule RengaWeb.ResourceLive.Show do
           </div>
           <div class="flex max-w-sm flex-col items-start gap-1 sm:items-end">
             <.link
+              :if={@hardware_assignable?}
               id="resource-hardware-link"
               navigate={~p"/inventory/resources/#{@resource.id}/hardware"}
               class="mb-2 inline-flex h-10 items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"

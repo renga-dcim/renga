@@ -107,6 +107,13 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#app-mobile-header")
     assert has_element?(view, "#mobile-navigation-trigger")
     assert has_element?(view, "#command-palette")
+
+    for route <- ["/dcim/hardware-types", "/inventory/component-findings"] do
+      assert has_element?(view, "#primary-navigation a[href='#{route}']")
+      assert has_element?(view, "#app-mobile-navigation a[href='#{route}']")
+      assert has_element?(view, "#command-palette a[href='#{route}']")
+    end
+
     assert has_element?(view, "#resource-filters")
     assert has_element?(view, "#resources")
     assert has_element?(view, "#resources-#{resource.id}", "compute-01")
@@ -506,5 +513,16 @@ defmodule RengaWeb.ResourceLiveTest do
     assert_raise Ecto.NoResultsError, fn ->
       live(conn, ~p"/inventory/resources/#{foreign_resource.id}")
     end
+  end
+
+  test "unsupported resource detail does not link to hardware assignment", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, vm} = Inventory.create_resource(scope, %{kind: "vm", name: "detail-vm"})
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{vm.id}")
+
+    refute has_element?(view, "#resource-hardware-link")
   end
 end
