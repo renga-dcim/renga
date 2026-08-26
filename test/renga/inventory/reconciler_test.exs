@@ -2470,6 +2470,255 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "interface evidence links catalog templates to the canonical IPAM interface" do
+    context = context()
+
+    first =
+      observation(context, "1", %{"machine_id" => "machine-1"}, %{}, [
+        %{
+          "name" => "eno1",
+          "mac_address" => "aa:bb:cc:dd:ee:ff",
+          "addresses" => ["192.0.2.10/24"]
+        }
+      ])
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [canonical] = Inventory.list_interfaces(context.scope, resource.id)
+
+    initial_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: first.id,
+        interface_id: canonical.id
+      )
+
+    assert initial_evidence.catalog_match_status == "unmatched"
+    assert is_nil(initial_evidence.component_template_id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "INTERFACE-LINK", [
+        %{
+          kind: "interface",
+          name: "Management port",
+          position: "mgmt0",
+          attributes: %{"mac_address" => "AA-BB-CC-DD-EE-FF"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    [expected] =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.filter(&(&1.kind == "interface"))
+
+    reported =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{
+          "name" => "eno1",
+          "mac_address" => "aa:bb:cc:dd:ee:ff",
+          "addresses" => ["192.0.2.10/24"]
+        }
+      ])
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+
+    assert [%{id: canonical_id, name: "eno1"}] =
+             Inventory.list_interfaces(context.scope, resource.id)
+
+    assert canonical_id == canonical.id
+    assert [_address] = Inventory.list_addresses(context.scope, canonical.id)
+
+    evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: canonical.id
+      )
+
+    assert Map.get(evidence, :component_template_id) == expected.component_template_id
+    assert Map.get(evidence, :catalog_match_status) == "matched"
+    assert Map.get(evidence, :catalog_match_strategy) == "mac_address"
+    assert Catalog.list_actual_components(context.scope, resource.id) == []
+  end
+
+  test "ambiguous interface template matches never select the first candidate" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "AMBIGUOUS-INTERFACE-LINK", [
+        %{kind: "interface", name: "First port", position: "eth0"},
+        %{kind: "interface", name: "Second port", position: "ETH0"},
+        %{kind: "interface", name: "Third port", position: "eth1"},
+        %{
+          kind: "interface",
+          name: "Out of band port",
+          position: "oob0",
+          attributes: %{"mac_address" => "00:11:22:33:44:55"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    expected_eth1 =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.find(&(&1.position == "eth1"))
+
+    reported =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "eth0", "status" => "up"},
+        %{
+          "name" => "eth1",
+          "status" => "up",
+          "mac_address" => "66:77:88:99:aa:bb"
+        }
+      ])
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+    [eth0, eth1] = Inventory.list_interfaces(context.scope, resource.id)
+
+    ambiguous_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: eth0.id
+      )
+
+    assert ambiguous_evidence.catalog_match_status == "ambiguous"
+    assert is_nil(ambiguous_evidence.component_template_id)
+    assert is_nil(ambiguous_evidence.catalog_match_strategy)
+
+    matched_evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: eth1.id
+      )
+
+    assert matched_evidence.catalog_match_status == "matched"
+    assert matched_evidence.catalog_match_strategy == "name"
+    assert matched_evidence.component_template_id == expected_eth1.component_template_id
+  end
+
+  test "ambiguous MAC matches fall back to a unique compatible interface name" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    shared_mac = "00:11:22:33:44:55"
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "SHARED-INTERFACE-MAC", [
+        %{
+          kind: "interface",
+          name: "Primary port",
+          position: "eth0",
+          attributes: %{"mac_address" => shared_mac}
+        },
+        %{
+          kind: "interface",
+          name: "Secondary port",
+          position: "eth1",
+          attributes: %{"mac_address" => shared_mac}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    expected_eth1 =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.find(&(&1.position == "eth1"))
+
+    reported =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, [
+        %{"name" => "ETH1", "status" => "up", "mac_address" => shared_mac}
+      ])
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+
+    evidence =
+      Repo.get_by!(InterfaceEvidence,
+        organization_id: context.scope.organization_id,
+        observation_id: reported.id,
+        interface_id: interface.id
+      )
+
+    assert evidence.catalog_match_status == "matched"
+    assert evidence.catalog_match_strategy == "name"
+    assert evidence.component_template_id == expected_eth1.component_template_id
+  end
+
+  test "interface evidence creation derives catalog links instead of accepting caller selections" do
+    %{context: context, expected: expected, interface: interface, observation: reported} =
+      interface_catalog_constraint_context()
+
+    assert {:ok, evidence} =
+             Inventory.create_interface_evidence(
+               context.scope,
+               context.source.id,
+               reported.id,
+               interface.id,
+               %{
+                 "name" => "ETH0",
+                 "kind" => "ethernet",
+                 "status" => "up",
+                 "mac_address" => "00:11:22:33:44:55"
+               }
+             )
+
+    assert evidence.catalog_match_status == "matched"
+    assert evidence.catalog_match_strategy == "mac_address"
+    assert evidence.component_template_id == expected.component_template_id
+    refute function_exported?(Inventory, :create_interface_evidence, 6)
+  end
+
+  test "interface evidence rejects a template link without match metadata" do
+    %{context: context, expected: expected, interface: interface, observation: reported} =
+      interface_catalog_constraint_context()
+
+    assert_raise Ecto.ConstraintError, ~r/interface_evidence_catalog_match_shape/, fn ->
+      Repo.insert!(%InterfaceEvidence{
+        organization_id: context.scope.organization_id,
+        source_id: context.source.id,
+        observation_id: reported.id,
+        interface_id: interface.id,
+        component_template_id: expected.component_template_id,
+        name: "eth0",
+        kind: "ethernet",
+        status: "up",
+        observed_at: reported.observed_at
+      })
+    end
+  end
+
+  test "interface evidence rejects a matched template link without a strategy" do
+    %{context: context, expected: expected, interface: interface, observation: reported} =
+      interface_catalog_constraint_context()
+
+    assert_raise Ecto.ConstraintError, ~r/interface_evidence_catalog_match_shape/, fn ->
+      Repo.insert!(%InterfaceEvidence{
+        organization_id: context.scope.organization_id,
+        source_id: context.source.id,
+        observation_id: reported.id,
+        interface_id: interface.id,
+        component_template_id: expected.component_template_id,
+        catalog_match_status: "matched",
+        name: "eth0",
+        kind: "ethernet",
+        status: "up",
+        observed_at: reported.observed_at
+      })
+    end
+  end
+
   test "explicit host masks remain idempotent after Postgrex decodes them as nil" do
     context = context()
 
@@ -2978,6 +3227,37 @@ defmodule Renga.Inventory.ReconcilerTest do
       Catalog.create_hardware_type_revision(scope, hardware_type, %{}, templates)
 
     hardware_type
+  end
+
+  defp interface_catalog_constraint_context do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "constraint-machine"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "INTERFACE-CONSTRAINT", [
+        %{
+          kind: "interface",
+          name: "Primary port",
+          position: "eth0",
+          attributes: %{"mac_address" => "00:11:22:33:44:55"}
+        },
+        %{kind: "cpu", name: "Unrelated processor", position: "CPU1"}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    expected =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.find(&(&1.kind == "interface"))
+
+    {:ok, interface} = Inventory.create_interface(context.scope, resource.id, %{name: "eth0"})
+
+    reported = observation(context, "2", %{"machine_id" => "constraint-machine"})
+
+    %{context: context, expected: expected, interface: interface, observation: reported}
   end
 
   defp module_type_fixture(scope, vendor_name, model, part_number) do

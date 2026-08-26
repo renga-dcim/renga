@@ -626,6 +626,10 @@ CREATE TABLE public.interface_evidence (
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    component_template_id uuid,
+    catalog_match_status character varying(255),
+    catalog_match_strategy character varying(255),
+    CONSTRAINT interface_evidence_catalog_match_shape CHECK (((((catalog_match_status IS NULL) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL)) OR (((catalog_match_status)::text = 'matched'::text) AND (component_template_id IS NOT NULL) AND ((catalog_match_strategy)::text = ANY ((ARRAY['mac_address'::character varying, 'name'::character varying])::text[]))) OR (((catalog_match_status)::text = ANY ((ARRAY['unmatched'::character varying, 'ambiguous'::character varying])::text[])) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL))) IS TRUE)),
     CONSTRAINT interface_evidence_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
 );
 
@@ -2222,6 +2226,13 @@ CREATE UNIQUE INDEX intake_api_keys_token_hash_index ON public.intake_api_keys U
 
 
 --
+-- Name: interface_evidence_component_template_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_evidence_component_template_index ON public.interface_evidence USING btree (organization_id, component_template_id);
+
+
+--
 -- Name: interface_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3513,6 +3524,14 @@ ALTER TABLE ONLY public.intake_api_keys
 
 
 --
+-- Name: interface_evidence interface_evidence_component_template_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_evidence
+    ADD CONSTRAINT interface_evidence_component_template_fkey FOREIGN KEY (component_template_id, organization_id) REFERENCES public.component_templates(id, organization_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: interface_evidence interface_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4179,3 +4198,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826160000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826170000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826180000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826190000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260826200000);

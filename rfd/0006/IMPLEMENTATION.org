@@ -38,7 +38,7 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 - [X] Resolve observed module installations against catalog bays and module
   types and add compatibility findings.
 - [X] Add missing-component findings gated by explicit complete snapshots.
-- [ ] Link interface templates and NIC/port evidence to the existing canonical
+- [X] Link interface templates and NIC/port evidence to the existing canonical
   interface model rather than creating a parallel network endpoint model.
 
 * Phase 5: Product surface and completion
