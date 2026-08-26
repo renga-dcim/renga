@@ -112,6 +112,10 @@ that source's component evidence stale only when the source policy and accepted
 observation declare the component section a complete snapshot. Omission from a
 partial, paginated, failed, or capability-limited collection has no absence
 meaning and never deletes the canonical component or expected structure.
+The initial completeness gate requires
+`Source.metadata.component_snapshot_policy = "complete"`,
+`payload.section_completeness.components = true`, and an explicit component
+list; neither declaration is authoritative by itself.
 
 == Interface ownership
 
