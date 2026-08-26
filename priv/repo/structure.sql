@@ -369,6 +369,7 @@ CREATE TABLE public.component_findings (
     last_observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT component_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
     CONSTRAINT component_findings_valid_kind CHECK (((kind)::text = ANY ((ARRAY['ambiguous_component_identity'::character varying, 'ambiguous_expected_component'::character varying, 'unexpected_actual_component'::character varying, 'component_drift'::character varying, 'missing_expected_component'::character varying])::text[]))),
     CONSTRAINT component_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
 );

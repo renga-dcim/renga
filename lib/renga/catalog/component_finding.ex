@@ -48,6 +48,10 @@ defmodule Renga.Catalog.ComponentFinding do
     |> validate_inclusion(:status, @statuses)
     |> validate_map(:details)
     |> assoc_constraint(:resource, name: :component_findings_resource_fkey)
+    |> check_constraint(:resolved_at,
+      name: :component_findings_resolution_state,
+      message: "must agree with finding status"
+    )
     |> unique_constraint([:organization_id, :resource_id, :kind, :resolution_key],
       name: :component_findings_open_resolution_index
     )

@@ -217,12 +217,14 @@ defmodule Renga.Catalog do
         %Observation{} = observation,
         %Resource{} = resource
       ) do
+    resource = scoped_lock!(Resource, scope.organization_id, resource.id)
+
     findings =
       ambiguous_identity_findings(scope, observation, resource) ++
         expected_actual_findings(scope, observation, resource)
 
     finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
-    Enum.each(findings, &put_component_finding(scope, observation, resource, &1))
+    Enum.each(findings, &put_component_finding(scope, resource, &1))
     resolve_component_findings(scope, observation, resource, finding_keys)
     :ok
   end
@@ -755,7 +757,8 @@ defmodule Renga.Catalog do
     differences =
       expected.attributes
       |> Enum.reject(fn {field, expected_value} ->
-        same_component_value?(expected_value, actual_component_spec(actual, field))
+        actual_value = actual_component_spec(actual, field)
+        is_nil(actual_value) or same_component_value?(expected_value, actual_value)
       end)
       |> Map.new(fn {field, expected_value} ->
         {field,
@@ -771,13 +774,13 @@ defmodule Renga.Catalog do
       [
         %{
           kind: "component_drift",
-          resolution_key: "expected:#{expected.id}",
+          resolution_key: expected_finding_resolution_key(expected),
           message: "Observed component differs from its catalog expectation",
-          details: %{
-            "expected_component_id" => expected.id,
-            "actual_component_id" => actual.id,
-            "differences" => differences
-          },
+          details:
+            Map.merge(expected_finding_details(expected), %{
+              "actual_component_id" => actual.id,
+              "differences" => differences
+            }),
           last_observed_at: observed_at
         }
       ]
@@ -799,13 +802,37 @@ defmodule Renga.Catalog do
   defp ambiguous_expected_finding(expected, candidates, observed_at) do
     %{
       kind: "ambiguous_expected_component",
-      resolution_key: "expected:#{expected.id}",
+      resolution_key: expected_finding_resolution_key(expected),
       message: "Catalog expectation matches more than one observed component",
-      details: %{
-        "expected_component_id" => expected.id,
-        "actual_component_ids" => Enum.map(candidates, & &1.id)
-      },
+      details:
+        Map.put(
+          expected_finding_details(expected),
+          "actual_component_ids",
+          Enum.map(candidates, & &1.id)
+        ),
       last_observed_at: observed_at
+    }
+  end
+
+  defp expected_finding_resolution_key(%{
+         hardware_assignment_id: assignment_id,
+         component_template_id: template_id
+       })
+       when not is_nil(template_id),
+       do: "assignment:#{assignment_id}:template:#{template_id}"
+
+  defp expected_finding_resolution_key(%{
+         hardware_assignment_id: assignment_id,
+         exception_id: exception_id
+       }),
+       do: "assignment:#{assignment_id}:exception:#{exception_id}"
+
+  defp expected_finding_details(expected) do
+    %{
+      "expected_component_id" => expected.id,
+      "hardware_assignment_id" => expected.hardware_assignment_id,
+      "component_template_id" => expected.component_template_id,
+      "exception_id" => expected.exception_id
     }
   end
 
@@ -828,27 +855,48 @@ defmodule Renga.Catalog do
 
   defp same_component_value?(left, right), do: left == right
 
-  defp put_component_finding(scope, observation, resource, attrs) do
-    finding =
-      ComponentFinding
-      |> where(
-        [finding],
-        finding.organization_id == ^scope.organization_id and
-          finding.resource_id == ^resource.id and finding.kind == ^attrs.kind and
-          finding.resolution_key == ^attrs.resolution_key and finding.status == "open"
+  defp put_component_finding(scope, resource, attrs) do
+    query =
+      component_finding_query(
+        scope.organization_id,
+        resource.id,
+        attrs.kind,
+        attrs.resolution_key
       )
-      |> Repo.one() ||
-        %ComponentFinding{
-          organization_id: scope.organization_id,
-          resource_id: resource.id
-        }
 
-    if is_nil(finding.id) or
-         not DateTime.before?(observation.observed_at, finding.last_observed_at) do
-      finding
-      |> ComponentFinding.changeset(Map.merge(attrs, %{status: "open", resolved_at: nil}))
-      |> upsert()
+    case Repo.get_by(query, status: "open") do
+      %ComponentFinding{} = finding ->
+        if not DateTime.before?(attrs.last_observed_at, finding.last_observed_at) do
+          update_component_finding(finding, attrs)
+        end
+
+      nil ->
+        latest =
+          query |> order_by([finding], desc: finding.last_observed_at) |> first() |> Repo.one()
+
+        if is_nil(latest) or DateTime.after?(attrs.last_observed_at, latest.last_observed_at) do
+          %ComponentFinding{
+            organization_id: scope.organization_id,
+            resource_id: resource.id
+          }
+          |> update_component_finding(attrs)
+        end
     end
+  end
+
+  defp component_finding_query(organization_id, resource_id, kind, resolution_key) do
+    where(
+      ComponentFinding,
+      [finding],
+      finding.organization_id == ^organization_id and finding.resource_id == ^resource_id and
+        finding.kind == ^kind and finding.resolution_key == ^resolution_key
+    )
+  end
+
+  defp update_component_finding(finding, attrs) do
+    finding
+    |> ComponentFinding.changeset(Map.merge(attrs, %{status: "open", resolved_at: nil}))
+    |> upsert()
   end
 
   defp resolve_component_findings(scope, observation, resource, current_keys) do

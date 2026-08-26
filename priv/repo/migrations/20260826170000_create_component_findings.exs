@@ -46,5 +46,12 @@ defmodule Renga.Repo.Migrations.CreateComponentFindings do
     create constraint(:component_findings, :component_findings_valid_status,
              check: "status IN ('open', 'resolved')"
            )
+
+    create constraint(:component_findings, :component_findings_resolution_state,
+             check: """
+             (status = 'open' AND resolved_at IS NULL) OR
+               (status = 'resolved' AND resolved_at IS NOT NULL)
+             """
+           )
   end
 end

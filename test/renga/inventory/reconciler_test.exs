@@ -4,6 +4,7 @@ defmodule Renga.Inventory.ReconcilerTest do
   alias Renga.Accounts
   alias Renga.Catalog
   alias Renga.Catalog.ActualComponentEvidenceMatch
+  alias Renga.Catalog.ComponentFinding
   alias Renga.Inventory
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.ComponentEvidence
@@ -631,6 +632,300 @@ defmodule Renga.Inventory.ReconcilerTest do
              Catalog.list_component_findings(context.scope, resource.id, "resolved")
 
     assert resolved_at == corrected.observed_at
+  end
+
+  test "omitted observed specifications do not create component drift" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "PARTIAL-COMPONENT-SPECS", [
+        %{
+          kind: "cpu",
+          name: "CPU1",
+          position: "CPU1",
+          attributes: %{"model" => "Expected CPU"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    partial =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1"}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "component findings retain stable identity when expectations rematerialize" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Observed CPU"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "STABLE-FINDING-IDENTITY", [
+        %{
+          kind: "cpu",
+          name: "CPU1",
+          position: "CPU1",
+          attributes: %{"model" => "Expected CPU"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    drift =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Observed CPU"}
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, drift.id)
+    assert [original] = Catalog.list_component_findings(context.scope, resource.id)
+
+    [old_expected] = Catalog.list_expected_components(context.scope, resource.id)
+
+    assert {:ok, _exception} =
+             Catalog.put_expected_component_exception(context.scope, resource.id, %{
+               action: "add",
+               kind: "disk",
+               name: "Local disk",
+               changes: %{"position" => "BAY2"}
+             })
+
+    new_expected =
+      context.scope
+      |> Catalog.list_expected_components(resource.id)
+      |> Enum.find(&(&1.kind == "cpu"))
+
+    refute new_expected.id == old_expected.id
+
+    repeated =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Observed CPU"}
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, repeated.id)
+    assert [current] = Catalog.list_component_findings(context.scope, resource.id)
+    assert current.id == original.id
+    assert current.resolution_key == original.resolution_key
+    assert current.details["expected_component_id"] == new_expected.id
+    assert Catalog.list_component_findings(context.scope, resource.id, "resolved") == []
+  end
+
+  test "older observations cannot change finding lifecycle and later drift can recur" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Expected CPU"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "ORDERED-FINDINGS", [
+        %{
+          kind: "cpu",
+          name: "CPU1",
+          position: "CPU1",
+          attributes: %{"model" => "Expected CPU"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    newer_drift =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Drifted CPU"}]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, newer_drift.id)
+
+    assert [opened] = Catalog.list_component_findings(context.scope, resource.id)
+    assert opened.last_observed_at == newer_drift.observed_at
+
+    assert {:error, invalid_state} =
+             opened
+             |> ComponentFinding.changeset(%{status: "resolved"})
+             |> Repo.update()
+
+    assert "must agree with finding status" in errors_on(invalid_state).resolved_at
+
+    older_correction =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Expected CPU"}]
+      )
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, older_correction.id)
+
+    assert [still_open] = Catalog.list_component_findings(context.scope, resource.id)
+    assert still_open.id == opened.id
+    assert still_open.last_observed_at == newer_drift.observed_at
+
+    correction =
+      observation(
+        context,
+        "4",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Expected CPU"}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, correction.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert [resolved] = Catalog.list_component_findings(context.scope, resource.id, "resolved")
+    assert resolved.id == opened.id
+    assert resolved.resolved_at == correction.observed_at
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, older_correction.id)
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    recurrence =
+      observation(
+        context,
+        "5",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Drifted again"}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, recurrence.id)
+    assert [reopened] = Catalog.list_component_findings(context.scope, resource.id)
+    refute reopened.id == resolved.id
+    assert reopened.resolution_key == resolved.resolution_key
+    assert reopened.last_observed_at == recurrence.observed_at
+  end
+
+  test "non-authoritative component sections do not infer missing findings" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "machine-1"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "NON-AUTHORITATIVE-COMPONENTS", [
+        %{kind: "cpu", name: "CPU1", position: "CPU1", required: true}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    for {id, components} <- [{"2", :absent}, {"3", nil}, {"4", []}] do
+      partial = observation(context, id, %{"machine_id" => "machine-1"}, %{}, [], components)
+      assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+
+      refute Enum.any?(
+               Catalog.list_component_findings(context.scope, resource.id),
+               &(&1.kind == "missing_expected_component")
+             )
+    end
+  end
+
+  test "component finding reads are scoped to the organization" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "disk", "id" => "disk-1", "slot" => "BAY9"}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type = hardware_type_fixture(context.scope, "TENANT-FINDINGS", [])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    repeated =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [%{"kind" => "disk", "id" => "disk-1", "slot" => "BAY9"}]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, repeated.id)
+
+    assert [%{kind: "unexpected_actual_component"}] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    foreign_context = context()
+    assert Catalog.list_component_findings(foreign_context.scope, resource.id) == []
   end
 
   test "strong identity keeps a resource stable across hostname changes" do
