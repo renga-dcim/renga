@@ -118,8 +118,8 @@ defmodule Renga.Repo.Migrations.CreateModuleInstallations do
       timestamps(type: :"timestamp(3)", updated_at: false)
     end
 
-    create index(:module_installation_events, [:organization_id, :module_bay_id, :occurred_at],
-             name: :module_installation_events_bay_time_index
+    create index(:module_installation_events, [:organization_id, :module_bay_id, :sequence],
+             name: :module_installation_events_bay_sequence_index
            )
   end
 

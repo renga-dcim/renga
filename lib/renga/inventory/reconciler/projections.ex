@@ -64,8 +64,13 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp reconcile_component_evidence(scope, source, observation, resource, payload) do
-    payload
-    |> Map.get("components", [])
+    components =
+      case Map.get(payload, "components") do
+        components when is_list(components) -> components
+        _absent_or_invalid -> []
+      end
+
+    components
     |> Enum.filter(&supported_component?/1)
     |> Enum.each(fn component ->
       attrs = component_evidence_attrs(component)
@@ -120,6 +125,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
       component["source_local_id"],
       component["id"],
       component["serial_number"],
+      component["slot"],
+      component["path"],
+      component["name"],
+      component["device"],
       singleton_or_named_component_id(component)
     ]
     |> Enum.find_value(&optional_component_string/1)

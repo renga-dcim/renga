@@ -157,7 +157,7 @@ defmodule Renga.Catalog do
       [event],
       event.organization_id == ^organization_id and event.module_bay_id == ^module_bay_id
     )
-    |> order_by([event], asc: event.occurred_at, asc: event.sequence)
+    |> order_by([event], asc: event.sequence)
     |> Repo.all()
   end
 

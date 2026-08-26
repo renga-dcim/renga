@@ -275,6 +275,35 @@ defmodule Renga.CatalogModuleTest do
            ]
   end
 
+  test "installation history retains transition order when event times are backdated", %{
+    scope: scope
+  } do
+    module_type = module_type_fixture(scope, "BACKDATED-HISTORY")
+    {:ok, _revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+    owner = resource_fixture(scope, "backdated-history-owner")
+    {:ok, bay} = Catalog.create_module_bay(scope, owner.id, %{name: "Slot 1"}, [module_type.id])
+    first = module_fixture(scope, module_type, "Original module")
+    second = module_fixture(scope, module_type, "Replacement module")
+
+    assert {:ok, _installation} =
+             Catalog.install_module(scope, bay.id, first.id, %{
+               occurred_at: ~U[2026-08-25 14:00:00.000Z]
+             })
+
+    assert {:ok, _replacement} =
+             Catalog.install_module(scope, bay.id, second.id, %{
+               occurred_at: ~U[2026-08-25 13:00:00.000Z]
+             })
+
+    assert Enum.map(Catalog.list_module_installation_events(scope, bay.id), fn event ->
+             {event.action, event.module_id}
+           end) == [
+             {"installed", first.id},
+             {"removed", first.id},
+             {"installed", second.id}
+           ]
+  end
+
   test "disabled, incompatible, and occupied bays reject invalid changes", %{scope: scope} do
     compatible_type = module_type_fixture(scope, "COMPATIBLE")
     incompatible_type = module_type_fixture(scope, "INCOMPATIBLE")

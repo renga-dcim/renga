@@ -177,6 +177,62 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert Repo.aggregate(ComponentEvidence, :count) == 3
   end
 
+  test "nullable components remain raw without blocking reconciliation" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        nil
+      )
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert Inventory.list_component_evidence(context.scope, resource.id) == []
+    assert Enum.at(observation.payload["resources"], 0)["components"] == nil
+  end
+
+  test "positional CPU and memory components retain distinct source identities" do
+    context = context()
+
+    observation =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "slot" => "CPU1", "model" => "Example CPU"},
+          %{"kind" => "cpu", "slot" => "CPU2", "model" => "Example CPU"},
+          %{"kind" => "memory", "slot" => "DIMM1", "total_bytes" => 8_192},
+          %{"kind" => "memory", "slot" => "DIMM2", "total_bytes" => 8_192}
+        ]
+      )
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert context.scope
+           |> Inventory.list_component_evidence(resource.id)
+           |> Enum.map(&{&1.kind, &1.source_local_id, &1.slot}) == [
+             {"cpu", "CPU1", "CPU1"},
+             {"cpu", "CPU2", "CPU2"},
+             {"memory", "DIMM1", "DIMM1"},
+             {"memory", "DIMM2", "DIMM2"}
+           ]
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, observation.id)
+
+    assert Repo.aggregate(ComponentEvidence, :count) == 4
+  end
+
   test "strong identity keeps a resource stable across hostname changes" do
     context = context()
 
