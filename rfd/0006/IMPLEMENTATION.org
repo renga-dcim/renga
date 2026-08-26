@@ -29,9 +29,12 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 - [X] Promote high-value shape-open agent components into typed source evidence
   while preserving unknown kinds in immutable observations.
-- [ ] Reconcile expected and observed components into canonical projections and
-  complete-snapshot-aware missing, unexpected, ambiguous, identity,
-  compatibility, and drift findings.
+- [X] Reconcile CPU, memory, and disk evidence into source-neutral canonical
+  projections with deterministic identity matching.
+- [X] Add unexpected, ambiguous identity, and specification-drift findings for
+  expected and observed CPU, memory, and disk components.
+- [ ] Add compatibility findings for observed module installations.
+- [ ] Add missing-component findings gated by explicit complete snapshots.
 - [ ] Link interface templates and NIC/port evidence to the existing canonical
   interface model rather than creating a parallel network endpoint model.
 

@@ -14,7 +14,9 @@ defmodule Renga.Catalog do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Catalog.ActualComponent
+  alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
   alias Renga.Catalog.ExpectedComponent
@@ -32,12 +34,15 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.TypeRevision
   alias Renga.Inventory
   alias Renga.Inventory.Host
+  alias Renga.Inventory.ComponentEvidence
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
+  @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift)
 
   def list_manufacturers(%Scope{organization_id: organization_id}) do
     Manufacturer
@@ -189,6 +194,37 @@ defmodule Renga.Catalog do
     )
     |> preload(evidence_matches: :component_evidence)
     |> Repo.one!()
+  end
+
+  def list_component_findings(
+        %Scope{organization_id: organization_id},
+        resource_id,
+        status \\ "open"
+      ) do
+    ComponentFinding
+    |> where(
+      [finding],
+      finding.organization_id == ^organization_id and finding.resource_id == ^resource_id and
+        finding.status == ^status
+    )
+    |> order_by([finding], asc: finding.kind, asc: finding.resolution_key)
+    |> Repo.all()
+  end
+
+  @doc false
+  def reconcile_component_findings(
+        %Scope{} = scope,
+        %Observation{} = observation,
+        %Resource{} = resource
+      ) do
+    findings =
+      ambiguous_identity_findings(scope, observation, resource) ++
+        expected_actual_findings(scope, observation, resource)
+
+    finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
+    Enum.each(findings, &put_component_finding(scope, observation, resource, &1))
+    resolve_component_findings(scope, observation, resource, finding_keys)
+    :ok
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
@@ -606,6 +642,239 @@ defmodule Renga.Catalog do
 
   def change_module_type(%ModuleType{} = module_type, attrs \\ %{}),
     do: ModuleType.changeset(module_type, attrs)
+
+  defp ambiguous_identity_findings(scope, observation, resource) do
+    ComponentEvidence
+    |> where(
+      [evidence],
+      evidence.organization_id == ^scope.organization_id and
+        evidence.resource_id == ^resource.id
+    )
+    |> join(:left, [evidence], match in ActualComponentEvidenceMatch,
+      on: match.component_evidence_id == evidence.id
+    )
+    |> where([_evidence, match], is_nil(match.id))
+    |> Repo.all()
+    |> Enum.map(fn evidence ->
+      %{
+        kind: "ambiguous_component_identity",
+        resolution_key: "evidence:#{evidence.id}",
+        message: "Component evidence matches more than one canonical component",
+        details: %{
+          "component_evidence_id" => evidence.id,
+          "component_kind" => evidence.kind,
+          "source_id" => evidence.source_id,
+          "source_local_id" => evidence.source_local_id
+        },
+        last_observed_at: max_datetime(evidence.observed_at, observation.observed_at)
+      }
+    end)
+  end
+
+  defp expected_actual_findings(scope, observation, resource) do
+    case get_hardware_assignment(scope, resource.id) do
+      nil ->
+        []
+
+      _assignment ->
+        expectations =
+          scope
+          |> list_expected_components(resource.id)
+          |> Enum.filter(&(&1.kind in ~w(cpu memory disk) and not &1.suppressed))
+
+        actuals = list_actual_components(scope, resource.id)
+        expected_candidates = Enum.map(expectations, &{&1, expected_candidates(&1, actuals)})
+
+        candidate_frequencies =
+          expected_candidates
+          |> Enum.flat_map(fn {_expected, candidates} -> Enum.map(candidates, & &1.id) end)
+          |> Enum.frequencies()
+
+        considered_ids =
+          expected_candidates
+          |> Enum.flat_map(fn {_expected, candidates} -> Enum.map(candidates, & &1.id) end)
+          |> MapSet.new()
+
+        expectation_findings =
+          expected_candidate_findings(
+            expected_candidates,
+            candidate_frequencies,
+            observation.observed_at
+          )
+
+        unexpected_findings =
+          actuals
+          |> Enum.reject(&MapSet.member?(considered_ids, &1.id))
+          |> Enum.map(&unexpected_actual_finding(&1, observation.observed_at))
+
+        expectation_findings ++ unexpected_findings
+    end
+  end
+
+  defp expected_candidate_findings(expected_candidates, candidate_frequencies, observed_at) do
+    Enum.flat_map(expected_candidates, fn
+      {expected, [actual]} when is_map_key(candidate_frequencies, actual.id) ->
+        if candidate_frequencies[actual.id] == 1 do
+          drift_findings(expected, actual, observed_at)
+        else
+          [ambiguous_expected_finding(expected, [actual], observed_at)]
+        end
+
+      {_expected, []} ->
+        []
+
+      {expected, candidates} ->
+        [ambiguous_expected_finding(expected, candidates, observed_at)]
+    end)
+  end
+
+  defp expected_candidates(expected, actuals) do
+    Enum.filter(actuals, fn actual ->
+      actual.kind == expected.kind and expected_identity_matches?(expected, actual)
+    end)
+  end
+
+  defp expected_identity_matches?(expected, actual) do
+    expected_part_number = expected.attributes["part_number"]
+    position = actual.slot || actual.path
+
+    checks =
+      [
+        expected.position && same_component_value?(expected.position, position),
+        expected_part_number && same_component_value?(expected_part_number, actual.part_number)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case checks do
+      [] -> same_component_value?(expected.name, actual.name)
+      checks -> Enum.all?(checks)
+    end
+  end
+
+  defp drift_findings(expected, actual, observed_at) do
+    differences =
+      expected.attributes
+      |> Enum.reject(fn {field, expected_value} ->
+        same_component_value?(expected_value, actual_component_spec(actual, field))
+      end)
+      |> Map.new(fn {field, expected_value} ->
+        {field,
+         %{
+           "expected" => expected_value,
+           "actual" => actual_component_spec(actual, field)
+         }}
+      end)
+
+    if differences == %{} do
+      []
+    else
+      [
+        %{
+          kind: "component_drift",
+          resolution_key: "expected:#{expected.id}",
+          message: "Observed component differs from its catalog expectation",
+          details: %{
+            "expected_component_id" => expected.id,
+            "actual_component_id" => actual.id,
+            "differences" => differences
+          },
+          last_observed_at: observed_at
+        }
+      ]
+    end
+  end
+
+  defp actual_component_spec(actual, field) do
+    case field do
+      "name" -> actual.name
+      "model" -> actual.model
+      "slot" -> actual.slot
+      "path" -> actual.path
+      "serial_number" -> actual.serial_number
+      "part_number" -> actual.part_number
+      field -> actual.attributes[field]
+    end
+  end
+
+  defp ambiguous_expected_finding(expected, candidates, observed_at) do
+    %{
+      kind: "ambiguous_expected_component",
+      resolution_key: "expected:#{expected.id}",
+      message: "Catalog expectation matches more than one observed component",
+      details: %{
+        "expected_component_id" => expected.id,
+        "actual_component_ids" => Enum.map(candidates, & &1.id)
+      },
+      last_observed_at: observed_at
+    }
+  end
+
+  defp unexpected_actual_finding(actual, observed_at) do
+    %{
+      kind: "unexpected_actual_component",
+      resolution_key: "actual:#{actual.id}",
+      message: "Observed component has no catalog expectation",
+      details: %{
+        "actual_component_id" => actual.id,
+        "component_kind" => actual.kind
+      },
+      last_observed_at: observed_at
+    }
+  end
+
+  defp same_component_value?(left, right) when is_binary(left) and is_binary(right) do
+    String.downcase(String.trim(left)) == String.downcase(String.trim(right))
+  end
+
+  defp same_component_value?(left, right), do: left == right
+
+  defp put_component_finding(scope, observation, resource, attrs) do
+    finding =
+      ComponentFinding
+      |> where(
+        [finding],
+        finding.organization_id == ^scope.organization_id and
+          finding.resource_id == ^resource.id and finding.kind == ^attrs.kind and
+          finding.resolution_key == ^attrs.resolution_key and finding.status == "open"
+      )
+      |> Repo.one() ||
+        %ComponentFinding{
+          organization_id: scope.organization_id,
+          resource_id: resource.id
+        }
+
+    if is_nil(finding.id) or
+         not DateTime.before?(observation.observed_at, finding.last_observed_at) do
+      finding
+      |> ComponentFinding.changeset(Map.merge(attrs, %{status: "open", resolved_at: nil}))
+      |> upsert()
+    end
+  end
+
+  defp resolve_component_findings(scope, observation, resource, current_keys) do
+    ComponentFinding
+    |> where(
+      [finding],
+      finding.organization_id == ^scope.organization_id and finding.resource_id == ^resource.id and
+        finding.status == "open" and finding.kind in ^@presence_component_finding_kinds and
+        finding.last_observed_at <= ^observation.observed_at
+    )
+    |> Repo.all()
+    |> Enum.reject(&MapSet.member?(current_keys, {&1.kind, &1.resolution_key}))
+    |> Enum.each(fn finding ->
+      finding
+      |> ComponentFinding.changeset(%{
+        status: "resolved",
+        resolved_at: observation.observed_at,
+        last_observed_at: observation.observed_at
+      })
+      |> update_or_rollback()
+    end)
+  end
+
+  defp max_datetime(left, right) do
+    if DateTime.after?(left, right), do: left, else: right
+  end
 
   defp create_type_revision(scope, schema, type_id, attrs, templates)
        when is_list(templates) do

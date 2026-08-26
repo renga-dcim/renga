@@ -19,12 +19,17 @@ defmodule Renga.Inventory.ReconcilerTest do
         slug: "reconciliation-#{suffix}"
       })
 
-    scope = Accounts.scope_for(organization)
-
     {:ok, user} =
       Accounts.register_user(%{email: "reconciler-actor-#{suffix}@example.com"})
 
-    scope = %{scope | user: user}
+    {:ok, _membership} =
+      Accounts.create_organization_membership(organization, %{
+        user_id: user.id,
+        role: "admin",
+        status: "active"
+      })
+
+    scope = Accounts.scope_for_user(user, organization.id)
 
     {:ok, source} =
       Inventory.create_source(scope, %{kind: "host_agent", name: "host-agent-#{suffix}"})
@@ -463,6 +468,14 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
     assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
 
+    hardware_type =
+      hardware_type_fixture(context.scope, "AMBIGUOUS-COMPONENTS", [
+        %{kind: "disk", name: "Expected disk", position: "BAY1"}
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
     {:ok, second_source} =
       Inventory.create_source(context.scope, %{kind: "bmc", name: "ambiguous-component-bmc"})
 
@@ -497,6 +510,11 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
 
     assert length(Catalog.list_actual_components(context.scope, resource.id)) == 2
+
+    assert context.scope
+           |> Catalog.list_component_findings(resource.id)
+           |> Enum.map(& &1.kind)
+           |> Enum.sort() == ~w(ambiguous_component_identity ambiguous_expected_component)
   end
 
   test "retrying already-linked equal-time evidence does not overwrite canonical state" do
@@ -536,6 +554,83 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert after_retry.model == "Model B"
     assert after_retry.updated_at == before_retry.updated_at
     assert length(after_retry.evidence_matches) == 2
+  end
+
+  test "component drift resolves while unexpected observed components remain open" do
+    context = context()
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Observed CPU"},
+          %{"kind" => "disk", "id" => "disk-1", "slot" => "BAY9"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "EXPECTED-COMPONENTS", [
+        %{
+          kind: "cpu",
+          name: "CPU1",
+          position: "CPU1",
+          attributes: %{"model" => "Expected CPU"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    drift =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Observed CPU"},
+          %{"kind" => "disk", "id" => "disk-1", "slot" => "BAY9"}
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, drift.id)
+
+    assert [drift_finding, unexpected] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    assert drift_finding.kind == "component_drift"
+    assert drift_finding.details["differences"]["model"]["expected"] == "Expected CPU"
+    assert unexpected.kind == "unexpected_actual_component"
+
+    corrected =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "machine-1"},
+        %{},
+        [],
+        [
+          %{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "model" => "Expected CPU"},
+          %{"kind" => "disk", "id" => "disk-1", "slot" => "BAY9"}
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, corrected.id)
+
+    assert [%{kind: "unexpected_actual_component"}] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    assert [%{kind: "component_drift", resolved_at: resolved_at}] =
+             Catalog.list_component_findings(context.scope, resource.id, "resolved")
+
+    assert resolved_at == corrected.observed_at
   end
 
   test "strong identity keeps a resource stable across hostname changes" do
@@ -1739,5 +1834,28 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert [%{status: "failed", attempt: 1}] =
              Inventory.list_observation_reconciliations(context.scope, observation.id)
+  end
+
+  defp hardware_type_fixture(scope, model, templates) do
+    slug = model |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
+
+    {:ok, manufacturer} =
+      Catalog.create_manufacturer(
+        scope,
+        %{name: "Finding vendor #{model}", lifecycle_state: "active"},
+        %{slug: "finding-vendor-#{slug}"}
+      )
+
+    {:ok, hardware_type} =
+      Catalog.create_hardware_type(
+        scope,
+        %{name: "Finding hardware #{model}", lifecycle_state: "active"},
+        %{manufacturer_id: manufacturer.id, model: model, device_class: "server"}
+      )
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, templates)
+
+    hardware_type
   end
 end
