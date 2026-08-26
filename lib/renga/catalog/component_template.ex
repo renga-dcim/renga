@@ -10,7 +10,7 @@ defmodule Renga.Catalog.ComponentTemplate do
     autogenerate: {Renga.Time, :utc_now_ms, []},
     updated_at: false
   ]
-  @kinds ~w(interface module_bay power_port power_outlet console_port device_bay)
+  @kinds ~w(interface module_bay power_port power_outlet console_port device_bay cpu memory disk)
 
   schema "component_templates" do
     field :kind, :string

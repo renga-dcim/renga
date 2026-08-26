@@ -585,19 +585,29 @@ defmodule Renga.CatalogTest do
     {:ok, revision} =
       Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
         %{kind: "interface", name: "eth0", label: "Management", attributes: %{"speed" => 1_000}},
-        %{kind: "module_bay", name: "PSU1", position: "rear-left"}
+        %{kind: "module_bay", name: "PSU1", position: "rear-left"},
+        %{kind: "cpu", name: "CPU1", position: "socket-1", attributes: %{"model" => "CPU-X"}},
+        %{kind: "memory", name: "DIMM1", position: "A1", attributes: %{"size_bytes" => 16_384}},
+        %{kind: "disk", name: "Disk1", position: "bay-1", attributes: %{"part_number" => "D-1"}}
       ])
 
     assert {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
     components = Catalog.list_expected_components(scope, resource.id)
     psu = Enum.find(components, &(&1.name == "PSU1"))
     eth0 = Enum.find(components, &(&1.name == "eth0"))
+    cpu = Enum.find(components, &(&1.name == "CPU1"))
+    memory = Enum.find(components, &(&1.name == "DIMM1"))
+    disk = Enum.find(components, &(&1.name == "Disk1"))
 
     assert psu.catalog_type_revision_id == revision.id
     assert psu.component_template_id
     assert psu.position == "rear-left"
     assert eth0.label == "Management"
     assert eth0.attributes == %{"speed" => 1_000}
+    assert cpu.position == "socket-1"
+    assert cpu.attributes == %{"model" => "CPU-X"}
+    assert memory.kind == "memory"
+    assert disk.attributes == %{"part_number" => "D-1"}
 
     {:ok, replacement_type} = hardware_type_fixture(scope, manufacturer, "X2", "server")
 
@@ -652,9 +662,18 @@ defmodule Renga.CatalogTest do
                changes: %{"label" => "Local", "attributes" => %{"speed" => 10_000}}
              })
 
+    assert {:ok, _added_disk} =
+             Catalog.put_expected_component_exception(scope, resource.id, %{
+               action: "add",
+               kind: "disk",
+               name: "local-disk",
+               changes: %{"position" => "bay-2", "attributes" => %{"part_number" => "D-2"}}
+             })
+
     components = Catalog.list_expected_components(scope, resource.id)
     eth0 = Enum.find(components, &(&1.name == "eth0"))
     eth1 = Enum.find(components, &(&1.name == "eth1"))
+    local_disk = Enum.find(components, &(&1.name == "local-disk"))
     psu = Enum.find(components, &(&1.name == "PSU1"))
 
     assert eth0.label == "Dedicated"
@@ -663,6 +682,8 @@ defmodule Renga.CatalogTest do
     assert eth1.component_template_id == nil
     assert eth1.exception_id == added.id
     assert eth1.label == "Local"
+    assert local_disk.kind == "disk"
+    assert local_disk.position == "bay-2"
     assert psu.suppressed
 
     assert {:ok, nil} =
