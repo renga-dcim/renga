@@ -44,7 +44,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
     allow_new_rows? = Keyword.get(opts, :allow_new_rows?, true)
 
     reconcile_host(scope, source, observation, resource, payload, overrides)
-    reconcile_component_evidence(scope, source, observation, resource, payload)
+
+    reconcile_component_evidence(
+      scope,
+      source,
+      observation,
+      resource,
+      payload,
+      allow_new_rows?
+    )
 
     interfaces_authoritative? = Map.has_key?(payload, "interfaces")
     interfaces = Map.get(payload, "interfaces", [])
@@ -67,7 +75,17 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp reconcile_component_evidence(scope, source, observation, resource, payload) do
+  defp reconcile_component_evidence(
+         scope,
+         source,
+         observation,
+         resource,
+         payload,
+         current_snapshot?
+       ) do
+    complete_snapshot? =
+      complete_component_snapshot?(source, observation, payload, current_snapshot?)
+
     components =
       case Map.get(payload, "components") do
         components when is_list(components) -> components
@@ -134,7 +152,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
       end
     end)
 
-    Catalog.reconcile_component_findings(scope, observation, resource)
+    Catalog.reconcile_component_findings(scope, observation, resource,
+      component_snapshot_complete?: complete_snapshot?,
+      component_snapshot_current?: current_snapshot?
+    )
+  end
+
+  defp complete_component_snapshot?(source, observation, payload, current_snapshot?) do
+    current_snapshot? and source.metadata["component_snapshot_policy"] == "complete" and
+      get_in(observation.payload, ["section_completeness", "components"]) == true and
+      is_list(Map.get(payload, "components"))
   end
 
   defp reconcile_actual_component(scope, evidence, allow_position_match?) do
