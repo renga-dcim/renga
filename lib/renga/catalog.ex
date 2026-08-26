@@ -187,7 +187,7 @@ defmodule Renga.Catalog do
       asc: component.name,
       asc: component.id
     )
-    |> preload(evidence_matches: :component_evidence)
+    |> preload(evidence_matches: [component_evidence: :source])
     |> Repo.all()
   end
 
@@ -197,7 +197,7 @@ defmodule Renga.Catalog do
       [component],
       component.organization_id == ^organization_id and component.id == ^id
     )
-    |> preload(evidence_matches: :component_evidence)
+    |> preload(evidence_matches: [component_evidence: :source])
     |> Repo.one!()
   end
 
@@ -213,6 +213,20 @@ defmodule Renga.Catalog do
         finding.status == ^status
     )
     |> order_by([finding], asc: finding.kind, asc: finding.resolution_key)
+    |> Repo.all()
+  end
+
+  def list_organization_component_findings(
+        %Scope{organization_id: organization_id},
+        status \\ "open"
+      ) do
+    ComponentFinding
+    |> where(
+      [finding],
+      finding.organization_id == ^organization_id and finding.status == ^status
+    )
+    |> order_by([finding], desc: finding.last_observed_at, asc: finding.kind)
+    |> preload(:resource)
     |> Repo.all()
   end
 
