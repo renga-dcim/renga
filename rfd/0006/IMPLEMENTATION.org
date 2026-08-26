@@ -35,7 +35,7 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
   expected and observed CPU, memory, and disk components.
 - [X] Capture provenance-linked, bay-addressable module installation evidence
   without treating modules as CPU, memory, or disk projections.
-- [ ] Resolve observed module installations against catalog bays and module
+- [X] Resolve observed module installations against catalog bays and module
   types and add compatibility findings.
 - [ ] Add missing-component findings gated by explicit complete snapshots.
 - [ ] Link interface templates and NIC/port evidence to the existing canonical
