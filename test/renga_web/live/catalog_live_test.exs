@@ -116,6 +116,29 @@ defmodule RengaWeb.CatalogLiveTest do
     assert Renga.Inventory.list_resources(scope) == []
   end
 
+  test "organization members can author catalog identities", %{
+    organization: organization
+  } do
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+
+    member_conn =
+      build_conn()
+      |> log_in_user(member)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, view, _html} = live(member_conn, "/dcim/manufacturers")
+    assert has_element?(view, "#new-manufacturer-form")
+
+    view
+    |> form("#new-manufacturer-form",
+      manufacturer: %{name: "Member Vendor", slug: "member-vendor", description: ""}
+    )
+    |> render_submit()
+
+    assert {"/dcim/manufacturers", _flash} = assert_redirect(view)
+  end
+
   test "lists catalog identity and links to type detail", %{conn: conn, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Acme Systems", "acme-systems")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")

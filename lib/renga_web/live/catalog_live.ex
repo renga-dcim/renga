@@ -4,7 +4,6 @@ defmodule RengaWeb.CatalogLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Catalog
-  alias Renga.Inventory
 
   @device_class_options Enum.map(
                           ~w(server switch appliance chassis pdu storage other),
@@ -23,7 +22,7 @@ defmodule RengaWeb.CatalogLive do
        manufacturers_empty?: true,
        hardware_types_empty?: true,
        module_types_empty?: true,
-       can_manage_catalog?: Inventory.organization_manager?(socket.assigns.current_scope),
+       can_author_catalog?: Catalog.catalog_author?(socket.assigns.current_scope),
        device_class_options: @device_class_options,
        module_class_options: @module_class_options,
        manufacturer_options: [],
@@ -168,14 +167,14 @@ defmodule RengaWeb.CatalogLive do
 
         <%= case @live_action do %>
           <% :manufacturers -> %>
-            <.manufacturer_form :if={@can_manage_catalog?} form={@manufacturer_form} />
+            <.manufacturer_form :if={@can_author_catalog?} form={@manufacturer_form} />
             <.manufacturer_catalog
               manufacturers={@streams.manufacturers}
               empty?={@manufacturers_empty?}
             />
           <% :hardware_types -> %>
             <.catalog_type_form
-              :if={@can_manage_catalog?}
+              :if={@can_author_catalog?}
               id="new-hardware-type-form"
               form={@hardware_type_form}
               event="create_hardware_type"
@@ -199,7 +198,7 @@ defmodule RengaWeb.CatalogLive do
             />
           <% :module_types -> %>
             <.catalog_type_form
-              :if={@can_manage_catalog?}
+              :if={@can_author_catalog?}
               id="new-module-type-form"
               form={@module_type_form}
               event="create_module_type"

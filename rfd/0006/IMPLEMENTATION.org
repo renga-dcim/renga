@@ -53,10 +53,10 @@ Implements [[file:README.adoc][RFD 6: Hardware catalog and components]].
 
 * Phase 6: Catalog authoring and completion
 
-- [X] Add owner/admin catalog identity authoring for manufacturers, hardware
-  types, and module types plus module-type browsing while preserving read-only
-  access for other organization roles.
-- [ ] Add owner/admin immutable revision publishing with typed component
+- [X] Add member, admin, and owner catalog identity authoring for manufacturers,
+  hardware types, and module types plus module-type browsing while preserving
+  read-only access for viewers.
+- [ ] Add member, admin, and owner immutable revision publishing with typed component
   templates for hardware and module types.
 - [ ] Add tenant, authorization, validation, revision immutability, and LiveView
   interaction tests, then run `make check-rfds`, focused hardware tests, and

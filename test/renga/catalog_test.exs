@@ -161,7 +161,7 @@ defmodule Renga.CatalogTest do
              hardware_type_fixture(other_scope, manufacturer, "Foreign", "server")
   end
 
-  test "catalog mutations require a current owner or admin membership", %{
+  test "catalog mutations allow members while managed envelopes remain context-owned", %{
     scope: scope,
     organization: organization
   } do
@@ -170,14 +170,14 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, member_manufacturer} =
              Catalog.create_manufacturer(
                member_scope,
-               %{name: "Forbidden", lifecycle_state: "active"},
-               %{slug: "forbidden"}
+               %{name: "Member authored", lifecycle_state: "active"},
+               %{slug: "member-authored"}
              )
 
-    refute Repo.get_by(Resource, kind: "manufacturer", name: "Forbidden")
+    assert member_manufacturer.resource.name == "Member authored"
 
     assert {:error, :forbidden} =
              Inventory.create_resource(member_scope, %{
@@ -189,6 +189,17 @@ defmodule Renga.CatalogTest do
              Inventory.update_resource(member_scope, manufacturer.resource, %{
                name: "Bypassed catalog mutation"
              })
+
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.create_manufacturer(
+               viewer_scope,
+               %{name: "Viewer authored", lifecycle_state: "active"},
+               %{slug: "viewer-authored"}
+             )
 
     assert {:error, changeset} =
              Inventory.update_resource(scope, manufacturer.resource, %{kind: "server"})
@@ -577,8 +588,10 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, assignment} =
              Catalog.assign_hardware_type(member_scope, resource.id, hardware_type.id)
+
+    assert assignment.provenance["user_id"] == member.id
 
     other_user = user_fixture()
     other_organization = organization_fixture()
@@ -600,7 +613,6 @@ defmodule Renga.CatalogTest do
 
     assert errors_on(changeset) != %{}
 
-    assert {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
     {:ok, newer_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
 
     assert {:error, mismatched_revision_changeset} =
@@ -841,7 +853,7 @@ defmodule Renga.CatalogTest do
     assert altered.confirmed_by_user_id == second_manager.id
   end
 
-  test "exceptions require management access and templates from the pinned revision", %{
+  test "exceptions require catalog author access and templates from the pinned revision", %{
     scope: scope,
     organization: organization
   } do
@@ -873,12 +885,14 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, exception} =
              Catalog.put_expected_component_exception(member_scope, resource.id, %{
                action: "add",
                kind: "interface",
-               name: "unauthorized"
+               name: "member-added"
              })
+
+    assert exception.confirmed_by_user_id == member.id
   end
 
   test "database rejects exceptions whose template is from another revision", %{scope: scope} do

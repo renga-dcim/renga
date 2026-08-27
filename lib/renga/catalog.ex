@@ -40,6 +40,8 @@ defmodule Renga.Catalog do
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
+  @catalog_author_roles ~w(owner admin member)
+  @catalog_mutator_role "catalog_mutator"
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -49,6 +51,10 @@ defmodule Renga.Catalog do
   @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
                                       @module_component_finding_kinds
   @assignment_component_finding_kinds ~w(ambiguous_expected_component component_drift missing_expected_component unexpected_actual_component)
+
+  def catalog_author?(%Scope{user: user, roles: roles}) do
+    not is_nil(user) and Enum.any?(roles, &(&1 in @catalog_author_roles))
+  end
 
   def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
@@ -1305,7 +1311,7 @@ defmodule Renga.Catalog do
     resource_attrs = put_attr(resource_attrs, :kind, kind)
 
     resource =
-      case Inventory.create_resource(scope, resource_attrs) do
+      case Inventory.create_resource(with_catalog_mutator_role(scope), resource_attrs) do
         {:ok, resource} -> resource
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -1320,7 +1326,10 @@ defmodule Renga.Catalog do
     revision = latest_module_revision!(scope.organization_id, module_type.id)
 
     resource =
-      case Inventory.create_resource(scope, put_attr(resource_attrs, :kind, "module")) do
+      case Inventory.create_resource(
+             with_catalog_mutator_role(scope),
+             put_attr(resource_attrs, :kind, "module")
+           ) do
         {:ok, resource} -> resource
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -2090,7 +2099,7 @@ defmodule Renga.Catalog do
 
   defp managed_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
-      authorize_manager!(scope)
+      authorize_catalog_author!(scope)
 
       case mutation.() do
         {:ok, result} -> result
@@ -2112,7 +2121,9 @@ defmodule Renga.Catalog do
     end)
   end
 
-  defp authorize_manager!(%Scope{membership_id: membership_id, user: %{id: user_id}} = scope)
+  defp authorize_catalog_author!(
+         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope
+       )
        when not is_nil(membership_id) do
     lock_active_organization!(scope.organization_id)
 
@@ -2121,7 +2132,7 @@ defmodule Renga.Catalog do
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.organization_id == ^scope.organization_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ["owner", "admin"])
+    |> where([membership], membership.role in ^@catalog_author_roles)
     |> select([membership], membership.id)
     |> lock("FOR UPDATE")
     |> Repo.one()
@@ -2131,7 +2142,7 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_manager!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_catalog_author!(%Scope{}), do: Repo.rollback(:forbidden)
 
   defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
     if "catalog_reconciler" in roles do
@@ -2141,7 +2152,13 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_reconciler!(%Scope{} = scope), do: authorize_manager!(scope)
+  defp authorize_reconciler!(%Scope{} = scope), do: authorize_catalog_author!(scope)
+
+  defp with_catalog_mutator_role(%Scope{} = scope) do
+    # Inventory accepts this internal capability only after Catalog locks and
+    # authorizes the current membership, preserving the resource-envelope boundary.
+    %{scope | roles: [@catalog_mutator_role | scope.roles]}
+  end
 
   defp lock_active_organization!(organization_id) do
     Organization

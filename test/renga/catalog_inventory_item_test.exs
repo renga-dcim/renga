@@ -230,7 +230,7 @@ defmodule Renga.CatalogInventoryItemTest do
     end
   end
 
-  test "mutations require current management access and a physical owner", %{
+  test "members mutate inventory-only parts while physical ownership remains enforced", %{
     scope: scope,
     membership: membership
   } do
@@ -254,11 +254,12 @@ defmodule Renga.CatalogInventoryItemTest do
 
     {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "member"})
 
-    assert {:error, :forbidden} =
-             Catalog.create_inventory_item(scope, owner.id, %{name: "Forbidden", kind: "fru"})
+    assert {:ok, member_item} =
+             Catalog.create_inventory_item(scope, owner.id, %{name: "Member part", kind: "fru"})
 
-    assert {:error, :forbidden} =
-             Catalog.promote_inventory_item_to_module(scope, item, module_type)
+    assert member_item.owner_resource_id == owner.id
+    assert {:ok, promoted} = Catalog.promote_inventory_item_to_module(scope, item, module_type)
+    assert promoted.module_type_id == module_type.id
   end
 
   defp resource_fixture(scope, name) do

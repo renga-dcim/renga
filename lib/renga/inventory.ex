@@ -308,9 +308,15 @@ defmodule Renga.Inventory do
   defp authorize_current_organization_manager_or_rollback(%Scope{}),
     do: Repo.rollback(:forbidden)
 
-  defp authorize_managed_resource_kind!(scope, kind) when kind in @managed_resource_kinds do
+  defp authorize_managed_resource_kind!(%Scope{} = scope, kind)
+       when kind in @managed_resource_kinds do
     ensure_organization_active_or_rollback(scope.organization_id)
-    authorize_current_organization_manager_or_rollback(scope)
+
+    # Catalog grants this internal capability after checking the current member
+    # in its own transaction; direct managed-resource mutations still require management.
+    unless "catalog_mutator" in scope.roles do
+      authorize_current_organization_manager_or_rollback(scope)
+    end
   end
 
   defp authorize_managed_resource_kind!(_scope, _kind), do: :ok
