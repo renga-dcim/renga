@@ -32,11 +32,11 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ModuleInstallationEvent
   alias Renga.Catalog.ModuleType
   alias Renga.Catalog.TypeRevision
-  alias Renga.Inventory
   alias Renga.Inventory.Host
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
@@ -92,6 +92,24 @@ defmodule Renga.Catalog do
     |> preload_type()
   end
 
+  def get_hardware_type_by_identity(
+        %Scope{organization_id: organization_id},
+        manufacturer_id,
+        model
+      ) do
+    normalized_model = model |> String.trim() |> String.downcase()
+
+    HardwareType
+    |> where(
+      [hardware_type],
+      hardware_type.organization_id == ^organization_id and
+        hardware_type.manufacturer_id == ^manufacturer_id and
+        fragment("lower(?)", hardware_type.model) == ^normalized_model
+    )
+    |> preload([:resource, manufacturer: :resource])
+    |> Repo.one()
+  end
+
   def list_module_types(%Scope{organization_id: organization_id}) do
     ModuleType
     |> where([module_type], module_type.organization_id == ^organization_id)
@@ -109,6 +127,24 @@ defmodule Renga.Catalog do
     |> where([module_type], module_type.organization_id == ^organization_id)
     |> Repo.get!(id)
     |> preload_type()
+  end
+
+  def get_module_type_by_identity(
+        %Scope{organization_id: organization_id},
+        manufacturer_id,
+        model
+      ) do
+    normalized_model = model |> String.trim() |> String.downcase()
+
+    ModuleType
+    |> where(
+      [module_type],
+      module_type.organization_id == ^organization_id and
+        module_type.manufacturer_id == ^manufacturer_id and
+        fragment("lower(?)", module_type.model) == ^normalized_model
+    )
+    |> preload([:resource, manufacturer: :resource])
+    |> Repo.one()
   end
 
   def list_modules(%Scope{organization_id: organization_id}) do
@@ -1321,12 +1357,7 @@ defmodule Renga.Catalog do
 
   defp create_projection(scope, module, kind, resource_attrs, attrs) do
     resource_attrs = put_attr(resource_attrs, :kind, kind)
-
-    resource =
-      case Inventory.create_catalog_resource(scope, resource_attrs) do
-        {:ok, resource} -> resource
-        {:error, reason} -> Repo.rollback(reason)
-      end
+    resource = create_catalog_resource(scope.organization_id, resource_attrs)
 
     struct(module, organization_id: scope.organization_id, resource_id: resource.id)
     |> module.changeset(attrs)
@@ -1380,10 +1411,7 @@ defmodule Renga.Catalog do
     revision = latest_module_revision!(scope.organization_id, module_type.id)
 
     resource =
-      case Inventory.create_catalog_resource(scope, put_attr(resource_attrs, :kind, "module")) do
-        {:ok, resource} -> resource
-        {:error, reason} -> Repo.rollback(reason)
-      end
+      create_catalog_resource(scope.organization_id, put_attr(resource_attrs, :kind, "module"))
 
     %Module{
       organization_id: scope.organization_id,
@@ -1394,6 +1422,13 @@ defmodule Renga.Catalog do
     |> Module.changeset(attrs)
     |> insert_or_rollback()
     |> Repo.preload([:resource, :catalog_type_revision, module_type: :resource])
+  end
+
+  defp create_catalog_resource(organization_id, attrs) do
+    case ResourceStore.insert(organization_id, attrs) do
+      {:ok, resource} -> resource
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp promoted_resource_lifecycle("removed"), do: "retired"

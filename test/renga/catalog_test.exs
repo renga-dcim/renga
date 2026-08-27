@@ -17,6 +17,7 @@ defmodule Renga.CatalogTest do
   alias Renga.Catalog.TypeRevision
   alias Renga.Inventory
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceRevision
   alias Renga.Repo
 
   setup do
@@ -72,11 +73,15 @@ defmodule Renga.CatalogTest do
     assert {:ok, _hardware_type} =
              hardware_type_fixture(scope, manufacturer, "RS-42", "server")
 
+    assert Catalog.get_hardware_type_by_identity(scope, manufacturer.id, "  rs-42  ")
+
     assert {:error, %Ecto.Changeset{errors: [model: {"has already been taken", _}]}} =
              hardware_type_fixture(scope, manufacturer, "rs-42", "server")
 
     assert {:ok, _module_type} =
              module_type_fixture(scope, manufacturer, "RS-42", "line_card")
+
+    assert Catalog.get_module_type_by_identity(scope, manufacturer.id, "  rs-42  ")
 
     assert {:error, %Ecto.Changeset{errors: [model: {"has already been taken", _}]}} =
              module_type_fixture(scope, manufacturer, "rs-42", "line_card")
@@ -178,6 +183,10 @@ defmodule Renga.CatalogTest do
              )
 
     assert member_manufacturer.resource.name == "Member authored"
+    refute function_exported?(Inventory, :create_catalog_resource, 2)
+
+    resource_count = Repo.aggregate(Resource, :count)
+    revision_count = Repo.aggregate(ResourceRevision, :count)
 
     assert {:error, :forbidden} =
              Inventory.create_resource(member_scope, %{
@@ -224,6 +233,8 @@ defmodule Renga.CatalogTest do
              Inventory.update_resource(scope, manufacturer.resource, %{kind: "server"})
 
     assert %{kind: ["cannot be changed"]} = errors_on(changeset)
+    assert Repo.aggregate(Resource, :count) == resource_count
+    assert Repo.aggregate(ResourceRevision, :count) == revision_count
   end
 
   test "catalog mutations reject stale downgraded and disabled membership scopes", %{
