@@ -620,7 +620,21 @@ defmodule RengaWeb.CatalogLive do
 
   defp create_catalog_type(socket, type, params) do
     scope = socket.assigns.current_scope
-    manufacturer_name = manufacturer_name(socket.assigns.manufacturer_options, params)
+
+    case Catalog.get_manufacturer(scope, params["manufacturer_id"]) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(catalog_type_form_key(type), catalog_form(type, params))
+         |> put_flash(:error, "Selected manufacturer is unavailable")}
+
+      manufacturer ->
+        persist_catalog_type(socket, type, params, manufacturer.resource.name)
+    end
+  end
+
+  defp persist_catalog_type(socket, type, params, manufacturer_name) do
+    scope = socket.assigns.current_scope
 
     resource_attrs = %{
       name: "#{manufacturer_name} #{params["model"]}",
@@ -682,12 +696,8 @@ defmodule RengaWeb.CatalogLive do
     assign(socket, :manufacturer_options, options)
   end
 
-  defp manufacturer_name(options, %{"manufacturer_id" => manufacturer_id}) do
-    Enum.find_value(options, "Unknown manufacturer", fn
-      {name, ^manufacturer_id} -> name
-      _option -> nil
-    end)
-  end
+  defp catalog_type_form_key(:hardware_type), do: :hardware_type_form
+  defp catalog_type_form_key(:module_type), do: :module_type_form
 
   defp catalog_form(type, params \\ %{})
 

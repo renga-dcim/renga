@@ -73,6 +73,13 @@ defmodule Renga.Catalog do
     |> Repo.preload(:resource)
   end
 
+  def get_manufacturer(%Scope{organization_id: organization_id}, id) do
+    Manufacturer
+    |> where([manufacturer], manufacturer.organization_id == ^organization_id)
+    |> Repo.get(id)
+    |> Repo.preload(:resource)
+  end
+
   def list_hardware_types(%Scope{organization_id: organization_id}) do
     HardwareType
     |> where([hardware_type], hardware_type.organization_id == ^organization_id)

@@ -6,6 +6,7 @@ defmodule RengaWeb.CatalogLiveTest do
   import Renga.InventoryFixtures
 
   alias Renga.Catalog
+  alias Renga.Inventory
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -114,6 +115,54 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#new-manufacturer-form input[value='Invalid Vendor']")
     assert Catalog.list_manufacturers(scope) == []
     assert Renga.Inventory.list_resources(scope) == []
+  end
+
+  test "catalog type submission resolves manufacturers from current tenant data", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Fresh Vendor", "fresh-vendor")
+
+    render_hook(view, "create_hardware_type", %{
+      "hardware_type" => %{
+        "manufacturer_id" => manufacturer.id,
+        "model" => "FRESH-1",
+        "device_class" => "server",
+        "description" => ""
+      }
+    })
+
+    assert {_path, _flash} = assert_redirect(view)
+    [hardware_type] = Catalog.list_hardware_types(scope)
+    assert hardware_type.resource.name == "Fresh Vendor FRESH-1"
+  end
+
+  test "catalog type submission rejects a foreign manufacturer without partial writes", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Renga.Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    {:ok, foreign_manufacturer} =
+      manufacturer_fixture(foreign_scope, "Foreign Vendor", "foreign-vendor")
+
+    render_hook(view, "create_hardware_type", %{
+      "hardware_type" => %{
+        "manufacturer_id" => foreign_manufacturer.id,
+        "model" => "FOREIGN-1",
+        "device_class" => "server",
+        "description" => ""
+      }
+    })
+
+    assert has_element?(view, "#flash-error", "manufacturer")
+    assert Catalog.list_hardware_types(scope) == []
+    assert Inventory.list_resources(scope) == []
   end
 
   test "organization members can author catalog identities", %{
