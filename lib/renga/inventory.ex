@@ -284,6 +284,43 @@ defmodule Renga.Inventory do
     end)
   end
 
+  defp authorized_reconciliation_observation(%Scope{} = scope, observation_id) do
+    Repo.transaction(fn ->
+      ensure_organization_active_or_rollback(scope.organization_id)
+      authorize_current_reconciliation_actor_or_rollback(scope)
+      get_observation!(scope, observation_id)
+    end)
+  end
+
+  defp authorize_reconciliation!(%Scope{} = scope) do
+    ensure_organization_active_or_rollback(scope.organization_id)
+    authorize_current_reconciliation_actor_or_rollback(scope)
+  end
+
+  defp authorize_current_reconciliation_actor_or_rollback(%Scope{
+         membership_id: membership_id,
+         user: %{id: user_id},
+         organization_id: organization_id
+       })
+       when not is_nil(membership_id) do
+    authorized? =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active")
+      |> where([membership], membership.role in ["owner", "admin", "member"])
+      |> select([membership], membership.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> is_binary()
+
+    unless authorized?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_current_reconciliation_actor_or_rollback(%Scope{}),
+    do: Repo.rollback(:forbidden)
+
   defp authorize_current_organization_manager_or_rollback(%Scope{
          membership_id: membership_id,
          user: %{id: user_id},
@@ -1601,18 +1638,34 @@ defmodule Renga.Inventory do
   @doc """
   Reconciles one immutable observation into canonical inventory.
   """
-  def reconcile_observation(%Scope{} = scope, observation_id) do
+  def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
     Reconciler.reconcile(scope, observation)
+  end
+
+  def reconcile_observation(%Scope{} = scope, observation_id) do
+    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
+      Reconciler.reconcile(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end
+      )
+    end
   end
 
   @doc """
   Reconciles one observation for ingestion, returning its existing terminal
   result when another request has already attempted it.
   """
-  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+  def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
     Reconciler.reconcile_once(scope, observation)
+  end
+
+  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
+      Reconciler.reconcile_once(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end
+      )
+    end
   end
 
   @doc """

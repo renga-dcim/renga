@@ -152,12 +152,11 @@ defmodule Renga.Inventory.Reconciler.Projections do
       end
     end)
 
-    reconciler_scope = %{
-      scope
-      | user: nil,
-        membership_id: nil,
-        roles: ["catalog_reconciler"]
-    }
+    reconciler_scope =
+      case scope do
+        %Scope{user: nil} -> %{scope | membership_id: nil, roles: ["catalog_reconciler"]}
+        %Scope{} -> scope
+      end
 
     :ok =
       Catalog.reconcile_component_findings(reconciler_scope, observation, resource,

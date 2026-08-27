@@ -38,6 +38,72 @@ defmodule Renga.Inventory.ReconcilerTest do
     %{scope: scope, source: source}
   end
 
+  test "reconciliation entrypoints reject human scopes after membership changes" do
+    context = context()
+    organization = context.scope.organization
+    service_scope = Accounts.scope_for(organization)
+    observation = observation(context, "1", %{"machine_id" => "authorization-boundary"})
+
+    {:ok, viewer} =
+      Accounts.register_user(%{
+        "email" => "reconciliation-viewer-#{System.unique_integer()}@example.com"
+      })
+
+    {:ok, _viewer_membership} =
+      Accounts.create_organization_membership(organization, %{
+        user_id: viewer.id,
+        role: "viewer",
+        status: "active"
+      })
+
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    {:ok, stale_admin} =
+      Accounts.register_user(%{
+        "email" => "reconciliation-admin-#{System.unique_integer()}@example.com"
+      })
+
+    {:ok, admin_membership} =
+      Accounts.create_organization_membership(organization, %{
+        user_id: stale_admin.id,
+        role: "admin",
+        status: "active"
+      })
+
+    stale_admin_scope = Accounts.scope_for_user(stale_admin, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(admin_membership, %{role: "viewer"})
+
+    {:ok, disabled_member} =
+      Accounts.register_user(%{
+        "email" => "reconciliation-member-#{System.unique_integer()}@example.com"
+      })
+
+    {:ok, member_membership} =
+      Accounts.create_organization_membership(organization, %{
+        user_id: disabled_member.id,
+        role: "member",
+        status: "active"
+      })
+
+    disabled_member_scope = Accounts.scope_for_user(disabled_member, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(member_membership, %{status: "disabled"})
+
+    for scope <- [viewer_scope, stale_admin_scope, disabled_member_scope] do
+      assert {:error, :forbidden} = Inventory.reconcile_observation(scope, observation.id)
+      assert {:error, :forbidden} = Inventory.reconcile_observation_once(scope, observation.id)
+    end
+
+    assert Inventory.list_resources(context.scope) == []
+    assert Inventory.list_observation_reconciliations(context.scope, observation.id) == []
+
+    assert {:ok, _resource, true} =
+             Inventory.reconcile_observation_once(service_scope, observation.id)
+  end
+
   defp observation(
          context,
          id,
@@ -2885,7 +2951,7 @@ defmodule Renga.Inventory.ReconcilerTest do
     observation =
       observation(context, "1", %{"machine_id" => "override-machine"}, %{"vendor" => "Observed"})
 
-    assert {:ok, resource, true} = Inventory.reconcile_observation(scope, observation.id)
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, observation.id)
 
     assert {:ok, override} =
              Inventory.create_resource_override(scope, resource.id, %{
@@ -2930,7 +2996,7 @@ defmodule Renga.Inventory.ReconcilerTest do
         "asset_tag" => "LATER"
       })
 
-    assert {:ok, ^resource, false} = Inventory.reconcile_observation(scope, later.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, later.id)
     host = Inventory.get_host_by_resource!(scope, resource.id)
     assert host.vendor == "Operator Vendor"
     assert host.asset_tag == "ASSET-42"
