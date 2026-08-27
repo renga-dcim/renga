@@ -226,6 +226,37 @@ defmodule Renga.CatalogTest do
     assert %{kind: ["cannot be changed"]} = errors_on(changeset)
   end
 
+  test "catalog mutations reject stale downgraded and disabled membership scopes", %{
+    scope: admin_scope,
+    organization: organization,
+    membership: admin_membership
+  } do
+    {:ok, _membership} =
+      Accounts.update_organization_membership(admin_membership, %{role: "viewer"})
+
+    member = user_fixture()
+    member_membership = organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(member_membership, %{status: "disabled"})
+
+    for {scope, slug} <- [
+          {admin_scope, "stale-downgraded"},
+          {member_scope, "stale-disabled"}
+        ] do
+      assert {:error, :forbidden} =
+               Catalog.create_manufacturer(
+                 scope,
+                 %{name: slug, lifecycle_state: "active"},
+                 %{slug: slug}
+               )
+    end
+
+    assert Catalog.list_manufacturers(admin_scope) == []
+    assert Inventory.list_resources(admin_scope) == []
+  end
+
   test "invalid templates roll back the entire revision", %{scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Acme", "acme")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
