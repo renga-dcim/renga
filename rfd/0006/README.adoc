@@ -151,6 +151,8 @@ Initial routes are:
 * `/dcim/manufacturers`
 * `/dcim/hardware-types`
 * `/dcim/hardware-types/:id`
+* `/dcim/module-types`
+* `/dcim/module-types/:id`
 * `/inventory/resources/:id/hardware`
 * `/inventory/component-findings`
 
