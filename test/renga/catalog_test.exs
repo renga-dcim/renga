@@ -22,9 +22,9 @@ defmodule Renga.CatalogTest do
   setup do
     user = user_fixture()
     organization = organization_fixture()
-    organization_membership_fixture(user, organization, %{role: "admin"})
+    membership = organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Accounts.scope_for_user(user, organization.id)
-    %{scope: scope, organization: organization}
+    %{scope: scope, organization: organization, membership: membership}
   end
 
   test "creates resource-backed manufacturers and tenant-scoped catalog types", %{scope: scope} do
@@ -239,6 +239,79 @@ defmodule Renga.CatalogTest do
              )
 
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "finding reconciliation rechecks authorization and scopes observations", %{
+    scope: scope,
+    organization: organization,
+    membership: membership
+  } do
+    {resource, observation} = finding_reconciliation_fixture(scope)
+    opts = [component_snapshot_complete?: true, component_snapshot_current?: true]
+
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    stale_admin_scope = scope
+    {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "viewer"})
+
+    disabled_member = user_fixture()
+
+    disabled_membership =
+      organization_membership_fixture(disabled_member, organization, %{role: "member"})
+
+    disabled_scope = Accounts.scope_for_user(disabled_member, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(disabled_membership, %{status: "disabled"})
+
+    for unauthorized_scope <- [viewer_scope, stale_admin_scope, disabled_scope] do
+      assert {:error, :forbidden} =
+               Catalog.reconcile_component_findings(
+                 unauthorized_scope,
+                 observation,
+                 resource,
+                 opts
+               )
+
+      assert Catalog.list_component_findings(scope, resource.id) == []
+    end
+
+    other_organization = organization_fixture()
+    other_scope = Accounts.scope_for(other_organization)
+
+    {:ok, other_source} =
+      Inventory.create_source(other_scope, %{kind: "host_agent", name: "other"})
+
+    {:ok, foreign_observation} =
+      Inventory.create_observation(other_scope, other_source.id, %{
+        observation_id: "foreign-finding-observation",
+        observed_at: ~U[2026-08-27 07:00:00.000000Z],
+        payload: %{}
+      })
+
+    reconciler_scope = Accounts.scope_for(organization, %{roles: ["catalog_reconciler"]})
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Catalog.reconcile_component_findings(
+        reconciler_scope,
+        foreign_observation,
+        resource,
+        opts
+      )
+    end
+
+    assert :ok =
+             Catalog.reconcile_component_findings(
+               reconciler_scope,
+               observation,
+               resource,
+               opts
+             )
+
+    assert [%{kind: "missing_expected_component"}] =
+             Catalog.list_component_findings(scope, resource.id)
   end
 
   test "database constraints reject every cross-tenant catalog relationship", %{scope: scope} do
@@ -1053,5 +1126,28 @@ defmodule Renga.CatalogTest do
       |> Repo.insert!()
       |> Map.fetch!(:id)
     end)
+  end
+
+  defp finding_reconciliation_fixture(scope) do
+    resource = physical_resource_fixture(scope, "authorized-finding-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Finding Vendor", "finding-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "FINDING-1", "server")
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "cpu", name: "CPU1", required: true}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "finding-source"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        observation_id: "authorized-finding-observation",
+        observed_at: ~U[2026-08-27 06:00:00.000000Z],
+        payload: %{}
+      })
+
+    {resource, observation}
   end
 end

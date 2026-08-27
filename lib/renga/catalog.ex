@@ -245,37 +245,44 @@ defmodule Renga.Catalog do
         %Resource{} = resource,
         opts \\ []
       ) do
-    resource = scoped_lock!(Resource, scope.organization_id, resource.id)
-    component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
-    component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
+    reconciliation_transaction(scope, fn ->
+      observation = scoped_lock!(Observation, scope.organization_id, observation.id)
+      resource = scoped_lock!(Resource, scope.organization_id, resource.id)
+      component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
+      component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
 
-    {expected_findings, observed_expectation_keys} =
-      expected_actual_findings(
+      {expected_findings, observed_expectation_keys} =
+        expected_actual_findings(
+          scope,
+          observation,
+          resource,
+          component_snapshot_complete?,
+          component_snapshot_current?
+        )
+
+      findings =
+        ambiguous_identity_findings(scope, observation, resource) ++
+          expected_findings ++
+          module_installation_findings(scope, resource)
+
+      finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
+      Enum.each(findings, &put_component_finding(scope, resource, &1))
+
+      resolve_component_findings(
         scope,
         observation,
         resource,
+        finding_keys,
         component_snapshot_complete?,
-        component_snapshot_current?
+        observed_expectation_keys
       )
 
-    findings =
-      ambiguous_identity_findings(scope, observation, resource) ++
-        expected_findings ++
-        module_installation_findings(scope, resource)
-
-    finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
-    Enum.each(findings, &put_component_finding(scope, resource, &1))
-
-    resolve_component_findings(
-      scope,
-      observation,
-      resource,
-      finding_keys,
-      component_snapshot_complete?,
-      observed_expectation_keys
-    )
-
-    :ok
+      :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
