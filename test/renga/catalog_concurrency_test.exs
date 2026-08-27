@@ -7,6 +7,7 @@ defmodule Renga.CatalogConcurrencyTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Catalog
+  alias Renga.Inventory
   alias Renga.Repo
 
   test "concurrent revision creation serializes numbering on the catalog type" do
@@ -191,6 +192,54 @@ defmodule Renga.CatalogConcurrencyTest do
       assert {:ok, {:ok, promoted_module}} = Task.await(first_task)
       assert {:error, :inventory_item_already_promoted} = Task.await(second_task)
       assert Enum.map(Catalog.list_modules(scope), & &1.id) == [promoted_module.id]
+    end)
+  end
+
+  test "catalog type creation uses a concurrently committed manufacturer name" do
+    with_catalog(fn scope, hardware_type ->
+      manufacturer = Catalog.get_manufacturer!(scope, hardware_type.manufacturer_id)
+      test_process = self()
+
+      rename_task =
+        concurrent(fn ->
+          Repo.transaction(fn ->
+            result =
+              Inventory.update_resource(scope, manufacturer.resource, %{
+                name: "Renamed Vendor",
+                display_name: "Renamed Vendor"
+              })
+
+            send(test_process, :manufacturer_rename_ready)
+
+            receive do
+              :release_manufacturer_rename -> result
+            end
+          end)
+        end)
+
+      assert_receive :manufacturer_rename_ready, 1_000
+
+      create_task =
+        concurrent(fn ->
+          Catalog.create_module_type(
+            scope,
+            %{name: "Stale Vendor MOD-2", lifecycle_state: "active"},
+            %{
+              manufacturer_id: manufacturer.id,
+              model: "  MOD-2  ",
+              module_class: "line_card"
+            }
+          )
+        end)
+
+      assert Task.yield(create_task, 200) == nil
+      send(rename_task.pid, :release_manufacturer_rename)
+
+      assert {:ok, {:ok, renamed_resource}} = Task.await(rename_task)
+      assert renamed_resource.name == "Renamed Vendor"
+      assert {:ok, module_type} = Task.await(create_task)
+      assert module_type.model == "MOD-2"
+      assert module_type.resource.name == "Renamed Vendor MOD-2"
     end)
   end
 

@@ -127,7 +127,7 @@ defmodule RengaWeb.CatalogLiveTest do
     render_hook(view, "create_hardware_type", %{
       "hardware_type" => %{
         "manufacturer_id" => manufacturer.id,
-        "model" => "FRESH-1",
+        "model" => "  FRESH-1  ",
         "device_class" => "server",
         "description" => ""
       }
@@ -135,6 +135,7 @@ defmodule RengaWeb.CatalogLiveTest do
 
     assert {_path, _flash} = assert_redirect(view)
     [hardware_type] = Catalog.list_hardware_types(scope)
+    assert hardware_type.model == "FRESH-1"
     assert hardware_type.resource.name == "Fresh Vendor FRESH-1"
   end
 

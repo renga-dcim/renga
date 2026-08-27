@@ -414,20 +414,43 @@ if Mix.env() == :dev do
           end
 
       poweredge =
-        find_projection.(HardwareType, "hardware_type", "Dell PowerEdge R760") ||
-          case Catalog.create_hardware_type(
-                 scope,
-                 %{name: "Dell PowerEdge R760", lifecycle_state: "active"},
-                 %{
-                   manufacturer_id: dell.id,
-                   model: "PowerEdge R760",
-                   device_class: "server",
-                   description: "Two-socket 2U compute platform"
-                 }
-               ) do
-            {:ok, hardware_type} -> hardware_type
-            {:error, reason} -> raise inspect(reason)
-          end
+        Repo.get_by(HardwareType,
+          organization_id: organization.id,
+          manufacturer_id: dell.id,
+          model: "PowerEdge R760"
+        )
+        |> case do
+          nil ->
+            case Catalog.create_hardware_type(
+                   scope,
+                   %{lifecycle_state: "active"},
+                   %{
+                     manufacturer_id: dell.id,
+                     model: "PowerEdge R760",
+                     device_class: "server",
+                     description: "Two-socket 2U compute platform"
+                   }
+                 ) do
+              {:ok, hardware_type} -> hardware_type
+              {:error, reason} -> raise inspect(reason)
+            end
+
+          hardware_type ->
+            Repo.preload(hardware_type, :resource)
+        end
+
+      poweredge =
+        if poweredge.resource.name == "Dell Technologies PowerEdge R760" do
+          poweredge
+        else
+          {:ok, resource} =
+            Inventory.update_resource(scope, poweredge.resource, %{
+              name: "Dell Technologies PowerEdge R760",
+              display_name: "Dell Technologies PowerEdge R760"
+            })
+
+          %{poweredge | resource: resource}
+        end
 
       if Catalog.get_hardware_type!(scope, poweredge.id).revisions == [] do
         {:ok, _revision} =
@@ -462,20 +485,43 @@ if Mix.env() == :dev do
       {:ok, _assignment} = Catalog.assign_hardware_type(scope, compute.id, poweredge.id)
 
       boss_type =
-        find_projection.(ModuleType, "module_type", "Dell BOSS-N1") ||
-          case Catalog.create_module_type(
-                 scope,
-                 %{name: "Dell BOSS-N1", lifecycle_state: "active"},
-                 %{
-                   manufacturer_id: dell.id,
-                   model: "BOSS-N1",
-                   module_class: "other",
-                   description: "Internal boot optimized storage module"
-                 }
-               ) do
-            {:ok, module_type} -> module_type
-            {:error, reason} -> raise inspect(reason)
-          end
+        Repo.get_by(ModuleType,
+          organization_id: organization.id,
+          manufacturer_id: dell.id,
+          model: "BOSS-N1"
+        )
+        |> case do
+          nil ->
+            case Catalog.create_module_type(
+                   scope,
+                   %{lifecycle_state: "active"},
+                   %{
+                     manufacturer_id: dell.id,
+                     model: "BOSS-N1",
+                     module_class: "other",
+                     description: "Internal boot optimized storage module"
+                   }
+                 ) do
+              {:ok, module_type} -> module_type
+              {:error, reason} -> raise inspect(reason)
+            end
+
+          module_type ->
+            Repo.preload(module_type, :resource)
+        end
+
+      boss_type =
+        if boss_type.resource.name == "Dell Technologies BOSS-N1" do
+          boss_type
+        else
+          {:ok, resource} =
+            Inventory.update_resource(scope, boss_type.resource, %{
+              name: "Dell Technologies BOSS-N1",
+              display_name: "Dell Technologies BOSS-N1"
+            })
+
+          %{boss_type | resource: resource}
+        end
 
       if Catalog.get_module_type!(scope, boss_type.id).revisions == [] do
         {:ok, _revision} =

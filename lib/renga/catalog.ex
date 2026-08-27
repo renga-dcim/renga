@@ -73,13 +73,6 @@ defmodule Renga.Catalog do
     |> Repo.preload(:resource)
   end
 
-  def get_manufacturer(%Scope{organization_id: organization_id}, id) do
-    Manufacturer
-    |> where([manufacturer], manufacturer.organization_id == ^organization_id)
-    |> Repo.get(id)
-    |> Repo.preload(:resource)
-  end
-
   def list_hardware_types(%Scope{organization_id: organization_id}) do
     HardwareType
     |> where([hardware_type], hardware_type.organization_id == ^organization_id)
@@ -349,13 +342,19 @@ defmodule Renga.Catalog do
 
   def create_hardware_type(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
-      create_projection(scope, HardwareType, "hardware_type", resource_attrs, attrs)
+      create_catalog_type_projection(
+        scope,
+        HardwareType,
+        "hardware_type",
+        resource_attrs,
+        attrs
+      )
     end)
   end
 
   def create_module_type(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
-      create_projection(scope, ModuleType, "module_type", resource_attrs, attrs)
+      create_catalog_type_projection(scope, ModuleType, "module_type", resource_attrs, attrs)
     end)
   end
 
@@ -1333,6 +1332,48 @@ defmodule Renga.Catalog do
     |> module.changeset(attrs)
     |> insert_or_rollback()
     |> Repo.preload(:resource)
+  end
+
+  defp create_catalog_type_projection(scope, module, kind, resource_attrs, attrs) do
+    validation_changeset =
+      struct(module,
+        organization_id: scope.organization_id,
+        resource_id: Ecto.UUID.generate()
+      )
+      |> module.changeset(attrs)
+
+    unless validation_changeset.valid?, do: Repo.rollback(validation_changeset)
+
+    manufacturer_id = Ecto.Changeset.get_field(validation_changeset, :manufacturer_id)
+    model = Ecto.Changeset.get_field(validation_changeset, :model)
+
+    manufacturer_resource =
+      Manufacturer
+      |> where(
+        [manufacturer],
+        manufacturer.organization_id == ^scope.organization_id and
+          manufacturer.id == ^manufacturer_id
+      )
+      |> join(:inner, [manufacturer], resource in assoc(manufacturer, :resource))
+      |> select([_manufacturer, resource], resource)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(manufacturer_resource) do
+      validation_changeset
+      |> Ecto.Changeset.add_error(:manufacturer_id, "manufacturer does not exist")
+      |> Repo.rollback()
+    end
+
+    name = "#{manufacturer_resource.name} #{model}"
+
+    resource_attrs =
+      resource_attrs
+      |> put_attr(:name, name)
+      |> put_attr(:display_name, name)
+
+    attrs = put_attr(attrs, :model, model)
+    create_projection(scope, module, kind, resource_attrs, attrs)
   end
 
   defp create_module_record(scope, module_type, resource_attrs, attrs) do
