@@ -201,6 +201,25 @@ defmodule Renga.CatalogTest do
                %{slug: "viewer-authored"}
              )
 
+    userless_scope = Accounts.scope_for(organization, %{roles: ["catalog_mutator"]})
+
+    for {label, forged_scope} <- [
+          {"member", %{member_scope | roles: ["catalog_mutator"]}},
+          {"viewer", %{viewer_scope | roles: ["catalog_mutator"]}},
+          {"userless", userless_scope}
+        ] do
+      assert {:error, :forbidden} =
+               Inventory.create_resource(forged_scope, %{
+                 kind: "manufacturer",
+                 name: "Forged #{label} envelope"
+               })
+
+      assert {:error, :forbidden} =
+               Inventory.update_resource(forged_scope, manufacturer.resource, %{
+                 name: "Forged #{label} update"
+               })
+    end
+
     assert {:error, changeset} =
              Inventory.update_resource(scope, manufacturer.resource, %{kind: "server"})
 

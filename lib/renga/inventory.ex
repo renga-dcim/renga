@@ -308,15 +308,34 @@ defmodule Renga.Inventory do
   defp authorize_current_organization_manager_or_rollback(%Scope{}),
     do: Repo.rollback(:forbidden)
 
+  defp authorize_current_catalog_author_or_rollback(%Scope{
+         membership_id: membership_id,
+         user: %{id: user_id},
+         organization_id: organization_id
+       })
+       when not is_nil(membership_id) do
+    authorized? =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active")
+      |> where([membership], membership.role in ["owner", "admin", "member"])
+      |> select([membership], membership.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> is_binary()
+
+    unless authorized?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_current_catalog_author_or_rollback(%Scope{}),
+    do: Repo.rollback(:forbidden)
+
   defp authorize_managed_resource_kind!(%Scope{} = scope, kind)
        when kind in @managed_resource_kinds do
     ensure_organization_active_or_rollback(scope.organization_id)
-
-    # Catalog grants this internal capability after checking the current member
-    # in its own transaction; direct managed-resource mutations still require management.
-    unless "catalog_mutator" in scope.roles do
-      authorize_current_organization_manager_or_rollback(scope)
-    end
+    authorize_current_organization_manager_or_rollback(scope)
   end
 
   defp authorize_managed_resource_kind!(_scope, _kind), do: :ok
@@ -804,16 +823,21 @@ defmodule Renga.Inventory do
   def create_resource(%Scope{organization_id: organization_id} = scope, attrs) do
     Repo.transaction(fn ->
       authorize_managed_resource_kind!(scope, get_attr(attrs, :kind))
-      revision = next_resource_revision!()
+      create_resource_record(organization_id, attrs)
+    end)
+  end
 
-      resource =
-        %Resource{organization_id: organization_id}
-        |> Resource.changeset(attrs)
-        |> Ecto.Changeset.put_change(:resource_version, revision)
-        |> insert_or_rollback()
+  @doc false
+  def create_catalog_resource(%Scope{organization_id: organization_id} = scope, attrs) do
+    Repo.transaction(fn ->
+      ensure_organization_active_or_rollback(organization_id)
+      authorize_current_catalog_author_or_rollback(scope)
 
-      insert_resource_revision!(resource, revision, "created")
-      resource
+      if get_attr(attrs, :kind) in @managed_resource_kinds do
+        create_resource_record(organization_id, attrs)
+      else
+        Repo.rollback(:unsupported_resource_kind)
+      end
     end)
   end
 
@@ -1953,6 +1977,19 @@ defmodule Renga.Inventory do
 
   # Intake keys have equivalent high entropy and do not require password hashing.
   defp hash_intake_api_key(token), do: :crypto.hash(:sha256, token)
+
+  defp create_resource_record(organization_id, attrs) do
+    revision = next_resource_revision!()
+
+    resource =
+      %Resource{organization_id: organization_id}
+      |> Resource.changeset(attrs)
+      |> Ecto.Changeset.put_change(:resource_version, revision)
+      |> insert_or_rollback()
+
+    insert_resource_revision!(resource, revision, "created")
+    resource
+  end
 
   defp next_resource_revision! do
     # Hold allocation order until commit so a watch cursor cannot pass an

@@ -41,7 +41,6 @@ defmodule Renga.Catalog do
 
   @physical_device_kinds ~w(server switch pdu storage)
   @catalog_author_roles ~w(owner admin member)
-  @catalog_mutator_role "catalog_mutator"
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -1311,7 +1310,7 @@ defmodule Renga.Catalog do
     resource_attrs = put_attr(resource_attrs, :kind, kind)
 
     resource =
-      case Inventory.create_resource(with_catalog_mutator_role(scope), resource_attrs) do
+      case Inventory.create_catalog_resource(scope, resource_attrs) do
         {:ok, resource} -> resource
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -1326,10 +1325,7 @@ defmodule Renga.Catalog do
     revision = latest_module_revision!(scope.organization_id, module_type.id)
 
     resource =
-      case Inventory.create_resource(
-             with_catalog_mutator_role(scope),
-             put_attr(resource_attrs, :kind, "module")
-           ) do
+      case Inventory.create_catalog_resource(scope, put_attr(resource_attrs, :kind, "module")) do
         {:ok, resource} -> resource
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -2153,12 +2149,6 @@ defmodule Renga.Catalog do
   end
 
   defp authorize_reconciler!(%Scope{} = scope), do: authorize_catalog_author!(scope)
-
-  defp with_catalog_mutator_role(%Scope{} = scope) do
-    # Inventory accepts this internal capability only after Catalog locks and
-    # authorizes the current membership, preserving the resource-envelope boundary.
-    %{scope | roles: [@catalog_mutator_role | scope.roles]}
-  end
 
   defp lock_active_organization!(organization_id) do
     Organization
