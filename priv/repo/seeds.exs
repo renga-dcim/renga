@@ -3,11 +3,9 @@ if Mix.env() == :dev do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
   alias Renga.Catalog
-  alias Renga.Catalog.HardwareType
   alias Renga.Catalog.InventoryItem
   alias Renga.Catalog.Manufacturer
   alias Renga.Catalog.ModuleBay
-  alias Renga.Catalog.ModuleType
   alias Renga.DCIM
   alias Renga.DCIM.Location
   alias Renga.DCIM.Rack
@@ -414,11 +412,7 @@ if Mix.env() == :dev do
           end
 
       poweredge =
-        Repo.get_by(HardwareType,
-          organization_id: organization.id,
-          manufacturer_id: dell.id,
-          model: "PowerEdge R760"
-        )
+        Catalog.get_hardware_type_by_identity(scope, dell.id, "PowerEdge R760")
         |> case do
           nil ->
             case Catalog.create_hardware_type(
@@ -439,14 +433,16 @@ if Mix.env() == :dev do
             Repo.preload(hardware_type, :resource)
         end
 
+      poweredge_name = "Dell Technologies #{poweredge.model}"
+
       poweredge =
-        if poweredge.resource.name == "Dell Technologies PowerEdge R760" do
+        if poweredge.resource.name == poweredge_name do
           poweredge
         else
           {:ok, resource} =
             Inventory.update_resource(scope, poweredge.resource, %{
-              name: "Dell Technologies PowerEdge R760",
-              display_name: "Dell Technologies PowerEdge R760"
+              name: poweredge_name,
+              display_name: poweredge_name
             })
 
           %{poweredge | resource: resource}
@@ -485,11 +481,7 @@ if Mix.env() == :dev do
       {:ok, _assignment} = Catalog.assign_hardware_type(scope, compute.id, poweredge.id)
 
       boss_type =
-        Repo.get_by(ModuleType,
-          organization_id: organization.id,
-          manufacturer_id: dell.id,
-          model: "BOSS-N1"
-        )
+        Catalog.get_module_type_by_identity(scope, dell.id, "BOSS-N1")
         |> case do
           nil ->
             case Catalog.create_module_type(
@@ -510,14 +502,16 @@ if Mix.env() == :dev do
             Repo.preload(module_type, :resource)
         end
 
+      boss_type_name = "Dell Technologies #{boss_type.model}"
+
       boss_type =
-        if boss_type.resource.name == "Dell Technologies BOSS-N1" do
+        if boss_type.resource.name == boss_type_name do
           boss_type
         else
           {:ok, resource} =
             Inventory.update_resource(scope, boss_type.resource, %{
-              name: "Dell Technologies BOSS-N1",
-              display_name: "Dell Technologies BOSS-N1"
+              name: boss_type_name,
+              display_name: boss_type_name
             })
 
           %{boss_type | resource: resource}
