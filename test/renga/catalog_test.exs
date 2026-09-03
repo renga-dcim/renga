@@ -283,6 +283,44 @@ defmodule Renga.CatalogTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision values outside database limits return changeset errors", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Limits", "limits")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "LIMITS-1", "server")
+
+    for attrs <- [
+          %{part_number: String.duplicate("p", 256)},
+          %{width_mm: "100000000.00"},
+          %{weight_kg: "10000000.000"}
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, attrs)
+
+      assert errors_on(changeset) != %{}
+    end
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: String.duplicate("n", 256)}
+             ])
+
+    assert %{name: [_]} = errors_on(changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "component identity is unique without regard to case", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Identity", "identity")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTITY-1", "server")
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0"},
+               %{kind: "interface", name: "ETH0"}
+             ])
+
+    assert %{name: ["has already been taken"]} = errors_on(changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "finding reconciliation rechecks authorization and scopes observations", %{
     scope: scope,
     organization: organization,

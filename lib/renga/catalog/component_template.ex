@@ -27,24 +27,30 @@ defmodule Renga.Catalog.ComponentTemplate do
 
   def changeset(template, attrs) do
     template
-    |> cast(attrs, [:kind, :name, :label, :position, :description, :required, :attributes])
+    |> input_changeset(attrs)
     |> reject_mutation()
-    |> update_change(:name, &String.trim/1)
-    |> validate_required([
-      :organization_id,
-      :catalog_type_revision_id,
-      :kind,
-      :name,
-      :required
-    ])
-    |> validate_inclusion(:kind, @kinds)
-    |> validate_map(:attributes)
+    |> validate_required([:organization_id, :catalog_type_revision_id])
     |> assoc_constraint(:catalog_type_revision, name: :component_templates_revision_fkey)
     |> check_constraint(:catalog_type_revision,
       name: :component_templates_revision_finalized,
       message: "is finalized"
     )
-    |> unique_constraint([:organization_id, :catalog_type_revision_id, :kind, :name])
+    |> unique_constraint(:name, name: :component_templates_identity_index)
+  end
+
+  def input_changeset(template, attrs) do
+    template
+    |> cast(attrs, [:kind, :name, :label, :position, :description, :required, :attributes])
+    |> update_change(:name, &String.trim/1)
+    |> update_change(:label, &normalize_optional_string/1)
+    |> update_change(:position, &normalize_optional_string/1)
+    |> update_change(:description, &normalize_optional_string/1)
+    |> validate_required([:kind, :name, :required])
+    |> validate_length(:name, max: 255)
+    |> validate_length(:label, max: 255)
+    |> validate_length(:position, max: 255)
+    |> validate_inclusion(:kind, @kinds)
+    |> validate_map(:attributes)
   end
 
   defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
@@ -58,5 +64,12 @@ defmodule Renga.Catalog.ComponentTemplate do
     validate_change(changeset, field, fn ^field, value ->
       if is_map(value), do: [], else: [{field, "must be a map"}]
     end)
+  end
+
+  defp normalize_optional_string(value) do
+    case String.trim(value) do
+      "" -> nil
+      value -> value
+    end
   end
 end
