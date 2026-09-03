@@ -4,6 +4,8 @@ defmodule RengaWeb.CatalogLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Catalog
+  alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.TypeRevision
 
   @device_class_options Enum.map(
                           ~w(server switch appliance chassis pdu storage other),
@@ -39,6 +41,7 @@ defmodule RengaWeb.CatalogLive do
        module_type_form: catalog_form(:module_type),
        revision_params: default_revision_params(),
        revision_form: revision_form(default_revision_params()),
+       template_errors: %{},
        airflow_options: @airflow_options,
        component_kind_options: @component_kind_options
      )
@@ -134,7 +137,15 @@ defmodule RengaWeb.CatalogLive do
 
   def handle_event("validate_revision", %{"revision" => params}, socket) do
     params = normalize_revision_params(params)
-    {:noreply, assign_revision_form(socket, params)}
+
+    case revision_submission(params) do
+      {:ok, _revision_attrs, _templates} ->
+        {:noreply, assign_revision_form(socket, params, [], %{}, :validate)}
+
+      {:error, revision_errors, template_errors} ->
+        {:noreply,
+         assign_revision_form(socket, params, revision_errors, template_errors, :validate)}
+    end
   end
 
   def handle_event("add_component_template", _params, socket) do
@@ -149,21 +160,19 @@ defmodule RengaWeb.CatalogLive do
     {:noreply, assign_revision_form(socket, params)}
   end
 
-  def handle_event("remove_component_template", %{"index" => index}, socket) do
-    case Integer.parse(index) do
-      {index, ""} ->
-        templates =
-          socket.assigns.revision_params["templates"]
-          |> template_params_list()
-          |> List.delete_at(index)
-          |> index_template_params()
+  def handle_event("remove_component_template", %{"id" => id}, socket) do
+    templates =
+      socket.assigns.revision_params["templates"]
+      |> template_params_list()
+      |> Enum.reject(&(&1["_persistent_id"] == id))
+      |> case do
+        [] -> [default_template_params()]
+        templates -> templates
+      end
+      |> index_template_params()
 
-        params = Map.put(socket.assigns.revision_params, "templates", templates)
-        {:noreply, assign_revision_form(socket, params)}
-
-      _invalid_index ->
-        {:noreply, socket}
-    end
+    params = Map.put(socket.assigns.revision_params, "templates", templates)
+    {:noreply, assign_revision_form(socket, params)}
   end
 
   def handle_event("publish_revision", %{"revision" => params}, socket) do
@@ -245,6 +254,7 @@ defmodule RengaWeb.CatalogLive do
               class_value={@hardware_type.device_class}
               can_author_catalog={@can_author_catalog?}
               revision_form={@revision_form}
+              template_errors={@template_errors}
               airflow_options={@airflow_options}
               component_kind_options={@component_kind_options}
             />
@@ -273,6 +283,7 @@ defmodule RengaWeb.CatalogLive do
               class_value={@module_type.module_class}
               can_author_catalog={@can_author_catalog?}
               revision_form={@revision_form}
+              template_errors={@template_errors}
               airflow_options={@airflow_options}
               component_kind_options={@component_kind_options}
             />
@@ -512,6 +523,7 @@ defmodule RengaWeb.CatalogLive do
   attr :class_value, :string, required: true
   attr :can_author_catalog, :boolean, required: true
   attr :revision_form, :map, required: true
+  attr :template_errors, :map, required: true
   attr :airflow_options, :list, required: true
   attr :component_kind_options, :list, required: true
 
@@ -544,6 +556,7 @@ defmodule RengaWeb.CatalogLive do
       <.revision_authoring_form
         :if={@can_author_catalog}
         form={@revision_form}
+        template_errors={@template_errors}
         airflow_options={@airflow_options}
         component_kind_options={@component_kind_options}
       />
@@ -607,6 +620,7 @@ defmodule RengaWeb.CatalogLive do
   end
 
   attr :form, :map, required: true
+  attr :template_errors, :map, required: true
   attr :airflow_options, :list, required: true
   attr :component_kind_options, :list, required: true
 
@@ -639,11 +653,38 @@ defmodule RengaWeb.CatalogLive do
         class="mt-7 space-y-7"
       >
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <.input field={@form[:part_number]} type="text" label="Part number" />
-          <.input field={@form[:height_units]} type="number" label="Rack height (U)" min="1" />
-          <.input field={@form[:width_mm]} type="number" label="Width (mm)" min="0" step="0.01" />
-          <.input field={@form[:depth_mm]} type="number" label="Depth (mm)" min="0" step="0.01" />
-          <.input field={@form[:weight_kg]} type="number" label="Weight (kg)" min="0" step="0.001" />
+          <.input field={@form[:part_number]} type="text" label="Part number" maxlength="255" />
+          <.input
+            field={@form[:height_units]}
+            type="number"
+            label="Rack height (U)"
+            min="1"
+            max="2147483647"
+          />
+          <.input
+            field={@form[:width_mm]}
+            type="number"
+            label="Width (mm)"
+            min="0.01"
+            max="99999999.99"
+            step="0.01"
+          />
+          <.input
+            field={@form[:depth_mm]}
+            type="number"
+            label="Depth (mm)"
+            min="0.01"
+            max="99999999.99"
+            step="0.01"
+          />
+          <.input
+            field={@form[:weight_kg]}
+            type="number"
+            label="Weight (kg)"
+            min="0.001"
+            max="9999999.999"
+            step="0.001"
+          />
           <.input
             field={@form[:airflow]}
             type="select"
@@ -684,27 +725,30 @@ defmodule RengaWeb.CatalogLive do
               :let={template_form}
               field={@form[:templates]}
               default={[]}
-              skip_persistent_id
             >
               <fieldset
-                id={"component-template-field-#{template_form.index}"}
-                class="rounded-xl border border-base-content/10 bg-base-100 p-4"
+                id={"component-template-field-#{template_form.params["_persistent_id"]}"}
+                class="relative rounded-xl border border-base-content/10 bg-base-100 p-4"
               >
-                <div class="flex items-center justify-between gap-4">
-                  <legend class="text-sm font-semibold">
-                    Component {template_form.index + 1}
-                  </legend>
-                  <button
-                    :if={template_form.index > 0}
-                    id={"remove-component-template-#{template_form.index}"}
-                    type="button"
-                    phx-click="remove_component_template"
-                    phx-value-index={template_form.index}
-                    class="rounded-md p-1.5 text-base-content/40 transition hover:bg-red-500/10 hover:text-red-600"
-                    aria-label={"Remove component #{template_form.index + 1}"}
-                  >
-                    <.icon name="hero-trash" class="size-4" />
-                  </button>
+                <legend class="px-1 text-sm font-semibold">
+                  Component {template_form.index + 1}
+                </legend>
+                <button
+                  id={"remove-component-template-#{template_form.params["_persistent_id"]}"}
+                  type="button"
+                  phx-click="remove_component_template"
+                  phx-value-id={template_form.params["_persistent_id"]}
+                  class="absolute right-4 top-3 rounded-md p-1.5 text-base-content/40 transition hover:bg-red-500/10 hover:text-red-600"
+                  aria-label={"Remove component #{template_form.index + 1}"}
+                >
+                  <.icon name="hero-trash" class="size-4" />
+                </button>
+                <div
+                  :if={errors = @template_errors[template_form.params["_persistent_id"]]}
+                  id={"component-template-field-#{template_form.params["_persistent_id"]}-errors"}
+                  class="mt-2 space-y-1 text-sm text-error"
+                >
+                  <p :for={error <- errors}>Component {template_form.index + 1}: {error}</p>
                 </div>
                 <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <.input
@@ -714,9 +758,19 @@ defmodule RengaWeb.CatalogLive do
                     prompt="Select kind"
                     options={@component_kind_options}
                   />
-                  <.input field={template_form[:name]} type="text" label="Name" />
-                  <.input field={template_form[:label]} type="text" label="Display label" />
-                  <.input field={template_form[:position]} type="text" label="Position" />
+                  <.input field={template_form[:name]} type="text" label="Name" maxlength="255" />
+                  <.input
+                    field={template_form[:label]}
+                    type="text"
+                    label="Display label"
+                    maxlength="255"
+                  />
+                  <.input
+                    field={template_form[:position]}
+                    type="text"
+                    label="Position"
+                    maxlength="255"
+                  />
                   <.input
                     field={template_form[:description]}
                     type="text"
@@ -815,15 +869,24 @@ defmodule RengaWeb.CatalogLive do
             <li
               :for={template <- templates}
               id={"component-template-#{template.id}"}
-              class="flex items-start justify-between gap-4 text-sm"
+              class="grid gap-3 text-sm sm:grid-cols-[1fr_auto]"
             >
               <div>
                 <p class="font-medium">{template.label || template.name}</p>
                 <p class="text-xs text-base-content/45">{template.position || template.name}</p>
+                <p :if={template.description} class="mt-2 text-xs text-base-content/60">
+                  {template.description}
+                </p>
               </div>
               <span class="text-xs text-base-content/50">
                 {if(template.required, do: "Required", else: "Optional")}
               </span>
+              <.key_values
+                :if={map_size(template.attributes) > 0}
+                id={"component-template-#{template.id}-attributes"}
+                title="Attributes"
+                values={template.attributes}
+              />
             </li>
           </ul>
         </section>
@@ -891,11 +954,11 @@ defmodule RengaWeb.CatalogLive do
         {result, path} = publish_revision_for_type(socket, revision_attrs, templates)
         handle_revision_result(socket, params, result, path)
 
-      {:error, message} ->
+      {:error, revision_errors, template_errors} ->
         {:noreply,
          socket
-         |> assign_revision_form(params)
-         |> put_flash(:error, message)}
+         |> assign_revision_form(params, revision_errors, template_errors, :insert)
+         |> put_flash(:error, first_submission_error(revision_errors, template_errors))}
     end
   end
 
@@ -946,19 +1009,40 @@ defmodule RengaWeb.CatalogLive do
   end
 
   defp revision_submission(params) do
-    with {:ok, specifications} <- decode_json_map(params["specifications"], "Specifications"),
-         {:ok, templates} <- component_template_attrs(params["templates"]) do
-      attrs = %{
-        part_number: blank_to_nil(params["part_number"]),
-        height_units: blank_to_nil(params["height_units"]),
-        width_mm: blank_to_nil(params["width_mm"]),
-        depth_mm: blank_to_nil(params["depth_mm"]),
-        weight_kg: blank_to_nil(params["weight_kg"]),
-        airflow: blank_to_nil(params["airflow"]),
-        specifications: specifications
-      }
+    {specifications, specification_error} = decoded_json_map(params["specifications"])
 
-      {:ok, attrs, templates}
+    attrs = %{
+      part_number: blank_to_nil(params["part_number"]),
+      height_units: blank_to_nil(params["height_units"]),
+      width_mm: blank_to_nil(params["width_mm"]),
+      depth_mm: blank_to_nil(params["depth_mm"]),
+      weight_kg: blank_to_nil(params["weight_kg"]),
+      airflow: blank_to_nil(params["airflow"]),
+      specifications: specifications
+    }
+
+    changeset =
+      %TypeRevision{}
+      |> TypeRevision.input_changeset(attrs)
+      |> maybe_add_error(:specifications, specification_error)
+
+    {templates, template_errors} = component_template_attrs(params["templates"])
+
+    if changeset.valid? and map_size(template_errors) == 0 do
+      revision = Ecto.Changeset.apply_changes(changeset)
+
+      {:ok,
+       Map.take(revision, [
+         :part_number,
+         :height_units,
+         :width_mm,
+         :depth_mm,
+         :weight_kg,
+         :airflow,
+         :specifications
+       ]), templates}
+    else
+      {:error, changeset.errors, template_errors}
     end
   end
 
@@ -966,52 +1050,86 @@ defmodule RengaWeb.CatalogLive do
     templates
     |> template_params_list()
     |> Enum.reject(&blank_template?/1)
-    |> Enum.reduce_while({:ok, []}, fn template, {:ok, parsed} ->
-      case decode_json_map(template["attributes"], "Component attributes") do
-        {:ok, attributes} ->
-          attrs = %{
-            kind: blank_to_nil(template["kind"]),
-            name: blank_to_nil(template["name"]),
-            label: blank_to_nil(template["label"]),
-            position: blank_to_nil(template["position"]),
-            description: blank_to_nil(template["description"]),
-            required: template["required"],
-            attributes: attributes
-          }
+    |> Enum.reduce({[], %{}, MapSet.new()}, fn template, {parsed, errors, identities} ->
+      {attributes, attributes_error} = decoded_json_map(template["attributes"])
 
-          {:cont, {:ok, [attrs | parsed]}}
+      attrs = %{
+        kind: blank_to_nil(template["kind"]),
+        name: blank_to_nil(template["name"]),
+        label: blank_to_nil(template["label"]),
+        position: blank_to_nil(template["position"]),
+        description: blank_to_nil(template["description"]),
+        required: template["required"],
+        attributes: attributes
+      }
 
-        {:error, message} ->
-          {:halt, {:error, message}}
-      end
+      changeset =
+        %ComponentTemplate{}
+        |> ComponentTemplate.input_changeset(attrs)
+        |> maybe_add_error(:attributes, attributes_error)
+
+      component = Ecto.Changeset.apply_changes(changeset)
+      identity = component_identity(component)
+
+      changeset =
+        if identity && MapSet.member?(identities, identity) do
+          Ecto.Changeset.add_error(changeset, :name, "has already been taken")
+        else
+          changeset
+        end
+
+      id = template["_persistent_id"]
+      messages = changeset_error_messages(changeset)
+
+      parsed =
+        if changeset.valid? do
+          [
+            Map.take(component, [
+              :kind,
+              :name,
+              :label,
+              :position,
+              :description,
+              :required,
+              :attributes
+            ])
+            | parsed
+          ]
+        else
+          parsed
+        end
+
+      errors = if messages == [], do: errors, else: Map.put(errors, id, messages)
+      identities = if identity, do: MapSet.put(identities, identity), else: identities
+      {parsed, errors, identities}
     end)
-    |> case do
-      {:ok, parsed} -> {:ok, Enum.reverse(parsed)}
-      error -> error
-    end
+    |> then(fn {parsed, errors, _identities} -> {Enum.reverse(parsed), errors} end)
   end
 
-  defp decode_json_map(value, _label) when value in [nil, ""], do: {:ok, %{}}
+  defp decoded_json_map(value) when value in [nil, ""], do: {%{}, nil}
 
-  defp decode_json_map(value, label) do
+  defp decoded_json_map(value) do
     case Jason.decode(value) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _other} -> {:error, "#{label} must be a JSON object"}
-      {:error, _error} -> {:error, "#{label} must contain valid JSON"}
+      {:ok, decoded} when is_map(decoded) -> {decoded, nil}
+      {:ok, _other} -> {%{}, "must be a JSON object"}
+      {:error, _error} -> {%{}, "must contain valid JSON"}
     end
   end
 
   defp reset_revision_form(socket), do: assign_revision_form(socket, default_revision_params())
 
-  defp assign_revision_form(socket, params) do
+  defp assign_revision_form(socket, params, errors \\ [], template_errors \\ %{}, action \\ nil) do
     params = normalize_revision_params(params)
 
     socket
     |> assign(:revision_params, params)
-    |> assign(:revision_form, revision_form(params))
+    |> assign(:revision_form, revision_form(params, errors, action))
+    |> assign(:template_errors, template_errors)
   end
 
-  defp revision_form(params), do: to_form(params, as: :revision)
+  defp revision_form(params, errors \\ [], action \\ nil) do
+    to_form(params, as: :revision, errors: errors, action: action)
+  end
 
   defp normalize_revision_params(params) do
     default_revision_params()
@@ -1019,6 +1137,7 @@ defmodule RengaWeb.CatalogLive do
     |> Map.update!("templates", fn templates ->
       templates
       |> template_params_list()
+      |> Enum.map(&Map.merge(default_template_params(), &1))
       |> index_template_params()
     end)
   end
@@ -1058,6 +1177,7 @@ defmodule RengaWeb.CatalogLive do
 
   defp default_template_params do
     %{
+      "_persistent_id" => Ecto.UUID.generate(),
       "kind" => "",
       "name" => "",
       "label" => "",
@@ -1071,6 +1191,38 @@ defmodule RengaWeb.CatalogLive do
   defp blank_template?(template) do
     Enum.all?(~w(kind name label position description), &(template[&1] in [nil, ""])) and
       template["attributes"] in [nil, "", "{}"]
+  end
+
+  defp component_identity(%ComponentTemplate{kind: kind, name: name})
+       when is_binary(kind) and is_binary(name) do
+    {kind, String.downcase(name)}
+  end
+
+  defp component_identity(_component), do: nil
+
+  defp maybe_add_error(changeset, _field, nil), do: changeset
+
+  defp maybe_add_error(changeset, field, message),
+    do: Ecto.Changeset.add_error(changeset, field, message)
+
+  defp changeset_error_messages(changeset) do
+    Enum.map(changeset.errors, fn {field, error} ->
+      label = if field == :attributes, do: "Component attributes", else: humanize(field)
+      "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
+    end)
+  end
+
+  defp first_submission_error(revision_errors, template_errors) do
+    case revision_errors do
+      [{field, error} | _rest] ->
+        "#{humanize(field)} #{RengaWeb.CoreComponents.translate_error(error)}"
+
+      [] ->
+        template_errors
+        |> Map.values()
+        |> List.flatten()
+        |> List.first()
+    end
   end
 
   defp assign_manufacturer_options(socket, scope) do
