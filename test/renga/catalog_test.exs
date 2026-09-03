@@ -17,14 +17,15 @@ defmodule Renga.CatalogTest do
   alias Renga.Catalog.TypeRevision
   alias Renga.Inventory
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceRevision
   alias Renga.Repo
 
   setup do
     user = user_fixture()
     organization = organization_fixture()
-    organization_membership_fixture(user, organization, %{role: "admin"})
+    membership = organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Accounts.scope_for_user(user, organization.id)
-    %{scope: scope, organization: organization}
+    %{scope: scope, organization: organization, membership: membership}
   end
 
   test "creates resource-backed manufacturers and tenant-scoped catalog types", %{scope: scope} do
@@ -72,11 +73,15 @@ defmodule Renga.CatalogTest do
     assert {:ok, _hardware_type} =
              hardware_type_fixture(scope, manufacturer, "RS-42", "server")
 
+    assert Catalog.get_hardware_type_by_identity(scope, manufacturer.id, "  rs-42  ")
+
     assert {:error, %Ecto.Changeset{errors: [model: {"has already been taken", _}]}} =
              hardware_type_fixture(scope, manufacturer, "rs-42", "server")
 
     assert {:ok, _module_type} =
              module_type_fixture(scope, manufacturer, "RS-42", "line_card")
+
+    assert Catalog.get_module_type_by_identity(scope, manufacturer.id, "  rs-42  ")
 
     assert {:error, %Ecto.Changeset{errors: [model: {"has already been taken", _}]}} =
              module_type_fixture(scope, manufacturer, "rs-42", "line_card")
@@ -161,7 +166,7 @@ defmodule Renga.CatalogTest do
              hardware_type_fixture(other_scope, manufacturer, "Foreign", "server")
   end
 
-  test "catalog mutations require a current owner or admin membership", %{
+  test "catalog mutations allow members while managed envelopes remain context-owned", %{
     scope: scope,
     organization: organization
   } do
@@ -170,14 +175,18 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, member_manufacturer} =
              Catalog.create_manufacturer(
                member_scope,
-               %{name: "Forbidden", lifecycle_state: "active"},
-               %{slug: "forbidden"}
+               %{name: "Member authored", lifecycle_state: "active"},
+               %{slug: "member-authored"}
              )
 
-    refute Repo.get_by(Resource, kind: "manufacturer", name: "Forbidden")
+    assert member_manufacturer.resource.name == "Member authored"
+    refute function_exported?(Inventory, :create_catalog_resource, 2)
+
+    resource_count = Repo.aggregate(Resource, :count)
+    revision_count = Repo.aggregate(ResourceRevision, :count)
 
     assert {:error, :forbidden} =
              Inventory.create_resource(member_scope, %{
@@ -190,10 +199,73 @@ defmodule Renga.CatalogTest do
                name: "Bypassed catalog mutation"
              })
 
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    assert {:error, :forbidden} =
+             Catalog.create_manufacturer(
+               viewer_scope,
+               %{name: "Viewer authored", lifecycle_state: "active"},
+               %{slug: "viewer-authored"}
+             )
+
+    userless_scope = Accounts.scope_for(organization, %{roles: ["catalog_mutator"]})
+
+    for {label, forged_scope} <- [
+          {"member", %{member_scope | roles: ["catalog_mutator"]}},
+          {"viewer", %{viewer_scope | roles: ["catalog_mutator"]}},
+          {"userless", userless_scope}
+        ] do
+      assert {:error, :forbidden} =
+               Inventory.create_resource(forged_scope, %{
+                 kind: "manufacturer",
+                 name: "Forged #{label} envelope"
+               })
+
+      assert {:error, :forbidden} =
+               Inventory.update_resource(forged_scope, manufacturer.resource, %{
+                 name: "Forged #{label} update"
+               })
+    end
+
     assert {:error, changeset} =
              Inventory.update_resource(scope, manufacturer.resource, %{kind: "server"})
 
     assert %{kind: ["cannot be changed"]} = errors_on(changeset)
+    assert Repo.aggregate(Resource, :count) == resource_count
+    assert Repo.aggregate(ResourceRevision, :count) == revision_count
+  end
+
+  test "catalog mutations reject stale downgraded and disabled membership scopes", %{
+    scope: admin_scope,
+    organization: organization,
+    membership: admin_membership
+  } do
+    {:ok, _membership} =
+      Accounts.update_organization_membership(admin_membership, %{role: "viewer"})
+
+    member = user_fixture()
+    member_membership = organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(member_membership, %{status: "disabled"})
+
+    for {scope, slug} <- [
+          {admin_scope, "stale-downgraded"},
+          {member_scope, "stale-disabled"}
+        ] do
+      assert {:error, :forbidden} =
+               Catalog.create_manufacturer(
+                 scope,
+                 %{name: slug, lifecycle_state: "active"},
+                 %{slug: slug}
+               )
+    end
+
+    assert Catalog.list_manufacturers(admin_scope) == []
+    assert Inventory.list_resources(admin_scope) == []
   end
 
   test "invalid templates roll back the entire revision", %{scope: scope} do
@@ -209,6 +281,79 @@ defmodule Renga.CatalogTest do
              )
 
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "finding reconciliation rechecks authorization and scopes observations", %{
+    scope: scope,
+    organization: organization,
+    membership: membership
+  } do
+    {resource, observation} = finding_reconciliation_fixture(scope)
+    opts = [component_snapshot_complete?: true, component_snapshot_current?: true]
+
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    stale_admin_scope = scope
+    {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "viewer"})
+
+    disabled_member = user_fixture()
+
+    disabled_membership =
+      organization_membership_fixture(disabled_member, organization, %{role: "member"})
+
+    disabled_scope = Accounts.scope_for_user(disabled_member, organization.id)
+
+    {:ok, _membership} =
+      Accounts.update_organization_membership(disabled_membership, %{status: "disabled"})
+
+    for unauthorized_scope <- [viewer_scope, stale_admin_scope, disabled_scope] do
+      assert {:error, :forbidden} =
+               Catalog.reconcile_component_findings(
+                 unauthorized_scope,
+                 observation,
+                 resource,
+                 opts
+               )
+
+      assert Catalog.list_component_findings(scope, resource.id) == []
+    end
+
+    other_organization = organization_fixture()
+    other_scope = Accounts.scope_for(other_organization)
+
+    {:ok, other_source} =
+      Inventory.create_source(other_scope, %{kind: "host_agent", name: "other"})
+
+    {:ok, foreign_observation} =
+      Inventory.create_observation(other_scope, other_source.id, %{
+        observation_id: "foreign-finding-observation",
+        observed_at: ~U[2026-08-27 07:00:00.000000Z],
+        payload: %{}
+      })
+
+    reconciler_scope = Accounts.scope_for(organization, %{roles: ["catalog_reconciler"]})
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Catalog.reconcile_component_findings(
+        reconciler_scope,
+        foreign_observation,
+        resource,
+        opts
+      )
+    end
+
+    assert :ok =
+             Catalog.reconcile_component_findings(
+               reconciler_scope,
+               observation,
+               resource,
+               opts
+             )
+
+    assert [%{kind: "missing_expected_component"}] =
+             Catalog.list_component_findings(scope, resource.id)
   end
 
   test "database constraints reject every cross-tenant catalog relationship", %{scope: scope} do
@@ -577,8 +722,10 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, assignment} =
              Catalog.assign_hardware_type(member_scope, resource.id, hardware_type.id)
+
+    assert assignment.provenance["user_id"] == member.id
 
     other_user = user_fixture()
     other_organization = organization_fixture()
@@ -600,7 +747,6 @@ defmodule Renga.CatalogTest do
 
     assert errors_on(changeset) != %{}
 
-    assert {:ok, assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
     {:ok, newer_revision} = Catalog.create_hardware_type_revision(scope, hardware_type, %{})
 
     assert {:error, mismatched_revision_changeset} =
@@ -841,7 +987,7 @@ defmodule Renga.CatalogTest do
     assert altered.confirmed_by_user_id == second_manager.id
   end
 
-  test "exceptions require management access and templates from the pinned revision", %{
+  test "exceptions require catalog author access and templates from the pinned revision", %{
     scope: scope,
     organization: organization
   } do
@@ -873,12 +1019,14 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:error, :forbidden} =
+    assert {:ok, exception} =
              Catalog.put_expected_component_exception(member_scope, resource.id, %{
                action: "add",
                kind: "interface",
-               name: "unauthorized"
+               name: "member-added"
              })
+
+    assert exception.confirmed_by_user_id == member.id
   end
 
   test "database rejects exceptions whose template is from another revision", %{scope: scope} do
@@ -1020,5 +1168,28 @@ defmodule Renga.CatalogTest do
       |> Repo.insert!()
       |> Map.fetch!(:id)
     end)
+  end
+
+  defp finding_reconciliation_fixture(scope) do
+    resource = physical_resource_fixture(scope, "authorized-finding-device")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Finding Vendor", "finding-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "FINDING-1", "server")
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+        %{kind: "cpu", name: "CPU1", required: true}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, resource.id, hardware_type.id)
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "finding-source"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        observation_id: "authorized-finding-observation",
+        observed_at: ~U[2026-08-27 06:00:00.000000Z],
+        payload: %{}
+      })
+
+    {resource, observation}
   end
 end

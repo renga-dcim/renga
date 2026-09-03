@@ -27,10 +27,14 @@ defmodule Renga.Inventory.Reconciler do
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
   """
-  def reconcile(%Scope{} = scope, %Observation{} = observation) do
-    do_reconcile(scope, observation)
-  rescue
-    exception -> record_unexpected_failure(scope, observation, exception)
+  def reconcile(%Scope{} = scope, %Observation{} = observation, opts \\ []) do
+    authorize = Keyword.get(opts, :authorize, fn -> :ok end)
+
+    try do
+      do_reconcile(scope, observation, authorize)
+    rescue
+      exception -> record_unexpected_failure(scope, observation, exception, authorize)
+    end
   end
 
   @doc """
@@ -40,25 +44,31 @@ defmodule Renga.Inventory.Reconciler do
   check and first attempt allocation atomic, while `reconcile/2` remains the
   explicit retry path for repaired failures.
   """
-  def reconcile_once(%Scope{} = scope, %Observation{} = observation) do
-    Repo.transaction(fn ->
-      Inventory.lock_organization!(scope.organization_id)
+  def reconcile_once(%Scope{} = scope, %Observation{} = observation, opts \\ []) do
+    authorize = Keyword.get(opts, :authorize, fn -> :ok end)
 
-      case latest_result(scope, observation.id) do
-        nil -> perform_reconciliation(scope, observation)
-        result -> result_to_reconciliation(scope, result)
+    try do
+      Repo.transaction(fn ->
+        authorize.()
+        Inventory.lock_organization!(scope.organization_id)
+
+        case latest_result(scope, observation.id) do
+          nil -> perform_reconciliation(scope, observation)
+          result -> result_to_reconciliation(scope, result)
+        end
+      end)
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> record_unexpected_failure_once(scope, observation, reason, authorize)
       end
-    end)
-    |> case do
-      {:ok, result} -> result
-      {:error, reason} -> record_unexpected_failure_once(scope, observation, reason)
+    rescue
+      exception -> record_unexpected_failure_once(scope, observation, exception, authorize)
     end
-  rescue
-    exception -> record_unexpected_failure_once(scope, observation, exception)
   end
 
-  defp do_reconcile(scope, observation) do
+  defp do_reconcile(scope, observation, authorize) do
     Repo.transaction(fn ->
+      authorize.()
       Inventory.lock_organization!(scope.organization_id)
       perform_reconciliation(scope, observation)
     end)
@@ -118,10 +128,11 @@ defmodule Renga.Inventory.Reconciler do
 
   defp result_to_reconciliation(_scope, result), do: {:error, result}
 
-  defp record_unexpected_failure_once(scope, observation, reason) do
+  defp record_unexpected_failure_once(scope, observation, reason, authorize) do
     attrs = unexpected_failure_attrs(reason)
 
     Repo.transaction(fn ->
+      authorize.()
       Inventory.lock_organization!(scope.organization_id)
 
       case latest_result(scope, observation.id) do
@@ -144,8 +155,13 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp record_unexpected_failure(scope, observation, exception) do
-    record_serialized_failure(scope, observation, unexpected_failure_attrs(exception))
+  defp record_unexpected_failure(scope, observation, exception, authorize) do
+    record_serialized_failure(
+      scope,
+      observation,
+      unexpected_failure_attrs(exception),
+      authorize
+    )
   end
 
   defp unexpected_failure_attrs(reason) do
@@ -167,8 +183,9 @@ defmodule Renga.Inventory.Reconciler do
   defp failure_type(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp failure_type(_reason), do: "unknown"
 
-  defp record_serialized_failure(scope, observation, attrs, retries \\ 1) do
+  defp record_serialized_failure(scope, observation, attrs, authorize, retries \\ 1) do
     Repo.transaction(fn ->
+      authorize.()
       Inventory.lock_organization!(scope.organization_id)
 
       case Inventory.create_observation_reconciliation(
@@ -186,7 +203,7 @@ defmodule Renga.Inventory.Reconciler do
 
       {:error, changeset} when retries > 0 ->
         if attempt_conflict?(changeset) do
-          record_serialized_failure(scope, observation, attrs, retries - 1)
+          record_serialized_failure(scope, observation, attrs, authorize, retries - 1)
         else
           {:error, changeset}
         end

@@ -37,6 +37,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ResourceOwner
   alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
+  alias Renga.Inventory.ResourceStore
   alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
@@ -45,7 +46,6 @@ defmodule Renga.Inventory do
 
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
-  @resource_revision_lock_key 1_380_271_687
   @operational_resource_page_size 50
   @managed_resource_kinds ~w(manufacturer hardware_type module_type module)
 
@@ -284,6 +284,43 @@ defmodule Renga.Inventory do
     end)
   end
 
+  defp authorized_reconciliation_observation(%Scope{} = scope, observation_id) do
+    Repo.transaction(fn ->
+      ensure_organization_active_or_rollback(scope.organization_id)
+      authorize_current_reconciliation_actor_or_rollback(scope)
+      get_observation!(scope, observation_id)
+    end)
+  end
+
+  defp authorize_reconciliation!(%Scope{} = scope) do
+    ensure_organization_active_or_rollback(scope.organization_id)
+    authorize_current_reconciliation_actor_or_rollback(scope)
+  end
+
+  defp authorize_current_reconciliation_actor_or_rollback(%Scope{
+         membership_id: membership_id,
+         user: %{id: user_id},
+         organization_id: organization_id
+       })
+       when not is_nil(membership_id) do
+    authorized? =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active")
+      |> where([membership], membership.role in ["owner", "admin", "member"])
+      |> select([membership], membership.id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> is_binary()
+
+    unless authorized?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_current_reconciliation_actor_or_rollback(%Scope{}),
+    do: Repo.rollback(:forbidden)
+
   defp authorize_current_organization_manager_or_rollback(%Scope{
          membership_id: membership_id,
          user: %{id: user_id},
@@ -308,7 +345,8 @@ defmodule Renga.Inventory do
   defp authorize_current_organization_manager_or_rollback(%Scope{}),
     do: Repo.rollback(:forbidden)
 
-  defp authorize_managed_resource_kind!(scope, kind) when kind in @managed_resource_kinds do
+  defp authorize_managed_resource_kind!(%Scope{} = scope, kind)
+       when kind in @managed_resource_kinds do
     ensure_organization_active_or_rollback(scope.organization_id)
     authorize_current_organization_manager_or_rollback(scope)
   end
@@ -798,16 +836,7 @@ defmodule Renga.Inventory do
   def create_resource(%Scope{organization_id: organization_id} = scope, attrs) do
     Repo.transaction(fn ->
       authorize_managed_resource_kind!(scope, get_attr(attrs, :kind))
-      revision = next_resource_revision!()
-
-      resource =
-        %Resource{organization_id: organization_id}
-        |> Resource.changeset(attrs)
-        |> Ecto.Changeset.put_change(:resource_version, revision)
-        |> insert_or_rollback()
-
-      insert_resource_revision!(resource, revision, "created")
-      resource
+      create_resource_record(organization_id, attrs)
     end)
   end
 
@@ -820,14 +849,23 @@ defmodule Renga.Inventory do
         attrs
       ) do
     Repo.transaction(fn ->
+      stored_kind =
+        Resource
+        |> where([stored], stored.id == ^resource.id)
+        |> where([stored], stored.organization_id == ^organization_id)
+        |> select([stored], stored.kind)
+        |> Repo.one!()
+
+      # Managed mutations use the same organization → membership → resource
+      # lock order as their owning contexts to avoid cross-context deadlocks.
+      authorize_managed_resource_kind!(scope, stored_kind)
+
       stored_resource =
         Resource
         |> where([stored], stored.id == ^resource.id)
         |> where([stored], stored.organization_id == ^organization_id)
         |> lock("FOR UPDATE")
         |> Repo.one!()
-
-      authorize_managed_resource_kind!(scope, stored_resource.kind)
 
       if stored_resource.resource_version != resource.resource_version do
         stored_resource
@@ -836,7 +874,7 @@ defmodule Renga.Inventory do
         |> Repo.rollback()
       end
 
-      revision = next_resource_revision!()
+      revision = ResourceStore.next_revision!()
 
       resource =
         stored_resource
@@ -1600,18 +1638,34 @@ defmodule Renga.Inventory do
   @doc """
   Reconciles one immutable observation into canonical inventory.
   """
-  def reconcile_observation(%Scope{} = scope, observation_id) do
+  def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
     Reconciler.reconcile(scope, observation)
+  end
+
+  def reconcile_observation(%Scope{} = scope, observation_id) do
+    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
+      Reconciler.reconcile(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end
+      )
+    end
   end
 
   @doc """
   Reconciles one observation for ingestion, returning its existing terminal
   result when another request has already attempted it.
   """
-  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+  def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
     Reconciler.reconcile_once(scope, observation)
+  end
+
+  def reconcile_observation_once(%Scope{} = scope, observation_id) do
+    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
+      Reconciler.reconcile_once(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end
+      )
+    end
   end
 
   @doc """
@@ -1948,12 +2002,11 @@ defmodule Renga.Inventory do
   # Intake keys have equivalent high entropy and do not require password hashing.
   defp hash_intake_api_key(token), do: :crypto.hash(:sha256, token)
 
-  defp next_resource_revision! do
-    # Hold allocation order until commit so a watch cursor cannot pass an
-    # earlier revision that is still invisible in another transaction.
-    Repo.query!("SELECT pg_advisory_xact_lock($1)", [@resource_revision_lock_key])
-    %{rows: [[revision]]} = Repo.query!("SELECT nextval('resource_revision_sequence')")
-    revision
+  defp create_resource_record(organization_id, attrs) do
+    case ResourceStore.insert(organization_id, attrs) do
+      {:ok, resource} -> resource
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp insert_resource_revision!(resource, revision, action) do

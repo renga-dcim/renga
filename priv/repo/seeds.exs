@@ -3,11 +3,9 @@ if Mix.env() == :dev do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.User
   alias Renga.Catalog
-  alias Renga.Catalog.HardwareType
   alias Renga.Catalog.InventoryItem
   alias Renga.Catalog.Manufacturer
   alias Renga.Catalog.ModuleBay
-  alias Renga.Catalog.ModuleType
   alias Renga.DCIM
   alias Renga.DCIM.Location
   alias Renga.DCIM.Rack
@@ -414,20 +412,41 @@ if Mix.env() == :dev do
           end
 
       poweredge =
-        find_projection.(HardwareType, "hardware_type", "Dell PowerEdge R760") ||
-          case Catalog.create_hardware_type(
-                 scope,
-                 %{name: "Dell PowerEdge R760", lifecycle_state: "active"},
-                 %{
-                   manufacturer_id: dell.id,
-                   model: "PowerEdge R760",
-                   device_class: "server",
-                   description: "Two-socket 2U compute platform"
-                 }
-               ) do
-            {:ok, hardware_type} -> hardware_type
-            {:error, reason} -> raise inspect(reason)
-          end
+        Catalog.get_hardware_type_by_identity(scope, dell.id, "PowerEdge R760")
+        |> case do
+          nil ->
+            case Catalog.create_hardware_type(
+                   scope,
+                   %{lifecycle_state: "active"},
+                   %{
+                     manufacturer_id: dell.id,
+                     model: "PowerEdge R760",
+                     device_class: "server",
+                     description: "Two-socket 2U compute platform"
+                   }
+                 ) do
+              {:ok, hardware_type} -> hardware_type
+              {:error, reason} -> raise inspect(reason)
+            end
+
+          hardware_type ->
+            Repo.preload(hardware_type, :resource)
+        end
+
+      poweredge_name = "Dell Technologies #{poweredge.model}"
+
+      poweredge =
+        if poweredge.resource.name == poweredge_name do
+          poweredge
+        else
+          {:ok, resource} =
+            Inventory.update_resource(scope, poweredge.resource, %{
+              name: poweredge_name,
+              display_name: poweredge_name
+            })
+
+          %{poweredge | resource: resource}
+        end
 
       if Catalog.get_hardware_type!(scope, poweredge.id).revisions == [] do
         {:ok, _revision} =
@@ -462,20 +481,41 @@ if Mix.env() == :dev do
       {:ok, _assignment} = Catalog.assign_hardware_type(scope, compute.id, poweredge.id)
 
       boss_type =
-        find_projection.(ModuleType, "module_type", "Dell BOSS-N1") ||
-          case Catalog.create_module_type(
-                 scope,
-                 %{name: "Dell BOSS-N1", lifecycle_state: "active"},
-                 %{
-                   manufacturer_id: dell.id,
-                   model: "BOSS-N1",
-                   module_class: "other",
-                   description: "Internal boot optimized storage module"
-                 }
-               ) do
-            {:ok, module_type} -> module_type
-            {:error, reason} -> raise inspect(reason)
-          end
+        Catalog.get_module_type_by_identity(scope, dell.id, "BOSS-N1")
+        |> case do
+          nil ->
+            case Catalog.create_module_type(
+                   scope,
+                   %{lifecycle_state: "active"},
+                   %{
+                     manufacturer_id: dell.id,
+                     model: "BOSS-N1",
+                     module_class: "other",
+                     description: "Internal boot optimized storage module"
+                   }
+                 ) do
+              {:ok, module_type} -> module_type
+              {:error, reason} -> raise inspect(reason)
+            end
+
+          module_type ->
+            Repo.preload(module_type, :resource)
+        end
+
+      boss_type_name = "Dell Technologies #{boss_type.model}"
+
+      boss_type =
+        if boss_type.resource.name == boss_type_name do
+          boss_type
+        else
+          {:ok, resource} =
+            Inventory.update_resource(scope, boss_type.resource, %{
+              name: boss_type_name,
+              display_name: boss_type_name
+            })
+
+          %{boss_type | resource: resource}
+        end
 
       if Catalog.get_module_type!(scope, boss_type.id).revisions == [] do
         {:ok, _revision} =

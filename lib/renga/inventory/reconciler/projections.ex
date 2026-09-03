@@ -152,11 +152,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
       end
     end)
 
-    Catalog.reconcile_component_findings(scope, observation, resource,
-      component_snapshot_complete?: complete_snapshot?,
-      component_snapshot_current?: current_snapshot?
-    )
+    reconciler_scope = catalog_reconciler_scope(scope)
+
+    :ok =
+      Catalog.reconcile_component_findings(reconciler_scope, observation, resource,
+        component_snapshot_complete?: complete_snapshot?,
+        component_snapshot_current?: current_snapshot?
+      )
   end
+
+  defp catalog_reconciler_scope(%Scope{user: nil} = scope) do
+    %{scope | membership_id: nil, roles: ["catalog_reconciler"]}
+  end
+
+  defp catalog_reconciler_scope(%Scope{} = scope), do: scope
 
   defp complete_component_snapshot?(source, observation, payload, current_snapshot?) do
     current_snapshot? and source.metadata["component_snapshot_policy"] == "complete" and

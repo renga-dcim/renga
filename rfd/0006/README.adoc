@@ -143,14 +143,16 @@ Routes belong inside the existing `live_session
 :require_authenticated_user` block and `[:browser,
 :require_authenticated_user]` pipeline because hardware catalogs and assets are
 organization inventory and every view requires login. Reads follow organization
-membership. Catalog, matching, and exception mutations require the managed
-inventory owner/admin policy.
+membership. Catalog, matching, and exception mutations allow active members,
+admins, and owners; viewers remain read-only.
 
 Initial routes are:
 
 * `/dcim/manufacturers`
 * `/dcim/hardware-types`
 * `/dcim/hardware-types/:id`
+* `/dcim/module-types`
+* `/dcim/module-types/:id`
 * `/inventory/resources/:id/hardware`
 * `/inventory/component-findings`
 

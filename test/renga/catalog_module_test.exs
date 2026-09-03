@@ -151,7 +151,7 @@ defmodule Renga.CatalogModuleTest do
     assert first_revision.module_type_id == first_type.id
   end
 
-  test "module and bay mutations require current management access", %{
+  test "members manage modules and bays through the catalog boundary", %{
     scope: scope,
     membership: membership
   } do
@@ -165,20 +165,23 @@ defmodule Renga.CatalogModuleTest do
 
     {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "member"})
 
-    assert {:error, :forbidden} =
+    assert {:ok, member_module} =
              Catalog.create_module(
                scope,
                module_type,
-               %{name: "Forbidden module", lifecycle_state: "active"}
+               %{name: "Member module", lifecycle_state: "active"}
              )
 
-    assert {:error, :forbidden} =
-             Catalog.create_module_bay(scope, owner.id, %{name: "Forbidden bay"})
+    assert {:ok, _member_bay} =
+             Catalog.create_module_bay(scope, owner.id, %{name: "Member bay"})
 
-    assert {:error, :forbidden} =
+    assert {:ok, desired} =
              Catalog.put_desired_module_assignment(scope, bay.id, module_type.id)
 
-    assert {:error, :forbidden} = Catalog.install_module(scope, bay.id, module.id)
+    assert desired.module_type_id == module_type.id
+    assert {:ok, installation} = Catalog.install_module(scope, bay.id, module.id)
+    assert installation.module_id == module.id
+    assert member_module.module_type_id == module_type.id
 
     assert {:error, :forbidden} =
              Inventory.create_resource(scope, %{kind: "module", name: "Orphan module"})

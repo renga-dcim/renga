@@ -173,7 +173,7 @@ defmodule RengaWeb.ResourceHardwareLive do
             id="hardware-read-only"
             class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
           >
-            Read-only access. An organization owner or admin manages catalog assignments.
+            Read-only access. Organization members, admins, and owners manage catalog assignments.
           </div>
           <div
             :if={!@hardware_assignable?}
@@ -371,7 +371,7 @@ defmodule RengaWeb.ResourceHardwareLive do
       page_title: "#{resource.display_name || resource.name} hardware",
       assignment: assignment,
       hardware_assignable?: hardware_assignable?,
-      can_manage_hardware?: hardware_assignable? and Inventory.organization_manager?(scope),
+      can_manage_hardware?: hardware_assignable? and Catalog.catalog_author?(scope),
       hardware_type_options: hardware_type_options(hardware_types),
       hardware_form: hardware_form(assignment)
     )

@@ -7,7 +7,10 @@ defmodule Renga.CatalogConcurrencyTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Catalog
+  alias Renga.Inventory
   alias Renga.Repo
+
+  @timeout 5_000
 
   test "concurrent revision creation serializes numbering on the catalog type" do
     with_catalog(fn scope, hardware_type ->
@@ -194,6 +197,102 @@ defmodule Renga.CatalogConcurrencyTest do
     end)
   end
 
+  test "catalog type creation uses a concurrently committed manufacturer name" do
+    with_catalog(fn scope, hardware_type ->
+      manufacturer = Catalog.get_manufacturer!(scope, hardware_type.manufacturer_id)
+      test_process = self()
+
+      rename_task =
+        concurrent(fn ->
+          Repo.transaction(fn ->
+            result =
+              Inventory.update_resource(scope, manufacturer.resource, %{
+                name: "Renamed Vendor",
+                display_name: "Renamed Vendor"
+              })
+
+            send(test_process, :manufacturer_rename_ready)
+
+            receive do
+              :release_manufacturer_rename -> result
+            end
+          end)
+        end)
+
+      assert_receive :manufacturer_rename_ready, 1_000
+
+      create_task =
+        concurrent(fn ->
+          Catalog.create_module_type(
+            scope,
+            %{name: "Stale Vendor MOD-2", lifecycle_state: "active"},
+            %{
+              manufacturer_id: manufacturer.id,
+              model: "  MOD-2  ",
+              module_class: "line_card"
+            }
+          )
+        end)
+
+      assert Task.yield(create_task, 200) == nil
+      send(rename_task.pid, :release_manufacturer_rename)
+
+      assert {:ok, {:ok, renamed_resource}} = Task.await(rename_task)
+      assert renamed_resource.name == "Renamed Vendor"
+      assert {:ok, module_type} = Task.await(create_task)
+      assert module_type.model == "MOD-2"
+      assert module_type.resource.name == "Renamed Vendor MOD-2"
+    end)
+  end
+
+  test "managed resource updates and catalog creation share a deadlock-safe lock order" do
+    with_catalog(fn scope, hardware_type ->
+      manufacturer = Catalog.get_manufacturer!(scope, hardware_type.manufacturer_id)
+
+      Repo.query!("BEGIN")
+
+      Repo.query!("SELECT id FROM resources WHERE id::text = $1 FOR UPDATE", [
+        manufacturer.resource_id
+      ])
+
+      update_task =
+        concurrent(fn ->
+          Inventory.update_resource(scope, manufacturer.resource, %{
+            name: "Ordered Vendor",
+            display_name: "Ordered Vendor"
+          })
+        end)
+
+      create_task =
+        try do
+          await_lock_waiters!(1, @timeout)
+
+          task =
+            concurrent(fn ->
+              Catalog.create_module_type(
+                scope,
+                %{lifecycle_state: "active"},
+                %{
+                  manufacturer_id: manufacturer.id,
+                  model: "ORDERED-1",
+                  module_class: "line_card"
+                }
+              )
+            end)
+
+          await_lock_waiters!(2, @timeout)
+          task
+        after
+          Repo.query!("COMMIT")
+        end
+
+      assert {:ok, updated_resource} = Task.await(update_task, @timeout)
+      assert updated_resource.name == "Ordered Vendor"
+      assert {:ok, module_type} = Task.await(create_task, @timeout)
+      assert module_type.resource.name == "Ordered Vendor ORDERED-1"
+    end)
+  end
+
   defp concurrent(fun) do
     Task.async(fn ->
       :ok = Sandbox.checkout(Repo, sandbox: false)
@@ -204,6 +303,32 @@ defmodule Renga.CatalogConcurrencyTest do
         Sandbox.checkin(Repo)
       end
     end)
+  end
+
+  defp await_lock_waiters!(expected, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_lock_waiters!(expected, deadline)
+  end
+
+  defp do_await_lock_waiters!(expected, deadline) do
+    [[count]] =
+      Repo.query!("""
+      SELECT count(*)
+      FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock'
+      """).rows
+
+    cond do
+      count >= expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("expected #{expected} lock waiters, found #{count}")
+
+      true ->
+        Process.sleep(10)
+        do_await_lock_waiters!(expected, deadline)
+    end
   end
 
   defp with_catalog(fun) do

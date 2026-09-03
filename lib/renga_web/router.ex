@@ -78,6 +78,8 @@ defmodule RengaWeb.Router do
       live "/dcim/manufacturers", CatalogLive, :manufacturers
       live "/dcim/hardware-types", CatalogLive, :hardware_types
       live "/dcim/hardware-types/:id", CatalogLive, :hardware_type
+      live "/dcim/module-types", CatalogLive, :module_types
+      live "/dcim/module-types/:id", CatalogLive, :module_type
     end
 
     post "/organizations/select", OrganizationSessionController, :create

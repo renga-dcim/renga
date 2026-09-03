@@ -32,14 +32,15 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ModuleInstallationEvent
   alias Renga.Catalog.ModuleType
   alias Renga.Catalog.TypeRevision
-  alias Renga.Inventory
   alias Renga.Inventory.Host
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
+  @catalog_author_roles ~w(owner admin member)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -49,6 +50,10 @@ defmodule Renga.Catalog do
   @presence_component_finding_kinds ~w(ambiguous_component_identity ambiguous_expected_component unexpected_actual_component component_drift) ++
                                       @module_component_finding_kinds
   @assignment_component_finding_kinds ~w(ambiguous_expected_component component_drift missing_expected_component unexpected_actual_component)
+
+  def catalog_author?(%Scope{user: user, roles: roles}) do
+    not is_nil(user) and Enum.any?(roles, &(&1 in @catalog_author_roles))
+  end
 
   def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
@@ -87,6 +92,24 @@ defmodule Renga.Catalog do
     |> preload_type()
   end
 
+  def get_hardware_type_by_identity(
+        %Scope{organization_id: organization_id},
+        manufacturer_id,
+        model
+      ) do
+    normalized_model = model |> String.trim() |> String.downcase()
+
+    HardwareType
+    |> where(
+      [hardware_type],
+      hardware_type.organization_id == ^organization_id and
+        hardware_type.manufacturer_id == ^manufacturer_id and
+        fragment("lower(?)", hardware_type.model) == ^normalized_model
+    )
+    |> preload([:resource, manufacturer: :resource])
+    |> Repo.one()
+  end
+
   def list_module_types(%Scope{organization_id: organization_id}) do
     ModuleType
     |> where([module_type], module_type.organization_id == ^organization_id)
@@ -104,6 +127,24 @@ defmodule Renga.Catalog do
     |> where([module_type], module_type.organization_id == ^organization_id)
     |> Repo.get!(id)
     |> preload_type()
+  end
+
+  def get_module_type_by_identity(
+        %Scope{organization_id: organization_id},
+        manufacturer_id,
+        model
+      ) do
+    normalized_model = model |> String.trim() |> String.downcase()
+
+    ModuleType
+    |> where(
+      [module_type],
+      module_type.organization_id == ^organization_id and
+        module_type.manufacturer_id == ^manufacturer_id and
+        fragment("lower(?)", module_type.model) == ^normalized_model
+    )
+    |> preload([:resource, manufacturer: :resource])
+    |> Repo.one()
   end
 
   def list_modules(%Scope{organization_id: organization_id}) do
@@ -240,37 +281,44 @@ defmodule Renga.Catalog do
         %Resource{} = resource,
         opts \\ []
       ) do
-    resource = scoped_lock!(Resource, scope.organization_id, resource.id)
-    component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
-    component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
+    reconciliation_transaction(scope, fn ->
+      observation = scoped_lock!(Observation, scope.organization_id, observation.id)
+      resource = scoped_lock!(Resource, scope.organization_id, resource.id)
+      component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
+      component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
 
-    {expected_findings, observed_expectation_keys} =
-      expected_actual_findings(
+      {expected_findings, observed_expectation_keys} =
+        expected_actual_findings(
+          scope,
+          observation,
+          resource,
+          component_snapshot_complete?,
+          component_snapshot_current?
+        )
+
+      findings =
+        ambiguous_identity_findings(scope, observation, resource) ++
+          expected_findings ++
+          module_installation_findings(scope, resource)
+
+      finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
+      Enum.each(findings, &put_component_finding(scope, resource, &1))
+
+      resolve_component_findings(
         scope,
         observation,
         resource,
+        finding_keys,
         component_snapshot_complete?,
-        component_snapshot_current?
+        observed_expectation_keys
       )
 
-    findings =
-      ambiguous_identity_findings(scope, observation, resource) ++
-        expected_findings ++
-        module_installation_findings(scope, resource)
-
-    finding_keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
-    Enum.each(findings, &put_component_finding(scope, resource, &1))
-
-    resolve_component_findings(
-      scope,
-      observation,
-      resource,
-      finding_keys,
-      component_snapshot_complete?,
-      observed_expectation_keys
-    )
-
-    :ok
+      :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
@@ -330,13 +378,19 @@ defmodule Renga.Catalog do
 
   def create_hardware_type(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
-      create_projection(scope, HardwareType, "hardware_type", resource_attrs, attrs)
+      create_catalog_type_projection(
+        scope,
+        HardwareType,
+        "hardware_type",
+        resource_attrs,
+        attrs
+      )
     end)
   end
 
   def create_module_type(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
-      create_projection(scope, ModuleType, "module_type", resource_attrs, attrs)
+      create_catalog_type_projection(scope, ModuleType, "module_type", resource_attrs, attrs)
     end)
   end
 
@@ -1303,12 +1357,7 @@ defmodule Renga.Catalog do
 
   defp create_projection(scope, module, kind, resource_attrs, attrs) do
     resource_attrs = put_attr(resource_attrs, :kind, kind)
-
-    resource =
-      case Inventory.create_resource(scope, resource_attrs) do
-        {:ok, resource} -> resource
-        {:error, reason} -> Repo.rollback(reason)
-      end
+    resource = create_catalog_resource(scope.organization_id, resource_attrs)
 
     struct(module, organization_id: scope.organization_id, resource_id: resource.id)
     |> module.changeset(attrs)
@@ -1316,14 +1365,53 @@ defmodule Renga.Catalog do
     |> Repo.preload(:resource)
   end
 
+  defp create_catalog_type_projection(scope, module, kind, resource_attrs, attrs) do
+    validation_changeset =
+      struct(module,
+        organization_id: scope.organization_id,
+        resource_id: Ecto.UUID.generate()
+      )
+      |> module.changeset(attrs)
+
+    unless validation_changeset.valid?, do: Repo.rollback(validation_changeset)
+
+    manufacturer_id = Ecto.Changeset.get_field(validation_changeset, :manufacturer_id)
+    model = Ecto.Changeset.get_field(validation_changeset, :model)
+
+    manufacturer_resource =
+      Manufacturer
+      |> where(
+        [manufacturer],
+        manufacturer.organization_id == ^scope.organization_id and
+          manufacturer.id == ^manufacturer_id
+      )
+      |> join(:inner, [manufacturer], resource in assoc(manufacturer, :resource))
+      |> select([_manufacturer, resource], resource)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(manufacturer_resource) do
+      validation_changeset
+      |> Ecto.Changeset.add_error(:manufacturer_id, "manufacturer does not exist")
+      |> Repo.rollback()
+    end
+
+    name = "#{manufacturer_resource.name} #{model}"
+
+    resource_attrs =
+      resource_attrs
+      |> put_attr(:name, name)
+      |> put_attr(:display_name, name)
+
+    attrs = put_attr(attrs, :model, model)
+    create_projection(scope, module, kind, resource_attrs, attrs)
+  end
+
   defp create_module_record(scope, module_type, resource_attrs, attrs) do
     revision = latest_module_revision!(scope.organization_id, module_type.id)
 
     resource =
-      case Inventory.create_resource(scope, put_attr(resource_attrs, :kind, "module")) do
-        {:ok, resource} -> resource
-        {:error, reason} -> Repo.rollback(reason)
-      end
+      create_catalog_resource(scope.organization_id, put_attr(resource_attrs, :kind, "module"))
 
     %Module{
       organization_id: scope.organization_id,
@@ -1334,6 +1422,13 @@ defmodule Renga.Catalog do
     |> Module.changeset(attrs)
     |> insert_or_rollback()
     |> Repo.preload([:resource, :catalog_type_revision, module_type: :resource])
+  end
+
+  defp create_catalog_resource(organization_id, attrs) do
+    case ResourceStore.insert(organization_id, attrs) do
+      {:ok, resource} -> resource
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp promoted_resource_lifecycle("removed"), do: "retired"
@@ -2090,7 +2185,7 @@ defmodule Renga.Catalog do
 
   defp managed_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
-      authorize_manager!(scope)
+      authorize_catalog_author!(scope)
 
       case mutation.() do
         {:ok, result} -> result
@@ -2112,7 +2207,9 @@ defmodule Renga.Catalog do
     end)
   end
 
-  defp authorize_manager!(%Scope{membership_id: membership_id, user: %{id: user_id}} = scope)
+  defp authorize_catalog_author!(
+         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope
+       )
        when not is_nil(membership_id) do
     lock_active_organization!(scope.organization_id)
 
@@ -2121,7 +2218,7 @@ defmodule Renga.Catalog do
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.organization_id == ^scope.organization_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ["owner", "admin"])
+    |> where([membership], membership.role in ^@catalog_author_roles)
     |> select([membership], membership.id)
     |> lock("FOR UPDATE")
     |> Repo.one()
@@ -2131,7 +2228,7 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_manager!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_catalog_author!(%Scope{}), do: Repo.rollback(:forbidden)
 
   defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
     if "catalog_reconciler" in roles do
@@ -2141,7 +2238,7 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_reconciler!(%Scope{} = scope), do: authorize_manager!(scope)
+  defp authorize_reconciler!(%Scope{} = scope), do: authorize_catalog_author!(scope)
 
   defp lock_active_organization!(organization_id) do
     Organization

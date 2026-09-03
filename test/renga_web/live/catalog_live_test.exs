@@ -6,6 +6,7 @@ defmodule RengaWeb.CatalogLiveTest do
   import Renga.InventoryFixtures
 
   alias Renga.Catalog
+  alias Renga.Inventory
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -25,9 +26,167 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
     assert has_element?(manufacturers, "#catalog-browser")
     assert has_element?(manufacturers, "#manufacturers-empty")
+    assert has_element?(manufacturers, "#new-manufacturer-form")
 
     {:ok, hardware_types, _html} = live(conn, "/dcim/hardware-types")
     assert has_element?(hardware_types, "#hardware-types-empty")
+    assert has_element?(hardware_types, "#new-hardware-type-form")
+
+    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+    assert has_element?(module_types, "#module-types-empty")
+    assert has_element?(module_types, "#new-module-type-form")
+  end
+
+  test "organization managers author manufacturer, hardware, and module identities", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
+
+    redirect =
+      manufacturers
+      |> form("#new-manufacturer-form",
+        manufacturer: %{
+          name: "Authoring Vendor",
+          slug: "authoring-vendor",
+          description: "Created from the catalog"
+        }
+      )
+      |> render_submit()
+
+    assert {"/dcim/manufacturers", _flash} = assert_redirect(manufacturers)
+    {:ok, manufacturer_view, _html} = follow_redirect(redirect, conn)
+    assert has_element?(manufacturer_view, "#manufacturers-list", "Authoring Vendor")
+    [manufacturer] = Catalog.list_manufacturers(scope)
+
+    {:ok, hardware_types, _html} = live(conn, "/dcim/hardware-types")
+
+    hardware_redirect =
+      hardware_types
+      |> form("#new-hardware-type-form",
+        hardware_type: %{
+          manufacturer_id: manufacturer.id,
+          model: "AUTHOR-SERVER",
+          device_class: "server",
+          description: "Authored server"
+        }
+      )
+      |> render_submit()
+
+    {hardware_path, _flash} = assert_redirect(hardware_types)
+    assert hardware_path =~ "/dcim/hardware-types/"
+    {:ok, hardware_detail, _html} = follow_redirect(hardware_redirect, conn)
+    assert has_element?(hardware_detail, "[id^='hardware-type-detail-']", "AUTHOR-SERVER")
+
+    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+
+    module_redirect =
+      module_types
+      |> form("#new-module-type-form",
+        module_type: %{
+          manufacturer_id: manufacturer.id,
+          model: "AUTHOR-LINE-CARD",
+          module_class: "line_card",
+          description: "Authored module"
+        }
+      )
+      |> render_submit()
+
+    {module_path, _flash} = assert_redirect(module_types)
+    assert module_path =~ "/dcim/module-types/"
+    {:ok, module_detail, _html} = follow_redirect(module_redirect, conn)
+    assert has_element?(module_detail, "[id^='module-type-detail-']", "AUTHOR-LINE-CARD")
+    assert has_element?(module_detail, "#module-type-module-class", "Line card")
+  end
+
+  test "catalog authoring reports validation errors without creating partial resources", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, view, _html} = live(conn, "/dcim/manufacturers")
+
+    view
+    |> form("#new-manufacturer-form",
+      manufacturer: %{name: "Invalid Vendor", slug: "Not a slug!", description: ""}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "has invalid format")
+    assert has_element?(view, "#new-manufacturer-form input[value='Invalid Vendor']")
+    assert Catalog.list_manufacturers(scope) == []
+    assert Renga.Inventory.list_resources(scope) == []
+  end
+
+  test "catalog type submission resolves manufacturers from current tenant data", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Fresh Vendor", "fresh-vendor")
+
+    render_hook(view, "create_hardware_type", %{
+      "hardware_type" => %{
+        "manufacturer_id" => manufacturer.id,
+        "model" => "  FRESH-1  ",
+        "device_class" => "server",
+        "description" => ""
+      }
+    })
+
+    assert {_path, _flash} = assert_redirect(view)
+    [hardware_type] = Catalog.list_hardware_types(scope)
+    assert hardware_type.model == "FRESH-1"
+    assert hardware_type.resource.name == "Fresh Vendor FRESH-1"
+  end
+
+  test "catalog type submission rejects a foreign manufacturer without partial writes", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Renga.Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    {:ok, foreign_manufacturer} =
+      manufacturer_fixture(foreign_scope, "Foreign Vendor", "foreign-vendor")
+
+    render_hook(view, "create_hardware_type", %{
+      "hardware_type" => %{
+        "manufacturer_id" => foreign_manufacturer.id,
+        "model" => "FOREIGN-1",
+        "device_class" => "server",
+        "description" => ""
+      }
+    })
+
+    assert has_element?(view, "#flash-error", "manufacturer")
+    assert Catalog.list_hardware_types(scope) == []
+    assert Inventory.list_resources(scope) == []
+  end
+
+  test "organization members can author catalog identities", %{
+    organization: organization
+  } do
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+
+    member_conn =
+      build_conn()
+      |> log_in_user(member)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, view, _html} = live(member_conn, "/dcim/manufacturers")
+    assert has_element?(view, "#new-manufacturer-form")
+
+    view
+    |> form("#new-manufacturer-form",
+      manufacturer: %{name: "Member Vendor", slug: "member-vendor", description: ""}
+    )
+    |> render_submit()
+
+    assert {"/dcim/manufacturers", _flash} = assert_redirect(view)
   end
 
   test "lists catalog identity and links to type detail", %{conn: conn, scope: scope} do
@@ -92,6 +251,9 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, local_manufacturer} = manufacturer_fixture(scope, "Local Vendor", "local-vendor")
     {:ok, local_type} = hardware_type_fixture(scope, local_manufacturer, "LOCAL-1", "server")
 
+    {:ok, local_module_type} =
+      module_type_fixture(scope, local_manufacturer, "LOCAL-MODULE", "line_card")
+
     foreign_user = user_fixture()
     foreign_organization = organization_fixture()
     organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
@@ -103,6 +265,9 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, foreign_type} =
       hardware_type_fixture(foreign_scope, foreign_manufacturer, "SECRET-1", "server")
 
+    {:ok, foreign_module_type} =
+      module_type_fixture(foreign_scope, foreign_manufacturer, "SECRET-MODULE", "line_card")
+
     {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
     assert has_element?(manufacturers, "#manufacturer-#{local_manufacturer.id}")
     refute has_element?(manufacturers, "#manufacturer-#{foreign_manufacturer.id}")
@@ -111,8 +276,21 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(types, "#hardware-type-#{local_type.id}")
     refute has_element?(types, "#hardware-type-#{foreign_type.id}")
 
+    refute has_element?(
+             types,
+             "#new-hardware-type-form option[value='#{foreign_manufacturer.id}']"
+           )
+
+    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+    assert has_element?(module_types, "#module-type-#{local_module_type.id}")
+    refute has_element?(module_types, "#module-type-#{foreign_module_type.id}")
+
     assert_raise Ecto.NoResultsError, fn ->
       live(conn, "/dcim/hardware-types/#{foreign_type.id}")
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      live(conn, "/dcim/module-types/#{foreign_module_type.id}")
     end
   end
 
@@ -134,6 +312,20 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#hardware-type-detail-#{hardware_type.id}")
     refute has_element?(view, "#hardware-type-detail-#{hardware_type.id} form")
     refute has_element?(view, "#hardware-type-detail-#{hardware_type.id} [phx-click]")
+
+    {:ok, manufacturer_view, _html} = live(viewer_conn, "/dcim/manufacturers")
+    refute has_element?(manufacturer_view, "#new-manufacturer-form")
+
+    render_hook(manufacturer_view, "create_manufacturer", %{
+      "manufacturer" => %{
+        "name" => "Forged Vendor",
+        "slug" => "forged-vendor",
+        "description" => ""
+      }
+    })
+
+    assert has_element?(manufacturer_view, "#flash-error", "not allowed")
+    assert Enum.map(Catalog.list_manufacturers(scope), & &1.id) == [manufacturer.id]
   end
 
   defp manufacturer_fixture(scope, name, slug) do
@@ -153,6 +345,19 @@ defmodule RengaWeb.CatalogLiveTest do
         model: model,
         device_class: device_class,
         description: "#{model} hardware definition"
+      }
+    )
+  end
+
+  defp module_type_fixture(scope, manufacturer, model, module_class) do
+    Catalog.create_module_type(
+      scope,
+      %{name: "#{manufacturer.id}-module-#{model}", lifecycle_state: "active"},
+      %{
+        manufacturer_id: manufacturer.id,
+        model: model,
+        module_class: module_class,
+        description: "#{model} module definition"
       }
     )
   end

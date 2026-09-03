@@ -255,6 +255,31 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     assert has_element?(view, "#flash-error", "not allowed")
   end
 
+  test "organization members can assign hardware types", %{
+    organization: organization,
+    resource: resource,
+    scope: scope
+  } do
+    hardware_type = hardware_type_fixture(scope, "MEMBER-TYPE", [])
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+
+    member_conn =
+      build_conn()
+      |> log_in_user(member)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, view, _html} = live(member_conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    assert has_element?(view, "#hardware-assignment-form")
+
+    view
+    |> form("#hardware-assignment-form", hardware: %{hardware_type_id: hardware_type.id})
+    |> render_submit()
+
+    assert Catalog.get_hardware_assignment(scope, resource.id).hardware_type_id ==
+             hardware_type.id
+  end
+
   test "rejects a hardware type ID from another organization", %{
     conn: conn,
     resource: resource,

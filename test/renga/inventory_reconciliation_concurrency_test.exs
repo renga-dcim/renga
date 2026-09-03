@@ -19,7 +19,7 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
         slug: "concurrent-component-findings-#{suffix}"
       })
 
-    scope = Accounts.scope_for(organization)
+    scope = Accounts.scope_for(organization, %{roles: ["catalog_reconciler"]})
     {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
     {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "host-#{suffix}"})
 
