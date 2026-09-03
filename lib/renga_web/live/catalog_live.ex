@@ -136,7 +136,7 @@ defmodule RengaWeb.CatalogLive do
   end
 
   def handle_event("validate_revision", %{"revision" => params}, socket) when is_map(params) do
-    params = normalize_revision_params(params)
+    params = normalize_revision_params(params, socket.assigns.revision_params)
 
     case revision_submission(params) do
       {:ok, _revision_attrs, _templates} ->
@@ -184,7 +184,7 @@ defmodule RengaWeb.CatalogLive do
   end
 
   def handle_event("publish_revision", %{"revision" => params}, socket) when is_map(params) do
-    publish_revision(socket, normalize_revision_params(params))
+    publish_revision(socket, normalize_revision_params(params, socket.assigns.revision_params))
   end
 
   def handle_event("publish_revision", _params, socket) do
@@ -665,8 +665,18 @@ defmodule RengaWeb.CatalogLive do
         id="new-revision-form"
         phx-change="validate_revision"
         phx-submit="publish_revision"
+        aria-invalid={if(base_error_messages(@form) == [], do: nil, else: "true")}
+        aria-describedby={if(base_error_messages(@form) == [], do: nil, else: "revision-form-errors")}
         class="mt-7 space-y-7"
       >
+        <div
+          :if={base_error_messages(@form) != []}
+          id="revision-form-errors"
+          role="alert"
+          class="rounded-lg border border-error/20 bg-error/5 px-4 py-3 text-sm text-error"
+        >
+          <p :for={error <- base_error_messages(@form)}>{error}</p>
+        </div>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <.input field={@form[:part_number]} type="text" label="Part number" />
           <.input
@@ -743,6 +753,16 @@ defmodule RengaWeb.CatalogLive do
             >
               <fieldset
                 id={"component-template-field-#{template_form.params["_persistent_id"]}"}
+                aria-invalid={
+                  if(Map.has_key?(@template_errors, template_form.params["_persistent_id"]),
+                    do: "true"
+                  )
+                }
+                aria-describedby={
+                  if(Map.has_key?(@template_errors, template_form.params["_persistent_id"]),
+                    do: "component-template-field-#{template_form.params["_persistent_id"]}-errors"
+                  )
+                }
                 class="relative rounded-xl border border-base-content/10 bg-base-100 p-4"
               >
                 <legend class="px-1 text-sm font-semibold">
@@ -761,6 +781,7 @@ defmodule RengaWeb.CatalogLive do
                 <div
                   :if={Map.has_key?(@template_errors, template_form.params["_persistent_id"])}
                   id={"component-template-field-#{template_form.params["_persistent_id"]}-errors"}
+                  role="alert"
                   class="mt-2 space-y-1 text-sm text-error"
                 >
                   <p :for={error <- template_error_messages(template_form, @template_errors)}>
@@ -979,16 +1000,20 @@ defmodule RengaWeb.CatalogLive do
   end
 
   defp publish_revision(socket, params) do
-    case revision_submission(params) do
-      {:ok, revision_attrs, templates} ->
-        {result, path} = publish_revision_for_type(socket, revision_attrs, templates)
-        handle_revision_result(socket, params, result, path)
+    if socket.assigns.live_action in [:hardware_type, :module_type] do
+      case revision_submission(params) do
+        {:ok, revision_attrs, templates} ->
+          {result, path} = publish_revision_for_type(socket, revision_attrs, templates)
+          handle_revision_result(socket, params, result, path)
 
-      {:error, revision_errors, template_errors} ->
-        {:noreply,
-         socket
-         |> assign_revision_form(params, revision_errors, template_errors, :insert)
-         |> put_flash(:error, first_submission_error(revision_errors, template_errors))}
+        {:error, revision_errors, template_errors} ->
+          {:noreply,
+           socket
+           |> assign_revision_form(params, revision_errors, template_errors, :insert)
+           |> put_flash(:error, first_submission_error(revision_errors, template_errors))}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Revisions can only be published from a type page")}
     end
   end
 
@@ -1154,8 +1179,6 @@ defmodule RengaWeb.CatalogLive do
   defp reset_revision_form(socket), do: assign_revision_form(socket, default_revision_params())
 
   defp assign_revision_form(socket, params, errors \\ [], template_errors \\ %{}, action \\ nil) do
-    params = normalize_revision_params(params)
-
     socket
     |> assign(:revision_params, params)
     |> assign(:revision_form, revision_form(params, errors, action))
@@ -1166,15 +1189,27 @@ defmodule RengaWeb.CatalogLive do
     to_form(params, as: :revision, errors: errors, action: action)
   end
 
-  defp normalize_revision_params(params) do
+  defp normalize_revision_params(params, trusted_params) do
+    trusted_ids =
+      trusted_params
+      |> then(fn trusted -> if is_map(trusted), do: trusted["templates"], else: nil end)
+      |> template_params_list()
+      |> Enum.map(& &1["_persistent_id"])
+
     default_revision_params()
     |> Map.merge(params)
     |> Map.update!("templates", fn templates ->
       templates
       |> template_params_list()
+      |> Enum.with_index()
       |> Enum.map(fn
-        template when is_map(template) -> Map.merge(default_template_params(), template)
-        _invalid -> Map.put(default_template_params(), "_invalid", "must be an object")
+        {template, index} when is_map(template) ->
+          default_template_params()
+          |> Map.merge(Map.drop(template, ["_persistent_id", "_invalid"]))
+          |> Map.put("_persistent_id", Enum.at(trusted_ids, index) || Ecto.UUID.generate())
+
+        {_invalid, _index} ->
+          Map.put(default_template_params(), "_invalid", "must be an object")
       end)
       |> index_template_params()
     end)
@@ -1242,17 +1277,18 @@ defmodule RengaWeb.CatalogLive do
     )
   end
 
-  defp persistence_errors(_params, %Ecto.Changeset{data: %TypeRevision{}, errors: errors}) do
+  @doc false
+  def persistence_errors(_params, %Ecto.Changeset{data: %TypeRevision{}, errors: errors}) do
     {errors, %{}}
   end
 
-  defp persistence_errors(
-         params,
-         %Ecto.Changeset{
-           data: %ComponentTemplate{},
-           errors: errors
-         } = changeset
-       ) do
+  def persistence_errors(
+        params,
+        %Ecto.Changeset{
+          data: %ComponentTemplate{},
+          errors: errors
+        } = changeset
+      ) do
     identity = changeset |> Ecto.Changeset.apply_changes() |> component_identity()
 
     id =
@@ -1303,6 +1339,12 @@ defmodule RengaWeb.CatalogLive do
     template_errors
     |> Map.get(template_form.params["_persistent_id"], [])
     |> Enum.map(&format_field_error/1)
+  end
+
+  defp base_error_messages(form) do
+    form.errors
+    |> Keyword.get_values(:base)
+    |> Enum.map(&RengaWeb.CoreComponents.translate_error/1)
   end
 
   defp first_submission_error(revision_errors, template_errors) do

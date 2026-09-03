@@ -360,30 +360,43 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DYNAMIC-1", "server")
     {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
 
+    view |> element("#add-component-template") |> render_click()
+    view |> element("#add-component-template") |> render_click()
+
+    row_ids =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#component-template-fields fieldset")
+      |> LazyHTML.attribute("id")
+      |> Enum.map(&String.replace_prefix(&1, "component-template-field-", ""))
+
+    [alpha, beta, gamma] = row_ids
+
     render_change(view, "validate_revision", %{
       "revision" => %{
         "templates" => %{
-          "0" => %{"_persistent_id" => "alpha", "kind" => "interface", "name" => "eth0"},
-          "1" => %{"_persistent_id" => "beta", "kind" => "memory", "name" => "DIMM1"},
-          "2" => %{"_persistent_id" => "gamma", "kind" => "disk", "name" => "Disk1"}
+          "0" => %{"_persistent_id" => alpha, "kind" => "interface", "name" => "eth0"},
+          "1" => %{"_persistent_id" => beta, "kind" => "memory", "name" => "DIMM1"},
+          "2" => %{"_persistent_id" => gamma, "kind" => "disk", "name" => "Disk1"}
         }
       }
     })
 
-    assert has_element?(view, "#component-template-field-alpha input[value='eth0']")
-    assert has_element?(view, "#component-template-field-gamma input[value='Disk1']")
+    assert has_element?(view, "#component-template-field-#{alpha} input[value='eth0']")
+    assert has_element?(view, "#component-template-field-#{gamma} input[value='Disk1']")
 
-    view |> element("#remove-component-template-beta") |> render_click()
-    refute has_element?(view, "#component-template-field-beta")
-    assert has_element?(view, "#component-template-field-alpha input[value='eth0']")
-    assert has_element?(view, "#component-template-field-gamma input[value='Disk1']")
+    view |> element("#remove-component-template-#{beta}") |> render_click()
+    refute has_element?(view, "#component-template-field-#{beta}")
+    assert has_element?(view, "#component-template-field-#{alpha} input[value='eth0']")
+    assert has_element?(view, "#component-template-field-#{gamma} input[value='Disk1']")
 
-    view |> element("#remove-component-template-alpha") |> render_click()
-    refute has_element?(view, "#component-template-field-alpha")
-    assert has_element?(view, "#component-template-field-gamma input[value='Disk1']")
+    view |> element("#remove-component-template-#{alpha}") |> render_click()
+    refute has_element?(view, "#component-template-field-#{alpha}")
+    assert has_element?(view, "#component-template-field-#{gamma} input[value='Disk1']")
 
-    view |> element("#remove-component-template-gamma") |> render_click()
-    refute has_element?(view, "#component-template-field-gamma")
+    view |> element("#remove-component-template-#{gamma}") |> render_click()
+    refute has_element?(view, "#component-template-field-#{gamma}")
     assert has_element?(view, "#component-template-fields fieldset")
   end
 
@@ -577,7 +590,7 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision_width_mm.input-error")
     assert has_element?(view, "#revision_weight_kg.input-error")
     assert has_element?(view, "#revision_specifications.textarea-error")
-    assert has_element?(view, "#component-template-field-jsonb-template-errors")
+    assert has_element?(view, "#component-template-fields [role='alert']")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
@@ -627,17 +640,97 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
 
     render_hook(view, "validate_revision", %{"revision" => []})
-    assert has_element?(view, "#new-revision-form")
+
+    assert has_element?(
+             view,
+             "#new-revision-form[aria-invalid='true'][aria-describedby='revision-form-errors']"
+           )
+
+    assert has_element?(view, "#revision-form-errors[role='alert']", "submission is invalid")
 
     render_hook(view, "publish_revision", %{
       "revision" => %{"templates" => %{"0" => ["not", "an", "object"]}}
     })
 
-    assert has_element?(view, "#component-template-fields", "must be an object")
+    assert has_element?(
+             view,
+             "#component-template-fields fieldset[aria-invalid='true'][aria-describedby$='-errors']"
+           )
+
+    assert has_element?(view, "#component-template-fields [role='alert']", "must be an object")
 
     render_hook(view, "remove_component_template", %{})
     assert has_element?(view, "#flash-error", "could not be removed")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision authoring replaces forged internal row identifiers", %{conn: conn, scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Identifier Vendor", "identifier-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTIFIER-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    render_hook(view, "validate_revision", %{
+      "revision" => %{
+        "templates" => %{
+          "0" => %{
+            "_persistent_id" => %{"crash" => true},
+            "_invalid" => %{"crash" => true},
+            "kind" => "interface",
+            "name" => "eth0"
+          },
+          "1" => %{
+            "_persistent_id" => "duplicate id",
+            "kind" => "memory",
+            "name" => "DIMM1"
+          }
+        }
+      }
+    })
+
+    html = render(view)
+    document = LazyHTML.from_fragment(html)
+    fieldsets = LazyHTML.query(document, "#component-template-fields fieldset")
+    ids = LazyHTML.attribute(fieldsets, "id")
+
+    assert length(ids) == 2
+    assert Enum.uniq(ids) == ids
+    refute Enum.any?(ids, &String.contains?(&1, " "))
+    assert has_element?(view, "#new-revision-form")
+  end
+
+  test "revision publication is rejected outside a catalog type page", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/dcim/manufacturers")
+    render_hook(view, "publish_revision", %{"revision" => %{}})
+
+    assert has_element?(view, "#flash-error", "only be published from a type page")
+  end
+
+  test "persistence changesets map back to revision and component fields" do
+    revision_changeset =
+      %Renga.Catalog.TypeRevision{}
+      |> Ecto.Changeset.change(part_number: "PN-1")
+      |> Ecto.Changeset.add_error(:part_number, "was rejected by persistence")
+
+    assert {[part_number: {"was rejected by persistence", []}], %{}} =
+             RengaWeb.CatalogLive.persistence_errors(%{}, revision_changeset)
+
+    component_changeset =
+      %Renga.Catalog.ComponentTemplate{}
+      |> Ecto.Changeset.change(kind: "interface", name: "eth0")
+      |> Ecto.Changeset.add_error(:name, "was rejected by persistence")
+
+    params = %{
+      "templates" => %{
+        "0" => %{
+          "_persistent_id" => "server-row-id",
+          "kind" => "interface",
+          "name" => "eth0"
+        }
+      }
+    }
+
+    assert {[], %{"server-row-id" => [name: {"was rejected by persistence", []}]}} =
+             RengaWeb.CatalogLive.persistence_errors(params, component_changeset)
   end
 
   test "revision validation rejects case-only duplicate component identities", %{
@@ -659,7 +752,7 @@ defmodule RengaWeb.CatalogLiveTest do
 
     assert has_element?(
              view,
-             "#component-template-field-duplicate-errors",
+             "#component-template-fields [role='alert']",
              "Name has already been taken"
            )
 

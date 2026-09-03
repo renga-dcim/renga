@@ -40,4 +40,20 @@ defmodule RengaWeb.CoreComponentsTest do
 
     assert LazyHTML.to_html(LazyHTML.query(document, "#manual-name-error[role='alert']")) != ""
   end
+
+  test "inputs do not reference an error container when there are no visible errors" do
+    form = to_form(%{"name" => ""}, as: :item)
+
+    html =
+      render_component(&CoreComponents.input/1,
+        field: form[:name],
+        type: "text",
+        error_id: "custom-name-error"
+      )
+
+    document = LazyHTML.from_fragment(html)
+    input = LazyHTML.query(document, "input")
+    assert LazyHTML.attribute(input, "aria-describedby") == []
+    assert LazyHTML.to_html(LazyHTML.query(document, "#custom-name-error")) == ""
+  end
 end
