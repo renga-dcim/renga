@@ -291,7 +291,9 @@ defmodule Renga.CatalogTest do
           %{part_number: String.duplicate("p", 256)},
           %{part_number: String.duplicate("e\u0301", 128)},
           %{width_mm: "100000000.00"},
-          %{weight_kg: "10000000.000"}
+          %{weight_kg: "10000000.000"},
+          %{width_mm: "1.005"},
+          %{weight_kg: "1.0005"}
         ] do
       assert {:error, %Ecto.Changeset{} = changeset} =
                Catalog.create_hardware_type_revision(scope, hardware_type, attrs)
@@ -312,6 +314,50 @@ defmodule Renga.CatalogTest do
              ])
 
     assert %{name: [_]} = errors_on(changeset)
+
+    for field <- [:label, :position] do
+      attrs = Map.put(%{kind: "interface", name: "eth0"}, field, String.duplicate("e\u0301", 128))
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [attrs])
+
+      assert %{^field => [_]} = errors_on(changeset)
+    end
+
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision JSON rejects values PostgreSQL JSONB cannot represent", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "JSONB", "jsonb")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "JSONB-1", "server")
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"note" => "contains\0nul"}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"too_large" => %Decimal{sign: 1, coef: 1, exp: 131_072}}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{unsupported_atom_key: true}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0", attributes: %{"note" => "contains\0nul"}}
+             ])
+
+    assert %{attributes: [_]} = errors_on(changeset)
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 

@@ -3,6 +3,8 @@ defmodule Renga.Catalog.TypeRevision do
 
   import Ecto.Changeset
 
+  alias Renga.Catalog.JSONB
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [
@@ -70,8 +72,11 @@ defmodule Renga.Catalog.TypeRevision do
     |> validate_number(:width_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
     |> validate_number(:depth_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
     |> validate_number(:weight_kg, greater_than: 0, less_than_or_equal_to: @max_weight)
+    |> validate_decimal_scale(:width_mm, 2)
+    |> validate_decimal_scale(:depth_mm, 2)
+    |> validate_decimal_scale(:weight_kg, 3)
     |> validate_inclusion(:airflow, @airflows)
-    |> validate_map(:specifications)
+    |> validate_jsonb_map(:specifications)
   end
 
   defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
@@ -81,9 +86,21 @@ defmodule Renga.Catalog.TypeRevision do
 
   defp reject_mutation(changeset), do: changeset
 
-  defp validate_map(changeset, field) do
+  defp validate_decimal_scale(changeset, field, scale) do
     validate_change(changeset, field, fn ^field, value ->
-      if is_map(value), do: [], else: [{field, "must be a map"}]
+      if Decimal.equal?(value, Decimal.round(value, scale)),
+        do: [],
+        else: [{field, "must have at most #{scale} decimal places"}]
+    end)
+  end
+
+  defp validate_jsonb_map(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      case JSONB.validate(value) do
+        :ok when is_map(value) -> []
+        :ok -> [{field, "must be a map"}]
+        {:error, message} -> [{field, message}]
+      end
     end)
   end
 

@@ -3,6 +3,8 @@ defmodule Renga.Catalog.ComponentTemplate do
 
   import Ecto.Changeset
 
+  alias Renga.Catalog.JSONB
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [
@@ -50,7 +52,7 @@ defmodule Renga.Catalog.ComponentTemplate do
     |> validate_length(:label, max: 255, count: :codepoints)
     |> validate_length(:position, max: 255, count: :codepoints)
     |> validate_inclusion(:kind, @kinds)
-    |> validate_map(:attributes)
+    |> validate_jsonb_map(:attributes)
   end
 
   defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
@@ -60,9 +62,13 @@ defmodule Renga.Catalog.ComponentTemplate do
 
   defp reject_mutation(changeset), do: changeset
 
-  defp validate_map(changeset, field) do
+  defp validate_jsonb_map(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->
-      if is_map(value), do: [], else: [{field, "must be a map"}]
+      case JSONB.validate(value) do
+        :ok when is_map(value) -> []
+        :ok -> [{field, "must be a map"}]
+        {:error, message} -> [{field, message}]
+      end
     end)
   end
 
