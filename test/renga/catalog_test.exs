@@ -361,6 +361,54 @@ defmodule Renga.CatalogTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision text rejects NUL and malformed UTF-8 without raising", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Text Safety", "text-safety")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "TEXT-1", "server")
+
+    for attrs <- [%{part_number: "PN\0BAD"}, %{part_number: <<255>>}] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, attrs)
+
+      assert %{part_number: [_]} = errors_on(changeset)
+    end
+
+    for template <- [
+          %{kind: "interface", name: "eth\0bad"},
+          %{kind: "interface", name: <<255>>},
+          %{kind: "interface", name: "eth0", description: "bad\0description"}
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [template])
+
+      assert errors_on(changeset) != %{}
+    end
+
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision JSON preserves exact fractional numbers through PostgreSQL", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Precise JSON", "precise-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "PRECISE-JSON", "server")
+    ratio = Decimal.new("0.123456789012345678901")
+
+    assert {:ok, revision} =
+             Catalog.create_hardware_type_revision(
+               scope,
+               hardware_type,
+               %{specifications: %{"ratio" => ratio}},
+               [%{kind: "interface", name: "eth0", attributes: %{"ratio" => ratio}}]
+             )
+
+    stored_revision =
+      Catalog.get_hardware_type!(scope, hardware_type.id).revisions |> List.first()
+
+    assert Decimal.equal?(revision.specifications["ratio"], ratio)
+    assert Decimal.equal?(stored_revision.specifications["ratio"], ratio)
+
+    [template] = stored_revision.component_templates
+    assert Decimal.equal?(template.attributes["ratio"], ratio)
+  end
+
   test "component identity is unique without regard to case", %{scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Identity", "identity")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTITY-1", "server")

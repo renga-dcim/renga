@@ -67,7 +67,7 @@ defmodule Renga.Catalog.TypeRevision do
       :specifications
     ])
     |> update_change(:part_number, &normalize_optional_string/1)
-    |> validate_length(:part_number, max: 255, count: :codepoints)
+    |> validate_text(:part_number, 255)
     |> validate_number(:height_units, greater_than: 0, less_than_or_equal_to: @max_integer)
     |> validate_number(:width_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
     |> validate_number(:depth_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
@@ -105,9 +105,30 @@ defmodule Renga.Catalog.TypeRevision do
   end
 
   defp normalize_optional_string(value) do
-    case String.trim(value) do
-      "" -> nil
-      value -> value
+    if String.valid?(value) do
+      case String.trim(value) do
+        "" -> nil
+        value -> value
+      end
+    else
+      value
     end
   end
+
+  defp validate_text(changeset, field, max_length) do
+    validate_change(changeset, field, fn ^field, value ->
+      cond do
+        not String.valid?(value) or String.contains?(value, <<0>>) ->
+          [{field, "contains characters PostgreSQL text cannot represent"}]
+
+        codepoint_length(value) > max_length ->
+          [{field, {"should be at most %{count} character(s)", [count: max_length]}}]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp codepoint_length(value), do: value |> String.codepoints() |> length()
 end

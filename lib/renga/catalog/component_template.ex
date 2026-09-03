@@ -43,14 +43,15 @@ defmodule Renga.Catalog.ComponentTemplate do
   def input_changeset(template, attrs) do
     template
     |> cast(attrs, [:kind, :name, :label, :position, :description, :required, :attributes])
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, &normalize_string/1)
     |> update_change(:label, &normalize_optional_string/1)
     |> update_change(:position, &normalize_optional_string/1)
     |> update_change(:description, &normalize_optional_string/1)
     |> validate_required([:kind, :name, :required])
-    |> validate_length(:name, max: 255, count: :codepoints)
-    |> validate_length(:label, max: 255, count: :codepoints)
-    |> validate_length(:position, max: 255, count: :codepoints)
+    |> validate_text(:name, 255)
+    |> validate_text(:label, 255)
+    |> validate_text(:position, 255)
+    |> validate_text(:description)
     |> validate_inclusion(:kind, @kinds)
     |> validate_jsonb_map(:attributes)
   end
@@ -73,9 +74,34 @@ defmodule Renga.Catalog.ComponentTemplate do
   end
 
   defp normalize_optional_string(value) do
-    case String.trim(value) do
-      "" -> nil
-      value -> value
+    if String.valid?(value) do
+      case String.trim(value) do
+        "" -> nil
+        value -> value
+      end
+    else
+      value
     end
   end
+
+  defp normalize_string(value) do
+    if String.valid?(value), do: String.trim(value), else: value
+  end
+
+  defp validate_text(changeset, field, max_length \\ nil) do
+    validate_change(changeset, field, fn ^field, value ->
+      cond do
+        not String.valid?(value) or String.contains?(value, <<0>>) ->
+          [{field, "contains characters PostgreSQL text cannot represent"}]
+
+        max_length && codepoint_length(value) > max_length ->
+          [{field, {"should be at most %{count} character(s)", [count: max_length]}}]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp codepoint_length(value), do: value |> String.codepoints() |> length()
 end
