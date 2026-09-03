@@ -244,6 +244,167 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision-#{revision.revision}-templates-module_bay", "PSU1")
   end
 
+  test "publishes a typed hardware revision with component templates", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Revision Vendor", "revision-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "REV-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    view |> element("#add-component-template") |> render_click()
+
+    redirect =
+      view
+      |> form("#new-revision-form",
+        revision: %{
+          part_number: "PN-REV-1",
+          height_units: "2",
+          width_mm: "482.60",
+          depth_mm: "800.00",
+          weight_kg: "18.500",
+          airflow: "front_to_rear",
+          specifications: ~s({"cpu_sockets":2,"management":"BMC"}),
+          templates: %{
+            "0" => %{
+              kind: "interface",
+              name: "eth0",
+              label: "Management",
+              position: "rear",
+              description: "Management interface",
+              required: "true",
+              attributes: ~s({"speed_mbps":1000})
+            },
+            "1" => %{
+              kind: "module_bay",
+              name: "PSU1",
+              label: "Power supply 1",
+              position: "rear-left",
+              description: "",
+              required: "false",
+              attributes: "{}"
+            }
+          }
+        }
+      )
+      |> render_submit()
+
+    assert {path, _flash} = assert_redirect(view)
+    assert path == "/dcim/hardware-types/#{hardware_type.id}"
+    {:ok, detail, _html} = follow_redirect(redirect, conn)
+    assert has_element?(detail, "#revision-1", "PN-REV-1")
+    assert has_element?(detail, "#revision-1-templates-interface", "Management")
+
+    [revision] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+    assert revision.part_number == "PN-REV-1"
+    assert revision.height_units == 2
+    assert Decimal.equal?(revision.width_mm, Decimal.new("482.60"))
+    assert revision.specifications == %{"cpu_sockets" => 2, "management" => "BMC"}
+
+    assert revision.component_templates
+           |> Enum.map(&{&1.kind, &1.name, &1.required})
+           |> Enum.sort() ==
+             [{"interface", "eth0", true}, {"module_bay", "PSU1", false}]
+
+    interface = Enum.find(revision.component_templates, &(&1.name == "eth0"))
+    assert interface.attributes == %{"speed_mbps" => 1000}
+  end
+
+  test "component template rows can be added and removed", %{conn: conn, scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Dynamic Vendor", "dynamic-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DYNAMIC-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    assert has_element?(view, "#component-template-field-0")
+    refute has_element?(view, "#component-template-field-1")
+
+    view |> element("#add-component-template") |> render_click()
+    assert has_element?(view, "#component-template-field-1")
+
+    view |> element("#remove-component-template-1") |> render_click()
+    refute has_element?(view, "#component-template-field-1")
+    assert has_element?(view, "#component-template-field-0")
+  end
+
+  test "organization members publish module revisions", %{
+    organization: organization,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Module Vendor", "module-vendor")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "MEMBER-MOD", "line_card")
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+
+    member_conn =
+      build_conn()
+      |> log_in_user(member)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, view, _html} = live(member_conn, "/dcim/module-types/#{module_type.id}")
+    assert has_element?(view, "#new-revision-form")
+
+    view
+    |> form("#new-revision-form",
+      revision: %{
+        part_number: "MEMBER-PN",
+        specifications: "{}",
+        templates: %{
+          "0" => %{
+            kind: "interface",
+            name: "xe-0/0/0",
+            required: "true",
+            attributes: "{}"
+          }
+        }
+      }
+    )
+    |> render_submit()
+
+    assert {path, _flash} = assert_redirect(view)
+    assert path == "/dcim/module-types/#{module_type.id}"
+    [revision] = Catalog.get_module_type!(scope, module_type.id).revisions
+    assert revision.part_number == "MEMBER-PN"
+    assert Enum.map(revision.component_templates, & &1.name) == ["xe-0/0/0"]
+  end
+
+  test "invalid revision JSON preserves input and does not partially publish", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Invalid Vendor", "invalid-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "INVALID-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    view
+    |> form("#new-revision-form",
+      revision: %{part_number: "KEEP-ME", specifications: "not json"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "Specifications must contain valid JSON")
+
+    assert has_element?(
+             view,
+             "#new-revision-form input[name='revision[part_number]'][value='KEEP-ME']"
+           )
+
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+
+    view
+    |> form("#new-revision-form",
+      revision: %{
+        part_number: "KEEP-ME",
+        specifications: "{}",
+        templates: %{
+          "0" => %{kind: "interface", name: "eth0", attributes: "[]"}
+        }
+      }
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "Component attributes must be a JSON object")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "tenant catalog lists exclude foreign records and foreign detail raises", %{
     conn: conn,
     scope: scope
@@ -326,6 +487,13 @@ defmodule RengaWeb.CatalogLiveTest do
 
     assert has_element?(manufacturer_view, "#flash-error", "not allowed")
     assert Enum.map(Catalog.list_manufacturers(scope), & &1.id) == [manufacturer.id]
+
+    render_hook(view, "publish_revision", %{
+      "revision" => %{"part_number" => "FORGED-PN", "specifications" => "{}"}
+    })
+
+    assert has_element?(view, "#flash-error", "not allowed")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
   defp manufacturer_fixture(scope, name, slug) do
