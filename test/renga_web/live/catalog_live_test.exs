@@ -232,7 +232,7 @@ defmodule RengaWeb.CatalogLiveTest do
             label: "Management",
             position: "rear",
             description: "Dedicated management port",
-            attributes: %{"speed_mbps" => 1000}
+            attributes: %{"speed_mbps" => 1000, "supported_vlans" => Enum.to_list(1..25)}
           },
           %{kind: "interface", name: "eth1", required: false},
           %{kind: "module_bay", name: "PSU1", position: "rear-left"}
@@ -253,6 +253,12 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(
              view,
              "#component-template-#{Enum.find(revision.component_templates, &(&1.name == "eth0")).id}",
+             "eth0"
+           )
+
+    assert has_element?(
+             view,
+             "#component-template-#{Enum.find(revision.component_templates, &(&1.name == "eth0")).id}",
              "Dedicated management port"
            )
 
@@ -260,6 +266,12 @@ defmodule RengaWeb.CatalogLiveTest do
              view,
              "#component-template-#{Enum.find(revision.component_templates, &(&1.name == "eth0")).id}-attributes",
              "Speed mbps"
+           )
+
+    assert has_element?(
+             view,
+             "#component-template-#{Enum.find(revision.component_templates, &(&1.name == "eth0")).id}-attributes",
+             "25"
            )
   end
 
@@ -493,6 +505,17 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision_width_mm.input-error")
     assert has_element?(view, "#revision_specifications.textarea-error")
     assert has_element?(view, "#component-template-fields [id$='-errors']", "Component 1")
+
+    assert has_element?(
+             view,
+             "#component-template-fields input[name$='[name]'].input-error[aria-invalid='true'][aria-describedby$='_name-error']"
+           )
+
+    assert has_element?(
+             view,
+             "#component-template-fields textarea[name$='[attributes]'].textarea-error[aria-invalid='true'][aria-describedby$='_attributes-error']"
+           )
+
     refute has_element?(view, "#flash-error")
   end
 

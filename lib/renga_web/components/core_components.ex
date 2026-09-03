@@ -156,6 +156,7 @@ defmodule RengaWeb.CoreComponents do
     doc: "a form field struct retrieved from the form, for example: @form[:email]"
 
   attr :errors, :list, default: []
+  attr :error_id, :string, default: nil
   attr :checked, :boolean, doc: "the checked flag for checkbox inputs"
   attr :prompt, :string, default: nil, doc: "the prompt for select inputs"
   attr :options, :list, doc: "the options to pass to Phoenix.HTML.Form.options_for_select/2"
@@ -169,10 +170,12 @@ defmodule RengaWeb.CoreComponents do
 
   def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
     errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+    id = assigns.id || field.id
 
     assigns
-    |> assign(field: nil, id: assigns.id || field.id)
+    |> assign(field: nil, id: id)
     |> assign(:errors, Enum.map(errors, &translate_error(&1)))
+    |> assign(:error_id, if(errors == [], do: nil, else: "#{id}-error"))
     |> assign_new(:name, fn -> if assigns.multiple, do: field.name <> "[]", else: field.name end)
     |> assign_new(:value, fn -> field.value end)
     |> input()
@@ -180,7 +183,9 @@ defmodule RengaWeb.CoreComponents do
 
   def input(%{type: "checkbox"} = assigns) do
     assigns =
-      assign_new(assigns, :checked, fn ->
+      assigns
+      |> assign_error_id()
+      |> assign_new(:checked, fn ->
         Phoenix.HTML.Form.normalize_value("checkbox", assigns[:value])
       end)
 
@@ -196,16 +201,22 @@ defmodule RengaWeb.CoreComponents do
             value="true"
             checked={@checked}
             class={@class || "checkbox checkbox-sm"}
+            aria-invalid={if(@errors == [], do: nil, else: "true")}
+            aria-describedby={@error_id}
             {@rest}
           />{@label}
         </span>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <div :if={@errors != []} id={@error_id} role="alert">
+        <.error :for={msg <- @errors}>{msg}</.error>
+      </div>
     </div>
     """
   end
 
   def input(%{type: "select"} = assigns) do
+    assigns = assign_error_id(assigns)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -215,18 +226,24 @@ defmodule RengaWeb.CoreComponents do
           name={@name}
           class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
           multiple={@multiple}
+          aria-invalid={if(@errors == [], do: nil, else: "true")}
+          aria-describedby={@error_id}
           {@rest}
         >
           <option :if={@prompt} value="">{@prompt}</option>
           {Phoenix.HTML.Form.options_for_select(@options, @value)}
         </select>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <div :if={@errors != []} id={@error_id} role="alert">
+        <.error :for={msg <- @errors}>{msg}</.error>
+      </div>
     </div>
     """
   end
 
   def input(%{type: "textarea"} = assigns) do
+    assigns = assign_error_id(assigns)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -238,16 +255,22 @@ defmodule RengaWeb.CoreComponents do
             @class || "w-full textarea",
             @errors != [] && (@error_class || "textarea-error")
           ]}
+          aria-invalid={if(@errors == [], do: nil, else: "true")}
+          aria-describedby={@error_id}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <div :if={@errors != []} id={@error_id} role="alert">
+        <.error :for={msg <- @errors}>{msg}</.error>
+      </div>
     </div>
     """
   end
 
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
+    assigns = assign_error_id(assigns)
+
     ~H"""
     <div class="fieldset mb-2">
       <label>
@@ -261,10 +284,14 @@ defmodule RengaWeb.CoreComponents do
             @class || "w-full input",
             @errors != [] && (@error_class || "input-error")
           ]}
+          aria-invalid={if(@errors == [], do: nil, else: "true")}
+          aria-describedby={@error_id}
           {@rest}
         />
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <div :if={@errors != []} id={@error_id} role="alert">
+        <.error :for={msg <- @errors}>{msg}</.error>
+      </div>
     </div>
     """
   end
@@ -277,6 +304,14 @@ defmodule RengaWeb.CoreComponents do
       {render_slot(@inner_block)}
     </p>
     """
+  end
+
+  defp assign_error_id(assigns) do
+    if assigns.errors != [] and is_nil(assigns.error_id) and assigns.id do
+      assign(assigns, :error_id, "#{assigns.id}-error")
+    else
+      assigns
+    end
   end
 
   @doc """

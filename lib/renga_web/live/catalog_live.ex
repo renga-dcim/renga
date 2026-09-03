@@ -744,48 +744,59 @@ defmodule RengaWeb.CatalogLive do
                   <.icon name="hero-trash" class="size-4" />
                 </button>
                 <div
-                  :if={errors = @template_errors[template_form.params["_persistent_id"]]}
+                  :if={Map.has_key?(@template_errors, template_form.params["_persistent_id"])}
                   id={"component-template-field-#{template_form.params["_persistent_id"]}-errors"}
                   class="mt-2 space-y-1 text-sm text-error"
                 >
-                  <p :for={error <- errors}>Component {template_form.index + 1}: {error}</p>
+                  <p :for={error <- template_error_messages(template_form, @template_errors)}>
+                    Component {template_form.index + 1}: {error}
+                  </p>
                 </div>
                 <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <.input
-                    field={template_form[:kind]}
+                    field={template_field(template_form, :kind, @template_errors)}
                     type="select"
                     label="Kind"
                     prompt="Select kind"
                     options={@component_kind_options}
                   />
-                  <.input field={template_form[:name]} type="text" label="Name" maxlength="255" />
                   <.input
-                    field={template_form[:label]}
+                    field={template_field(template_form, :name, @template_errors)}
+                    type="text"
+                    label="Name"
+                    maxlength="255"
+                  />
+                  <.input
+                    field={template_field(template_form, :label, @template_errors)}
                     type="text"
                     label="Display label"
                     maxlength="255"
                   />
                   <.input
-                    field={template_form[:position]}
+                    field={template_field(template_form, :position, @template_errors)}
                     type="text"
                     label="Position"
                     maxlength="255"
                   />
                   <.input
-                    field={template_form[:description]}
+                    field={template_field(template_form, :description, @template_errors)}
                     type="text"
                     label="Description"
                     class="w-full rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-sm outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/15 sm:col-span-2"
                   />
                   <.input
-                    field={template_form[:attributes]}
+                    field={template_field(template_form, :attributes, @template_errors)}
                     type="textarea"
                     label="Attributes (JSON)"
                     rows="2"
                     spellcheck="false"
                     class="min-h-20 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 font-mono text-xs outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/15"
                   />
-                  <.input field={template_form[:required]} type="checkbox" label="Required" />
+                  <.input
+                    field={template_field(template_form, :required, @template_errors)}
+                    type="checkbox"
+                    label="Required"
+                  />
                 </div>
               </fieldset>
             </.inputs_for>
@@ -872,8 +883,11 @@ defmodule RengaWeb.CatalogLive do
               class="grid gap-3 text-sm sm:grid-cols-[1fr_auto]"
             >
               <div>
-                <p class="font-medium">{template.label || template.name}</p>
-                <p class="text-xs text-base-content/45">{template.position || template.name}</p>
+                <p class="font-mono text-xs font-semibold">{template.name}</p>
+                <p :if={template.label} class="mt-1 text-sm font-medium">{template.label}</p>
+                <p :if={template.position} class="mt-1 text-xs text-base-content/45">
+                  Position: {template.position}
+                </p>
                 <p :if={template.description} class="mt-2 text-xs text-base-content/60">
                   {template.description}
                 </p>
@@ -1079,7 +1093,7 @@ defmodule RengaWeb.CatalogLive do
         end
 
       id = template["_persistent_id"]
-      messages = changeset_error_messages(changeset)
+      field_errors = changeset.errors
 
       parsed =
         if changeset.valid? do
@@ -1099,7 +1113,7 @@ defmodule RengaWeb.CatalogLive do
           parsed
         end
 
-      errors = if messages == [], do: errors, else: Map.put(errors, id, messages)
+      errors = if field_errors == [], do: errors, else: Map.put(errors, id, field_errors)
       identities = if identity, do: MapSet.put(identities, identity), else: identities
       {parsed, errors, identities}
     end)
@@ -1205,8 +1219,19 @@ defmodule RengaWeb.CatalogLive do
   defp maybe_add_error(changeset, field, message),
     do: Ecto.Changeset.add_error(changeset, field, message)
 
-  defp changeset_error_messages(changeset) do
-    Enum.map(changeset.errors, fn {field, error} ->
+  defp template_field(template_form, field, template_errors) do
+    errors =
+      template_errors
+      |> Map.get(template_form.params["_persistent_id"], [])
+      |> Keyword.get_values(field)
+
+    %{template_form[field] | errors: errors}
+  end
+
+  defp template_error_messages(template_form, template_errors) do
+    template_errors
+    |> Map.get(template_form.params["_persistent_id"], [])
+    |> Enum.map(fn {field, error} ->
       label = if field == :attributes, do: "Component attributes", else: humanize(field)
       "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
     end)
@@ -1222,6 +1247,10 @@ defmodule RengaWeb.CatalogLive do
         |> Map.values()
         |> List.flatten()
         |> List.first()
+        |> then(fn {field, error} ->
+          label = if field == :attributes, do: "Component attributes", else: humanize(field)
+          "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
+        end)
     end
   end
 
@@ -1299,5 +1328,6 @@ defmodule RengaWeb.CatalogLive do
   defp sorted_pairs(map), do: Enum.sort_by(map, fn {key, _value} -> to_string(key) end)
   defp display_value(value) when is_binary(value), do: value
   defp display_value(value) when is_number(value) or is_boolean(value), do: to_string(value)
-  defp display_value(value), do: inspect(value, limit: 20)
+  defp display_value(value) when is_map(value) or is_list(value), do: Jason.encode!(value)
+  defp display_value(value), do: inspect(value, limit: :infinity)
 end
