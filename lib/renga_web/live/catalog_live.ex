@@ -150,17 +150,19 @@ defmodule RengaWeb.CatalogLive do
   end
 
   def handle_event("remove_component_template", %{"index" => index}, socket) do
-    with {index, ""} <- Integer.parse(index) do
-      templates =
-        socket.assigns.revision_params["templates"]
-        |> template_params_list()
-        |> List.delete_at(index)
-        |> index_template_params()
+    case Integer.parse(index) do
+      {index, ""} ->
+        templates =
+          socket.assigns.revision_params["templates"]
+          |> template_params_list()
+          |> List.delete_at(index)
+          |> index_template_params()
 
-      params = Map.put(socket.assigns.revision_params, "templates", templates)
-      {:noreply, assign_revision_form(socket, params)}
-    else
-      _invalid_index -> {:noreply, socket}
+        params = Map.put(socket.assigns.revision_params, "templates", templates)
+        {:noreply, assign_revision_form(socket, params)}
+
+      _invalid_index ->
+        {:noreply, socket}
     end
   end
 
@@ -884,56 +886,63 @@ defmodule RengaWeb.CatalogLive do
   end
 
   defp publish_revision(socket, params) do
-    with {:ok, revision_attrs, templates} <- revision_submission(params) do
-      {result, path} =
-        case socket.assigns.live_action do
-          :hardware_type ->
-            hardware_type = socket.assigns.hardware_type
+    case revision_submission(params) do
+      {:ok, revision_attrs, templates} ->
+        {result, path} = publish_revision_for_type(socket, revision_attrs, templates)
+        handle_revision_result(socket, params, result, path)
 
-            {Catalog.create_hardware_type_revision(
-               socket.assigns.current_scope,
-               hardware_type,
-               revision_attrs,
-               templates
-             ), ~p"/dcim/hardware-types/#{hardware_type.id}"}
-
-          :module_type ->
-            module_type = socket.assigns.module_type
-
-            {Catalog.create_module_type_revision(
-               socket.assigns.current_scope,
-               module_type,
-               revision_attrs,
-               templates
-             ), ~p"/dcim/module-types/#{module_type.id}"}
-        end
-
-      case result do
-        {:ok, _revision} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Immutable revision published")
-           |> push_navigate(to: path)}
-
-        {:error, %Ecto.Changeset{} = changeset} ->
-          {:noreply,
-           socket
-           |> assign_revision_form(params)
-           |> put_flash(:error, first_error(changeset))}
-
-        {:error, :forbidden} ->
-          {:noreply, put_flash(socket, :error, "You are not allowed to author the catalog")}
-
-        {:error, _reason} ->
-          {:noreply, put_flash(socket, :error, "Revision could not be published")}
-      end
-    else
       {:error, message} ->
         {:noreply,
          socket
          |> assign_revision_form(params)
          |> put_flash(:error, message)}
     end
+  end
+
+  defp publish_revision_for_type(socket, revision_attrs, templates) do
+    case socket.assigns.live_action do
+      :hardware_type ->
+        hardware_type = socket.assigns.hardware_type
+
+        {Catalog.create_hardware_type_revision(
+           socket.assigns.current_scope,
+           hardware_type,
+           revision_attrs,
+           templates
+         ), ~p"/dcim/hardware-types/#{hardware_type.id}"}
+
+      :module_type ->
+        module_type = socket.assigns.module_type
+
+        {Catalog.create_module_type_revision(
+           socket.assigns.current_scope,
+           module_type,
+           revision_attrs,
+           templates
+         ), ~p"/dcim/module-types/#{module_type.id}"}
+    end
+  end
+
+  defp handle_revision_result(socket, _params, {:ok, _revision}, path) do
+    {:noreply,
+     socket
+     |> put_flash(:info, "Immutable revision published")
+     |> push_navigate(to: path)}
+  end
+
+  defp handle_revision_result(socket, params, {:error, %Ecto.Changeset{} = changeset}, _path) do
+    {:noreply,
+     socket
+     |> assign_revision_form(params)
+     |> put_flash(:error, first_error(changeset))}
+  end
+
+  defp handle_revision_result(socket, _params, {:error, :forbidden}, _path) do
+    {:noreply, put_flash(socket, :error, "You are not allowed to author the catalog")}
+  end
+
+  defp handle_revision_result(socket, _params, {:error, _reason}, _path) do
+    {:noreply, put_flash(socket, :error, "Revision could not be published")}
   end
 
   defp revision_submission(params) do
