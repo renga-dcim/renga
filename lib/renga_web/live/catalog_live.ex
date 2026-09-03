@@ -848,7 +848,9 @@ defmodule RengaWeb.CatalogLive do
           class="flex items-start justify-between gap-4 py-3 text-sm"
         >
           <dt class="text-base-content/55">{humanize(to_string(key))}</dt>
-          <dd class="text-right font-mono text-xs font-medium">{display_value(value)}</dd>
+          <dd class="break-all text-right font-mono text-xs font-medium">
+            {display_value(value)}
+          </dd>
         </div>
       </dl>
     </section>
@@ -884,7 +886,9 @@ defmodule RengaWeb.CatalogLive do
             >
               <div>
                 <p class="font-mono text-xs font-semibold">{template.name}</p>
-                <p :if={template.label} class="mt-1 text-sm font-medium">{template.label}</p>
+                <p :if={template.label} class="mt-1 text-sm font-medium">
+                  Display label: {template.label}
+                </p>
                 <p :if={template.position} class="mt-1 text-xs text-base-content/45">
                   Position: {template.position}
                 </p>
