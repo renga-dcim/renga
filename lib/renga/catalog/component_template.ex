@@ -46,9 +46,9 @@ defmodule Renga.Catalog.ComponentTemplate do
     |> update_change(:position, &normalize_optional_string/1)
     |> update_change(:description, &normalize_optional_string/1)
     |> validate_required([:kind, :name, :required])
-    |> validate_length(:name, max: 255)
-    |> validate_length(:label, max: 255)
-    |> validate_length(:position, max: 255)
+    |> validate_length(:name, max: 255, count: :codepoints)
+    |> validate_length(:label, max: 255, count: :codepoints)
+    |> validate_length(:position, max: 255, count: :codepoints)
     |> validate_inclusion(:kind, @kinds)
     |> validate_map(:attributes)
   end

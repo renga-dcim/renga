@@ -289,6 +289,7 @@ defmodule Renga.CatalogTest do
 
     for attrs <- [
           %{part_number: String.duplicate("p", 256)},
+          %{part_number: String.duplicate("e\u0301", 128)},
           %{width_mm: "100000000.00"},
           %{weight_kg: "10000000.000"}
         ] do
@@ -301,6 +302,13 @@ defmodule Renga.CatalogTest do
     assert {:error, %Ecto.Changeset{} = changeset} =
              Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
                %{kind: "interface", name: String.duplicate("n", 256)}
+             ])
+
+    assert %{name: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: String.duplicate("e\u0301", 128)}
              ])
 
     assert %{name: [_]} = errors_on(changeset)

@@ -65,7 +65,7 @@ defmodule Renga.Catalog.TypeRevision do
       :specifications
     ])
     |> update_change(:part_number, &normalize_optional_string/1)
-    |> validate_length(:part_number, max: 255)
+    |> validate_length(:part_number, max: 255, count: :codepoints)
     |> validate_number(:height_units, greater_than: 0, less_than_or_equal_to: @max_integer)
     |> validate_number(:width_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
     |> validate_number(:depth_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)
