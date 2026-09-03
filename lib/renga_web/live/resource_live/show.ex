@@ -425,7 +425,7 @@ defmodule RengaWeb.ResourceLive.Show do
   defp observation_count_label(count), do: "#{count} observations"
 
   defp format_value(value) when is_binary(value), do: value
-  defp format_value(value), do: Jason.encode!(value)
+  defp format_value(value), do: Renga.JSON.encode!(value)
 
   defp humanize(value), do: value |> String.replace("_", " ")
 end

@@ -67,6 +67,7 @@ defmodule Renga.Catalog.TypeRevision do
       :specifications
     ])
     |> update_change(:part_number, &normalize_optional_string/1)
+    |> validate_required([:specifications])
     |> validate_text(:part_number, 255)
     |> validate_number(:height_units, greater_than: 0, less_than_or_equal_to: @max_integer)
     |> validate_number(:width_mm, greater_than: 0, less_than_or_equal_to: @max_dimension)

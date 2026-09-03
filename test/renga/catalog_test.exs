@@ -361,6 +361,24 @@ defmodule Renga.CatalogTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision JSON rejects explicit nil maps without raising", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Required JSON", "required-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "REQUIRED-JSON", "server")
+
+    assert {:error, %Ecto.Changeset{} = revision_changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{specifications: nil})
+
+    assert %{specifications: [_]} = errors_on(revision_changeset)
+
+    assert {:error, %Ecto.Changeset{} = template_changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0", attributes: nil}
+             ])
+
+    assert %{attributes: [_]} = errors_on(template_changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "revision text rejects NUL and malformed UTF-8 without raising", %{scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Text Safety", "text-safety")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "TEXT-1", "server")

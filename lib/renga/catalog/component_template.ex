@@ -47,7 +47,7 @@ defmodule Renga.Catalog.ComponentTemplate do
     |> update_change(:label, &normalize_optional_string/1)
     |> update_change(:position, &normalize_optional_string/1)
     |> update_change(:description, &normalize_optional_string/1)
-    |> validate_required([:kind, :name, :required])
+    |> validate_required([:kind, :name, :required, :attributes])
     |> validate_text(:name, 255)
     |> validate_text(:label, 255)
     |> validate_text(:position, 255)

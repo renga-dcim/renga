@@ -185,5 +185,5 @@ defmodule RengaWeb.ComponentFindingLive do
   defp humanize(value), do: value |> String.replace("_", " ")
   defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
   defp format_value(value) when is_binary(value), do: value
-  defp format_value(value), do: Jason.encode!(value)
+  defp format_value(value), do: Renga.JSON.encode!(value)
 end
