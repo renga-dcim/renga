@@ -581,6 +581,65 @@ defmodule RengaWeb.CatalogLiveTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision authoring preserves and displays exact fractional JSON numbers", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Exact Vendor", "exact-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "EXACT-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    number = "0.123456789012345678901"
+
+    render_hook(view, "publish_revision", %{
+      "revision" => %{
+        "specifications" => ~s({"ratio":#{number}}),
+        "templates" => %{
+          "0" => %{
+            "_persistent_id" => "exact-template",
+            "kind" => "interface",
+            "name" => "eth0",
+            "attributes" => ~s({"ratio":#{number}})
+          }
+        }
+      }
+    })
+
+    assert {_path, _flash} = assert_redirect(view)
+    [revision] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+    assert Decimal.equal?(revision.specifications["ratio"], Decimal.new(number))
+
+    {:ok, detail, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    assert has_element?(detail, "#revision-1-specifications", number)
+
+    assert has_element?(
+             detail,
+             "#component-template-#{List.first(revision.component_templates).id}-attributes",
+             number
+           )
+  end
+
+  test "revision events reject malformed parameter shapes without crashing", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Shape Vendor", "shape-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SHAPE-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    render_hook(view, "validate_revision", %{"revision" => []})
+    assert has_element?(view, "#new-revision-form")
+
+    render_hook(view, "publish_revision", %{
+      "revision" => %{"templates" => %{"0" => ["not", "an", "object"]}}
+    })
+
+    assert has_element?(view, "#component-template-fields", "must be an object")
+
+    render_hook(view, "remove_component_template", %{})
+    assert has_element?(view, "#flash-error", "could not be removed")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "revision validation rejects case-only duplicate component identities", %{
     conn: conn,
     scope: scope

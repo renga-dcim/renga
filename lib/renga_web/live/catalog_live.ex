@@ -135,7 +135,7 @@ defmodule RengaWeb.CatalogLive do
     create_catalog_type(socket, :module_type, params)
   end
 
-  def handle_event("validate_revision", %{"revision" => params}, socket) do
+  def handle_event("validate_revision", %{"revision" => params}, socket) when is_map(params) do
     params = normalize_revision_params(params)
 
     case revision_submission(params) do
@@ -146,6 +146,10 @@ defmodule RengaWeb.CatalogLive do
         {:noreply,
          assign_revision_form(socket, params, revision_errors, template_errors, :validate)}
     end
+  end
+
+  def handle_event("validate_revision", _params, socket) do
+    {:noreply, invalid_revision_submission(socket, :validate)}
   end
 
   def handle_event("add_component_template", _params, socket) do
@@ -175,8 +179,19 @@ defmodule RengaWeb.CatalogLive do
     {:noreply, assign_revision_form(socket, params)}
   end
 
-  def handle_event("publish_revision", %{"revision" => params}, socket) do
+  def handle_event("remove_component_template", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Component template could not be removed")}
+  end
+
+  def handle_event("publish_revision", %{"revision" => params}, socket) when is_map(params) do
     publish_revision(socket, normalize_revision_params(params))
+  end
+
+  def handle_event("publish_revision", _params, socket) do
+    {:noreply,
+     socket
+     |> invalid_revision_submission(:insert)
+     |> put_flash(:error, "Revision submission is invalid")}
   end
 
   @impl true
@@ -1009,9 +1024,11 @@ defmodule RengaWeb.CatalogLive do
   end
 
   defp handle_revision_result(socket, params, {:error, %Ecto.Changeset{} = changeset}, _path) do
+    {revision_errors, template_errors} = persistence_errors(params, changeset)
+
     {:noreply,
      socket
-     |> assign_revision_form(params)
+     |> assign_revision_form(params, revision_errors, template_errors, :insert)
      |> put_flash(:error, first_error(changeset))}
   end
 
@@ -1082,6 +1099,7 @@ defmodule RengaWeb.CatalogLive do
         %ComponentTemplate{}
         |> ComponentTemplate.input_changeset(attrs)
         |> maybe_add_error(:attributes, attributes_error)
+        |> maybe_add_error(:base, template["_invalid"])
 
       component = Ecto.Changeset.apply_changes(changeset)
       identity = component_identity(component)
@@ -1123,13 +1141,15 @@ defmodule RengaWeb.CatalogLive do
 
   defp decoded_json_map(value) when value in [nil, ""], do: {%{}, nil}
 
-  defp decoded_json_map(value) do
-    case Jason.decode(value) do
+  defp decoded_json_map(value) when is_binary(value) do
+    case Renga.JSON.decode(value) do
       {:ok, decoded} when is_map(decoded) -> {decoded, nil}
       {:ok, _other} -> {%{}, "must be a JSON object"}
       {:error, _error} -> {%{}, "must contain valid JSON"}
     end
   end
+
+  defp decoded_json_map(_value), do: {%{}, "must contain valid JSON"}
 
   defp reset_revision_form(socket), do: assign_revision_form(socket, default_revision_params())
 
@@ -1152,7 +1172,10 @@ defmodule RengaWeb.CatalogLive do
     |> Map.update!("templates", fn templates ->
       templates
       |> template_params_list()
-      |> Enum.map(&Map.merge(default_template_params(), &1))
+      |> Enum.map(fn
+        template when is_map(template) -> Map.merge(default_template_params(), template)
+        _invalid -> Map.put(default_template_params(), "_invalid", "must be an object")
+      end)
       |> index_template_params()
     end)
   end
@@ -1160,9 +1183,9 @@ defmodule RengaWeb.CatalogLive do
   defp template_params_list(templates) when is_map(templates) do
     templates
     |> Enum.sort_by(fn {index, _template} ->
-      case Integer.parse(index) do
+      case Integer.parse(to_string(index)) do
         {integer, ""} -> integer
-        _invalid_index -> index
+        _invalid_index -> to_string(index)
       end
     end)
     |> Enum.map(fn {_index, template} -> template end)
@@ -1204,9 +1227,56 @@ defmodule RengaWeb.CatalogLive do
   end
 
   defp blank_template?(template) do
-    Enum.all?(~w(kind name label position description), &(template[&1] in [nil, ""])) and
+    is_nil(template["_invalid"]) and
+      Enum.all?(~w(kind name label position description), &(template[&1] in [nil, ""])) and
       template["attributes"] in [nil, "", "{}"]
   end
+
+  defp invalid_revision_submission(socket, action) do
+    assign_revision_form(
+      socket,
+      socket.assigns.revision_params,
+      [base: {"submission is invalid", []}],
+      %{},
+      action
+    )
+  end
+
+  defp persistence_errors(_params, %Ecto.Changeset{data: %TypeRevision{}, errors: errors}) do
+    {errors, %{}}
+  end
+
+  defp persistence_errors(
+         params,
+         %Ecto.Changeset{
+           data: %ComponentTemplate{},
+           errors: errors
+         } = changeset
+       ) do
+    identity = changeset |> Ecto.Changeset.apply_changes() |> component_identity()
+
+    id =
+      params["templates"]
+      |> template_params_list()
+      |> Enum.find_value(fn template ->
+        if identity && component_params_identity(template) == identity,
+          do: template["_persistent_id"]
+      end)
+
+    if id, do: {[], %{id => errors}}, else: {[base: {"could not be persisted", []}], %{}}
+  end
+
+  defp component_params_identity(template) when is_map(template) do
+    case {blank_to_nil(template["kind"]), blank_to_nil(template["name"])} do
+      {kind, name} when is_binary(kind) and is_binary(name) and name != "" ->
+        {kind, String.downcase(String.trim(name))}
+
+      _invalid ->
+        nil
+    end
+  end
+
+  defp component_params_identity(_template), do: nil
 
   defp component_identity(%ComponentTemplate{kind: kind, name: name})
        when is_binary(kind) and is_binary(name) do
@@ -1326,5 +1396,5 @@ defmodule RengaWeb.CatalogLive do
   defp format_measure(nil, _unit), do: "Not specified"
   defp format_measure(value, unit), do: "#{value} #{unit}"
   defp sorted_pairs(map), do: Enum.sort_by(map, fn {key, _value} -> to_string(key) end)
-  defp display_value(value), do: Jason.encode!(value)
+  defp display_value(value), do: Renga.JSON.encode!(value)
 end
