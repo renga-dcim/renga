@@ -1231,27 +1231,26 @@ defmodule RengaWeb.CatalogLive do
   defp template_error_messages(template_form, template_errors) do
     template_errors
     |> Map.get(template_form.params["_persistent_id"], [])
-    |> Enum.map(fn {field, error} ->
-      label = if field == :attributes, do: "Component attributes", else: humanize(field)
-      "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
-    end)
+    |> Enum.map(&format_field_error/1)
   end
 
   defp first_submission_error(revision_errors, template_errors) do
     case revision_errors do
       [{field, error} | _rest] ->
-        "#{humanize(field)} #{RengaWeb.CoreComponents.translate_error(error)}"
+        format_field_error({field, error})
 
       [] ->
         template_errors
         |> Map.values()
         |> List.flatten()
         |> List.first()
-        |> then(fn {field, error} ->
-          label = if field == :attributes, do: "Component attributes", else: humanize(field)
-          "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
-        end)
+        |> format_field_error()
     end
+  end
+
+  defp format_field_error({field, error}) do
+    label = if field == :attributes, do: "Component attributes", else: humanize(field)
+    "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
   end
 
   defp assign_manufacturer_options(socket, scope) do
