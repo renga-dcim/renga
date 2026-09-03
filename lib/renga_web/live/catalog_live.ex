@@ -653,7 +653,7 @@ defmodule RengaWeb.CatalogLive do
         class="mt-7 space-y-7"
       >
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <.input field={@form[:part_number]} type="text" label="Part number" maxlength="255" />
+          <.input field={@form[:part_number]} type="text" label="Part number" />
           <.input
             field={@form[:height_units]}
             type="number"
@@ -764,19 +764,16 @@ defmodule RengaWeb.CatalogLive do
                     field={template_field(template_form, :name, @template_errors)}
                     type="text"
                     label="Name"
-                    maxlength="255"
                   />
                   <.input
                     field={template_field(template_form, :label, @template_errors)}
                     type="text"
                     label="Display label"
-                    maxlength="255"
                   />
                   <.input
                     field={template_field(template_form, :position, @template_errors)}
                     type="text"
                     label="Position"
-                    maxlength="255"
                   />
                   <.input
                     field={template_field(template_form, :description, @template_errors)}
@@ -847,7 +844,7 @@ defmodule RengaWeb.CatalogLive do
           :for={{key, value} <- sorted_pairs(@values)}
           class="flex items-start justify-between gap-4 py-3 text-sm"
         >
-          <dt class="text-base-content/55">{humanize(to_string(key))}</dt>
+          <dt class="font-mono text-xs text-base-content/55">{to_string(key)}</dt>
           <dd class="break-all text-right font-mono text-xs font-medium">
             {display_value(value)}
           </dd>
@@ -1329,8 +1326,5 @@ defmodule RengaWeb.CatalogLive do
   defp format_measure(nil, _unit), do: "Not specified"
   defp format_measure(value, unit), do: "#{value} #{unit}"
   defp sorted_pairs(map), do: Enum.sort_by(map, fn {key, _value} -> to_string(key) end)
-  defp display_value(value) when is_binary(value), do: value
-  defp display_value(value) when is_number(value) or is_boolean(value), do: to_string(value)
-  defp display_value(value) when is_map(value) or is_list(value), do: Jason.encode!(value)
-  defp display_value(value), do: inspect(value, limit: :infinity)
+  defp display_value(value), do: Jason.encode!(value)
 end

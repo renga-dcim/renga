@@ -223,7 +223,14 @@ defmodule RengaWeb.CatalogLiveTest do
           depth_mm: "800.00",
           weight_kg: "18.500",
           airflow: "front_to_rear",
-          specifications: %{"cpu_sockets" => 2, "management" => "BMC"}
+          specifications: %{
+            "cpu_sockets" => 2,
+            "cpu sockets" => 3,
+            "management" => "BMC",
+            "enabled_string" => "true",
+            "enabled_boolean" => true,
+            "unset" => nil
+          }
         },
         [
           %{
@@ -245,8 +252,11 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#hardware-type-device-class", "Server")
     assert has_element?(view, "#revision-#{revision.revision}", "Immutable revision pin")
     assert has_element?(view, "#revision-#{revision.revision}-dimensions", "482.60 mm")
-    assert has_element?(view, "#revision-#{revision.revision}-specifications", "Cpu sockets")
     assert has_element?(view, "#revision-#{revision.revision}-specifications", "BMC")
+    assert has_element?(view, "#revision-#{revision.revision}-specifications", "cpu_sockets")
+    assert has_element?(view, "#revision-#{revision.revision}-specifications", "cpu sockets")
+    assert has_element?(view, "#revision-#{revision.revision}-specifications", ~s("true"))
+    assert has_element?(view, "#revision-#{revision.revision}-specifications", "null")
     assert has_element?(view, "#revision-#{revision.revision}-templates-interface", "Management")
     assert has_element?(view, "#revision-#{revision.revision}-templates-module_bay", "PSU1")
 
@@ -265,7 +275,7 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(
              view,
              "#component-template-#{Enum.find(revision.component_templates, &(&1.name == "eth0")).id}-attributes",
-             "Speed mbps"
+             "speed_mbps"
            )
 
     assert has_element?(
@@ -537,6 +547,37 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision_part_number.input-error")
     assert has_element?(view, "#revision_width_mm.input-error")
     assert has_element?(view, "#new-revision-form input[value='#{oversized}']")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision validation rejects precision loss and unrepresentable JSONB", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Precise Vendor", "precise-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "PRECISE-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    render_hook(view, "publish_revision", %{
+      "revision" => %{
+        "width_mm" => "1.005",
+        "weight_kg" => "1.0005",
+        "specifications" => ~s({"note":"\u0000"}),
+        "templates" => %{
+          "0" => %{
+            "_persistent_id" => "jsonb-template",
+            "kind" => "interface",
+            "name" => "eth0",
+            "attributes" => ~s({"note":"\u0000"})
+          }
+        }
+      }
+    })
+
+    assert has_element?(view, "#revision_width_mm.input-error")
+    assert has_element?(view, "#revision_weight_kg.input-error")
+    assert has_element?(view, "#revision_specifications.textarea-error")
+    assert has_element?(view, "#component-template-field-jsonb-template-errors")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 

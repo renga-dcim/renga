@@ -171,11 +171,12 @@ defmodule RengaWeb.CoreComponents do
   def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
     errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
     id = assigns.id || field.id
+    error_id = assigns.error_id || if(errors == [], do: nil, else: "#{id}-error")
 
     assigns
     |> assign(field: nil, id: id)
     |> assign(:errors, Enum.map(errors, &translate_error(&1)))
-    |> assign(:error_id, if(errors == [], do: nil, else: "#{id}-error"))
+    |> assign(:error_id, error_id)
     |> assign_new(:name, fn -> if assigns.multiple, do: field.name <> "[]", else: field.name end)
     |> assign_new(:value, fn -> field.value end)
     |> input()
@@ -307,8 +308,12 @@ defmodule RengaWeb.CoreComponents do
   end
 
   defp assign_error_id(assigns) do
-    if assigns.errors != [] and is_nil(assigns.error_id) and assigns.id do
-      assign(assigns, :error_id, "#{assigns.id}-error")
+    if assigns.errors != [] do
+      id = assigns.id || to_string(assigns.name)
+
+      assigns
+      |> assign(:id, id)
+      |> assign(:error_id, assigns.error_id || "#{id}-error")
     else
       assigns
     end
