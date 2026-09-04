@@ -1,6 +1,6 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: committed
+:discussion: https://github.com/renga-dcim/renga/pull/49
 :labels: dcim, inventory, location, software
 
 = RFD 5 Physical containment
