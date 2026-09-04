@@ -17,8 +17,22 @@ defmodule Renga.Inventory.ResourceStore do
            |> Resource.changeset(attrs)
            |> Ecto.Changeset.put_change(:resource_version, revision)
            |> Repo.insert(),
-         {:ok, _resource_revision} <- insert_revision(resource, revision) do
+         {:ok, _resource_revision} <- insert_revision(resource, revision, "created") do
       {:ok, resource}
+    end
+  end
+
+  def update(%Resource{} = resource, attrs) do
+    revision = next_revision!()
+
+    with {:ok, updated} <-
+           resource
+           |> Resource.changeset(attrs)
+           |> Ecto.Changeset.put_change(:resource_version, revision)
+           |> Repo.update(),
+         {:ok, _resource_revision} <-
+           insert_revision(updated, revision, revision_action(resource, updated)) do
+      {:ok, updated}
     end
   end
 
@@ -30,19 +44,28 @@ defmodule Renga.Inventory.ResourceStore do
     revision
   end
 
-  defp insert_revision(resource, revision) do
+  defp insert_revision(resource, revision, action) do
     %ResourceRevision{
       organization_id: resource.organization_id,
       resource_id: resource.id
     }
     |> ResourceRevision.changeset(%{
       revision: revision,
-      action: "created",
+      action: action,
       generation: resource.generation,
       snapshot: snapshot(resource)
     })
     |> Repo.insert()
   end
+
+  defp revision_action(
+         %Resource{deletion_requested_at: nil},
+         %Resource{deletion_requested_at: deletion_requested_at}
+       )
+       when not is_nil(deletion_requested_at),
+       do: "deletion_requested"
+
+  defp revision_action(%Resource{}, %Resource{}), do: "updated"
 
   defp snapshot(resource) do
     %{

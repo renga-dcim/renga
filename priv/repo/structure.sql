@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Z2gGM93CfXo8WOz0GHgtMkkJ6LE8vD8k8fNtdRg6h1dmjS1EiuDp6OlYH9bDyF4
+\restrict PWuBSBRcu0fCOMJe0NXhdR0MF8Ju2QliHObo4ZPRBSIUNKUatJoK8XDbRJqlqTE
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -1306,6 +1306,64 @@ CREATE TABLE public.users_tokens (
 
 
 --
+-- Name: vlan_group_vid_ranges; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.vlan_group_vid_ranges (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    vlan_group_id uuid NOT NULL,
+    start_vid integer NOT NULL,
+    end_vid integer NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT vlan_group_vid_ranges_valid_bounds CHECK ((((start_vid >= 1) AND (start_vid <= 4094)) AND ((end_vid >= 1) AND (end_vid <= 4094)) AND (start_vid <= end_vid)))
+);
+
+
+--
+-- Name: vlan_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.vlan_groups (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    slug character varying(255) NOT NULL,
+    scope_kind character varying(255) DEFAULT 'global'::character varying NOT NULL,
+    site_id uuid,
+    location_id uuid,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT vlan_groups_valid_scope CHECK (((((scope_kind)::text = 'global'::text) AND (site_id IS NULL) AND (location_id IS NULL)) OR (((scope_kind)::text = 'site'::text) AND (site_id IS NOT NULL) AND (location_id IS NULL)) OR (((scope_kind)::text = 'location'::text) AND (site_id IS NULL) AND (location_id IS NOT NULL))))
+);
+
+
+--
+-- Name: vlans; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.vlans (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    vlan_group_id uuid,
+    vid integer NOT NULL,
+    name character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    role character varying(255),
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT vlans_valid_vid CHECK (((vid >= 1) AND (vid <= 4094)))
+);
+
+
+--
 -- Name: module_installation_events sequence; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1782,6 +1840,38 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.users_tokens
     ADD CONSTRAINT users_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: vlan_group_vid_ranges vlan_group_vid_ranges_no_overlap; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_group_vid_ranges
+    ADD CONSTRAINT vlan_group_vid_ranges_no_overlap EXCLUDE USING gist (vlan_group_id WITH =, int4range(start_vid, end_vid, '[]'::text) WITH &&);
+
+
+--
+-- Name: vlan_group_vid_ranges vlan_group_vid_ranges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_group_vid_ranges
+    ADD CONSTRAINT vlan_group_vid_ranges_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: vlan_groups vlan_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_groups
+    ADD CONSTRAINT vlan_groups_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: vlans vlans_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlans
+    ADD CONSTRAINT vlans_pkey PRIMARY KEY (id);
 
 
 --
@@ -3024,6 +3114,69 @@ CREATE INDEX users_tokens_user_id_index ON public.users_tokens USING btree (user
 
 
 --
+-- Name: vlan_group_vid_ranges_organization_id_vlan_group_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX vlan_group_vid_ranges_organization_id_vlan_group_id_index ON public.vlan_group_vid_ranges USING btree (organization_id, vlan_group_id);
+
+
+--
+-- Name: vlan_groups_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlan_groups_id_organization_id_index ON public.vlan_groups USING btree (id, organization_id);
+
+
+--
+-- Name: vlan_groups_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlan_groups_organization_id_resource_id_index ON public.vlan_groups USING btree (organization_id, resource_id);
+
+
+--
+-- Name: vlan_groups_organization_id_slug_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlan_groups_organization_id_slug_index ON public.vlan_groups USING btree (organization_id, slug);
+
+
+--
+-- Name: vlan_groups_scope_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX vlan_groups_scope_index ON public.vlan_groups USING btree (organization_id, scope_kind, site_id, location_id);
+
+
+--
+-- Name: vlans_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlans_id_organization_id_index ON public.vlans USING btree (id, organization_id);
+
+
+--
+-- Name: vlans_organization_group_vid_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlans_organization_group_vid_index ON public.vlans USING btree (organization_id, vlan_group_id, vid) NULLS NOT DISTINCT;
+
+
+--
+-- Name: vlans_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vlans_organization_id_resource_id_index ON public.vlans USING btree (organization_id, resource_id);
+
+
+--
+-- Name: vlans_organization_id_vlan_group_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX vlans_organization_id_vlan_group_id_index ON public.vlans USING btree (organization_id, vlan_group_id);
+
+
+--
 -- Name: catalog_type_revisions catalog_type_revisions_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4164,10 +4317,58 @@ ALTER TABLE ONLY public.users_tokens
 
 
 --
+-- Name: vlan_group_vid_ranges vlan_group_vid_ranges_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_group_vid_ranges
+    ADD CONSTRAINT vlan_group_vid_ranges_group_fkey FOREIGN KEY (vlan_group_id, organization_id) REFERENCES public.vlan_groups(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: vlan_groups vlan_groups_organization_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_groups
+    ADD CONSTRAINT vlan_groups_organization_location_fkey FOREIGN KEY (location_id, organization_id) REFERENCES public.locations(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: vlan_groups vlan_groups_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_groups
+    ADD CONSTRAINT vlan_groups_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: vlan_groups vlan_groups_organization_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlan_groups
+    ADD CONSTRAINT vlan_groups_organization_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: vlans vlans_organization_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlans
+    ADD CONSTRAINT vlans_organization_group_fkey FOREIGN KEY (vlan_group_id, organization_id) REFERENCES public.vlan_groups(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: vlans vlans_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vlans
+    ADD CONSTRAINT vlans_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Z2gGM93CfXo8WOz0GHgtMkkJ6LE8vD8k8fNtdRg6h1dmjS1EiuDp6OlYH9bDyF4
+\unrestrict PWuBSBRcu0fCOMJe0NXhdR0MF8Ju2QliHObo4ZPRBSIUNKUatJoK8XDbRJqlqTE
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -4200,3 +4401,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826180000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826190000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826200000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260903213000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260907070000);
