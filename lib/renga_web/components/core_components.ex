@@ -203,7 +203,7 @@ defmodule RengaWeb.CoreComponents do
             checked={@checked}
             class={@class || "checkbox checkbox-sm"}
             aria-invalid={if(@errors == [], do: nil, else: "true")}
-            aria-describedby={@error_id}
+            aria-describedby={@described_by}
             {@rest}
           />{@label}
         </span>
@@ -228,7 +228,7 @@ defmodule RengaWeb.CoreComponents do
           class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
           multiple={@multiple}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
-          aria-describedby={@error_id}
+          aria-describedby={@described_by}
           {@rest}
         >
           <option :if={@prompt} value="">{@prompt}</option>
@@ -257,7 +257,7 @@ defmodule RengaWeb.CoreComponents do
             @errors != [] && (@error_class || "textarea-error")
           ]}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
-          aria-describedby={@error_id}
+          aria-describedby={@described_by}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
@@ -286,7 +286,7 @@ defmodule RengaWeb.CoreComponents do
             @errors != [] && (@error_class || "input-error")
           ]}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
-          aria-describedby={@error_id}
+          aria-describedby={@described_by}
           {@rest}
         />
       </label>
@@ -308,15 +308,24 @@ defmodule RengaWeb.CoreComponents do
   end
 
   defp assign_error_id(assigns) do
-    if assigns.errors != [] do
-      id = assigns.id || to_string(assigns.name)
+    assigns =
+      if assigns.errors != [] do
+        id = assigns.id || to_string(assigns.name)
 
-      assigns
-      |> assign(:id, id)
-      |> assign(:error_id, assigns.error_id || "#{id}-error")
-    else
-      assign(assigns, :error_id, nil)
-    end
+        assigns
+        |> assign(:id, id)
+        |> assign(:error_id, assigns.error_id || "#{id}-error")
+      else
+        assign(assigns, :error_id, nil)
+      end
+
+    help_id = assigns.rest[:"aria-describedby"]
+    description_ids = Enum.reject([help_id, assigns.error_id], &is_nil/1)
+    described_by = if description_ids == [], do: nil, else: Enum.join(description_ids, " ")
+
+    assigns
+    |> assign(:rest, Map.delete(assigns.rest, :"aria-describedby"))
+    |> assign(:described_by, described_by)
   end
 
   @doc """

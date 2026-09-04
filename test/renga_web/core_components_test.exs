@@ -56,4 +56,20 @@ defmodule RengaWeb.CoreComponentsTest do
     assert LazyHTML.attribute(input, "aria-describedby") == []
     assert LazyHTML.to_html(LazyHTML.query(document, "#custom-name-error")) == ""
   end
+
+  test "inputs retain help descriptions alongside validation errors" do
+    form =
+      %{"name" => ""}
+      |> to_form(as: :item, errors: [name: {"is invalid", []}], action: :validate)
+
+    attrs =
+      [field: form[:name], type: "text"]
+      |> Keyword.put(:"aria-describedby", "name-help")
+
+    html = render_component(&CoreComponents.input/1, attrs)
+
+    document = LazyHTML.from_fragment(html)
+    input = LazyHTML.query(document, "input")
+    assert LazyHTML.attribute(input, "aria-describedby") == ["name-help item_name-error"]
+  end
 end
