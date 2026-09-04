@@ -9,7 +9,6 @@ defmodule Renga.Catalog.JSONB do
   def validate(%Decimal{} = value) do
     case value do
       %Decimal{coef: coefficient, exp: exponent} when is_integer(coefficient) ->
-        {coefficient, exponent} = trim_trailing_zeroes(coefficient, exponent)
         coefficient_digits = digit_count(coefficient)
         integer_digits = max(coefficient_digits + exponent, 0)
         fractional_digits = max(-exponent, 0)
@@ -74,11 +73,4 @@ defmodule Renga.Catalog.JSONB do
     |> Integer.digits()
     |> length()
   end
-
-  defp trim_trailing_zeroes(0, _exponent), do: {0, 0}
-
-  defp trim_trailing_zeroes(coefficient, exponent) when rem(coefficient, 10) == 0,
-    do: trim_trailing_zeroes(div(coefficient, 10), exponent + 1)
-
-  defp trim_trailing_zeroes(coefficient, exponent), do: {coefficient, exponent}
 end

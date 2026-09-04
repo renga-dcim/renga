@@ -631,6 +631,23 @@ defmodule RengaWeb.CatalogLiveTest do
            )
   end
 
+  test "revision authoring reports excessive JSON fractional scale inline", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Scale Vendor", "scale-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALE-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    scaled = "1." <> String.duplicate("0", 16_384)
+
+    render_hook(view, "publish_revision", %{
+      "revision" => %{"specifications" => ~s({"scaled":#{scaled}})}
+    })
+
+    assert has_element?(view, "#revision_specifications.textarea-error")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "revision events reject malformed parameter shapes without crashing", %{
     conn: conn,
     scope: scope

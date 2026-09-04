@@ -26,6 +26,29 @@ defmodule Renga.JSONTest do
 
     coefficient = String.to_integer("1" <> String.duplicate("2", 40))
     assert :ok = JSONB.validate(%Decimal{sign: 1, coef: coefficient, exp: -40})
+
+    max_scale_coefficient = String.to_integer("1" <> String.duplicate("0", 16_383))
+    excess_scale_coefficient = max_scale_coefficient * 10
+    assert :ok = JSONB.validate(%Decimal{sign: 1, coef: max_scale_coefficient, exp: -16_383})
+
+    assert {:error, _message} =
+             JSONB.validate(%Decimal{sign: 1, coef: excess_scale_coefficient, exp: -16_384})
+
+    assert :ok = JSONB.validate(%Decimal{sign: 1, coef: 0, exp: -16_383})
+    assert {:error, _message} = JSONB.validate(%Decimal{sign: 1, coef: 0, exp: -16_384})
+
+    assert Renga.JSON.encode!(%{"zero" => %Decimal{sign: -1, coef: 0, exp: -2}}) ==
+             ~s({"zero":-0.00})
+  end
+
+  test "decodes zero-padded signed exponents by their numeric value" do
+    for {encoded, expected} <- [
+          {"1e0000001", %Decimal{sign: 1, coef: 1, exp: 1}},
+          {"1e+0000001", %Decimal{sign: 1, coef: 1, exp: 1}},
+          {"1e-0000001", %Decimal{sign: 1, coef: 1, exp: -1}}
+        ] do
+      assert {:ok, %{"number" => ^expected}} = Renga.JSON.decode(~s({"number":#{encoded}}))
+    end
   end
 
   test "web JSON keeps native request floats and emits Decimal values as numbers" do

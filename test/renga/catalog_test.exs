@@ -427,6 +427,36 @@ defmodule Renga.CatalogTest do
     assert Decimal.equal?(template.attributes["ratio"], ratio)
   end
 
+  test "revision JSON enforces PostgreSQL fractional display scale", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Scale JSON", "scale-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALE-JSON", "server")
+
+    max_scale = %Decimal{
+      sign: 1,
+      coef: String.to_integer("1" <> String.duplicate("0", 16_383)),
+      exp: -16_383
+    }
+
+    excess_scale = %{max_scale | coef: max_scale.coef * 10, exp: -16_384}
+
+    assert {:ok, _revision} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{
+                 "scaled" => max_scale,
+                 "zero" => %Decimal{sign: 1, coef: 0, exp: -2}
+               }
+             })
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"scaled" => excess_scale}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+    [stored] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+    assert stored.specifications["zero"] == %Decimal{sign: 1, coef: 0, exp: -2}
+  end
+
   test "component identity is unique without regard to case", %{scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Identity", "identity")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTITY-1", "server")

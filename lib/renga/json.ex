@@ -52,6 +52,7 @@ defmodule Renga.JSON do
 
     magnitude =
       cond do
+        coefficient == 0 and exponent < 0 -> "0." <> String.duplicate("0", -exponent)
         coefficient == 0 -> "0"
         abs(exponent) > 1_000 -> digits <> "e" <> Integer.to_string(exponent)
         exponent >= 0 -> digits <> String.duplicate("0", exponent)
@@ -140,12 +141,20 @@ defmodule Renga.JSON do
   defp bounded_exponent(""), do: 0
 
   defp bounded_exponent(exponent) do
-    digits = String.trim_leading(exponent, "+") |> String.trim_leading("-")
+    {sign, digits} =
+      case exponent do
+        "+" <> digits -> {1, digits}
+        "-" <> digits -> {-1, digits}
+        digits -> {1, digits}
+      end
+
+    digits = String.trim_leading(digits, "0")
+    digits = if digits == "", do: "0", else: digits
 
     if byte_size(digits) > 6 do
-      if String.starts_with?(exponent, "-"), do: -1_000_000, else: 1_000_000
+      sign * 1_000_000
     else
-      String.to_integer(exponent)
+      sign * String.to_integer(digits)
     end
   end
 end
