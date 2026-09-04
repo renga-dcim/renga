@@ -23,6 +23,8 @@ defmodule RengaWeb.CatalogLive do
                             ~w(interface module_bay power_port power_outlet console_port device_bay cpu memory disk),
                             &{Phoenix.Naming.humanize(&1), &1}
                           )
+  @revision_scalar_fields ~w(part_number height_units width_mm depth_mm weight_kg airflow specifications)
+  @template_scalar_fields ~w(kind name label position description required attributes)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -136,15 +138,19 @@ defmodule RengaWeb.CatalogLive do
   end
 
   def handle_event("validate_revision", %{"revision" => params}, socket) when is_map(params) do
-    params = normalize_revision_params(params, socket.assigns.revision_params)
+    if safe_revision_param_shapes?(params) do
+      params = normalize_revision_params(params, socket.assigns.revision_params)
 
-    case revision_submission(params) do
-      {:ok, _revision_attrs, _templates} ->
-        {:noreply, assign_revision_form(socket, params, [], %{}, :validate)}
+      case revision_submission(params) do
+        {:ok, _revision_attrs, _templates} ->
+          {:noreply, assign_revision_form(socket, params, [], %{}, :validate)}
 
-      {:error, revision_errors, template_errors} ->
-        {:noreply,
-         assign_revision_form(socket, params, revision_errors, template_errors, :validate)}
+        {:error, revision_errors, template_errors} ->
+          {:noreply,
+           assign_revision_form(socket, params, revision_errors, template_errors, :validate)}
+      end
+    else
+      {:noreply, invalid_revision_submission(socket, :validate)}
     end
   end
 
@@ -184,7 +190,14 @@ defmodule RengaWeb.CatalogLive do
   end
 
   def handle_event("publish_revision", %{"revision" => params}, socket) when is_map(params) do
-    publish_revision(socket, normalize_revision_params(params, socket.assigns.revision_params))
+    if safe_revision_param_shapes?(params) do
+      publish_revision(socket, normalize_revision_params(params, socket.assigns.revision_params))
+    else
+      {:noreply,
+       socket
+       |> invalid_revision_submission(:insert)
+       |> put_flash(:error, "Revision submission is invalid")}
+    end
   end
 
   def handle_event("publish_revision", _params, socket) do
@@ -1212,6 +1225,23 @@ defmodule RengaWeb.CatalogLive do
           Map.put(default_template_params(), "_invalid", "must be an object")
       end)
       |> index_template_params()
+    end)
+  end
+
+  defp safe_revision_param_shapes?(params) do
+    scalar_fields_safe?(params, @revision_scalar_fields) and
+      params
+      |> Map.get("templates")
+      |> template_params_list()
+      |> Enum.all?(fn
+        template when is_map(template) -> scalar_fields_safe?(template, @template_scalar_fields)
+        _invalid_template -> true
+      end)
+  end
+
+  defp scalar_fields_safe?(params, fields) do
+    Enum.all?(fields, fn field ->
+      not Map.has_key?(params, field) or is_nil(params[field]) or is_binary(params[field])
     end)
   end
 

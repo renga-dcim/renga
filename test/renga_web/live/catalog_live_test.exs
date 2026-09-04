@@ -681,6 +681,38 @@ defmodule RengaWeb.CatalogLiveTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision events reject nested values in scalar fields without crashing", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Scalar Vendor", "scalar-vendor")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALAR-1", "server")
+    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+
+    for field <- ~w(part_number height_units width_mm depth_mm weight_kg airflow specifications) do
+      render_hook(view, "publish_revision", %{
+        "revision" => %{field => %{"nested" => true}}
+      })
+
+      assert has_element?(view, "#revision-form-errors[role='alert']", "submission is invalid")
+    end
+
+    for field <- ~w(kind name label position description required attributes) do
+      render_hook(view, "publish_revision", %{
+        "revision" => %{
+          "templates" => %{
+            "0" => %{field => %{"nested" => true}}
+          }
+        }
+      })
+
+      assert has_element?(view, "#revision-form-errors[role='alert']", "submission is invalid")
+    end
+
+    assert has_element?(view, "#new-revision-form")
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "revision authoring replaces forged internal row identifiers", %{conn: conn, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Identifier Vendor", "identifier-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTIFIER-1", "server")
