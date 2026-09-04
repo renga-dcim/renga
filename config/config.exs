@@ -26,7 +26,8 @@ config :renga,
 
 config :renga, Renga.Repo,
   migration_primary_key: [name: :id, type: :binary_id],
-  migration_foreign_key: [type: :binary_id]
+  migration_foreign_key: [type: :binary_id],
+  types: Renga.PostgrexTypes
 
 # Configures the endpoint
 config :renga, RengaWeb.Endpoint,
@@ -74,8 +75,11 @@ config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
-# Use Jason for JSON parsing in Phoenix
-config :phoenix, :json_library, Jason
+# Keep native request-number decoding while preserving Decimal response numbers.
+config :phoenix, :json_library, RengaWeb.JSON
+
+# Preserve exact fractional values when JSONB crosses the PostgreSQL boundary.
+config :postgrex, :json_library, Renga.JSON
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

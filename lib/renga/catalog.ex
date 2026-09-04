@@ -1224,6 +1224,38 @@ defmodule Renga.Catalog do
     String.downcase(String.trim(left)) == String.downcase(String.trim(right))
   end
 
+  defp same_component_value?(%Decimal{} = left, right) when is_integer(right),
+    do: Decimal.equal?(left, Decimal.new(right))
+
+  defp same_component_value?(%Decimal{} = left, right) when is_float(right),
+    do: Decimal.equal?(left, Decimal.from_float(right))
+
+  defp same_component_value?(left, %Decimal{} = right) when is_integer(left) or is_float(left),
+    do: same_component_value?(right, left)
+
+  defp same_component_value?(%Decimal{} = left, %Decimal{} = right),
+    do: Decimal.equal?(left, right)
+
+  defp same_component_value?(left, right)
+       when is_map(left) and not is_struct(left) and is_map(right) and not is_struct(right) do
+    map_size(left) == map_size(right) and
+      Enum.all?(left, fn {key, left_value} ->
+        case Map.fetch(right, key) do
+          {:ok, right_value} -> same_component_value?(left_value, right_value)
+          :error -> false
+        end
+      end)
+  end
+
+  defp same_component_value?(left, right) when is_list(left) and is_list(right) do
+    length(left) == length(right) and
+      left
+      |> Enum.zip(right)
+      |> Enum.all?(fn {left_value, right_value} ->
+        same_component_value?(left_value, right_value)
+      end)
+  end
+
   defp same_component_value?(left, right), do: left == right
 
   defp put_component_finding(scope, resource, attrs) do

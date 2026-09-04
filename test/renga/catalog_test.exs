@@ -283,6 +283,196 @@ defmodule Renga.CatalogTest do
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 
+  test "revision values outside database limits return changeset errors", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Limits", "limits")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "LIMITS-1", "server")
+
+    for attrs <- [
+          %{part_number: String.duplicate("p", 256)},
+          %{part_number: String.duplicate("e\u0301", 128)},
+          %{width_mm: "100000000.00"},
+          %{weight_kg: "10000000.000"},
+          %{width_mm: "1.005"},
+          %{weight_kg: "1.0005"}
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, attrs)
+
+      assert errors_on(changeset) != %{}
+    end
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: String.duplicate("n", 256)}
+             ])
+
+    assert %{name: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: String.duplicate("e\u0301", 128)}
+             ])
+
+    assert %{name: [_]} = errors_on(changeset)
+
+    for field <- [:label, :position] do
+      attrs = Map.put(%{kind: "interface", name: "eth0"}, field, String.duplicate("e\u0301", 128))
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [attrs])
+
+      assert %{^field => [_]} = errors_on(changeset)
+    end
+
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision JSON rejects values PostgreSQL JSONB cannot represent", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "JSONB", "jsonb")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "JSONB-1", "server")
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"note" => "contains\0nul"}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"too_large" => %Decimal{sign: 1, coef: 1, exp: 131_072}}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{unsupported_atom_key: true}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0", attributes: %{"note" => "contains\0nul"}}
+             ])
+
+    assert %{attributes: [_]} = errors_on(changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision JSON rejects explicit nil maps without raising", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Required JSON", "required-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "REQUIRED-JSON", "server")
+
+    assert {:error, %Ecto.Changeset{} = revision_changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{specifications: nil})
+
+    assert %{specifications: [_]} = errors_on(revision_changeset)
+
+    assert {:error, %Ecto.Changeset{} = template_changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0", attributes: nil}
+             ])
+
+    assert %{attributes: [_]} = errors_on(template_changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision text rejects NUL and malformed UTF-8 without raising", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Text Safety", "text-safety")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "TEXT-1", "server")
+
+    for attrs <- [%{part_number: "PN\0BAD"}, %{part_number: <<255>>}] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, attrs)
+
+      assert %{part_number: [_]} = errors_on(changeset)
+    end
+
+    for template <- [
+          %{kind: "interface", name: "eth\0bad"},
+          %{kind: "interface", name: <<255>>},
+          %{kind: "interface", name: "eth0", description: "bad\0description"}
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [template])
+
+      assert errors_on(changeset) != %{}
+    end
+
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
+  test "revision JSON preserves exact fractional numbers through PostgreSQL", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Precise JSON", "precise-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "PRECISE-JSON", "server")
+    ratio = Decimal.new("0.123456789012345678901")
+
+    assert {:ok, revision} =
+             Catalog.create_hardware_type_revision(
+               scope,
+               hardware_type,
+               %{specifications: %{"ratio" => ratio}},
+               [%{kind: "interface", name: "eth0", attributes: %{"ratio" => ratio}}]
+             )
+
+    stored_revision =
+      Catalog.get_hardware_type!(scope, hardware_type.id).revisions |> List.first()
+
+    assert Decimal.equal?(revision.specifications["ratio"], ratio)
+    assert Decimal.equal?(stored_revision.specifications["ratio"], ratio)
+
+    [template] = stored_revision.component_templates
+    assert Decimal.equal?(template.attributes["ratio"], ratio)
+  end
+
+  test "revision JSON enforces PostgreSQL fractional display scale", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Scale JSON", "scale-json")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALE-JSON", "server")
+
+    max_scale = %Decimal{
+      sign: 1,
+      coef: String.to_integer("1" <> String.duplicate("0", 16_383)),
+      exp: -16_383
+    }
+
+    excess_scale = %{max_scale | coef: max_scale.coef * 10, exp: -16_384}
+
+    assert {:ok, _revision} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{
+                 "scaled" => max_scale,
+                 "zero" => %Decimal{sign: 1, coef: 0, exp: -2},
+                 "positive_exponent_zero" => %Decimal{sign: 1, coef: 0, exp: 131_072}
+               }
+             })
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{
+               specifications: %{"scaled" => excess_scale}
+             })
+
+    assert %{specifications: [_]} = errors_on(changeset)
+    [stored] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+    assert stored.specifications["zero"] == %Decimal{sign: 1, coef: 0, exp: -2}
+    assert stored.specifications["positive_exponent_zero"] == 0
+  end
+
+  test "component identity is unique without regard to case", %{scope: scope} do
+    {:ok, manufacturer} = manufacturer_fixture(scope, "Identity", "identity")
+    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTITY-1", "server")
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Catalog.create_hardware_type_revision(scope, hardware_type, %{}, [
+               %{kind: "interface", name: "eth0"},
+               %{kind: "interface", name: "ETH0"}
+             ])
+
+    assert %{name: ["has already been taken"]} = errors_on(changeset)
+    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+  end
+
   test "finding reconciliation rechecks authorization and scopes observations", %{
     scope: scope,
     organization: organization,

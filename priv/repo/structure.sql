@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict bCB6wXvLo6QfK10CgJh9Z9pdrars64wGGguhgaQNA672ZqhJyUtUNukzQiytopK
+\restrict Z2gGM93CfXo8WOz0GHgtMkkJ6LE8vD8k8fNtdRg6h1dmjS1EiuDp6OlYH9bDyF4
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -2030,10 +2030,10 @@ CREATE UNIQUE INDEX component_templates_id_organization_id_index ON public.compo
 
 
 --
--- Name: component_templates_organization_id_catalog_type_revision_id_ki; Type: INDEX; Schema: public; Owner: -
+-- Name: component_templates_identity_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX component_templates_organization_id_catalog_type_revision_id_ki ON public.component_templates USING btree (organization_id, catalog_type_revision_id, kind, name);
+CREATE UNIQUE INDEX component_templates_identity_index ON public.component_templates USING btree (organization_id, catalog_type_revision_id, kind, lower((name)::text));
 
 
 --
@@ -4167,7 +4167,7 @@ ALTER TABLE ONLY public.users_tokens
 -- PostgreSQL database dump complete
 --
 
-\unrestrict bCB6wXvLo6QfK10CgJh9Z9pdrars64wGGguhgaQNA672ZqhJyUtUNukzQiytopK
+\unrestrict Z2gGM93CfXo8WOz0GHgtMkkJ6LE8vD8k8fNtdRg6h1dmjS1EiuDp6OlYH9bDyF4
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -4199,3 +4199,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826170000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826180000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826190000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826200000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260903213000);

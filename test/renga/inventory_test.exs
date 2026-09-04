@@ -180,6 +180,20 @@ defmodule Renga.InventoryTest do
       refute Map.has_key?(source, :capabilities)
     end
 
+    test "fractional agent metadata remains a JSON number after database reload", %{
+      scope: scope,
+      source: source
+    } do
+      assert {:ok, {%Agent{} = agent, %AgentLease{}}} =
+               Inventory.record_agent_check_in(scope, source.id, %{
+                 metadata: %{"load" => 1.5}
+               })
+
+      stored = Inventory.get_agent!(scope, agent.id)
+      assert Decimal.equal?(stored.metadata["load"], Decimal.new("1.5"))
+      assert RengaWeb.JSON.encode!(stored.metadata) == ~s({"load":1.5})
+    end
+
     test "renewal updates one lease and expiry is deterministic", %{scope: scope, source: source} do
       {:ok, {agent, original}} = Inventory.record_agent_check_in(scope, source.id)
       renewed_at = ~U[2030-08-01 12:00:00.000000Z]

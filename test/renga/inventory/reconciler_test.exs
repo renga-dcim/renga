@@ -1504,6 +1504,49 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert reopened.last_observed_at == recurrence.observed_at
   end
 
+  test "equivalent JSON number scales do not create component drift" do
+    context = context()
+    first = observation(context, "1", %{"machine_id" => "numeric-component"})
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "NUMERIC-COMPONENT", [
+        %{
+          kind: "cpu",
+          name: "CPU1",
+          position: "CPU1",
+          attributes: %{
+            "cores" => Decimal.new("1.00"),
+            "limits" => %{"values" => [Decimal.new("1.00"), Decimal.new("2.0")]}
+          }
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    observed =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "numeric-component"},
+        %{},
+        [],
+        [
+          %{
+            "kind" => "cpu",
+            "id" => "cpu-1",
+            "slot" => "CPU1",
+            "cores" => 1,
+            "limits" => %{"values" => [1, 2.0]}
+          }
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, observed.id)
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
   test "non-authoritative component sections do not infer missing findings" do
     context = context()
 

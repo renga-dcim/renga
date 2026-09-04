@@ -2208,7 +2208,7 @@ defmodule Renga.Inventory do
   defp validate_agent_metadata_size(changeset, metadata) do
     max_bytes = AgentPayload.max_agent_metadata_bytes()
 
-    if metadata |> Jason.encode!() |> byte_size() <= max_bytes do
+    if metadata |> Renga.JSON.encode!() |> byte_size() <= max_bytes do
       changeset
     else
       Ecto.Changeset.add_error(
