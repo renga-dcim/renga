@@ -1224,6 +1224,18 @@ defmodule Renga.Catalog do
     String.downcase(String.trim(left)) == String.downcase(String.trim(right))
   end
 
+  defp same_component_value?(%Decimal{} = left, right) when is_integer(right),
+    do: Decimal.equal?(left, Decimal.new(right))
+
+  defp same_component_value?(%Decimal{} = left, right) when is_float(right),
+    do: Decimal.equal?(left, Decimal.from_float(right))
+
+  defp same_component_value?(left, %Decimal{} = right) when is_integer(left) or is_float(left),
+    do: same_component_value?(right, left)
+
+  defp same_component_value?(%Decimal{} = left, %Decimal{} = right),
+    do: Decimal.equal?(left, right)
+
   defp same_component_value?(left, right), do: left == right
 
   defp put_component_finding(scope, resource, attrs) do
