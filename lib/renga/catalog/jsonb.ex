@@ -10,7 +10,7 @@ defmodule Renga.Catalog.JSONB do
     case value do
       %Decimal{coef: coefficient, exp: exponent} when is_integer(coefficient) ->
         coefficient_digits = digit_count(coefficient)
-        integer_digits = max(coefficient_digits + exponent, 0)
+        integer_digits = if coefficient == 0, do: 0, else: max(coefficient_digits + exponent, 0)
         fractional_digits = max(-exponent, 0)
 
         if integer_digits <= @max_integer_digits and

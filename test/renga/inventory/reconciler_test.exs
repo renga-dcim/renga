@@ -1515,7 +1515,10 @@ defmodule Renga.Inventory.ReconcilerTest do
           kind: "cpu",
           name: "CPU1",
           position: "CPU1",
-          attributes: %{"cores" => Decimal.new("1.00")}
+          attributes: %{
+            "cores" => Decimal.new("1.00"),
+            "limits" => %{"values" => [Decimal.new("1.00"), Decimal.new("2.0")]}
+          }
         }
       ])
 
@@ -1529,7 +1532,15 @@ defmodule Renga.Inventory.ReconcilerTest do
         %{"machine_id" => "numeric-component"},
         %{},
         [],
-        [%{"kind" => "cpu", "id" => "cpu-1", "slot" => "CPU1", "cores" => 1}]
+        [
+          %{
+            "kind" => "cpu",
+            "id" => "cpu-1",
+            "slot" => "CPU1",
+            "cores" => 1,
+            "limits" => %{"values" => [1, 2.0]}
+          }
+        ]
       )
 
     assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, observed.id)

@@ -36,6 +36,7 @@ defmodule Renga.JSONTest do
 
     assert :ok = JSONB.validate(%Decimal{sign: 1, coef: 0, exp: -16_383})
     assert {:error, _message} = JSONB.validate(%Decimal{sign: 1, coef: 0, exp: -16_384})
+    assert :ok = JSONB.validate(%Decimal{sign: 1, coef: 0, exp: 131_072})
 
     assert Renga.JSON.encode!(%{"zero" => %Decimal{sign: -1, coef: 0, exp: -2}}) ==
              ~s({"zero":-0.00})
