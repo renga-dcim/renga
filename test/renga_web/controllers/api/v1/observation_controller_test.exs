@@ -162,6 +162,54 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "validates VLAN membership and logical interface relationship payloads" do
+      %{source: source, token: token} = source_fixture()
+
+      invalid_vlan =
+        source
+        |> valid_observation_payload(%{"observation_id" => "invalid-vlan-membership"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "vlan_mode"],
+          "access"
+        )
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"],
+          [%{"vid" => 10, "tagging_mode" => "tagged"}]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", invalid_vlan)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => vlan_errors} = response
+      assert Enum.any?(vlan_errors, &(&1["path"] == "resources.0.interfaces.0.vlans"))
+
+      self_relationship =
+        source
+        |> valid_observation_payload(%{"observation_id" => "self-interface-relationship"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "relationships"],
+          [%{"target" => "eth0", "kind" => "peer"}]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", self_relationship)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => relationship_errors} = response
+
+      assert Enum.any?(
+               relationship_errors,
+               &(&1["path"] == "resources.0.interfaces.0.relationships")
+             )
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects explicit null interface kind and status before raw storage" do
       %{source: source, token: token} = source_fixture()
 

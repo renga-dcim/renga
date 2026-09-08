@@ -24,6 +24,7 @@ defmodule Renga.Inventory.InterfaceRelationshipEvidence do
     field :kind, :string
     field :metadata, :map, default: %{}
     field :observed_at, :utc_datetime_usec
+    field :stale_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :interface_relationship, InterfaceRelationship
@@ -35,7 +36,7 @@ defmodule Renga.Inventory.InterfaceRelationshipEvidence do
 
   def changeset(evidence, attrs) do
     evidence
-    |> cast(attrs, [:kind, :metadata, :observed_at])
+    |> cast(attrs, [:kind, :metadata, :observed_at, :stale_at])
     |> validate_required([
       :organization_id,
       :interface_relationship_id,

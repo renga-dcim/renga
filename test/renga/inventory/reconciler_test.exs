@@ -2456,6 +2456,73 @@ defmodule Renga.Inventory.ReconcilerTest do
              Inventory.list_addresses(context.scope, interface.id)
   end
 
+  test "logical relationship evidence is only staled by explicitly complete snapshots" do
+    context = context()
+
+    {:ok, _source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"interface_relationship_snapshot_policy" => "complete"}
+      })
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [
+              %{"target" => "bond0", "kind" => "lag_member", "metadata" => %{}}
+            ]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [eth0, _bond0] = Inventory.list_interfaces(context.scope, resource.id)
+    [relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+    assert relationship.kind == "lag_member"
+
+    assert [%{stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    partial =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [%{"name" => "eth0"}, %{"name" => "bond0", "kind" => "bond"}]
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+
+    assert [%{stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    complete =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [%{"name" => "eth0", "relationships" => []}, %{"name" => "bond0", "kind" => "bond"}],
+        :absent,
+        %{"interface_relationships" => true}
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, complete.id)
+
+    assert [%{stale_at: stale_at}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert stale_at == complete.observed_at
+    assert [_relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+  end
+
   test "absent addresses preserve address state while an explicit empty collection withdraws it with an audit event" do
     context = context()
 

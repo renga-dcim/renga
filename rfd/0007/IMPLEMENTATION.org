@@ -14,12 +14,12 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 * Phase 2: Interface membership and evidence
 
-- [ ] Add separate desired and reconciled current tagged/untagged interface
+- [X] Add separate desired and reconciled current tagged/untagged interface
   membership, layer-local effective untagged VLAN rules, interface mode
   validation, and tenant-safe constraints.
-- [ ] Add source-local VLAN mapping and observation-linked membership evidence
+- [X] Add source-local VLAN mapping and observation-linked membership evidence
   with complete-versus-partial snapshot and stale semantics.
-- [ ] Extend logical interface relationship evidence without conflating host
+- [X] Extend logical interface relationship evidence without conflating host
   stacking, Layer 2 adjacency, and physical cabling.
 
 * Phase 3: Neighbor discovery and adjacency

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict PWuBSBRcu0fCOMJe0NXhdR0MF8Ju2QliHObo4ZPRBSIUNKUatJoK8XDbRJqlqTE
+\restrict LSPUWEVgATyuA5hBlYktN9MhKD32au14aJBjRc9rqrV9jP4aQwWXqP7PMgsghrP
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -396,6 +396,41 @@ CREATE TABLE public.component_templates (
 
 
 --
+-- Name: current_interface_vlan_memberships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_interface_vlan_memberships (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    vlan_id uuid NOT NULL,
+    tagging_mode character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    interface_vlan_evidence_id uuid CONSTRAINT current_interface_vlan_memb_interface_vlan_evidence_id_not_null NOT NULL,
+    CONSTRAINT current_interface_vlan_memberships_valid_tagging_mode CHECK (((tagging_mode)::text = ANY ((ARRAY['tagged'::character varying, 'untagged'::character varying])::text[])))
+);
+
+
+--
+-- Name: current_interface_vlan_modes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_interface_vlan_modes (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    mode character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    interface_vlan_mode_evidence_id uuid CONSTRAINT current_interface_vlan_mode_interface_vlan_mode_eviden_not_null NOT NULL,
+    CONSTRAINT current_interface_vlan_modes_valid_mode CHECK (((mode)::text = ANY ((ARRAY['access'::character varying, 'trunk'::character varying, 'tagged_all'::character varying])::text[])))
+);
+
+
+--
 -- Name: current_module_installations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -431,6 +466,39 @@ CREATE TABLE public.current_placements (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT current_placements_valid_rack_position CHECK ((((rack_id IS NULL) AND ("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR ((rack_id IS NOT NULL) AND ((("position" IS NULL) AND (height_units IS NULL) AND (face IS NULL)) OR (("position" > 0) AND (height_units > 0) AND ((face)::text = ANY ((ARRAY['front'::character varying, 'rear'::character varying, 'full'::character varying])::text[])))))))
+);
+
+
+--
+-- Name: desired_interface_vlan_assignments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.desired_interface_vlan_assignments (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    vlan_id uuid NOT NULL,
+    tagging_mode character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT desired_interface_vlan_assignments_valid_tagging_mode CHECK (((tagging_mode)::text = ANY ((ARRAY['tagged'::character varying, 'untagged'::character varying])::text[])))
+);
+
+
+--
+-- Name: desired_interface_vlan_modes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.desired_interface_vlan_modes (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    mode character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT desired_interface_vlan_modes_valid_mode CHECK (((mode)::text = ANY ((ARRAY['access'::character varying, 'trunk'::character varying, 'tagged_all'::character varying])::text[])))
 );
 
 
@@ -648,7 +716,8 @@ CREATE TABLE public.interface_relationship_evidence (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    stale_at timestamp(3) without time zone
 );
 
 
@@ -666,6 +735,48 @@ CREATE TABLE public.interface_relationships (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT interface_relationships_distinct_endpoints CHECK ((source_interface_id <> target_interface_id))
+);
+
+
+--
+-- Name: interface_vlan_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_vlan_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    vlan_id uuid,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    source_local_key character varying(255) NOT NULL,
+    source_local_scope character varying(255),
+    vid integer NOT NULL,
+    tagging_mode character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    stale_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_vlan_evidence_valid_tagging_mode CHECK (((tagging_mode)::text = ANY ((ARRAY['tagged'::character varying, 'untagged'::character varying])::text[]))),
+    CONSTRAINT interface_vlan_evidence_valid_vid CHECK (((vid >= 1) AND (vid <= 4094)))
+);
+
+
+--
+-- Name: interface_vlan_mode_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_vlan_mode_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    mode character varying(255),
+    observed_at timestamp(3) without time zone NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_vlan_mode_evidence_valid_mode CHECK (((mode IS NULL) OR ((mode)::text = ANY ((ARRAY['access'::character varying, 'trunk'::character varying, 'tagged_all'::character varying])::text[]))))
 );
 
 
@@ -1241,6 +1352,22 @@ CREATE TABLE public.sites (
 
 
 --
+-- Name: source_vlan_group_mappings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.source_vlan_group_mappings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    vlan_group_id uuid,
+    source_local_scope character varying(255) DEFAULT 'default'::character varying NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: sources; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1273,6 +1400,28 @@ CREATE TABLE public.sync_runs (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT sync_runs_completion_state CHECK (((((status)::text = 'running'::text) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'partial'::character varying])::text[])) AND (completed_at IS NOT NULL) AND (completed_at >= started_at))))
+);
+
+
+--
+-- Name: topology_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.topology_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    resolution_key character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT topology_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
+    CONSTRAINT topology_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
 );
 
 
@@ -1459,6 +1608,22 @@ ALTER TABLE ONLY public.component_templates
 
 
 --
+-- Name: current_interface_vlan_memberships current_interface_vlan_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_memberships
+    ADD CONSTRAINT current_interface_vlan_memberships_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: current_interface_vlan_modes current_interface_vlan_modes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_modes
+    ADD CONSTRAINT current_interface_vlan_modes_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: current_module_installations current_module_installations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1472,6 +1637,22 @@ ALTER TABLE ONLY public.current_module_installations
 
 ALTER TABLE ONLY public.current_placements
     ADD CONSTRAINT current_placements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: desired_interface_vlan_assignments desired_interface_vlan_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_assignments
+    ADD CONSTRAINT desired_interface_vlan_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: desired_interface_vlan_modes desired_interface_vlan_modes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_modes
+    ADD CONSTRAINT desired_interface_vlan_modes_pkey PRIMARY KEY (id);
 
 
 --
@@ -1568,6 +1749,22 @@ ALTER TABLE ONLY public.interface_relationship_evidence
 
 ALTER TABLE ONLY public.interface_relationships
     ADD CONSTRAINT interface_relationships_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_mode_evidence
+    ADD CONSTRAINT interface_vlan_mode_evidence_pkey PRIMARY KEY (id);
 
 
 --
@@ -1811,6 +2008,14 @@ ALTER TABLE ONLY public.sites
 
 
 --
+-- Name: source_vlan_group_mappings source_vlan_group_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_vlan_group_mappings
+    ADD CONSTRAINT source_vlan_group_mappings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sources sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1824,6 +2029,14 @@ ALTER TABLE ONLY public.sources
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: topology_findings topology_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_findings
+    ADD CONSTRAINT topology_findings_pkey PRIMARY KEY (id);
 
 
 --
@@ -2134,6 +2347,34 @@ CREATE INDEX component_templates_organization_id_kind_index ON public.component_
 
 
 --
+-- Name: current_interface_vlan_memberships_effective_untagged_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_vlan_memberships_effective_untagged_index ON public.current_interface_vlan_memberships USING btree (organization_id, interface_id) WHERE ((tagging_mode)::text = 'untagged'::text);
+
+
+--
+-- Name: current_interface_vlan_memberships_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_vlan_memberships_id_organization_id_index ON public.current_interface_vlan_memberships USING btree (id, organization_id);
+
+
+--
+-- Name: current_interface_vlan_memberships_interface_vlan_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_vlan_memberships_interface_vlan_index ON public.current_interface_vlan_memberships USING btree (organization_id, interface_id, vlan_id);
+
+
+--
+-- Name: current_interface_vlan_modes_organization_id_interface_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_vlan_modes_organization_id_interface_id_index ON public.current_interface_vlan_modes USING btree (organization_id, interface_id);
+
+
+--
 -- Name: current_module_installations_bay_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2159,6 +2400,34 @@ CREATE UNIQUE INDEX current_placements_id_organization_id_index ON public.curren
 --
 
 CREATE UNIQUE INDEX current_placements_organization_id_resource_id_index ON public.current_placements USING btree (organization_id, resource_id);
+
+
+--
+-- Name: desired_interface_vlan_assignments_effective_untagged_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_interface_vlan_assignments_effective_untagged_index ON public.desired_interface_vlan_assignments USING btree (organization_id, interface_id) WHERE ((tagging_mode)::text = 'untagged'::text);
+
+
+--
+-- Name: desired_interface_vlan_assignments_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_interface_vlan_assignments_id_organization_id_index ON public.desired_interface_vlan_assignments USING btree (id, organization_id);
+
+
+--
+-- Name: desired_interface_vlan_assignments_interface_vlan_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_interface_vlan_assignments_interface_vlan_index ON public.desired_interface_vlan_assignments USING btree (organization_id, interface_id, vlan_id);
+
+
+--
+-- Name: desired_interface_vlan_modes_organization_id_interface_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX desired_interface_vlan_modes_organization_id_interface_id_index ON public.desired_interface_vlan_modes USING btree (organization_id, interface_id);
 
 
 --
@@ -2383,6 +2652,48 @@ CREATE INDEX interface_relationships_organization_id_kind_index ON public.interf
 --
 
 CREATE UNIQUE INDEX interface_relationships_source_target_kind_index ON public.interface_relationships USING btree (organization_id, source_interface_id, target_interface_id, kind);
+
+
+--
+-- Name: interface_vlan_evidence_membership_identity_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_vlan_evidence_membership_identity_index ON public.interface_vlan_evidence USING btree (id, organization_id, interface_id, vlan_id);
+
+
+--
+-- Name: interface_vlan_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_vlan_evidence_observation_link_index ON public.interface_vlan_evidence USING btree (organization_id, observation_id, interface_id, source_local_key);
+
+
+--
+-- Name: interface_vlan_evidence_source_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_vlan_evidence_source_interface_index ON public.interface_vlan_evidence USING btree (organization_id, source_id, interface_id);
+
+
+--
+-- Name: interface_vlan_mode_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_vlan_mode_evidence_observation_link_index ON public.interface_vlan_mode_evidence USING btree (organization_id, observation_id, interface_id);
+
+
+--
+-- Name: interface_vlan_mode_evidence_projection_identity_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_vlan_mode_evidence_projection_identity_index ON public.interface_vlan_mode_evidence USING btree (id, organization_id, interface_id);
+
+
+--
+-- Name: interface_vlan_mode_evidence_source_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_vlan_mode_evidence_source_interface_index ON public.interface_vlan_mode_evidence USING btree (organization_id, source_id, interface_id);
 
 
 --
@@ -3030,6 +3341,20 @@ CREATE UNIQUE INDEX sites_organization_id_slug_index ON public.sites USING btree
 
 
 --
+-- Name: source_vlan_group_mappings_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX source_vlan_group_mappings_id_organization_id_index ON public.source_vlan_group_mappings USING btree (id, organization_id);
+
+
+--
+-- Name: source_vlan_group_mappings_source_scope_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX source_vlan_group_mappings_source_scope_index ON public.source_vlan_group_mappings USING btree (organization_id, source_id, source_local_scope);
+
+
+--
 -- Name: sources_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3090,6 +3415,20 @@ CREATE INDEX sync_runs_organization_id_started_at_index ON public.sync_runs USIN
 --
 
 CREATE INDEX sync_runs_organization_id_status_index ON public.sync_runs USING btree (organization_id, status);
+
+
+--
+-- Name: topology_findings_open_resolution_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX topology_findings_open_resolution_index ON public.topology_findings USING btree (organization_id, interface_id, kind, resolution_key) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: topology_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX topology_findings_organization_id_status_kind_index ON public.topology_findings USING btree (organization_id, status, kind);
 
 
 --
@@ -3421,6 +3760,62 @@ ALTER TABLE ONLY public.component_templates
 
 
 --
+-- Name: current_interface_vlan_memberships current_interface_vlan_memberships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_memberships
+    ADD CONSTRAINT current_interface_vlan_memberships_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_vlan_memberships current_interface_vlan_memberships_tenant_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_memberships
+    ADD CONSTRAINT current_interface_vlan_memberships_tenant_evidence_fkey FOREIGN KEY (interface_vlan_evidence_id, organization_id, interface_id, vlan_id) REFERENCES public.interface_vlan_evidence(id, organization_id, interface_id, vlan_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_vlan_memberships current_interface_vlan_memberships_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_memberships
+    ADD CONSTRAINT current_interface_vlan_memberships_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_vlan_memberships current_interface_vlan_memberships_tenant_vlan_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_memberships
+    ADD CONSTRAINT current_interface_vlan_memberships_tenant_vlan_fkey FOREIGN KEY (vlan_id, organization_id) REFERENCES public.vlans(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: current_interface_vlan_modes current_interface_vlan_modes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_modes
+    ADD CONSTRAINT current_interface_vlan_modes_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_vlan_modes current_interface_vlan_modes_tenant_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_modes
+    ADD CONSTRAINT current_interface_vlan_modes_tenant_evidence_fkey FOREIGN KEY (interface_vlan_mode_evidence_id, organization_id, interface_id) REFERENCES public.interface_vlan_mode_evidence(id, organization_id, interface_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_vlan_modes current_interface_vlan_modes_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_vlan_modes
+    ADD CONSTRAINT current_interface_vlan_modes_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: current_module_installations current_module_installations_bay_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3474,6 +3869,46 @@ ALTER TABLE ONLY public.current_placements
 
 ALTER TABLE ONLY public.current_placements
     ADD CONSTRAINT current_placements_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_interface_vlan_assignments desired_interface_vlan_assignments_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_assignments
+    ADD CONSTRAINT desired_interface_vlan_assignments_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: desired_interface_vlan_assignments desired_interface_vlan_assignments_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_assignments
+    ADD CONSTRAINT desired_interface_vlan_assignments_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: desired_interface_vlan_assignments desired_interface_vlan_assignments_tenant_vlan_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_assignments
+    ADD CONSTRAINT desired_interface_vlan_assignments_tenant_vlan_fkey FOREIGN KEY (vlan_id, organization_id) REFERENCES public.vlans(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: desired_interface_vlan_modes desired_interface_vlan_modes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_modes
+    ADD CONSTRAINT desired_interface_vlan_modes_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: desired_interface_vlan_modes desired_interface_vlan_modes_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_interface_vlan_modes
+    ADD CONSTRAINT desired_interface_vlan_modes_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -3770,6 +4205,78 @@ ALTER TABLE ONLY public.interface_relationships
 
 ALTER TABLE ONLY public.interface_relationships
     ADD CONSTRAINT interface_relationships_tenant_target_fkey FOREIGN KEY (target_interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_vlan_evidence interface_vlan_evidence_tenant_vlan_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_evidence
+    ADD CONSTRAINT interface_vlan_evidence_tenant_vlan_fkey FOREIGN KEY (vlan_id, organization_id) REFERENCES public.vlans(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_mode_evidence
+    ADD CONSTRAINT interface_vlan_mode_evidence_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_mode_evidence
+    ADD CONSTRAINT interface_vlan_mode_evidence_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_mode_evidence
+    ADD CONSTRAINT interface_vlan_mode_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_vlan_mode_evidence
+    ADD CONSTRAINT interface_vlan_mode_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
 
 
 --
@@ -4285,6 +4792,30 @@ ALTER TABLE ONLY public.sites
 
 
 --
+-- Name: source_vlan_group_mappings source_vlan_group_mappings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_vlan_group_mappings
+    ADD CONSTRAINT source_vlan_group_mappings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: source_vlan_group_mappings source_vlan_group_mappings_tenant_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_vlan_group_mappings
+    ADD CONSTRAINT source_vlan_group_mappings_tenant_group_fkey FOREIGN KEY (vlan_group_id, organization_id) REFERENCES public.vlan_groups(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: source_vlan_group_mappings source_vlan_group_mappings_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_vlan_group_mappings
+    ADD CONSTRAINT source_vlan_group_mappings_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: sources sources_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4306,6 +4837,22 @@ ALTER TABLE ONLY public.sync_runs
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE SET NULL (source_id);
+
+
+--
+-- Name: topology_findings topology_findings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_findings
+    ADD CONSTRAINT topology_findings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: topology_findings topology_findings_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_findings
+    ADD CONSTRAINT topology_findings_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -4368,7 +4915,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict PWuBSBRcu0fCOMJe0NXhdR0MF8Ju2QliHObo4ZPRBSIUNKUatJoK8XDbRJqlqTE
+\unrestrict LSPUWEVgATyuA5hBlYktN9MhKD32au14aJBjRc9rqrV9jP4aQwWXqP7PMgsghrP
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -4402,3 +4949,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826190000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260826200000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260903213000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260907070000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260908090000);

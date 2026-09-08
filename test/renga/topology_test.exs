@@ -424,6 +424,440 @@ defmodule Renga.TopologyTest do
     assert vlan.resource.name == "global/200"
   end
 
+  test "keeps desired and current membership separate with layer-local untagged and mode rules",
+       %{
+         scope: scope
+       } do
+    resource = resource_fixture(scope, "membership-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, group} = vlan_group_fixture(scope, "membership", [{1, 100}])
+    {:ok, native} = vlan_fixture(scope, group, 10, "Native")
+    {:ok, tagged} = vlan_fixture(scope, group, 20, "Tagged")
+
+    assert {:ok, %{mode: "access"}} =
+             Topology.put_desired_interface_vlan_mode(scope, interface.id, %{mode: "access"})
+
+    assert {:ok, assignment} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               native.id,
+               %{tagging_mode: "untagged"}
+             )
+
+    assert {:error, :invalid_interface_vlan_mode} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               tagged.id,
+               %{tagging_mode: "tagged"}
+             )
+
+    assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
+    assert [%{id: id}] = Topology.list_desired_interface_vlan_assignments(scope, interface.id)
+    assert id == assignment.id
+
+    assert {:ok, %{mode: "trunk"}} =
+             Topology.put_desired_interface_vlan_mode(scope, interface.id, %{mode: "trunk"})
+
+    assert {:ok, _tagged_assignment} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               tagged.id,
+               %{tagging_mode: "tagged"}
+             )
+
+    assert {:error, %Ecto.Changeset{}} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               tagged.id,
+               %{tagging_mode: "untagged"}
+             )
+  end
+
+  test "resolves source-local VLAN evidence and only complete snapshots stale omissions", %{
+    scope: scope
+  } do
+    resource = resource_fixture(scope, "observed-membership-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, group} = vlan_group_fixture(scope, "observed-membership", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Observed")
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "vlan-source",
+        metadata: %{"interface_vlan_snapshot_policy" => "complete"}
+      })
+
+    assert {:ok, _mapping} =
+             Topology.put_source_vlan_group_mapping(scope, source.id, group.id)
+
+    first = observation_fixture(scope, source, "vlan-first", ~U[2026-09-08 09:00:00.000Z], %{})
+
+    assert {:ok, [_evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               first,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlan_mode" => "trunk",
+                   "vlans" => [%{"vid" => 10, "tagging_mode" => "tagged"}]
+                 }
+               ],
+               true
+             )
+
+    assert %{mode: "trunk"} = Topology.get_current_interface_vlan_mode(scope, interface.id)
+
+    assert [%{vlan_id: vlan_id, tagging_mode: "tagged"}] =
+             Topology.list_current_interface_vlan_memberships(scope, interface.id)
+
+    assert vlan_id == vlan.id
+
+    partial =
+      observation_fixture(scope, source, "vlan-partial", ~U[2026-09-08 09:01:00.000Z], %{})
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               partial,
+               resource.id,
+               [%{"name" => "eth0", "vlans" => []}],
+               true
+             )
+
+    assert [_membership] = Topology.list_current_interface_vlan_memberships(scope, interface.id)
+
+    complete =
+      observation_fixture(
+        scope,
+        source,
+        "vlan-complete",
+        ~U[2026-09-08 09:02:00.000Z],
+        %{"section_completeness" => %{"interface_vlans" => true}}
+      )
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               complete,
+               resource.id,
+               [%{"name" => "eth0", "vlans" => []}],
+               true
+             )
+
+    assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
+    assert is_nil(Topology.get_current_interface_vlan_mode(scope, interface.id))
+    assert [%{stale_at: stale_at}] = Topology.list_interface_vlan_evidence(scope, interface.id)
+    assert stale_at == complete.observed_at
+  end
+
+  test "retains unresolved source VLAN evidence without inventing current membership", %{
+    scope: scope
+  } do
+    resource = resource_fixture(scope, "unresolved-membership-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "unmapped-vlan-source"})
+
+    observation =
+      observation_fixture(scope, source, "unmapped-vlan", ~U[2026-09-08 10:00:00.000Z], %{})
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               observation,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlans" => [%{"vid" => 10, "tagging_mode" => "untagged"}]
+                 }
+               ],
+               true
+             )
+
+    assert is_nil(evidence.vlan_id)
+    assert evidence.metadata["resolution"] == "unmapped_scope"
+    assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
+
+    assert [%{kind: "unknown_vlan", status: "open"}] =
+             Topology.list_topology_findings(scope, interface.id)
+  end
+
+  test "reports VLAN scope, range, and desired-versus-current findings", %{scope: scope} do
+    resource = resource_fixture(scope, "membership-findings-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, first_group} = vlan_group_fixture(scope, "findings-first", [{1, 100}])
+    {:ok, second_group} = vlan_group_fixture(scope, "findings-second", [{1, 100}])
+    {:ok, desired_vlan} = vlan_fixture(scope, first_group, 10, "Desired")
+    {:ok, unexpected_vlan} = vlan_fixture(scope, first_group, 20, "Unexpected")
+    {:ok, missing_vlan} = vlan_fixture(scope, first_group, 30, "Missing")
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "finding-vlan-source",
+        metadata: %{"interface_vlan_snapshot_policy" => "complete"}
+      })
+
+    assert {:ok, _mapping} =
+             Topology.put_source_vlan_group_mapping(scope, source.id, first_group.id, %{
+               source_local_scope: "first"
+             })
+
+    assert {:ok, _mapping} =
+             Topology.put_source_vlan_group_mapping(scope, source.id, second_group.id, %{
+               source_local_scope: "second"
+             })
+
+    assert {:ok, _assignment} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               desired_vlan.id,
+               %{tagging_mode: "untagged"}
+             )
+
+    assert {:ok, _assignment} =
+             Topology.put_desired_interface_vlan_assignment(
+               scope,
+               interface.id,
+               missing_vlan.id,
+               %{tagging_mode: "tagged"}
+             )
+
+    observation =
+      observation_fixture(
+        scope,
+        source,
+        "vlan-findings",
+        ~U[2026-09-08 11:00:00.000Z],
+        %{"section_completeness" => %{"interface_vlans" => true}}
+      )
+
+    assert {:ok, evidence} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               observation,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlan_mode" => "trunk",
+                   "vlans" => [
+                     %{"vid" => 10, "scope" => "first", "tagging_mode" => "tagged"},
+                     %{"vid" => 20, "scope" => "first", "tagging_mode" => "tagged"},
+                     %{"vid" => 40, "tagging_mode" => "tagged"},
+                     %{"vid" => 50, "scope" => "first", "tagging_mode" => "tagged"},
+                     %{"vid" => 200, "scope" => "first", "tagging_mode" => "tagged"}
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert length(evidence) == 5
+    assert Enum.find(evidence, &(&1.vid == 40)).metadata["resolution"] == "ambiguous_scope"
+    assert Enum.find(evidence, &(&1.vid == 50)).metadata["resolution"] == "unknown_vlan"
+    assert Enum.find(evidence, &(&1.vid == 200)).metadata["resolution"] == "out_of_range"
+
+    kinds =
+      scope
+      |> Topology.list_topology_findings(interface.id)
+      |> Enum.map(& &1.kind)
+      |> MapSet.new()
+
+    expected =
+      MapSet.new(
+        ~w(ambiguous_scope conflicting_tagging_mode missing_vlan out_of_range_vid unexpected_vlan unknown_vlan)
+      )
+
+    assert MapSet.subset?(expected, kinds)
+
+    assert Enum.any?(
+             Topology.list_current_interface_vlan_memberships(scope, interface.id),
+             &(&1.vlan_id == unexpected_vlan.id)
+           )
+  end
+
+  test "membership writes enforce manager authorization and tenant boundaries", %{
+    scope: scope,
+    organization: organization
+  } do
+    resource = resource_fixture(scope, "membership-authorization-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, group} = vlan_group_fixture(scope, "membership-authorization", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Authorized")
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "mapping-authorization"})
+
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    assert {:error, :forbidden} =
+             Topology.put_desired_interface_vlan_assignment(
+               viewer_scope,
+               interface.id,
+               vlan.id,
+               %{tagging_mode: "tagged"}
+             )
+
+    assert {:error, :forbidden} =
+             Topology.put_source_vlan_group_mapping(viewer_scope, source.id, group.id)
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    {:ok, other_group} = vlan_group_fixture(other_scope, "foreign-membership", [{1, 100}])
+    {:ok, other_vlan} = vlan_fixture(other_scope, other_group, 10, "Foreign")
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.put_desired_interface_vlan_assignment(
+        scope,
+        interface.id,
+        other_vlan.id,
+        %{tagging_mode: "tagged"}
+      )
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.put_source_vlan_group_mapping(scope, source.id, other_group.id)
+    end
+  end
+
+  test "mode evidence restores fallback sources and refuses an incompatible current mode", %{
+    scope: scope
+  } do
+    resource = resource_fixture(scope, "mode-evidence-server")
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, group} = vlan_group_fixture(scope, "mode-evidence", [{1, 100}])
+    {:ok, _vlan} = vlan_fixture(scope, group, 10, "Tagged")
+    {:ok, late_vlan} = vlan_fixture(scope, group, 20, "Historical")
+
+    {:ok, source_a} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "mode-source-a",
+        metadata: %{"interface_vlan_snapshot_policy" => "complete"}
+      })
+
+    {:ok, source_b} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "mode-source-b",
+        metadata: %{"interface_vlan_snapshot_policy" => "complete"}
+      })
+
+    assert {:ok, _mapping} =
+             Topology.put_source_vlan_group_mapping(scope, source_a.id, group.id)
+
+    assert {:ok, _mapping} =
+             Topology.put_source_vlan_group_mapping(scope, source_b.id, group.id)
+
+    first = observation_fixture(scope, source_a, "mode-a", ~U[2026-08-30 12:00:00.000Z], %{})
+
+    assert {:ok, [_evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_a,
+               first,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlan_mode" => "trunk",
+                   "vlans" => [%{"vid" => 10, "tagging_mode" => "tagged"}]
+                 }
+               ],
+               true
+             )
+
+    assert %{mode: "trunk"} = Topology.get_current_interface_vlan_mode(scope, interface.id)
+
+    incompatible =
+      observation_fixture(scope, source_b, "mode-b", ~U[2026-08-31 12:01:00.000Z], %{})
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_b,
+               incompatible,
+               resource.id,
+               [%{"name" => "eth0", "vlan_mode" => "access"}],
+               true
+             )
+
+    assert is_nil(Topology.get_current_interface_vlan_mode(scope, interface.id))
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, interface.id),
+             &(&1.kind == "conflicting_interface_mode")
+           )
+
+    withdrawal =
+      observation_fixture(
+        scope,
+        source_b,
+        "mode-b-withdrawal",
+        ~U[2026-09-01 12:02:00.000Z],
+        %{"section_completeness" => %{"interface_vlans" => true}}
+      )
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_b,
+               withdrawal,
+               resource.id,
+               [%{"name" => "eth0"}],
+               true
+             )
+
+    assert %{mode: "trunk"} = Topology.get_current_interface_vlan_mode(scope, interface.id)
+    assert length(Topology.list_interface_vlan_mode_evidence(scope, interface.id)) == 3
+
+    late =
+      observation_fixture(scope, source_b, "mode-b-late", ~U[2026-08-31 12:02:00.000Z], %{})
+
+    assert {:ok, [_historical_evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_b,
+               late,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlan_mode" => "trunk",
+                   "vlans" => [%{"vid" => 20, "tagging_mode" => "tagged"}]
+                 }
+               ],
+               false
+             )
+
+    assert %{mode: "trunk"} = Topology.get_current_interface_vlan_mode(scope, interface.id)
+
+    refute Enum.any?(
+             Topology.list_current_interface_vlan_memberships(scope, interface.id),
+             &(&1.vlan_id == late_vlan.id)
+           )
+  end
+
   defp vlan_group_fixture(scope, slug, ranges) do
     Topology.create_vlan_group(
       scope,
@@ -433,6 +867,28 @@ defmodule Renga.TopologyTest do
         %{start_vid: start_vid, end_vid: end_vid}
       end)
     )
+  end
+
+  defp observation_fixture(scope, source, id, observed_at, payload) do
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: id,
+        observed_at: observed_at,
+        payload: payload
+      })
+
+    observation
+  end
+
+  defp resource_fixture(scope, name) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: name,
+        lifecycle_state: "active"
+      })
+
+    resource
   end
 
   defp vlan_fixture(scope, group, vid, name) do

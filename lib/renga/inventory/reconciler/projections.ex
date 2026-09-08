@@ -20,10 +20,13 @@ defmodule Renga.Inventory.Reconciler.Projections do
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
+  alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
   alias Renga.Repo
+  alias Renga.Topology
   alias Renga.Types.Inet
   alias Renga.Types.MacAddress
 
@@ -68,6 +71,27 @@ defmodule Renga.Inventory.Reconciler.Projections do
         overrides,
         allow_new_rows?
       )
+    )
+
+    topology_scope = topology_reconciler_scope(scope)
+
+    {:ok, _evidence} =
+      Topology.reconcile_interface_vlans(
+        topology_scope,
+        source,
+        observation,
+        resource.id,
+        interfaces,
+        allow_new_rows?
+      )
+
+    reconcile_interface_relationships(
+      scope,
+      source,
+      observation,
+      resource,
+      interfaces,
+      allow_new_rows?
     )
 
     if allow_new_rows? and interfaces_authoritative? do
@@ -166,6 +190,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp catalog_reconciler_scope(%Scope{} = scope), do: scope
+
+  defp topology_reconciler_scope(%Scope{user: nil} = scope) do
+    %{scope | membership_id: nil, roles: ["topology_reconciler"]}
+  end
+
+  defp topology_reconciler_scope(%Scope{} = scope), do: scope
 
   defp complete_component_snapshot?(source, observation, payload, current_snapshot?) do
     current_snapshot? and source.metadata["component_snapshot_policy"] == "complete" and
@@ -640,6 +670,167 @@ defmodule Renga.Inventory.Reconciler.Projections do
           evidence_attrs
         )
     end
+  end
+
+  defp reconcile_interface_relationships(
+         scope,
+         source,
+         observation,
+         resource,
+         reported_interfaces,
+         current_snapshot?
+       ) do
+    interfaces =
+      scope
+      |> Inventory.list_interfaces(resource.id)
+      |> Map.new(&{&1.name, &1})
+
+    observed_relationship_ids =
+      reported_interfaces
+      |> Enum.flat_map(fn reported ->
+        source_interface = Map.get(interfaces, String.trim(reported["name"]))
+
+        Enum.flat_map(Map.get(reported, "relationships", []), fn attrs ->
+          target_interface = Map.get(interfaces, String.trim(attrs["target"]))
+
+          case reconcile_interface_relationship(
+                 scope,
+                 source,
+                 observation,
+                 source_interface,
+                 target_interface,
+                 attrs,
+                 current_snapshot?
+               ) do
+            nil -> []
+            relationship_id -> [relationship_id]
+          end
+        end)
+      end)
+      |> MapSet.new()
+
+    if complete_interface_relationship_snapshot?(source, observation, current_snapshot?) do
+      InterfaceRelationshipEvidence
+      |> join(:inner, [evidence], relationship in InterfaceRelationship,
+        on:
+          relationship.id == evidence.interface_relationship_id and
+            relationship.organization_id == evidence.organization_id
+      )
+      |> join(:inner, [_evidence, relationship], interface in Interface,
+        on:
+          interface.id == relationship.source_interface_id and
+            interface.organization_id == relationship.organization_id
+      )
+      |> where(
+        [evidence, _relationship, _interface],
+        evidence.organization_id == ^scope.organization_id and evidence.source_id == ^source.id and
+          is_nil(evidence.stale_at) and evidence.observed_at < ^observation.observed_at
+      )
+      |> where([_evidence, _relationship, interface], interface.resource_id == ^resource.id)
+      |> where(
+        [evidence, _relationship, _interface],
+        evidence.interface_relationship_id not in ^MapSet.to_list(observed_relationship_ids)
+      )
+      |> Repo.update_all(set: [stale_at: observation.observed_at])
+    end
+  end
+
+  defp reconcile_interface_relationship(
+         _scope,
+         _source,
+         _observation,
+         nil,
+         _target_interface,
+         _attrs,
+         _current_snapshot?
+       ),
+       do: nil
+
+  defp reconcile_interface_relationship(
+         _scope,
+         _source,
+         _observation,
+         _source_interface,
+         nil,
+         _attrs,
+         _current_snapshot?
+       ),
+       do: nil
+
+  defp reconcile_interface_relationship(
+         scope,
+         source,
+         observation,
+         source_interface,
+         target_interface,
+         attrs,
+         current_snapshot?
+       ) do
+    relationship =
+      Repo.get_by(InterfaceRelationship,
+        organization_id: scope.organization_id,
+        source_interface_id: source_interface.id,
+        target_interface_id: target_interface.id,
+        kind: attrs["kind"]
+      )
+
+    relationship =
+      cond do
+        relationship ->
+          relationship
+
+        current_snapshot? ->
+          {:ok, relationship} =
+            Inventory.create_interface_relationship(
+              scope,
+              source_interface.id,
+              target_interface.id,
+              Map.take(attrs, ~w(kind metadata))
+            )
+
+          relationship
+
+        true ->
+          nil
+      end
+
+    if relationship do
+      if current_snapshot? do
+        InterfaceRelationshipEvidence
+        |> where([evidence], evidence.organization_id == ^scope.organization_id)
+        |> where([evidence], evidence.source_id == ^source.id)
+        |> where([evidence], evidence.interface_relationship_id == ^relationship.id)
+        |> where(
+          [evidence],
+          is_nil(evidence.stale_at) and evidence.observed_at < ^observation.observed_at
+        )
+        |> Repo.update_all(set: [stale_at: observation.observed_at])
+      end
+
+      unless Repo.exists?(
+               from evidence in InterfaceRelationshipEvidence,
+                 where:
+                   evidence.organization_id == ^scope.organization_id and
+                     evidence.observation_id == ^observation.id and
+                     evidence.interface_relationship_id == ^relationship.id
+             ) do
+        {:ok, _evidence} =
+          Inventory.create_interface_relationship_evidence(
+            scope,
+            source.id,
+            observation.id,
+            relationship.id,
+            Map.take(attrs, ~w(kind metadata))
+          )
+      end
+
+      relationship.id
+    end
+  end
+
+  defp complete_interface_relationship_snapshot?(source, observation, current_snapshot?) do
+    current_snapshot? and source.metadata["interface_relationship_snapshot_policy"] == "complete" and
+      get_in(observation.payload, ["section_completeness", "interface_relationships"]) == true
   end
 
   defp reconcile_address(

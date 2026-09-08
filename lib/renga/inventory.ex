@@ -1520,6 +1520,22 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Lists the retained observation history for a scoped logical interface relationship.
+  """
+  def list_interface_relationship_evidence(
+        %Scope{organization_id: organization_id} = scope,
+        relationship_id
+      ) do
+    get_interface_relationship!(scope, relationship_id)
+
+    InterfaceRelationshipEvidence
+    |> where([evidence], evidence.organization_id == ^organization_id)
+    |> where([evidence], evidence.interface_relationship_id == ^relationship_id)
+    |> order_by([evidence], desc: evidence.observed_at, asc: evidence.id)
+    |> Repo.all()
+  end
+
+  @doc """
   Creates a cross-domain topology link when no typed relationship table applies.
   """
   def create_resource_relationship(

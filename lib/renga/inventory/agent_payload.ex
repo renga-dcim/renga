@@ -20,6 +20,9 @@ defmodule Renga.Inventory.AgentPayload do
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
   @identity_interface_kinds ~w(ethernet)
   @interface_statuses ~w(up down dormant not_present unknown)
+  @interface_vlan_modes ~w(access trunk tagged_all)
+  @vlan_tagging_modes ~w(tagged untagged)
+  @interface_relationship_kinds ~w(parent lower_device lag_member bridge_member bridged peer vrf_member backed_by)
   @address_kinds ~w(ipv4 ipv6)
   @prohibited_resource_keys ~w(id organization_id resource_id source_id sync_run_id)
 
@@ -504,6 +507,8 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_positive_integer(interface, "speed_mbps", "#{path}.speed_mbps")
     |> validate_optional_map(interface, "metadata", "#{path}.metadata")
     |> validate_interface_addresses(interface, path)
+    |> validate_interface_vlans(interface, path)
+    |> validate_interface_relationships(interface, path)
   end
 
   defp validate_interface(errors, _interface, path) do
@@ -541,6 +546,154 @@ defmodule Renga.Inventory.AgentPayload do
       _invalid ->
         [error("#{path}.addresses", "must be a list") | errors]
     end
+  end
+
+  defp validate_interface_vlans(errors, interface, path) do
+    errors =
+      validate_optional_inclusion(
+        errors,
+        interface,
+        "vlan_mode",
+        @interface_vlan_modes,
+        "#{path}.vlan_mode"
+      )
+
+    case Map.get(interface, "vlans") do
+      nil ->
+        errors
+
+      memberships when is_list(memberships) ->
+        errors =
+          memberships
+          |> Enum.with_index()
+          |> Enum.reduce(errors, fn {membership, index}, errors ->
+            validate_interface_vlan(errors, membership, "#{path}.vlans.#{index}")
+          end)
+
+        errors
+        |> validate_effective_untagged_membership(path, memberships)
+        |> validate_unique_vlan_memberships(path, memberships)
+        |> validate_access_memberships(interface, path, memberships)
+
+      _invalid ->
+        [error("#{path}.vlans", "must be a list") | errors]
+    end
+  end
+
+  defp validate_interface_vlan(errors, %{} = membership, path) do
+    errors
+    |> validate_required_vid(membership, "#{path}.vid")
+    |> validate_optional_string(membership, "key", "#{path}.key")
+    |> validate_optional_string(membership, "scope", "#{path}.scope")
+    |> validate_optional_inclusion(
+      membership,
+      "tagging_mode",
+      @vlan_tagging_modes,
+      "#{path}.tagging_mode"
+    )
+    |> validate_required_tagging_mode(membership, "#{path}.tagging_mode")
+    |> validate_optional_map(membership, "metadata", "#{path}.metadata")
+  end
+
+  defp validate_interface_vlan(errors, _membership, path),
+    do: [error(path, "must be an object") | errors]
+
+  defp validate_required_vid(errors, membership, path) do
+    case Map.get(membership, "vid") do
+      vid when is_integer(vid) and vid in 1..4094 -> errors
+      nil -> [error(path, "is required") | errors]
+      _invalid -> [error(path, "must be an integer from 1 through 4094") | errors]
+    end
+  end
+
+  defp validate_required_tagging_mode(errors, membership, path) do
+    if Map.has_key?(membership, "tagging_mode"),
+      do: errors,
+      else: [error(path, "is required") | errors]
+  end
+
+  defp validate_access_memberships(errors, %{"vlan_mode" => "access"}, path, memberships) do
+    if length(memberships) <= 1 and
+         Enum.all?(memberships, &(&1["tagging_mode"] == "untagged")) do
+      errors
+    else
+      [error("#{path}.vlans", "access mode allows at most one untagged VLAN") | errors]
+    end
+  end
+
+  defp validate_access_memberships(errors, _interface, _path, _memberships), do: errors
+
+  defp validate_effective_untagged_membership(errors, path, memberships) do
+    if Enum.count(memberships, &(is_map(&1) and &1["tagging_mode"] == "untagged")) <= 1,
+      do: errors,
+      else: [error("#{path}.vlans", "allows at most one untagged VLAN") | errors]
+  end
+
+  defp validate_unique_vlan_memberships(errors, path, memberships) do
+    keys =
+      Enum.map(memberships, fn
+        %{} = membership ->
+          Map.get(membership, "key") ||
+            "#{Map.get(membership, "scope", "default")}:#{Map.get(membership, "vid")}"
+
+        invalid ->
+          invalid
+      end)
+
+    if length(keys) == length(Enum.uniq(keys)),
+      do: errors,
+      else: [error("#{path}.vlans", "must not contain duplicate source-local VLANs") | errors]
+  end
+
+  defp validate_interface_relationships(errors, interface, path) do
+    case Map.get(interface, "relationships") do
+      nil ->
+        errors
+
+      relationships when is_list(relationships) ->
+        relationships
+        |> Enum.with_index()
+        |> Enum.reduce(errors, fn {relationship, index}, errors ->
+          validate_interface_relationship(errors, relationship, "#{path}.relationships.#{index}")
+        end)
+        |> validate_distinct_relationship_targets(interface, path, relationships)
+
+      _invalid ->
+        [error("#{path}.relationships", "must be a list") | errors]
+    end
+  end
+
+  defp validate_interface_relationship(errors, %{} = relationship, path) do
+    errors
+    |> validate_required_string(relationship, "target", "#{path}.target")
+    |> validate_string_length(relationship, "target", "#{path}.target")
+    |> validate_optional_inclusion(
+      relationship,
+      "kind",
+      @interface_relationship_kinds,
+      "#{path}.kind"
+    )
+    |> validate_required_relationship_kind(relationship, "#{path}.kind")
+    |> validate_optional_map(relationship, "metadata", "#{path}.metadata")
+  end
+
+  defp validate_interface_relationship(errors, _relationship, path),
+    do: [error(path, "must be an object") | errors]
+
+  defp validate_required_relationship_kind(errors, relationship, path) do
+    if Map.has_key?(relationship, "kind"), do: errors, else: [error(path, "is required") | errors]
+  end
+
+  defp validate_distinct_relationship_targets(errors, interface, path, relationships) do
+    if Enum.any?(relationships, fn
+         %{"target" => target} when is_binary(target) ->
+           String.trim(target) == String.trim(Map.get(interface, "name", ""))
+
+         _invalid ->
+           false
+       end),
+       do: [error("#{path}.relationships", "cannot target the same interface") | errors],
+       else: errors
   end
 
   defp validate_address(errors, address, path) when is_binary(address) do
