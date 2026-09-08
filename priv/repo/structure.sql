@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict LSPUWEVgATyuA5hBlYktN9MhKD32au14aJBjRc9rqrV9jP4aQwWXqP7PMgsghrP
+\restrict pgjYI4bfcXQq5E3xHeftp1m65eKPtCIhnsZwUS4GOTlb6Zl9sQCOxgM1SIGosQz
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -112,6 +112,36 @@ $$;
 
 
 --
+-- Name: enforce_interface_vlan_evidence_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_interface_vlan_evidence_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.id IS NOT DISTINCT FROM OLD.id
+     AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
+     AND NEW.interface_id IS NOT DISTINCT FROM OLD.interface_id
+     AND NEW.vlan_id IS NOT DISTINCT FROM OLD.vlan_id
+     AND NEW.source_id IS NOT DISTINCT FROM OLD.source_id
+     AND NEW.observation_id IS NOT DISTINCT FROM OLD.observation_id
+     AND NEW.source_local_key IS NOT DISTINCT FROM OLD.source_local_key
+     AND NEW.source_local_scope IS NOT DISTINCT FROM OLD.source_local_scope
+     AND NEW.vid IS NOT DISTINCT FROM OLD.vid
+     AND NEW.tagging_mode IS NOT DISTINCT FROM OLD.tagging_mode
+     AND NEW.metadata IS NOT DISTINCT FROM OLD.metadata
+     AND NEW.observed_at IS NOT DISTINCT FROM OLD.observed_at
+     AND NEW.inserted_at IS NOT DISTINCT FROM OLD.inserted_at THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'interface VLAN evidence facts are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
 -- Name: enforce_resource_kind_immutability(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -125,6 +155,20 @@ BEGIN
   END IF;
 
   RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: reject_interface_vlan_mode_evidence_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_interface_vlan_mode_evidence_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'interface VLAN mode evidence is immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
 END;
 $$;
 
@@ -152,6 +196,20 @@ BEGIN
   END IF;
 
   RAISE EXCEPTION 'observations are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
+-- Name: reject_topology_snapshot_event_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_topology_snapshot_event_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'topology snapshot events are immutable'
     USING ERRCODE = 'integrity_constraint_violation';
 END;
 $$;
@@ -749,7 +807,7 @@ CREATE TABLE public.interface_vlan_evidence (
     vlan_id uuid,
     source_id uuid NOT NULL,
     observation_id uuid NOT NULL,
-    source_local_key character varying(255) NOT NULL,
+    source_local_key text NOT NULL,
     source_local_scope character varying(255),
     vid integer NOT NULL,
     tagging_mode character varying(255) NOT NULL,
@@ -1412,7 +1470,7 @@ CREATE TABLE public.topology_findings (
     organization_id uuid NOT NULL,
     interface_id uuid NOT NULL,
     kind character varying(255) NOT NULL,
-    resolution_key character varying(255) NOT NULL,
+    resolution_key text NOT NULL,
     status character varying(255) DEFAULT 'open'::character varying NOT NULL,
     message text NOT NULL,
     details jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -1422,6 +1480,23 @@ CREATE TABLE public.topology_findings (
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT topology_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
     CONSTRAINT topology_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
+);
+
+
+--
+-- Name: topology_snapshot_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.topology_snapshot_events (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    section character varying(255) NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT topology_snapshot_events_valid_section CHECK (((section)::text = ANY ((ARRAY['interface_vlans'::character varying, 'interface_relationships'::character varying])::text[])))
 );
 
 
@@ -2040,6 +2115,14 @@ ALTER TABLE ONLY public.topology_findings
 
 
 --
+-- Name: topology_snapshot_events topology_snapshot_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_snapshot_events
+    ADD CONSTRAINT topology_snapshot_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2606,6 +2689,13 @@ CREATE INDEX interface_evidence_organization_id_source_id_interface_id_index ON 
 
 
 --
+-- Name: interface_relationship_evidence_active_relationship_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_relationship_evidence_active_relationship_index ON public.interface_relationship_evidence USING btree (organization_id, interface_relationship_id, source_id, observed_at) WHERE (stale_at IS NULL);
+
+
+--
 -- Name: interface_relationship_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2655,6 +2745,27 @@ CREATE UNIQUE INDEX interface_relationships_source_target_kind_index ON public.i
 
 
 --
+-- Name: interface_vlan_evidence_active_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_vlan_evidence_active_interface_index ON public.interface_vlan_evidence USING btree (organization_id, interface_id) WHERE (stale_at IS NULL);
+
+
+--
+-- Name: interface_vlan_evidence_active_source_key_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_vlan_evidence_active_source_key_index ON public.interface_vlan_evidence USING btree (organization_id, source_id, interface_id, source_local_key, observed_at) WHERE (stale_at IS NULL);
+
+
+--
+-- Name: interface_vlan_evidence_active_vlan_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_vlan_evidence_active_vlan_index ON public.interface_vlan_evidence USING btree (organization_id, vlan_id) WHERE ((stale_at IS NULL) AND (vlan_id IS NOT NULL));
+
+
+--
 -- Name: interface_vlan_evidence_membership_identity_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2693,7 +2804,7 @@ CREATE UNIQUE INDEX interface_vlan_mode_evidence_projection_identity_index ON pu
 -- Name: interface_vlan_mode_evidence_source_interface_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX interface_vlan_mode_evidence_source_interface_index ON public.interface_vlan_mode_evidence USING btree (organization_id, source_id, interface_id);
+CREATE INDEX interface_vlan_mode_evidence_source_interface_index ON public.interface_vlan_mode_evidence USING btree (organization_id, interface_id, source_id, observed_at DESC, observation_id DESC);
 
 
 --
@@ -3418,6 +3529,13 @@ CREATE INDEX sync_runs_organization_id_status_index ON public.sync_runs USING bt
 
 
 --
+-- Name: topology_findings_interface_history_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX topology_findings_interface_history_index ON public.topology_findings USING btree (organization_id, interface_id, GREATEST(last_observed_at, COALESCE(resolved_at, last_observed_at)) DESC);
+
+
+--
 -- Name: topology_findings_open_resolution_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3429,6 +3547,20 @@ CREATE UNIQUE INDEX topology_findings_open_resolution_index ON public.topology_f
 --
 
 CREATE INDEX topology_findings_organization_id_status_kind_index ON public.topology_findings USING btree (organization_id, status, kind);
+
+
+--
+-- Name: topology_snapshot_events_observation_section_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX topology_snapshot_events_observation_section_index ON public.topology_snapshot_events USING btree (organization_id, observation_id, resource_id, section);
+
+
+--
+-- Name: topology_snapshot_events_source_resource_section_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX topology_snapshot_events_source_resource_section_index ON public.topology_snapshot_events USING btree (organization_id, resource_id, section, source_id, observed_at DESC, observation_id DESC);
 
 
 --
@@ -3530,6 +3662,20 @@ CREATE TRIGGER component_templates_enforce_immutability BEFORE INSERT OR DELETE 
 
 
 --
+-- Name: interface_vlan_evidence interface_vlan_evidence_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER interface_vlan_evidence_enforce_immutability BEFORE UPDATE ON public.interface_vlan_evidence FOR EACH ROW EXECUTE FUNCTION public.enforce_interface_vlan_evidence_immutability();
+
+
+--
+-- Name: interface_vlan_mode_evidence interface_vlan_mode_evidence_reject_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER interface_vlan_mode_evidence_reject_update BEFORE UPDATE ON public.interface_vlan_mode_evidence FOR EACH ROW EXECUTE FUNCTION public.reject_interface_vlan_mode_evidence_update();
+
+
+--
 -- Name: observations observations_reject_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3541,6 +3687,13 @@ CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations F
 --
 
 CREATE TRIGGER resources_enforce_kind_immutability BEFORE UPDATE OF kind ON public.resources FOR EACH ROW EXECUTE FUNCTION public.enforce_resource_kind_immutability();
+
+
+--
+-- Name: topology_snapshot_events topology_snapshot_events_reject_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER topology_snapshot_events_reject_update BEFORE UPDATE ON public.topology_snapshot_events FOR EACH ROW EXECUTE FUNCTION public.reject_topology_snapshot_event_update();
 
 
 --
@@ -4856,6 +5009,38 @@ ALTER TABLE ONLY public.topology_findings
 
 
 --
+-- Name: topology_snapshot_events topology_snapshot_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_snapshot_events
+    ADD CONSTRAINT topology_snapshot_events_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: topology_snapshot_events topology_snapshot_events_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_snapshot_events
+    ADD CONSTRAINT topology_snapshot_events_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: topology_snapshot_events topology_snapshot_events_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_snapshot_events
+    ADD CONSTRAINT topology_snapshot_events_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: topology_snapshot_events topology_snapshot_events_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topology_snapshot_events
+    ADD CONSTRAINT topology_snapshot_events_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: users_tokens users_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4915,7 +5100,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict LSPUWEVgATyuA5hBlYktN9MhKD32au14aJBjRc9rqrV9jP4aQwWXqP7PMgsghrP
+\unrestrict pgjYI4bfcXQq5E3xHeftp1m65eKPtCIhnsZwUS4GOTlb6Zl9sQCOxgM1SIGosQz
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -4950,3 +5135,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260826200000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260903213000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260907070000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260908120000);

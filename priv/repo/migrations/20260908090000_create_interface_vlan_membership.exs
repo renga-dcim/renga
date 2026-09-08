@@ -84,7 +84,7 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
           ),
           null: false
 
-      add :source_local_key, :string, null: false
+      add :source_local_key, :text, null: false
       add :source_local_scope, :string
       add :vid, :integer, null: false
       add :tagging_mode, :string, null: false
@@ -108,6 +108,23 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
 
     create index(:interface_vlan_evidence, [:organization_id, :source_id, :interface_id],
              name: :interface_vlan_evidence_source_interface_index
+           )
+
+    create index(
+             :interface_vlan_evidence,
+             [:organization_id, :source_id, :interface_id, :source_local_key, :observed_at],
+             where: "stale_at IS NULL",
+             name: :interface_vlan_evidence_active_source_key_index
+           )
+
+    create index(:interface_vlan_evidence, [:organization_id, :interface_id],
+             where: "stale_at IS NULL",
+             name: :interface_vlan_evidence_active_interface_index
+           )
+
+    create index(:interface_vlan_evidence, [:organization_id, :vlan_id],
+             where: "stale_at IS NULL AND vlan_id IS NOT NULL",
+             name: :interface_vlan_evidence_active_vlan_index
            )
 
     create constraint(:interface_vlan_evidence, :interface_vlan_evidence_valid_vid,
@@ -169,9 +186,14 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
              name: :interface_vlan_mode_evidence_observation_link_index
            )
 
-    create index(:interface_vlan_mode_evidence, [:organization_id, :source_id, :interface_id],
-             name: :interface_vlan_mode_evidence_source_interface_index
-           )
+    execute(
+      """
+      CREATE INDEX interface_vlan_mode_evidence_source_interface_index
+      ON interface_vlan_mode_evidence
+        (organization_id, interface_id, source_id, observed_at DESC, observation_id DESC)
+      """,
+      "DROP INDEX interface_vlan_mode_evidence_source_interface_index"
+    )
 
     create constraint(:interface_vlan_mode_evidence, :interface_vlan_mode_evidence_valid_mode,
              check: "mode IS NULL OR mode IN ('access', 'trunk', 'tagged_all')"
@@ -207,6 +229,13 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
       add :stale_at, :"timestamp(3)"
     end
 
+    create index(
+             :interface_relationship_evidence,
+             [:organization_id, :interface_relationship_id, :source_id, :observed_at],
+             where: "stale_at IS NULL",
+             name: :interface_relationship_evidence_active_relationship_index
+           )
+
     create table(:topology_findings, primary_key: false) do
       add :id, :binary_id, primary_key: true
 
@@ -223,7 +252,7 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
           null: false
 
       add :kind, :string, null: false
-      add :resolution_key, :string, null: false
+      add :resolution_key, :text, null: false
       add :status, :string, null: false, default: "open"
       add :message, :text, null: false
       add :details, :map, null: false, default: %{}
@@ -240,6 +269,16 @@ defmodule Renga.Repo.Migrations.CreateInterfaceVlanMembership do
            )
 
     create index(:topology_findings, [:organization_id, :status, :kind])
+
+    execute(
+      """
+      CREATE INDEX topology_findings_interface_history_index
+      ON topology_findings
+        (organization_id, interface_id,
+         (GREATEST(last_observed_at, COALESCE(resolved_at, last_observed_at))) DESC)
+      """,
+      "DROP INDEX topology_findings_interface_history_index"
+    )
 
     create constraint(:topology_findings, :topology_findings_valid_status,
              check: "status IN ('open', 'resolved')"

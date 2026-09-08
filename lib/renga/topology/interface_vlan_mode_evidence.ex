@@ -22,6 +22,7 @@ defmodule Renga.Topology.InterfaceVlanModeEvidence do
   def changeset(evidence, attrs) do
     evidence
     |> cast(attrs, [:mode, :observed_at, :metadata])
+    |> reject_mutation()
     |> validate_required([
       :organization_id,
       :interface_id,
@@ -38,4 +39,11 @@ defmodule Renga.Topology.InterfaceVlanModeEvidence do
       name: :interface_vlan_mode_evidence_observation_link_index
     )
   end
+
+  defp reject_mutation(%Ecto.Changeset{data: %{id: id}, changes: changes} = changeset)
+       when not is_nil(id) and map_size(changes) > 0 do
+    add_error(changeset, :base, "interface VLAN mode evidence is immutable")
+  end
+
+  defp reject_mutation(changeset), do: changeset
 end

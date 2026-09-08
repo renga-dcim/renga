@@ -17,10 +17,13 @@ defmodule Renga.Topology.SourceVlanGroupMapping do
 
   def changeset(mapping, attrs) do
     mapping
-    |> cast(attrs, [:source_local_scope, :metadata])
-    |> update_change(:source_local_scope, &String.trim/1)
+    |> cast(attrs, [:source_local_scope, :metadata], empty_values: [])
+    |> update_change(:source_local_scope, fn
+      nil -> nil
+      scope -> String.trim(scope)
+    end)
     |> validate_required([:organization_id, :source_id, :source_local_scope, :metadata])
-    |> validate_length(:source_local_scope, min: 1, max: 255)
+    |> validate_length(:source_local_scope, min: 1, max: 255, count: :codepoints)
     |> assoc_constraint(:source, name: :source_vlan_group_mappings_tenant_source_fkey)
     |> assoc_constraint(:vlan_group, name: :source_vlan_group_mappings_tenant_group_fkey)
     |> unique_constraint([:organization_id, :source_id, :source_local_scope],

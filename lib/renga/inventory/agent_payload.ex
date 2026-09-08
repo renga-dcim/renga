@@ -13,6 +13,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_observation_bytes 256_000
   @max_agent_metadata_bytes 16_000
   @max_agent_string_length 255
+  @max_source_local_vlan_key_bytes 2_000
   @max_observation_id_length 255
   @max_postgres_integer 2_147_483_647
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
@@ -71,6 +72,7 @@ defmodule Renga.Inventory.AgentPayload do
       |> validate_payload_size(params)
       |> validate_source_identity(params, source)
       |> validate_observation_id(params)
+      |> validate_section_completeness(params)
       |> validate_resources(params)
 
     case errors do
@@ -485,10 +487,14 @@ defmodule Renga.Inventory.AgentPayload do
         errors
 
       interfaces when is_list(interfaces) ->
-        interfaces
-        |> Enum.with_index()
-        |> Enum.reduce(errors, fn {interface, index}, errors ->
-          validate_interface(errors, interface, "#{path}.interfaces.#{index}")
+        errors
+        |> validate_unique_interface_names(interfaces, "#{path}.interfaces")
+        |> then(fn errors ->
+          interfaces
+          |> Enum.with_index()
+          |> Enum.reduce(errors, fn {interface, index}, errors ->
+            validate_interface(errors, interface, "#{path}.interfaces.#{index}")
+          end)
         end)
 
       _invalid ->
@@ -513,6 +519,19 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_interface(errors, _interface, path) do
     [error(path, "must be an object") | errors]
+  end
+
+  defp validate_unique_interface_names(errors, interfaces, path) do
+    names =
+      interfaces
+      |> Enum.flat_map(fn
+        %{"name" => name} when is_binary(name) -> [String.trim(name)]
+        _invalid -> []
+      end)
+
+    if length(names) == length(Enum.uniq(names)),
+      do: errors,
+      else: [error(path, "must not contain duplicate normalized interface names") | errors]
   end
 
   defp validate_optional_mac(errors, interface, path) do
@@ -558,11 +577,11 @@ defmodule Renga.Inventory.AgentPayload do
         "#{path}.vlan_mode"
       )
 
-    case Map.get(interface, "vlans") do
-      nil ->
+    case Map.fetch(interface, "vlans") do
+      :error ->
         errors
 
-      memberships when is_list(memberships) ->
+      {:ok, memberships} when is_list(memberships) ->
         errors =
           memberships
           |> Enum.with_index()
@@ -575,7 +594,7 @@ defmodule Renga.Inventory.AgentPayload do
         |> validate_unique_vlan_memberships(path, memberships)
         |> validate_access_memberships(interface, path, memberships)
 
-      _invalid ->
+      {:ok, _invalid} ->
         [error("#{path}.vlans", "must be a list") | errors]
     end
   end
@@ -583,8 +602,9 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_interface_vlan(errors, %{} = membership, path) do
     errors
     |> validate_required_vid(membership, "#{path}.vid")
-    |> validate_optional_string(membership, "key", "#{path}.key")
-    |> validate_optional_string(membership, "scope", "#{path}.scope")
+    |> validate_optional_source_local_vlan_key(membership, "#{path}.key")
+    |> validate_optional_non_blank_string(membership, "scope", "#{path}.scope")
+    |> validate_optional_codepoint_length(membership, "scope", "#{path}.scope")
     |> validate_optional_inclusion(
       membership,
       "tagging_mode",
@@ -592,7 +612,7 @@ defmodule Renga.Inventory.AgentPayload do
       "#{path}.tagging_mode"
     )
     |> validate_required_tagging_mode(membership, "#{path}.tagging_mode")
-    |> validate_optional_map(membership, "metadata", "#{path}.metadata")
+    |> validate_optional_non_nil_map(membership, "metadata", "#{path}.metadata")
   end
 
   defp validate_interface_vlan(errors, _membership, path),
@@ -614,7 +634,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_access_memberships(errors, %{"vlan_mode" => "access"}, path, memberships) do
     if length(memberships) <= 1 and
-         Enum.all?(memberships, &(&1["tagging_mode"] == "untagged")) do
+         Enum.all?(memberships, &(is_map(&1) and &1["tagging_mode"] == "untagged")) do
       errors
     else
       [error("#{path}.vlans", "access mode allows at most one untagged VLAN") | errors]
@@ -631,14 +651,9 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp validate_unique_vlan_memberships(errors, path, memberships) do
     keys =
-      Enum.map(memberships, fn
-        %{} = membership ->
-          Map.get(membership, "key") ||
-            "#{Map.get(membership, "scope", "default")}:#{Map.get(membership, "vid")}"
-
-        invalid ->
-          invalid
-      end)
+      memberships
+      |> Enum.filter(&valid_vlan_membership_identity?/1)
+      |> Enum.map(&source_local_vlan_key/1)
 
     if length(keys) == length(Enum.uniq(keys)),
       do: errors,
@@ -646,11 +661,11 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_interface_relationships(errors, interface, path) do
-    case Map.get(interface, "relationships") do
-      nil ->
+    case Map.fetch(interface, "relationships") do
+      :error ->
         errors
 
-      relationships when is_list(relationships) ->
+      {:ok, relationships} when is_list(relationships) ->
         relationships
         |> Enum.with_index()
         |> Enum.reduce(errors, fn {relationship, index}, errors ->
@@ -658,7 +673,7 @@ defmodule Renga.Inventory.AgentPayload do
         end)
         |> validate_distinct_relationship_targets(interface, path, relationships)
 
-      _invalid ->
+      {:ok, _invalid} ->
         [error("#{path}.relationships", "must be a list") | errors]
     end
   end
@@ -674,7 +689,7 @@ defmodule Renga.Inventory.AgentPayload do
       "#{path}.kind"
     )
     |> validate_required_relationship_kind(relationship, "#{path}.kind")
-    |> validate_optional_map(relationship, "metadata", "#{path}.metadata")
+    |> validate_optional_non_nil_map(relationship, "metadata", "#{path}.metadata")
   end
 
   defp validate_interface_relationship(errors, _relationship, path),
@@ -685,13 +700,16 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_distinct_relationship_targets(errors, interface, path, relationships) do
-    if Enum.any?(relationships, fn
-         %{"target" => target} when is_binary(target) ->
-           String.trim(target) == String.trim(Map.get(interface, "name", ""))
+    interface_name = Map.get(interface, "name")
 
-         _invalid ->
-           false
-       end),
+    if is_binary(interface_name) and
+         Enum.any?(relationships, fn
+           %{"target" => target} when is_binary(target) ->
+             String.trim(target) == String.trim(interface_name)
+
+           _invalid ->
+             false
+         end),
        do: [error("#{path}.relationships", "cannot target the same interface") | errors],
        else: errors
   end
@@ -794,6 +812,100 @@ defmodule Renga.Inventory.AgentPayload do
       nil -> errors
       value when is_map(value) -> errors
       _invalid -> [error(path, "must be an object") | errors]
+    end
+  end
+
+  defp validate_optional_non_nil_map(errors, attrs, key, path) do
+    case Map.fetch(attrs, key) do
+      :error -> errors
+      {:ok, value} when is_map(value) -> errors
+      {:ok, _invalid} -> [error(path, "must be an object") | errors]
+    end
+  end
+
+  defp validate_optional_non_blank_string(errors, attrs, key, path) do
+    case Map.fetch(attrs, key) do
+      :error ->
+        errors
+
+      {:ok, value} when is_binary(value) ->
+        errors |> validate_non_blank(path, value) |> validate_string_value(value, path)
+
+      {:ok, _invalid} ->
+        [error(path, "must be a string") | errors]
+    end
+  end
+
+  defp validate_optional_codepoint_length(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      value when is_binary(value) ->
+        if String.codepoints(value) |> length() <= @max_agent_string_length,
+          do: errors,
+          else: [error(path, "must be at most #{@max_agent_string_length} code points") | errors]
+
+      _missing_or_invalid ->
+        errors
+    end
+  end
+
+  defp validate_optional_source_local_vlan_key(errors, membership, path) do
+    case Map.fetch(membership, "key") do
+      :error ->
+        errors
+
+      {:ok, value} when is_binary(value) ->
+        value = String.trim(value)
+
+        cond do
+          value == "" ->
+            [error(path, "must not be blank") | errors]
+
+          byte_size(value) > @max_source_local_vlan_key_bytes ->
+            [error(path, "is too large") | errors]
+
+          true ->
+            errors
+        end
+
+      {:ok, _invalid} ->
+        [error(path, "must be a string") | errors]
+    end
+  end
+
+  defp valid_vlan_membership_identity?(membership) do
+    is_map(membership) and is_integer(membership["vid"]) and
+      (is_nil(membership["key"]) or is_binary(membership["key"])) and
+      (is_nil(membership["scope"]) or is_binary(membership["scope"]))
+  end
+
+  defp source_local_vlan_key(membership) do
+    normalize_source_local_vlan_key(Map.get(membership, "key")) ||
+      "#{normalize_source_scope(Map.get(membership, "scope"))}:#{membership["vid"]}"
+  end
+
+  defp normalize_source_local_vlan_key(nil), do: nil
+  defp normalize_source_local_vlan_key(key), do: String.trim(key)
+
+  defp normalize_source_scope(nil), do: "default"
+  defp normalize_source_scope(scope), do: String.trim(scope)
+
+  defp validate_section_completeness(errors, params) do
+    case Map.fetch(params, "section_completeness") do
+      :error ->
+        errors
+
+      {:ok, completeness} when is_map(completeness) ->
+        Enum.reduce(completeness, errors, fn {section, value}, errors ->
+          if section in ~w(components interface_vlans interface_relationships placement) and
+               is_boolean(value) do
+            errors
+          else
+            [error("section_completeness.#{section}", "must be a supported boolean") | errors]
+          end
+        end)
+
+      {:ok, _invalid} ->
+        [error("section_completeness", "must be an object") | errors]
     end
   end
 

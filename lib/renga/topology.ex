@@ -25,6 +25,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.SourceVlanGroupMapping
   alias Renga.Topology.TopologyFinding
+  alias Renga.Topology.TopologySnapshotEvent
   alias Renga.Topology.Vlan
   alias Renga.Topology.VlanGroup
   alias Renga.Topology.VlanGroupVidRange
@@ -178,6 +179,7 @@ defmodule Renga.Topology do
       vid = Ecto.Changeset.get_field(changeset, :vid)
       name = Ecto.Changeset.get_field(changeset, :name)
       ensure_vid_allowed!(scope.organization_id, group_id, vid)
+      ensure_vlan_identity_mutable!(scope.organization_id, stored, group_id, vid)
       update_vlan_resource(stored.resource, group_id, vid, name)
 
       changeset
@@ -214,34 +216,42 @@ defmodule Renga.Topology do
     managed_transaction(scope, fn ->
       interface = scoped_lock!(Interface, scope.organization_id, interface_id)
       vlan = scoped_get!(Vlan, scope.organization_id, vlan_id)
-      tagging_mode = attr(attrs, :tagging_mode)
 
-      validate_mode_membership!(
-        DesiredInterfaceVlanMode,
-        scope.organization_id,
-        interface.id,
-        tagging_mode
-      )
+      changeset =
+        DesiredInterfaceVlanAssignment
+        |> Repo.get_by(
+          organization_id: scope.organization_id,
+          interface_id: interface.id,
+          vlan_id: vlan.id
+        )
+        |> case do
+          nil ->
+            %DesiredInterfaceVlanAssignment{
+              organization_id: scope.organization_id,
+              interface_id: interface.id,
+              vlan_id: vlan.id
+            }
 
-      DesiredInterfaceVlanAssignment
-      |> Repo.get_by(
-        organization_id: scope.organization_id,
-        interface_id: interface.id,
-        vlan_id: vlan.id
-      )
-      |> case do
-        nil ->
-          %DesiredInterfaceVlanAssignment{
-            organization_id: scope.organization_id,
-            interface_id: interface.id,
-            vlan_id: vlan.id
-          }
+          assignment ->
+            assignment
+        end
+        |> DesiredInterfaceVlanAssignment.changeset(attrs)
 
-        assignment ->
-          assignment
+      if changeset.valid? do
+        validate_mode_membership!(
+          DesiredInterfaceVlanMode,
+          scope.organization_id,
+          interface.id,
+          Ecto.Changeset.get_field(changeset, :tagging_mode)
+        )
       end
-      |> DesiredInterfaceVlanAssignment.changeset(attrs)
-      |> Repo.insert_or_update()
+
+      result = Repo.insert_or_update(changeset)
+
+      if match?({:ok, _assignment}, result),
+        do: refresh_interface_findings(scope.organization_id, interface.id)
+
+      result
     end)
   end
 
@@ -253,7 +263,9 @@ defmodule Renga.Topology do
       assignment =
         scoped_get!(DesiredInterfaceVlanAssignment, scope.organization_id, assignment.id)
 
-      Repo.delete(assignment)
+      result = Repo.delete(assignment)
+      refresh_interface_findings(scope.organization_id, assignment.interface_id)
+      result
     end)
   end
 
@@ -269,7 +281,12 @@ defmodule Renga.Topology do
         mode
       )
 
-      upsert_mode(DesiredInterfaceVlanMode, scope.organization_id, interface.id, attrs)
+      result = upsert_mode(DesiredInterfaceVlanMode, scope.organization_id, interface.id, attrs)
+
+      if match?({:ok, _mode}, result),
+        do: refresh_interface_findings(scope.organization_id, interface.id)
+
+      result
     end)
   end
 
@@ -291,7 +308,18 @@ defmodule Renga.Topology do
     managed_transaction(scope, fn ->
       source = scoped_get!(Source, scope.organization_id, source_id)
       group = if vlan_group_id, do: scoped_get!(VlanGroup, scope.organization_id, vlan_group_id)
-      source_local_scope = attr(attrs, :source_local_scope) || "default"
+
+      mapping_attrs = default_source_local_scope(attrs)
+
+      validation_changeset =
+        %SourceVlanGroupMapping{
+          organization_id: scope.organization_id,
+          source_id: source.id
+        }
+        |> SourceVlanGroupMapping.changeset(mapping_attrs)
+
+      unless validation_changeset.valid?, do: Repo.rollback(validation_changeset)
+      source_local_scope = Ecto.Changeset.get_field(validation_changeset, :source_local_scope)
 
       SourceVlanGroupMapping
       |> Repo.get_by(
@@ -311,7 +339,7 @@ defmodule Renga.Topology do
       end
       |> Ecto.Changeset.change(vlan_group_id: group && group.id)
       |> SourceVlanGroupMapping.changeset(
-        put_attr(attrs, :source_local_scope, source_local_scope)
+        put_attr(mapping_attrs, :source_local_scope, source_local_scope)
       )
       |> Repo.insert_or_update()
     end)
@@ -343,6 +371,15 @@ defmodule Renga.Topology do
     |> where([evidence], evidence.interface_id == ^interface_id)
     |> order_by([evidence], desc: evidence.observed_at, asc: evidence.observation_id)
     |> Repo.all()
+  end
+
+  @doc false
+  def latest_complete_snapshot_by_source(
+        %Scope{organization_id: organization_id},
+        resource_id,
+        section
+      ) do
+    latest_snapshot_events(organization_id, resource_id, section)
   end
 
   def list_topology_findings(
@@ -384,6 +421,10 @@ defmodule Renga.Topology do
         |> Map.new(&{&1.name, &1})
 
       complete_snapshot? = complete_interface_vlan_snapshot?(source, observation)
+
+      if complete_snapshot? do
+        put_snapshot_event(scope, source, observation, resource_id, "interface_vlans")
+      end
 
       {evidence, observed_keys, mode_interface_ids} =
         reported_interfaces
@@ -457,18 +498,23 @@ defmodule Renga.Topology do
           []
         end
 
-      if current_snapshot? or mode_interface_ids != [] do
+      refresh_vlan_evidence_staleness(scope.organization_id, resource_id)
+
+      if evidence != [] or stale_interface_ids != [] or mode_interface_ids != [] or
+           complete_snapshot? do
+        boundaries = latest_snapshot_events(scope.organization_id, resource_id, "interface_vlans")
+
         (Enum.map(evidence, & &1.interface_id) ++ stale_interface_ids ++ mode_interface_ids)
         |> Enum.uniq()
         |> Enum.each(fn interface_id ->
-          rebuild_current_memberships(scope.organization_id, interface_id)
-          rebuild_current_mode(scope.organization_id, interface_id)
+          rebuild_current_memberships(scope.organization_id, interface_id, boundaries)
+          rebuild_current_mode(scope.organization_id, interface_id, boundaries)
 
           reconcile_interface_findings(
             scope.organization_id,
             interface_id,
             observation.observed_at,
-            complete_snapshot?
+            boundaries
           )
         end)
       end
@@ -541,6 +587,21 @@ defmodule Renga.Topology do
     unless allowed?, do: Repo.rollback(:vlan_out_of_range)
   end
 
+  defp ensure_vlan_identity_mutable!(organization_id, vlan, group_id, vid) do
+    identity_changed? = vlan.vlan_group_id != group_id or vlan.vid != vid
+
+    active_evidence? =
+      identity_changed? and
+        Repo.exists?(
+          from evidence in InterfaceVlanEvidence,
+            where:
+              evidence.organization_id == ^organization_id and evidence.vlan_id == ^vlan.id and
+                is_nil(evidence.stale_at)
+        )
+
+    if active_evidence?, do: Repo.rollback(:vlan_identity_in_use)
+  end
+
   defp put_interface_vlan_evidence(
          scope,
          source,
@@ -549,9 +610,12 @@ defmodule Renga.Topology do
          membership,
          current_snapshot?
        ) do
-    source_local_scope = Map.get(membership, "scope")
+    source_local_scope = normalize_optional_source_local_scope(Map.get(membership, "scope"))
     vid = Map.fetch!(membership, "vid")
-    source_local_key = Map.get(membership, "key") || "#{source_local_scope || "default"}:#{vid}"
+
+    source_local_key =
+      normalize_optional_source_local_key(Map.get(membership, "key")) ||
+        "#{source_local_scope || "default"}:#{vid}"
 
     {vlan, resolution} =
       resolve_source_vlan(scope.organization_id, source.id, source_local_scope, vid)
@@ -569,33 +633,41 @@ defmodule Renga.Topology do
       |> Repo.update_all(set: [stale_at: observation.observed_at])
     end
 
-    metadata =
-      membership
-      |> Map.get("metadata", %{})
-      |> Map.put("resolution", resolution)
+    metadata = Map.put(valid_metadata(membership["metadata"]), "resolution", resolution)
+
+    existing =
+      Repo.get_by(InterfaceVlanEvidence,
+        organization_id: scope.organization_id,
+        observation_id: observation.id,
+        interface_id: interface.id,
+        source_local_key: source_local_key
+      )
 
     evidence =
-      %InterfaceVlanEvidence{
-        organization_id: scope.organization_id,
-        interface_id: interface.id,
-        vlan_id: vlan && vlan.id,
-        source_id: source.id,
-        observation_id: observation.id
-      }
-      |> InterfaceVlanEvidence.changeset(%{
-        source_local_key: source_local_key,
-        source_local_scope: source_local_scope,
-        vid: vid,
-        tagging_mode: membership["tagging_mode"],
-        metadata: metadata,
-        observed_at: observation.observed_at
-      })
-      |> insert_or_rollback()
+      existing ||
+        %InterfaceVlanEvidence{
+          organization_id: scope.organization_id,
+          interface_id: interface.id,
+          vlan_id: vlan && vlan.id,
+          source_id: source.id,
+          observation_id: observation.id
+        }
+        |> InterfaceVlanEvidence.changeset(%{
+          source_local_key: source_local_key,
+          source_local_scope: source_local_scope,
+          vid: vid,
+          tagging_mode: membership["tagging_mode"],
+          metadata: metadata,
+          observed_at: observation.observed_at
+        })
+        |> insert_or_rollback()
 
     {evidence, {interface.id, source_local_key}}
   end
 
   defp resolve_source_vlan(organization_id, source_id, source_local_scope, vid) do
+    source_local_scope = normalize_optional_source_local_scope(source_local_scope)
+
     mappings =
       SourceVlanGroupMapping
       |> where(
@@ -621,7 +693,7 @@ defmodule Renga.Topology do
     vlan =
       Vlan
       |> where([vlan], vlan.organization_id == ^organization_id)
-      |> where([vlan], vlan.vlan_group_id == ^vlan_group_id)
+      |> maybe_where_vlan_group(vlan_group_id)
       |> where([vlan], vlan.vid == ^vid)
       |> Repo.one()
 
@@ -669,6 +741,110 @@ defmodule Renga.Topology do
     end)
 
     Enum.map(candidates, & &1.interface_id)
+  end
+
+  @doc false
+  def record_complete_snapshot(
+        %Scope{} = scope,
+        %Source{} = source,
+        %Observation{} = observation,
+        resource_id,
+        section
+      ) do
+    reconciliation_transaction(scope, fn ->
+      source = scoped_get!(Source, scope.organization_id, source.id)
+      scoped_get!(Resource, scope.organization_id, resource_id)
+
+      observation =
+        Observation
+        |> where([item], item.organization_id == ^scope.organization_id)
+        |> where([item], item.source_id == ^source.id and item.id == ^observation.id)
+        |> Repo.one!()
+
+      put_snapshot_event(scope, source, observation, resource_id, section)
+    end)
+  end
+
+  defp put_snapshot_event(scope, source, observation, resource_id, section) do
+    Repo.get_by(TopologySnapshotEvent,
+      organization_id: scope.organization_id,
+      observation_id: observation.id,
+      resource_id: resource_id,
+      section: section
+    ) ||
+      %TopologySnapshotEvent{
+        organization_id: scope.organization_id,
+        resource_id: resource_id,
+        source_id: source.id,
+        observation_id: observation.id
+      }
+      |> TopologySnapshotEvent.changeset(%{
+        section: section,
+        observed_at: observation.observed_at
+      })
+      |> insert_or_rollback()
+  end
+
+  defp refresh_vlan_evidence_staleness(organization_id, resource_id) do
+    boundaries = latest_snapshot_events(organization_id, resource_id, "interface_vlans")
+
+    InterfaceVlanEvidence
+    |> join(:inner, [evidence], interface in Interface,
+      on:
+        interface.id == evidence.interface_id and
+          interface.organization_id == evidence.organization_id
+    )
+    |> where([evidence, interface], evidence.organization_id == ^organization_id)
+    |> where([_evidence, interface], interface.resource_id == ^resource_id)
+    |> where([evidence, _interface], is_nil(evidence.stale_at))
+    |> select([evidence, _interface], evidence)
+    |> Repo.all()
+    |> Enum.group_by(&{&1.source_id, &1.interface_id, &1.source_local_key})
+    |> Enum.each(fn {{source_id, _interface_id, _key}, evidence} ->
+      latest = Enum.max_by(evidence, &observation_order/1)
+      boundary = Map.get(boundaries, source_id)
+
+      Enum.each(evidence, fn item ->
+        active? =
+          item.id == latest.id and
+            (is_nil(boundary) or observation_order(item) >= observation_order(boundary))
+
+        stale_at =
+          if active?,
+            do: nil,
+            else: later_observed_at(latest, boundary)
+
+        if is_nil(item.stale_at) and not is_nil(stale_at) do
+          item |> Ecto.Changeset.change(stale_at: stale_at) |> update_or_rollback()
+        end
+      end)
+    end)
+  end
+
+  defp latest_snapshot_events(organization_id, resource_id, section) do
+    latest_event =
+      from event in TopologySnapshotEvent,
+        where: event.organization_id == ^organization_id,
+        where: event.resource_id == ^resource_id and event.section == ^section,
+        where: event.source_id == parent_as(:source).id,
+        order_by: [desc: event.observed_at, desc: event.observation_id],
+        limit: 1
+
+    Source
+    |> from(as: :source)
+    |> where([source], source.organization_id == ^organization_id)
+    |> join(:inner_lateral, [source: _source], event in subquery(latest_event), on: true)
+    |> select([_source, event], event)
+    |> Repo.all()
+    |> Map.new(&{&1.source_id, &1})
+  end
+
+  defp later_observed_at(first, nil), do: first.observed_at
+
+  defp later_observed_at(first, second) do
+    if observation_order(first) >= observation_order(second),
+      do: first.observed_at,
+      else: second.observed_at
   end
 
   defp put_omitted_interface_vlan_mode_withdrawals(
@@ -733,30 +909,20 @@ defmodule Renga.Topology do
     end
   end
 
-  defp rebuild_current_memberships(organization_id, interface_id) do
+  defp rebuild_current_memberships(organization_id, interface_id, latest_complete_by_source) do
     scoped_lock!(Interface, organization_id, interface_id)
-
-    latest_complete_by_source =
-      InterfaceVlanModeEvidence
-      |> where([item], item.organization_id == ^organization_id)
-      |> where([item], item.interface_id == ^interface_id)
-      |> where([item], fragment("?->>'complete_snapshot' = 'true'", item.metadata))
-      |> Repo.all()
-      |> Enum.group_by(& &1.source_id)
-      |> Map.new(fn {source_id, evidence} ->
-        {source_id, Enum.max_by(evidence, &observation_order/1)}
-      end)
 
     selected =
       InterfaceVlanEvidence
       |> where([evidence], evidence.organization_id == ^organization_id)
       |> where([evidence], evidence.interface_id == ^interface_id)
-      |> where([evidence], is_nil(evidence.stale_at) and not is_nil(evidence.vlan_id))
+      |> where([evidence], is_nil(evidence.stale_at))
       |> Repo.all()
       |> latest_source_membership_evidence()
       |> Enum.filter(&membership_after_latest_complete_snapshot?(latest_complete_by_source, &1))
+      |> Enum.reject(&is_nil(&1.vlan_id))
       |> Enum.group_by(& &1.vlan_id)
-      |> Enum.map(fn {_vlan_id, evidence} -> Enum.max_by(evidence, &observation_order/1) end)
+      |> Enum.map(fn {_vlan_id, evidence} -> Enum.max_by(evidence, &membership_order/1) end)
       |> select_effective_untagged()
 
     CurrentInterfaceVlanMembership
@@ -779,8 +945,8 @@ defmodule Renga.Topology do
     end)
   end
 
-  defp rebuild_current_mode(organization_id, interface_id) do
-    evidence = effective_mode_evidence(organization_id, interface_id)
+  defp rebuild_current_mode(organization_id, interface_id, boundaries) do
+    evidence = effective_mode_evidence(organization_id, interface_id, boundaries)
 
     current =
       Repo.get_by(CurrentInterfaceVlanMode,
@@ -823,23 +989,38 @@ defmodule Renga.Topology do
     end
   end
 
-  defp effective_mode_evidence(organization_id, interface_id) do
-    InterfaceVlanModeEvidence
-    |> where([evidence], evidence.organization_id == ^organization_id)
-    |> where([evidence], evidence.interface_id == ^interface_id)
-    |> Repo.all()
-    |> Enum.group_by(& &1.source_id)
-    |> Enum.map(fn {_source_id, evidence} ->
-      Enum.max_by(evidence, &observation_order/1)
-    end)
+  defp effective_mode_evidence(organization_id, interface_id, boundaries) do
+    organization_id
+    |> effective_mode_evidence_by_source(interface_id, boundaries)
     |> Enum.reject(&is_nil(&1.mode))
     |> Enum.max_by(&observation_order/1, fn -> nil end)
+  end
+
+  defp effective_mode_evidence_by_source(organization_id, interface_id, boundaries) do
+    latest_evidence =
+      from evidence in InterfaceVlanModeEvidence,
+        where: evidence.organization_id == ^organization_id,
+        where: evidence.interface_id == ^interface_id,
+        where: evidence.source_id == parent_as(:source).id,
+        order_by: [desc: evidence.observed_at, desc: evidence.observation_id],
+        limit: 1
+
+    Source
+    |> from(as: :source)
+    |> where([source], source.organization_id == ^organization_id)
+    |> join(:inner_lateral, [source: _source], evidence in subquery(latest_evidence), on: true)
+    |> select([_source, evidence], evidence)
+    |> Repo.all()
+    |> Enum.filter(fn evidence ->
+      boundary = Map.get(boundaries, evidence.source_id)
+      is_nil(boundary) or observation_order(evidence) >= observation_order(boundary)
+    end)
   end
 
   defp latest_source_membership_evidence(evidence) do
     evidence
     |> Enum.group_by(&{&1.source_id, &1.source_local_key})
-    |> Enum.map(fn {_key, items} -> Enum.max_by(items, &observation_order/1) end)
+    |> Enum.map(fn {_key, items} -> Enum.max_by(items, &membership_order/1) end)
   end
 
   defp membership_after_latest_complete_snapshot?(latest_complete_by_source, evidence) do
@@ -851,6 +1032,11 @@ defmodule Renga.Topology do
     {DateTime.to_unix(evidence.observed_at, :microsecond), evidence.observation_id}
   end
 
+  # Source-local key provides deterministic precedence when one observation maps
+  # multiple source identities to the same canonical VLAN.
+  defp membership_order(evidence),
+    do: {observation_order(evidence), evidence.source_local_key}
+
   defp mode_compatible?("access", memberships),
     do: Enum.all?(memberships, &(&1.tagging_mode == "untagged"))
 
@@ -861,21 +1047,55 @@ defmodule Renga.Topology do
 
     case untagged do
       [] -> tagged
-      memberships -> [Enum.max_by(memberships, &observation_order/1) | tagged]
+      memberships -> [Enum.max_by(memberships, &membership_order/1) | tagged]
     end
   end
 
-  defp reconcile_interface_findings(
-         organization_id,
-         interface_id,
-         observed_at,
-         complete_snapshot?
-       ) do
+  defp reconcile_interface_findings(organization_id, interface_id, observed_at, boundaries) do
     evidence =
       InterfaceVlanEvidence
       |> where([item], item.organization_id == ^organization_id)
       |> where([item], item.interface_id == ^interface_id and is_nil(item.stale_at))
       |> Repo.all()
+
+    mode_evidence = effective_mode_evidence_by_source(organization_id, interface_id, boundaries)
+    snapshot_events = Map.values(boundaries)
+
+    finding_history_floor =
+      TopologyFinding
+      |> where([finding], finding.organization_id == ^organization_id)
+      |> where([finding], finding.interface_id == ^interface_id)
+      |> order_by(
+        [finding],
+        desc:
+          fragment(
+            "GREATEST(?, COALESCE(?, ?))",
+            finding.last_observed_at,
+            finding.resolved_at,
+            finding.last_observed_at
+          )
+      )
+      |> select(
+        [finding],
+        type(
+          fragment(
+            "GREATEST(?, COALESCE(?, ?))",
+            finding.last_observed_at,
+            finding.resolved_at,
+            finding.last_observed_at
+          ),
+          :utc_datetime_usec
+        )
+      )
+      |> limit(1)
+      |> Repo.one()
+
+    observed_at =
+      effective_finding_time(
+        observed_at,
+        evidence ++ mode_evidence ++ snapshot_events,
+        finding_history_floor
+      )
 
     desired =
       DesiredInterfaceVlanAssignment
@@ -896,8 +1116,8 @@ defmodule Renga.Topology do
     findings =
       unresolved_vlan_findings(evidence, observed_at) ++
         evidence_conflict_findings(evidence, observed_at) ++
-        drift_findings(desired, current, observed_at, complete_snapshot?) ++
-        mode_conflict_findings(organization_id, interface_id, current, observed_at)
+        drift_findings(desired, current, observed_at, snapshot_events != []) ++
+        mode_conflict_findings(organization_id, interface_id, current, mode_evidence, observed_at)
 
     keys = MapSet.new(findings, &{&1.kind, &1.resolution_key})
     Enum.each(findings, &put_topology_finding(organization_id, interface_id, &1))
@@ -905,15 +1125,36 @@ defmodule Renga.Topology do
     TopologyFinding
     |> where([finding], finding.organization_id == ^organization_id)
     |> where([finding], finding.interface_id == ^interface_id and finding.status == "open")
-    |> where([finding], finding.last_observed_at <= ^observed_at)
     |> Repo.all()
     |> Enum.reject(&MapSet.member?(keys, {&1.kind, &1.resolution_key}))
-    |> Enum.reject(&(&1.kind == "missing_vlan" and not complete_snapshot?))
     |> Enum.each(fn finding ->
       finding
       |> TopologyFinding.changeset(%{status: "resolved", resolved_at: observed_at})
       |> update_or_rollback()
     end)
+  end
+
+  defp refresh_interface_findings(organization_id, interface_id) do
+    interface = scoped_get!(Interface, organization_id, interface_id)
+    boundaries = latest_snapshot_events(organization_id, interface.resource_id, "interface_vlans")
+
+    reconcile_interface_findings(
+      organization_id,
+      interface_id,
+      Renga.Time.utc_now_ms(),
+      boundaries
+    )
+  end
+
+  defp effective_finding_time(observed_at, evidence, finding_history_floor) do
+    evidence_time =
+      Enum.reduce(evidence, observed_at, fn item, latest ->
+        max_datetime(item.observed_at, latest)
+      end)
+
+    if finding_history_floor,
+      do: max_datetime(finding_history_floor, evidence_time),
+      else: evidence_time
   end
 
   defp unresolved_vlan_findings(evidence, observed_at) do
@@ -1024,26 +1265,85 @@ defmodule Renga.Topology do
     end
   end
 
-  defp mode_conflict_findings(organization_id, interface_id, memberships, observed_at) do
-    case effective_mode_evidence(organization_id, interface_id) do
-      nil ->
-        []
+  defp mode_conflict_findings(
+         organization_id,
+         interface_id,
+         memberships,
+         mode_evidence,
+         observed_at
+       ) do
+    effective_evidence =
+      mode_evidence
+      |> Enum.reject(&is_nil(&1.mode))
+      |> Enum.max_by(&observation_order/1, fn -> nil end)
 
-      evidence ->
-        if mode_compatible?(evidence.mode, memberships) do
+    membership_conflict =
+      case effective_evidence do
+        nil ->
           []
-        else
-          [
-            %{
-              kind: "conflicting_interface_mode",
-              resolution_key: "effective_mode",
-              message: "Observed interface mode conflicts with current VLAN membership",
-              details: %{"mode" => evidence.mode, "source_id" => evidence.source_id},
-              last_observed_at: observed_at
-            }
-          ]
-        end
-    end
+
+        evidence ->
+          if mode_compatible?(evidence.mode, memberships) do
+            []
+          else
+            [
+              %{
+                kind: "conflicting_interface_mode",
+                resolution_key: "effective_mode",
+                message: "Observed interface mode conflicts with current VLAN membership",
+                details: %{"mode" => evidence.mode, "source_id" => evidence.source_id},
+                last_observed_at: observed_at
+              }
+            ]
+          end
+      end
+
+    source_modes =
+      mode_evidence |> Enum.reject(&is_nil(&1.mode)) |> Enum.map(& &1.mode) |> Enum.uniq()
+
+    source_conflict =
+      if length(source_modes) > 1 do
+        [
+          %{
+            kind: "conflicting_interface_mode",
+            resolution_key: "source_modes",
+            message: "Sources report conflicting interface modes",
+            details: %{"modes" => source_modes},
+            last_observed_at: observed_at
+          }
+        ]
+      else
+        []
+      end
+
+    desired =
+      Repo.get_by(DesiredInterfaceVlanMode,
+        organization_id: organization_id,
+        interface_id: interface_id
+      )
+
+    current =
+      Repo.get_by(CurrentInterfaceVlanMode,
+        organization_id: organization_id,
+        interface_id: interface_id
+      )
+
+    desired_conflict =
+      if desired && (is_nil(current) or desired.mode != current.mode) do
+        [
+          %{
+            kind: "conflicting_interface_mode",
+            resolution_key: "desired_mode",
+            message: "Desired and current interface modes differ",
+            details: %{"desired_mode" => desired.mode, "current_mode" => current && current.mode},
+            last_observed_at: observed_at
+          }
+        ]
+      else
+        []
+      end
+
+    membership_conflict ++ source_conflict ++ desired_conflict
   end
 
   defp drift_finding(kind, vlan_id, message, observed_at) do
@@ -1057,24 +1357,33 @@ defmodule Renga.Topology do
   end
 
   defp put_topology_finding(organization_id, interface_id, attrs) do
-    TopologyFinding
-    |> Repo.get_by(
-      organization_id: organization_id,
-      interface_id: interface_id,
-      kind: attrs.kind,
-      resolution_key: attrs.resolution_key,
-      status: "open"
-    )
-    |> case do
-      nil -> %TopologyFinding{organization_id: organization_id, interface_id: interface_id}
-      finding -> finding
-    end
+    finding =
+      Repo.get_by(TopologyFinding,
+        organization_id: organization_id,
+        interface_id: interface_id,
+        kind: attrs.kind,
+        resolution_key: attrs.resolution_key,
+        status: "open"
+      )
+
+    attrs =
+      if finding do
+        Map.update!(attrs, :last_observed_at, &max_datetime(&1, finding.last_observed_at))
+      else
+        attrs
+      end
+
+    (finding || %TopologyFinding{organization_id: organization_id, interface_id: interface_id})
     |> TopologyFinding.changeset(Map.merge(attrs, %{status: "open", resolved_at: nil}))
     |> Repo.insert_or_update()
     |> case do
       {:ok, finding} -> finding
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  defp max_datetime(first, second) do
+    if DateTime.compare(first, second) == :lt, do: second, else: first
   end
 
   defp resolution_finding_kind("ambiguous_scope"), do: "ambiguous_scope"
@@ -1092,7 +1401,10 @@ defmodule Renga.Topology do
 
   defp complete_interface_vlan_snapshot?(source, observation) do
     source.metadata["interface_vlan_snapshot_policy"] == "complete" and
-      get_in(observation.payload, ["section_completeness", "interface_vlans"]) == true
+      match?(
+        %{"section_completeness" => %{"interface_vlans" => true}},
+        observation.payload
+      )
   end
 
   defp validate_reported_mode!(reported) do
@@ -1141,6 +1453,14 @@ defmodule Renga.Topology do
 
   defp maybe_where_source_local_scope(query, scope),
     do: where(query, [mapping], mapping.source_local_scope == ^scope)
+
+  defp normalize_optional_source_local_scope(nil), do: nil
+  defp normalize_optional_source_local_scope(scope), do: normalize_source_local_scope(scope)
+  defp normalize_source_local_scope(scope), do: String.trim(scope)
+  defp normalize_optional_source_local_key(nil), do: nil
+  defp normalize_optional_source_local_key(key), do: String.trim(key)
+  defp valid_metadata(metadata) when is_map(metadata), do: metadata
+  defp valid_metadata(_metadata), do: %{}
 
   defp lock_vlan_group(_organization_id, nil), do: nil
 
@@ -1242,7 +1562,26 @@ defmodule Renga.Topology do
     end
   end
 
-  defp authorize_reconciler!(%Scope{} = scope), do: authorize_manager!(scope)
+  defp authorize_reconciler!(%Scope{membership_id: membership_id, user: %{id: user_id}} = scope)
+       when not is_nil(membership_id) do
+    lock_active_organization!(scope.organization_id)
+
+    OrganizationMembership
+    |> where([membership], membership.id == ^membership_id)
+    |> where([membership], membership.user_id == ^user_id)
+    |> where([membership], membership.organization_id == ^scope.organization_id)
+    |> where([membership], membership.status == "active")
+    |> where([membership], membership.role in ["owner", "admin", "member"])
+    |> select([membership], membership.id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+    |> case do
+      nil -> Repo.rollback(:forbidden)
+      _membership_id -> :ok
+    end
+  end
+
+  defp authorize_reconciler!(%Scope{}), do: Repo.rollback(:forbidden)
 
   defp lock_active_organization!(organization_id) do
     Organization
@@ -1283,6 +1622,12 @@ defmodule Renga.Topology do
 
   defp put_default_attr(attrs, key, value) do
     if attr(attrs, key), do: attrs, else: put_attr(attrs, key, value)
+  end
+
+  defp default_source_local_scope(attrs) do
+    if Map.has_key?(attrs, :source_local_scope) or Map.has_key?(attrs, "source_local_scope"),
+      do: attrs,
+      else: put_attr(attrs, :source_local_scope, "default")
   end
 
   defp put_attr(attrs, key, value) do
