@@ -422,105 +422,241 @@ defmodule Renga.Topology do
 
       complete_snapshot? = complete_interface_vlan_snapshot?(source, observation)
 
-      if complete_snapshot? do
-        put_snapshot_event(scope, source, observation, resource_id, "interface_vlans")
-      end
+      maybe_put_vlan_snapshot_event(scope, source, observation, resource_id, complete_snapshot?)
 
       {evidence, observed_keys, mode_interface_ids} =
-        reported_interfaces
-        |> Enum.reduce({[], [], []}, fn reported, {evidence, keys, mode_ids} ->
-          name = reported |> Map.fetch!("name") |> String.trim()
-
-          case Map.fetch(interfaces, name) do
-            {:ok, interface} ->
-              mode_ids =
-                if Map.has_key?(reported, "vlan_mode") do
-                  validate_reported_mode!(reported)
-
-                  put_interface_vlan_mode_evidence(
-                    scope.organization_id,
-                    source,
-                    observation,
-                    interface,
-                    reported["vlan_mode"],
-                    complete_snapshot?
-                  )
-
-                  [interface.id | mode_ids]
-                else
-                  mode_ids
-                end
-
-              reported_evidence =
-                Enum.map(Map.get(reported, "vlans", []), fn membership ->
-                  put_interface_vlan_evidence(
-                    scope,
-                    source,
-                    observation,
-                    interface,
-                    membership,
-                    current_snapshot?
-                  )
-                end)
-
-              {rows, reported_keys} = Enum.unzip(reported_evidence)
-              {rows ++ evidence, reported_keys ++ keys, mode_ids}
-
-            :error ->
-              {evidence, keys, mode_ids}
-          end
-        end)
+        collect_reported_vlan_evidence(
+          scope,
+          source,
+          observation,
+          interfaces,
+          reported_interfaces,
+          current_snapshot?,
+          complete_snapshot?
+        )
 
       mode_interface_ids =
-        if complete_snapshot? do
-          mode_interface_ids ++
-            put_omitted_interface_vlan_mode_withdrawals(
-              scope.organization_id,
-              source,
-              observation,
-              interfaces,
-              reported_interfaces
-            )
-        else
-          mode_interface_ids
-        end
+        add_omitted_mode_withdrawals(
+          mode_interface_ids,
+          scope.organization_id,
+          source,
+          observation,
+          interfaces,
+          reported_interfaces,
+          complete_snapshot?
+        )
 
       stale_interface_ids =
-        if complete_snapshot? do
-          stale_omitted_vlan_evidence(
-            scope,
-            source,
-            observation,
-            resource_id,
-            MapSet.new(observed_keys)
-          )
-        else
-          []
-        end
+        stale_omitted_vlan_evidence_if_complete(
+          scope,
+          source,
+          observation,
+          resource_id,
+          observed_keys,
+          complete_snapshot?
+        )
 
       refresh_vlan_evidence_staleness(scope.organization_id, resource_id)
 
-      if evidence != [] or stale_interface_ids != [] or mode_interface_ids != [] or
-           complete_snapshot? do
-        boundaries = latest_snapshot_events(scope.organization_id, resource_id, "interface_vlans")
-
-        (Enum.map(evidence, & &1.interface_id) ++ stale_interface_ids ++ mode_interface_ids)
-        |> Enum.uniq()
-        |> Enum.each(fn interface_id ->
-          rebuild_current_memberships(scope.organization_id, interface_id, boundaries)
-          rebuild_current_mode(scope.organization_id, interface_id, boundaries)
-
-          reconcile_interface_findings(
-            scope.organization_id,
-            interface_id,
-            observation.observed_at,
-            boundaries
-          )
-        end)
-      end
+      rebuild_changed_vlan_interfaces(
+        scope,
+        observation,
+        resource_id,
+        evidence,
+        stale_interface_ids,
+        mode_interface_ids,
+        complete_snapshot?
+      )
 
       evidence
     end)
+  end
+
+  defp maybe_put_vlan_snapshot_event(scope, source, observation, resource_id, true) do
+    put_snapshot_event(scope, source, observation, resource_id, "interface_vlans")
+  end
+
+  defp maybe_put_vlan_snapshot_event(_scope, _source, _observation, _resource_id, false), do: nil
+
+  defp collect_reported_vlan_evidence(
+         scope,
+         source,
+         observation,
+         interfaces,
+         reported_interfaces,
+         current_snapshot?,
+         complete_snapshot?
+       ) do
+    Enum.reduce(reported_interfaces, {[], [], []}, fn reported, accumulator ->
+      collect_interface_vlan_evidence(
+        scope,
+        source,
+        observation,
+        interfaces,
+        reported,
+        accumulator,
+        current_snapshot?,
+        complete_snapshot?
+      )
+    end)
+  end
+
+  defp collect_interface_vlan_evidence(
+         scope,
+         source,
+         observation,
+         interfaces,
+         reported,
+         {evidence, keys, mode_ids} = accumulator,
+         current_snapshot?,
+         complete_snapshot?
+       ) do
+    name = reported |> Map.fetch!("name") |> String.trim()
+
+    case Map.fetch(interfaces, name) do
+      {:ok, interface} ->
+        mode_ids =
+          put_reported_vlan_mode(
+            scope.organization_id,
+            source,
+            observation,
+            interface,
+            reported,
+            mode_ids,
+            complete_snapshot?
+          )
+
+        reported_evidence =
+          Enum.map(Map.get(reported, "vlans", []), fn membership ->
+            put_interface_vlan_evidence(
+              scope,
+              source,
+              observation,
+              interface,
+              membership,
+              current_snapshot?
+            )
+          end)
+
+        {rows, reported_keys} = Enum.unzip(reported_evidence)
+        {rows ++ evidence, reported_keys ++ keys, mode_ids}
+
+      :error ->
+        accumulator
+    end
+  end
+
+  defp put_reported_vlan_mode(
+         organization_id,
+         source,
+         observation,
+         interface,
+         reported,
+         mode_ids,
+         complete_snapshot?
+       ) do
+    if Map.has_key?(reported, "vlan_mode") do
+      validate_reported_mode!(reported)
+
+      put_interface_vlan_mode_evidence(
+        organization_id,
+        source,
+        observation,
+        interface,
+        reported["vlan_mode"],
+        complete_snapshot?
+      )
+
+      [interface.id | mode_ids]
+    else
+      mode_ids
+    end
+  end
+
+  defp add_omitted_mode_withdrawals(
+         mode_interface_ids,
+         organization_id,
+         source,
+         observation,
+         interfaces,
+         reported_interfaces,
+         true
+       ) do
+    mode_interface_ids ++
+      put_omitted_interface_vlan_mode_withdrawals(
+        organization_id,
+        source,
+        observation,
+        interfaces,
+        reported_interfaces
+      )
+  end
+
+  defp add_omitted_mode_withdrawals(
+         mode_interface_ids,
+         _organization_id,
+         _source,
+         _observation,
+         _interfaces,
+         _reported_interfaces,
+         false
+       ),
+       do: mode_interface_ids
+
+  defp stale_omitted_vlan_evidence_if_complete(
+         scope,
+         source,
+         observation,
+         resource_id,
+         observed_keys,
+         true
+       ) do
+    stale_omitted_vlan_evidence(
+      scope,
+      source,
+      observation,
+      resource_id,
+      MapSet.new(observed_keys)
+    )
+  end
+
+  defp stale_omitted_vlan_evidence_if_complete(
+         _scope,
+         _source,
+         _observation,
+         _resource_id,
+         _observed_keys,
+         false
+       ),
+       do: []
+
+  defp rebuild_changed_vlan_interfaces(
+         scope,
+         observation,
+         resource_id,
+         evidence,
+         stale_interface_ids,
+         mode_interface_ids,
+         complete_snapshot?
+       ) do
+    if evidence != [] or stale_interface_ids != [] or mode_interface_ids != [] or
+         complete_snapshot? do
+      boundaries = latest_snapshot_events(scope.organization_id, resource_id, "interface_vlans")
+
+      (Enum.map(evidence, & &1.interface_id) ++ stale_interface_ids ++ mode_interface_ids)
+      |> Enum.uniq()
+      |> Enum.each(fn interface_id ->
+        rebuild_current_memberships(scope.organization_id, interface_id, boundaries)
+        rebuild_current_mode(scope.organization_id, interface_id, boundaries)
+
+        reconcile_interface_findings(
+          scope.organization_id,
+          interface_id,
+          observation.observed_at,
+          boundaries
+        )
+      end)
+    end
   end
 
   def change_vlan_group(%VlanGroup{} = group, attrs \\ %{}),
@@ -801,24 +937,28 @@ defmodule Renga.Topology do
     |> Repo.all()
     |> Enum.group_by(&{&1.source_id, &1.interface_id, &1.source_local_key})
     |> Enum.each(fn {{source_id, _interface_id, _key}, evidence} ->
-      latest = Enum.max_by(evidence, &observation_order/1)
-      boundary = Map.get(boundaries, source_id)
-
-      Enum.each(evidence, fn item ->
-        active? =
-          item.id == latest.id and
-            (is_nil(boundary) or observation_order(item) >= observation_order(boundary))
-
-        stale_at =
-          if active?,
-            do: nil,
-            else: later_observed_at(latest, boundary)
-
-        if is_nil(item.stale_at) and not is_nil(stale_at) do
-          item |> Ecto.Changeset.change(stale_at: stale_at) |> update_or_rollback()
-        end
-      end)
+      stale_vlan_evidence_group(evidence, Map.get(boundaries, source_id))
     end)
+  end
+
+  defp stale_vlan_evidence_group(evidence, boundary) do
+    latest = Enum.max_by(evidence, &observation_order/1)
+
+    Enum.each(evidence, fn item ->
+      stale_vlan_evidence(item, latest, boundary)
+    end)
+  end
+
+  defp stale_vlan_evidence(item, latest, boundary) do
+    active? =
+      item.id == latest.id and
+        (is_nil(boundary) or observation_order(item) >= observation_order(boundary))
+
+    stale_at = if active?, do: nil, else: later_observed_at(latest, boundary)
+
+    if is_nil(item.stale_at) and not is_nil(stale_at) do
+      item |> Ecto.Changeset.change(stale_at: stale_at) |> update_or_rollback()
+    end
   end
 
   defp latest_snapshot_events(organization_id, resource_id, section) do

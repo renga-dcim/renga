@@ -489,17 +489,19 @@ defmodule Renga.Inventory.AgentPayload do
       interfaces when is_list(interfaces) ->
         errors
         |> validate_unique_interface_names(interfaces, "#{path}.interfaces")
-        |> then(fn errors ->
-          interfaces
-          |> Enum.with_index()
-          |> Enum.reduce(errors, fn {interface, index}, errors ->
-            validate_interface(errors, interface, "#{path}.interfaces.#{index}")
-          end)
-        end)
+        |> validate_interface_entries(interfaces, path)
 
       _invalid ->
         [error("#{path}.interfaces", "must be a list") | errors]
     end
+  end
+
+  defp validate_interface_entries(errors, interfaces, path) do
+    interfaces
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {interface, index}, errors ->
+      validate_interface(errors, interface, "#{path}.interfaces.#{index}")
+    end)
   end
 
   defp validate_interface(errors, %{} = interface, path) do
@@ -896,16 +898,20 @@ defmodule Renga.Inventory.AgentPayload do
 
       {:ok, completeness} when is_map(completeness) ->
         Enum.reduce(completeness, errors, fn {section, value}, errors ->
-          if section in ~w(components interface_vlans interface_relationships placement) and
-               is_boolean(value) do
-            errors
-          else
-            [error("section_completeness.#{section}", "must be a supported boolean") | errors]
-          end
+          validate_section_completeness_entry(errors, section, value)
         end)
 
       {:ok, _invalid} ->
         [error("section_completeness", "must be an object") | errors]
+    end
+  end
+
+  defp validate_section_completeness_entry(errors, section, value) do
+    if section in ~w(components interface_vlans interface_relationships placement) and
+         is_boolean(value) do
+      errors
+    else
+      [error("section_completeness.#{section}", "must be a supported boolean") | errors]
     end
   end
 

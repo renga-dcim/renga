@@ -768,37 +768,61 @@ defmodule Renga.Inventory.Reconciler.Projections do
           {:error, reason} -> Repo.rollback(reason)
         end
 
-    if relationship do
-      if current_snapshot? do
-        InterfaceRelationshipEvidence
-        |> where([evidence], evidence.organization_id == ^scope.organization_id)
-        |> where([evidence], evidence.source_id == ^source.id)
-        |> where([evidence], evidence.interface_relationship_id == ^relationship.id)
-        |> where(
-          [evidence],
-          is_nil(evidence.stale_at) and evidence.observed_at < ^observation.observed_at
+    stale_previous_relationship_evidence(
+      scope,
+      source,
+      observation,
+      relationship,
+      current_snapshot?
+    )
+
+    put_relationship_evidence(scope, source, observation, relationship, attrs)
+    relationship.id
+  end
+
+  defp stale_previous_relationship_evidence(
+         scope,
+         source,
+         observation,
+         relationship,
+         true
+       ) do
+    InterfaceRelationshipEvidence
+    |> where([evidence], evidence.organization_id == ^scope.organization_id)
+    |> where([evidence], evidence.source_id == ^source.id)
+    |> where([evidence], evidence.interface_relationship_id == ^relationship.id)
+    |> where(
+      [evidence],
+      is_nil(evidence.stale_at) and evidence.observed_at < ^observation.observed_at
+    )
+    |> Repo.update_all(set: [stale_at: observation.observed_at])
+  end
+
+  defp stale_previous_relationship_evidence(
+         _scope,
+         _source,
+         _observation,
+         _relationship,
+         false
+       ),
+       do: nil
+
+  defp put_relationship_evidence(scope, source, observation, relationship, attrs) do
+    unless Repo.exists?(
+             from evidence in InterfaceRelationshipEvidence,
+               where:
+                 evidence.organization_id == ^scope.organization_id and
+                   evidence.observation_id == ^observation.id and
+                   evidence.interface_relationship_id == ^relationship.id
+           ) do
+      {:ok, _evidence} =
+        Inventory.create_interface_relationship_evidence(
+          scope,
+          source.id,
+          observation.id,
+          relationship.id,
+          Map.take(attrs, ~w(kind metadata))
         )
-        |> Repo.update_all(set: [stale_at: observation.observed_at])
-      end
-
-      unless Repo.exists?(
-               from evidence in InterfaceRelationshipEvidence,
-                 where:
-                   evidence.organization_id == ^scope.organization_id and
-                     evidence.observation_id == ^observation.id and
-                     evidence.interface_relationship_id == ^relationship.id
-             ) do
-        {:ok, _evidence} =
-          Inventory.create_interface_relationship_evidence(
-            scope,
-            source.id,
-            observation.id,
-            relationship.id,
-            Map.take(attrs, ~w(kind metadata))
-          )
-      end
-
-      relationship.id
     end
   end
 
@@ -838,23 +862,30 @@ defmodule Renga.Inventory.Reconciler.Projections do
     |> Repo.all()
     |> Enum.group_by(&{&1.source_id, &1.interface_relationship_id})
     |> Enum.each(fn {{source_id, _relationship_id}, evidence} ->
-      latest = Enum.max_by(evidence, &evidence_order/1)
-      boundary = Map.get(boundaries, source_id)
-
-      Enum.each(evidence, fn item ->
-        active? =
-          item.id == latest.id and
-            (is_nil(boundary) or evidence_order(item) >= evidence_order(boundary))
-
-        stale_at = if active?, do: nil, else: later_evidence_time(latest, boundary)
-
-        if is_nil(item.stale_at) and not is_nil(stale_at) do
-          item
-          |> Ecto.Changeset.change(stale_at: stale_at)
-          |> Repo.update!()
-        end
-      end)
+      stale_relationship_evidence_group(evidence, Map.get(boundaries, source_id))
     end)
+  end
+
+  defp stale_relationship_evidence_group(evidence, boundary) do
+    latest = Enum.max_by(evidence, &evidence_order/1)
+
+    Enum.each(evidence, fn item ->
+      stale_relationship_evidence(item, latest, boundary)
+    end)
+  end
+
+  defp stale_relationship_evidence(item, latest, boundary) do
+    active? =
+      item.id == latest.id and
+        (is_nil(boundary) or evidence_order(item) >= evidence_order(boundary))
+
+    stale_at = if active?, do: nil, else: later_evidence_time(latest, boundary)
+
+    if is_nil(item.stale_at) and not is_nil(stale_at) do
+      item
+      |> Ecto.Changeset.change(stale_at: stale_at)
+      |> Repo.update!()
+    end
   end
 
   defp evidence_order(item),
