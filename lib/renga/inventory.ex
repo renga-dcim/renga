@@ -47,7 +47,7 @@ defmodule Renga.Inventory do
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type module)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -352,6 +352,26 @@ defmodule Renga.Inventory do
   end
 
   defp authorize_managed_resource_kind!(_scope, _kind), do: :ok
+
+  defp protect_managed_resource_fields(changeset, "vlan") do
+    Enum.reduce([:name, :display_name], changeset, fn field, changeset ->
+      if Ecto.Changeset.changed?(changeset, field),
+        do: Ecto.Changeset.add_error(changeset, field, "is managed by topology"),
+        else: changeset
+    end)
+  end
+
+  defp protect_managed_resource_fields(changeset, _kind), do: changeset
+
+  defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
+       when kind in ~w(vlan vlan_group) do
+    %Resource{organization_id: organization_id}
+    |> Resource.changeset(attrs)
+    |> Ecto.Changeset.add_error(:kind, "must be created through the topology context")
+    |> Repo.rollback()
+  end
+
+  defp reject_context_managed_resource_creation!(_organization_id, _kind, _attrs), do: :ok
 
   defp ensure_organization_active_or_rollback(organization_id) do
     Organization
@@ -835,7 +855,9 @@ defmodule Renga.Inventory do
   """
   def create_resource(%Scope{organization_id: organization_id} = scope, attrs) do
     Repo.transaction(fn ->
-      authorize_managed_resource_kind!(scope, get_attr(attrs, :kind))
+      kind = get_attr(attrs, :kind)
+      authorize_managed_resource_kind!(scope, kind)
+      reject_context_managed_resource_creation!(organization_id, kind, attrs)
       create_resource_record(organization_id, attrs)
     end)
   end
@@ -874,11 +896,17 @@ defmodule Renga.Inventory do
         |> Repo.rollback()
       end
 
+      changeset =
+        stored_resource
+        |> Resource.changeset(attrs)
+        |> protect_managed_resource_fields(stored_kind)
+
+      unless changeset.valid?, do: Repo.rollback(changeset)
+
       revision = ResourceStore.next_revision!()
 
       resource =
-        stored_resource
-        |> Resource.changeset(attrs)
+        changeset
         |> Ecto.Changeset.put_change(:resource_version, revision)
         |> update_or_rollback()
 
