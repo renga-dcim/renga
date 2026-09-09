@@ -20,10 +20,13 @@ defmodule Renga.Inventory.Reconciler.Projections do
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
+  alias Renga.Inventory.InterfaceRelationship
+  alias Renga.Inventory.InterfaceRelationshipEvidence
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
   alias Renga.Repo
+  alias Renga.Topology
   alias Renga.Types.Inet
   alias Renga.Types.MacAddress
 
@@ -68,6 +71,27 @@ defmodule Renga.Inventory.Reconciler.Projections do
         overrides,
         allow_new_rows?
       )
+    )
+
+    topology_scope = topology_reconciler_scope(scope)
+
+    {:ok, _evidence} =
+      Topology.reconcile_interface_vlans(
+        topology_scope,
+        source,
+        observation,
+        resource.id,
+        interfaces,
+        allow_new_rows?
+      )
+
+    reconcile_interface_relationships(
+      scope,
+      source,
+      observation,
+      resource,
+      interfaces,
+      allow_new_rows?
     )
 
     if allow_new_rows? and interfaces_authoritative? do
@@ -166,6 +190,12 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp catalog_reconciler_scope(%Scope{} = scope), do: scope
+
+  defp topology_reconciler_scope(%Scope{user: nil} = scope) do
+    %{scope | membership_id: nil, roles: ["topology_reconciler"]}
+  end
+
+  defp topology_reconciler_scope(%Scope{} = scope), do: scope
 
   defp complete_component_snapshot?(source, observation, payload, current_snapshot?) do
     current_snapshot? and source.metadata["component_snapshot_policy"] == "complete" and
@@ -640,6 +670,233 @@ defmodule Renga.Inventory.Reconciler.Projections do
           evidence_attrs
         )
     end
+  end
+
+  defp reconcile_interface_relationships(
+         scope,
+         source,
+         observation,
+         resource,
+         reported_interfaces,
+         current_snapshot?
+       ) do
+    interfaces =
+      scope
+      |> Inventory.list_interfaces(resource.id)
+      |> Map.new(&{&1.name, &1})
+
+    Enum.each(reported_interfaces, fn reported ->
+      source_interface = Map.get(interfaces, String.trim(reported["name"]))
+
+      Enum.each(Map.get(reported, "relationships", []), fn attrs ->
+        target_interface = Map.get(interfaces, String.trim(attrs["target"]))
+
+        reconcile_interface_relationship(
+          scope,
+          source,
+          observation,
+          source_interface,
+          target_interface,
+          attrs,
+          current_snapshot?
+        )
+      end)
+    end)
+
+    if complete_interface_relationship_snapshot?(source, observation) do
+      {:ok, _event} =
+        Topology.record_complete_snapshot(
+          topology_reconciler_scope(scope),
+          source,
+          observation,
+          resource.id,
+          "interface_relationships"
+        )
+    end
+
+    refresh_relationship_evidence_staleness(scope, resource.id)
+  end
+
+  defp reconcile_interface_relationship(
+         _scope,
+         _source,
+         _observation,
+         nil,
+         _target_interface,
+         _attrs,
+         _current_snapshot?
+       ),
+       do: nil
+
+  defp reconcile_interface_relationship(
+         _scope,
+         _source,
+         _observation,
+         _source_interface,
+         nil,
+         _attrs,
+         _current_snapshot?
+       ),
+       do: nil
+
+  defp reconcile_interface_relationship(
+         scope,
+         source,
+         observation,
+         source_interface,
+         target_interface,
+         attrs,
+         current_snapshot?
+       ) do
+    relationship =
+      Repo.get_by(InterfaceRelationship,
+        organization_id: scope.organization_id,
+        source_interface_id: source_interface.id,
+        target_interface_id: target_interface.id,
+        kind: attrs["kind"]
+      )
+
+    relationship =
+      relationship ||
+        case Inventory.create_interface_relationship(
+               scope,
+               source_interface.id,
+               target_interface.id,
+               Map.take(attrs, ~w(kind metadata))
+             ) do
+          {:ok, relationship} -> relationship
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+    stale_previous_relationship_evidence(
+      scope,
+      source,
+      observation,
+      relationship,
+      current_snapshot?
+    )
+
+    put_relationship_evidence(scope, source, observation, relationship, attrs)
+    relationship.id
+  end
+
+  defp stale_previous_relationship_evidence(
+         scope,
+         source,
+         observation,
+         relationship,
+         true
+       ) do
+    InterfaceRelationshipEvidence
+    |> where([evidence], evidence.organization_id == ^scope.organization_id)
+    |> where([evidence], evidence.source_id == ^source.id)
+    |> where([evidence], evidence.interface_relationship_id == ^relationship.id)
+    |> where(
+      [evidence],
+      is_nil(evidence.stale_at) and evidence.observed_at < ^observation.observed_at
+    )
+    |> Repo.update_all(set: [stale_at: observation.observed_at])
+  end
+
+  defp stale_previous_relationship_evidence(
+         _scope,
+         _source,
+         _observation,
+         _relationship,
+         false
+       ),
+       do: nil
+
+  defp put_relationship_evidence(scope, source, observation, relationship, attrs) do
+    unless Repo.exists?(
+             from evidence in InterfaceRelationshipEvidence,
+               where:
+                 evidence.organization_id == ^scope.organization_id and
+                   evidence.observation_id == ^observation.id and
+                   evidence.interface_relationship_id == ^relationship.id
+           ) do
+      {:ok, _evidence} =
+        Inventory.create_interface_relationship_evidence(
+          scope,
+          source.id,
+          observation.id,
+          relationship.id,
+          Map.take(attrs, ~w(kind metadata))
+        )
+    end
+  end
+
+  defp complete_interface_relationship_snapshot?(source, observation) do
+    source.metadata["interface_relationship_snapshot_policy"] == "complete" and
+      match?(
+        %{"section_completeness" => %{"interface_relationships" => true}},
+        observation.payload
+      )
+  end
+
+  defp refresh_relationship_evidence_staleness(scope, resource_id) do
+    boundaries =
+      Topology.latest_complete_snapshot_by_source(
+        scope,
+        resource_id,
+        "interface_relationships"
+      )
+
+    InterfaceRelationshipEvidence
+    |> join(:inner, [evidence], relationship in InterfaceRelationship,
+      on:
+        relationship.id == evidence.interface_relationship_id and
+          relationship.organization_id == evidence.organization_id
+    )
+    |> join(:inner, [_evidence, relationship], interface in Interface,
+      on:
+        interface.id == relationship.source_interface_id and
+          interface.organization_id == relationship.organization_id
+    )
+    |> where(
+      [evidence, _relationship, interface],
+      evidence.organization_id == ^scope.organization_id and interface.resource_id == ^resource_id
+    )
+    |> where([evidence, _relationship, _interface], is_nil(evidence.stale_at))
+    |> select([evidence, _relationship, _interface], evidence)
+    |> Repo.all()
+    |> Enum.group_by(&{&1.source_id, &1.interface_relationship_id})
+    |> Enum.each(fn {{source_id, _relationship_id}, evidence} ->
+      stale_relationship_evidence_group(evidence, Map.get(boundaries, source_id))
+    end)
+  end
+
+  defp stale_relationship_evidence_group(evidence, boundary) do
+    latest = Enum.max_by(evidence, &evidence_order/1)
+
+    Enum.each(evidence, fn item ->
+      stale_relationship_evidence(item, latest, boundary)
+    end)
+  end
+
+  defp stale_relationship_evidence(item, latest, boundary) do
+    active? =
+      item.id == latest.id and
+        (is_nil(boundary) or evidence_order(item) >= evidence_order(boundary))
+
+    stale_at = if active?, do: nil, else: later_evidence_time(latest, boundary)
+
+    if is_nil(item.stale_at) and not is_nil(stale_at) do
+      item
+      |> Ecto.Changeset.change(stale_at: stale_at)
+      |> Repo.update!()
+    end
+  end
+
+  defp evidence_order(item),
+    do: {DateTime.to_unix(item.observed_at, :microsecond), item.observation_id}
+
+  defp later_evidence_time(first, nil), do: first.observed_at
+
+  defp later_evidence_time(first, second) do
+    if evidence_order(first) >= evidence_order(second),
+      do: first.observed_at,
+      else: second.observed_at
   end
 
   defp reconcile_address(

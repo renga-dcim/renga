@@ -10,6 +10,7 @@ defmodule Renga.Inventory.ReconcilerTest do
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.ResourceIdentifierClaim
+  alias Renga.Topology
 
   defp context do
     suffix = System.unique_integer([:positive])
@@ -2454,6 +2455,273 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert [%{metadata: %{"present" => false}}] =
              Inventory.list_addresses(context.scope, interface.id)
+  end
+
+  test "logical relationship evidence is only staled by explicitly complete snapshots" do
+    context = context()
+
+    {:ok, _source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"interface_relationship_snapshot_policy" => "complete"}
+      })
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [
+              %{"target" => "bond0", "kind" => "lag_member", "metadata" => %{}}
+            ]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [eth0, _bond0] = Inventory.list_interfaces(context.scope, resource.id)
+    [relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+    assert relationship.kind == "lag_member"
+
+    assert [%{stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    partial =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [%{"name" => "eth0"}, %{"name" => "bond0", "kind" => "bond"}]
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, partial.id)
+
+    assert [%{stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    complete =
+      observation(
+        context,
+        "3",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [%{"name" => "eth0", "relationships" => []}, %{"name" => "bond0", "kind" => "bond"}],
+        :absent,
+        %{"interface_relationships" => true}
+      )
+
+    assert {:ok, _resource, false} = Inventory.reconcile_observation(context.scope, complete.id)
+
+    assert [%{stale_at: stale_at}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert stale_at == complete.observed_at
+    assert [_relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+
+    later_complete =
+      observation(
+        context,
+        "4",
+        %{"machine_id" => "logical-relationship-server"},
+        %{},
+        [%{"name" => "eth0", "relationships" => []}, %{"name" => "bond0", "kind" => "bond"}],
+        :absent,
+        %{"interface_relationships" => true}
+      )
+
+    assert {:ok, _resource, false} =
+             Inventory.reconcile_observation(context.scope, later_complete.id)
+
+    assert [%{stale_at: unchanged_stale_at}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert unchanged_stale_at == complete.observed_at
+  end
+
+  test "delayed and equal-time relationship evidence cannot revive an authoritative withdrawal" do
+    context = context()
+
+    {:ok, _source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"interface_relationship_snapshot_policy" => "complete"}
+      })
+
+    timestamp = ~U[2026-08-01 13:00:00.000Z]
+
+    reported =
+      observation_at(
+        context,
+        "relationship-reported",
+        timestamp,
+        %{"machine_id" => "ordered-relationship-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [%{"target" => "bond0", "kind" => "lag_member"}]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    withdrawn =
+      observation_at(
+        context,
+        "relationship-withdrawn",
+        timestamp,
+        %{"machine_id" => "ordered-relationship-server"},
+        %{},
+        [%{"name" => "eth0", "relationships" => []}, %{"name" => "bond0", "kind" => "bond"}],
+        :absent,
+        %{"interface_relationships" => true}
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, reported.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, withdrawn.id)
+    [eth0, _bond0] = Inventory.list_interfaces(context.scope, resource.id)
+    [relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+
+    assert [%{stale_at: stale_at}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert DateTime.compare(stale_at, timestamp) == :eq
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, reported.id)
+
+    assert [%{stale_at: replay_stale_at}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert DateTime.compare(replay_stale_at, timestamp) == :eq
+
+    delayed =
+      observation_at(
+        context,
+        "relationship-delayed",
+        DateTime.add(timestamp, -60, :second),
+        %{"machine_id" => "ordered-relationship-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [%{"target" => "bond0", "kind" => "lag_member"}]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, delayed.id)
+
+    delayed_evidence =
+      Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert length(delayed_evidence) == 2
+    assert Enum.all?(delayed_evidence, &(DateTime.compare(&1.stale_at, timestamp) == :eq))
+  end
+
+  test "a delayed unseen relationship is retained when newer partial data cannot withdraw it" do
+    context = context()
+
+    newer_partial =
+      observation_at(
+        context,
+        "unseen-relationship-newer",
+        ~U[2026-08-01 14:00:00Z],
+        %{"machine_id" => "unseen-relationship-server"},
+        %{},
+        [%{"name" => "eth0"}, %{"name" => "bond0", "kind" => "bond"}]
+      )
+
+    delayed =
+      observation_at(
+        context,
+        "unseen-relationship-delayed",
+        ~U[2026-08-01 13:00:00Z],
+        %{"machine_id" => "unseen-relationship-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [%{"target" => "bond0", "kind" => "lag_member"}]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, newer_partial.id)
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, delayed.id)
+    [eth0, _bond0] = Inventory.list_interfaces(context.scope, resource.id)
+    [relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+
+    assert [%{observation_id: observation_id, stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert observation_id == delayed.id
+  end
+
+  test "stored malformed completeness containers are safely non-authoritative" do
+    context = context()
+
+    {:ok, _source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{
+          "interface_vlan_snapshot_policy" => "complete",
+          "interface_relationship_snapshot_policy" => "complete"
+        }
+      })
+
+    first =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "malformed-completeness-server"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "relationships" => [%{"target" => "bond0", "kind" => "lag_member"}]
+          },
+          %{"name" => "bond0", "kind" => "bond"}
+        ]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, first.id)
+    [eth0, _bond0] = Inventory.list_interfaces(context.scope, resource.id)
+    [relationship] = Inventory.list_interface_relationships(context.scope, eth0.id)
+
+    malformed =
+      observation(
+        context,
+        "2",
+        %{"machine_id" => "malformed-completeness-server"},
+        %{},
+        [%{"name" => "eth0", "relationships" => []}, %{"name" => "bond0", "kind" => "bond"}],
+        :absent,
+        true
+      )
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, malformed.id)
+
+    assert [%{stale_at: nil}] =
+             Inventory.list_interface_relationship_evidence(context.scope, relationship.id)
+
+    assert Topology.latest_complete_snapshot_by_source(
+             context.scope,
+             resource.id,
+             "interface_vlans"
+           ) == %{}
+
+    assert Topology.latest_complete_snapshot_by_source(
+             context.scope,
+             resource.id,
+             "interface_relationships"
+           ) == %{}
   end
 
   test "absent addresses preserve address state while an explicit empty collection withdraws it with an audit event" do

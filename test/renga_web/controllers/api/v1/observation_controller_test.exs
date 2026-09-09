@@ -12,6 +12,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Source
   alias Renga.Repo
+  alias Renga.Topology
 
   @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
@@ -136,6 +137,93 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
     end
 
+    test "ingests, replays, partially preserves, and completely withdraws VLAN membership" do
+      %{scope: scope, admin_scope: admin_scope, source: source, token: token} = source_fixture()
+
+      {:ok, _source} =
+        Inventory.update_source(admin_scope, source, %{
+          metadata: %{"interface_vlan_snapshot_policy" => "complete"}
+        })
+
+      {:ok, vlan} =
+        Topology.create_vlan(
+          admin_scope,
+          %{lifecycle_state: "active"},
+          %{vid: 10, name: "API VLAN", status: "active"}
+        )
+
+      {:ok, _mapping} =
+        Topology.put_source_vlan_group_mapping(admin_scope, source.id, nil)
+
+      first =
+        source
+        |> valid_observation_payload(%{
+          "observation_id" => "api-vlan-first",
+          "section_completeness" => %{"interface_vlans" => true}
+        })
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"],
+          [%{"vid" => 10, "tagging_mode" => "tagged"}]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", first)
+        |> json_response(202)
+
+      resource = Inventory.get_resource!(scope, response["reconciliation"]["matched_resource_id"])
+      [interface] = Inventory.list_interfaces(scope, resource.id)
+
+      assert [%{vlan_id: vlan_id}] =
+               Topology.list_current_interface_vlan_memberships(scope, interface.id)
+
+      assert vlan_id == vlan.id
+
+      replay =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", first)
+        |> json_response(200)
+
+      assert replay["duplicate"] == true
+      assert length(Topology.list_interface_vlan_evidence(scope, interface.id)) == 1
+
+      partial =
+        source
+        |> valid_observation_payload(%{
+          "observation_id" => "api-vlan-partial",
+          "observed_at" => "2026-07-31T12:01:00Z"
+        })
+        |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [])
+
+      assert %{"status" => "accepted"} =
+               build_conn()
+               |> authorize(token)
+               |> post(~p"/api/v1/observations", partial)
+               |> json_response(202)
+
+      assert [_membership] =
+               Topology.list_current_interface_vlan_memberships(scope, interface.id)
+
+      complete =
+        source
+        |> valid_observation_payload(%{
+          "observation_id" => "api-vlan-complete",
+          "observed_at" => "2026-07-31T12:02:00Z",
+          "section_completeness" => %{"interface_vlans" => true}
+        })
+        |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [])
+
+      assert %{"status" => "accepted"} =
+               build_conn()
+               |> authorize(token)
+               |> post(~p"/api/v1/observations", complete)
+               |> json_response(202)
+
+      assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
+    end
+
     test "rejects malformed canonical projection fields before raw storage", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
 
@@ -160,6 +248,177 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert "resources.0.interfaces.0.mtu" in paths
       assert "resources.0.interfaces.0.metadata" in paths
       assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "validates VLAN membership and logical interface relationship payloads" do
+      %{source: source, token: token} = source_fixture()
+
+      invalid_vlan =
+        source
+        |> valid_observation_payload(%{"observation_id" => "invalid-vlan-membership"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "vlan_mode"],
+          "access"
+        )
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"],
+          [%{"vid" => 10, "tagging_mode" => "tagged"}]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", invalid_vlan)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => vlan_errors} = response
+      assert Enum.any?(vlan_errors, &(&1["path"] == "resources.0.interfaces.0.vlans"))
+
+      self_relationship =
+        source
+        |> valid_observation_payload(%{"observation_id" => "self-interface-relationship"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "relationships"],
+          [%{"target" => "eth0", "kind" => "peer"}]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", self_relationship)
+        |> json_response(422)
+
+      assert %{"status" => "rejected", "errors" => relationship_errors} = response
+
+      assert Enum.any?(
+               relationship_errors,
+               &(&1["path"] == "resources.0.interfaces.0.relationships")
+             )
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects null, blank, malformed, and invalid-completeness topology fields safely" do
+      %{source: source, token: token} = source_fixture()
+      long_unicode_scope = String.duplicate("e\u0301", 128)
+
+      cases = [
+        {"null-vlans",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], nil)
+         end},
+        {"null-relationships",
+         fn payload ->
+           put_in(
+             payload,
+             ["resources", Access.at(0), "interfaces", Access.at(0), "relationships"],
+             nil
+           )
+         end},
+        {"malformed-vlan",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             "invalid"
+           ])
+         end},
+        {"null-vlan-metadata",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"vid" => 10, "tagging_mode" => "tagged", "metadata" => nil}
+           ])
+         end},
+        {"blank-vlan-identity",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"key" => " ", "scope" => " ", "vid" => 10, "tagging_mode" => "tagged"}
+           ])
+         end},
+        {"null-vlan-key",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"key" => nil, "vid" => 10, "tagging_mode" => "tagged"}
+           ])
+         end},
+        {"null-vlan-scope",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"scope" => nil, "vid" => 10, "tagging_mode" => "tagged"}
+           ])
+         end},
+        {"overlong-unicode-vlan-scope",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"scope" => long_unicode_scope, "vid" => 10, "tagging_mode" => "tagged"}
+           ])
+         end},
+        {"oversized-vlan-key",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{
+               "key" => String.duplicate("e\u0301", 1_001),
+               "vid" => 10,
+               "tagging_mode" => "tagged"
+             }
+           ])
+         end},
+        {"duplicate-normalized-vlan-key",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+             %{"key" => "port-vlan", "vid" => 10, "tagging_mode" => "tagged"},
+             %{"key" => " port-vlan ", "vid" => 20, "tagging_mode" => "tagged"}
+           ])
+         end},
+        {"duplicate-interface-name",
+         fn payload ->
+           put_in(payload, ["resources", Access.at(0), "interfaces"], [
+             %{"name" => "eth0", "vlan_mode" => "trunk"},
+             %{"name" => " eth0 ", "vlan_mode" => "access"}
+           ])
+         end},
+        {"invalid-completeness",
+         fn payload ->
+           Map.put(payload, "section_completeness", %{"interface_vlans" => nil})
+         end},
+        {"unknown-completeness",
+         fn payload ->
+           Map.put(payload, "section_completeness", %{"unknown" => true})
+         end}
+      ]
+
+      for {name, mutate} <- cases do
+        payload =
+          source
+          |> valid_observation_payload(%{"observation_id" => name})
+          |> mutate.()
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert %{"status" => "rejected", "errors" => [_ | _]} = response
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "accepts a VLAN scope at the 255-code-point storage boundary" do
+      %{source: source} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "max-vlan-scope"})
+        |> put_in(["resources", Access.at(0), "interfaces", Access.at(0), "vlans"], [
+          %{
+            "key" => String.duplicate("k", 2_000),
+            "scope" => String.duplicate("x", 255),
+            "vid" => 10,
+            "tagging_mode" => "tagged"
+          }
+        ])
+
+      assert {:ok, _attrs} = AgentPayload.validate_observation(payload, source)
     end
 
     test "rejects explicit null interface kind and status before raw storage" do
