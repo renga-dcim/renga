@@ -516,6 +516,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_map(interface, "metadata", "#{path}.metadata")
     |> validate_interface_addresses(interface, path)
     |> validate_interface_vlans(interface, path)
+    |> validate_interface_neighbors(interface, path)
     |> validate_interface_relationships(interface, path)
   end
 
@@ -677,6 +678,89 @@ defmodule Renga.Inventory.AgentPayload do
 
       {:ok, _invalid} ->
         [error("#{path}.relationships", "must be a list") | errors]
+    end
+  end
+
+  defp validate_interface_neighbors(errors, interface, path) do
+    case Map.fetch(interface, "neighbors") do
+      :error ->
+        errors
+
+      {:ok, neighbors} when is_list(neighbors) ->
+        neighbors
+        |> Enum.with_index()
+        |> Enum.reduce(errors, fn {neighbor, index}, errors ->
+          validate_interface_neighbor(errors, neighbor, "#{path}.neighbors.#{index}")
+        end)
+        |> validate_unique_interface_neighbors(path, neighbors)
+
+      {:ok, _invalid} ->
+        [error("#{path}.neighbors", "must be a list") | errors]
+    end
+  end
+
+  defp validate_interface_neighbor(errors, %{} = neighbor, path) do
+    errors
+    |> validate_required_string(neighbor, "protocol", "#{path}.protocol")
+    |> validate_optional_inclusion(neighbor, "protocol", ~w(lldp cdp), "#{path}.protocol")
+    |> validate_required_string(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
+    |> validate_string_length(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
+    |> validate_optional_inclusion(
+      neighbor,
+      "remote_chassis_id_kind",
+      ~w(mac_address network_address local name),
+      "#{path}.remote_chassis_id_kind"
+    )
+    |> validate_optional_non_blank_string(
+      neighbor,
+      "remote_system_name",
+      "#{path}.remote_system_name"
+    )
+    |> validate_required_string(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_string_length(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_optional_inclusion(
+      neighbor,
+      "remote_port_id_kind",
+      ~w(mac_address local name),
+      "#{path}.remote_port_id_kind"
+    )
+    |> validate_optional_non_blank_string(
+      neighbor,
+      "remote_port_description",
+      "#{path}.remote_port_description"
+    )
+    |> validate_neighbor_ttl(neighbor, "#{path}.ttl_seconds")
+    |> validate_optional_non_nil_map(neighbor, "metadata", "#{path}.metadata")
+  end
+
+  defp validate_interface_neighbor(errors, _neighbor, path),
+    do: [error(path, "must be an object") | errors]
+
+  defp validate_unique_interface_neighbors(errors, path, neighbors) do
+    identities =
+      Enum.flat_map(neighbors, fn
+        %{
+          "protocol" => protocol,
+          "remote_chassis_id" => chassis_id,
+          "remote_port_id" => port_id
+        }
+        when is_binary(protocol) and is_binary(chassis_id) and is_binary(port_id) ->
+          [{protocol, String.trim(chassis_id), String.trim(port_id)}]
+
+        _invalid ->
+          []
+      end)
+
+    if length(identities) == length(Enum.uniq(identities)),
+      do: errors,
+      else: [error("#{path}.neighbors", "must not contain duplicate endpoints") | errors]
+  end
+
+  defp validate_neighbor_ttl(errors, neighbor, path) do
+    case Map.fetch(neighbor, "ttl_seconds") do
+      {:ok, value} when is_integer(value) and value in 1..65_535 -> errors
+      {:ok, _invalid} -> [error(path, "must be an integer from 1 through 65535") | errors]
+      :error -> [error(path, "is required") | errors]
     end
   end
 
@@ -907,7 +991,7 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_section_completeness_entry(errors, section, value) do
-    if section in ~w(components interface_vlans interface_relationships placement) and
+    if section in ~w(components interface_vlans interface_neighbors interface_relationships placement) and
          is_boolean(value) do
       errors
     else

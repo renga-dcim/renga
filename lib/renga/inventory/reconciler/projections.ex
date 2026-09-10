@@ -85,6 +85,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
         allow_new_rows?
       )
 
+    {:ok, _neighbor_evidence} =
+      Topology.reconcile_interface_neighbors(
+        topology_scope,
+        source,
+        observation,
+        resource.id,
+        interfaces,
+        allow_new_rows?
+      )
+
     reconcile_interface_relationships(
       scope,
       source,
