@@ -11,6 +11,8 @@ defmodule Renga.TopologyTest do
   alias Renga.Inventory.ResourceStore
   alias Renga.Repo
   alias Renga.Topology
+  alias Renga.Topology.CurrentInterfaceAdjacency
+  alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceVlanEvidence
   alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.TopologySnapshotEvent
@@ -22,6 +24,430 @@ defmodule Renga.TopologyTest do
     organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Accounts.scope_for_user(user, organization.id)
     %{scope: scope, organization: organization}
+  end
+
+  test "reconciles stable LLDP endpoints and strengthens reciprocal adjacency confidence", %{
+    scope: scope
+  } do
+    first_resource = resource_fixture(scope, "neighbor-first")
+    second_resource = resource_fixture(scope, "neighbor-second")
+
+    {:ok, first_interface} =
+      Inventory.create_interface(scope, first_resource.id, %{
+        name: "eth0",
+        mac_address: "02:00:00:00:00:01"
+      })
+
+    {:ok, second_interface} =
+      Inventory.create_interface(scope, second_resource.id, %{
+        name: "Ethernet1",
+        mac_address: "02:00:00:00:00:02"
+      })
+
+    {:ok, first_source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "neighbor-first"})
+
+    {:ok, second_source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "neighbor-second"})
+
+    first_observation =
+      observation_fixture(scope, first_source, "neighbor-first", ~U[2026-09-10 12:00:00Z], %{})
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               first_source,
+               first_observation,
+               first_resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "neighbors" => [neighbor("02:00:00:00:00:02", "02:00:00:00:00:02")]
+                 }
+               ],
+               true
+             )
+
+    assert %{status: "matched", strategy: "stable_identifiers", remote_interface_id: remote_id} =
+             Topology.get_interface_neighbor_match(scope, evidence.id)
+
+    assert remote_id == second_interface.id
+    assert [%{confidence: "reported"}] = Topology.list_current_interface_adjacencies(scope)
+
+    assert_raise Postgrex.Error, ~r/interface neighbor evidence facts are immutable/, fn ->
+      Repo.update_all(
+        from(item in InterfaceNeighborEvidence, where: item.id == ^evidence.id),
+        set: [remote_port_id: "changed"]
+      )
+    end
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, first_interface.id),
+             &(&1.kind == "asymmetric_neighbor")
+           )
+
+    second_observation =
+      observation_fixture(scope, second_source, "neighbor-second", ~U[2026-09-10 12:01:00Z], %{})
+
+    assert {:ok, [_]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               second_source,
+               second_observation,
+               second_resource.id,
+               [
+                 %{
+                   "name" => "Ethernet1",
+                   "neighbors" => [neighbor("02:00:00:00:00:01", "02:00:00:00:00:01")]
+                 }
+               ],
+               true
+             )
+
+    assert [%{confidence: "reciprocal"}] = Topology.list_current_interface_adjacencies(scope)
+
+    refute Enum.any?(
+             Topology.list_topology_findings(scope, first_interface.id),
+             &(&1.kind == "asymmetric_neighbor")
+           )
+
+    refute Enum.any?(
+             Topology.list_topology_findings(scope, second_interface.id),
+             &(&1.kind == "asymmetric_neighbor")
+           )
+  end
+
+  test "keeps unresolved endpoints, expires evidence, and withdraws complete snapshots", %{
+    scope: scope
+  } do
+    local_resource = resource_fixture(scope, "neighbor-lifecycle-local")
+    remote_resource = resource_fixture(scope, "neighbor-lifecycle-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+
+    assert {:ok, _hostname} =
+             Inventory.create_resource_identifier(scope, remote_resource.id, %{
+               kind: "hostname",
+               value: "neighbor-switch.example"
+             })
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "neighbor-lifecycle",
+        metadata: %{"interface_neighbor_snapshot_policy" => "complete"}
+      })
+
+    unresolved_observation =
+      observation_fixture(scope, source, "neighbor-unresolved", ~U[2026-09-10 13:00:00Z], %{})
+
+    assert {:ok, [unresolved]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               unresolved_observation,
+               local_resource.id,
+               [%{"name" => "eth0", "neighbors" => [neighbor("missing-switch", "swp1")]}],
+               true
+             )
+
+    assert %{status: "unresolved"} = Topology.get_interface_neighbor_match(scope, unresolved.id)
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, local.id),
+             &(&1.kind == "ambiguous_remote_identity")
+           )
+
+    matched_observation =
+      observation_fixture(scope, source, "neighbor-matched", ~U[2026-09-10 13:01:00Z], %{})
+
+    matched_neighbor = neighbor("neighbor-switch.example", remote.name, %{"ttl_seconds" => 30})
+
+    assert {:ok, [matched]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               matched_observation,
+               local_resource.id,
+               [%{"name" => "eth0", "neighbors" => [matched_neighbor]}],
+               true
+             )
+
+    assert %{status: "matched", strategy: "name_fallback"} =
+             Topology.get_interface_neighbor_match(scope, matched.id)
+
+    assert [%CurrentInterfaceAdjacency{}] = Topology.list_current_interface_adjacencies(scope)
+
+    assert {:ok, []} =
+             Topology.expire_interface_neighbors(scope, ~U[2026-09-10 13:01:31Z])
+
+    assert Topology.list_current_interface_adjacencies(scope) == []
+    assert DateTime.compare(Repo.reload!(matched).stale_at, ~U[2026-09-10 13:01:30Z]) == :eq
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, local.id),
+             &(&1.kind == "expired_adjacency")
+           )
+
+    fresh_observation =
+      observation_fixture(scope, source, "neighbor-fresh", ~U[2026-09-10 13:02:00Z], %{
+        "section_completeness" => %{"interface_neighbors" => true}
+      })
+
+    assert {:ok, [_]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               fresh_observation,
+               local_resource.id,
+               [
+                 %{"name" => "eth0", "neighbors" => [neighbor(remote_resource.name, remote.name)]}
+               ],
+               true
+             )
+
+    withdrawal =
+      observation_fixture(scope, source, "neighbor-withdrawal", ~U[2026-09-10 13:03:00Z], %{
+        "section_completeness" => %{"interface_neighbors" => true}
+      })
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               withdrawal,
+               local_resource.id,
+               [%{"name" => "eth0", "neighbors" => []}],
+               true
+             )
+
+    assert Topology.list_current_interface_adjacencies(scope) == []
+    assert Enum.all?(Topology.list_interface_neighbor_evidence(scope, local.id), & &1.stale_at)
+  end
+
+  test "expires neighbor evidence across resources during reconciliation", %{scope: scope} do
+    local_resource = resource_fixture(scope, "neighbor-global-expiry-local")
+    remote_resource = resource_fixture(scope, "neighbor-global-expiry-remote")
+    unrelated_resource = resource_fixture(scope, "neighbor-global-expiry-unrelated")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "global-expiry"})
+
+    initial =
+      observation_fixture(scope, source, "global-expiry-initial", ~U[2026-09-10 13:00:00Z], %{})
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               initial,
+               local_resource.id,
+               [
+                 %{
+                   "name" => local.name,
+                   "neighbors" => [
+                     neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 30})
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert [_adjacency] = Topology.list_current_interface_adjacencies(scope)
+
+    later =
+      observation_fixture(scope, source, "global-expiry-later", ~U[2026-09-10 13:01:00Z], %{})
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               later,
+               unrelated_resource.id,
+               [],
+               true
+             )
+
+    assert Repo.reload!(evidence).stale_reason == "expired"
+    assert Topology.list_current_interface_adjacencies(scope) == []
+  end
+
+  test "surfaces conflicting current neighbors without creating multiple canonical terminations",
+       %{
+         scope: scope
+       } do
+    local_resource = resource_fixture(scope, "neighbor-conflict-local")
+    first_remote = resource_fixture(scope, "neighbor-conflict-first")
+    second_remote = resource_fixture(scope, "neighbor-conflict-second")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, first_port} = Inventory.create_interface(scope, first_remote.id, %{name: "swp1"})
+    {:ok, second_port} = Inventory.create_interface(scope, second_remote.id, %{name: "swp1"})
+
+    for {source_name, remote_resource, remote_port} <- [
+          {"neighbor-conflict-a", first_remote, first_port},
+          {"neighbor-conflict-b", second_remote, second_port}
+        ] do
+      {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: source_name})
+      observation = observation_fixture(scope, source, source_name, ~U[2026-09-10 14:00:00Z], %{})
+
+      assert {:ok, [_]} =
+               Topology.reconcile_interface_neighbors(
+                 scope,
+                 source,
+                 observation,
+                 local_resource.id,
+                 [
+                   %{
+                     "name" => "eth0",
+                     "neighbors" => [neighbor(remote_resource.name, remote_port.name)]
+                   }
+                 ],
+                 true
+               )
+    end
+
+    assert [_one_selected] = Topology.list_current_interface_adjacencies(scope)
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, local.id),
+             &(&1.kind == "conflicting_neighbors")
+           )
+  end
+
+  test "surfaces contention when multiple local interfaces report the same remote endpoint", %{
+    scope: scope
+  } do
+    first_local_resource = resource_fixture(scope, "neighbor-contention-first")
+    second_local_resource = resource_fixture(scope, "neighbor-contention-second")
+    remote_resource = resource_fixture(scope, "neighbor-contention-remote")
+
+    {:ok, first_local} =
+      Inventory.create_interface(scope, first_local_resource.id, %{name: "eth0"})
+
+    {:ok, second_local} =
+      Inventory.create_interface(scope, second_local_resource.id, %{name: "eth0"})
+
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+
+    for {resource, interface, suffix} <- [
+          {first_local_resource, first_local, "first"},
+          {second_local_resource, second_local, "second"}
+        ] do
+      {:ok, source} =
+        Inventory.create_source(scope, %{kind: "manual", name: "neighbor-contention-#{suffix}"})
+
+      observation =
+        observation_fixture(
+          scope,
+          source,
+          "neighbor-contention-#{suffix}",
+          ~U[2026-09-10 14:30:00Z],
+          %{}
+        )
+
+      assert {:ok, [_]} =
+               Topology.reconcile_interface_neighbors(
+                 scope,
+                 source,
+                 observation,
+                 resource.id,
+                 [
+                   %{
+                     "name" => interface.name,
+                     "neighbors" => [neighbor(remote_resource.name, remote.name)]
+                   }
+                 ],
+                 true
+               )
+    end
+
+    assert [_one_selected] = Topology.list_current_interface_adjacencies(scope)
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, remote.id),
+             &(&1.kind == "conflicting_neighbors")
+           )
+  end
+
+  test "preserves ambiguous stable endpoint matches and rejects delayed neighbor resurrection", %{
+    scope: scope
+  } do
+    local_resource = resource_fixture(scope, "neighbor-order-local")
+    first_remote = resource_fixture(scope, "neighbor-order-first")
+    second_remote = resource_fixture(scope, "neighbor-order-second")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, first_port} = Inventory.create_interface(scope, first_remote.id, %{name: "swp1"})
+    {:ok, second_port} = Inventory.create_interface(scope, second_remote.id, %{name: "swp1"})
+
+    for resource <- [first_remote, second_remote] do
+      assert {:ok, _identifier} =
+               Inventory.create_resource_identifier(scope, resource.id, %{
+                 kind: "external_id",
+                 value: "duplicate-chassis"
+               })
+    end
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "neighbor-order"})
+
+    ambiguous_observation =
+      observation_fixture(scope, source, "neighbor-ambiguous", ~U[2026-09-10 15:00:00Z], %{})
+
+    assert {:ok, [ambiguous]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               ambiguous_observation,
+               local_resource.id,
+               [%{"name" => "eth0", "neighbors" => [neighbor("duplicate-chassis", "swp1")]}],
+               true
+             )
+
+    assert %{status: "ambiguous", candidate_count: 2} =
+             Topology.get_interface_neighbor_match(scope, ambiguous.id)
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, local.id),
+             &(&1.kind == "ambiguous_remote_identity")
+           )
+
+    newer = observation_fixture(scope, source, "neighbor-newer", ~U[2026-09-10 15:02:00Z], %{})
+
+    assert {:ok, [_]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               newer,
+               local_resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "neighbors" => [neighbor(first_remote.name, first_port.name)]
+                 }
+               ],
+               true
+             )
+
+    older = observation_fixture(scope, source, "neighbor-older", ~U[2026-09-10 15:01:00Z], %{})
+
+    assert {:ok, [delayed]} =
+             Topology.reconcile_interface_neighbors(
+               scope,
+               source,
+               older,
+               local_resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "neighbors" => [neighbor(second_remote.name, second_port.name)]
+                 }
+               ],
+               false
+             )
+
+    assert Repo.reload!(delayed).stale_reason == "superseded"
+    assert [adjacency] = Topology.list_current_interface_adjacencies(scope)
+    assert first_port.id in [adjacency.interface_a_id, adjacency.interface_b_id]
+    refute second_port.id in [adjacency.interface_a_id, adjacency.interface_b_id]
   end
 
   test "creates resource-backed global VLAN namespaces and enforces valid ranges", %{scope: scope} do
@@ -1653,6 +2079,26 @@ defmodule Renga.TopologyTest do
     assert {:error, rejected_vlan} = Repo.insert(vlan_changeset)
     assert "does not exist" in errors_on(rejected_vlan).interface
 
+    neighbor_changeset =
+      %InterfaceNeighborEvidence{
+        organization_id: scope.organization_id,
+        local_interface_id: foreign_interface.id,
+        source_id: source.id,
+        observation_id: observation.id
+      }
+      |> InterfaceNeighborEvidence.changeset(%{
+        protocol: "lldp",
+        remote_chassis_id: "switch.example",
+        remote_port_id: "Ethernet1",
+        ttl_seconds: 120,
+        observed_at: observation.observed_at,
+        expires_at: DateTime.add(observation.observed_at, 120, :second),
+        metadata: %{}
+      })
+
+    assert {:error, rejected_neighbor} = Repo.insert(neighbor_changeset)
+    assert "does not exist" in errors_on(rejected_neighbor).local_interface
+
     snapshot_changeset =
       %TopologySnapshotEvent{
         organization_id: scope.organization_id,
@@ -1754,6 +2200,19 @@ defmodule Renga.TopologyTest do
       })
 
     observation
+  end
+
+  defp neighbor(chassis_id, port_id, attrs \\ %{}) do
+    Map.merge(
+      %{
+        "protocol" => "lldp",
+        "remote_chassis_id" => chassis_id,
+        "remote_port_id" => port_id,
+        "ttl_seconds" => 120,
+        "metadata" => %{}
+      },
+      attrs
+    )
   end
 
   defp resource_fixture(scope, name) do

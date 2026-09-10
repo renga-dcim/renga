@@ -13,6 +13,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Inventory.Source
   alias Renga.Repo
   alias Renga.Topology
+  alias Renga.Topology.InterfaceNeighborEvidence
 
   @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
@@ -298,6 +299,41 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "accepts LLDP neighbor evidence through observation reconciliation" do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "lldp-neighbor"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+          [
+            %{
+              "protocol" => "lldp",
+              "remote_chassis_id" => "02:00:00:00:00:02",
+              "remote_chassis_id_kind" => "mac_address",
+              "remote_system_name" => "switch-01",
+              "remote_port_id" => "Ethernet1",
+              "remote_port_id_kind" => "name",
+              "ttl_seconds" => 120,
+              "metadata" => %{"source" => "lldpd"}
+            }
+          ]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(202)
+
+      assert response["status"] == "accepted"
+      evidence = Repo.one!(InterfaceNeighborEvidence)
+      assert evidence.protocol == "lldp"
+      assert evidence.remote_system_name == "switch-01"
+      assert evidence.metadata == %{"source" => "lldpd"}
+    end
+
     test "rejects null, blank, malformed, and invalid-completeness topology fields safely" do
       %{source: source, token: token} = source_fixture()
       long_unicode_scope = String.duplicate("e\u0301", 128)
@@ -313,6 +349,44 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
              payload,
              ["resources", Access.at(0), "interfaces", Access.at(0), "relationships"],
              nil
+           )
+         end},
+        {"null-neighbors",
+         fn payload ->
+           put_in(
+             payload,
+             ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+             nil
+           )
+         end},
+        {"invalid-neighbor-ttl",
+         fn payload ->
+           put_in(
+             payload,
+             ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+             [
+               %{
+                 "protocol" => "lldp",
+                 "remote_chassis_id" => "switch",
+                 "remote_port_id" => "eth0",
+                 "ttl_seconds" => 0
+               }
+             ]
+           )
+         end},
+        {"duplicate-neighbor-endpoint",
+         fn payload ->
+           neighbor = %{
+             "protocol" => "cdp",
+             "remote_chassis_id" => "switch",
+             "remote_port_id" => "Gi1/0/1",
+             "ttl_seconds" => 180
+           }
+
+           put_in(
+             payload,
+             ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+             [neighbor, Map.put(neighbor, "remote_chassis_id", " switch ")]
            )
          end},
         {"malformed-vlan",
