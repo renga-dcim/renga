@@ -441,7 +441,7 @@ defmodule Renga.Inventory.Reconciler do
 
           :error ->
             {:ok, created} =
-              Inventory.create_resource_identifier(scope, resource.id, %{
+              Inventory.create_reconciled_resource_identifier(scope, resource.id, %{
                 kind: identifier.kind,
                 value: identifier.value
               })

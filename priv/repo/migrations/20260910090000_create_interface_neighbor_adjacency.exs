@@ -10,10 +10,25 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
       CHECK (section IN ('interface_vlans', 'interface_neighbors', 'interface_relationships'))
       """,
       """
-      ALTER TABLE topology_snapshot_events
-      DROP CONSTRAINT topology_snapshot_events_valid_section,
-      ADD CONSTRAINT topology_snapshot_events_valid_section
-      CHECK (section IN ('interface_vlans', 'interface_relationships'))
+      DO $$
+      BEGIN
+        DELETE FROM topology_findings
+        WHERE kind IN (
+          'ambiguous_remote_identity',
+          'asymmetric_neighbor',
+          'conflicting_neighbors',
+          'expired_adjacency'
+        );
+
+        DELETE FROM topology_snapshot_events
+        WHERE section = 'interface_neighbors';
+
+        ALTER TABLE topology_snapshot_events
+        DROP CONSTRAINT topology_snapshot_events_valid_section,
+        ADD CONSTRAINT topology_snapshot_events_valid_section
+        CHECK (section IN ('interface_vlans', 'interface_relationships'));
+      END
+      $$
       """
     )
 
@@ -53,9 +68,11 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
       add :protocol, :string, null: false
       add :remote_chassis_id, :string, null: false
       add :remote_chassis_id_kind, :string
+      add :remote_chassis_id_normalized, :string, null: false
       add :remote_system_name, :string
       add :remote_port_id, :string, null: false
       add :remote_port_id_kind, :string
+      add :remote_port_id_normalized, :string, null: false
       add :remote_port_description, :string
       add :ttl_seconds, :integer, null: false
       add :observed_at, :"timestamp(3)", null: false
@@ -73,10 +90,35 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
                :observation_id,
                :local_interface_id,
                :protocol,
-               :remote_chassis_id,
-               :remote_port_id
+               :remote_chassis_id_kind,
+               :remote_chassis_id_normalized,
+               :remote_port_id_kind,
+               :remote_port_id_normalized
              ],
-             name: :interface_neighbor_evidence_observation_endpoint_index
+             name: :interface_neighbor_evidence_observation_endpoint_index,
+             nulls_distinct: false
+           )
+
+    create index(
+             :interface_neighbor_evidence,
+             [
+               :organization_id,
+               :local_interface_id,
+               :source_id,
+               :protocol,
+               :remote_chassis_id_kind,
+               :remote_chassis_id_normalized,
+               :remote_port_id_kind,
+               :remote_port_id_normalized,
+               desc: :observed_at,
+               desc: :observation_id
+             ],
+             name: :interface_neighbor_evidence_identity_order_index
+           )
+
+    create index(:interface_neighbor_evidence, [:expires_at, :organization_id],
+             where: "stale_at IS NULL",
+             name: :interface_neighbor_evidence_active_expiry_index
            )
 
     create unique_index(:interface_neighbor_evidence, [:id, :organization_id])
@@ -103,7 +145,7 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
 
     create constraint(:interface_neighbor_evidence, :interface_neighbor_evidence_stale_shape,
              check:
-               "(stale_at IS NULL AND stale_reason IS NULL) OR (stale_at IS NOT NULL AND stale_reason IN ('expired', 'superseded', 'withdrawn'))"
+               "(stale_at IS NULL AND stale_reason IS NULL) OR (stale_at IS NOT NULL AND stale_reason IS NOT NULL AND stale_reason IN ('expired', 'superseded', 'withdrawn'))"
            )
 
     execute(
@@ -228,6 +270,8 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
              name: :current_interface_adjacencies_endpoints_index
            )
 
+    create unique_index(:current_interface_adjacencies, [:id, :organization_id])
+
     create index(:current_interface_adjacencies, [:organization_id, :interface_a_id],
              name: :current_interface_adjacencies_a_index
            )
@@ -247,5 +291,176 @@ defmodule Renga.Repo.Migrations.CreateInterfaceNeighborAdjacency do
              :current_interface_adjacencies_valid_confidence,
              check: "confidence IN ('reported', 'reciprocal')"
            )
+
+    create table(:current_interface_adjacency_endpoints, primary_key: false) do
+      add :organization_id,
+          references(:organizations, on_delete: :delete_all, type: :binary_id),
+          null: false,
+          primary_key: true
+
+      add :interface_id,
+          references(:interfaces,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :current_interface_adjacency_endpoints_tenant_interface_fkey
+          ),
+          null: false,
+          primary_key: true
+
+      add :adjacency_id,
+          references(:current_interface_adjacencies,
+            with: [organization_id: :organization_id],
+            on_delete: :delete_all,
+            type: :binary_id,
+            name: :current_interface_adjacency_endpoints_tenant_adjacency_fkey
+          ),
+          null: false
+    end
+
+    create index(:current_interface_adjacency_endpoints, [:adjacency_id, :organization_id])
+
+    execute(
+      """
+      CREATE FUNCTION occupy_current_interface_adjacency_endpoints() RETURNS trigger AS $$
+      BEGIN
+        INSERT INTO current_interface_adjacency_endpoints
+          (organization_id, interface_id, adjacency_id)
+        VALUES
+          (NEW.organization_id, NEW.interface_a_id, NEW.id),
+          (NEW.organization_id, NEW.interface_b_id, NEW.id);
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+      """,
+      "DROP FUNCTION occupy_current_interface_adjacency_endpoints()"
+    )
+
+    execute(
+      """
+      CREATE TRIGGER current_interface_adjacencies_occupy_endpoints
+      AFTER INSERT ON current_interface_adjacencies
+      FOR EACH ROW EXECUTE FUNCTION occupy_current_interface_adjacency_endpoints()
+      """,
+      "DROP TRIGGER current_interface_adjacencies_occupy_endpoints ON current_interface_adjacencies"
+    )
+
+    execute(
+      """
+      CREATE FUNCTION enforce_current_interface_adjacency_occupancy() RETURNS trigger AS $$
+      DECLARE
+        checked_adjacency_id uuid;
+        checked_organization_id uuid;
+      BEGIN
+        IF TG_OP IN ('DELETE', 'UPDATE') THEN
+          checked_adjacency_id := OLD.adjacency_id;
+          checked_organization_id := OLD.organization_id;
+
+          IF EXISTS (
+            SELECT 1
+            FROM current_interface_adjacencies adjacency
+            WHERE adjacency.id = checked_adjacency_id
+              AND adjacency.organization_id = checked_organization_id
+              AND (
+                (SELECT count(*)
+                 FROM current_interface_adjacency_endpoints endpoint
+                 WHERE endpoint.adjacency_id = adjacency.id
+                   AND endpoint.organization_id = adjacency.organization_id) <> 2
+                OR NOT EXISTS (
+                  SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+                  WHERE endpoint.adjacency_id = adjacency.id
+                    AND endpoint.organization_id = adjacency.organization_id
+                    AND endpoint.interface_id = adjacency.interface_a_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+                  WHERE endpoint.adjacency_id = adjacency.id
+                    AND endpoint.organization_id = adjacency.organization_id
+                    AND endpoint.interface_id = adjacency.interface_b_id
+                )
+              )
+          ) THEN
+            RAISE EXCEPTION 'current interface adjacency occupancy is inconsistent'
+              USING ERRCODE = 'integrity_constraint_violation';
+          END IF;
+        END IF;
+
+        IF TG_OP IN ('INSERT', 'UPDATE') THEN
+          checked_adjacency_id := NEW.adjacency_id;
+          checked_organization_id := NEW.organization_id;
+
+          IF EXISTS (
+            SELECT 1
+            FROM current_interface_adjacencies adjacency
+            WHERE adjacency.id = checked_adjacency_id
+              AND adjacency.organization_id = checked_organization_id
+              AND (
+                (SELECT count(*)
+                 FROM current_interface_adjacency_endpoints endpoint
+                 WHERE endpoint.adjacency_id = adjacency.id
+                   AND endpoint.organization_id = adjacency.organization_id) <> 2
+                OR NOT EXISTS (
+                  SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+                  WHERE endpoint.adjacency_id = adjacency.id
+                    AND endpoint.organization_id = adjacency.organization_id
+                    AND endpoint.interface_id = adjacency.interface_a_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+                  WHERE endpoint.adjacency_id = adjacency.id
+                    AND endpoint.organization_id = adjacency.organization_id
+                    AND endpoint.interface_id = adjacency.interface_b_id
+                )
+              )
+          ) THEN
+            RAISE EXCEPTION 'current interface adjacency occupancy is inconsistent'
+              USING ERRCODE = 'integrity_constraint_violation';
+          END IF;
+        END IF;
+
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql
+      """,
+      "DROP FUNCTION enforce_current_interface_adjacency_occupancy()"
+    )
+
+    execute(
+      """
+      CREATE CONSTRAINT TRIGGER current_interface_adjacency_endpoints_enforce_consistency
+      AFTER INSERT OR UPDATE OR DELETE ON current_interface_adjacency_endpoints
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION enforce_current_interface_adjacency_occupancy()
+      """,
+      "DROP TRIGGER current_interface_adjacency_endpoints_enforce_consistency ON current_interface_adjacency_endpoints"
+    )
+
+    execute(
+      """
+      CREATE FUNCTION enforce_current_interface_adjacency_endpoints_immutable() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.organization_id = OLD.organization_id AND
+           NEW.interface_a_id = OLD.interface_a_id AND
+           NEW.interface_b_id = OLD.interface_b_id THEN
+          RETURN NEW;
+        END IF;
+
+        RAISE EXCEPTION 'current interface adjacency endpoints are immutable'
+          USING ERRCODE = 'integrity_constraint_violation';
+      END;
+      $$ LANGUAGE plpgsql
+      """,
+      "DROP FUNCTION enforce_current_interface_adjacency_endpoints_immutable()"
+    )
+
+    execute(
+      """
+      CREATE TRIGGER current_interface_adjacencies_enforce_endpoints_immutable
+      BEFORE UPDATE ON current_interface_adjacencies
+      FOR EACH ROW EXECUTE FUNCTION enforce_current_interface_adjacency_endpoints_immutable()
+      """,
+      "DROP TRIGGER current_interface_adjacencies_enforce_endpoints_immutable ON current_interface_adjacencies"
+    )
   end
 end

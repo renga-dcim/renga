@@ -4,6 +4,8 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Renga.Topology.NeighborIdentifier
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
@@ -12,9 +14,11 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
     field :protocol, :string
     field :remote_chassis_id, :string
     field :remote_chassis_id_kind, :string
+    field :remote_chassis_id_normalized, :string
     field :remote_system_name, :string
     field :remote_port_id, :string
     field :remote_port_id_kind, :string
+    field :remote_port_id_normalized, :string
     field :remote_port_description, :string
     field :ttl_seconds, :integer
     field :observed_at, :utc_datetime_usec
@@ -47,6 +51,7 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
       :metadata
     ])
     |> reject_fact_mutation()
+    |> put_normalized_identifiers()
     |> validate_required([
       :organization_id,
       :local_interface_id,
@@ -54,7 +59,9 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
       :observation_id,
       :protocol,
       :remote_chassis_id,
+      :remote_chassis_id_normalized,
       :remote_port_id,
+      :remote_port_id_normalized,
       :ttl_seconds,
       :observed_at,
       :expires_at,
@@ -64,8 +71,10 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
     |> validate_inclusion(:remote_chassis_id_kind, ~w(mac_address network_address local name))
     |> validate_inclusion(:remote_port_id_kind, ~w(mac_address local name))
     |> validate_length(:remote_chassis_id, max: 255, count: :codepoints)
+    |> validate_length(:remote_chassis_id_normalized, max: 255, count: :codepoints)
     |> validate_length(:remote_system_name, max: 255, count: :codepoints)
     |> validate_length(:remote_port_id, max: 255, count: :codepoints)
+    |> validate_length(:remote_port_id_normalized, max: 255, count: :codepoints)
     |> validate_length(:remote_port_description, max: 255, count: :codepoints)
     |> validate_number(:ttl_seconds, greater_than: 0, less_than_or_equal_to: 65_535)
     |> validate_inclusion(:stale_reason, ~w(expired superseded withdrawn))
@@ -100,4 +109,35 @@ defmodule Renga.Topology.InterfaceNeighborEvidence do
   end
 
   defp reject_fact_mutation(changeset), do: changeset
+
+  defp put_normalized_identifiers(changeset) do
+    changeset
+    |> put_normalized_identifier(
+      :remote_chassis_id,
+      :remote_chassis_id_kind,
+      :remote_chassis_id_normalized
+    )
+    |> put_normalized_identifier(
+      :remote_port_id,
+      :remote_port_id_kind,
+      :remote_port_id_normalized
+    )
+  end
+
+  defp put_normalized_identifier(changeset, value_field, kind_field, normalized_field) do
+    case {get_field(changeset, kind_field), get_field(changeset, value_field)} do
+      {kind, value} when is_binary(value) ->
+        put_change(
+          changeset,
+          normalized_field,
+          if(normalized_field == :remote_chassis_id_normalized,
+            do: NeighborIdentifier.normalize_chassis(kind, value),
+            else: NeighborIdentifier.normalize_port(kind, value)
+          )
+        )
+
+      _kind_and_value ->
+        changeset
+    end
+  end
 end

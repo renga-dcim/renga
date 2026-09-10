@@ -29,6 +29,9 @@ config :renga, RengaWeb.Endpoint,
 # In test we don't send emails
 config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test
 
+# Tests invoke deterministic expiry sweeps directly under the SQL sandbox.
+config :renga, :neighbor_expiry_worker_enabled, false
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 

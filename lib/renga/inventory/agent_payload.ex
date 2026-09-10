@@ -6,7 +6,9 @@ defmodule Renga.Inventory.AgentPayload do
   keeps the first gate focused on tenant/source identity and payload shape.
   """
 
+  alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
+  alias Renga.Topology.NeighborIdentifier
   alias Renga.Types.Inet
   alias Renga.Types.MacAddress
 
@@ -15,6 +17,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_agent_string_length 255
   @max_source_local_vlan_key_bytes 2_000
   @max_observation_id_length 255
+  @max_future_observation_skew_seconds 300
   @max_postgres_integer 2_147_483_647
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
@@ -69,6 +72,7 @@ defmodule Renga.Inventory.AgentPayload do
 
     errors =
       errors
+      |> validate_observation_clock(observed_at)
       |> validate_payload_size(params)
       |> validate_source_identity(params, source)
       |> validate_observation_id(params)
@@ -430,7 +434,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp normalized_mac_set(values) do
     values
-    |> Enum.map(&Renga.Inventory.ResourceIdentifier.normalize_value("mac_address", &1))
+    |> Enum.map(&ResourceIdentifier.normalize_value("mac_address", &1))
     |> MapSet.new()
   end
 
@@ -705,6 +709,11 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_inclusion(neighbor, "protocol", ~w(lldp cdp), "#{path}.protocol")
     |> validate_required_string(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
     |> validate_string_length(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_chassis_id",
+      "#{path}.remote_chassis_id"
+    )
     |> validate_optional_inclusion(
       neighbor,
       "remote_chassis_id_kind",
@@ -716,8 +725,14 @@ defmodule Renga.Inventory.AgentPayload do
       "remote_system_name",
       "#{path}.remote_system_name"
     )
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_system_name",
+      "#{path}.remote_system_name"
+    )
     |> validate_required_string(neighbor, "remote_port_id", "#{path}.remote_port_id")
     |> validate_string_length(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_optional_codepoint_length(neighbor, "remote_port_id", "#{path}.remote_port_id")
     |> validate_optional_inclusion(
       neighbor,
       "remote_port_id_kind",
@@ -728,6 +743,23 @@ defmodule Renga.Inventory.AgentPayload do
       neighbor,
       "remote_port_description",
       "#{path}.remote_port_description"
+    )
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_port_description",
+      "#{path}.remote_port_description"
+    )
+    |> validate_neighbor_identifier_value(
+      neighbor,
+      "remote_chassis_id_kind",
+      "remote_chassis_id",
+      path
+    )
+    |> validate_neighbor_identifier_value(
+      neighbor,
+      "remote_port_id_kind",
+      "remote_port_id",
+      path
     )
     |> validate_neighbor_ttl(neighbor, "#{path}.ttl_seconds")
     |> validate_optional_non_nil_map(neighbor, "metadata", "#{path}.metadata")
@@ -743,9 +775,20 @@ defmodule Renga.Inventory.AgentPayload do
           "protocol" => protocol,
           "remote_chassis_id" => chassis_id,
           "remote_port_id" => port_id
-        }
+        } = neighbor
         when is_binary(protocol) and is_binary(chassis_id) and is_binary(port_id) ->
-          [{protocol, String.trim(chassis_id), String.trim(port_id)}]
+          chassis_kind = Map.get(neighbor, "remote_chassis_id_kind")
+          port_kind = Map.get(neighbor, "remote_port_id_kind")
+
+          [
+            {
+              protocol,
+              chassis_kind,
+              NeighborIdentifier.normalize_chassis(chassis_kind, chassis_id),
+              port_kind,
+              NeighborIdentifier.normalize_port(port_kind, port_id)
+            }
+          ]
 
         _invalid ->
           []
@@ -762,6 +805,41 @@ defmodule Renga.Inventory.AgentPayload do
       {:ok, _invalid} -> [error(path, "must be an integer from 1 through 65535") | errors]
       :error -> [error(path, "is required") | errors]
     end
+  end
+
+  defp validate_neighbor_identifier_value(errors, neighbor, kind_key, value_key, path) do
+    kind = Map.get(neighbor, kind_key)
+    value = Map.get(neighbor, value_key)
+
+    errors =
+      case {kind, value} do
+        {"mac_address", value} when is_binary(value) ->
+          if NeighborIdentifier.mac_address?(value),
+            do: errors,
+            else: [error("#{path}.#{value_key}", "must be a MAC address") | errors]
+
+        {"network_address", value} when is_binary(value) ->
+          case Inet.cast(String.trim(value)) do
+            {:ok, _address} -> errors
+            :error -> [error("#{path}.#{value_key}", "must be a network address") | errors]
+          end
+
+        _opaque_or_invalid ->
+          errors
+      end
+
+    normalized =
+      cond do
+        not is_binary(value) -> nil
+        value_key == "remote_chassis_id" -> NeighborIdentifier.normalize_chassis(kind, value)
+        true -> NeighborIdentifier.normalize_port(kind, value)
+      end
+
+    if normalized && length(String.codepoints(normalized)) > 255,
+      do: [
+        error("#{path}.#{value_key}", "normalized value must be at most 255 characters") | errors
+      ],
+      else: errors
   end
 
   defp validate_interface_relationship(errors, %{} = relationship, path) do
@@ -1032,6 +1110,16 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp parse_required_timestamp(_value, path), do: {nil, [error(path, "must be a string")]}
+
+  defp validate_observation_clock(errors, nil), do: errors
+
+  defp validate_observation_clock(errors, observed_at) do
+    latest = DateTime.add(Renga.Time.utc_now_ms(), @max_future_observation_skew_seconds, :second)
+
+    if DateTime.compare(observed_at, latest) == :gt,
+      do: [error("observed_at", "must not be more than 5 minutes in the future") | errors],
+      else: errors
+  end
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)

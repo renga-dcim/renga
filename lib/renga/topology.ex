@@ -14,18 +14,18 @@ defmodule Renga.Topology do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
-  alias Renga.Inventory.Source
   alias Renga.Inventory.ResourceStore
+  alias Renga.Inventory.Source
   alias Renga.Repo
   alias Renga.Topology.CurrentInterfaceAdjacency
   alias Renga.Topology.CurrentInterfaceVlanMembership
   alias Renga.Topology.CurrentInterfaceVlanMode
   alias Renga.Topology.DesiredInterfaceVlanAssignment
   alias Renga.Topology.DesiredInterfaceVlanMode
-  alias Renga.Topology.InterfaceVlanEvidence
-  alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceNeighborMatch
+  alias Renga.Topology.InterfaceVlanEvidence
+  alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.NeighborReconciler
   alias Renga.Topology.SourceVlanGroupMapping
   alias Renga.Topology.TopologyFinding
@@ -35,6 +35,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.VlanGroupVidRange
 
   @vlan_finding_kinds ~w(ambiguous_scope conflicting_interface_mode conflicting_tagging_mode conflicting_untagged_vlan missing_vlan out_of_range_vid unexpected_vlan unknown_vlan)
+  @neighbor_finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency)
 
   def list_vlan_groups(%Scope{organization_id: organization_id}) do
     VlanGroup
@@ -422,6 +423,19 @@ defmodule Renga.Topology do
   end
 
   @doc false
+  def interface_neighbor_reconciliation_needed?(
+        %Scope{organization_id: organization_id},
+        %Observation{} = observation,
+        resource_id,
+        reported_interfaces
+      ) do
+    Enum.any?(reported_interfaces, &Map.has_key?(&1, "neighbors")) or
+      match?(%{"section_completeness" => %{"interface_neighbors" => true}}, observation.payload) or
+      resource_neighbor_finding?(organization_id, resource_id) or
+      active_neighbor_evidence?(organization_id)
+  end
+
+  @doc false
   def reconcile_interface_neighbors(
         %Scope{} = scope,
         %Source{} = source,
@@ -445,6 +459,43 @@ defmodule Renga.Topology do
   @doc false
   def expire_interface_neighbors(%Scope{} = scope, as_of \\ Renga.Time.utc_now_ms()) do
     reconciliation_transaction(scope, fn -> NeighborReconciler.expire(scope, as_of) end)
+  end
+
+  @doc false
+  def refresh_interface_neighbors(%Scope{} = scope, as_of \\ Renga.Time.utc_now_ms()) do
+    reconciliation_transaction(scope, fn -> NeighborReconciler.refresh(scope, as_of) end)
+  end
+
+  @doc false
+  def current_interface_neighbor_state?(%Scope{organization_id: organization_id}) do
+    Repo.exists?(
+      from evidence in InterfaceNeighborEvidence,
+        where: evidence.organization_id == ^organization_id and is_nil(evidence.stale_at)
+    ) or
+      Repo.exists?(
+        from finding in TopologyFinding,
+          where:
+            finding.organization_id == ^organization_id and finding.status == "open" and
+              finding.kind in ^@neighbor_finding_kinds
+      )
+  end
+
+  defp active_neighbor_evidence?(organization_id) do
+    Repo.exists?(
+      from evidence in InterfaceNeighborEvidence,
+        where: evidence.organization_id == ^organization_id and is_nil(evidence.stale_at)
+    )
+  end
+
+  defp resource_neighbor_finding?(organization_id, resource_id) do
+    Repo.exists?(
+      from finding in TopologyFinding,
+        join: interface in Interface,
+        on: interface.id == finding.interface_id,
+        where:
+          finding.organization_id == ^organization_id and finding.status == "open" and
+            finding.kind in ^@neighbor_finding_kinds and interface.resource_id == ^resource_id
+    )
   end
 
   @doc false

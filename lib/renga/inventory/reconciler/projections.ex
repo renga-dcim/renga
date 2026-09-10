@@ -85,16 +85,6 @@ defmodule Renga.Inventory.Reconciler.Projections do
         allow_new_rows?
       )
 
-    {:ok, _neighbor_evidence} =
-      Topology.reconcile_interface_neighbors(
-        topology_scope,
-        source,
-        observation,
-        resource.id,
-        interfaces,
-        allow_new_rows?
-      )
-
     reconcile_interface_relationships(
       scope,
       source,
@@ -106,6 +96,23 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
     if allow_new_rows? and interfaces_authoritative? do
       reconcile_network_omissions(scope, source, observation, resource, interfaces, overrides)
+    end
+
+    if Topology.interface_neighbor_reconciliation_needed?(
+         topology_scope,
+         observation,
+         resource.id,
+         interfaces
+       ) do
+      {:ok, _neighbor_evidence} =
+        Topology.reconcile_interface_neighbors(
+          topology_scope,
+          source,
+          observation,
+          resource.id,
+          interfaces,
+          allow_new_rows?
+        )
     end
   end
 
@@ -525,7 +532,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
         )
 
       {:ok, _host} =
-        Inventory.create_host(
+        Inventory.create_reconciled_host(
           scope,
           resource.id,
           Map.put(attrs, "metadata", put_field_owners(%{}, owners))
@@ -623,7 +630,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
           )
 
         {:ok, interface} =
-          Inventory.create_interface(
+          Inventory.create_reconciled_interface(
             scope,
             resource.id,
             Map.put(

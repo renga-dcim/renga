@@ -334,6 +334,130 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert evidence.metadata == %{"source" => "lldpd"}
     end
 
+    test "rejects observations more than five minutes in the future before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        valid_observation_payload(source, %{
+          "observed_at" =>
+            Renga.Time.utc_now_ms() |> DateTime.add(600, :second) |> DateTime.to_iso8601()
+        })
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert Enum.any?(response["errors"], &(&1["path"] == "observed_at"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects neighbor identifiers whose normalized value exceeds storage limits" do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "neighbor-normalized-length"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+          [
+            %{
+              "protocol" => "lldp",
+              "remote_chassis_id" => String.duplicate("İ", 128),
+              "remote_chassis_id_kind" => "name",
+              "remote_port_id" => "swp1",
+              "ttl_seconds" => 120
+            }
+          ]
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert Enum.any?(response["errors"], &(&1["path"] =~ "remote_chassis_id"))
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects neighbor strings that exceed the evidence code-point limit" do
+      %{source: source, token: token} = source_fixture()
+      too_many_codepoints = String.duplicate("e\u0301", 128)
+
+      for field <- ~w(remote_chassis_id remote_system_name remote_port_id remote_port_description) do
+        neighbor = %{
+          "protocol" => "lldp",
+          "remote_chassis_id" => "switch-01",
+          "remote_system_name" => "switch-01",
+          "remote_port_id" => "Ethernet1",
+          "remote_port_description" => "Ethernet1",
+          "ttl_seconds" => 120
+        }
+
+        payload =
+          source
+          |> valid_observation_payload(%{"observation_id" => "neighbor-length-#{field}"})
+          |> put_in(
+            ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+            [Map.put(neighbor, field, too_many_codepoints)]
+          )
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert Enum.any?(response["errors"], &(&1["path"] =~ field))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
+    test "rejects malformed explicitly typed neighbor identifiers" do
+      %{source: source, token: token} = source_fixture()
+
+      cases = [
+        {"invalid-chassis-mac", "remote_chassis_id_kind", "mac_address", "remote_chassis_id",
+         "switch-one"},
+        {"invalid-port-mac", "remote_port_id_kind", "mac_address", "remote_port_id", "swp1"},
+        {"invalid-network-address", "remote_chassis_id_kind", "network_address",
+         "remote_chassis_id", "not-an-address"}
+      ]
+
+      for {id, kind_field, kind, value_field, value} <- cases do
+        neighbor =
+          %{
+            "protocol" => "lldp",
+            "remote_chassis_id" => "02:00:00:00:00:01",
+            "remote_port_id" => "02:00:00:00:00:02",
+            "ttl_seconds" => 120
+          }
+          |> Map.put(kind_field, kind)
+          |> Map.put(value_field, value)
+
+        payload =
+          source
+          |> valid_observation_payload(%{"observation_id" => id})
+          |> put_in(
+            ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+            [neighbor]
+          )
+
+        response =
+          build_conn()
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert Enum.any?(response["errors"], &(&1["path"] =~ value_field))
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "rejects null, blank, malformed, and invalid-completeness topology fields safely" do
       %{source: source, token: token} = source_fixture()
       long_unicode_scope = String.duplicate("e\u0301", 128)
@@ -387,6 +511,28 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
              payload,
              ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
              [neighbor, Map.put(neighbor, "remote_chassis_id", " switch ")]
+           )
+         end},
+        {"duplicate-neighbor-equivalent-mac",
+         fn payload ->
+           neighbor = %{
+             "protocol" => "lldp",
+             "remote_chassis_id" => "02:00:00:00:00:01",
+             "remote_chassis_id_kind" => "mac_address",
+             "remote_port_id" => "02:00:00:00:00:02",
+             "remote_port_id_kind" => "mac_address",
+             "ttl_seconds" => 120
+           }
+
+           alternate =
+             neighbor
+             |> Map.put("remote_chassis_id", "0200.0000.0001")
+             |> Map.put("remote_port_id", "02-00-00-00-00-02")
+
+           put_in(
+             payload,
+             ["resources", Access.at(0), "interfaces", Access.at(0), "neighbors"],
+             [neighbor, alternate]
            )
          end},
         {"malformed-vlan",

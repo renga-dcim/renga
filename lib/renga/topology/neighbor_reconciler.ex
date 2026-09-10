@@ -4,6 +4,7 @@ defmodule Renga.Topology.NeighborReconciler do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
@@ -13,6 +14,7 @@ defmodule Renga.Topology.NeighborReconciler do
   alias Renga.Topology.CurrentInterfaceAdjacency
   alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceNeighborMatch
+  alias Renga.Topology.NeighborIdentifier
   alias Renga.Topology.TopologyFinding
   alias Renga.Topology.TopologySnapshotEvent
   alias Renga.Types.MacAddress
@@ -25,7 +27,7 @@ defmodule Renga.Topology.NeighborReconciler do
         %Observation{} = observation,
         resource_id,
         reported_interfaces,
-        current_snapshot?
+        _current_snapshot?
       ) do
     source = scoped_get!(Source, organization_id, source.id)
     scoped_get!(Resource, organization_id, resource_id)
@@ -50,36 +52,38 @@ defmodule Renga.Topology.NeighborReconciler do
           source,
           observation,
           interfaces,
-          reported,
-          current_snapshot?
+          reported
         )
       end)
 
     complete_snapshot? = complete_snapshot?(source, observation)
     maybe_record_snapshot(organization_id, source, observation, resource_id, complete_snapshot?)
 
-    maybe_stale_omitted(
-      organization_id,
-      source,
-      observation,
-      resource_id,
-      evidence,
-      complete_snapshot?
-    )
+    as_of = Renga.Time.utc_now_ms()
 
-    refresh_evidence_staleness(organization_id, resource_id, observation.observed_at)
-    stale_expired(organization_id, observation.observed_at)
+    newly_expired_ids =
+      refresh_evidence_staleness(organization_id, resource_id, as_of) ++
+        stale_expired(organization_id, as_of)
+
     reconcile_active_matches(organization_id)
     adjacencies = rebuild_adjacencies(organization_id, observation.observed_at)
-    reconcile_findings(organization_id, observation.observed_at, adjacencies)
+    reconcile_findings(organization_id, as_of, adjacencies, newly_expired_ids)
     evidence
   end
 
   def expire(%Scope{organization_id: organization_id}, as_of) do
-    stale_expired(organization_id, as_of)
+    newly_expired_ids = stale_expired(organization_id, as_of)
     reconcile_active_matches(organization_id)
     adjacencies = rebuild_adjacencies(organization_id, as_of)
-    reconcile_findings(organization_id, as_of, adjacencies)
+    reconcile_findings(organization_id, as_of, adjacencies, newly_expired_ids)
+    adjacencies
+  end
+
+  def refresh(%Scope{organization_id: organization_id}, as_of) do
+    newly_expired_ids = stale_expired(organization_id, as_of)
+    reconcile_active_matches(organization_id)
+    adjacencies = rebuild_adjacencies(organization_id, as_of)
+    reconcile_findings(organization_id, as_of, adjacencies, newly_expired_ids)
     adjacencies
   end
 
@@ -88,23 +92,13 @@ defmodule Renga.Topology.NeighborReconciler do
          source,
          observation,
          interfaces,
-         reported,
-         current_snapshot?
+         reported
        ) do
     name = reported |> Map.fetch!("name") |> String.trim()
 
     case Map.fetch(interfaces, name) do
       {:ok, interface} ->
         neighbors = Map.get(reported, "neighbors", [])
-
-        maybe_stale_replaced(
-          organization_id,
-          source,
-          observation,
-          interface,
-          neighbors,
-          current_snapshot?
-        )
 
         Enum.map(neighbors, fn attrs ->
           put_evidence(organization_id, source, observation, interface, attrs)
@@ -116,15 +110,27 @@ defmodule Renga.Topology.NeighborReconciler do
   end
 
   defp put_evidence(organization_id, source, observation, interface, attrs) do
+    chassis_kind = attrs["remote_chassis_id_kind"]
+    chassis_id = String.trim(attrs["remote_chassis_id"])
+    port_kind = attrs["remote_port_id_kind"]
+    port_id = String.trim(attrs["remote_port_id"])
+
     existing =
-      Repo.get_by(InterfaceNeighborEvidence,
-        organization_id: organization_id,
-        observation_id: observation.id,
-        local_interface_id: interface.id,
-        protocol: attrs["protocol"],
-        remote_chassis_id: String.trim(attrs["remote_chassis_id"]),
-        remote_port_id: String.trim(attrs["remote_port_id"])
+      InterfaceNeighborEvidence
+      |> where(
+        [evidence],
+        evidence.organization_id == ^organization_id and
+          evidence.observation_id == ^observation.id and
+          evidence.local_interface_id == ^interface.id and
+          evidence.protocol == ^attrs["protocol"] and
+          evidence.remote_chassis_id_normalized ==
+            ^NeighborIdentifier.normalize_chassis(chassis_kind, chassis_id) and
+          evidence.remote_port_id_normalized ==
+            ^NeighborIdentifier.normalize_port(port_kind, port_id)
       )
+      |> where_nullable(:remote_chassis_id_kind, chassis_kind)
+      |> where_nullable(:remote_port_id_kind, port_kind)
+      |> Repo.one()
 
     existing ||
       %InterfaceNeighborEvidence{
@@ -135,11 +141,11 @@ defmodule Renga.Topology.NeighborReconciler do
       }
       |> InterfaceNeighborEvidence.changeset(%{
         protocol: attrs["protocol"],
-        remote_chassis_id: String.trim(attrs["remote_chassis_id"]),
-        remote_chassis_id_kind: attrs["remote_chassis_id_kind"],
+        remote_chassis_id: chassis_id,
+        remote_chassis_id_kind: chassis_kind,
         remote_system_name: trim_optional(attrs["remote_system_name"]),
-        remote_port_id: String.trim(attrs["remote_port_id"]),
-        remote_port_id_kind: attrs["remote_port_id_kind"],
+        remote_port_id: port_id,
+        remote_port_id_kind: port_kind,
         remote_port_description: trim_optional(attrs["remote_port_description"]),
         ttl_seconds: attrs["ttl_seconds"],
         observed_at: observation.observed_at,
@@ -147,33 +153,6 @@ defmodule Renga.Topology.NeighborReconciler do
         metadata: Map.get(attrs, "metadata", %{})
       })
       |> insert_or_rollback()
-  end
-
-  defp maybe_stale_replaced(
-         _organization_id,
-         _source,
-         _observation,
-         _interface,
-         _neighbors,
-         false
-       ),
-       do: :ok
-
-  defp maybe_stale_replaced(organization_id, source, observation, interface, neighbors, true) do
-    protocols = neighbors |> Enum.map(& &1["protocol"]) |> Enum.uniq()
-
-    if protocols != [] do
-      InterfaceNeighborEvidence
-      |> where([item], item.organization_id == ^organization_id)
-      |> where([item], item.source_id == ^source.id and item.local_interface_id == ^interface.id)
-      |> where([item], item.protocol in ^protocols and is_nil(item.stale_at))
-      |> where(
-        [item],
-        item.observed_at < ^observation.observed_at or
-          (item.observed_at == ^observation.observed_at and item.observation_id < ^observation.id)
-      )
-      |> Repo.update_all(set: [stale_at: observation.observed_at, stale_reason: "superseded"])
-    end
   end
 
   defp maybe_record_snapshot(_organization_id, _source, _observation, _resource_id, false),
@@ -204,68 +183,58 @@ defmodule Renga.Topology.NeighborReconciler do
     end
   end
 
-  defp maybe_stale_omitted(
-         _organization_id,
-         _source,
-         _observation,
-         _resource_id,
-         _evidence,
-         false
-       ),
-       do: :ok
-
-  defp maybe_stale_omitted(organization_id, source, observation, resource_id, evidence, true) do
-    observed_ids = Enum.map(evidence, & &1.id)
-
-    InterfaceNeighborEvidence
-    |> join(:inner, [item], interface in Interface, on: interface.id == item.local_interface_id)
-    |> where([item, interface], item.organization_id == ^organization_id)
-    |> where([item, _interface], item.source_id == ^source.id and is_nil(item.stale_at))
-    |> where([_item, interface], interface.resource_id == ^resource_id)
-    |> where(
-      [item, _interface],
-      item.observed_at < ^observation.observed_at or
-        (item.observed_at == ^observation.observed_at and item.observation_id < ^observation.id)
-    )
-    |> maybe_exclude_ids(observed_ids)
-    |> Repo.update_all(set: [stale_at: observation.observed_at, stale_reason: "withdrawn"])
-  end
-
-  defp maybe_exclude_ids(query, []), do: query
-  defp maybe_exclude_ids(query, ids), do: where(query, [item, _interface], item.id not in ^ids)
-
   defp refresh_evidence_staleness(organization_id, resource_id, as_of) do
-    boundaries = latest_boundaries(organization_id, resource_id)
-
-    evidence =
+    active_evidence =
       InterfaceNeighborEvidence
       |> join(:inner, [item], interface in Interface, on: interface.id == item.local_interface_id)
       |> where([item, interface], item.organization_id == ^organization_id)
-      |> where([_item, interface], interface.resource_id == ^resource_id)
-      |> where([item, _interface], is_nil(item.stale_at))
+      |> where([item, interface], interface.resource_id == ^resource_id and is_nil(item.stale_at))
       |> select([item, _interface], item)
       |> Repo.all()
 
-    evidence
-    |> Enum.group_by(&{&1.source_id, &1.local_interface_id, &1.protocol})
-    |> Enum.each(fn {{source_id, _, _}, items} ->
-      latest = Enum.max_by(items, &evidence_order/1)
-      boundary = Map.get(boundaries, source_id)
-
-      Enum.each(items, fn item ->
-        {stale_at, reason} = evidence_staleness(item, latest, boundary, as_of)
-        maybe_stale(item, stale_at, reason)
+    boundaries =
+      active_evidence
+      |> Enum.map(& &1.source_id)
+      |> Enum.uniq()
+      |> Map.new(fn source_id ->
+        {source_id, latest_boundary(organization_id, resource_id, source_id)}
       end)
+
+    active_evidence
+    |> Enum.map(fn item ->
+      latest_item = latest_identity_evidence(organization_id, item)
+      boundary = Map.get(boundaries, item.source_id)
+      {stale_at, reason} = evidence_staleness(item, latest_item, boundary, as_of)
+      maybe_stale(item, stale_at, reason)
     end)
+    |> expired_ids()
+  end
+
+  defp latest_identity_evidence(organization_id, item) do
+    InterfaceNeighborEvidence
+    |> where(
+      [candidate],
+      candidate.organization_id == ^organization_id and
+        candidate.source_id == ^item.source_id and
+        candidate.local_interface_id == ^item.local_interface_id and
+        candidate.protocol == ^item.protocol and
+        candidate.remote_chassis_id_normalized == ^item.remote_chassis_id_normalized and
+        candidate.remote_port_id_normalized == ^item.remote_port_id_normalized
+    )
+    |> where_nullable(:remote_chassis_id_kind, item.remote_chassis_id_kind)
+    |> where_nullable(:remote_port_id_kind, item.remote_port_id_kind)
+    |> order_by([candidate], desc: candidate.observed_at, desc: candidate.observation_id)
+    |> limit(1)
+    |> Repo.one!()
   end
 
   defp evidence_staleness(item, latest, boundary, as_of) do
     cond do
-      DateTime.compare(item.expires_at, as_of) != :gt ->
-        {item.expires_at, "expired"}
-
       evidence_order(item) < evidence_order(latest) ->
         {latest.observed_at, "superseded"}
+
+      DateTime.compare(item.expires_at, as_of) != :gt ->
+        {item.expires_at, "expired"}
 
       boundary && evidence_order(item) < evidence_order(boundary) ->
         {boundary.observed_at, "withdrawn"}
@@ -280,37 +249,75 @@ defmodule Renga.Topology.NeighborReconciler do
     |> where([item], item.organization_id == ^organization_id)
     |> where([item], is_nil(item.stale_at) and item.expires_at <= ^as_of)
     |> Repo.all()
-    |> Enum.each(&maybe_stale(&1, &1.expires_at, "expired"))
+    |> Enum.map(&maybe_stale(&1, &1.expires_at, "expired"))
+    |> expired_ids()
   end
 
   defp maybe_stale(_item, nil, nil), do: :ok
 
   defp maybe_stale(%{stale_at: nil} = item, stale_at, reason) do
-    item
-    |> Ecto.Changeset.change(stale_at: stale_at, stale_reason: reason)
-    |> update_or_rollback()
+    updated =
+      item
+      |> Ecto.Changeset.change(stale_at: stale_at, stale_reason: reason)
+      |> update_or_rollback()
+
+    {:staled, updated}
   end
 
   defp maybe_stale(_item, _stale_at, _reason), do: :ok
 
-  defp latest_boundaries(organization_id, resource_id) do
+  defp expired_ids(results) do
+    for {:staled, %{id: id, stale_reason: "expired"}} <- results, do: id
+  end
+
+  defp latest_boundary(organization_id, resource_id, source_id) do
     TopologySnapshotEvent
     |> where([event], event.organization_id == ^organization_id)
     |> where(
       [event],
-      event.resource_id == ^resource_id and event.section == "interface_neighbors"
+      event.resource_id == ^resource_id and event.source_id == ^source_id and
+        event.section == "interface_neighbors"
     )
-    |> Repo.all()
-    |> Enum.group_by(& &1.source_id)
-    |> Map.new(fn {source_id, events} -> {source_id, Enum.max_by(events, &evidence_order/1)} end)
+    |> order_by([event], desc: event.observed_at, desc: event.observation_id)
+    |> limit(1)
+    |> Repo.one()
   end
 
   defp reconcile_active_matches(organization_id) do
-    InterfaceNeighborEvidence
-    |> where([item], item.organization_id == ^organization_id and is_nil(item.stale_at))
-    |> Repo.all()
+    ineligible_evidence_ids =
+      InterfaceNeighborEvidence
+      |> join(:inner, [item], interface in Interface, on: interface.id == item.local_interface_id)
+      |> where(
+        [item, interface],
+        item.organization_id == ^organization_id and is_nil(item.stale_at) and
+          interface.status == "not_present"
+      )
+      |> select([item, _interface], item.id)
+
+    InterfaceNeighborMatch
+    |> where(
+      [match],
+      match.organization_id == ^organization_id and
+        match.interface_neighbor_evidence_id in subquery(ineligible_evidence_ids)
+    )
+    |> Repo.delete_all()
+
+    evidence =
+      InterfaceNeighborEvidence
+      |> join(:inner, [item], interface in Interface, on: interface.id == item.local_interface_id)
+      |> where(
+        [item, interface],
+        item.organization_id == ^organization_id and is_nil(item.stale_at) and
+          interface.status != "not_present"
+      )
+      |> select([item, _interface], item)
+      |> Repo.all()
+
+    bmc_resources = bmc_resource_lookup(organization_id, evidence)
+
+    evidence
     |> Enum.each(fn evidence ->
-      attrs = match_remote_interface(organization_id, evidence)
+      attrs = match_remote_interface(organization_id, evidence, bmc_resources)
 
       (Repo.get_by(InterfaceNeighborMatch,
          organization_id: organization_id,
@@ -326,17 +333,36 @@ defmodule Renga.Topology.NeighborReconciler do
     end)
   end
 
-  defp match_remote_interface(organization_id, evidence) do
-    {resource_ids, stable_chassis?} = matching_resources(organization_id, evidence)
-    {interfaces, stable_port?} = matching_interfaces(organization_id, resource_ids, evidence)
+  defp match_remote_interface(organization_id, evidence, bmc_resources) do
+    stable_resource_ids = stable_resource_ids(organization_id, evidence, bmc_resources)
+    stable_ports = stable_port_interfaces(organization_id, :all, evidence)
+
+    {interfaces, strategy} =
+      case {stable_resource_ids, stable_ports} do
+        {[], []} ->
+          resource_ids = named_resource_ids(organization_id, evidence)
+          {named_port_interfaces(organization_id, resource_ids, evidence), "name_fallback"}
+
+        {[], stable_ports} ->
+          {stable_ports, "stable_identifiers"}
+
+        {stable_resource_ids, []} ->
+          {named_port_interfaces(organization_id, stable_resource_ids, evidence), "name_fallback"}
+
+        {stable_resource_ids, stable_ports} ->
+          matching_stable_ports =
+            Enum.filter(stable_ports, &(&1.resource_id in stable_resource_ids))
+
+          {matching_stable_ports, "stable_identifiers"}
+      end
+
     interfaces = Enum.reject(interfaces, &(&1.id == evidence.local_interface_id))
 
     case interfaces do
       [interface] ->
         %{
           status: "matched",
-          strategy:
-            if(stable_chassis? and stable_port?, do: "stable_identifiers", else: "name_fallback"),
+          strategy: strategy,
           candidate_count: 1,
           remote_interface_id: interface.id
         }
@@ -354,37 +380,36 @@ defmodule Renga.Topology.NeighborReconciler do
     end
   end
 
-  defp matching_resources(organization_id, evidence) do
-    stable_ids =
-      if evidence.remote_chassis_id_kind == "name",
-        do: [],
-        else: stable_resource_ids(organization_id, evidence)
+  defp stable_resource_ids(organization_id, evidence, bmc_resources) do
+    identifier_kinds =
+      cond do
+        evidence.remote_chassis_id_kind in ["name", "mac_address"] ->
+          []
 
-    if stable_ids == [] do
-      {named_resource_ids(organization_id, evidence), false}
-    else
-      {stable_ids, true}
-    end
-  end
+        is_nil(evidence.remote_chassis_id_kind) and
+            NeighborIdentifier.mac_address?(evidence.remote_chassis_id) ->
+          []
 
-  defp stable_resource_ids(organization_id, evidence) do
-    values = normalized_identifier_values(evidence.remote_chassis_id)
-    identifier_kinds = chassis_identifier_kinds(evidence.remote_chassis_id_kind)
+        true ->
+          chassis_identifier_kinds(evidence.remote_chassis_id_kind)
+      end
 
     identifier_ids =
-      ResourceIdentifier
-      |> where([identifier], identifier.organization_id == ^organization_id)
-      |> where([identifier], identifier.kind in ^identifier_kinds)
-      |> where([identifier], identifier.normalized_value in ^values)
-      |> select([identifier], identifier.resource_id)
-      |> Repo.all()
+      matching_identifier_resource_ids(organization_id, identifier_kinds, evidence, bmc_resources)
 
     interface_ids =
-      case {evidence.remote_chassis_id_kind, MacAddress.cast(evidence.remote_chassis_id)} do
-        {kind, {:ok, mac}} when kind in [nil, "local", "mac_address"] ->
+      case {
+        evidence.remote_chassis_id_kind,
+        NeighborIdentifier.mac_address?(evidence.remote_chassis_id),
+        MacAddress.cast(evidence.remote_chassis_id)
+      } do
+        {kind, true, {:ok, mac}} when kind in [nil, "mac_address"] ->
           Interface
           |> where([interface], interface.organization_id == ^organization_id)
-          |> where([interface], interface.mac_address == ^mac)
+          |> where(
+            [interface],
+            interface.status != "not_present" and interface.mac_address == ^mac
+          )
           |> select([interface], interface.resource_id)
           |> Repo.all()
 
@@ -395,94 +420,190 @@ defmodule Renga.Topology.NeighborReconciler do
     Enum.uniq(identifier_ids ++ interface_ids)
   end
 
-  defp chassis_identifier_kinds("mac_address"), do: ["mac_address"]
+  defp matching_identifier_resource_ids(_organization_id, [], _evidence, _bmc_resources), do: []
+
+  defp matching_identifier_resource_ids(
+         _organization_id,
+         ["bmc_address"],
+         %{
+           remote_chassis_id_kind: "network_address",
+           remote_chassis_id: value
+         },
+         bmc_resources
+       ) do
+    normalized = NeighborIdentifier.normalize_chassis("network_address", value)
+    Map.get(bmc_resources, normalized, [])
+  end
+
+  defp matching_identifier_resource_ids(
+         organization_id,
+         identifier_kinds,
+         evidence,
+         _bmc_resources
+       ) do
+    identity_match =
+      Enum.reduce(identifier_kinds, dynamic(false), fn kind, identity_match ->
+        normalized_value = ResourceIdentifier.normalize_value(kind, evidence.remote_chassis_id)
+
+        dynamic(
+          [identifier],
+          ^identity_match or
+            (identifier.kind == ^kind and identifier.normalized_value == ^normalized_value)
+        )
+      end)
+
+    ResourceIdentifier
+    |> where([identifier], identifier.organization_id == ^organization_id)
+    |> where(^identity_match)
+    |> select([identifier], identifier.resource_id)
+    |> Repo.all()
+  end
+
+  defp bmc_resource_lookup(organization_id, evidence) do
+    if Enum.any?(evidence, &(&1.remote_chassis_id_kind == "network_address")) do
+      ResourceIdentifier
+      |> where(
+        [identifier],
+        identifier.organization_id == ^organization_id and identifier.kind == "bmc_address"
+      )
+      |> select([identifier], {identifier.resource_id, identifier.value})
+      |> Repo.all()
+      |> Enum.group_by(
+        fn {_resource_id, value} ->
+          NeighborIdentifier.normalize_chassis("network_address", value)
+        end,
+        &elem(&1, 0)
+      )
+    else
+      %{}
+    end
+  end
+
+  defp chassis_identifier_kinds("mac_address"), do: []
   defp chassis_identifier_kinds("network_address"), do: ["bmc_address"]
 
   defp chassis_identifier_kinds(_local_or_unspecified) do
-    ~w(serial_number machine_id dmi_uuid mac_address provider_instance_id bmc_address external_id)
-  end
-
-  defp normalized_identifier_values(value) do
-    [
-      String.trim(value),
-      value |> String.trim() |> String.downcase(),
-      ResourceIdentifier.normalize_value("mac_address", value)
-    ]
-    |> Enum.uniq()
+    ~w(serial_number machine_id dmi_uuid provider_instance_id bmc_address external_id)
   end
 
   defp named_resource_ids(organization_id, evidence) do
     names =
-      [evidence.remote_system_name, evidence.remote_chassis_id]
+      [
+        evidence.remote_system_name,
+        identifier_name_hint(evidence.remote_chassis_id_kind, evidence.remote_chassis_id)
+      ]
       |> Enum.reject(&is_nil/1)
       |> Enum.map(&(String.trim(&1) |> String.downcase()))
       |> Enum.uniq()
 
     resource_ids =
       Resource
-      |> where([resource], resource.organization_id == ^organization_id)
+      |> join(:left, [resource], host in Host, on: host.resource_id == resource.id)
+      |> where([resource, _host], resource.organization_id == ^organization_id)
       |> where(
-        [resource],
-        fragment("lower(?)", resource.name) in ^names or
-          fragment("lower(?)", resource.display_name) in ^names
+        [resource, host],
+        is_nil(host.id) and
+          (fragment("lower(?)", resource.name) in ^names or
+             fragment("lower(?)", resource.display_name) in ^names)
       )
-      |> select([resource], resource.id)
+      |> select([resource, _host], resource.id)
+      |> Repo.all()
+
+    host_ids =
+      Host
+      |> where([host], host.organization_id == ^organization_id)
+      |> where([host], host.hostname in ^names or host.fqdn in ^names)
+      |> select([host], host.resource_id)
       |> Repo.all()
 
     identifier_ids =
       ResourceIdentifier
-      |> where([identifier], identifier.organization_id == ^organization_id)
-      |> where([identifier], identifier.kind in ["hostname", "fqdn"])
-      |> where([identifier], identifier.normalized_value in ^names)
-      |> select([identifier], identifier.resource_id)
+      |> join(:left, [identifier], host in Host, on: host.resource_id == identifier.resource_id)
+      |> where([identifier, _host], identifier.organization_id == ^organization_id)
+      |> where([identifier, host], is_nil(host.id))
+      |> where([identifier, _host], identifier.kind in ["hostname", "fqdn"])
+      |> where([identifier, _host], identifier.normalized_value in ^names)
+      |> select([identifier, _host], identifier.resource_id)
       |> Repo.all()
 
-    Enum.uniq(resource_ids ++ identifier_ids)
+    Enum.uniq(resource_ids ++ host_ids ++ identifier_ids)
   end
 
-  defp matching_interfaces(_organization_id, [], _evidence), do: {[], false}
-
-  defp matching_interfaces(organization_id, resource_ids, evidence) do
-    stable =
-      if evidence.remote_port_id_kind == "name",
-        do: [],
-        else: stable_port_interfaces(organization_id, resource_ids, evidence)
-
-    if stable == [] do
-      {named_port_interfaces(organization_id, resource_ids, evidence), false}
-    else
-      {stable, true}
-    end
-  end
+  defp stable_port_interfaces(_organization_id, _resource_ids, %{
+         remote_port_id_kind: kind
+       })
+       when kind in ["local", "name"],
+       do: []
 
   defp stable_port_interfaces(organization_id, resource_ids, evidence) do
-    case MacAddress.cast(evidence.remote_port_id) do
-      {:ok, mac} ->
+    case {NeighborIdentifier.mac_address?(evidence.remote_port_id),
+          MacAddress.cast(evidence.remote_port_id)} do
+      {true, {:ok, mac}} ->
         Interface
         |> where([interface], interface.organization_id == ^organization_id)
+        |> where([interface], interface.status != "not_present")
+        |> maybe_limit_resources(resource_ids)
         |> where(
           [interface],
-          interface.resource_id in ^resource_ids and interface.mac_address == ^mac
+          interface.mac_address == ^mac
         )
         |> Repo.all()
 
-      :error ->
+      _not_a_mac_port_id ->
         []
     end
   end
 
   defp named_port_interfaces(organization_id, resource_ids, evidence) do
     names =
-      [evidence.remote_port_id, evidence.remote_port_description]
+      [
+        identifier_name_hint(evidence.remote_port_id_kind, evidence.remote_port_id),
+        evidence.remote_port_description
+      ]
       |> Enum.reject(&is_nil/1)
       |> Enum.map(&String.trim/1)
       |> Enum.uniq()
 
     Interface
     |> where([interface], interface.organization_id == ^organization_id)
+    |> where([interface], interface.status != "not_present")
     |> where([interface], interface.resource_id in ^resource_ids and interface.name in ^names)
+    |> compatible_with_reported_port_mac(evidence)
     |> Repo.all()
   end
+
+  defp compatible_with_reported_port_mac(query, evidence) do
+    case reported_port_mac(evidence) do
+      {:ok, mac} ->
+        where(query, [interface], is_nil(interface.mac_address) or interface.mac_address == ^mac)
+
+      :error ->
+        query
+    end
+  end
+
+  defp reported_port_mac(evidence) do
+    if evidence.remote_port_id_kind in [nil, "mac_address"] and
+         NeighborIdentifier.mac_address?(evidence.remote_port_id) do
+      MacAddress.cast(evidence.remote_port_id)
+    else
+      :error
+    end
+  end
+
+  defp identifier_name_hint(kind, _value) when kind in ["mac_address", "network_address"],
+    do: nil
+
+  defp identifier_name_hint(nil, value) do
+    if NeighborIdentifier.mac_address?(value), do: nil, else: value
+  end
+
+  defp identifier_name_hint(_kind, value), do: value
+
+  defp maybe_limit_resources(query, :all), do: query
+
+  defp maybe_limit_resources(query, resource_ids),
+    do: where(query, [interface], interface.resource_id in ^resource_ids)
 
   defp rebuild_adjacencies(organization_id, _as_of) do
     evidence = active_matched_evidence(organization_id)
@@ -514,9 +635,19 @@ defmodule Renga.Topology.NeighborReconciler do
     |> join(:inner, [evidence], match in InterfaceNeighborMatch,
       on: match.interface_neighbor_evidence_id == evidence.id
     )
-    |> where([evidence, match], evidence.organization_id == ^organization_id)
-    |> where([evidence, match], is_nil(evidence.stale_at) and match.status == "matched")
-    |> select([evidence, match], {evidence, match.remote_interface_id})
+    |> join(:inner, [evidence, _match], local in Interface,
+      on: local.id == evidence.local_interface_id
+    )
+    |> join(:inner, [_evidence, match, _local], remote in Interface,
+      on: remote.id == match.remote_interface_id
+    )
+    |> where([evidence, _match, _local, _remote], evidence.organization_id == ^organization_id)
+    |> where(
+      [evidence, match, local, remote],
+      is_nil(evidence.stale_at) and match.status == "matched" and
+        local.status != "not_present" and remote.status != "not_present"
+    )
+    |> select([evidence, match, _local, _remote], {evidence, match.remote_interface_id})
     |> Repo.all()
   end
 
@@ -529,7 +660,7 @@ defmodule Renga.Topology.NeighborReconciler do
       canonical_pair(item.local_interface_id, remote_id)
     end)
     |> Enum.map(fn {{interface_a_id, interface_b_id}, items} ->
-      primary = items |> Enum.map(&elem(&1, 0)) |> Enum.max_by(&evidence_order/1)
+      primary = items |> Enum.map(&elem(&1, 0)) |> Enum.max_by(&primary_evidence_order/1)
 
       reciprocal? =
         MapSet.member?(directed, {interface_a_id, interface_b_id}) and
@@ -548,12 +679,7 @@ defmodule Renga.Topology.NeighborReconciler do
 
   defp select_non_conflicting_adjacencies(candidates) do
     candidates
-    |> Enum.sort_by(fn candidate ->
-      confidence_rank = if candidate.confidence == "reciprocal", do: 0, else: 1
-
-      {confidence_rank, -DateTime.to_unix(candidate.primary.observed_at, :microsecond),
-       candidate.interface_a_id, candidate.interface_b_id}
-    end)
+    |> Enum.sort(&adjacency_precedes?/2)
     |> Enum.reduce({[], MapSet.new()}, fn candidate, {selected, used} ->
       if MapSet.member?(used, candidate.interface_a_id) or
            MapSet.member?(used, candidate.interface_b_id) do
@@ -567,45 +693,140 @@ defmodule Renga.Topology.NeighborReconciler do
     |> Enum.reverse()
   end
 
-  defp reconcile_findings(organization_id, observed_at, adjacencies) do
-    evidence = latest_neighbor_evidence(organization_id)
+  defp adjacency_precedes?(first, second) do
+    first_confidence = if first.confidence == "reciprocal", do: 0, else: 1
+    second_confidence = if second.confidence == "reciprocal", do: 0, else: 1
+    first_evidence = evidence_order(first.primary)
+    second_evidence = evidence_order(second.primary)
+
+    cond do
+      first_confidence != second_confidence ->
+        first_confidence < second_confidence
+
+      first_evidence != second_evidence ->
+        first_evidence > second_evidence
+
+      first.interface_a_id != second.interface_a_id ->
+        first.interface_a_id < second.interface_a_id
+
+      true ->
+        first.interface_b_id <= second.interface_b_id
+    end
+  end
+
+  defp reconcile_findings(organization_id, observed_at, adjacencies, newly_expired_ids) do
+    evidence = latest_neighbor_evidence(organization_id, newly_expired_ids)
     matches = neighbor_matches(organization_id, evidence)
+    boundaries = latest_neighbor_boundaries(organization_id, evidence)
 
     findings =
       ambiguous_findings(evidence, matches, observed_at) ++
         conflicting_findings(evidence, matches, observed_at) ++
         asymmetric_findings(adjacencies, observed_at) ++
-        expired_findings(evidence, observed_at)
+        expired_findings(evidence, boundaries, observed_at)
 
     grouped = Enum.group_by(findings, & &1.interface_id)
 
-    Interface
-    |> where([interface], interface.organization_id == ^organization_id)
-    |> select([interface], interface.id)
-    |> Repo.all()
+    existing =
+      TopologyFinding
+      |> where([finding], finding.organization_id == ^organization_id)
+      |> where([finding], finding.status == "open" and finding.kind in ^@finding_kinds)
+      |> Repo.all()
+      |> Enum.group_by(& &1.interface_id)
+
+    (Map.keys(grouped) ++ Map.keys(existing))
+    |> Enum.uniq()
     |> Enum.each(fn interface_id ->
       desired = Map.get(grouped, interface_id, [])
       keys = MapSet.new(desired, &{&1.kind, &1.resolution_key})
-      Enum.each(desired, &put_finding(organization_id, interface_id, &1))
 
-      TopologyFinding
-      |> where([finding], finding.organization_id == ^organization_id)
-      |> where([finding], finding.interface_id == ^interface_id)
-      |> where([finding], finding.status == "open" and finding.kind in ^@finding_kinds)
-      |> Repo.all()
+      existing_by_key =
+        Map.new(Map.get(existing, interface_id, []), &{{&1.kind, &1.resolution_key}, &1})
+
+      Enum.each(desired, fn attrs ->
+        put_finding(
+          organization_id,
+          interface_id,
+          attrs,
+          Map.get(existing_by_key, {attrs.kind, attrs.resolution_key})
+        )
+      end)
+
+      existing_by_key
+      |> Map.values()
       |> Enum.reject(&MapSet.member?(keys, {&1.kind, &1.resolution_key}))
       |> Enum.each(&resolve_finding(&1, observed_at))
     end)
   end
 
-  defp latest_neighbor_evidence(organization_id) do
+  defp latest_neighbor_evidence(organization_id, newly_expired_ids) do
+    tracked_expired_ids =
+      TopologyFinding
+      |> where(
+        [finding],
+        finding.organization_id == ^organization_id and finding.status == "open" and
+          finding.kind == "expired_adjacency"
+      )
+      |> select([finding], fragment("?->>'evidence_id'", finding.details))
+      |> Repo.all()
+      |> Kernel.++(newly_expired_ids)
+      |> Enum.uniq()
+
     InterfaceNeighborEvidence
-    |> where([item], item.organization_id == ^organization_id)
+    |> join(:inner, [item], interface in Interface, on: interface.id == item.local_interface_id)
+    |> where(
+      [item, interface],
+      item.organization_id == ^organization_id and interface.status != "not_present"
+    )
+    |> current_or_tracked_evidence(tracked_expired_ids)
+    |> latest_evidence_query()
     |> Repo.all()
-    |> Enum.group_by(&{&1.source_id, &1.local_interface_id, &1.protocol})
-    |> Enum.flat_map(fn {_key, items} ->
-      latest_order = items |> Enum.max_by(&evidence_order/1) |> evidence_order()
-      Enum.filter(items, &(evidence_order(&1) == latest_order))
+  end
+
+  defp current_or_tracked_evidence(query, []),
+    do: where(query, [item, _interface], is_nil(item.stale_at))
+
+  defp current_or_tracked_evidence(query, ids),
+    do: where(query, [item, _interface], is_nil(item.stale_at) or item.id in ^ids)
+
+  defp latest_evidence_query(query) do
+    query
+    |> distinct(
+      [item],
+      [
+        item.source_id,
+        item.local_interface_id,
+        item.protocol,
+        item.remote_chassis_id_kind,
+        item.remote_chassis_id_normalized,
+        item.remote_port_id_kind,
+        item.remote_port_id_normalized
+      ]
+    )
+    |> order_by(
+      [item],
+      asc: item.source_id,
+      asc: item.local_interface_id,
+      asc: item.protocol,
+      asc: item.remote_chassis_id_kind,
+      asc: item.remote_chassis_id_normalized,
+      asc: item.remote_port_id_kind,
+      asc: item.remote_port_id_normalized,
+      desc: item.observed_at,
+      desc: item.observation_id
+    )
+  end
+
+  defp latest_neighbor_boundaries(organization_id, evidence) do
+    resources =
+      interface_resources(organization_id, Enum.map(evidence, & &1.local_interface_id))
+
+    evidence
+    |> Enum.map(&{&1.source_id, resources[&1.local_interface_id]})
+    |> Enum.reject(fn {_source_id, resource_id} -> is_nil(resource_id) end)
+    |> Enum.uniq()
+    |> Map.new(fn {source_id, resource_id} = key ->
+      {key, latest_boundary(organization_id, resource_id, source_id)}
     end)
   end
 
@@ -635,7 +856,7 @@ defmodule Renga.Topology.NeighborReconciler do
       neighbor_finding(
         item.local_interface_id,
         "ambiguous_remote_identity",
-        item.id,
+        evidence_identity_key(item),
         "Neighbor endpoint could not be matched uniquely",
         %{
           "evidence_id" => item.id,
@@ -653,7 +874,7 @@ defmodule Renga.Topology.NeighborReconciler do
     pairs =
       evidence
       |> Enum.filter(
-        &((matches[&1.id] && matches[&1.id].status == "matched") and is_nil(&1.stale_at))
+        &(is_nil(&1.stale_at) and match?(%{status: "matched"}, Map.get(matches, &1.id)))
       )
       |> Enum.map(fn item ->
         canonical_pair(item.local_interface_id, matches[item.id].remote_interface_id)
@@ -716,19 +937,44 @@ defmodule Renga.Topology.NeighborReconciler do
     end)
   end
 
-  defp expired_findings(evidence, observed_at) do
+  defp expired_findings(evidence, boundaries, observed_at) do
+    organization_id = evidence |> List.first() |> then(&(&1 && &1.organization_id))
+
+    interface_resources =
+      interface_resources(organization_id, Enum.map(evidence, & &1.local_interface_id))
+
     evidence
-    |> Enum.filter(&(&1.stale_reason == "expired"))
+    |> Enum.filter(fn item ->
+      boundary =
+        Map.get(boundaries, {item.source_id, interface_resources[item.local_interface_id]})
+
+      item.stale_reason == "expired" and
+        (is_nil(boundary) or evidence_order(item) >= evidence_order(boundary))
+    end)
     |> Enum.map(fn item ->
       neighbor_finding(
         item.local_interface_id,
         "expired_adjacency",
-        item.id,
+        evidence_identity_key(item),
         "Latest neighbor evidence has expired",
         %{"evidence_id" => item.id},
         observed_at
       )
     end)
+  end
+
+  defp interface_resources(_organization_id, []), do: %{}
+
+  defp interface_resources(organization_id, interface_ids) do
+    Interface
+    |> where(
+      [interface],
+      interface.organization_id == ^organization_id and
+        interface.id in ^Enum.uniq(interface_ids)
+    )
+    |> select([interface], {interface.id, interface.resource_id})
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp neighbor_finding(interface_id, kind, key, message, details, observed_at) do
@@ -742,16 +988,7 @@ defmodule Renga.Topology.NeighborReconciler do
     }
   end
 
-  defp put_finding(organization_id, interface_id, attrs) do
-    existing =
-      Repo.get_by(TopologyFinding,
-        organization_id: organization_id,
-        interface_id: interface_id,
-        kind: attrs.kind,
-        resolution_key: attrs.resolution_key,
-        status: "open"
-      )
-
+  defp put_finding(organization_id, interface_id, attrs, existing) do
     attrs = Map.drop(attrs, [:interface_id])
 
     attrs =
@@ -787,8 +1024,46 @@ defmodule Renga.Topology.NeighborReconciler do
   defp evidence_order(item),
     do: {DateTime.to_unix(item.observed_at, :microsecond), item.observation_id}
 
+  defp primary_evidence_order(item) do
+    {
+      evidence_order(item),
+      item.protocol,
+      item.remote_chassis_id_kind || "",
+      item.remote_chassis_id_normalized,
+      item.remote_port_id_kind || "",
+      item.remote_port_id_normalized,
+      item.id
+    }
+  end
+
+  defp evidence_identity(item) do
+    {
+      item.source_id,
+      item.local_interface_id,
+      item.protocol,
+      item.remote_chassis_id_kind,
+      item.remote_chassis_id_normalized,
+      item.remote_port_id_kind,
+      item.remote_port_id_normalized
+    }
+  end
+
+  defp evidence_identity_key(item) do
+    item
+    |> evidence_identity()
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp max_datetime(first, second),
     do: if(DateTime.compare(first, second) == :lt, do: second, else: first)
+
+  defp where_nullable(query, field_name, nil),
+    do: where(query, [item], is_nil(field(item, ^field_name)))
+
+  defp where_nullable(query, field_name, value),
+    do: where(query, [item], field(item, ^field_name) == ^value)
 
   defp trim_optional(nil), do: nil
   defp trim_optional(value), do: String.trim(value)
