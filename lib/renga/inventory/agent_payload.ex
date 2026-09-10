@@ -6,7 +6,9 @@ defmodule Renga.Inventory.AgentPayload do
   keeps the first gate focused on tenant/source identity and payload shape.
   """
 
+  alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
+  alias Renga.Topology.NeighborIdentifier
   alias Renga.Types.Inet
   alias Renga.Types.MacAddress
 
@@ -15,6 +17,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_agent_string_length 255
   @max_source_local_vlan_key_bytes 2_000
   @max_observation_id_length 255
+  @max_future_observation_skew_seconds 300
   @max_postgres_integer 2_147_483_647
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
@@ -69,6 +72,7 @@ defmodule Renga.Inventory.AgentPayload do
 
     errors =
       errors
+      |> validate_observation_clock(observed_at)
       |> validate_payload_size(params)
       |> validate_source_identity(params, source)
       |> validate_observation_id(params)
@@ -430,7 +434,7 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp normalized_mac_set(values) do
     values
-    |> Enum.map(&Renga.Inventory.ResourceIdentifier.normalize_value("mac_address", &1))
+    |> Enum.map(&ResourceIdentifier.normalize_value("mac_address", &1))
     |> MapSet.new()
   end
 
@@ -516,6 +520,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_map(interface, "metadata", "#{path}.metadata")
     |> validate_interface_addresses(interface, path)
     |> validate_interface_vlans(interface, path)
+    |> validate_interface_neighbors(interface, path)
     |> validate_interface_relationships(interface, path)
   end
 
@@ -679,6 +684,167 @@ defmodule Renga.Inventory.AgentPayload do
         [error("#{path}.relationships", "must be a list") | errors]
     end
   end
+
+  defp validate_interface_neighbors(errors, interface, path) do
+    case Map.fetch(interface, "neighbors") do
+      :error ->
+        errors
+
+      {:ok, neighbors} when is_list(neighbors) ->
+        neighbors
+        |> Enum.with_index()
+        |> Enum.reduce(errors, fn {neighbor, index}, errors ->
+          validate_interface_neighbor(errors, neighbor, "#{path}.neighbors.#{index}")
+        end)
+        |> validate_unique_interface_neighbors(path, neighbors)
+
+      {:ok, _invalid} ->
+        [error("#{path}.neighbors", "must be a list") | errors]
+    end
+  end
+
+  defp validate_interface_neighbor(errors, %{} = neighbor, path) do
+    errors
+    |> validate_required_string(neighbor, "protocol", "#{path}.protocol")
+    |> validate_optional_inclusion(neighbor, "protocol", ~w(lldp cdp), "#{path}.protocol")
+    |> validate_required_string(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
+    |> validate_string_length(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_chassis_id",
+      "#{path}.remote_chassis_id"
+    )
+    |> validate_optional_inclusion(
+      neighbor,
+      "remote_chassis_id_kind",
+      ~w(mac_address network_address local name),
+      "#{path}.remote_chassis_id_kind"
+    )
+    |> validate_optional_non_blank_string(
+      neighbor,
+      "remote_system_name",
+      "#{path}.remote_system_name"
+    )
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_system_name",
+      "#{path}.remote_system_name"
+    )
+    |> validate_required_string(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_string_length(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_optional_codepoint_length(neighbor, "remote_port_id", "#{path}.remote_port_id")
+    |> validate_optional_inclusion(
+      neighbor,
+      "remote_port_id_kind",
+      ~w(mac_address local name),
+      "#{path}.remote_port_id_kind"
+    )
+    |> validate_optional_non_blank_string(
+      neighbor,
+      "remote_port_description",
+      "#{path}.remote_port_description"
+    )
+    |> validate_optional_codepoint_length(
+      neighbor,
+      "remote_port_description",
+      "#{path}.remote_port_description"
+    )
+    |> validate_neighbor_identifier_value(
+      neighbor,
+      "remote_chassis_id_kind",
+      "remote_chassis_id",
+      path
+    )
+    |> validate_neighbor_identifier_value(
+      neighbor,
+      "remote_port_id_kind",
+      "remote_port_id",
+      path
+    )
+    |> validate_neighbor_ttl(neighbor, "#{path}.ttl_seconds")
+    |> validate_optional_non_nil_map(neighbor, "metadata", "#{path}.metadata")
+  end
+
+  defp validate_interface_neighbor(errors, _neighbor, path),
+    do: [error(path, "must be an object") | errors]
+
+  defp validate_unique_interface_neighbors(errors, path, neighbors) do
+    identities =
+      Enum.flat_map(neighbors, fn
+        %{
+          "protocol" => protocol,
+          "remote_chassis_id" => chassis_id,
+          "remote_port_id" => port_id
+        } = neighbor
+        when is_binary(protocol) and is_binary(chassis_id) and is_binary(port_id) ->
+          chassis_kind = Map.get(neighbor, "remote_chassis_id_kind")
+          port_kind = Map.get(neighbor, "remote_port_id_kind")
+
+          [
+            {
+              protocol,
+              chassis_kind,
+              NeighborIdentifier.normalize_chassis(chassis_kind, chassis_id),
+              port_kind,
+              NeighborIdentifier.normalize_port(port_kind, port_id)
+            }
+          ]
+
+        _invalid ->
+          []
+      end)
+
+    if length(identities) == length(Enum.uniq(identities)),
+      do: errors,
+      else: [error("#{path}.neighbors", "must not contain duplicate endpoints") | errors]
+  end
+
+  defp validate_neighbor_ttl(errors, neighbor, path) do
+    case Map.fetch(neighbor, "ttl_seconds") do
+      {:ok, value} when is_integer(value) and value in 1..65_535 -> errors
+      {:ok, _invalid} -> [error(path, "must be an integer from 1 through 65535") | errors]
+      :error -> [error(path, "is required") | errors]
+    end
+  end
+
+  defp validate_neighbor_identifier_value(errors, neighbor, kind_key, value_key, path) do
+    kind = Map.get(neighbor, kind_key)
+    value = Map.get(neighbor, value_key)
+    errors = validate_neighbor_identifier_format(errors, kind, value, value_key, path)
+    normalized = normalize_neighbor_identifier(kind, value, value_key)
+
+    if normalized && length(String.codepoints(normalized)) > 255,
+      do: [
+        error("#{path}.#{value_key}", "normalized value must be at most 255 characters") | errors
+      ],
+      else: errors
+  end
+
+  defp validate_neighbor_identifier_format(errors, "mac_address", value, value_key, path)
+       when is_binary(value) do
+    if NeighborIdentifier.mac_address?(value),
+      do: errors,
+      else: [error("#{path}.#{value_key}", "must be a MAC address") | errors]
+  end
+
+  defp validate_neighbor_identifier_format(errors, "network_address", value, value_key, path)
+       when is_binary(value) do
+    case Inet.cast(String.trim(value)) do
+      {:ok, _address} -> errors
+      :error -> [error("#{path}.#{value_key}", "must be a network address") | errors]
+    end
+  end
+
+  defp validate_neighbor_identifier_format(errors, _kind, _value, _value_key, _path),
+    do: errors
+
+  defp normalize_neighbor_identifier(_kind, value, _value_key) when not is_binary(value), do: nil
+
+  defp normalize_neighbor_identifier(kind, value, "remote_chassis_id"),
+    do: NeighborIdentifier.normalize_chassis(kind, value)
+
+  defp normalize_neighbor_identifier(kind, value, _port_key),
+    do: NeighborIdentifier.normalize_port(kind, value)
 
   defp validate_interface_relationship(errors, %{} = relationship, path) do
     errors
@@ -907,7 +1073,7 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_section_completeness_entry(errors, section, value) do
-    if section in ~w(components interface_vlans interface_relationships placement) and
+    if section in ~w(components interface_vlans interface_neighbors interface_relationships placement) and
          is_boolean(value) do
       errors
     else
@@ -948,6 +1114,16 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp parse_required_timestamp(_value, path), do: {nil, [error(path, "must be a string")]}
+
+  defp validate_observation_clock(errors, nil), do: errors
+
+  defp validate_observation_clock(errors, observed_at) do
+    latest = DateTime.add(Renga.Time.utc_now_ms(), @max_future_observation_skew_seconds, :second)
+
+    if DateTime.compare(observed_at, latest) == :gt,
+      do: [error("observed_at", "must not be more than 5 minutes in the future") | errors],
+      else: errors
+  end
 
   defp maybe_put(attrs, _key, nil), do: attrs
   defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)

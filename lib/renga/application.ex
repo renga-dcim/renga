@@ -10,14 +10,17 @@ defmodule Renga.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      RengaWeb.Telemetry,
-      Renga.Repo,
-      {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: Renga.PubSub},
-      # Keep the endpoint last so infrastructure dependencies are ready first.
-      RengaWeb.Endpoint
-    ]
+    children =
+      [
+        RengaWeb.Telemetry,
+        Renga.Repo,
+        {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
+        {Phoenix.PubSub, name: Renga.PubSub},
+        neighbor_expiry_worker(),
+        # Keep the endpoint last so infrastructure dependencies are ready first.
+        RengaWeb.Endpoint
+      ]
+      |> Enum.reject(&is_nil/1)
 
     opts = [strategy: :one_for_one, name: Renga.Supervisor]
     Supervisor.start_link(children, opts)
@@ -27,5 +30,10 @@ defmodule Renga.Application do
   def config_change(changed, _new, removed) do
     RengaWeb.Endpoint.config_change(changed, removed)
     :ok
+  end
+
+  defp neighbor_expiry_worker do
+    if Application.get_env(:renga, :neighbor_expiry_worker_enabled, true),
+      do: Renga.Topology.NeighborExpiryWorker
   end
 end

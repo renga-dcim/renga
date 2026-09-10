@@ -2225,6 +2225,410 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert matched.id == resource.id
   end
 
+  test "authoritative interface omission removes its current neighbor adjacency" do
+    context = context()
+
+    {:ok, remote_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "omission-neighbor-remote",
+        lifecycle_state: "active"
+      })
+
+    {:ok, remote_interface} =
+      Inventory.create_interface(context.scope, remote_resource.id, %{name: "swp1"})
+
+    initial =
+      observation_at(
+        context,
+        "neighbor-omission-1",
+        ~U[2099-09-11 06:00:00Z],
+        %{"machine_id" => "neighbor-omission-machine"},
+        %{},
+        [
+          %{
+            "name" => "eth0",
+            "status" => "up",
+            "neighbors" => [
+              %{
+                "protocol" => "lldp",
+                "remote_chassis_id" => remote_resource.name,
+                "remote_port_id" => remote_interface.name,
+                "ttl_seconds" => 120,
+                "metadata" => %{}
+              }
+            ]
+          }
+        ]
+      )
+
+    assert {:ok, local_resource, true} =
+             Inventory.reconcile_observation(context.scope, initial.id)
+
+    [local_interface] = Inventory.list_interfaces(context.scope, local_resource.id)
+    [evidence] = Topology.list_interface_neighbor_evidence(context.scope, local_interface.id)
+    assert [_adjacency] = Topology.list_current_interface_adjacencies(context.scope)
+
+    omitted =
+      observation_at(
+        context,
+        "neighbor-omission-2",
+        ~U[2099-09-11 06:01:00Z],
+        %{"machine_id" => "neighbor-omission-machine"},
+        %{},
+        []
+      )
+
+    assert {:ok, ^local_resource, false} =
+             Inventory.reconcile_observation(context.scope, omitted.id)
+
+    assert [%{status: "not_present"}] =
+             Inventory.list_interfaces(context.scope, local_resource.id)
+
+    assert Topology.list_current_interface_adjacencies(context.scope) == []
+    assert Topology.get_interface_neighbor_match(context.scope, evidence.id) == nil
+    assert Topology.list_topology_findings(context.scope, local_interface.id) == []
+  end
+
+  test "remote interface omission invalidates incoming neighbor adjacency" do
+    context = context()
+
+    {:ok, local_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "incoming-omission-local",
+        lifecycle_state: "active"
+      })
+
+    {:ok, local_interface} =
+      Inventory.create_interface(context.scope, local_resource.id, %{name: "eth0"})
+
+    {:ok, remote_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "incoming-omission-remote",
+        lifecycle_state: "active"
+      })
+
+    {:ok, _identifier} =
+      Inventory.create_resource_identifier(context.scope, remote_resource.id, %{
+        kind: "machine_id",
+        value: "incoming-omission-machine"
+      })
+
+    initial_remote =
+      observation_at(
+        context,
+        "incoming-omission-initial",
+        ~U[2099-09-11 11:59:00Z],
+        %{"machine_id" => "incoming-omission-machine"},
+        %{},
+        [%{"name" => "swp1", "status" => "up"}]
+      )
+
+    assert {:ok, ^remote_resource, false} =
+             Inventory.reconcile_observation(context.scope, initial_remote.id)
+
+    [remote_interface] = Inventory.list_interfaces(context.scope, remote_resource.id)
+
+    topology_observation =
+      observation_at(
+        context,
+        "incoming-omission-neighbor",
+        ~U[2099-09-11 12:00:00Z],
+        %{"machine_id" => "unrelated-topology-source"},
+        %{},
+        :absent
+      )
+
+    assert {:ok, [_evidence]} =
+             Topology.reconcile_interface_neighbors(
+               context.scope,
+               context.source,
+               topology_observation,
+               local_resource.id,
+               [
+                 %{
+                   "name" => local_interface.name,
+                   "neighbors" => [
+                     %{
+                       "protocol" => "lldp",
+                       "remote_chassis_id" => "incoming-omission-machine",
+                       "remote_port_id" => remote_interface.name,
+                       "ttl_seconds" => 120,
+                       "metadata" => %{}
+                     }
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert [_adjacency] = Topology.list_current_interface_adjacencies(context.scope)
+
+    omission =
+      observation_at(
+        context,
+        "incoming-omission-inventory",
+        ~U[2099-09-11 12:01:00Z],
+        %{"machine_id" => "incoming-omission-machine"},
+        %{},
+        []
+      )
+
+    assert {:ok, ^remote_resource, false} =
+             Inventory.reconcile_observation(context.scope, omission.id)
+
+    assert [%{status: "not_present"}] =
+             Inventory.list_interfaces(context.scope, remote_resource.id)
+
+    assert Topology.list_current_interface_adjacencies(context.scope) == []
+  end
+
+  test "remote discovery rematches unresolved neighbor evidence" do
+    context = context()
+
+    {:ok, local_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "neighbor-discovery-local",
+        lifecycle_state: "active"
+      })
+
+    {:ok, local_interface} =
+      Inventory.create_interface(context.scope, local_resource.id, %{name: "eth0"})
+
+    topology_observation =
+      observation_at(
+        context,
+        "neighbor-discovery-evidence",
+        ~U[2099-09-11 13:00:00Z],
+        %{"machine_id" => "unrelated-discovery-source"},
+        %{},
+        :absent
+      )
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_neighbors(
+               context.scope,
+               context.source,
+               topology_observation,
+               local_resource.id,
+               [
+                 %{
+                   "name" => local_interface.name,
+                   "neighbors" => [
+                     %{
+                       "protocol" => "lldp",
+                       "remote_chassis_id" => "new-switch.example",
+                       "remote_port_id" => "swp1",
+                       "ttl_seconds" => 120,
+                       "metadata" => %{}
+                     }
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert %{status: "unresolved"} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    discovery =
+      observation_at(
+        context,
+        "neighbor-discovery-inventory",
+        ~U[2099-09-11 13:01:00Z],
+        %{"machine_id" => "neighbor-discovery-machine"},
+        %{"hostname" => "new-switch.example"},
+        [%{"name" => "swp1", "status" => "up"}]
+      )
+
+    assert {:ok, discovered_resource, true} =
+             Inventory.reconcile_observation(context.scope, discovery.id)
+
+    [discovered_interface] =
+      Inventory.list_interfaces(context.scope, discovered_resource.id)
+
+    assert %{status: "matched", remote_interface_id: remote_id} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    assert remote_id == discovered_interface.id
+  end
+
+  test "one inventory observation does not reconcile intermediate neighbor candidates" do
+    context = context()
+    remote_mac = "02:00:00:00:04:01"
+
+    {:ok, local_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "neighbor-batch-local",
+        lifecycle_state: "active"
+      })
+
+    {:ok, local_interface} =
+      Inventory.create_interface(context.scope, local_resource.id, %{name: "eth0"})
+
+    {:ok, remote_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "neighbor-batch-remote",
+        lifecycle_state: "active"
+      })
+
+    {:ok, _identifier} =
+      Inventory.create_resource_identifier(context.scope, remote_resource.id, %{
+        kind: "machine_id",
+        value: "neighbor-batch-machine"
+      })
+
+    topology_observation =
+      observation_at(
+        context,
+        "neighbor-batch-topology",
+        ~U[2099-09-11 13:10:00Z],
+        %{"machine_id" => "neighbor-batch-unrelated"},
+        %{},
+        :absent
+      )
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_neighbors(
+               context.scope,
+               context.source,
+               topology_observation,
+               local_resource.id,
+               [
+                 %{
+                   "name" => local_interface.name,
+                   "neighbors" => [
+                     %{
+                       "protocol" => "lldp",
+                       "remote_chassis_id" => remote_resource.name,
+                       "remote_port_id" => remote_mac,
+                       "remote_port_id_kind" => "mac_address",
+                       "ttl_seconds" => 120,
+                       "metadata" => %{}
+                     }
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert %{status: "unresolved", candidate_count: 0} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    assert [%{id: finding_id}] =
+             Topology.list_topology_findings(context.scope, local_interface.id)
+
+    inventory_observation =
+      observation_at(
+        context,
+        "neighbor-batch-inventory",
+        ~U[2099-09-11 13:11:00Z],
+        %{"machine_id" => "neighbor-batch-machine"},
+        %{},
+        [
+          %{"name" => "swp1", "status" => "up", "mac_address" => remote_mac},
+          %{"name" => "swp2", "status" => "up", "mac_address" => remote_mac}
+        ]
+      )
+
+    assert {:ok, ^remote_resource, false} =
+             Inventory.reconcile_observation(context.scope, inventory_observation.id)
+
+    assert %{status: "ambiguous", candidate_count: 2} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    assert [%{id: ^finding_id}] =
+             Topology.list_topology_findings(context.scope, local_interface.id)
+
+    assert Topology.list_topology_findings(context.scope, local_interface.id, "resolved") == []
+  end
+
+  test "ordinary inventory discovery can make a matched neighbor ambiguous" do
+    context = context()
+
+    first_candidate =
+      observation_at(
+        context,
+        "neighbor-candidate-first",
+        ~U[2099-09-11 14:00:00Z],
+        %{"machine_id" => "neighbor-candidate-first"},
+        %{"hostname" => "shared-switch.example"},
+        [%{"name" => "swp1", "status" => "up"}]
+      )
+
+    assert {:ok, _first_resource, true} =
+             Inventory.reconcile_observation(context.scope, first_candidate.id)
+
+    {:ok, local_resource} =
+      Inventory.create_resource(context.scope, %{
+        kind: "server",
+        name: "neighbor-candidate-local",
+        lifecycle_state: "active"
+      })
+
+    {:ok, local_interface} =
+      Inventory.create_interface(context.scope, local_resource.id, %{name: "eth0"})
+
+    topology_observation =
+      observation_at(
+        context,
+        "neighbor-candidate-evidence",
+        ~U[2099-09-11 14:01:00Z],
+        %{"machine_id" => "neighbor-candidate-unrelated"},
+        %{},
+        :absent
+      )
+
+    assert {:ok, [evidence]} =
+             Topology.reconcile_interface_neighbors(
+               context.scope,
+               context.source,
+               topology_observation,
+               local_resource.id,
+               [
+                 %{
+                   "name" => local_interface.name,
+                   "neighbors" => [
+                     %{
+                       "protocol" => "lldp",
+                       "remote_chassis_id" => "shared-switch.example",
+                       "remote_port_id" => "swp1",
+                       "ttl_seconds" => 120,
+                       "metadata" => %{}
+                     }
+                   ]
+                 }
+               ],
+               true
+             )
+
+    assert %{status: "matched"} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    second_candidate =
+      observation_at(
+        context,
+        "neighbor-candidate-second",
+        ~U[2099-09-11 14:02:00Z],
+        %{"machine_id" => "neighbor-candidate-second"},
+        %{"hostname" => "shared-switch.example"},
+        [%{"name" => "swp1", "status" => "up"}]
+      )
+
+    assert {:ok, _second_resource, true} =
+             Inventory.reconcile_observation(context.scope, second_candidate.id)
+
+    assert %{status: "ambiguous", candidate_count: 2} =
+             Topology.get_interface_neighbor_match(context.scope, evidence.id)
+
+    assert Topology.list_current_interface_adjacencies(context.scope) == []
+  end
+
   test "does not merge resources when different strong identifiers disagree" do
     context = context()
 

@@ -24,7 +24,7 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 * Phase 3: Neighbor discovery and adjacency
 
-- [ ] Add LLDP/CDP evidence, stable remote endpoint matching, expiry, reciprocal
+- [X] Add LLDP/CDP evidence, stable remote endpoint matching, expiry, reciprocal
   confidence, unresolved endpoints, canonical adjacency, and findings.
 
 * Phase 4: Cable intent and reconciliation

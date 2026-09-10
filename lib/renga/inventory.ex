@@ -21,14 +21,15 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Host
+  alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.InterfaceRelationship
   alias Renga.Inventory.InterfaceRelationshipEvidence
-  alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Prefix
+  alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceCondition
   alias Renga.Inventory.ResourceIdentifier
@@ -38,7 +39,6 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ResourceRelationship
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.ResourceStore
-  alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Source
   alias Renga.Inventory.SyncRun
   alias Renga.Repo
@@ -855,6 +855,7 @@ defmodule Renga.Inventory do
   """
   def create_resource(%Scope{organization_id: organization_id} = scope, attrs) do
     Repo.transaction(fn ->
+      lock_organization!(organization_id)
       kind = get_attr(attrs, :kind)
       authorize_managed_resource_kind!(scope, kind)
       reject_context_managed_resource_creation!(organization_id, kind, attrs)
@@ -871,6 +872,8 @@ defmodule Renga.Inventory do
         attrs
       ) do
     Repo.transaction(fn ->
+      lock_organization!(organization_id)
+
       stored_kind =
         Resource
         |> where([stored], stored.id == ^resource.id)
@@ -916,6 +919,7 @@ defmodule Renga.Inventory do
         revision_action(stored_resource, resource)
       )
 
+      maybe_refresh_neighbor_topology(scope)
       resource
     end)
   end
@@ -954,9 +958,15 @@ defmodule Renga.Inventory do
   def create_host(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
     resource = get_resource!(scope, resource_id)
 
-    %Host{organization_id: organization_id, resource_id: resource.id}
-    |> Host.changeset(attrs)
-    |> Repo.insert()
+    neighbor_refreshing_transaction(scope, fn ->
+      insert_host(organization_id, resource.id, attrs)
+    end)
+  end
+
+  @doc false
+  def create_reconciled_host(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
+    resource = get_resource!(scope, resource_id)
+    insert_host(organization_id, resource.id, attrs)
   end
 
   @doc """
@@ -1059,12 +1069,19 @@ defmodule Renga.Inventory do
       ) do
     resource = get_resource!(scope, resource_id)
 
-    %ResourceIdentifier{
-      organization_id: organization_id,
-      resource_id: resource.id
-    }
-    |> ResourceIdentifier.changeset(attrs)
-    |> Repo.insert()
+    neighbor_refreshing_transaction(scope, fn ->
+      insert_resource_identifier(organization_id, resource.id, attrs)
+    end)
+  end
+
+  @doc false
+  def create_reconciled_resource_identifier(
+        %Scope{organization_id: organization_id} = scope,
+        resource_id,
+        attrs
+      ) do
+    resource = get_resource!(scope, resource_id)
+    insert_resource_identifier(organization_id, resource.id, attrs)
   end
 
   @doc """
@@ -1236,12 +1253,19 @@ defmodule Renga.Inventory do
   def create_interface(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
     resource = get_resource!(scope, resource_id)
 
-    %Interface{
-      organization_id: organization_id,
-      resource_id: resource.id
-    }
-    |> Interface.changeset(attrs)
-    |> Repo.insert()
+    neighbor_refreshing_transaction(scope, fn ->
+      insert_interface(organization_id, resource.id, attrs)
+    end)
+  end
+
+  @doc false
+  def create_reconciled_interface(
+        %Scope{organization_id: organization_id} = scope,
+        resource_id,
+        attrs
+      ) do
+    resource = get_resource!(scope, resource_id)
+    insert_interface(organization_id, resource.id, attrs)
   end
 
   @doc """
@@ -1881,6 +1905,7 @@ defmodule Renga.Inventory do
                metadata: override_provenance(override),
                occurred_at: override.inserted_at
              }) do
+        maybe_refresh_neighbor_topology(scope, override)
         override
       else
         {:error, error} -> Repo.rollback(error)
@@ -1890,7 +1915,14 @@ defmodule Renga.Inventory do
 
   @doc false
   def lock_organization!(organization_id) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> select([organization], organization.id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
+
     Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
+    :ok
   end
 
   @host_override_fields ~w(hostname fqdn vendor model asset_tag)
@@ -1958,7 +1990,7 @@ defmodule Renga.Inventory do
        do: changeset
 
   defp validate_override_type(changeset, {:interface, _name, "mac_address"}, value) do
-    case Renga.Types.MacAddress.cast(value) do
+    case MacAddress.cast(value) do
       {:ok, _mac} -> changeset
       :error -> Ecto.Changeset.add_error(changeset, :value, "has an invalid type or value")
     end
@@ -2002,6 +2034,60 @@ defmodule Renga.Inventory do
         changeset = Interface.changeset(interface, %{field => value, "metadata" => metadata})
         persist_projection(interface, changeset, old_value)
     end
+  end
+
+  defp maybe_refresh_neighbor_topology(scope, %{field: field}) do
+    if String.starts_with?(field, "host.") or String.starts_with?(field, "interfaces.") do
+      maybe_refresh_neighbor_topology(scope)
+    end
+  end
+
+  defp maybe_refresh_neighbor_topology(scope) do
+    if Renga.Topology.current_interface_neighbor_state?(scope) do
+      topology_scope = %Scope{
+        organization: scope.organization,
+        organization_id: scope.organization_id,
+        roles: ["topology_reconciler"]
+      }
+
+      case Renga.Topology.refresh_interface_neighbors(topology_scope) do
+        {:ok, _adjacencies} -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end
+  end
+
+  defp neighbor_refreshing_transaction(%Scope{organization_id: organization_id} = scope, mutation) do
+    Repo.transaction(fn ->
+      lock_organization!(organization_id)
+
+      case mutation.() do
+        {:ok, result} ->
+          maybe_refresh_neighbor_topology(scope)
+          result
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp insert_host(organization_id, resource_id, attrs) do
+    %Host{organization_id: organization_id, resource_id: resource_id}
+    |> Host.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  defp insert_resource_identifier(organization_id, resource_id, attrs) do
+    %ResourceIdentifier{organization_id: organization_id, resource_id: resource_id}
+    |> ResourceIdentifier.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  defp insert_interface(organization_id, resource_id, attrs) do
+    %Interface{organization_id: organization_id, resource_id: resource_id}
+    |> Interface.changeset(attrs)
+    |> Repo.insert()
   end
 
   defp persist_projection(%{id: nil}, changeset, old_value),
