@@ -810,30 +810,8 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_neighbor_identifier_value(errors, neighbor, kind_key, value_key, path) do
     kind = Map.get(neighbor, kind_key)
     value = Map.get(neighbor, value_key)
-
-    errors =
-      case {kind, value} do
-        {"mac_address", value} when is_binary(value) ->
-          if NeighborIdentifier.mac_address?(value),
-            do: errors,
-            else: [error("#{path}.#{value_key}", "must be a MAC address") | errors]
-
-        {"network_address", value} when is_binary(value) ->
-          case Inet.cast(String.trim(value)) do
-            {:ok, _address} -> errors
-            :error -> [error("#{path}.#{value_key}", "must be a network address") | errors]
-          end
-
-        _opaque_or_invalid ->
-          errors
-      end
-
-    normalized =
-      cond do
-        not is_binary(value) -> nil
-        value_key == "remote_chassis_id" -> NeighborIdentifier.normalize_chassis(kind, value)
-        true -> NeighborIdentifier.normalize_port(kind, value)
-      end
+    errors = validate_neighbor_identifier_format(errors, kind, value, value_key, path)
+    normalized = normalize_neighbor_identifier(kind, value, value_key)
 
     if normalized && length(String.codepoints(normalized)) > 255,
       do: [
@@ -841,6 +819,32 @@ defmodule Renga.Inventory.AgentPayload do
       ],
       else: errors
   end
+
+  defp validate_neighbor_identifier_format(errors, "mac_address", value, value_key, path)
+       when is_binary(value) do
+    if NeighborIdentifier.mac_address?(value),
+      do: errors,
+      else: [error("#{path}.#{value_key}", "must be a MAC address") | errors]
+  end
+
+  defp validate_neighbor_identifier_format(errors, "network_address", value, value_key, path)
+       when is_binary(value) do
+    case Inet.cast(String.trim(value)) do
+      {:ok, _address} -> errors
+      :error -> [error("#{path}.#{value_key}", "must be a network address") | errors]
+    end
+  end
+
+  defp validate_neighbor_identifier_format(errors, _kind, _value, _value_key, _path),
+    do: errors
+
+  defp normalize_neighbor_identifier(_kind, value, _value_key) when not is_binary(value), do: nil
+
+  defp normalize_neighbor_identifier(kind, value, "remote_chassis_id"),
+    do: NeighborIdentifier.normalize_chassis(kind, value)
+
+  defp normalize_neighbor_identifier(kind, value, _port_key),
+    do: NeighborIdentifier.normalize_port(kind, value)
 
   defp validate_interface_relationship(errors, %{} = relationship, path) do
     errors
