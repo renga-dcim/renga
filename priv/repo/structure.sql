@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pgjYI4bfcXQq5E3xHeftp1m65eKPtCIhnsZwUS4GOTlb6Zl9sQCOxgM1SIGosQz
+\restrict 4w1SZqIhlSZtrVVSqFbnfffLX1v3wCcKleYc5PwqM5vbLoYKeEJ8zj3GUVZkijd
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -112,6 +112,127 @@ $$;
 
 
 --
+-- Name: enforce_current_interface_adjacency_endpoints_immutable(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_current_interface_adjacency_endpoints_immutable() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.organization_id = OLD.organization_id AND
+     NEW.interface_a_id = OLD.interface_a_id AND
+     NEW.interface_b_id = OLD.interface_b_id THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'current interface adjacency endpoints are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
+-- Name: enforce_current_interface_adjacency_occupancy(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_current_interface_adjacency_occupancy() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  checked_adjacency_id uuid;
+  checked_organization_id uuid;
+BEGIN
+  IF TG_OP IN ('DELETE', 'UPDATE') THEN
+    checked_adjacency_id := OLD.adjacency_id;
+    checked_organization_id := OLD.organization_id;
+
+    IF EXISTS (
+      SELECT 1
+      FROM current_interface_adjacencies adjacency
+      WHERE adjacency.id = checked_adjacency_id
+        AND adjacency.organization_id = checked_organization_id
+        AND (
+          (SELECT count(*)
+           FROM current_interface_adjacency_endpoints endpoint
+           WHERE endpoint.adjacency_id = adjacency.id
+             AND endpoint.organization_id = adjacency.organization_id) <> 2
+          OR NOT EXISTS (
+            SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+            WHERE endpoint.adjacency_id = adjacency.id
+              AND endpoint.organization_id = adjacency.organization_id
+              AND endpoint.interface_id = adjacency.interface_a_id
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+            WHERE endpoint.adjacency_id = adjacency.id
+              AND endpoint.organization_id = adjacency.organization_id
+              AND endpoint.interface_id = adjacency.interface_b_id
+          )
+        )
+    ) THEN
+      RAISE EXCEPTION 'current interface adjacency occupancy is inconsistent'
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    checked_adjacency_id := NEW.adjacency_id;
+    checked_organization_id := NEW.organization_id;
+
+    IF EXISTS (
+      SELECT 1
+      FROM current_interface_adjacencies adjacency
+      WHERE adjacency.id = checked_adjacency_id
+        AND adjacency.organization_id = checked_organization_id
+        AND (
+          (SELECT count(*)
+           FROM current_interface_adjacency_endpoints endpoint
+           WHERE endpoint.adjacency_id = adjacency.id
+             AND endpoint.organization_id = adjacency.organization_id) <> 2
+          OR NOT EXISTS (
+            SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+            WHERE endpoint.adjacency_id = adjacency.id
+              AND endpoint.organization_id = adjacency.organization_id
+              AND endpoint.interface_id = adjacency.interface_a_id
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM current_interface_adjacency_endpoints endpoint
+            WHERE endpoint.adjacency_id = adjacency.id
+              AND endpoint.organization_id = adjacency.organization_id
+              AND endpoint.interface_id = adjacency.interface_b_id
+          )
+        )
+    ) THEN
+      RAISE EXCEPTION 'current interface adjacency occupancy is inconsistent'
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: enforce_interface_neighbor_evidence_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_interface_neighbor_evidence_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF (to_jsonb(NEW) - ARRAY['stale_at', 'stale_reason']) =
+     (to_jsonb(OLD) - ARRAY['stale_at', 'stale_reason']) THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'interface neighbor evidence facts are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
 -- Name: enforce_interface_vlan_evidence_immutability(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -153,6 +274,25 @@ BEGIN
     RAISE EXCEPTION 'resource kind is immutable'
       USING ERRCODE = '23514', CONSTRAINT = 'resources_kind_immutable';
   END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: occupy_current_interface_adjacency_endpoints(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.occupy_current_interface_adjacency_endpoints() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  INSERT INTO current_interface_adjacency_endpoints
+    (organization_id, interface_id, adjacency_id)
+  VALUES
+    (NEW.organization_id, NEW.interface_a_id, NEW.id),
+    (NEW.organization_id, NEW.interface_b_id, NEW.id);
 
   RETURN NEW;
 END;
@@ -450,6 +590,37 @@ CREATE TABLE public.component_templates (
     required boolean DEFAULT true NOT NULL,
     attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: current_interface_adjacencies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_interface_adjacencies (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_a_id uuid NOT NULL,
+    interface_b_id uuid NOT NULL,
+    primary_evidence_id uuid NOT NULL,
+    confidence character varying(255) NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT current_interface_adjacencies_canonical_order CHECK ((interface_a_id < interface_b_id)),
+    CONSTRAINT current_interface_adjacencies_valid_confidence CHECK (((confidence)::text = ANY ((ARRAY['reported'::character varying, 'reciprocal'::character varying])::text[])))
+);
+
+
+--
+-- Name: current_interface_adjacency_endpoints; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_interface_adjacency_endpoints (
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    adjacency_id uuid NOT NULL
 );
 
 
@@ -757,6 +928,58 @@ CREATE TABLE public.interface_evidence (
     catalog_match_strategy character varying(255),
     CONSTRAINT interface_evidence_catalog_match_shape CHECK (((((catalog_match_status IS NULL) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL)) OR (((catalog_match_status)::text = 'matched'::text) AND (component_template_id IS NOT NULL) AND ((catalog_match_strategy)::text = ANY ((ARRAY['mac_address'::character varying, 'name'::character varying])::text[]))) OR (((catalog_match_status)::text = ANY ((ARRAY['unmatched'::character varying, 'ambiguous'::character varying])::text[])) AND (component_template_id IS NULL) AND (catalog_match_strategy IS NULL))) IS TRUE)),
     CONSTRAINT interface_evidence_mtu_speed_positive CHECK ((((mtu IS NULL) OR (mtu > 0)) AND ((speed_mbps IS NULL) OR (speed_mbps > 0))))
+);
+
+
+--
+-- Name: interface_neighbor_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_neighbor_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    local_interface_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    protocol character varying(255) NOT NULL,
+    remote_chassis_id character varying(255) NOT NULL,
+    remote_chassis_id_kind character varying(255),
+    remote_chassis_id_normalized character varying(255) CONSTRAINT interface_neighbor_evidence_remote_chassis_id_normaliz_not_null NOT NULL,
+    remote_system_name character varying(255),
+    remote_port_id character varying(255) NOT NULL,
+    remote_port_id_kind character varying(255),
+    remote_port_id_normalized character varying(255) NOT NULL,
+    remote_port_description character varying(255),
+    ttl_seconds integer NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    stale_at timestamp(3) without time zone,
+    stale_reason character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_neighbor_evidence_stale_shape CHECK ((((stale_at IS NULL) AND (stale_reason IS NULL)) OR ((stale_at IS NOT NULL) AND (stale_reason IS NOT NULL) AND ((stale_reason)::text = ANY ((ARRAY['expired'::character varying, 'superseded'::character varying, 'withdrawn'::character varying])::text[]))))),
+    CONSTRAINT interface_neighbor_evidence_valid_id_kinds CHECK ((((remote_chassis_id_kind IS NULL) OR ((remote_chassis_id_kind)::text = ANY ((ARRAY['mac_address'::character varying, 'network_address'::character varying, 'local'::character varying, 'name'::character varying])::text[]))) AND ((remote_port_id_kind IS NULL) OR ((remote_port_id_kind)::text = ANY ((ARRAY['mac_address'::character varying, 'local'::character varying, 'name'::character varying])::text[]))))),
+    CONSTRAINT interface_neighbor_evidence_valid_protocol CHECK (((protocol)::text = ANY ((ARRAY['lldp'::character varying, 'cdp'::character varying])::text[]))),
+    CONSTRAINT interface_neighbor_evidence_valid_ttl CHECK ((((ttl_seconds >= 1) AND (ttl_seconds <= 65535)) AND (expires_at > observed_at)))
+);
+
+
+--
+-- Name: interface_neighbor_matches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_neighbor_matches (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_neighbor_evidence_id uuid CONSTRAINT interface_neighbor_matches_interface_neighbor_evidence_not_null NOT NULL,
+    remote_interface_id uuid,
+    status character varying(255) NOT NULL,
+    strategy character varying(255),
+    candidate_count integer DEFAULT 0 NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_neighbor_matches_status_shape CHECK (((((status)::text = 'matched'::text) AND (remote_interface_id IS NOT NULL) AND (strategy IS NOT NULL) AND (candidate_count = 1)) OR (((status)::text = ANY ((ARRAY['unresolved'::character varying, 'ambiguous'::character varying])::text[])) AND (remote_interface_id IS NULL) AND (strategy IS NULL) AND (candidate_count >= 0)))),
+    CONSTRAINT interface_neighbor_matches_valid_strategy CHECK (((strategy IS NULL) OR ((strategy)::text = ANY ((ARRAY['stable_identifiers'::character varying, 'name_fallback'::character varying])::text[]))))
 );
 
 
@@ -1496,7 +1719,7 @@ CREATE TABLE public.topology_snapshot_events (
     section character varying(255) NOT NULL,
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT topology_snapshot_events_valid_section CHECK (((section)::text = ANY ((ARRAY['interface_vlans'::character varying, 'interface_relationships'::character varying])::text[])))
+    CONSTRAINT topology_snapshot_events_valid_section CHECK (((section)::text = ANY ((ARRAY['interface_vlans'::character varying, 'interface_neighbors'::character varying, 'interface_relationships'::character varying])::text[])))
 );
 
 
@@ -1683,6 +1906,22 @@ ALTER TABLE ONLY public.component_templates
 
 
 --
+-- Name: current_interface_adjacencies current_interface_adjacencies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacencies
+    ADD CONSTRAINT current_interface_adjacencies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: current_interface_adjacency_endpoints current_interface_adjacency_endpoints_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacency_endpoints
+    ADD CONSTRAINT current_interface_adjacency_endpoints_pkey PRIMARY KEY (organization_id, interface_id);
+
+
+--
 -- Name: current_interface_vlan_memberships current_interface_vlan_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1808,6 +2047,22 @@ ALTER TABLE ONLY public.intake_api_keys
 
 ALTER TABLE ONLY public.interface_evidence
     ADD CONSTRAINT interface_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_evidence
+    ADD CONSTRAINT interface_neighbor_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interface_neighbor_matches interface_neighbor_matches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_matches
+    ADD CONSTRAINT interface_neighbor_matches_pkey PRIMARY KEY (id);
 
 
 --
@@ -2430,6 +2685,41 @@ CREATE INDEX component_templates_organization_id_kind_index ON public.component_
 
 
 --
+-- Name: current_interface_adjacencies_a_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX current_interface_adjacencies_a_index ON public.current_interface_adjacencies USING btree (organization_id, interface_a_id);
+
+
+--
+-- Name: current_interface_adjacencies_b_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX current_interface_adjacencies_b_index ON public.current_interface_adjacencies USING btree (organization_id, interface_b_id);
+
+
+--
+-- Name: current_interface_adjacencies_endpoints_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_adjacencies_endpoints_index ON public.current_interface_adjacencies USING btree (organization_id, interface_a_id, interface_b_id);
+
+
+--
+-- Name: current_interface_adjacencies_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX current_interface_adjacencies_id_organization_id_index ON public.current_interface_adjacencies USING btree (id, organization_id);
+
+
+--
+-- Name: current_interface_adjacency_endpoints_adjacency_id_organization; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX current_interface_adjacency_endpoints_adjacency_id_organization ON public.current_interface_adjacency_endpoints USING btree (adjacency_id, organization_id);
+
+
+--
 -- Name: current_interface_vlan_memberships_effective_untagged_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2686,6 +2976,48 @@ CREATE UNIQUE INDEX interface_evidence_observation_link_index ON public.interfac
 --
 
 CREATE INDEX interface_evidence_organization_id_source_id_interface_id_index ON public.interface_evidence USING btree (organization_id, source_id, interface_id);
+
+
+--
+-- Name: interface_neighbor_evidence_active_expiry_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_neighbor_evidence_active_expiry_index ON public.interface_neighbor_evidence USING btree (expires_at, organization_id) WHERE (stale_at IS NULL);
+
+
+--
+-- Name: interface_neighbor_evidence_active_local_source_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_neighbor_evidence_active_local_source_index ON public.interface_neighbor_evidence USING btree (organization_id, local_interface_id, source_id, observed_at) WHERE (stale_at IS NULL);
+
+
+--
+-- Name: interface_neighbor_evidence_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_neighbor_evidence_id_organization_id_index ON public.interface_neighbor_evidence USING btree (id, organization_id);
+
+
+--
+-- Name: interface_neighbor_evidence_identity_order_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_neighbor_evidence_identity_order_index ON public.interface_neighbor_evidence USING btree (organization_id, local_interface_id, source_id, protocol, remote_chassis_id_kind, remote_chassis_id_normalized, remote_port_id_kind, remote_port_id_normalized, observed_at DESC, observation_id DESC);
+
+
+--
+-- Name: interface_neighbor_evidence_observation_endpoint_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_neighbor_evidence_observation_endpoint_index ON public.interface_neighbor_evidence USING btree (organization_id, observation_id, local_interface_id, protocol, remote_chassis_id_kind, remote_chassis_id_normalized, remote_port_id_kind, remote_port_id_normalized) NULLS NOT DISTINCT;
+
+
+--
+-- Name: interface_neighbor_matches_evidence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_neighbor_matches_evidence_index ON public.interface_neighbor_matches USING btree (organization_id, interface_neighbor_evidence_id);
 
 
 --
@@ -3662,6 +3994,34 @@ CREATE TRIGGER component_templates_enforce_immutability BEFORE INSERT OR DELETE 
 
 
 --
+-- Name: current_interface_adjacencies current_interface_adjacencies_enforce_endpoints_immutable; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER current_interface_adjacencies_enforce_endpoints_immutable BEFORE UPDATE ON public.current_interface_adjacencies FOR EACH ROW EXECUTE FUNCTION public.enforce_current_interface_adjacency_endpoints_immutable();
+
+
+--
+-- Name: current_interface_adjacencies current_interface_adjacencies_occupy_endpoints; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER current_interface_adjacencies_occupy_endpoints AFTER INSERT ON public.current_interface_adjacencies FOR EACH ROW EXECUTE FUNCTION public.occupy_current_interface_adjacency_endpoints();
+
+
+--
+-- Name: current_interface_adjacency_endpoints current_interface_adjacency_endpoints_enforce_consistency; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER current_interface_adjacency_endpoints_enforce_consistency AFTER INSERT OR DELETE OR UPDATE ON public.current_interface_adjacency_endpoints DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.enforce_current_interface_adjacency_occupancy();
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER interface_neighbor_evidence_enforce_immutability BEFORE UPDATE ON public.interface_neighbor_evidence FOR EACH ROW EXECUTE FUNCTION public.enforce_interface_neighbor_evidence_immutability();
+
+
+--
 -- Name: interface_vlan_evidence interface_vlan_evidence_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3910,6 +4270,62 @@ ALTER TABLE ONLY public.component_findings
 
 ALTER TABLE ONLY public.component_templates
     ADD CONSTRAINT component_templates_revision_fkey FOREIGN KEY (catalog_type_revision_id, organization_id) REFERENCES public.catalog_type_revisions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacencies current_interface_adjacencies_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacencies
+    ADD CONSTRAINT current_interface_adjacencies_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacencies current_interface_adjacencies_tenant_a_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacencies
+    ADD CONSTRAINT current_interface_adjacencies_tenant_a_fkey FOREIGN KEY (interface_a_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacencies current_interface_adjacencies_tenant_b_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacencies
+    ADD CONSTRAINT current_interface_adjacencies_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacencies current_interface_adjacencies_tenant_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacencies
+    ADD CONSTRAINT current_interface_adjacencies_tenant_evidence_fkey FOREIGN KEY (primary_evidence_id, organization_id) REFERENCES public.interface_neighbor_evidence(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacency_endpoints current_interface_adjacency_endpoints_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacency_endpoints
+    ADD CONSTRAINT current_interface_adjacency_endpoints_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacency_endpoints current_interface_adjacency_endpoints_tenant_adjacency_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacency_endpoints
+    ADD CONSTRAINT current_interface_adjacency_endpoints_tenant_adjacency_fkey FOREIGN KEY (adjacency_id, organization_id) REFERENCES public.current_interface_adjacencies(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: current_interface_adjacency_endpoints current_interface_adjacency_endpoints_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_interface_adjacency_endpoints
+    ADD CONSTRAINT current_interface_adjacency_endpoints_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -4302,6 +4718,62 @@ ALTER TABLE ONLY public.interface_evidence
 
 ALTER TABLE ONLY public.interface_evidence
     ADD CONSTRAINT interface_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_evidence
+    ADD CONSTRAINT interface_neighbor_evidence_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_evidence
+    ADD CONSTRAINT interface_neighbor_evidence_tenant_interface_fkey FOREIGN KEY (local_interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_evidence
+    ADD CONSTRAINT interface_neighbor_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_neighbor_evidence interface_neighbor_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_evidence
+    ADD CONSTRAINT interface_neighbor_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_neighbor_matches interface_neighbor_matches_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_matches
+    ADD CONSTRAINT interface_neighbor_matches_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_neighbor_matches interface_neighbor_matches_tenant_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_matches
+    ADD CONSTRAINT interface_neighbor_matches_tenant_evidence_fkey FOREIGN KEY (interface_neighbor_evidence_id, organization_id) REFERENCES public.interface_neighbor_evidence(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_neighbor_matches interface_neighbor_matches_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_neighbor_matches
+    ADD CONSTRAINT interface_neighbor_matches_tenant_interface_fkey FOREIGN KEY (remote_interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -5100,7 +5572,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pgjYI4bfcXQq5E3xHeftp1m65eKPtCIhnsZwUS4GOTlb6Zl9sQCOxgM1SIGosQz
+\unrestrict 4w1SZqIhlSZtrVVSqFbnfffLX1v3wCcKleYc5PwqM5vbLoYKeEJ8zj3GUVZkijd
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -5136,3 +5608,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260903213000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260907070000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260910090000);

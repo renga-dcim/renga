@@ -30,7 +30,11 @@ defmodule Renga.Topology.TopologySnapshotEvent do
       :section,
       :observed_at
     ])
-    |> validate_inclusion(:section, ~w(interface_vlans interface_relationships))
+    |> validate_inclusion(
+      :section,
+      ~w(interface_vlans interface_neighbors interface_relationships)
+    )
+    |> check_constraint(:section, name: :topology_snapshot_events_valid_section)
     |> assoc_constraint(:resource, name: :topology_snapshot_events_tenant_resource_fkey)
     |> assoc_constraint(:source, name: :topology_snapshot_events_tenant_source_fkey)
     |> assoc_constraint(:observation, name: :topology_snapshot_events_tenant_observation_fkey)

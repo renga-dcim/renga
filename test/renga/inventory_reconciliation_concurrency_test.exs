@@ -223,7 +223,7 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
 
     try do
       await_task_readiness!(tasks)
-      await_advisory_waiters!(2, @timeout)
+      await_row_lock_waiters!(2, @timeout)
     after
       Repo.query!("COMMIT")
     end
