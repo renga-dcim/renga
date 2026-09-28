@@ -429,6 +429,72 @@ defmodule Renga.Topology do
     |> Repo.all()
   end
 
+  @doc """
+  Lists current adjacencies for the organization with their endpoints loaded.
+
+  An optional `:interface_id` narrows the list to adjacencies touching one
+  endpoint, which is what resource details link to.
+  """
+  def list_organization_interface_adjacencies(
+        %Scope{organization_id: organization_id},
+        opts \\ []
+      ) do
+    CurrentInterfaceAdjacency
+    |> where([adjacency], adjacency.organization_id == ^organization_id)
+    |> maybe_where_adjacency_interface(Keyword.get(opts, :interface_id))
+    |> order_by([adjacency], asc: adjacency.interface_a_id, asc: adjacency.interface_b_id)
+    |> preload(interface_a: :resource, interface_b: :resource, primary_evidence: :source)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists active neighbor evidence that no matched remote endpoint explains.
+
+  Unresolved and ambiguous evidence stays visible so operators can see what
+  collectors observed without it becoming reconciled adjacency or cabling.
+  """
+  def list_unresolved_interface_neighbor_evidence(
+        %Scope{organization_id: organization_id},
+        opts \\ []
+      ) do
+    InterfaceNeighborEvidence
+    |> join(:left, [evidence], match in InterfaceNeighborMatch,
+      on:
+        match.organization_id == evidence.organization_id and
+          match.interface_neighbor_evidence_id == evidence.id
+    )
+    |> where([evidence], evidence.organization_id == ^organization_id)
+    |> where([evidence], is_nil(evidence.stale_at))
+    |> where([_evidence, match], is_nil(match.id) or match.status != "matched")
+    |> maybe_where_evidence_interface(Keyword.get(opts, :interface_id))
+    |> order_by([evidence], desc: evidence.observed_at, desc: evidence.observation_id)
+    |> preload([:source, local_interface: :resource])
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists organization topology findings with optional status, kind, and endpoint
+  filters.
+  """
+  def list_organization_topology_findings(
+        %Scope{organization_id: organization_id},
+        opts \\ []
+      ) do
+    TopologyFinding
+    |> where([finding], finding.organization_id == ^organization_id)
+    |> maybe_where_finding_status(Keyword.get(opts, :status, "open"))
+    |> maybe_where_finding_kind(Keyword.get(opts, :kind))
+    |> maybe_where_finding_interface(Keyword.get(opts, :interface_id))
+    |> order_by([finding], desc: finding.last_observed_at, asc: finding.kind)
+    |> preload(interface: :resource)
+    |> Repo.all()
+  end
+
+  @doc "Every finding kind topology reconciliation can produce."
+  def topology_finding_kinds do
+    @vlan_finding_kinds ++ @neighbor_finding_kinds ++ CableReconciler.finding_kinds()
+  end
+
   @doc false
   def interface_neighbor_reconciliation_needed?(
         %Scope{organization_id: organization_id},
@@ -545,7 +611,7 @@ defmodule Renga.Topology do
     |> where([plan], plan.organization_id == ^organization_id)
     |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
     |> order_by([plan], asc: plan.interface_a_id, asc: plan.interface_b_id)
-    |> preload([:interface_a, :interface_b])
+    |> preload(interface_a: :resource, interface_b: :resource)
     |> Repo.all()
   end
 
@@ -611,7 +677,7 @@ defmodule Renga.Topology do
     |> where([assertion], assertion.organization_id == ^organization_id)
     |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
     |> order_by([assertion], desc: assertion.asserted_at, desc: assertion.sequence)
-    |> preload([:interface_a, :interface_b])
+    |> preload(interface_a: :resource, interface_b: :resource)
     |> Repo.all()
   end
 
@@ -781,6 +847,7 @@ defmodule Renga.Topology do
 
   def list_cables(%Scope{organization_id: organization_id}, opts \\ []) do
     CableReconciler.list_cables(organization_id, opts)
+    |> Repo.preload(interface_a: :resource, interface_b: :resource)
   end
 
   def get_cable!(%Scope{organization_id: organization_id}, id) do
@@ -1235,6 +1302,37 @@ defmodule Renga.Topology do
       record.interface_a_id == ^interface_id or record.interface_b_id == ^interface_id
     )
   end
+
+  defp maybe_where_adjacency_interface(query, nil), do: query
+
+  defp maybe_where_adjacency_interface(query, interface_id) do
+    where(
+      query,
+      [adjacency],
+      adjacency.interface_a_id == ^interface_id or adjacency.interface_b_id == ^interface_id
+    )
+  end
+
+  defp maybe_where_evidence_interface(query, nil), do: query
+
+  defp maybe_where_evidence_interface(query, interface_id) do
+    where(query, [evidence], evidence.local_interface_id == ^interface_id)
+  end
+
+  defp maybe_where_finding_status(query, nil), do: query
+
+  defp maybe_where_finding_status(query, status),
+    do: where(query, [finding], finding.status == ^status)
+
+  defp maybe_where_finding_kind(query, nil), do: query
+
+  defp maybe_where_finding_kind(query, kind),
+    do: where(query, [finding], finding.kind == ^kind)
+
+  defp maybe_where_finding_interface(query, nil), do: query
+
+  defp maybe_where_finding_interface(query, interface_id),
+    do: where(query, [finding], finding.interface_id == ^interface_id)
 
   defp create_resource(organization_id, kind, attrs) do
     attrs = put_attr(attrs, :kind, kind)
