@@ -64,34 +64,7 @@ defmodule RengaWeb.VlanLive do
         {:noreply, put_flash(socket, :error, "Enter a VID from 1 to 4094")}
 
       true ->
-        case Topology.create_vlan(
-               scope,
-               %{lifecycle_state: "active"},
-               %{
-                 vlan_group_id: blank_to_nil(params["vlan_group_id"]),
-                 vid: vid,
-                 name: name,
-                 status: params["status"] || "active",
-                 role: blank_to_nil(params["role"]),
-                 description: blank_to_nil(params["description"])
-               }
-             ) do
-          {:ok, vlan} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "VLAN #{vlan.vid} created")
-             |> assign(:vlan_form, vlan_form())
-             |> load_vlans(socket.assigns.group_filter)}
-
-          {:error, :forbidden} ->
-            {:noreply, put_flash(socket, :error, "You are not allowed to manage VLANs")}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, put_flash(socket, :error, first_error(changeset))}
-
-          {:error, reason} ->
-            {:noreply, put_flash(socket, :error, mutation_error(reason))}
-        end
+        {:noreply, create_vlan(socket, scope, params, name, vid)}
     end
   end
 
@@ -335,7 +308,7 @@ defmodule RengaWeb.VlanLive do
                 <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
                 <p class="mt-1 text-xs text-base-content/45">
                   {vlan_namespace(vlan, @groups)}
-                  <span :if={vlan.role}> ·       {vlan.role}</span>
+                  <span :if={vlan.role}>{"· #{vlan.role}"}</span>
                 </p>
                 <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/45">
                   {vlan.description}
@@ -348,6 +321,38 @@ defmodule RengaWeb.VlanLive do
       </main>
     </Layouts.app>
     """
+  end
+
+  # Extracted from handle_event/3 so the handler keeps only input validation;
+  # this maps Topology.create_vlan/3 outcomes to flashes.
+  defp create_vlan(socket, scope, params, name, vid) do
+    case Topology.create_vlan(
+           scope,
+           %{lifecycle_state: "active"},
+           %{
+             vlan_group_id: blank_to_nil(params["vlan_group_id"]),
+             vid: vid,
+             name: name,
+             status: params["status"] || "active",
+             role: blank_to_nil(params["role"]),
+             description: blank_to_nil(params["description"])
+           }
+         ) do
+      {:ok, vlan} ->
+        socket
+        |> put_flash(:info, "VLAN #{vlan.vid} created")
+        |> assign(:vlan_form, vlan_form())
+        |> load_vlans(socket.assigns.group_filter)
+
+      {:error, :forbidden} ->
+        put_flash(socket, :error, "You are not allowed to manage VLANs")
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        put_flash(socket, :error, first_error(changeset))
+
+      {:error, reason} ->
+        put_flash(socket, :error, mutation_error(reason))
+    end
   end
 
   defp load_vlans(socket, group_filter) do

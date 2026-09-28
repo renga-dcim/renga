@@ -42,37 +42,7 @@ defmodule RengaWeb.VlanGroupLive do
          put_flash(socket, :error, "Enter a VID range from 1 to 4094 with start at or below end")}
 
       true ->
-        {scope_kind, site_id, location_id} = parse_scope(params["scope"])
-
-        case Topology.create_vlan_group(
-               scope,
-               %{name: name, lifecycle_state: "active"},
-               %{
-                 slug: blank_to_nil(params["slug"]) || slugify(name),
-                 scope_kind: scope_kind,
-                 site_id: site_id,
-                 location_id: location_id,
-                 status: "active",
-                 description: blank_to_nil(params["description"])
-               },
-               [%{start_vid: start_vid, end_vid: end_vid}]
-             ) do
-          {:ok, group} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "VLAN group #{group.slug} created")
-             |> assign(:group_form, group_form())
-             |> load_groups()}
-
-          {:error, :forbidden} ->
-            {:noreply, put_flash(socket, :error, "You are not allowed to manage VLAN namespaces")}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, put_flash(socket, :error, first_error(changeset))}
-
-          {:error, reason} ->
-            {:noreply, put_flash(socket, :error, mutation_error(reason))}
-        end
+        {:noreply, create_group(socket, scope, params, name, start_vid, end_vid)}
     end
   end
 
@@ -251,6 +221,41 @@ defmodule RengaWeb.VlanGroupLive do
       </main>
     </Layouts.app>
     """
+  end
+
+  # Extracted from handle_event/3 so the handler keeps only input validation;
+  # this maps Topology.create_vlan_group/4 outcomes to flashes.
+  defp create_group(socket, scope, params, name, start_vid, end_vid) do
+    {scope_kind, site_id, location_id} = parse_scope(params["scope"])
+
+    case Topology.create_vlan_group(
+           scope,
+           %{name: name, lifecycle_state: "active"},
+           %{
+             slug: blank_to_nil(params["slug"]) || slugify(name),
+             scope_kind: scope_kind,
+             site_id: site_id,
+             location_id: location_id,
+             status: "active",
+             description: blank_to_nil(params["description"])
+           },
+           [%{start_vid: start_vid, end_vid: end_vid}]
+         ) do
+      {:ok, group} ->
+        socket
+        |> put_flash(:info, "VLAN group #{group.slug} created")
+        |> assign(:group_form, group_form())
+        |> load_groups()
+
+      {:error, :forbidden} ->
+        put_flash(socket, :error, "You are not allowed to manage VLAN namespaces")
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        put_flash(socket, :error, first_error(changeset))
+
+      {:error, reason} ->
+        put_flash(socket, :error, mutation_error(reason))
+    end
   end
 
   defp load_groups(socket) do
