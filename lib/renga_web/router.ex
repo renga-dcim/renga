@@ -71,6 +71,9 @@ defmodule RengaWeb.Router do
 
       live "/ipam/vlan-groups", VlanGroupLive, :index
       live "/ipam/vlans", VlanLive, :index
+      live "/network/topology", TopologyLive, :index
+      live "/network/cables", CableLive, :index
+      live "/network/topology-findings", TopologyFindingLive, :index
 
       live "/dcim/sites", DcimLive, :sites
       live "/dcim/sites/:id", DcimLive, :site

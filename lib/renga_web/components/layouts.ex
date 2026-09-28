@@ -147,6 +147,24 @@ defmodule RengaWeb.Layouts do
             label="VLANs"
             active?={@active_nav == :vlans}
           />
+          <.sidebar_link
+            navigate={~p"/network/topology"}
+            icon="hero-share"
+            label="Topology"
+            active?={@active_nav == :topology}
+          />
+          <.sidebar_link
+            navigate={~p"/network/cables"}
+            icon="hero-link"
+            label="Cables"
+            active?={@active_nav == :cables}
+          />
+          <.sidebar_link
+            navigate={~p"/network/topology-findings"}
+            icon="hero-signal"
+            label="Topology findings"
+            active?={@active_nav == :topology_findings}
+          />
         </nav>
 
         <div class="mt-5 border-t border-base-content/10 pt-5">
@@ -258,6 +276,24 @@ defmodule RengaWeb.Layouts do
                   icon="hero-tag"
                   label="VLANs"
                   active?={@active_nav in [:vlans, :vlan_groups]}
+                />
+                <.sidebar_link
+                  navigate={~p"/network/topology"}
+                  icon="hero-share"
+                  label="Topology"
+                  active?={@active_nav == :topology}
+                />
+                <.sidebar_link
+                  navigate={~p"/network/cables"}
+                  icon="hero-link"
+                  label="Cables"
+                  active?={@active_nav == :cables}
+                />
+                <.sidebar_link
+                  navigate={~p"/network/topology-findings"}
+                  icon="hero-signal"
+                  label="Topology findings"
+                  active?={@active_nav == :topology_findings}
                 />
               </nav>
               <div class="mt-2 border-t border-base-content/10 pt-2">
@@ -405,6 +441,13 @@ defmodule RengaWeb.Layouts do
             label="VLAN groups"
           />
           <.command_link navigate={~p"/ipam/vlans"} icon="hero-tag" label="VLANs" />
+          <.command_link navigate={~p"/network/topology"} icon="hero-share" label="Topology" />
+          <.command_link navigate={~p"/network/cables"} icon="hero-link" label="Cables" />
+          <.command_link
+            navigate={~p"/network/topology-findings"}
+            icon="hero-signal"
+            label="Topology findings"
+          />
 
           <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
             Saved views
