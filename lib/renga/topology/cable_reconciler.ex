@@ -183,15 +183,23 @@ defmodule Renga.Topology.CableReconciler do
   end
 
   # A removed cable is explained by the claim that displaced it: the retraction
-  # for its own pair, or the newer claim that took one of its endpoints.
+  # for its own pair, or the highest-precedence selected claim that took one of
+  # its endpoints. Precedence must match selection rather than endpoint order: a
+  # newer claim on the second endpoint displaced the cable even when a
+  # reactivated older claim also touches the first.
   defp removal_cause(cable, claims_by_pair, selected_by_endpoint) do
     case Map.get(claims_by_pair, pair_key(cable)) do
       %{action: "retract"} = retraction ->
         retraction
 
       _claim_or_nil ->
-        [cable.interface_a_id, cable.interface_b_id]
-        |> Enum.find_value(&Map.get(selected_by_endpoint, &1))
+        cable
+        |> cable_endpoints()
+        |> Enum.map(&Map.get(selected_by_endpoint, &1))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.max_by(&{DateTime.to_unix(&1.asserted_at, :microsecond), &1.sequence}, fn ->
+          nil
+        end)
     end
   end
 

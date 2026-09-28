@@ -4940,6 +4940,63 @@ defmodule Renga.TopologyTest do
     assert removed.snapshot["cable_type"] == "cat6a"
   end
 
+  test "attributes a removal to the displacing claim's precedence, not endpoint order", %{
+    scope: scope,
+    organization: organization
+  } do
+    interfaces =
+      for index <- 1..4 do
+        interface_fixture(scope, "cable-cause-#{index}", "eth#{index}")
+      end
+
+    # The removed cable must start at the lowest endpoint id, so attributing the
+    # removal to the first endpoint deterministically picked the wrong claim.
+    {first, second} = interfaces |> Enum.take(2) |> Enum.min_max_by(& &1.id)
+    [third, fourth] = Enum.drop(interfaces, 2)
+
+    bob = user_fixture()
+    organization_membership_fixture(bob, organization, %{role: "admin"})
+    bob_scope = Accounts.scope_for_user(bob, organization.id)
+
+    carol = user_fixture()
+    organization_membership_fixture(carol, organization, %{role: "admin"})
+    carol_scope = Accounts.scope_for_user(carol, organization.id)
+
+    # Alice's older claim is blocked while Bob's cable is current.
+    assert {:ok, _alice_claim} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               asserted_at: ~U[2026-09-16 10:00:00.000000Z]
+             })
+
+    assert {:ok, _bob_claim} =
+             Topology.assert_cable(bob_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: ~U[2026-09-16 11:00:00.000000Z]
+             })
+
+    assert [displaced] = Topology.list_cables(scope)
+
+    # Carol's newer claim takes the second endpoint. Alice's claim is only
+    # reactivated; it did not displace Bob's cable by precedence.
+    assert {:ok, carol_claim} =
+             Topology.assert_cable(carol_scope, %{
+               interface_a_id: second.id,
+               interface_b_id: fourth.id,
+               asserted_at: ~U[2026-09-16 12:00:00.000000Z]
+             })
+
+    assert length(Topology.list_cables(scope)) == 2
+
+    assert [created, removed] = Topology.list_cable_change_events(scope, displaced.id)
+    assert created.action == "created"
+    assert removed.action == "removed"
+    assert removed.assertion_id == carol_claim.id
+    assert removed.actor_user_id == carol.id
+  end
+
   test "normalizes equivalent colors so reasserting does not fabricate changes", %{scope: scope} do
     first = interface_fixture(scope, "cable-color-first", "eth0")
     second = interface_fixture(scope, "cable-color-second", "swp1")
