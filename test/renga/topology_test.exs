@@ -8,10 +8,13 @@ defmodule Renga.TopologyTest do
   alias Renga.DCIM
   alias Renga.Inventory
   alias Renga.Inventory.Host
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.ResourceStore
   alias Renga.Repo
   alias Renga.Topology
+  alias Renga.Topology.Cable
+  alias Renga.Topology.CableAssertion
   alias Renga.Topology.CurrentInterfaceAdjacency
   alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceNeighborMatch
@@ -4113,6 +4116,1126 @@ defmodule Renga.TopologyTest do
         set: [section: "interface_relationships"]
       )
     end
+  end
+
+  test "asserts confirmed cabling with attribution, history, and one termination per endpoint", %{
+    scope: scope
+  } do
+    first = interface_fixture(scope, "cable-primary", "eth0")
+    second = interface_fixture(scope, "cable-secondary", "swp1")
+
+    assert {:ok, assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: second.id,
+               interface_b_id: first.id,
+               cable_type: "cat6a",
+               label: "uplink",
+               color: "#336699",
+               length_value: "1.5",
+               length_unit: "m",
+               description: "rack uplink"
+             })
+
+    assert assertion.kind == "operator"
+    assert assertion.action == "assert"
+    assert assertion.confirmation == "confirmed"
+    assert assertion.actor_user_id == scope.user.id
+    assert assertion.interface_a_id < assertion.interface_b_id
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.cable_type == "cat6a"
+    assert cable.status == "connected"
+    assert cable.label == "uplink"
+    assert cable.color == "#336699"
+    assert Decimal.equal?(cable.length_value, Decimal.new("1.5"))
+    assert cable.length_unit == "m"
+    assert cable.description == "rack uplink"
+    assert cable.primary_assertion_id == assertion.id
+    assert cable.last_asserted_at == assertion.asserted_at
+
+    assert [created] = Topology.list_cable_change_events(scope, cable.id)
+    assert created.action == "created"
+    assert created.cable_id == cable.id
+    assert created.actor_user_id == scope.user.id
+    assert created.changes == %{}
+
+    assert %{rows: [[2]]} =
+             Repo.query!(
+               "SELECT count(*) FROM cable_endpoint_terminations WHERE cable_id = $1::text::uuid",
+               [cable.id]
+             )
+
+    assert_raise Postgrex.Error, ~r/cable assertions are immutable/, fn ->
+      Repo.update_all(
+        from(item in CableAssertion, where: item.id == ^assertion.id),
+        set: [action: "retract"]
+      )
+    end
+
+    # retraction releases the endpoints but keeps attributed history, including
+    # attributes that are stripped because a retraction carries no cable facts
+    assert {:ok, retraction} =
+             Topology.retract_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert retraction.action == "retract"
+    assert is_nil(retraction.cable_type)
+
+    assert Topology.list_cables(scope) == []
+
+    # history keeps its cable identity after the projection is removed
+    assert [created_event, removed_event] = Topology.list_cable_change_events(scope, cable.id)
+    assert created_event.action == "created"
+    assert removed_event.action == "removed"
+    assert removed_event.cable_id == cable.id
+
+    assert [created_event, removed_event] =
+             Topology.list_interface_cable_change_events(scope, first.id)
+
+    assert created_event.action == "created"
+    assert created_event.interface_a_id == assertion.interface_a_id
+    assert created_event.interface_b_id == assertion.interface_b_id
+    assert removed_event.action == "removed"
+    assert removed_event.interface_a_id == assertion.interface_a_id
+  end
+
+  test "keeps cable plans separate from current cabling and reports feasibility and drift", %{
+    scope: scope
+  } do
+    first = interface_fixture(scope, "cable-plan-first", "eth0")
+    second = interface_fixture(scope, "cable-plan-second", "swp1")
+    third = interface_fixture(scope, "cable-plan-third", "swp2")
+
+    assert {:ok, plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               cable_type: "dac",
+               status: "planned",
+               length_value: "2",
+               length_unit: "m"
+             })
+
+    # a plan never reserves an endpoint
+    assert Topology.list_cables(scope) == []
+    assert Topology.list_topology_findings(scope, first.id) == []
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+
+    assert [conflict] =
+             Topology.list_topology_findings(scope, first.id)
+             |> Enum.filter(&(&1.kind == "cable_plan_conflict"))
+
+    assert conflict.details["plan_id"] == plan.id
+
+    assert {:ok, _deleted} = Topology.delete_cable_plan(scope, plan)
+
+    refute Enum.any?(
+             Topology.list_topology_findings(scope, first.id),
+             &(&1.kind == "cable_plan_conflict")
+           )
+
+    # an agreeing plan drifts only when its physical attributes differ
+    assert {:ok, _drift_plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat5e",
+               length_value: "9",
+               length_unit: "m"
+             })
+
+    assert [drift] =
+             findings_for(scope, [first.id, second.id])
+             |> Enum.filter(&(&1.kind == "cable_plan_drift"))
+
+    assert drift.details["interface_a_id"] == cable.interface_a_id
+    assert drift.details["interface_b_id"] == cable.interface_b_id
+
+    # an infeasible plan is reported, not silently cabled
+    bridge = interface_fixture(scope, "cable-plan-bridge", "br0", %{kind: "bridge"})
+
+    assert {:ok, _infeasible_plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: bridge.id,
+               interface_b_id: third.id,
+               status: "planned"
+             })
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, bridge.id),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+
+    assert [plan_row] = Topology.list_cable_plans(scope, interface_id: bridge.id)
+    assert plan_row.status == "planned"
+    assert length(Topology.list_cables(scope)) == 1
+  end
+
+  test "newest confirmed assertion wins a contested endpoint and reports a conflict", %{
+    scope: scope
+  } do
+    first = interface_fixture(scope, "cable-contest-first", "eth0")
+    second = interface_fixture(scope, "cable-contest-second", "swp1")
+    third = interface_fixture(scope, "cable-contest-third", "swp2")
+
+    assert {:ok, _older} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: ~U[2026-09-16 10:00:00.000000Z]
+             })
+
+    assert {:ok, _newer} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               asserted_at: ~U[2026-09-16 11:00:00.000000Z]
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.interface_a_id == Enum.min([first.id, third.id])
+    assert cable.interface_b_id == Enum.max([first.id, third.id])
+
+    assert [conflict] =
+             Topology.list_topology_findings(scope, first.id)
+             |> Enum.filter(&(&1.kind == "cable_endpoint_conflict"))
+
+    assert conflict.details["interface_a_id"] == Enum.min([first.id, second.id])
+    assert conflict.details["interface_b_id"] == Enum.max([first.id, second.id])
+
+    # the losing claim is retained as attributable history, not deleted
+    assert length(Topology.list_cable_assertions(scope)) == 2
+
+    assert %{rows: [[1]]} =
+             Repo.query!(
+               "SELECT count(*) FROM cable_endpoint_terminations WHERE organization_id = $1::text::uuid AND interface_id = $2::text::uuid",
+               [scope.organization_id, first.id]
+             )
+  end
+
+  test "requires distinct physical endpoints inside one organization", %{scope: scope} do
+    first = interface_fixture(scope, "cable-endpoint-first", "eth0")
+    bridge = interface_fixture(scope, "cable-endpoint-bridge", "br0", %{kind: "bridge"})
+
+    assert {:error, :identical_cable_endpoints} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: first.id
+             })
+
+    assert {:error, :cable_endpoint_not_physical} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: bridge.id
+             })
+
+    assert {:error, :identical_cable_endpoints} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: bridge.id,
+               interface_b_id: bridge.id
+             })
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id})
+
+    assert "can't be blank" in errors_on(changeset).interface_b_id
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    foreign = interface_fixture(foreign_scope, "cable-endpoint-foreign", "eth0")
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: foreign.id})
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.put_cable_plan(scope, %{interface_a_id: first.id, interface_b_id: foreign.id})
+    end
+
+    assert Topology.list_cables(scope) == []
+    assert Topology.list_cable_plans(scope) == []
+  end
+
+  test "restricts confirmed cabling to managers while members reconcile", %{
+    scope: scope,
+    organization: organization
+  } do
+    first = interface_fixture(scope, "cable-auth-first", "eth0")
+    second = interface_fixture(scope, "cable-auth-second", "swp1")
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "cable-auth-source"})
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} =
+             Topology.assert_cable(member_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    assert {:error, :forbidden} =
+             Topology.put_cable_plan(member_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    assert {:error, :forbidden} =
+             Topology.import_cable_assertion(member_scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    # members still reconcile projections they did not authorize
+    assert {:ok, []} = Topology.reconcile_cables(member_scope)
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert {:ok, imported} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert imported.kind == "import"
+    assert imported.source_id == source.id
+    assert is_nil(imported.actor_user_id)
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.cable_type == "cat6a"
+    assert cable.primary_assertion_id == imported.id
+
+    # attribute changes are attributed to the importing source
+    assert [created, updated] = Topology.list_cable_change_events(scope, cable.id)
+    assert created.action == "created"
+    assert created.actor_user_id == scope.user.id
+    assert updated.action == "updated"
+    assert updated.source_id == source.id
+    assert is_nil(updated.actor_user_id)
+    assert updated.changes["cable_type"] == %{"from" => nil, "to" => "cat6a"}
+  end
+
+  test "lets neighbor evidence propose but never create, move, or remove a cable", %{
+    scope: scope
+  } do
+    local_resource = resource_fixture(scope, "cable-evidence-local")
+    remote_resource = resource_fixture(scope, "cable-evidence-remote")
+    other_resource = resource_fixture(scope, "cable-evidence-other")
+
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+    {:ok, other} = Inventory.create_interface(scope, other_resource.id, %{name: "swp2"})
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-evidence"})
+
+    observation =
+      observation_fixture(scope, source, "cable-evidence", ~U[2099-09-10 12:00:00Z], %{})
+
+    assert {:ok, [evidence]} =
+             reconcile_neighbors(scope, source, observation, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [neighbor(remote_resource.name, remote.name)]
+               }
+             ])
+
+    assert Topology.list_cables(scope) == []
+
+    assert {:ok, proposal} = Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+    assert proposal.kind == "neighbor_evidence"
+    assert proposal.confirmation == "proposed"
+    assert proposal.interface_neighbor_evidence_id == evidence.id
+
+    # a proposal stays invisible to reconciliation
+    assert {:ok, []} = Topology.reconcile_cables(scope)
+    assert Topology.list_cables(scope) == []
+
+    assert {:ok, _confirmed} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: local.id,
+               interface_b_id: remote.id,
+               cable_type: "cat6a"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+
+    drift_observation =
+      observation_fixture(scope, source, "cable-evidence-drift", ~U[2099-09-10 13:00:00Z], %{})
+
+    assert {:ok, [_evidence]} =
+             reconcile_neighbors(scope, source, drift_observation, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [neighbor(other_resource.name, other.name)]
+               }
+             ])
+
+    assert [unchanged] = Topology.list_cables(scope)
+    assert unchanged.id == cable.id
+    assert unchanged.interface_a_id == cable.interface_a_id
+    assert unchanged.interface_b_id == cable.interface_b_id
+
+    assert Enum.any?(
+             Topology.list_topology_findings(scope, local.id),
+             &(&1.kind == "cable_neighbor_mismatch")
+           )
+
+    # the proposal never became current cabling
+    assert Enum.map(Topology.list_cables(scope), & &1.id) == [cable.id]
+  end
+
+  test "keeps cable plans, assertions, and cables organization scoped", %{scope: scope} do
+    first = interface_fixture(scope, "cable-scope-first", "eth0")
+    second = interface_fixture(scope, "cable-scope-second", "swp1")
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert {:ok, _plan} =
+             Topology.put_cable_plan(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert [cable] = Topology.list_cables(scope)
+    assert [plan] = Topology.list_cable_plans(scope)
+    assert [assertion] = Topology.list_cable_assertions(scope)
+    assert assertion.organization_id == scope.organization_id
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    assert Topology.list_cables(foreign_scope) == []
+    assert Topology.list_cable_plans(foreign_scope) == []
+    assert Topology.list_cable_assertions(foreign_scope) == []
+    assert Topology.list_cable_change_events(foreign_scope, cable.id) == []
+    assert Topology.list_interface_cable_change_events(foreign_scope, first.id) == []
+    assert_raise Ecto.NoResultsError, fn -> Topology.get_cable!(foreign_scope, cable.id) end
+    assert_raise Ecto.NoResultsError, fn -> Topology.get_cable_plan!(foreign_scope, plan.id) end
+
+    # the database rejects cross-organization cable claims even when constructed directly
+    foreign_resource = resource_fixture(foreign_scope, "cable-scope-foreign")
+
+    {:ok, foreign_interface} =
+      Inventory.create_interface(foreign_scope, foreign_resource.id, %{name: "eth0"})
+
+    [interface_a_id, interface_b_id] = Enum.sort([first.id, foreign_interface.id])
+
+    rejected =
+      %CableAssertion{
+        organization_id: scope.organization_id,
+        interface_a_id: interface_a_id,
+        interface_b_id: interface_b_id,
+        actor_user_id: scope.user.id
+      }
+      |> CableAssertion.changeset(%{
+        kind: "operator",
+        action: "assert",
+        confirmation: "confirmed",
+        asserted_at: Renga.Time.utc_now_ms()
+      })
+
+    assert {:error, rejected_changeset} = Repo.insert(rejected)
+    rejected_errors = errors_on(rejected_changeset)
+
+    assert "does not exist" in (rejected_errors[:interface_a] || []) or
+             "does not exist" in (rejected_errors[:interface_b] || [])
+  end
+
+  test "database rejects cable occupancy tampering and endpoint mutation", %{scope: scope} do
+    first = interface_fixture(scope, "cable-guard-first", "eth0")
+    second = interface_fixture(scope, "cable-guard-second", "swp1")
+    unrelated = interface_fixture(scope, "cable-guard-unrelated", "swp2")
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert [cable] = Topology.list_cables(scope)
+
+    # The reconciler retires a displaced cable before installing its successor,
+    # so the occupancy key is exercised directly: a second cable backed by a
+    # matching confirmed claim cannot reuse a terminated endpoint.
+    second = interface_fixture(scope, "cable-guard-second-port", "swp3")
+    claim = insert_cable_claim!(scope, first, second, ~U[2026-09-16 11:00:00.000000Z])
+
+    assert_raise Ecto.ConstraintError, ~r/cable_endpoint_terminations_pkey/, fn ->
+      insert_cable_row!(scope, claim)
+    end
+
+    assert_raise Postgrex.Error, ~r/cable endpoint termination is inconsistent/, fn ->
+      Repo.transaction(fn ->
+        Repo.query!(
+          "DELETE FROM cable_endpoint_terminations WHERE organization_id = $1::text::uuid AND interface_id = $2::text::uuid",
+          [scope.organization_id, first.id]
+        )
+
+        Repo.query!("SET CONSTRAINTS cable_endpoint_terminations_enforce_consistency IMMEDIATE")
+      end)
+    end
+
+    assert_raise Postgrex.Error, ~r/cable endpoints are immutable/, fn ->
+      Repo.update_all(
+        from(item in Cable, where: item.id == ^cable.id),
+        set: [interface_b_id: unrelated.id]
+      )
+    end
+  end
+
+  test "interface inventory changes refresh cable plan feasibility without neighbor evidence", %{
+    scope: scope
+  } do
+    first = interface_fixture(scope, "cable-refresh-first", "eth0")
+    bridge = interface_fixture(scope, "cable-refresh-bridge", "br0", %{kind: "bridge"})
+
+    assert {:ok, _plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: bridge.id
+             })
+
+    assert Enum.any?(
+             findings_for(scope, [first.id, bridge.id]),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+
+    assert Topology.current_interface_cable_state?(scope)
+
+    # The collector now reports the port as physical. An unrelated interface
+    # mutation must still re-evaluate cable state, which has no neighbor
+    # evidence to piggyback on.
+    Repo.update_all(from(item in Interface, where: item.id == ^bridge.id),
+      set: [kind: "ethernet"]
+    )
+
+    resource = resource_fixture(scope, "cable-refresh-extra")
+    assert {:ok, _interface} = Inventory.create_interface(scope, resource.id, %{name: "eth1"})
+
+    refute Enum.any?(
+             findings_for(scope, [first.id, bridge.id]),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+  end
+
+  test "updates an existing cable plan instead of inserting a duplicate", %{scope: scope} do
+    first = interface_fixture(scope, "cable-plan-update-first", "eth0")
+    second = interface_fixture(scope, "cable-plan-update-second", "swp1")
+
+    assert {:ok, plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a",
+               label: "first"
+             })
+
+    assert {:ok, updated} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: second.id,
+               interface_b_id: first.id,
+               cable_type: "dac",
+               label: "second",
+               length_value: "3",
+               length_unit: "m"
+             })
+
+    assert updated.id == plan.id
+    assert updated.cable_type == "dac"
+    assert updated.label == "second"
+    assert Decimal.equal?(updated.length_value, Decimal.new("3"))
+
+    assert [stored] = Topology.list_cable_plans(scope)
+    assert stored.id == plan.id
+    assert stored.label == "second"
+  end
+
+  test "accepts string-keyed attributes without letting callers classify a claim", %{scope: scope} do
+    first = interface_fixture(scope, "cable-keys-first", "eth0")
+    second = interface_fixture(scope, "cable-keys-second", "swp1")
+
+    assert {:ok, assertion} =
+             Topology.assert_cable(scope, %{
+               "interface_a_id" => second.id,
+               "interface_b_id" => first.id,
+               "cable_type" => "cat6a",
+               "kind" => "import",
+               "action" => "retract",
+               "confirmation" => "proposed"
+             })
+
+    assert assertion.kind == "operator"
+    assert assertion.action == "assert"
+    assert assertion.confirmation == "confirmed"
+    assert assertion.actor_user_id == scope.user.id
+    assert assertion.interface_a_id < assertion.interface_b_id
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.cable_type == "cat6a"
+
+    assert {:ok, retraction} =
+             Topology.retract_cable(scope, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => second.id,
+               "kind" => "operator",
+               "action" => "assert"
+             })
+
+    assert retraction.action == "retract"
+    assert Topology.list_cables(scope) == []
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-keys-source"})
+
+    assert {:ok, imported} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => second.id,
+               "confirmation" => "proposed"
+             })
+
+    assert imported.kind == "import"
+    assert imported.confirmation == "confirmed"
+    assert imported.source_id == source.id
+
+    assert {:ok, _plan} =
+             Topology.put_cable_plan(scope, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => second.id,
+               "status" => "planned"
+             })
+
+    assert [plan] = Topology.list_cable_plans(scope)
+    assert plan.status == "planned"
+  end
+
+  test "retains confirmed cabling when an endpoint is reclassified and still allows retraction",
+       %{
+         scope: scope
+       } do
+    first = interface_fixture(scope, "cable-reclass-first", "eth0")
+    second = interface_fixture(scope, "cable-reclass-second", "swp1")
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+
+    Repo.update_all(from(item in Interface, where: item.id == ^second.id), set: [kind: "bridge"])
+
+    # A collector reclassification never removes cabling on its own: the
+    # contradiction becomes a finding.
+    assert {:ok, [retained]} = Topology.reconcile_cables(scope)
+    assert retained.id == cable.id
+    assert retained.cable_type == "cat6a"
+
+    assert [finding] =
+             Topology.list_topology_findings(scope, second.id)
+             |> Enum.filter(&(&1.kind == "cable_endpoint_infeasible"))
+
+    assert finding.details["cable_id"] == cable.id
+
+    # The authorized removal path still works even though the endpoint is no
+    # longer physically connectable.
+    assert {:ok, _retraction} =
+             Topology.retract_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert Topology.list_cables(scope) == []
+
+    refute Enum.any?(
+             Topology.list_topology_findings(scope, second.id),
+             &(&1.kind == "cable_endpoint_infeasible")
+           )
+  end
+
+  test "orders same-millisecond claims by insertion sequence", %{scope: scope} do
+    first = interface_fixture(scope, "cable-sequence-first", "eth0")
+    second = interface_fixture(scope, "cable-sequence-second", "swp1")
+    third = interface_fixture(scope, "cable-sequence-third", "swp2")
+    at = ~U[2026-09-16 10:00:00.000000Z]
+
+    # A later retraction wins even when it shares the assertion timestamp.
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: at
+             })
+
+    assert {:ok, _retraction} =
+             Topology.retract_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: at
+             })
+
+    assert Topology.list_cables(scope) == []
+
+    # A later claim wins a contested endpoint at the same timestamp.
+    assert {:ok, _older} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: at
+             })
+
+    assert {:ok, _newer} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               asserted_at: at
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.interface_a_id == Enum.min([first.id, third.id])
+    assert cable.interface_b_id == Enum.max([first.id, third.id])
+
+    # A later claim for the same pair replaces its attributes.
+    assert {:ok, latest} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               cable_type: "cat6a",
+               asserted_at: at
+             })
+
+    assert [updated] = Topology.list_cables(scope)
+    assert updated.cable_type == "cat6a"
+    assert updated.primary_assertion_id == latest.id
+  end
+
+  test "records who caused a cable transition and what the cable was", %{scope: scope} do
+    first = interface_fixture(scope, "cable-history-first", "eth0")
+    second = interface_fixture(scope, "cable-history-second", "swp1")
+
+    assert {:ok, assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a",
+               label: "uplink"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+
+    assert [created] = Topology.list_cable_change_events(scope, cable.id)
+    assert created.assertion_id == assertion.id
+    assert created.actor_user_id == scope.user.id
+    assert created.snapshot["cable_type"] == "cat6a"
+    assert created.snapshot["label"] == "uplink"
+
+    remover = user_fixture()
+    organization_membership_fixture(remover, scope.organization, %{role: "admin"})
+    remover_scope = Accounts.scope_for_user(remover, scope.organization.id)
+
+    assert {:ok, retraction} =
+             Topology.retract_cable(remover_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    assert [^created, removed] = Topology.list_cable_change_events(scope, cable.id)
+    assert removed.action == "removed"
+    assert removed.assertion_id == retraction.id
+    assert removed.actor_user_id == remover.id
+    assert removed.snapshot["cable_type"] == "cat6a"
+    assert removed.snapshot["label"] == "uplink"
+  end
+
+  test "attributes a displaced cable's removal to the claim that replaced it", %{scope: scope} do
+    first = interface_fixture(scope, "cable-displace-first", "eth0")
+    second = interface_fixture(scope, "cable-displace-second", "swp1")
+    third = interface_fixture(scope, "cable-displace-third", "swp2")
+
+    assert {:ok, _older} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a",
+               asserted_at: ~U[2026-09-16 10:00:00.000000Z]
+             })
+
+    assert [displaced] = Topology.list_cables(scope)
+
+    replacer = user_fixture()
+    organization_membership_fixture(replacer, scope.organization, %{role: "admin"})
+    replacer_scope = Accounts.scope_for_user(replacer, scope.organization.id)
+
+    assert {:ok, replacement} =
+             Topology.assert_cable(replacer_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               cable_type: "dac",
+               asserted_at: ~U[2026-09-16 11:00:00.000000Z]
+             })
+
+    assert [_created, removed] = Topology.list_cable_change_events(scope, displaced.id)
+    assert removed.action == "removed"
+    assert removed.assertion_id == replacement.id
+    assert removed.actor_user_id == replacer.id
+    assert removed.snapshot["cable_type"] == "cat6a"
+  end
+
+  test "normalizes equivalent colors so reasserting does not fabricate changes", %{scope: scope} do
+    first = interface_fixture(scope, "cable-color-first", "eth0")
+    second = interface_fixture(scope, "cable-color-second", "swp1")
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               color: "#AA00BB",
+               cable_type: "cat6a"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+    assert cable.color == "#aa00bb"
+
+    assert {:ok, _plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               color: "#aa00bb",
+               cable_type: "cat6a"
+             })
+
+    refute Enum.any?(
+             findings_for(scope, [first.id, second.id]),
+             &(&1.kind == "cable_plan_drift")
+           )
+
+    # Reasserting the same color in a different case records no attribute change.
+    assert {:ok, _reassertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               color: "#AA00BB",
+               cable_type: "cat6a"
+             })
+
+    assert [_created] = Topology.list_cable_change_events(scope, cable.id)
+  end
+
+  test "rejects cable lengths the column cannot store", %{scope: scope} do
+    first = interface_fixture(scope, "cable-length-first", "eth0")
+    second = interface_fixture(scope, "cable-length-second", "swp1")
+
+    assert {:error, changeset} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "1000000000",
+               length_unit: "m"
+             })
+
+    assert "must be less than 1000000000" in errors_on(changeset).length_value
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "999999999.999",
+               length_unit: "m"
+             })
+
+    assert [cable] = Topology.list_cables(scope)
+    assert Decimal.equal?(cable.length_value, Decimal.new("999999999.999"))
+  end
+
+  test "database rejects cables that their primary assertion does not support", %{scope: scope} do
+    {evidence, local, remote} = neighbor_evidence!(scope, "cable-support")
+
+    assert {:ok, proposal} = Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+
+    assert_raise Postgrex.Error, ~r/must be a confirmed cable claim/, fn ->
+      insert_cable_row!(scope, proposal)
+    end
+
+    assert {:ok, retraction} =
+             Topology.retract_cable(scope, %{interface_a_id: local.id, interface_b_id: remote.id})
+
+    assert_raise Postgrex.Error, ~r/must be a confirmed cable claim/, fn ->
+      insert_cable_row!(scope, retraction)
+    end
+
+    first = interface_fixture(scope, "cable-support-first", "eth0")
+    second = interface_fixture(scope, "cable-support-second", "swp1")
+    third = interface_fixture(scope, "cable-support-third", "swp2")
+    claim = insert_cable_claim!(scope, first, second, ~U[2026-09-16 10:00:00.000000Z])
+
+    [interface_a_id, interface_b_id] = Enum.sort([first.id, third.id])
+
+    mismatched =
+      %Cable{
+        organization_id: scope.organization_id,
+        interface_a_id: interface_a_id,
+        interface_b_id: interface_b_id,
+        primary_assertion_id: claim.id
+      }
+      |> Ecto.Changeset.change(last_asserted_at: claim.asserted_at)
+      |> Cable.changeset(%{status: "connected", metadata: %{}})
+
+    assert_raise Postgrex.Error, ~r/endpoints must match its primary assertion/, fn ->
+      Repo.insert!(mismatched)
+    end
+  end
+
+  test "keeps assertions append-only and attributable across deletions", %{scope: scope} do
+    user = scope.user
+
+    first = interface_fixture(scope, "cable-retention-first", "eth0")
+    second = interface_fixture(scope, "cable-retention-second", "swp1")
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-retention"})
+
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert {:ok, _imported} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    # Direct assertion deletion would cascade current cabling away with no
+    # removal event, so it is rejected while the organization exists.
+    assert_raise Postgrex.Error, ~r/append-only and cannot be deleted/, fn ->
+      Repo.query!(
+        "DELETE FROM cable_assertions WHERE organization_id = $1::text::uuid",
+        [scope.organization_id]
+      )
+    end
+
+    # Deleting an importing source would cascade the same way.
+    assert_raise Postgrex.Error, ~r/append-only and cannot be deleted/, fn ->
+      Repo.delete(source)
+    end
+
+    # Deleting an attributed actor is rejected instead of rewriting provenance.
+    assert_raise Ecto.ConstraintError, ~r/cable_assertions/, fn ->
+      Repo.delete(user)
+    end
+
+    assert length(Topology.list_cable_assertions(scope)) == 2
+    assert length(Topology.list_cables(scope)) == 1
+
+    # Organization teardown still cascades deliberately.
+    assert {:ok, _deleted} = Repo.delete(scope.organization)
+    assert Repo.aggregate(CableAssertion, :count) == 0
+  end
+
+  test "allows members to propose from evidence while confirmed cabling stays manager-only", %{
+    scope: scope,
+    organization: organization
+  } do
+    {evidence, local, remote} = neighbor_evidence!(scope, "cable-proposal-auth")
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:ok, proposal} =
+             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id)
+
+    assert proposal.confirmation == "proposed"
+    assert Topology.list_cables(scope) == []
+
+    assert {:error, :forbidden} =
+             Topology.assert_cable(member_scope, %{
+               interface_a_id: local.id,
+               interface_b_id: remote.id
+             })
+
+    # A member cannot forge the endpoints or timestamp attributed to the evidence.
+    other = interface_fixture(scope, "cable-proposal-auth-other", "swp2")
+
+    assert {:ok, unchanged} =
+             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id, %{
+               "interface_a_id" => local.id,
+               "interface_b_id" => other.id,
+               "asserted_at" => ~U[2030-01-01 00:00:00Z]
+             })
+
+    assert unchanged.id == proposal.id
+    assert unchanged.interface_a_id == proposal.interface_a_id
+    assert unchanged.interface_b_id == proposal.interface_b_id
+    assert unchanged.asserted_at == evidence.observed_at
+  end
+
+  test "collector observations refresh cable feasibility without neighbor evidence", %{
+    scope: scope
+  } do
+    {:ok, source} =
+      Inventory.create_source(scope, %{kind: "host_agent", name: "cable-collector-source"})
+
+    observed_at = ~U[2026-09-16 12:00:00Z]
+
+    first =
+      observation_fixture(scope, source, "cable-collector-1", observed_at, %{
+        "observation_id" => "cable-collector-1",
+        "observed_at" => DateTime.to_iso8601(observed_at),
+        "resources" => [
+          %{
+            "kind" => "server",
+            "identifiers" => %{"machine_id" => "cable-collector-machine"},
+            "attributes" => %{},
+            "interfaces" => [
+              %{"name" => "eth0", "kind" => "ethernet"},
+              %{"name" => "br0", "kind" => "bridge"}
+            ]
+          }
+        ]
+      })
+
+    assert {:ok, resource, _current?} = Inventory.reconcile_observation(scope, first.id)
+
+    [br0, eth0] = Inventory.list_interfaces(scope, resource.id) |> Enum.sort_by(& &1.name)
+
+    assert {:ok, _plan} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: eth0.id,
+               interface_b_id: br0.id,
+               status: "planned"
+             })
+
+    assert Enum.any?(
+             findings_for(scope, [eth0.id, br0.id]),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+
+    # The collector reports the port as physical. No neighbor evidence exists in
+    # this organization, so cable state must be refreshed on its own.
+    second =
+      observation_fixture(scope, source, "cable-collector-2", DateTime.add(observed_at, 60), %{
+        "observation_id" => "cable-collector-2",
+        "observed_at" => DateTime.to_iso8601(DateTime.add(observed_at, 60)),
+        "resources" => [
+          %{
+            "kind" => "server",
+            "identifiers" => %{"machine_id" => "cable-collector-machine"},
+            "attributes" => %{},
+            "interfaces" => [
+              %{"name" => "eth0", "kind" => "ethernet"},
+              %{"name" => "br0", "kind" => "ethernet"}
+            ]
+          }
+        ]
+      })
+
+    assert {:ok, _resource, _current?} = Inventory.reconcile_observation(scope, second.id)
+
+    refute Enum.any?(
+             findings_for(scope, [eth0.id, br0.id]),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+
+    # Reporting the bridge again reopens the finding.
+    third =
+      observation_fixture(scope, source, "cable-collector-3", DateTime.add(observed_at, 120), %{
+        "observation_id" => "cable-collector-3",
+        "observed_at" => DateTime.to_iso8601(DateTime.add(observed_at, 120)),
+        "resources" => [
+          %{
+            "kind" => "server",
+            "identifiers" => %{"machine_id" => "cable-collector-machine"},
+            "attributes" => %{},
+            "interfaces" => [
+              %{"name" => "eth0", "kind" => "ethernet"},
+              %{"name" => "br0", "kind" => "bridge"}
+            ]
+          }
+        ]
+      })
+
+    assert {:ok, _resource, _current?} = Inventory.reconcile_observation(scope, third.id)
+
+    assert Enum.any?(
+             findings_for(scope, [eth0.id, br0.id]),
+             &(&1.kind == "cable_plan_infeasible")
+           )
+  end
+
+  defp neighbor_evidence!(scope, tag) do
+    local_resource = resource_fixture(scope, "#{tag}-local")
+    remote_resource = resource_fixture(scope, "#{tag}-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "#{tag}-source"})
+
+    observation = observation_fixture(scope, source, tag, ~U[2099-09-10 12:00:00Z], %{})
+
+    assert {:ok, [evidence]} =
+             reconcile_neighbors(scope, source, observation, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [neighbor(remote_resource.name, remote.name)]
+               }
+             ])
+
+    {evidence, local, remote}
+  end
+
+  defp insert_cable_claim!(scope, first, second, asserted_at) do
+    [interface_a_id, interface_b_id] = Enum.sort([first.id, second.id])
+
+    %CableAssertion{
+      organization_id: scope.organization_id,
+      interface_a_id: interface_a_id,
+      interface_b_id: interface_b_id,
+      actor_user_id: scope.user.id
+    }
+    |> CableAssertion.changeset(%{
+      kind: "operator",
+      action: "assert",
+      confirmation: "confirmed",
+      asserted_at: asserted_at
+    })
+    |> Repo.insert!()
+  end
+
+  defp insert_cable_row!(scope, claim) do
+    %Cable{
+      organization_id: scope.organization_id,
+      interface_a_id: claim.interface_a_id,
+      interface_b_id: claim.interface_b_id,
+      primary_assertion_id: claim.id
+    }
+    |> Ecto.Changeset.change(last_asserted_at: claim.asserted_at)
+    |> Cable.changeset(%{status: "connected", metadata: %{}})
+    |> Repo.insert!()
+  end
+
+  defp findings_for(scope, interface_ids) do
+    interface_ids
+    |> Enum.uniq()
+    |> Enum.flat_map(&Topology.list_topology_findings(scope, &1))
+  end
+
+  defp interface_fixture(scope, resource_name, interface_name, attrs \\ %{}) do
+    resource = resource_fixture(scope, resource_name)
+
+    {:ok, interface} =
+      Inventory.create_interface(scope, resource.id, Map.merge(%{name: interface_name}, attrs))
+
+    interface
   end
 
   defp vlan_group_fixture(scope, slug, ranges) do

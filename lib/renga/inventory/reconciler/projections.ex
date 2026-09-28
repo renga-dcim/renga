@@ -113,6 +113,17 @@ defmodule Renga.Inventory.Reconciler.Projections do
           interfaces,
           allow_new_rows?
         )
+    else
+      # Neighbor reconciliation refreshes cabling too, so this only runs when
+      # there is no neighbor state to reconcile: a collector can still make a
+      # cable plan infeasible or contradict confirmed cabling on its own.
+      maybe_reconcile_cables(topology_scope)
+    end
+  end
+
+  defp maybe_reconcile_cables(topology_scope) do
+    if Topology.current_interface_cable_state?(topology_scope) do
+      {:ok, _cables} = Topology.reconcile_cables(topology_scope)
     end
   end
 

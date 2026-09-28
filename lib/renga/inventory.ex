@@ -919,7 +919,7 @@ defmodule Renga.Inventory do
         revision_action(stored_resource, resource)
       )
 
-      maybe_refresh_neighbor_topology(scope)
+      maybe_refresh_topology(scope)
       resource
     end)
   end
@@ -1905,7 +1905,7 @@ defmodule Renga.Inventory do
                metadata: override_provenance(override),
                occurred_at: override.inserted_at
              }) do
-        maybe_refresh_neighbor_topology(scope, override)
+        maybe_refresh_topology(scope, override)
         override
       else
         {:error, error} -> Repo.rollback(error)
@@ -2036,14 +2036,16 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp maybe_refresh_neighbor_topology(scope, %{field: field}) do
+  defp maybe_refresh_topology(scope, %{field: field}) do
     if String.starts_with?(field, "host.") or String.starts_with?(field, "interfaces.") do
-      maybe_refresh_neighbor_topology(scope)
+      maybe_refresh_topology(scope)
     end
   end
 
-  defp maybe_refresh_neighbor_topology(scope) do
-    if Renga.Topology.current_interface_neighbor_state?(scope) do
+  defp maybe_refresh_topology(scope) do
+    neighbor_state? = Renga.Topology.current_interface_neighbor_state?(scope)
+
+    if neighbor_state? or Renga.Topology.current_interface_cable_state?(scope) do
       topology_scope = %Scope{
         organization: scope.organization,
         organization_id: scope.organization_id,
@@ -2063,7 +2065,7 @@ defmodule Renga.Inventory do
 
       case mutation.() do
         {:ok, result} ->
-          maybe_refresh_neighbor_topology(scope)
+          maybe_refresh_topology(scope)
           result
 
         {:error, reason} ->

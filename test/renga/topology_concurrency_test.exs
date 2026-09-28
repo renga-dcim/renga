@@ -498,6 +498,100 @@ defmodule Renga.TopologyConcurrencyTest do
     )
   end
 
+  test "competing confirmed cable assertions keep one termination per endpoint" do
+    with_topology(fn scope, suffix ->
+      first = cable_interface(scope, "cable-race-first-#{suffix}", "eth0")
+      second = cable_interface(scope, "cable-race-second-#{suffix}", "swp1")
+      third = cable_interface(scope, "cable-race-third-#{suffix}", "swp2")
+
+      results =
+        concurrently([
+          fn ->
+            Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+          end,
+          fn ->
+            Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: third.id})
+          end
+        ])
+
+      assert Enum.all?(results, &match?({:ok, _assertion}, &1))
+
+      assert [cable] = Topology.list_cables(scope)
+      assert first.id in [cable.interface_a_id, cable.interface_b_id]
+
+      assert %{rows: [[1]]} =
+               Repo.query!(
+                 "SELECT count(*) FROM cable_endpoint_terminations WHERE organization_id = $1::text::uuid AND interface_id = $2::text::uuid",
+                 [scope.organization_id, first.id]
+               )
+
+      assert Enum.any?(
+               Topology.list_topology_findings(scope, first.id),
+               &(&1.kind == "cable_endpoint_conflict")
+             )
+    end)
+  end
+
+  test "cable mutations serialize on the organization cable lock" do
+    with_topology(fn scope, suffix ->
+      first = cable_interface(scope, "cable-lock-first-#{suffix}", "eth0")
+      second = cable_interface(scope, "cable-lock-second-#{suffix}", "swp1")
+      test_process = self()
+
+      lock_blocker =
+        concurrent_task(fn ->
+          Repo.transaction(fn ->
+            Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+              scope.organization_id,
+              "cable-state"
+            ])
+
+            send(test_process, :cable_lock_held)
+
+            receive do
+              :release_cable_lock -> :ok
+            after
+              @timeout -> raise "cable lock was not released"
+            end
+          end)
+        end)
+
+      assert_receive :cable_lock_held, @timeout
+
+      assert_task =
+        concurrent_task(fn ->
+          backend_pid =
+            Repo.query!("SELECT pg_backend_pid()").rows |> List.first() |> List.first()
+
+          send(test_process, {:cable_assert_backend, backend_pid})
+
+          Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+        end)
+
+      assert_receive {:cable_assert_backend, backend_pid}, @timeout
+      await_backend_lock!(backend_pid, :advisory, @timeout)
+
+      send(lock_blocker.pid, :release_cable_lock)
+
+      assert {:ok, :ok} = Task.await(lock_blocker, @timeout)
+      assert {:ok, _assertion} = Task.await(assert_task, @timeout)
+      assert [cable] = Topology.list_cables(scope)
+      assert first.id in [cable.interface_a_id, cable.interface_b_id]
+    end)
+  end
+
+  defp cable_interface(scope, resource_name, interface_name) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: resource_name,
+        lifecycle_state: "active"
+      })
+
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: interface_name})
+    interface
+  end
+
   defp concurrent_task(function) do
     Task.async(fn ->
       :ok = Sandbox.checkout(Repo, sandbox: false)

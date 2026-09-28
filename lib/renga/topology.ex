@@ -17,6 +17,11 @@ defmodule Renga.Topology do
   alias Renga.Inventory.ResourceStore
   alias Renga.Inventory.Source
   alias Renga.Repo
+  alias Renga.Topology.Cable
+  alias Renga.Topology.CableAssertion
+  alias Renga.Topology.CableChangeEvent
+  alias Renga.Topology.CablePlan
+  alias Renga.Topology.CableReconciler
   alias Renga.Topology.CurrentInterfaceAdjacency
   alias Renga.Topology.CurrentInterfaceVlanMembership
   alias Renga.Topology.CurrentInterfaceVlanMode
@@ -36,6 +41,7 @@ defmodule Renga.Topology do
 
   @vlan_finding_kinds ~w(ambiguous_scope conflicting_interface_mode conflicting_tagging_mode conflicting_untagged_vlan missing_vlan out_of_range_vid unexpected_vlan unknown_vlan)
   @neighbor_finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency)
+  @cable_action_attributes ~w(cable_type status label color length_value length_unit description metadata)a
 
   def list_vlan_groups(%Scope{organization_id: organization_id}) do
     VlanGroup
@@ -445,25 +451,39 @@ defmodule Renga.Topology do
         current_snapshot?
       ) do
     reconciliation_transaction(scope, fn ->
-      NeighborReconciler.reconcile(
-        scope,
-        source,
-        observation,
-        resource_id,
-        reported_interfaces,
-        current_snapshot?
-      )
+      result =
+        NeighborReconciler.reconcile(
+          scope,
+          source,
+          observation,
+          resource_id,
+          reported_interfaces,
+          current_snapshot?
+        )
+
+      # Adjacency changes can confirm or contradict confirmed cabling, so the
+      # evidence disagreement findings are refreshed in the same transaction.
+      CableReconciler.reconcile(scope)
+      result
     end)
   end
 
   @doc false
   def expire_interface_neighbors(%Scope{} = scope, as_of \\ Renga.Time.utc_now_ms()) do
-    reconciliation_transaction(scope, fn -> NeighborReconciler.expire(scope, as_of) end)
+    reconciliation_transaction(scope, fn ->
+      result = NeighborReconciler.expire(scope, as_of)
+      CableReconciler.reconcile(scope)
+      result
+    end)
   end
 
   @doc false
   def refresh_interface_neighbors(%Scope{} = scope, as_of \\ Renga.Time.utc_now_ms()) do
-    reconciliation_transaction(scope, fn -> NeighborReconciler.refresh(scope, as_of) end)
+    reconciliation_transaction(scope, fn ->
+      result = NeighborReconciler.refresh(scope, as_of)
+      CableReconciler.reconcile(scope)
+      result
+    end)
   end
 
   @doc false
@@ -478,6 +498,27 @@ defmodule Renga.Topology do
             finding.organization_id == ^organization_id and finding.status == "open" and
               finding.kind in ^@neighbor_finding_kinds
       )
+  end
+
+  @doc """
+  Reports whether any cable intent, claim, or projection needs reconciliation.
+
+  Interface inventory changes can make a plan infeasible or contradict
+  confirmed cabling, so cable state is a refresh trigger in its own right and
+  does not depend on neighbor evidence existing.
+  """
+  def current_interface_cable_state?(%Scope{organization_id: organization_id}) do
+    from(plan in CablePlan, where: plan.organization_id == ^organization_id, select: 1)
+    |> union_all(
+      ^from(cable in Cable, where: cable.organization_id == ^organization_id, select: 1)
+    )
+    |> union_all(
+      ^from(assertion in CableAssertion,
+        where: assertion.organization_id == ^organization_id,
+        select: 1
+      )
+    )
+    |> Repo.exists?()
   end
 
   defp active_neighbor_evidence?(organization_id) do
@@ -496,6 +537,202 @@ defmodule Renga.Topology do
           finding.organization_id == ^organization_id and finding.status == "open" and
             finding.kind in ^@neighbor_finding_kinds and interface.resource_id == ^resource_id
     )
+  end
+
+  def list_cable_plans(%Scope{organization_id: organization_id}, opts \\ []) do
+    CablePlan
+    |> where([plan], plan.organization_id == ^organization_id)
+    |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
+    |> order_by([plan], asc: plan.interface_a_id, asc: plan.interface_b_id)
+    |> preload([:interface_a, :interface_b])
+    |> Repo.all()
+  end
+
+  def get_cable_plan!(%Scope{organization_id: organization_id}, id) do
+    CablePlan
+    |> where([plan], plan.organization_id == ^organization_id and plan.id == ^id)
+    |> preload([:interface_a, :interface_b])
+    |> Repo.one!()
+  end
+
+  def change_cable_plan(%CablePlan{} = plan, attrs \\ %{}), do: CablePlan.changeset(plan, attrs)
+
+  @doc """
+  Records desired direct connectivity between two canonical interfaces.
+
+  A plan is intent: it never reserves an endpoint and never replaces current
+  cabling, so it may legitimately disagree with the reconciled cable.
+  """
+  def put_cable_plan(%Scope{} = scope, attrs) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+      {interface_a_id, interface_b_id} = plan_endpoint_ids!(attrs)
+      validate_cable_plan_endpoints!(scope.organization_id, interface_a_id, interface_b_id)
+
+      plan =
+        CablePlan
+        |> Repo.get_by(
+          organization_id: scope.organization_id,
+          interface_a_id: interface_a_id,
+          interface_b_id: interface_b_id
+        )
+        |> case do
+          nil ->
+            %CablePlan{
+              organization_id: scope.organization_id,
+              interface_a_id: interface_a_id,
+              interface_b_id: interface_b_id
+            }
+
+          plan ->
+            plan
+        end
+        |> CablePlan.changeset(attrs)
+        |> upsert_or_rollback()
+
+      CableReconciler.reconcile(scope)
+      {:ok, Repo.preload(plan, [:interface_a, :interface_b])}
+    end)
+  end
+
+  def delete_cable_plan(%Scope{} = scope, %CablePlan{} = plan) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+      plan = scoped_get!(CablePlan, scope.organization_id, plan.id)
+      result = Repo.delete(plan)
+      CableReconciler.reconcile(scope)
+      result
+    end)
+  end
+
+  def list_cable_assertions(%Scope{organization_id: organization_id}, opts \\ []) do
+    CableAssertion
+    |> where([assertion], assertion.organization_id == ^organization_id)
+    |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
+    |> order_by([assertion], desc: assertion.asserted_at, desc: assertion.sequence)
+    |> preload([:interface_a, :interface_b])
+    |> Repo.all()
+  end
+
+  @doc """
+  Records an operator-confirmed direct cable between two physical interfaces.
+
+  Only confirmed assertions drive the reconciled cable projection; the
+  assertion itself remains as immutable, attributed history.
+
+  Cable type is recorded as an opaque physical descriptor. Port connector
+  compatibility arrives with RFD 6 hardware port templates, so the operator
+  assertion is currently the explicit confirmation that a recorded type is
+  correct.
+  """
+  def assert_cable(%Scope{} = scope, attrs) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+
+      assertion =
+        put_cable_assertion!(scope, attrs, "operator", "assert", %{
+          actor_user_id: actor_user_id(scope)
+        })
+
+      CableReconciler.reconcile(scope)
+      {:ok, assertion}
+    end)
+  end
+
+  @doc """
+  Withdraws an operator-confirmed cable claim without erasing its history.
+
+  A retraction releases the endpoints rather than restating a physical claim, so
+  it does not require the endpoints to still be physically connectable.
+  """
+  def retract_cable(%Scope{} = scope, attrs) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+
+      assertion =
+        put_cable_assertion!(
+          scope,
+          attrs,
+          "operator",
+          "retract",
+          %{actor_user_id: actor_user_id(scope)},
+          physical?: false
+        )
+
+      CableReconciler.reconcile(scope)
+      {:ok, assertion}
+    end)
+  end
+
+  @doc """
+  Records a confirmed cable claim from a trusted import contract.
+
+  Imported cabling is a cable mutation, so it follows the same owner/admin
+  policy as operator assertions while attributing the claim to the importing
+  source instead of a person.
+  """
+  def import_cable_assertion(%Scope{} = scope, source_id, attrs) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+      source = scoped_get!(Source, scope.organization_id, source_id)
+      assertion = put_cable_assertion!(scope, attrs, "import", "assert", %{source_id: source.id})
+      CableReconciler.reconcile(scope)
+      {:ok, assertion}
+    end)
+  end
+
+  @doc """
+  Records a candidate cable assertion proposed by matched neighbor evidence.
+
+  The proposal is attributed to the evidence and never mutates current cabling.
+  It uses reconciliation authorization (members and system reconcilers) rather
+  than the owner/admin policy for confirmed cabling: a proposal is not a cable
+  mutation, and reconciliation is what produces it.
+  """
+  def propose_cable_from_neighbor_evidence(%Scope{} = scope, evidence_id, attrs \\ %{}) do
+    reconciliation_transaction(scope, fn ->
+      {:ok, CableReconciler.propose_from_evidence(scope.organization_id, evidence_id, attrs)}
+    end)
+  end
+
+  def list_cables(%Scope{organization_id: organization_id}, opts \\ []) do
+    CableReconciler.list_cables(organization_id, opts)
+  end
+
+  def get_cable!(%Scope{organization_id: organization_id}, id) do
+    Cable
+    |> where([cable], cable.organization_id == ^organization_id and cable.id == ^id)
+    |> preload([:interface_a, :interface_b, :primary_assertion])
+    |> Repo.one!()
+  end
+
+  def list_cable_change_events(%Scope{organization_id: organization_id}, cable_id) do
+    CableChangeEvent
+    |> where([event], event.organization_id == ^organization_id and event.cable_id == ^cable_id)
+    |> order_by([event], asc: event.sequence)
+    |> Repo.all()
+  end
+
+  @doc "Lists cable history for an endpoint, including removed cables."
+  def list_interface_cable_change_events(%Scope{organization_id: organization_id}, interface_id) do
+    CableChangeEvent
+    |> where([event], event.organization_id == ^organization_id)
+    |> where(
+      [event],
+      event.interface_a_id == ^interface_id or event.interface_b_id == ^interface_id
+    )
+    |> order_by([event], asc: event.sequence)
+    |> Repo.all()
+  end
+
+  @doc """
+  Rebuilds current cables from confirmed assertions.
+
+  Proposed assertions and neighbor evidence are ignored, so reconciliation can
+  explain disagreement but never create, delete, or move a cable on its own.
+  """
+  def reconcile_cables(%Scope{} = scope) do
+    reconciliation_transaction(scope, fn -> CableReconciler.reconcile(scope) end)
   end
 
   @doc false
@@ -771,6 +1008,116 @@ defmodule Renga.Topology do
   defp vlan_validation_changeset(organization_id, attrs) do
     %Vlan{organization_id: organization_id, resource_id: Ecto.UUID.generate()}
     |> Vlan.changeset(attrs)
+  end
+
+  defp plan_endpoint_ids!(attrs) do
+    first = attr(attrs, :interface_a_id)
+    second = attr(attrs, :interface_b_id)
+
+    if is_nil(first) or is_nil(second), do: Repo.rollback(:cable_endpoints_required)
+    canonical_cable_pair(first, second)
+  end
+
+  # A plan is intent, so it only needs real, distinct, same-organization
+  # endpoints. Physical feasibility is reported as a finding instead.
+  defp validate_cable_plan_endpoints!(organization_id, interface_a_id, interface_b_id) do
+    if interface_a_id == interface_b_id, do: Repo.rollback(:identical_cable_endpoints)
+
+    scoped_get!(Interface, organization_id, interface_a_id)
+    scoped_get!(Interface, organization_id, interface_b_id)
+    :ok
+  end
+
+  defp put_cable_assertion!(scope, attrs, kind, action, attribution, opts \\ []) do
+    physical? = Keyword.get(opts, :physical?, true)
+
+    # Trusted classification is applied with the caller's key convention and
+    # after removing any caller-supplied copy, so string-keyed request params
+    # work and cannot override the kind, action, or confirmation.
+    attrs =
+      attrs
+      |> strip_trusted_assertion_keys()
+      |> put_attr(:kind, kind)
+      |> put_attr(:action, action)
+      |> put_attr(
+        :confirmation,
+        if(kind == "neighbor_evidence", do: "proposed", else: "confirmed")
+      )
+      |> put_default_attr(:asserted_at, Renga.Time.utc_now_ms())
+      |> strip_retract_attributes(action)
+
+    changeset =
+      struct(%CableAssertion{organization_id: scope.organization_id}, attribution)
+      |> CableAssertion.changeset(attrs)
+
+    unless changeset.valid?, do: Repo.rollback(changeset)
+
+    {interface_a_id, interface_b_id} =
+      canonical_cable_pair(
+        Ecto.Changeset.get_field(changeset, :interface_a_id),
+        Ecto.Changeset.get_field(changeset, :interface_b_id)
+      )
+
+    lock_cable_endpoints!(scope.organization_id, interface_a_id, interface_b_id, physical?)
+
+    changeset
+    |> Ecto.Changeset.put_change(:interface_a_id, interface_a_id)
+    |> Ecto.Changeset.put_change(:interface_b_id, interface_b_id)
+    |> insert_or_rollback()
+  end
+
+  # Confirmed cabling is a physical claim, so an assertion needs two real
+  # physical interfaces in this organization. A retraction only needs the real,
+  # distinct endpoints it releases, because an interface that a collector later
+  # reclassified away from ethernet must still be releasable. Locking endpoints
+  # in canonical order serializes competing claims on the same endpoint.
+  defp lock_cable_endpoints!(organization_id, interface_a_id, interface_b_id, physical?) do
+    if interface_a_id == interface_b_id, do: Repo.rollback(:identical_cable_endpoints)
+
+    first = scoped_lock!(Interface, organization_id, interface_a_id)
+    second = scoped_lock!(Interface, organization_id, interface_b_id)
+
+    if not physical? or
+         (CableReconciler.physically_connectable?(first) and
+            CableReconciler.physically_connectable?(second)) do
+      {first, second}
+    else
+      Repo.rollback(:cable_endpoint_not_physical)
+    end
+  end
+
+  defp strip_trusted_assertion_keys(attrs) do
+    Enum.reduce([:kind, :action, :confirmation], attrs, fn key, attrs ->
+      attrs
+      |> Map.delete(key)
+      |> Map.delete(Atom.to_string(key))
+    end)
+  end
+
+  defp strip_retract_attributes(attrs, "retract") do
+    Enum.reduce(@cable_action_attributes, attrs, fn field, attrs ->
+      attrs
+      |> Map.delete(field)
+      |> Map.delete(Atom.to_string(field))
+    end)
+  end
+
+  defp strip_retract_attributes(attrs, _action), do: attrs
+
+  defp actor_user_id(%Scope{user: %{id: user_id}}), do: user_id
+  defp actor_user_id(%Scope{}), do: nil
+
+  defp canonical_cable_pair(first, second) when first <= second, do: {first, second}
+  defp canonical_cable_pair(first, second), do: {second, first}
+
+  defp maybe_where_cable_interface(query, nil), do: query
+
+  defp maybe_where_cable_interface(query, interface_id) do
+    where(
+      query,
+      [record],
+      record.interface_a_id == ^interface_id or record.interface_b_id == ^interface_id
+    )
   end
 
   defp create_resource(organization_id, kind, attrs) do
@@ -1839,6 +2186,11 @@ defmodule Renga.Topology do
       _inactive_or_missing -> Repo.rollback(:forbidden)
     end
   end
+
+  defp upsert_or_rollback(%Ecto.Changeset{data: %{id: nil}} = changeset),
+    do: insert_or_rollback(changeset)
+
+  defp upsert_or_rollback(changeset), do: update_or_rollback(changeset)
 
   defp insert_or_rollback(changeset) do
     case Repo.insert(changeset) do
