@@ -88,7 +88,7 @@ defmodule RengaWeb.VlanGroupLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">New VLAN group</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 Creating a namespace changes shared VLAN identity, so only owners and admins may submit it.
               </p>
             </div>
@@ -170,7 +170,7 @@ defmodule RengaWeb.VlanGroupLive do
                 <h2 class="truncate text-lg font-semibold tracking-tight">
                   {group.resource.name}
                 </h2>
-                <p class="mt-1 font-mono text-xs text-base-content/45">{group.slug}</p>
+                <p class="mt-1 font-mono text-xs text-base-content/55">{group.slug}</p>
               </div>
               <span class={status_class(group.status)}>{group.status}</span>
             </div>
@@ -194,7 +194,7 @@ defmodule RengaWeb.VlanGroupLive do
 
             <% utilization = Map.fetch!(@utilization, group.id) %>
             <div class="mt-5 border-t border-base-content/10 pt-4">
-              <div class="flex items-center justify-between text-xs text-base-content/45">
+              <div class="flex items-center justify-between text-xs text-base-content/55">
                 <span>{utilization.used} of {utilization.capacity} VIDs assigned</span>
                 <span class="font-mono">{utilization.percent}%</span>
               </div>

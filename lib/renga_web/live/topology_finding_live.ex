@@ -102,7 +102,7 @@ defmodule RengaWeb.TopologyFindingLive do
           >
             <.icon name="hero-check-circle" class="mx-auto size-9 text-emerald-500" />
             <h2 class="mt-4 font-semibold">No {@finding_status} topology findings</h2>
-            <p class="mt-1 text-sm text-base-content/50">
+            <p class="mt-1 text-sm text-base-content/55">
               VLAN, adjacency, and cabling differences in this organization will appear here.
             </p>
           </div>
@@ -123,20 +123,20 @@ defmodule RengaWeb.TopologyFindingLive do
 
             <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-base-content/10 pt-4">
               <div>
-                <p class="text-xs uppercase tracking-wider text-base-content/40">Interface</p>
+                <p class="text-xs uppercase tracking-wider text-base-content/55">Interface</p>
                 <.link
                   navigate={~p"/inventory/resources/#{finding.interface.resource_id}"}
                   class="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
                 >
                   <span class="font-mono">{finding.interface.name}</span>
-                  <span class="text-xs font-normal text-base-content/45">
+                  <span class="text-xs font-normal text-base-content/55">
                     · {finding.interface.resource.name}
                   </span>
                   <.icon name="hero-arrow-right" class="size-3.5" />
                 </.link>
               </div>
               <div class="text-right">
-                <p class="text-xs uppercase tracking-wider text-base-content/40">Last observed</p>
+                <p class="text-xs uppercase tracking-wider text-base-content/55">Last observed</p>
                 <p class="mt-1 font-mono text-xs text-base-content/55">
                   {format_time(finding.last_observed_at)}
                 </p>
@@ -148,12 +148,12 @@ defmodule RengaWeb.TopologyFindingLive do
               class="mt-4 grid gap-2 rounded-xl bg-base-200/55 p-4 sm:grid-cols-2"
             >
               <div :for={{key, value} <- Enum.sort(finding.details)}>
-                <dt class="text-xs font-semibold capitalize text-base-content/40">{humanize(key)}</dt>
+                <dt class="text-xs font-semibold capitalize text-base-content/55">{humanize(key)}</dt>
                 <dd class="mt-1 break-words font-mono text-xs">{format_value(value)}</dd>
               </div>
             </dl>
 
-            <p :if={finding.resolved_at} class="mt-4 text-xs text-base-content/45">
+            <p :if={finding.resolved_at} class="mt-4 text-xs text-base-content/55">
               Resolved {format_time(finding.resolved_at)}
             </p>
           </article>

@@ -45,9 +45,9 @@ defmodule RengaWeb.TopologyLive do
           </div>
           <div :if={@interface} class="flex flex-col items-start gap-2 lg:items-end">
             <span class="inline-flex items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-xs font-medium">
-              <.icon name="hero-funnel" class="size-3.5 text-base-content/45" />
+              <.icon name="hero-funnel" class="size-3.5 text-base-content/55" />
               <span class="font-mono">{@interface.name}</span>
-              <span class="text-base-content/45">· {@interface_resource.name}</span>
+              <span class="text-base-content/55">· {@interface_resource.name}</span>
             </span>
             <.link
               id="topology-clear-interface"
@@ -76,7 +76,7 @@ defmodule RengaWeb.TopologyLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">Logical relationships</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 Directed host and stacking topology such as bonds, bridges, and lower devices.
               </p>
             </div>
@@ -88,7 +88,7 @@ defmodule RengaWeb.TopologyLive do
           <ul id="relationships-list" phx-update="stream" class="mt-5 space-y-3">
             <li
               id="relationships-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
             >
               No logical interface relationships in this organization.
             </li>
@@ -100,7 +100,7 @@ defmodule RengaWeb.TopologyLive do
             >
               <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                 <.endpoint_link interface={relationship.source_interface} />
-                <.icon name="hero-arrow-right" class="size-3.5 shrink-0 text-base-content/40" />
+                <.icon name="hero-arrow-right" class="size-3.5 shrink-0 text-base-content/50" />
                 <.endpoint_link interface={relationship.target_interface} />
               </div>
               <span class="shrink-0 self-start rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold capitalize text-base-content/55 sm:self-auto">
@@ -118,7 +118,7 @@ defmodule RengaWeb.TopologyLive do
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h2 class="font-semibold tracking-tight">Reconciled adjacency</h2>
-                <p class="mt-1 text-xs text-base-content/45">
+                <p class="mt-1 text-xs text-base-content/55">
                   Current Layer 2 neighbors selected from active LLDP/CDP evidence. Adjacency is
                   not proof of physical cabling.
                 </p>
@@ -131,7 +131,7 @@ defmodule RengaWeb.TopologyLive do
             <ul id="adjacencies-list" phx-update="stream" class="mt-5 space-y-3">
               <li
                 id="adjacencies-empty"
-                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
               >
                 No reconciled adjacency from active neighbor evidence.
               </li>
@@ -143,12 +143,12 @@ defmodule RengaWeb.TopologyLive do
               >
                 <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                   <.endpoint_link interface={adjacency.interface_a} />
-                  <.icon name="hero-arrows-right-left" class="size-3.5 shrink-0 text-base-content/40" />
+                  <.icon name="hero-arrows-right-left" class="size-3.5 shrink-0 text-base-content/50" />
                   <.endpoint_link interface={adjacency.interface_b} />
                 </div>
                 <div class="flex shrink-0 items-center gap-3 self-start sm:self-auto">
                   <span class={confidence_class(adjacency.confidence)}>{adjacency.confidence}</span>
-                  <span class="font-mono text-xs text-base-content/45">
+                  <span class="font-mono text-xs text-base-content/60">
                     {format_time(adjacency.last_observed_at)}
                   </span>
                 </div>
@@ -163,7 +163,7 @@ defmodule RengaWeb.TopologyLive do
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h2 class="font-semibold tracking-tight">Unresolved neighbor evidence</h2>
-                <p class="mt-1 text-xs text-base-content/45">
+                <p class="mt-1 text-xs text-base-content/55">
                   Active collector reports whose remote endpoint is not matched to canonical
                   inventory yet. They never create adjacency or cabling on their own.
                 </p>
@@ -176,7 +176,7 @@ defmodule RengaWeb.TopologyLive do
             <ul id="unresolved-evidence-list" phx-update="stream" class="mt-5 space-y-3">
               <li
                 id="unresolved-evidence-empty"
-                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
               >
                 Every active neighbor report is matched to inventory.
               </li>
@@ -190,11 +190,11 @@ defmodule RengaWeb.TopologyLive do
                   <div class="min-w-0">
                     <p class="flex flex-wrap items-center gap-2 text-sm">
                       <.endpoint_link interface={evidence.local_interface} />
-                      <span class="font-mono text-xs text-base-content/50">
+                      <span class="font-mono text-xs text-base-content/60">
                         {evidence.protocol} → {evidence.remote_chassis_id}:{evidence.remote_port_id}
                       </span>
                     </p>
-                    <p class="mt-1 text-xs text-base-content/45">
+                    <p class="mt-1 text-xs text-base-content/60">
                       via {evidence.source.name} · observed {format_time(evidence.observed_at)} · expires {format_time(
                         evidence.expires_at
                       )}
@@ -245,7 +245,7 @@ defmodule RengaWeb.TopologyLive do
       <span class="truncate font-mono text-sm font-medium">{@interface.name}</span>
       <.link
         navigate={~p"/inventory/resources/#{@interface.resource_id}"}
-        class="truncate text-xs text-base-content/45 transition hover:text-orange-600"
+        class="truncate text-xs text-base-content/60 transition hover:text-orange-600"
       >
         {@interface.resource.name}
       </.link>
