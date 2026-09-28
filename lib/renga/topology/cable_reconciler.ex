@@ -77,10 +77,12 @@ defmodule Renga.Topology.CableReconciler do
   def physically_connectable?(_interface), do: false
 
   @doc """
-  Records a candidate assertion from matched neighbor evidence.
+  Records a candidate assertion from fresh, matched neighbor evidence.
 
   The proposal is attributed to the evidence and stays invisible to cable
   reconciliation, so evidence can suggest adjacency without moving cabling.
+  Expired, superseded, or withdrawn evidence is rejected: its historical
+  matched row is not current truth.
   """
   def propose_from_evidence(organization_id, evidence_id, caller_attrs) do
     evidence =
@@ -96,6 +98,13 @@ defmodule Renga.Topology.CableReconciler do
 
     if is_nil(match) or match.status != "matched" do
       Repo.rollback(:neighbor_evidence_unresolved)
+    end
+
+    # Expiry can elapse before the sweep marks `stale_at`, so freshness is
+    # checked against the server clock instead of only the stale marker.
+    if not is_nil(evidence.stale_at) or
+         DateTime.compare(evidence.expires_at, Renga.Time.utc_now_ms()) != :gt do
+      Repo.rollback(:neighbor_evidence_stale)
     end
 
     existing =

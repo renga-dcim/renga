@@ -5280,6 +5280,134 @@ defmodule Renga.TopologyTest do
     assert unchanged.asserted_at == evidence.observed_at
   end
 
+  test "refuses to propose from expired neighbor evidence", %{scope: scope} do
+    local_resource = resource_fixture(scope, "cable-expiry-local")
+    remote_resource = resource_fixture(scope, "cable-expiry-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-expiry"})
+
+    observed_at = Renga.Time.utc_now_ms()
+    observation = observation_fixture(scope, source, "cable-expiry", observed_at, %{})
+
+    assert {:ok, [evidence]} =
+             reconcile_neighbors(scope, source, observation, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 1})
+                 ]
+               }
+             ])
+
+    assert Repo.get_by(InterfaceNeighborMatch, interface_neighbor_evidence_id: evidence.id).status ==
+             "matched"
+
+    # The TTL elapses before the expiry sweep runs: a matched row and an unset
+    # stale marker are not freshness.
+    Process.sleep(1_100)
+
+    assert is_nil(Repo.get!(InterfaceNeighborEvidence, evidence.id).stale_at)
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+
+    # After the sweep marks it expired the proposal is still refused.
+    assert {:ok, _adjacencies} =
+             Topology.expire_interface_neighbors(scope, DateTime.add(observed_at, 60, :second))
+
+    assert Repo.get!(InterfaceNeighborEvidence, evidence.id).stale_reason == "expired"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+
+    assert Topology.list_cable_assertions(scope) == []
+    assert Topology.list_cables(scope) == []
+  end
+
+  test "refuses to propose from superseded or withdrawn neighbor evidence", %{scope: scope} do
+    local_resource = resource_fixture(scope, "cable-stale-local")
+    remote_resource = resource_fixture(scope, "cable-stale-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "cable-stale",
+        metadata: %{"interface_neighbor_snapshot_policy" => "complete"}
+      })
+
+    observed_at = Renga.Time.utc_now_ms()
+
+    first =
+      observation_fixture(scope, source, "cable-stale-1", observed_at, %{
+        "section_completeness" => %{"interface_neighbors" => true}
+      })
+
+    assert {:ok, [superseded]} =
+             reconcile_neighbors(scope, source, first, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 600})
+                 ]
+               }
+             ])
+
+    second =
+      observation_fixture(
+        scope,
+        source,
+        "cable-stale-2",
+        DateTime.add(observed_at, 60, :second),
+        %{
+          "section_completeness" => %{"interface_neighbors" => true}
+        }
+      )
+
+    assert {:ok, [fresh]} =
+             reconcile_neighbors(scope, source, second, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 600})
+                 ]
+               }
+             ])
+
+    assert Repo.get!(InterfaceNeighborEvidence, superseded.id).stale_reason == "superseded"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, superseded.id)
+
+    # The newest report is still proposable: freshness is not over-blocked.
+    assert {:ok, proposal} = Topology.propose_cable_from_neighbor_evidence(scope, fresh.id)
+    assert proposal.interface_neighbor_evidence_id == fresh.id
+
+    # A complete snapshot without the neighbor withdraws the older report.
+    third =
+      observation_fixture(
+        scope,
+        source,
+        "cable-stale-3",
+        DateTime.add(observed_at, 120, :second),
+        %{
+          "section_completeness" => %{"interface_neighbors" => true}
+        }
+      )
+
+    assert {:ok, []} = reconcile_neighbors(scope, source, third, local_resource, [])
+
+    assert Repo.get!(InterfaceNeighborEvidence, fresh.id).stale_reason == "withdrawn"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, fresh.id)
+
+    assert length(Topology.list_cable_assertions(scope)) == 1
+    assert Topology.list_cables(scope) == []
+  end
+
   test "collector observations refresh cable feasibility without neighbor evidence", %{
     scope: scope
   } do
