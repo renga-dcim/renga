@@ -152,19 +152,35 @@ defmodule RengaWeb.VlanLive do
           </div>
 
           <dl class="mt-5 grid gap-3 sm:grid-cols-2">
-            <.mode_datum label="Desired mode" mode={@desired_mode} />
-            <.mode_datum label="Observed mode" mode={@current_mode} />
+            <.mode_datum
+              id="interface-membership-desired-mode"
+              label="Desired mode"
+              mode={@desired_mode}
+              memberships={@desired_membership_count}
+              missing_value="Not recorded"
+              membership_missing_value="Not recorded"
+              without_mode_note="Desired membership is recorded; no desired mode was set."
+            />
+            <.mode_datum
+              id="interface-membership-observed-mode"
+              label="Observed mode"
+              mode={@current_mode}
+              memberships={@current_membership_count}
+              missing_value="Not recorded"
+              membership_missing_value="Unavailable"
+              without_mode_note="Membership was observed; no reconciled port mode is available."
+            />
           </dl>
 
           <div class="mt-6 grid gap-6 lg:grid-cols-2">
             <div>
-              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
                 Desired membership
               </h3>
               <ul id="desired-memberships" phx-update="stream" class="mt-3 space-y-2">
                 <li
                   id="desired-memberships-empty"
-                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/45 only:block"
+                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/55 only:block"
                 >
                   No desired VLAN membership recorded.
                 </li>
@@ -177,7 +193,7 @@ defmodule RengaWeb.VlanLive do
                   <span class="font-mono text-sm">
                     {assignment.vlan.vid} · {assignment.vlan.name}
                   </span>
-                  <span class="text-xs font-semibold capitalize text-base-content/55">
+                  <span class="text-xs font-semibold capitalize text-base-content/60">
                     {assignment.tagging_mode}
                   </span>
                 </li>
@@ -185,13 +201,13 @@ defmodule RengaWeb.VlanLive do
             </div>
 
             <div>
-              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
                 Observed membership
               </h3>
               <ul id="current-memberships" phx-update="stream" class="mt-3 space-y-2">
                 <li
                   id="current-memberships-empty"
-                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/45 only:block"
+                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/55 only:block"
                 >
                   No reconciled membership from source evidence.
                 </li>
@@ -204,7 +220,7 @@ defmodule RengaWeb.VlanLive do
                   <span class="font-mono text-sm">
                     {membership.vlan.vid} · {membership.vlan.name}
                   </span>
-                  <span class="text-xs font-semibold capitalize text-base-content/55">
+                  <span class="text-xs font-semibold capitalize text-base-content/60">
                     {membership.tagging_mode}
                   </span>
                 </li>
@@ -224,7 +240,7 @@ defmodule RengaWeb.VlanLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">New VLAN</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 A VLAN outside every namespace is allowed; namespace membership only bounds its VID.
               </p>
             </div>
@@ -306,11 +322,11 @@ defmodule RengaWeb.VlanLive do
               </span>
               <div class="min-w-0">
                 <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
-                <p class="mt-1 text-xs text-base-content/45">
+                <p class="mt-1 text-xs text-base-content/55">
                   {vlan_namespace(vlan, @groups)}
                   <span :if={vlan.role}>{"· #{vlan.role}"}</span>
                 </p>
-                <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/45">
+                <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/55">
                   {vlan.description}
                 </p>
               </div>
@@ -381,6 +397,7 @@ defmodule RengaWeb.VlanLive do
     |> assign(:resource, nil)
     |> assign(:desired_mode, nil)
     |> assign(:current_mode, nil)
+    |> assign(:desired_membership_count, 0)
     |> assign(:current_membership_count, 0)
     |> stream(:desired_memberships, [], reset: true)
     |> stream(:current_memberships, [], reset: true)
@@ -396,6 +413,7 @@ defmodule RengaWeb.VlanLive do
     |> assign(:resource, resource)
     |> assign(:desired_mode, Topology.get_desired_interface_vlan_mode(scope, interface.id))
     |> assign(:current_mode, Topology.get_current_interface_vlan_mode(scope, interface.id))
+    |> assign(:desired_membership_count, length(desired))
     |> assign(:current_membership_count, length(current))
     |> stream(:desired_memberships, desired, dom_id: &"desired-membership-#{&1.id}", reset: true)
     |> stream(:current_memberships, current, dom_id: &"current-membership-#{&1.id}", reset: true)
@@ -456,17 +474,39 @@ defmodule RengaWeb.VlanLive do
     )
   end
 
+  attr :id, :string, required: true
   attr :label, :string, required: true
   attr :mode, :any, required: true
+  attr :memberships, :integer, default: 0
+  attr :missing_value, :string, required: true
+  attr :membership_missing_value, :string, required: true
+  attr :without_mode_note, :string, required: true
 
   defp mode_datum(assigns) do
     ~H"""
-    <div class="rounded-xl bg-base-200/60 px-4 py-3">
-      <dt class="text-xs font-semibold uppercase tracking-wider text-base-content/40">{@label}</dt>
-      <dd class="mt-1 text-sm font-medium capitalize">{(@mode && @mode.mode) || "Not recorded"}</dd>
+    <div id={@id} class="rounded-xl bg-base-200/60 px-4 py-3">
+      <dt class="text-xs font-semibold uppercase tracking-wider text-base-content/55">{@label}</dt>
+      <dd class="mt-1 text-sm font-medium">
+        {mode_value(@mode, @memberships, @missing_value, @membership_missing_value)}
+        <p
+          :if={is_nil(@mode) and @memberships > 0}
+          class="mt-1 text-xs font-normal text-base-content/60"
+        >
+          {@without_mode_note}
+        </p>
+      </dd>
     </div>
     """
   end
+
+  # The current mode is a reconciled projection. When it is absent we call the value
+  # unavailable rather than claiming the collector reported nothing, because reported mode
+  # evidence is also suppressed when it conflicts with the observed membership.
+  defp mode_value(%{mode: mode}, _memberships, _missing, _membership_missing),
+    do: mode |> to_string() |> String.capitalize()
+
+  defp mode_value(nil, 0, missing, _membership_missing), do: missing
+  defp mode_value(nil, _memberships, _missing, membership_missing), do: membership_missing
 
   defp status_class("active") do
     "shrink-0 self-start rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"

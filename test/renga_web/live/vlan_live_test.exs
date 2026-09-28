@@ -104,12 +104,156 @@ defmodule RengaWeb.VlanLiveTest do
 
     assert has_element?(view, "#desired-memberships", "10 · Management")
     assert has_element?(view, "#current-memberships", "10 · Management")
-    assert has_element?(view, "#interface-membership", "trunk")
+    assert has_element?(view, "#interface-membership-desired-mode", "Trunk")
+
+    # Membership evidence exists without mode evidence, so the panel reports the reconciled
+    # mode as unavailable instead of inventing a mode or denying the membership evidence.
+    assert has_element?(
+             view,
+             "#interface-membership-observed-mode > dd p",
+             "Membership was observed; no reconciled port mode is available."
+           )
+
+    assert has_element?(view, "#interface-membership-observed-mode", "Unavailable")
+    refute has_element?(view, "#interface-membership-observed-mode", "trunk")
     assert has_element?(view, "#vlans-clear-interface")
 
     # Without the filter the membership panel is absent.
     {:ok, plain_view, _html} = live(conn, ~p"/ipam/vlans")
     refute has_element?(plain_view, "#interface-membership")
+  end
+
+  test "shows a reported observed mode without the missing-mode note", %{conn: conn, scope: scope} do
+    {:ok, group} = create_group(scope, "observed-mode", [{1, 100}])
+    {:ok, _vlan} = create_vlan(scope, group, 10, "Management")
+
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "observed-mode-server",
+        lifecycle_state: "active"
+      })
+
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "mode-source"})
+    {:ok, _mapping} = Topology.put_source_vlan_group_mapping(scope, source.id, group.id)
+
+    observation = observation_fixture(scope, source, "vlan-ui-mode", %{})
+
+    assert {:ok, [_evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source,
+               observation,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlans" => [%{"vid" => 10, "tagging_mode" => "tagged"}],
+                   "vlan_mode" => "trunk"
+                 }
+               ],
+               true
+             )
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+
+    assert has_element?(view, "#interface-membership-observed-mode", "Trunk")
+    refute has_element?(view, "#interface-membership-observed-mode", "Unavailable")
+    refute has_element?(view, "#interface-membership-observed-mode > dd p")
+  end
+
+  test "does not claim no mode was reported when conflicting evidence suppresses it", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, group} = create_group(scope, "conflicting-mode", [{1, 100}])
+    {:ok, _vlan} = create_vlan(scope, group, 10, "Tagged")
+
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "conflicting-mode-server",
+        lifecycle_state: "active"
+      })
+
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+
+    {:ok, source_a} = Inventory.create_source(scope, %{kind: "manual", name: "mode-source-a"})
+    {:ok, source_b} = Inventory.create_source(scope, %{kind: "manual", name: "mode-source-b"})
+    {:ok, _mapping} = Topology.put_source_vlan_group_mapping(scope, source_a.id, group.id)
+    {:ok, _mapping} = Topology.put_source_vlan_group_mapping(scope, source_b.id, group.id)
+
+    first = observation_fixture(scope, source_a, "conflict-mode-a", %{})
+
+    assert {:ok, [_evidence]} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_a,
+               first,
+               resource.id,
+               [
+                 %{
+                   "name" => "eth0",
+                   "vlan_mode" => "trunk",
+                   "vlans" => [%{"vid" => 10, "tagging_mode" => "tagged"}]
+                 }
+               ],
+               true
+             )
+
+    assert %{mode: "trunk"} = Topology.get_current_interface_vlan_mode(scope, interface.id)
+
+    # A second source reports access with no memberships, which cannot reconcile against the
+    # tagged membership, so the current mode is dropped while mode evidence was reported.
+    incompatible = observation_fixture(scope, source_b, "conflict-mode-b", %{})
+
+    assert {:ok, []} =
+             Topology.reconcile_interface_vlans(
+               scope,
+               source_b,
+               incompatible,
+               resource.id,
+               [%{"name" => "eth0", "vlan_mode" => "access"}],
+               true
+             )
+
+    assert is_nil(Topology.get_current_interface_vlan_mode(scope, interface.id))
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+
+    # The membership stays visible and the mode reads as unavailable rather than absent
+    # from the collector's report.
+    assert has_element?(view, "#current-memberships", "10 · Tagged")
+    assert has_element?(view, "#interface-membership-observed-mode", "Unavailable")
+
+    assert has_element?(
+             view,
+             "#interface-membership-observed-mode > dd p",
+             "Membership was observed; no reconciled port mode is available."
+           )
+
+    refute has_element?(view, "#interface-membership", "reported no port mode")
+  end
+
+  test "keeps a missing mode as not recorded when no membership evidence exists", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "no-evidence-server",
+        lifecycle_state: "active"
+      })
+
+    {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+
+    assert has_element?(view, "#interface-membership-desired-mode", "Not recorded")
+    assert has_element?(view, "#interface-membership-observed-mode", "Not recorded")
+    refute has_element?(view, "#interface-membership", "no reconciled port mode")
   end
 
   test "managers create a VLAN and members only read it", %{
