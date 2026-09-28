@@ -69,6 +69,9 @@ defmodule RengaWeb.Router do
       live "/inventory/component-findings", ComponentFindingLive, :index
       live "/inventory/operations", InventoryOperationsLive, :index
 
+      live "/ipam/vlan-groups", VlanGroupLive, :index
+      live "/ipam/vlans", VlanLive, :index
+
       live "/dcim/sites", DcimLive, :sites
       live "/dcim/sites/:id", DcimLive, :site
       live "/dcim/locations/:id", DcimLive, :location

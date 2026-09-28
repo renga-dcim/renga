@@ -33,7 +33,20 @@ defmodule RengaWeb.Layouts do
 
   attr :active_nav, :atom,
     default: nil,
-    values: [nil, :overview, :resources, :collectors, :dcim, :catalog, :findings],
+    values: [
+      nil,
+      :overview,
+      :resources,
+      :collectors,
+      :dcim,
+      :catalog,
+      :findings,
+      :vlan_groups,
+      :vlans,
+      :topology,
+      :cables,
+      :topology_findings
+    ],
     doc: "the active inventory navigation destination"
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
@@ -45,7 +58,7 @@ defmodule RengaWeb.Layouts do
     <div :if={@current_scope && @current_scope.organization_id} class="flex min-h-screen bg-base-100">
       <aside
         id="app-sidebar"
-        class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-base-content/10 bg-base-200/45 px-3 py-4 lg:flex"
+        class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col overflow-y-auto border-r border-base-content/10 bg-base-200/45 px-3 py-4 lg:flex"
       >
         <.link
           navigate={~p"/inventory"}
@@ -117,6 +130,22 @@ defmodule RengaWeb.Layouts do
             icon="hero-exclamation-triangle"
             label="Component findings"
             active?={@active_nav == :findings}
+          />
+
+          <p class="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
+            Layer 2
+          </p>
+          <.sidebar_link
+            navigate={~p"/ipam/vlan-groups"}
+            icon="hero-rectangle-group"
+            label="VLAN groups"
+            active?={@active_nav == :vlan_groups}
+          />
+          <.sidebar_link
+            navigate={~p"/ipam/vlans"}
+            icon="hero-tag"
+            label="VLANs"
+            active?={@active_nav == :vlans}
           />
         </nav>
 
@@ -223,6 +252,12 @@ defmodule RengaWeb.Layouts do
                   icon="hero-exclamation-triangle"
                   label="Component findings"
                   active?={@active_nav == :findings}
+                />
+                <.sidebar_link
+                  navigate={~p"/ipam/vlans"}
+                  icon="hero-tag"
+                  label="VLANs"
+                  active?={@active_nav in [:vlans, :vlan_groups]}
                 />
               </nav>
               <div class="mt-2 border-t border-base-content/10 pt-2">
@@ -364,6 +399,12 @@ defmodule RengaWeb.Layouts do
             icon="hero-exclamation-triangle"
             label="Component findings"
           />
+          <.command_link
+            navigate={~p"/ipam/vlan-groups"}
+            icon="hero-rectangle-group"
+            label="VLAN groups"
+          />
+          <.command_link navigate={~p"/ipam/vlans"} icon="hero-tag" label="VLANs" />
 
           <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
             Saved views
