@@ -4379,6 +4379,8 @@ defmodule Renga.TopologyTest do
     {:ok, source} =
       Inventory.create_source(scope, %{kind: "manual", name: "cable-auth-source"})
 
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
@@ -4430,6 +4432,94 @@ defmodule Renga.TopologyTest do
     assert updated.source_id == source.id
     assert is_nil(updated.actor_user_id)
     assert updated.changes["cable_type"] == %{"from" => nil, "to" => "cat6a"}
+  end
+
+  test "requires a manager-granted contract before a source can import confirmed cabling", %{
+    scope: scope,
+    organization: organization
+  } do
+    first = interface_fixture(scope, "cable-contract-first", "eth0")
+    second = interface_fixture(scope, "cable-contract-second", "swp1")
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-contract"})
+
+    # Organization membership of a source is provenance, not trust.
+    assert {:error, :cable_import_not_granted} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    assert Topology.list_cables(scope) == []
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} = Topology.grant_cable_import_contract(member_scope, source.id)
+
+    assert {:ok, contract} = Topology.grant_cable_import_contract(scope, source.id)
+    assert contract.source_id == source.id
+    assert contract.granted_by_id == scope.user.id
+    assert is_nil(contract.revoked_at)
+
+    assert {:ok, imported} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert imported.kind == "import"
+    assert [cable] = Topology.list_cables(scope)
+
+    # Revocation stops new imports but leaves retained claims and cabling valid.
+    assert {:ok, revoked} = Topology.revoke_cable_import_contract(scope, source.id)
+    assert revoked.revoked_at != nil
+    assert revoked.revoked_by_id == scope.user.id
+
+    assert {:error, :cable_import_not_granted} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "dac"
+             })
+
+    assert [still_current] = Topology.list_cables(scope)
+    assert still_current.id == cable.id
+    assert length(Topology.list_cable_assertions(scope)) == 1
+
+    assert {:error, :cable_import_contract_already_revoked} =
+             Topology.revoke_cable_import_contract(scope, source.id)
+
+    # Re-granting clears the revocation; an inactive source cannot be trusted.
+    assert {:ok, regranted} = Topology.grant_cable_import_contract(scope, source.id)
+    assert is_nil(regranted.revoked_at)
+    assert regranted.granted_by_id == scope.user.id
+
+    assert {:ok, _inactive} = Inventory.update_source(scope, source, %{status: "revoked"})
+
+    assert {:error, :source_inactive} = Topology.grant_cable_import_contract(scope, source.id)
+
+    assert {:error, :source_inactive} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    # Contracts are tenant scoped like every other cable record.
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.grant_cable_import_contract(foreign_scope, source.id)
+    end
+
+    assert [listed] = Topology.list_cable_import_contracts(scope)
+    assert listed.source_id == source.id
+    assert Topology.list_cable_import_contracts(foreign_scope) == []
   end
 
   test "lets neighbor evidence propose but never create, move, or remove a cable", %{
@@ -4700,6 +4790,8 @@ defmodule Renga.TopologyTest do
 
     {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-keys-source"})
 
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
     assert {:ok, imported} =
              Topology.import_cable_assertion(scope, source.id, %{
                "interface_a_id" => first.id,
@@ -4842,6 +4934,8 @@ defmodule Renga.TopologyTest do
              })
 
     {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-future"})
+
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
 
     assert {:error, :cable_asserted_at_in_future} =
              Topology.import_cable_assertion(scope, source.id, %{
@@ -5108,6 +5202,8 @@ defmodule Renga.TopologyTest do
     second = interface_fixture(scope, "cable-retention-second", "swp1")
 
     {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-retention"})
+
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
 
     assert {:ok, _assertion} =
              Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
