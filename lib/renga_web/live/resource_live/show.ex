@@ -198,6 +198,39 @@ defmodule RengaWeb.ResourceLive.Show do
                       No addresses
                     </span>
                   </div>
+                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 sm:col-span-3">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+                      Layer 2
+                    </span>
+                    <.link
+                      id={"interface-#{interface.id}-memberships"}
+                      navigate={~p"/ipam/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
+                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
+                    >
+                      <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
+                    </.link>
+                    <.link
+                      id={"interface-#{interface.id}-relationships"}
+                      navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#logical-relationships"}
+                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
+                    >
+                      <.icon name="hero-share" class="size-3.5" /> Logical relationships
+                    </.link>
+                    <.link
+                      id={"interface-#{interface.id}-neighbors"}
+                      navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
+                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
+                    >
+                      <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
+                    </.link>
+                    <.link
+                      id={"interface-#{interface.id}-cables"}
+                      navigate={~p"/network/cables?#{[interface_id: interface.id]}" <> "#current-cables"}
+                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
+                    >
+                      <.icon name="hero-link" class="size-3.5" /> Confirmed cables
+                    </.link>
+                  </div>
                 </div>
               </div>
             </.panel>

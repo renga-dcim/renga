@@ -698,6 +698,23 @@ defmodule Renga.Inventory do
     where(query, [resource], resource.lifecycle_state == ^lifecycle)
   end
 
+  defp maybe_where_interface_kind(query, kind) when kind in [nil, ""], do: query
+
+  defp maybe_where_interface_kind(query, kind) do
+    where(query, [interface], interface.kind == ^kind)
+  end
+
+  defp maybe_where_relationship_interface(query, nil), do: query
+
+  defp maybe_where_relationship_interface(query, interface_id) do
+    where(
+      query,
+      [relationship],
+      relationship.source_interface_id == ^interface_id or
+        relationship.target_interface_id == ^interface_id
+    )
+  end
+
   defp maybe_filter_resource_condition(query, _organization_id, condition)
        when condition in [nil, ""],
        do: query
@@ -1239,6 +1256,22 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Lists organization interfaces with their resource loaded.
+
+  An optional `:kind` narrows the list to one interface kind, which is how
+  cable authoring offers only physically connectable endpoints.
+  """
+  def list_organization_interfaces(%Scope{organization_id: organization_id}, opts \\ []) do
+    Interface
+    |> join(:inner, [interface], resource in assoc(interface, :resource))
+    |> where([interface], interface.organization_id == ^organization_id)
+    |> maybe_where_interface_kind(Keyword.get(opts, :kind))
+    |> order_by([interface, resource], asc: resource.name, asc: interface.name)
+    |> preload(:resource)
+    |> Repo.all()
+  end
+
+  @doc """
   Fetches an interface only when it belongs to the caller's organization scope.
   """
   def get_interface!(%Scope{organization_id: organization_id}, id) do
@@ -1309,6 +1342,25 @@ defmodule Renga.Inventory do
         relationship.target_interface_id == ^interface_id
     )
     |> order_by([relationship], asc: relationship.kind, asc: relationship.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists organization interface relationships with both endpoints loaded.
+
+  An optional `:interface_id` narrows the list to relationships touching one
+  endpoint. Logical relationships are host and stacking topology, so they stay
+  separate from observed neighbors and confirmed cabling.
+  """
+  def list_organization_interface_relationships(
+        %Scope{organization_id: organization_id},
+        opts \\ []
+      ) do
+    InterfaceRelationship
+    |> where([relationship], relationship.organization_id == ^organization_id)
+    |> maybe_where_relationship_interface(Keyword.get(opts, :interface_id))
+    |> order_by([relationship], asc: relationship.kind, asc: relationship.id)
+    |> preload(source_interface: :resource, target_interface: :resource)
     |> Repo.all()
   end
 

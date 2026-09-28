@@ -39,7 +39,7 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 - [ ] Add optional tenant-safe prefix/VLAN relationships without making VLANs a
   prerequisite for IPAM.
-- [ ] Add authenticated organization-scoped VLAN, topology, cable, and finding
+- [X] Add authenticated organization-scoped VLAN, topology, cable, and finding
   LiveViews in the existing `live_session :require_authenticated_user` router
   block.
 

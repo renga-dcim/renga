@@ -503,6 +503,34 @@ defmodule RengaWeb.ResourceLiveTest do
            )
   end
 
+  test "links each interface to its Layer 2 concepts without conflating them", %{
+    conn: conn,
+    resource: resource,
+    interface: interface
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+
+    assert has_element?(
+             view,
+             "#interface-#{interface.id}-memberships[href='/ipam/vlans?interface_id=#{interface.id}#interface-membership']"
+           )
+
+    assert has_element?(
+             view,
+             "#interface-#{interface.id}-relationships[href='/network/topology?interface_id=#{interface.id}#logical-relationships']"
+           )
+
+    assert has_element?(
+             view,
+             "#interface-#{interface.id}-neighbors[href='/network/topology?interface_id=#{interface.id}#observed-neighbors']"
+           )
+
+    assert has_element?(
+             view,
+             "#interface-#{interface.id}-cables[href='/network/cables?interface_id=#{interface.id}#current-cables']"
+           )
+  end
+
   test "resource detail enforces organization scope", %{conn: conn} do
     other_organization = organization_fixture(%{name: "Other Operations"})
     other_scope = Renga.Accounts.scope_for(other_organization)

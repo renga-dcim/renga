@@ -4346,6 +4346,17 @@ defmodule Renga.TopologyTest do
                interface_b_id: bridge.id
              })
 
+    # Unselected form controls submit empty strings, which must read as missing
+    # endpoints rather than reach the database as UUIDs.
+    assert {:error, :cable_endpoints_required} =
+             Topology.put_cable_plan(scope, %{interface_a_id: "", interface_b_id: first.id})
+
+    assert {:error, :cable_endpoints_required} =
+             Topology.put_cable_plan(scope, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => ""
+             })
+
     assert {:error, %Ecto.Changeset{} = changeset} =
              Topology.assert_cable(scope, %{interface_a_id: first.id})
 

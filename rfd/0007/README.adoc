@@ -1,6 +1,6 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: published
+:discussion: https://github.com/renga-dcim/renga/pull/63
 :labels: inventory, network, topology, vlan
 
 = RFD 7 Layer 2 topology and VLANs

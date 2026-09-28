@@ -27,6 +27,9 @@ defmodule Renga.Topology.CableReconciler do
 
   @plan_attribute_fields ~w(cable_type label color length_value length_unit description)a
 
+  @doc "Finding kinds produced by cable reconciliation."
+  def finding_kinds, do: @finding_kinds
+
   @infeasible_message "Planned endpoint cannot be cabled"
   @endpoint_infeasible_message "Cabled endpoint is no longer physically connectable"
   @conflict_message "Planned endpoint is terminated by a different cable"
