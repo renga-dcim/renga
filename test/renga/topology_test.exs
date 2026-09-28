@@ -5143,7 +5143,29 @@ defmodule Renga.TopologyTest do
                length_unit: "m"
              })
 
-    assert "must be less than 1000000000" in errors_on(changeset).length_value
+    assert "must be less than or equal to 999999999.999" in errors_on(changeset).length_value
+
+    # numeric(12,3) rounds to the declared scale before the precision check, so
+    # a value that rounds up to 1000000000.000 would overflow.
+    assert {:error, rounded} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "999999999.9994",
+               length_unit: "m"
+             })
+
+    assert "must be less than or equal to 999999999.999" in errors_on(rounded).length_value
+
+    assert {:error, plan_changeset} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "999999999.9995",
+               length_unit: "m"
+             })
+
+    assert "must be less than or equal to 999999999.999" in errors_on(plan_changeset).length_value
 
     assert {:ok, _assertion} =
              Topology.assert_cable(scope, %{
