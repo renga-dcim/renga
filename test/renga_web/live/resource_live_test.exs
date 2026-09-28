@@ -529,6 +529,14 @@ defmodule RengaWeb.ResourceLiveTest do
              view,
              "#interface-#{interface.id}-cables[href='/network/cables?interface_id=#{interface.id}#current-cables']"
            )
+
+    # All four links share one group so the last one cannot wrap alone under the label.
+    for suffix <- ~w(memberships relationships neighbors cables) do
+      assert has_element?(
+               view,
+               "#interface-#{interface.id}-layer2-links > a#interface-#{interface.id}-#{suffix}"
+             )
+    end
   end
 
   test "resource detail enforces organization scope", %{conn: conn} do
