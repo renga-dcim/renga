@@ -24,6 +24,26 @@ defmodule RengaWeb.InventoryDashboardLiveTest do
     %{conn: conn, scope: scope}
   end
 
+  test "sidebar account control keeps the full email available behind truncation", %{
+    conn: conn,
+    scope: scope
+  } do
+    email = scope.user.email
+
+    {:ok, view, _html} = live(conn, ~p"/inventory")
+
+    assert has_element?(
+             view,
+             "#app-sidebar a[href='/users/settings'][title='#{email}'][aria-label='Account settings for #{email}']"
+           )
+
+    assert has_element?(
+             view,
+             "#app-sidebar a[href='/users/settings'] span.truncate[title='#{email}']",
+             email
+           )
+  end
+
   test "renders organization-scoped lifecycle, freshness, and connectivity counts", %{
     conn: conn,
     scope: scope

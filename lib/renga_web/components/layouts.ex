@@ -194,12 +194,21 @@ defmodule RengaWeb.Layouts do
           <div class="flex items-center gap-1 px-1">
             <.link
               navigate={~p"/users/settings"}
+              title={@current_scope.user.email}
+              aria-label={"Account settings for #{@current_scope.user.email}"}
               class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 transition hover:bg-base-content/[0.05]"
             >
               <span class="grid size-7 shrink-0 place-items-center rounded-full border border-base-content/15 bg-base-100 text-[11px] font-semibold uppercase">
                 {String.first(@current_scope.user.email)}
               </span>
-              <span class="min-w-0 truncate text-xs">{@current_scope.user.email}</span>
+              <%!-- The sidebar is 14rem wide, so a long email is truncated on purpose; the
+              title and aria-label carry the full address without leaking anything else. --%>
+              <span
+                class="min-w-0 truncate text-xs text-base-content/70"
+                title={@current_scope.user.email}
+              >
+                {@current_scope.user.email}
+              </span>
             </.link>
             <.theme_toggle />
             <.link
