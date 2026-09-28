@@ -21,6 +21,10 @@ defmodule Renga.Topology.CableAttributes do
   @statuses ~w(planned connected decommissioning)
   @length_units ~w(m cm ft in)
   @color_format ~r/\A#[0-9a-fA-F]{6}\z/
+  # The column is numeric(12,3): PostgreSQL rounds to the declared scale before
+  # checking precision, so anything above this could round up to 1000000000.000
+  # and overflow.
+  @max_length Decimal.new("999999999.999")
 
   def fields, do: @fields
 
@@ -37,9 +41,10 @@ defmodule Renga.Topology.CableAttributes do
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:length_unit, @length_units)
     |> validate_format(:color, @color_format)
-    # The column is numeric(12,3); rejecting values it cannot store keeps the
-    # failure a changeset error instead of a numeric overflow.
-    |> validate_number(:length_value, greater_than: 0, less_than: 1_000_000_000)
+    |> validate_number(:length_value,
+      greater_than: 0,
+      less_than_or_equal_to: @max_length
+    )
     |> validate_length_pair()
   end
 

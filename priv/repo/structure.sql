@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict drqSxpHeZIr31yCz9UYeXwIlGyZRoNpihx2alSGTngoW0M4vyTL4cRM9jogcCZa
+\restrict HwMkRjTgfUEND0bCu8DpbectEuGh8AnnG9dGMkjBtU2TQcKZiAfu3DXD7jYmBRz
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -72,7 +72,8 @@ BEGIN
   -- Organization teardown removes the organization row before cascading,
   -- so only deletes that outlive the organization are allowed. A deleted
   -- source or endpoint would otherwise cascade a confirmed claim away
-  -- without a removal event.
+  -- without a removal event, so retire the cable with retract_cable/2
+  -- before deleting one.
   IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
     RETURN OLD;
   END IF;
@@ -786,6 +787,23 @@ CREATE TABLE public.cable_endpoint_terminations (
     organization_id uuid NOT NULL,
     interface_id uuid NOT NULL,
     cable_id uuid NOT NULL
+);
+
+
+--
+-- Name: cable_import_contracts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cable_import_contracts (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    granted_by_id uuid,
+    granted_at timestamp(3) without time zone NOT NULL,
+    revoked_by_id uuid,
+    revoked_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -2274,6 +2292,14 @@ ALTER TABLE ONLY public.cable_endpoint_terminations
 
 
 --
+-- Name: cable_import_contracts cable_import_contracts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_import_contracts
+    ADD CONSTRAINT cable_import_contracts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: cable_plans cable_plans_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3015,6 +3041,20 @@ CREATE INDEX cable_change_events_cable_sequence_index ON public.cable_change_eve
 --
 
 CREATE INDEX cable_endpoint_terminations_cable_index ON public.cable_endpoint_terminations USING btree (cable_id, organization_id);
+
+
+--
+-- Name: cable_import_contracts_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_import_contracts_id_organization_id_index ON public.cable_import_contracts USING btree (id, organization_id);
+
+
+--
+-- Name: cable_import_contracts_source_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_import_contracts_source_index ON public.cable_import_contracts USING btree (organization_id, source_id);
 
 
 --
@@ -4845,6 +4885,38 @@ ALTER TABLE ONLY public.cable_endpoint_terminations
 
 
 --
+-- Name: cable_import_contracts cable_import_contracts_granted_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_import_contracts
+    ADD CONSTRAINT cable_import_contracts_granted_by_id_fkey FOREIGN KEY (granted_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: cable_import_contracts cable_import_contracts_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_import_contracts
+    ADD CONSTRAINT cable_import_contracts_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_import_contracts cable_import_contracts_revoked_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_import_contracts
+    ADD CONSTRAINT cable_import_contracts_revoked_by_id_fkey FOREIGN KEY (revoked_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: cable_import_contracts cable_import_contracts_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_import_contracts
+    ADD CONSTRAINT cable_import_contracts_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: cable_plans cable_plans_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6304,7 +6376,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict drqSxpHeZIr31yCz9UYeXwIlGyZRoNpihx2alSGTngoW0M4vyTL4cRM9jogcCZa
+\unrestrict HwMkRjTgfUEND0bCu8DpbectEuGh8AnnG9dGMkjBtU2TQcKZiAfu3DXD7jYmBRz
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6342,3 +6414,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260908090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260910090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260916120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260928120000);

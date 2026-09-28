@@ -20,6 +20,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.Cable
   alias Renga.Topology.CableAssertion
   alias Renga.Topology.CableChangeEvent
+  alias Renga.Topology.CableImportContract
   alias Renga.Topology.CablePlan
   alias Renga.Topology.CableReconciler
   alias Renga.Topology.CurrentInterfaceAdjacency
@@ -669,15 +670,98 @@ defmodule Renga.Topology do
 
   Imported cabling is a cable mutation, so it follows the same owner/admin
   policy as operator assertions while attributing the claim to the importing
-  source instead of a person.
+  source instead of a person. The source must be active and hold a contract
+  granted through `grant_cable_import_contract/2`: tenant membership alone is
+  not trust.
   """
   def import_cable_assertion(%Scope{} = scope, source_id, attrs) do
     managed_transaction(scope, fn ->
       CableReconciler.lock_state!(scope.organization_id)
       source = scoped_get!(Source, scope.organization_id, source_id)
+      authorize_cable_import!(scope.organization_id, source)
       assertion = put_cable_assertion!(scope, attrs, "import", "assert", %{source_id: source.id})
       CableReconciler.reconcile(scope)
       {:ok, assertion}
+    end)
+  end
+
+  def list_cable_import_contracts(%Scope{organization_id: organization_id}) do
+    CableImportContract
+    |> where([contract], contract.organization_id == ^organization_id)
+    |> order_by([contract], asc: contract.source_id)
+    |> preload([:source])
+    |> Repo.all()
+  end
+
+  @doc """
+  Grants one source the contract required by `import_cable_assertion/3`.
+
+  Imported cabling is authoritative, so a manager must trust the source
+  explicitly. Granting an already trusted source refreshes its attribution and
+  clears a prior revocation.
+  """
+  def grant_cable_import_contract(%Scope{} = scope, source_id) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+      source = scoped_get!(Source, scope.organization_id, source_id)
+
+      if source.status != "active", do: Repo.rollback(:source_inactive)
+
+      CableImportContract
+      |> Repo.get_by(organization_id: scope.organization_id, source_id: source.id)
+      |> case do
+        nil ->
+          %CableImportContract{
+            organization_id: scope.organization_id,
+            source_id: source.id
+          }
+
+        contract ->
+          contract
+      end
+      |> Ecto.Changeset.change(
+        granted_by_id: actor_user_id(scope),
+        granted_at: Renga.Time.utc_now_ms(),
+        revoked_at: nil,
+        revoked_by_id: nil
+      )
+      |> CableImportContract.changeset(%{})
+      |> upsert_or_rollback()
+    end)
+  end
+
+  @doc """
+  Revokes one source's cable-import contract.
+
+  Revocation only gates new imports: retained assertions and the reconciled
+  cable stay valid until an authorized retraction removes them.
+  """
+  def revoke_cable_import_contract(%Scope{} = scope, source_id) do
+    managed_transaction(scope, fn ->
+      CableReconciler.lock_state!(scope.organization_id)
+
+      CableImportContract
+      |> where(
+        [contract],
+        contract.organization_id == ^scope.organization_id and
+          contract.source_id == ^source_id
+      )
+      |> Repo.one()
+      |> case do
+        nil ->
+          Repo.rollback(:cable_import_contract_not_granted)
+
+        %CableImportContract{revoked_at: revoked_at} when not is_nil(revoked_at) ->
+          Repo.rollback(:cable_import_contract_already_revoked)
+
+        contract ->
+          contract
+          |> Ecto.Changeset.change(
+            revoked_at: Renga.Time.utc_now_ms(),
+            revoked_by_id: actor_user_id(scope)
+          )
+          |> update_or_rollback()
+      end
     end)
   end
 
@@ -1028,8 +1112,30 @@ defmodule Renga.Topology do
     :ok
   end
 
+  # Imported cabling is authoritative, so the source needs an active
+  # manager-granted contract: tenant membership alone is not trust. An inactive
+  # or revoked source is rejected even while a contract row exists.
+  defp authorize_cable_import!(_organization_id, %Source{status: status})
+       when status != "active" do
+    Repo.rollback(:source_inactive)
+  end
+
+  defp authorize_cable_import!(organization_id, %Source{id: source_id}) do
+    granted? =
+      CableImportContract
+      |> where(
+        [contract],
+        contract.organization_id == ^organization_id and contract.source_id == ^source_id and
+          is_nil(contract.revoked_at)
+      )
+      |> Repo.exists?()
+
+    unless granted?, do: Repo.rollback(:cable_import_not_granted)
+  end
+
   defp put_cable_assertion!(scope, attrs, kind, action, attribution, opts \\ []) do
     physical? = Keyword.get(opts, :physical?, true)
+    now = Renga.Time.utc_now_ms()
 
     # Trusted classification is applied with the caller's key convention and
     # after removing any caller-supplied copy, so string-keyed request params
@@ -1043,7 +1149,7 @@ defmodule Renga.Topology do
         :confirmation,
         if(kind == "neighbor_evidence", do: "proposed", else: "confirmed")
       )
-      |> put_default_attr(:asserted_at, Renga.Time.utc_now_ms())
+      |> put_default_attr(:asserted_at, now)
       |> strip_retract_attributes(action)
 
     changeset =
@@ -1051,6 +1157,7 @@ defmodule Renga.Topology do
       |> CableAssertion.changeset(attrs)
 
     unless changeset.valid?, do: Repo.rollback(changeset)
+    reject_future_assertion!(changeset, now)
 
     {interface_a_id, interface_b_id} =
       canonical_cable_pair(
@@ -1064,6 +1171,15 @@ defmodule Renga.Topology do
     |> Ecto.Changeset.put_change(:interface_a_id, interface_a_id)
     |> Ecto.Changeset.put_change(:interface_b_id, interface_b_id)
     |> insert_or_rollback()
+  end
+
+  # Confirmed claims are ordering facts about the present: a caller-supplied
+  # future `asserted_at` would outrank every later assertion, retraction, or
+  # import for the same pair or endpoint and lock ordinary mutations out.
+  defp reject_future_assertion!(changeset, now) do
+    if DateTime.compare(Ecto.Changeset.get_field(changeset, :asserted_at), now) == :gt do
+      Repo.rollback(:cable_asserted_at_in_future)
+    end
   end
 
   # Confirmed cabling is a physical claim, so an assertion needs two real

@@ -4379,6 +4379,8 @@ defmodule Renga.TopologyTest do
     {:ok, source} =
       Inventory.create_source(scope, %{kind: "manual", name: "cable-auth-source"})
 
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
@@ -4430,6 +4432,94 @@ defmodule Renga.TopologyTest do
     assert updated.source_id == source.id
     assert is_nil(updated.actor_user_id)
     assert updated.changes["cable_type"] == %{"from" => nil, "to" => "cat6a"}
+  end
+
+  test "requires a manager-granted contract before a source can import confirmed cabling", %{
+    scope: scope,
+    organization: organization
+  } do
+    first = interface_fixture(scope, "cable-contract-first", "eth0")
+    second = interface_fixture(scope, "cable-contract-second", "swp1")
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-contract"})
+
+    # Organization membership of a source is provenance, not trust.
+    assert {:error, :cable_import_not_granted} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    assert Topology.list_cables(scope) == []
+
+    member = user_fixture()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    member_scope = Accounts.scope_for_user(member, organization.id)
+
+    assert {:error, :forbidden} = Topology.grant_cable_import_contract(member_scope, source.id)
+
+    assert {:ok, contract} = Topology.grant_cable_import_contract(scope, source.id)
+    assert contract.source_id == source.id
+    assert contract.granted_by_id == scope.user.id
+    assert is_nil(contract.revoked_at)
+
+    assert {:ok, imported} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "cat6a"
+             })
+
+    assert imported.kind == "import"
+    assert [cable] = Topology.list_cables(scope)
+
+    # Revocation stops new imports but leaves retained claims and cabling valid.
+    assert {:ok, revoked} = Topology.revoke_cable_import_contract(scope, source.id)
+    assert revoked.revoked_at != nil
+    assert revoked.revoked_by_id == scope.user.id
+
+    assert {:error, :cable_import_not_granted} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               cable_type: "dac"
+             })
+
+    assert [still_current] = Topology.list_cables(scope)
+    assert still_current.id == cable.id
+    assert length(Topology.list_cable_assertions(scope)) == 1
+
+    assert {:error, :cable_import_contract_already_revoked} =
+             Topology.revoke_cable_import_contract(scope, source.id)
+
+    # Re-granting clears the revocation; an inactive source cannot be trusted.
+    assert {:ok, regranted} = Topology.grant_cable_import_contract(scope, source.id)
+    assert is_nil(regranted.revoked_at)
+    assert regranted.granted_by_id == scope.user.id
+
+    assert {:ok, _inactive} = Inventory.update_source(scope, source, %{status: "revoked"})
+
+    assert {:error, :source_inactive} = Topology.grant_cable_import_contract(scope, source.id)
+
+    assert {:error, :source_inactive} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id
+             })
+
+    # Contracts are tenant scoped like every other cable record.
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.grant_cable_import_contract(foreign_scope, source.id)
+    end
+
+    assert [listed] = Topology.list_cable_import_contracts(scope)
+    assert listed.source_id == source.id
+    assert Topology.list_cable_import_contracts(foreign_scope) == []
   end
 
   test "lets neighbor evidence propose but never create, move, or remove a cable", %{
@@ -4700,6 +4790,8 @@ defmodule Renga.TopologyTest do
 
     {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-keys-source"})
 
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
     assert {:ok, imported} =
              Topology.import_cable_assertion(scope, source.id, %{
                "interface_a_id" => first.id,
@@ -4821,6 +4913,55 @@ defmodule Renga.TopologyTest do
     assert updated.primary_assertion_id == latest.id
   end
 
+  test "rejects future-dated confirmed claims so later mutations still win", %{scope: scope} do
+    first = interface_fixture(scope, "cable-future-first", "eth0")
+    second = interface_fixture(scope, "cable-future-second", "swp1")
+
+    future = DateTime.add(Renga.Time.utc_now_ms(), 86_400, :second)
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: future
+             })
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.retract_cable(scope, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => second.id,
+               "asserted_at" => future
+             })
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-future"})
+
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: future
+             })
+
+    # Rejected claims leave no trace: no claim, no cabling, no history.
+    assert Topology.list_cable_assertions(scope) == []
+    assert Topology.list_cables(scope) == []
+
+    # Ordinary mutations still work; a future retraction cannot suppress them.
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert [cable] = Topology.list_cables(scope)
+
+    assert {:ok, _retraction} =
+             Topology.retract_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert Topology.list_cables(scope) == []
+    assert length(Topology.list_cable_assertions(scope)) == 2
+    assert length(Topology.list_cable_change_events(scope, cable.id)) == 2
+  end
+
   test "records who caused a cable transition and what the cable was", %{scope: scope} do
     first = interface_fixture(scope, "cable-history-first", "eth0")
     second = interface_fixture(scope, "cable-history-second", "swp1")
@@ -4893,6 +5034,63 @@ defmodule Renga.TopologyTest do
     assert removed.snapshot["cable_type"] == "cat6a"
   end
 
+  test "attributes a removal to the displacing claim's precedence, not endpoint order", %{
+    scope: scope,
+    organization: organization
+  } do
+    interfaces =
+      for index <- 1..4 do
+        interface_fixture(scope, "cable-cause-#{index}", "eth#{index}")
+      end
+
+    # The removed cable must start at the lowest endpoint id, so attributing the
+    # removal to the first endpoint deterministically picked the wrong claim.
+    {first, second} = interfaces |> Enum.take(2) |> Enum.min_max_by(& &1.id)
+    [third, fourth] = Enum.drop(interfaces, 2)
+
+    bob = user_fixture()
+    organization_membership_fixture(bob, organization, %{role: "admin"})
+    bob_scope = Accounts.scope_for_user(bob, organization.id)
+
+    carol = user_fixture()
+    organization_membership_fixture(carol, organization, %{role: "admin"})
+    carol_scope = Accounts.scope_for_user(carol, organization.id)
+
+    # Alice's older claim is blocked while Bob's cable is current.
+    assert {:ok, _alice_claim} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: third.id,
+               asserted_at: ~U[2026-09-16 10:00:00.000000Z]
+             })
+
+    assert {:ok, _bob_claim} =
+             Topology.assert_cable(bob_scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: ~U[2026-09-16 11:00:00.000000Z]
+             })
+
+    assert [displaced] = Topology.list_cables(scope)
+
+    # Carol's newer claim takes the second endpoint. Alice's claim is only
+    # reactivated; it did not displace Bob's cable by precedence.
+    assert {:ok, carol_claim} =
+             Topology.assert_cable(carol_scope, %{
+               interface_a_id: second.id,
+               interface_b_id: fourth.id,
+               asserted_at: ~U[2026-09-16 12:00:00.000000Z]
+             })
+
+    assert length(Topology.list_cables(scope)) == 2
+
+    assert [created, removed] = Topology.list_cable_change_events(scope, displaced.id)
+    assert created.action == "created"
+    assert removed.action == "removed"
+    assert removed.assertion_id == carol_claim.id
+    assert removed.actor_user_id == carol.id
+  end
+
   test "normalizes equivalent colors so reasserting does not fabricate changes", %{scope: scope} do
     first = interface_fixture(scope, "cable-color-first", "eth0")
     second = interface_fixture(scope, "cable-color-second", "swp1")
@@ -4945,7 +5143,29 @@ defmodule Renga.TopologyTest do
                length_unit: "m"
              })
 
-    assert "must be less than 1000000000" in errors_on(changeset).length_value
+    assert "must be less than or equal to 999999999.999" in errors_on(changeset).length_value
+
+    # numeric(12,3) rounds to the declared scale before the precision check, so
+    # a value that rounds up to 1000000000.000 would overflow.
+    assert {:error, rounded} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "999999999.9994",
+               length_unit: "m"
+             })
+
+    assert "must be less than or equal to 999999999.999" in errors_on(rounded).length_value
+
+    assert {:error, plan_changeset} =
+             Topology.put_cable_plan(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               length_value: "999999999.9995",
+               length_unit: "m"
+             })
+
+    assert "must be less than or equal to 999999999.999" in errors_on(plan_changeset).length_value
 
     assert {:ok, _assertion} =
              Topology.assert_cable(scope, %{
@@ -5005,6 +5225,8 @@ defmodule Renga.TopologyTest do
 
     {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-retention"})
 
+    assert {:ok, _contract} = Topology.grant_cable_import_contract(scope, source.id)
+
     assert {:ok, _assertion} =
              Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
 
@@ -5047,37 +5269,178 @@ defmodule Renga.TopologyTest do
     organization: organization
   } do
     {evidence, local, remote} = neighbor_evidence!(scope, "cable-proposal-auth")
+    other = interface_fixture(scope, "cable-proposal-auth-other", "swp2")
 
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
+    # A member cannot forge endpoints or a timestamp on the first proposal for
+    # fresh evidence: the facts come from the evidence, never caller input.
     assert {:ok, proposal} =
-             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id)
-
-    assert proposal.confirmation == "proposed"
-    assert Topology.list_cables(scope) == []
-
-    assert {:error, :forbidden} =
-             Topology.assert_cable(member_scope, %{
-               interface_a_id: local.id,
-               interface_b_id: remote.id
-             })
-
-    # A member cannot forge the endpoints or timestamp attributed to the evidence.
-    other = interface_fixture(scope, "cable-proposal-auth-other", "swp2")
-
-    assert {:ok, unchanged} =
              Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id, %{
                "interface_a_id" => local.id,
                "interface_b_id" => other.id,
                "asserted_at" => ~U[2030-01-01 00:00:00Z]
              })
 
+    assert proposal.kind == "neighbor_evidence"
+    assert proposal.action == "assert"
+    assert proposal.confirmation == "proposed"
+    assert proposal.interface_neighbor_evidence_id == evidence.id
+    assert proposal.interface_a_id == Enum.min([local.id, remote.id])
+    assert proposal.interface_b_id == Enum.max([local.id, remote.id])
+    assert proposal.asserted_at == evidence.observed_at
+    assert is_nil(proposal.actor_user_id)
+
+    assert Topology.list_cables(scope) == []
+
+    # Retries reuse the attributed proposal instead of re-forging it.
+    assert {:ok, unchanged} =
+             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id, %{
+               interface_a_id: other.id,
+               interface_b_id: local.id,
+               asserted_at: ~U[2031-01-01 00:00:00Z]
+             })
+
     assert unchanged.id == proposal.id
     assert unchanged.interface_a_id == proposal.interface_a_id
     assert unchanged.interface_b_id == proposal.interface_b_id
     assert unchanged.asserted_at == evidence.observed_at
+
+    assert {:error, :forbidden} =
+             Topology.assert_cable(member_scope, %{
+               interface_a_id: local.id,
+               interface_b_id: remote.id
+             })
+  end
+
+  test "refuses to propose from expired neighbor evidence", %{scope: scope} do
+    local_resource = resource_fixture(scope, "cable-expiry-local")
+    remote_resource = resource_fixture(scope, "cable-expiry-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-expiry"})
+
+    observed_at = Renga.Time.utc_now_ms()
+    observation = observation_fixture(scope, source, "cable-expiry", observed_at, %{})
+
+    assert {:ok, [evidence]} =
+             reconcile_neighbors(scope, source, observation, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 1})
+                 ]
+               }
+             ])
+
+    assert Repo.get_by(InterfaceNeighborMatch, interface_neighbor_evidence_id: evidence.id).status ==
+             "matched"
+
+    # The TTL elapses before the expiry sweep runs: a matched row and an unset
+    # stale marker are not freshness.
+    Process.sleep(1_100)
+
+    assert is_nil(Repo.get!(InterfaceNeighborEvidence, evidence.id).stale_at)
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+
+    # After the sweep marks it expired the proposal is still refused.
+    assert {:ok, _adjacencies} =
+             Topology.expire_interface_neighbors(scope, DateTime.add(observed_at, 60, :second))
+
+    assert Repo.get!(InterfaceNeighborEvidence, evidence.id).stale_reason == "expired"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, evidence.id)
+
+    assert Topology.list_cable_assertions(scope) == []
+    assert Topology.list_cables(scope) == []
+  end
+
+  test "refuses to propose from superseded or withdrawn neighbor evidence", %{scope: scope} do
+    local_resource = resource_fixture(scope, "cable-stale-local")
+    remote_resource = resource_fixture(scope, "cable-stale-remote")
+    {:ok, local} = Inventory.create_interface(scope, local_resource.id, %{name: "eth0"})
+    {:ok, remote} = Inventory.create_interface(scope, remote_resource.id, %{name: "swp1"})
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{
+        kind: "manual",
+        name: "cable-stale",
+        metadata: %{"interface_neighbor_snapshot_policy" => "complete"}
+      })
+
+    observed_at = Renga.Time.utc_now_ms()
+
+    first =
+      observation_fixture(scope, source, "cable-stale-1", observed_at, %{
+        "section_completeness" => %{"interface_neighbors" => true}
+      })
+
+    assert {:ok, [superseded]} =
+             reconcile_neighbors(scope, source, first, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 600})
+                 ]
+               }
+             ])
+
+    second =
+      observation_fixture(
+        scope,
+        source,
+        "cable-stale-2",
+        DateTime.add(observed_at, 60, :second),
+        %{
+          "section_completeness" => %{"interface_neighbors" => true}
+        }
+      )
+
+    assert {:ok, [fresh]} =
+             reconcile_neighbors(scope, source, second, local_resource, [
+               %{
+                 "name" => local.name,
+                 "neighbors" => [
+                   neighbor(remote_resource.name, remote.name, %{"ttl_seconds" => 600})
+                 ]
+               }
+             ])
+
+    assert Repo.get!(InterfaceNeighborEvidence, superseded.id).stale_reason == "superseded"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, superseded.id)
+
+    # The newest report is still proposable: freshness is not over-blocked.
+    assert {:ok, proposal} = Topology.propose_cable_from_neighbor_evidence(scope, fresh.id)
+    assert proposal.interface_neighbor_evidence_id == fresh.id
+
+    # A complete snapshot without the neighbor withdraws the older report.
+    third =
+      observation_fixture(
+        scope,
+        source,
+        "cable-stale-3",
+        DateTime.add(observed_at, 120, :second),
+        %{
+          "section_completeness" => %{"interface_neighbors" => true}
+        }
+      )
+
+    assert {:ok, []} = reconcile_neighbors(scope, source, third, local_resource, [])
+
+    assert Repo.get!(InterfaceNeighborEvidence, fresh.id).stale_reason == "withdrawn"
+
+    assert {:error, :neighbor_evidence_stale} =
+             Topology.propose_cable_from_neighbor_evidence(scope, fresh.id)
+
+    assert length(Topology.list_cable_assertions(scope)) == 1
+    assert Topology.list_cables(scope) == []
   end
 
   test "collector observations refresh cable feasibility without neighbor evidence", %{

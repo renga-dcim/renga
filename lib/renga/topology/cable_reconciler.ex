@@ -77,10 +77,12 @@ defmodule Renga.Topology.CableReconciler do
   def physically_connectable?(_interface), do: false
 
   @doc """
-  Records a candidate assertion from matched neighbor evidence.
+  Records a candidate assertion from fresh, matched neighbor evidence.
 
   The proposal is attributed to the evidence and stays invisible to cable
   reconciliation, so evidence can suggest adjacency without moving cabling.
+  Expired, superseded, or withdrawn evidence is rejected: its historical
+  matched row is not current truth.
   """
   def propose_from_evidence(organization_id, evidence_id, caller_attrs) do
     evidence =
@@ -96,6 +98,13 @@ defmodule Renga.Topology.CableReconciler do
 
     if is_nil(match) or match.status != "matched" do
       Repo.rollback(:neighbor_evidence_unresolved)
+    end
+
+    # Expiry can elapse before the sweep marks `stale_at`, so freshness is
+    # checked against the server clock instead of only the stale marker.
+    if not is_nil(evidence.stale_at) or
+         DateTime.compare(evidence.expires_at, Renga.Time.utc_now_ms()) != :gt do
+      Repo.rollback(:neighbor_evidence_stale)
     end
 
     existing =
@@ -183,15 +192,23 @@ defmodule Renga.Topology.CableReconciler do
   end
 
   # A removed cable is explained by the claim that displaced it: the retraction
-  # for its own pair, or the newer claim that took one of its endpoints.
+  # for its own pair, or the highest-precedence selected claim that took one of
+  # its endpoints. Precedence must match selection rather than endpoint order: a
+  # newer claim on the second endpoint displaced the cable even when a
+  # reactivated older claim also touches the first.
   defp removal_cause(cable, claims_by_pair, selected_by_endpoint) do
     case Map.get(claims_by_pair, pair_key(cable)) do
       %{action: "retract"} = retraction ->
         retraction
 
       _claim_or_nil ->
-        [cable.interface_a_id, cable.interface_b_id]
-        |> Enum.find_value(&Map.get(selected_by_endpoint, &1))
+        cable
+        |> cable_endpoints()
+        |> Enum.map(&Map.get(selected_by_endpoint, &1))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.max_by(&{DateTime.to_unix(&1.asserted_at, :microsecond), &1.sequence}, fn ->
+          nil
+        end)
     end
   end
 
