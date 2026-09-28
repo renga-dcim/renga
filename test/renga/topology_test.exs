@@ -5269,37 +5269,50 @@ defmodule Renga.TopologyTest do
     organization: organization
   } do
     {evidence, local, remote} = neighbor_evidence!(scope, "cable-proposal-auth")
+    other = interface_fixture(scope, "cable-proposal-auth-other", "swp2")
 
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
+    # A member cannot forge endpoints or a timestamp on the first proposal for
+    # fresh evidence: the facts come from the evidence, never caller input.
     assert {:ok, proposal} =
-             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id)
-
-    assert proposal.confirmation == "proposed"
-    assert Topology.list_cables(scope) == []
-
-    assert {:error, :forbidden} =
-             Topology.assert_cable(member_scope, %{
-               interface_a_id: local.id,
-               interface_b_id: remote.id
-             })
-
-    # A member cannot forge the endpoints or timestamp attributed to the evidence.
-    other = interface_fixture(scope, "cable-proposal-auth-other", "swp2")
-
-    assert {:ok, unchanged} =
              Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id, %{
                "interface_a_id" => local.id,
                "interface_b_id" => other.id,
                "asserted_at" => ~U[2030-01-01 00:00:00Z]
              })
 
+    assert proposal.kind == "neighbor_evidence"
+    assert proposal.action == "assert"
+    assert proposal.confirmation == "proposed"
+    assert proposal.interface_neighbor_evidence_id == evidence.id
+    assert proposal.interface_a_id == Enum.min([local.id, remote.id])
+    assert proposal.interface_b_id == Enum.max([local.id, remote.id])
+    assert proposal.asserted_at == evidence.observed_at
+    assert is_nil(proposal.actor_user_id)
+
+    assert Topology.list_cables(scope) == []
+
+    # Retries reuse the attributed proposal instead of re-forging it.
+    assert {:ok, unchanged} =
+             Topology.propose_cable_from_neighbor_evidence(member_scope, evidence.id, %{
+               interface_a_id: other.id,
+               interface_b_id: local.id,
+               asserted_at: ~U[2031-01-01 00:00:00Z]
+             })
+
     assert unchanged.id == proposal.id
     assert unchanged.interface_a_id == proposal.interface_a_id
     assert unchanged.interface_b_id == proposal.interface_b_id
     assert unchanged.asserted_at == evidence.observed_at
+
+    assert {:error, :forbidden} =
+             Topology.assert_cable(member_scope, %{
+               interface_a_id: local.id,
+               interface_b_id: remote.id
+             })
   end
 
   test "refuses to propose from expired neighbor evidence", %{scope: scope} do
