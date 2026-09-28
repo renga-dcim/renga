@@ -140,9 +140,9 @@ defmodule RengaWeb.CableLive do
           </div>
           <div :if={@interface} class="flex flex-col items-start gap-2 lg:items-end">
             <span class="inline-flex items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-xs font-medium">
-              <.icon name="hero-funnel" class="size-3.5 text-base-content/45" />
+              <.icon name="hero-funnel" class="size-3.5 text-base-content/55" />
               <span class="font-mono">{@interface.name}</span>
-              <span class="text-base-content/45">· {@interface_resource.name}</span>
+              <span class="text-base-content/55">· {@interface_resource.name}</span>
             </span>
             <.link
               id="cables-clear-interface"
@@ -167,7 +167,7 @@ defmodule RengaWeb.CableLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">Current cables</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 Reconciled from confirmed claims. Each endpoint carries at most one current cable.
               </p>
             </div>
@@ -179,7 +179,7 @@ defmodule RengaWeb.CableLive do
           <ul id="cables-list" phx-update="stream" class="mt-5 space-y-3">
             <li
               id="cables-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
             >
               No current cable is confirmed in this view.
             </li>
@@ -193,10 +193,10 @@ defmodule RengaWeb.CableLive do
                 <div class="min-w-0 space-y-2">
                   <p class="flex flex-wrap items-center gap-2 text-sm">
                     <.endpoint_link interface={cable.interface_a} />
-                    <.icon name="hero-link" class="size-3.5 shrink-0 text-base-content/40" />
+                    <.icon name="hero-link" class="size-3.5 shrink-0 text-base-content/50" />
                     <.endpoint_link interface={cable.interface_b} />
                   </p>
-                  <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/45">
+                  <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/55">
                     <span :if={cable.color} class="inline-flex items-center gap-1.5">
                       <span
                         class="inline-block size-3 rounded-full border border-base-content/15"
@@ -238,7 +238,7 @@ defmodule RengaWeb.CableLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">Cable plans</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 Desired connectivity only. A plan never reserves an endpoint and can disagree
                 with current cabling without replacing it.
               </p>
@@ -251,7 +251,7 @@ defmodule RengaWeb.CableLive do
           <ul id="plans-list" phx-update="stream" class="mt-5 space-y-3">
             <li
               id="plans-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
             >
               No cable plan recorded in this view.
             </li>
@@ -264,10 +264,10 @@ defmodule RengaWeb.CableLive do
               <div class="min-w-0 space-y-2">
                 <p class="flex flex-wrap items-center gap-2 text-sm">
                   <.endpoint_link interface={plan.interface_a} />
-                  <.icon name="hero-arrow-right" class="size-3.5 shrink-0 text-base-content/40" />
+                  <.icon name="hero-arrow-right" class="size-3.5 shrink-0 text-base-content/50" />
                   <.endpoint_link interface={plan.interface_b} />
                 </p>
-                <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/45">
+                <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/55">
                   <span :if={plan.cable_type}>{plan.cable_type}</span>
                   <span :if={plan.label}>“{plan.label}”</span>
                 </p>
@@ -320,7 +320,7 @@ defmodule RengaWeb.CableLive do
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="font-semibold tracking-tight">Cable claims</h2>
-              <p class="mt-1 text-xs text-base-content/45">
+              <p class="mt-1 text-xs text-base-content/55">
                 Append-only attributed claims, newest first. Proposals from neighbor evidence are
                 listed here but never reconcile into current cabling.
               </p>
@@ -333,7 +333,7 @@ defmodule RengaWeb.CableLive do
           <ul id="claims-list" phx-update="stream" class="mt-5 space-y-2">
             <li
               id="claims-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
             >
               No cable claim recorded in this view.
             </li>
@@ -346,11 +346,11 @@ defmodule RengaWeb.CableLive do
             >
               <div class="flex min-w-0 flex-wrap items-center gap-2 text-xs">
                 <span class={claim_class(assertion)}>{claim_label(assertion)}</span>
-                <span class="font-mono text-base-content/55">
+                <span class="font-mono text-base-content/60">
                   {endpoint_names(assertion)}
                 </span>
               </div>
-              <span class="shrink-0 self-start font-mono text-xs text-base-content/45 sm:self-auto">
+              <span class="shrink-0 self-start font-mono text-xs text-base-content/55 sm:self-auto">
                 {format_time(assertion.asserted_at)}
               </span>
             </li>
@@ -421,7 +421,7 @@ defmodule RengaWeb.CableLive do
       <span class="truncate font-mono text-sm font-medium">{@interface.name}</span>
       <.link
         navigate={~p"/inventory/resources/#{@interface.resource_id}"}
-        class="truncate text-xs text-base-content/45 transition hover:text-orange-600"
+        class="truncate text-xs text-base-content/60 transition hover:text-orange-600"
       >
         {@interface.resource.name}
       </.link>
@@ -450,27 +450,33 @@ defmodule RengaWeb.CableLive do
       <div class="flex items-start justify-between gap-4">
         <div>
           <h2 class="font-semibold tracking-tight">{@title}</h2>
-          <p class="mt-1 text-xs text-base-content/45">{@subtitle}</p>
+          <p class="mt-1 text-xs text-base-content/55">{@subtitle}</p>
         </div>
         <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
           Owner/Admin
         </span>
       </div>
       <div class="mt-6 grid gap-4 sm:grid-cols-2">
-        <.input
-          field={@form[:interface_a_id]}
-          type="select"
-          label="First endpoint"
-          options={@interface_options}
-          class={input_class()}
-        />
-        <.input
-          field={@form[:interface_b_id]}
-          type="select"
-          label="Second endpoint"
-          options={@interface_options}
-          class={input_class()}
-        />
+        <%!-- Endpoints carry the meaningful interface identity, so each select gets the
+        full form width instead of a half column that clips the placeholder and options. --%>
+        <div class="sm:col-span-2">
+          <.input
+            field={@form[:interface_a_id]}
+            type="select"
+            label="First endpoint"
+            options={@interface_options}
+            class={input_class()}
+          />
+        </div>
+        <div class="sm:col-span-2">
+          <.input
+            field={@form[:interface_b_id]}
+            type="select"
+            label="Second endpoint"
+            options={@interface_options}
+            class={input_class()}
+          />
+        </div>
         <.input
           field={@form[:cable_type]}
           type="text"
