@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4w1SZqIhlSZtrVVSqFbnfffLX1v3wCcKleYc5PwqM5vbLoYKeEJ8zj3GUVZkijd
+\restrict drqSxpHeZIr31yCz9UYeXwIlGyZRoNpihx2alSGTngoW0M4vyTL4cRM9jogcCZa
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -45,6 +45,185 @@ CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings';
+
+
+--
+-- Name: enforce_cable_assertion_immutability(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_cable_assertion_immutability() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'cable assertions are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
+-- Name: enforce_cable_assertion_retention(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_cable_assertion_retention() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- Organization teardown removes the organization row before cascading,
+  -- so only deletes that outlive the organization are allowed. A deleted
+  -- source or endpoint would otherwise cascade a confirmed claim away
+  -- without a removal event.
+  IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+    RETURN OLD;
+  END IF;
+
+  RAISE EXCEPTION 'cable assertions are append-only and cannot be deleted while the organization exists'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
+-- Name: enforce_cable_endpoint_termination(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_cable_endpoint_termination() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  checked_cable_id uuid;
+  checked_organization_id uuid;
+BEGIN
+  IF TG_OP IN ('DELETE', 'UPDATE') THEN
+    checked_cable_id := OLD.cable_id;
+    checked_organization_id := OLD.organization_id;
+
+    IF EXISTS (
+      SELECT 1
+      FROM cables cable
+      WHERE cable.id = checked_cable_id
+        AND cable.organization_id = checked_organization_id
+        AND (
+          (SELECT count(*)
+           FROM cable_endpoint_terminations termination
+           WHERE termination.cable_id = cable.id
+             AND termination.organization_id = cable.organization_id) <> 2
+          OR NOT EXISTS (
+            SELECT 1 FROM cable_endpoint_terminations termination
+            WHERE termination.cable_id = cable.id
+              AND termination.organization_id = cable.organization_id
+              AND termination.interface_id = cable.interface_a_id
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM cable_endpoint_terminations termination
+            WHERE termination.cable_id = cable.id
+              AND termination.organization_id = cable.organization_id
+              AND termination.interface_id = cable.interface_b_id
+          )
+        )
+    ) THEN
+      RAISE EXCEPTION 'cable endpoint termination is inconsistent'
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    checked_cable_id := NEW.cable_id;
+    checked_organization_id := NEW.organization_id;
+
+    IF EXISTS (
+      SELECT 1
+      FROM cables cable
+      WHERE cable.id = checked_cable_id
+        AND cable.organization_id = checked_organization_id
+        AND (
+          (SELECT count(*)
+           FROM cable_endpoint_terminations termination
+           WHERE termination.cable_id = cable.id
+             AND termination.organization_id = cable.organization_id) <> 2
+          OR NOT EXISTS (
+            SELECT 1 FROM cable_endpoint_terminations termination
+            WHERE termination.cable_id = cable.id
+              AND termination.organization_id = cable.organization_id
+              AND termination.interface_id = cable.interface_a_id
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM cable_endpoint_terminations termination
+            WHERE termination.cable_id = cable.id
+              AND termination.organization_id = cable.organization_id
+              AND termination.interface_id = cable.interface_b_id
+          )
+        )
+    ) THEN
+      RAISE EXCEPTION 'cable endpoint termination is inconsistent'
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: enforce_cable_endpoints_immutable(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_cable_endpoints_immutable() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.organization_id = OLD.organization_id AND
+     NEW.interface_a_id = OLD.interface_a_id AND
+     NEW.interface_b_id = OLD.interface_b_id THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'cable endpoints are immutable'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
+-- Name: enforce_cable_primary_assertion(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enforce_cable_primary_assertion() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  claim record;
+BEGIN
+  SELECT kind, action, interface_a_id, interface_b_id
+    INTO claim
+    FROM cable_assertions
+   WHERE id = NEW.primary_assertion_id
+     AND organization_id = NEW.organization_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'cable primary assertion does not exist in this organization'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+
+  -- The projection boundary is a database invariant, not only a
+  -- reconciliation policy: a current cable must be backed by a confirmed
+  -- claim for exactly these endpoints, never by a proposal, a retraction,
+  -- or a claim about different interfaces.
+  IF claim.kind NOT IN ('operator', 'import') OR claim.action <> 'assert' THEN
+    RAISE EXCEPTION 'cable primary assertion must be a confirmed cable claim'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+
+  IF claim.interface_a_id <> NEW.interface_a_id OR
+     claim.interface_b_id <> NEW.interface_b_id THEN
+    RAISE EXCEPTION 'cable endpoints must match its primary assertion'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -281,6 +460,25 @@ $$;
 
 
 --
+-- Name: occupy_cable_endpoints(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.occupy_cable_endpoints() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  INSERT INTO cable_endpoint_terminations
+    (organization_id, interface_id, cable_id)
+  VALUES
+    (NEW.organization_id, NEW.interface_a_id, NEW.id),
+    (NEW.organization_id, NEW.interface_b_id, NEW.id);
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: occupy_current_interface_adjacency_endpoints(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -474,6 +672,178 @@ CREATE TABLE public.agents (
     updated_at timestamp(3) without time zone NOT NULL,
     installation_id uuid,
     CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
+);
+
+
+--
+-- Name: cable_assertions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cable_assertions (
+    id uuid NOT NULL,
+    sequence bigint NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_a_id uuid NOT NULL,
+    interface_b_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    action character varying(255) NOT NULL,
+    confirmation character varying(255) NOT NULL,
+    actor_user_id uuid,
+    source_id uuid,
+    interface_neighbor_evidence_id uuid,
+    asserted_at timestamp(3) without time zone NOT NULL,
+    cable_type character varying(255),
+    status character varying(255),
+    label character varying(255),
+    color character varying(255),
+    length_value numeric(12,3),
+    length_unit character varying(255),
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT cable_assertions_attribution_shape CHECK ((((((kind)::text = 'operator'::text) AND (actor_user_id IS NOT NULL) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'import'::text) AND (actor_user_id IS NULL) AND (source_id IS NOT NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'neighbor_evidence'::text) AND (actor_user_id IS NULL) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NOT NULL))) IS TRUE)),
+    CONSTRAINT cable_assertions_canonical_order CHECK ((interface_a_id < interface_b_id)),
+    CONSTRAINT cable_assertions_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
+    CONSTRAINT cable_assertions_confirmation_shape CHECK (((((kind)::text = 'neighbor_evidence'::text) AND ((confirmation)::text = 'proposed'::text)) OR (((kind)::text <> 'neighbor_evidence'::text) AND ((confirmation)::text = 'confirmed'::text)))),
+    CONSTRAINT cable_assertions_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
+    CONSTRAINT cable_assertions_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
+    CONSTRAINT cable_assertions_retract_shape CHECK ((((action)::text = 'assert'::text) OR ((cable_type IS NULL) AND (status IS NULL) AND (label IS NULL) AND (color IS NULL) AND (length_value IS NULL) AND (length_unit IS NULL) AND (description IS NULL) AND (metadata = '{}'::jsonb)))),
+    CONSTRAINT cable_assertions_valid_action CHECK (((action)::text = ANY ((ARRAY['assert'::character varying, 'retract'::character varying])::text[]))),
+    CONSTRAINT cable_assertions_valid_confirmation CHECK (((confirmation)::text = ANY ((ARRAY['confirmed'::character varying, 'proposed'::character varying])::text[]))),
+    CONSTRAINT cable_assertions_valid_kind CHECK (((kind)::text = ANY ((ARRAY['operator'::character varying, 'import'::character varying, 'neighbor_evidence'::character varying])::text[]))),
+    CONSTRAINT cable_assertions_valid_length_unit CHECK (((length_unit IS NULL) OR ((length_unit)::text = ANY ((ARRAY['m'::character varying, 'cm'::character varying, 'ft'::character varying, 'in'::character varying])::text[])))),
+    CONSTRAINT cable_assertions_valid_status CHECK (((status IS NULL) OR ((status)::text = ANY ((ARRAY['planned'::character varying, 'connected'::character varying, 'decommissioning'::character varying])::text[]))))
+);
+
+
+--
+-- Name: cable_assertions_sequence_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cable_assertions_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cable_assertions_sequence_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cable_assertions_sequence_seq OWNED BY public.cable_assertions.sequence;
+
+
+--
+-- Name: cable_change_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cable_change_events (
+    id uuid NOT NULL,
+    sequence bigint NOT NULL,
+    organization_id uuid NOT NULL,
+    cable_id uuid NOT NULL,
+    assertion_id uuid,
+    interface_a_id uuid,
+    interface_b_id uuid,
+    source_id uuid,
+    action character varying(255) NOT NULL,
+    changes jsonb DEFAULT '{}'::jsonb NOT NULL,
+    snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    occurred_at timestamp(3) without time zone NOT NULL,
+    actor_user_id uuid,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT cable_change_events_valid_action CHECK (((action)::text = ANY ((ARRAY['created'::character varying, 'updated'::character varying, 'removed'::character varying])::text[])))
+);
+
+
+--
+-- Name: cable_change_events_sequence_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cable_change_events_sequence_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cable_change_events_sequence_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cable_change_events_sequence_seq OWNED BY public.cable_change_events.sequence;
+
+
+--
+-- Name: cable_endpoint_terminations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cable_endpoint_terminations (
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    cable_id uuid NOT NULL
+);
+
+
+--
+-- Name: cable_plans; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cable_plans (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_a_id uuid NOT NULL,
+    interface_b_id uuid NOT NULL,
+    cable_type character varying(255),
+    status character varying(255) DEFAULT 'planned'::character varying NOT NULL,
+    label character varying(255),
+    color character varying(255),
+    length_value numeric(12,3),
+    length_unit character varying(255),
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT cable_plans_canonical_order CHECK ((interface_a_id < interface_b_id)),
+    CONSTRAINT cable_plans_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
+    CONSTRAINT cable_plans_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
+    CONSTRAINT cable_plans_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
+    CONSTRAINT cable_plans_valid_length_unit CHECK (((length_unit IS NULL) OR ((length_unit)::text = ANY ((ARRAY['m'::character varying, 'cm'::character varying, 'ft'::character varying, 'in'::character varying])::text[])))),
+    CONSTRAINT cable_plans_valid_status CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, 'connected'::character varying, 'decommissioning'::character varying])::text[])))
+);
+
+
+--
+-- Name: cables; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cables (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_a_id uuid NOT NULL,
+    interface_b_id uuid NOT NULL,
+    primary_assertion_id uuid NOT NULL,
+    cable_type character varying(255),
+    status character varying(255) DEFAULT 'connected'::character varying NOT NULL,
+    label character varying(255),
+    color character varying(255),
+    length_value numeric(12,3),
+    length_unit character varying(255),
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_asserted_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT cables_canonical_order CHECK ((interface_a_id < interface_b_id)),
+    CONSTRAINT cables_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
+    CONSTRAINT cables_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
+    CONSTRAINT cables_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
+    CONSTRAINT cables_valid_length_unit CHECK (((length_unit IS NULL) OR ((length_unit)::text = ANY ((ARRAY['m'::character varying, 'cm'::character varying, 'ft'::character varying, 'in'::character varying])::text[])))),
+    CONSTRAINT cables_valid_status CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, 'connected'::character varying, 'decommissioning'::character varying])::text[])))
 );
 
 
@@ -1811,6 +2181,20 @@ CREATE TABLE public.vlans (
 
 
 --
+-- Name: cable_assertions sequence; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions ALTER COLUMN sequence SET DEFAULT nextval('public.cable_assertions_sequence_seq'::regclass);
+
+
+--
+-- Name: cable_change_events sequence; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events ALTER COLUMN sequence SET DEFAULT nextval('public.cable_change_events_sequence_seq'::regclass);
+
+
+--
 -- Name: module_installation_events sequence; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -1863,6 +2247,46 @@ ALTER TABLE ONLY public.agent_leases
 
 ALTER TABLE ONLY public.agents
     ADD CONSTRAINT agents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cable_assertions cable_assertions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cable_change_events cable_change_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cable_endpoint_terminations cable_endpoint_terminations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_endpoint_terminations
+    ADD CONSTRAINT cable_endpoint_terminations_pkey PRIMARY KEY (organization_id, interface_id);
+
+
+--
+-- Name: cable_plans cable_plans_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cables cables_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_pkey PRIMARY KEY (id);
 
 
 --
@@ -2549,6 +2973,104 @@ CREATE INDEX agents_organization_id_status_index ON public.agents USING btree (o
 --
 
 CREATE UNIQUE INDEX agents_organization_installation_id_index ON public.agents USING btree (organization_id, installation_id) WHERE (installation_id IS NOT NULL);
+
+
+--
+-- Name: cable_assertions_a_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_assertions_a_index ON public.cable_assertions USING btree (organization_id, interface_a_id, asserted_at);
+
+
+--
+-- Name: cable_assertions_b_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_assertions_b_index ON public.cable_assertions USING btree (organization_id, interface_b_id, asserted_at);
+
+
+--
+-- Name: cable_assertions_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_assertions_id_organization_id_index ON public.cable_assertions USING btree (id, organization_id);
+
+
+--
+-- Name: cable_assertions_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_assertions_kind_index ON public.cable_assertions USING btree (organization_id, kind, asserted_at);
+
+
+--
+-- Name: cable_change_events_cable_sequence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_change_events_cable_sequence_index ON public.cable_change_events USING btree (organization_id, cable_id, sequence);
+
+
+--
+-- Name: cable_endpoint_terminations_cable_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_endpoint_terminations_cable_index ON public.cable_endpoint_terminations USING btree (cable_id, organization_id);
+
+
+--
+-- Name: cable_plans_a_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_plans_a_index ON public.cable_plans USING btree (organization_id, interface_a_id);
+
+
+--
+-- Name: cable_plans_b_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_plans_b_index ON public.cable_plans USING btree (organization_id, interface_b_id);
+
+
+--
+-- Name: cable_plans_endpoints_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_plans_endpoints_index ON public.cable_plans USING btree (organization_id, interface_a_id, interface_b_id);
+
+
+--
+-- Name: cable_plans_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_plans_id_organization_id_index ON public.cable_plans USING btree (id, organization_id);
+
+
+--
+-- Name: cables_a_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cables_a_index ON public.cables USING btree (organization_id, interface_a_id);
+
+
+--
+-- Name: cables_b_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cables_b_index ON public.cables USING btree (organization_id, interface_b_id);
+
+
+--
+-- Name: cables_endpoints_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cables_endpoints_index ON public.cables USING btree (organization_id, interface_a_id, interface_b_id);
+
+
+--
+-- Name: cables_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cables_id_organization_id_index ON public.cables USING btree (id, organization_id);
 
 
 --
@@ -3980,6 +4502,48 @@ CREATE INDEX vlans_organization_id_vlan_group_id_index ON public.vlans USING btr
 
 
 --
+-- Name: cable_assertions cable_assertions_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cable_assertions_enforce_immutability BEFORE UPDATE ON public.cable_assertions FOR EACH ROW EXECUTE FUNCTION public.enforce_cable_assertion_immutability();
+
+
+--
+-- Name: cable_assertions cable_assertions_enforce_retention; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cable_assertions_enforce_retention BEFORE DELETE ON public.cable_assertions FOR EACH ROW EXECUTE FUNCTION public.enforce_cable_assertion_retention();
+
+
+--
+-- Name: cable_endpoint_terminations cable_endpoint_terminations_enforce_consistency; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER cable_endpoint_terminations_enforce_consistency AFTER INSERT OR DELETE OR UPDATE ON public.cable_endpoint_terminations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.enforce_cable_endpoint_termination();
+
+
+--
+-- Name: cables cables_enforce_endpoints_immutable; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cables_enforce_endpoints_immutable BEFORE UPDATE ON public.cables FOR EACH ROW EXECUTE FUNCTION public.enforce_cable_endpoints_immutable();
+
+
+--
+-- Name: cables cables_enforce_primary_assertion; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cables_enforce_primary_assertion BEFORE INSERT OR UPDATE ON public.cables FOR EACH ROW EXECUTE FUNCTION public.enforce_cable_primary_assertion();
+
+
+--
+-- Name: cables cables_occupy_endpoints; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER cables_occupy_endpoints AFTER INSERT ON public.cables FOR EACH ROW EXECUTE FUNCTION public.occupy_cable_endpoints();
+
+
+--
 -- Name: catalog_type_revisions catalog_type_revisions_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4166,6 +4730,174 @@ ALTER TABLE ONLY public.agents
 
 ALTER TABLE ONLY public.agents
     ADD CONSTRAINT agents_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: cable_assertions cable_assertions_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: cable_assertions cable_assertions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_a_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_a_fkey FOREIGN KEY (interface_a_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_b_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_evidence_fkey FOREIGN KEY (interface_neighbor_evidence_id, organization_id) REFERENCES public.interface_neighbor_evidence(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_change_events cable_change_events_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: cable_change_events cable_change_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_change_events cable_change_events_tenant_a_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_tenant_a_fkey FOREIGN KEY (interface_a_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE SET NULL (interface_a_id);
+
+
+--
+-- Name: cable_change_events cable_change_events_tenant_b_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE SET NULL (interface_b_id);
+
+
+--
+-- Name: cable_change_events cable_change_events_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_change_events
+    ADD CONSTRAINT cable_change_events_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE SET NULL (source_id);
+
+
+--
+-- Name: cable_endpoint_terminations cable_endpoint_terminations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_endpoint_terminations
+    ADD CONSTRAINT cable_endpoint_terminations_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_endpoint_terminations cable_endpoint_terminations_tenant_cable_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_endpoint_terminations
+    ADD CONSTRAINT cable_endpoint_terminations_tenant_cable_fkey FOREIGN KEY (cable_id, organization_id) REFERENCES public.cables(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_endpoint_terminations cable_endpoint_terminations_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_endpoint_terminations
+    ADD CONSTRAINT cable_endpoint_terminations_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_plans cable_plans_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_plans cable_plans_tenant_a_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_tenant_a_fkey FOREIGN KEY (interface_a_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_plans cable_plans_tenant_b_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_a_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_a_fkey FOREIGN KEY (interface_a_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_assertion_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_assertion_fkey FOREIGN KEY (primary_assertion_id, organization_id) REFERENCES public.cable_assertions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_b_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -5572,7 +6304,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4w1SZqIhlSZtrVVSqFbnfffLX1v3wCcKleYc5PwqM5vbLoYKeEJ8zj3GUVZkijd
+\unrestrict drqSxpHeZIr31yCz9UYeXwIlGyZRoNpihx2alSGTngoW0M4vyTL4cRM9jogcCZa
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -5609,3 +6341,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260907070000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260908120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260910090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20260916120000);
