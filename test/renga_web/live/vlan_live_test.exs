@@ -181,6 +181,61 @@ defmodule RengaWeb.VlanLiveTest do
     assert path =~ "/users/log-in"
   end
 
+  test "keeps another organization's VLANs and namespaces invisible", %{conn: conn, scope: scope} do
+    {:ok, group} = create_group(scope, "local-vlans", [{1, 10}])
+    {:ok, vlan} = create_vlan(scope, group, 5, "Local")
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    {:ok, foreign_group} = create_group(foreign_scope, "foreign-vlans", [{1, 10}])
+    {:ok, foreign_vlan} = create_vlan(foreign_scope, foreign_group, 5, "Foreign")
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+
+    assert has_element?(view, "#vlan-#{vlan.id}")
+    refute has_element?(view, "#vlan-#{foreign_vlan.id}")
+    assert has_element?(view, "#vlan-form option[value='#{group.id}']")
+    refute has_element?(view, "#vlan-form option[value='#{foreign_group.id}']")
+  end
+
+  test "tracks VLAN form values and resets them after success", %{conn: conn, scope: scope} do
+    {:ok, group} = create_group(scope, "form-tracking", [{1, 100}])
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+
+    values = %{
+      vlan_group_id: group.id,
+      vid: "10",
+      name: "Management",
+      status: "active",
+      role: "management",
+      description: "Core"
+    }
+
+    view |> form("#vlan-form", vlan: values) |> render_change()
+
+    assert has_element?(view, "#vlan-form input[name='vlan[name]'][value='Management']")
+
+    # A failed submission keeps the entered values for correction.
+    view
+    |> form("#vlan-form", vlan: %{values | vid: "250"})
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "outside the selected namespace range")
+    assert has_element?(view, "#vlan-form input[name='vlan[name]'][value='Management']")
+
+    # A successful submission resets the form to its defaults.
+    view |> form("#vlan-form", vlan: values) |> render_submit()
+
+    assert has_element?(view, "#flash-info", "VLAN 10 created")
+    assert has_element?(view, "#vlan-form input[name='vlan[name]'][value='']")
+    assert has_element?(view, "#vlan-form input[name='vlan[vid]'][value='']")
+
+    assert [vlan] = Topology.list_vlans(scope, group.id)
+    assert vlan.vid == 10
+  end
+
   defp create_group(scope, name, ranges) do
     Topology.create_vlan_group(
       scope,

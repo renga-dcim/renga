@@ -83,6 +83,23 @@ defmodule RengaWeb.TopologyLiveTest do
     refute has_element?(view, "#neighbor-evidence-#{other.unresolved.id}")
   end
 
+  test "keeps another organization's topology invisible", %{conn: conn, scope: scope} do
+    context = topology_context(scope)
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    foreign = topology_context(foreign_scope, tag: "foreign")
+
+    {:ok, view, _html} = live(conn, ~p"/network/topology")
+
+    assert has_element?(view, "#relationship-#{context.relationship.id}")
+    assert has_element?(view, "#neighbor-evidence-#{context.unresolved.id}")
+    refute has_element?(view, "#relationship-#{foreign.relationship.id}")
+    refute has_element?(view, "#neighbor-evidence-#{foreign.unresolved.id}")
+  end
+
   test "members read the organization topology", %{
     organization: organization,
     scope: scope

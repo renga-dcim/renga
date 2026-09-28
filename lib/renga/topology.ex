@@ -1162,11 +1162,20 @@ defmodule Renga.Topology do
   end
 
   defp plan_endpoint_ids!(attrs) do
-    first = attr(attrs, :interface_a_id)
-    second = attr(attrs, :interface_b_id)
+    first = blank_to_nil_attr(attrs, :interface_a_id)
+    second = blank_to_nil_attr(attrs, :interface_b_id)
 
     if is_nil(first) or is_nil(second), do: Repo.rollback(:cable_endpoints_required)
     canonical_cable_pair(first, second)
+  end
+
+  # Unselected form controls submit an empty string, which is not a UUID and
+  # must read as a missing endpoint rather than reach the database.
+  defp blank_to_nil_attr(attrs, key) do
+    case attr(attrs, key) do
+      value when value in [nil, ""] -> nil
+      value -> value
+    end
   end
 
   # A plan is intent, so it only needs real, distinct, same-organization

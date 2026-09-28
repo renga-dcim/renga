@@ -37,12 +37,20 @@ defmodule RengaWeb.CableLive do
   end
 
   @impl true
+  def handle_event("validate_cable", %{"cable" => params}, socket) do
+    {:noreply, assign(socket, :assert_form, to_form(params, as: :cable))}
+  end
+
+  def handle_event("validate_cable", %{"plan" => params}, socket) do
+    {:noreply, assign(socket, :plan_form, to_form(params, as: :plan))}
+  end
+
   def handle_event("assert_cable", %{"cable" => params}, socket) do
     scope = socket.assigns.current_scope
 
     case Topology.assert_cable(scope, %{
-           interface_a_id: params["interface_a_id"],
-           interface_b_id: params["interface_b_id"],
+           interface_a_id: blank_to_nil(params["interface_a_id"]),
+           interface_b_id: blank_to_nil(params["interface_b_id"]),
            cable_type: blank_to_nil(params["cable_type"]),
            label: blank_to_nil(params["label"])
          }) do
@@ -81,8 +89,8 @@ defmodule RengaWeb.CableLive do
     scope = socket.assigns.current_scope
 
     case Topology.put_cable_plan(scope, %{
-           interface_a_id: params["interface_a_id"],
-           interface_b_id: params["interface_b_id"],
+           interface_a_id: blank_to_nil(params["interface_a_id"]),
+           interface_b_id: blank_to_nil(params["interface_b_id"]),
            cable_type: blank_to_nil(params["cable_type"]),
            label: blank_to_nil(params["label"])
          }) do
@@ -436,6 +444,7 @@ defmodule RengaWeb.CableLive do
       for={@form}
       id={@id}
       phx-submit={@event}
+      phx-change="validate_cable"
       class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
     >
       <div class="flex items-start justify-between gap-4">

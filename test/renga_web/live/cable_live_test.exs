@@ -7,6 +7,7 @@ defmodule RengaWeb.CableLiveTest do
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Repo
   alias Renga.Topology
 
   setup %{conn: conn} do
@@ -168,6 +169,170 @@ defmodule RengaWeb.CableLiveTest do
   test "requires authentication" do
     assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/network/cables")
     assert path =~ "/users/log-in"
+  end
+
+  test "reports missing plan endpoints instead of crashing the form", %{conn: conn, scope: scope} do
+    {first, second, _third} = cable_interfaces(scope)
+
+    {:ok, view, _html} = live(conn, ~p"/network/cables")
+
+    for plan <- [
+          %{interface_a_id: first.id, interface_b_id: "", cable_type: "", label: ""},
+          %{interface_a_id: "", interface_b_id: second.id, cable_type: "", label: ""},
+          %{interface_a_id: "", interface_b_id: "", cable_type: "", label: ""}
+        ] do
+      view
+      |> form("#plan-cable-form", plan: plan)
+      |> render_submit()
+
+      assert has_element?(view, "#flash-error", "Select both cable endpoints")
+      assert Topology.list_cable_plans(scope) == []
+    end
+
+    # The same view still completes a valid plan after the errors.
+    view
+    |> form("#plan-cable-form",
+      plan: %{
+        interface_a_id: first.id,
+        interface_b_id: second.id,
+        cable_type: "cat6a",
+        label: "after-error"
+      }
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-info", "Cable plan recorded")
+    assert [plan] = Topology.list_cable_plans(scope)
+    assert first.id in [plan.interface_a_id, plan.interface_b_id]
+
+    # Confirming with a missing endpoint is a changeset error, not a crash.
+    view
+    |> form("#assert-cable-form",
+      cable: %{interface_a_id: first.id, interface_b_id: "", cable_type: "", label: ""}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "can't be blank")
+    assert Topology.list_cables(scope) == []
+  end
+
+  test "a manager downgraded after mount cannot confirm cabling", %{
+    conn: conn,
+    organization: organization,
+    scope: scope
+  } do
+    {first, second, _third} = cable_interfaces(scope)
+    {:ok, view, _html} = live(conn, ~p"/network/cables")
+
+    assert has_element?(view, "#assert-cable-form")
+
+    membership =
+      Repo.get_by!(Renga.Accounts.OrganizationMembership,
+        user_id: scope.user.id,
+        organization_id: organization.id
+      )
+
+    {:ok, _membership} =
+      Renga.Accounts.update_organization_membership(membership, %{role: "member"})
+
+    view
+    |> form("#assert-cable-form",
+      cable: %{interface_a_id: first.id, interface_b_id: second.id, cable_type: "", label: ""}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "not allowed")
+    assert Topology.list_cables(scope) == []
+    assert Topology.list_cable_assertions(scope) == []
+  end
+
+  test "keeps another organization's cabling invisible", %{conn: conn, scope: scope} do
+    {first, second, _third} = cable_interfaces(scope)
+
+    {:ok, _assertion} =
+      Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    [local_cable] = Topology.list_cables(scope)
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    {foreign_first, foreign_second, _third} = cable_interfaces(foreign_scope)
+
+    {:ok, _assertion} =
+      Topology.assert_cable(foreign_scope, %{
+        interface_a_id: foreign_first.id,
+        interface_b_id: foreign_second.id
+      })
+
+    [foreign_cable] = Topology.list_cables(foreign_scope)
+
+    {:ok, foreign_plan} =
+      Topology.put_cable_plan(foreign_scope, %{
+        interface_a_id: foreign_first.id,
+        interface_b_id: foreign_second.id
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/network/cables")
+
+    assert has_element?(view, "#cable-#{local_cable.id}")
+    refute has_element?(view, "#cable-#{foreign_cable.id}")
+    refute has_element?(view, "#plan-#{foreign_plan.id}")
+
+    refute has_element?(
+             view,
+             "#assert-cable-form option[value='#{foreign_first.id}']"
+           )
+  end
+
+  test "tracks cable form values and resets them after success", %{conn: conn, scope: scope} do
+    {first, second, _third} = cable_interfaces(scope)
+    {:ok, view, _html} = live(conn, ~p"/network/cables")
+
+    view
+    |> form("#assert-cable-form",
+      cable: %{
+        interface_a_id: first.id,
+        interface_b_id: second.id,
+        cable_type: "cat6a",
+        label: "typed"
+      }
+    )
+    |> render_change()
+
+    assert has_element?(view, "#assert-cable-form input[name='cable[label]'][value='typed']")
+
+    # A failed submission keeps the entered values for correction.
+    view
+    |> form("#assert-cable-form",
+      cable: %{
+        interface_a_id: first.id,
+        interface_b_id: first.id,
+        cable_type: "cat6a",
+        label: "typed"
+      }
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "distinct endpoints")
+    assert has_element?(view, "#assert-cable-form input[name='cable[label]'][value='typed']")
+
+    # A successful submission resets the form to its defaults.
+    view
+    |> form("#assert-cable-form",
+      cable: %{
+        interface_a_id: first.id,
+        interface_b_id: second.id,
+        cable_type: "cat6a",
+        label: "typed"
+      }
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#flash-info", "Current cable confirmed")
+    assert has_element?(view, "#assert-cable-form input[name='cable[label]'][value='']")
   end
 
   defp cable_interfaces(scope) do

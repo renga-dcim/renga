@@ -133,6 +133,41 @@ defmodule RengaWeb.VlanGroupLiveTest do
     assert path =~ "/users/log-in"
   end
 
+  test "tracks namespace form values and resets them after success", %{conn: conn, scope: scope} do
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+
+    values = %{
+      name: "Campus",
+      slug: "campus",
+      scope: "global",
+      start_vid: "1",
+      end_vid: "200",
+      description: "Access VLANs"
+    }
+
+    view |> form("#vlan-group-form", vlan_group: values) |> render_change()
+
+    assert has_element?(view, "#vlan-group-form input[name='vlan_group[name]'][value='Campus']")
+
+    # A failed submission keeps the entered values for correction.
+    view
+    |> form("#vlan-group-form", vlan_group: %{values | start_vid: "300", end_vid: "100"})
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "start at or below end")
+    assert has_element?(view, "#vlan-group-form input[name='vlan_group[name]'][value='Campus']")
+
+    # A successful submission resets the form to its defaults.
+    view |> form("#vlan-group-form", vlan_group: values) |> render_submit()
+
+    assert has_element?(view, "#flash-info", "campus")
+    assert has_element?(view, "#vlan-group-form input[name='vlan_group[name]'][value='']")
+    assert has_element?(view, "#vlan-group-form input[name='vlan_group[start_vid]'][value='1']")
+
+    assert [group] = Topology.list_vlan_groups(scope)
+    assert group.slug == "campus"
+  end
+
   defp create_group(scope, name, ranges) do
     Topology.create_vlan_group(
       scope,

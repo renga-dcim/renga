@@ -15,7 +15,7 @@ defmodule RengaWeb.TopologyFindingLive do
   @impl true
   def handle_params(params, _uri, socket) do
     status = normalize_status(params["status"])
-    kind = blank_to_nil(params["kind"])
+    kind = params["kind"] |> blank_to_nil() |> normalize_kind()
     interface_id = blank_to_nil(params["interface_id"])
 
     {:noreply,
@@ -167,7 +167,11 @@ defmodule RengaWeb.TopologyFindingLive do
     scope = socket.assigns.current_scope
 
     opts =
-      [status: socket.assigns.finding_status, kind: socket.assigns.finding_kind]
+      [
+        status: socket.assigns.finding_status,
+        kind: socket.assigns.finding_kind,
+        interface_id: socket.assigns.interface_id
+      ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
     findings = Topology.list_organization_topology_findings(scope, opts)

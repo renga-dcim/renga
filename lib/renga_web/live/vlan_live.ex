@@ -47,6 +47,10 @@ defmodule RengaWeb.VlanLive do
      push_patch(socket, to: vlans_path(socket, group_id: normalize_group_filter(group_id)))}
   end
 
+  def handle_event("validate_vlan", %{"vlan" => params}, socket) do
+    {:noreply, assign(socket, :vlan_form, to_form(params, as: :vlan))}
+  end
+
   def handle_event("create_vlan", %{"vlan" => params}, socket) do
     scope = socket.assigns.current_scope
     name = String.trim(params["name"] || "")
@@ -241,6 +245,7 @@ defmodule RengaWeb.VlanLive do
           for={@vlan_form}
           id="vlan-form"
           phx-submit="create_vlan"
+          phx-change="validate_vlan"
           class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
         >
           <div class="flex items-start justify-between gap-4">
@@ -330,7 +335,7 @@ defmodule RengaWeb.VlanLive do
                 <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
                 <p class="mt-1 text-xs text-base-content/45">
                   {vlan_namespace(vlan, @groups)}
-                  <span :if={vlan.role}> ·    {vlan.role}</span>
+                  <span :if={vlan.role}> ·       {vlan.role}</span>
                 </p>
                 <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/45">
                   {vlan.description}

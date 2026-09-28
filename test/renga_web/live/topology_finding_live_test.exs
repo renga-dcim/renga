@@ -150,6 +150,87 @@ defmodule RengaWeb.TopologyFindingLiveTest do
     assert path =~ "/users/log-in"
   end
 
+  test "filters findings by interface and keeps the restriction across patches", %{
+    conn: conn,
+    resource: resource,
+    interface: interface,
+    scope: scope
+  } do
+    {:ok, other_interface} = Inventory.create_interface(scope, resource.id, %{name: "eth1"})
+    first = finding_fixture(scope, interface, "cable_plan_drift", "open")
+    second = finding_fixture(scope, other_interface, "missing_vlan", "open")
+
+    {:ok, view, _html} =
+      live(conn, ~p"/network/topology-findings?#{[interface_id: interface.id]}")
+
+    assert has_element?(view, "#topology-finding-#{first.id}")
+    refute has_element?(view, "#topology-finding-#{second.id}")
+
+    # Changing state and kind keeps the interface restriction.
+    view
+    |> form("#topology-finding-filters", filters: %{status: "open", kind: "missing_vlan"})
+    |> render_change()
+
+    assert_patch(view)
+
+    refute has_element?(view, "#topology-finding-#{first.id}")
+    refute has_element?(view, "#topology-finding-#{second.id}")
+
+    # A foreign interface id cannot expose foreign findings.
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+
+    {:ok, foreign_resource} =
+      Inventory.create_resource(foreign_scope, %{
+        kind: "server",
+        name: "foreign-filter-server",
+        lifecycle_state: "active"
+      })
+
+    {:ok, foreign_interface} =
+      Inventory.create_interface(foreign_scope, foreign_resource.id, %{name: "eth0"})
+
+    foreign = finding_fixture(foreign_scope, foreign_interface, "cable_plan_drift", "open")
+
+    {:ok, foreign_view, _html} =
+      live(conn, ~p"/network/topology-findings?#{[interface_id: foreign_interface.id]}")
+
+    refute has_element?(foreign_view, "#topology-finding-#{foreign.id}")
+    refute has_element?(foreign_view, "#topology-finding-#{first.id}")
+  end
+
+  test "treats kind=all and blank kinds as unfiltered", %{
+    conn: conn,
+    interface: interface,
+    scope: scope
+  } do
+    drift = finding_fixture(scope, interface, "cable_plan_drift", "open")
+    missing = finding_fixture(scope, interface, "missing_vlan", "open")
+
+    for params <- [%{}, %{kind: ""}, %{kind: "all"}] do
+      {:ok, view, _html} = live(conn, ~p"/network/topology-findings?#{params}")
+
+      assert has_element?(view, "#topology-finding-#{drift.id}")
+      assert has_element?(view, "#topology-finding-#{missing.id}")
+    end
+
+    {:ok, view, _html} =
+      live(conn, ~p"/network/topology-findings?#{[kind: "missing_vlan"]}")
+
+    refute has_element?(view, "#topology-finding-#{drift.id}")
+    assert has_element?(view, "#topology-finding-#{missing.id}")
+
+    # Selecting All kinds again restores the other rows.
+    view
+    |> form("#topology-finding-filters", filters: %{status: "open", kind: "all"})
+    |> render_change()
+
+    assert has_element?(view, "#topology-finding-#{drift.id}")
+    assert has_element?(view, "#topology-finding-#{missing.id}")
+  end
+
   defp finding_fixture(scope, interface, kind, status) do
     resolved_at = if status == "resolved", do: ~U[2026-09-20 13:00:00.000000Z]
 

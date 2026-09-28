@@ -23,6 +23,11 @@ defmodule RengaWeb.VlanGroupLive do
   end
 
   @impl true
+  def handle_event("validate_group", %{"vlan_group" => params}, socket) do
+    {:noreply, assign(socket, :group_form, to_form(params, as: :vlan_group))}
+  end
+
+  @impl true
   def handle_event("create_vlan_group", %{"vlan_group" => params}, socket) do
     scope = socket.assigns.current_scope
     name = String.trim(params["name"] || "")
@@ -107,6 +112,7 @@ defmodule RengaWeb.VlanGroupLive do
           for={@group_form}
           id="vlan-group-form"
           phx-submit="create_vlan_group"
+          phx-change="validate_group"
           class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
         >
           <div class="flex items-start justify-between gap-4">
