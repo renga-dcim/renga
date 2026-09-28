@@ -1030,6 +1030,7 @@ defmodule Renga.Topology do
 
   defp put_cable_assertion!(scope, attrs, kind, action, attribution, opts \\ []) do
     physical? = Keyword.get(opts, :physical?, true)
+    now = Renga.Time.utc_now_ms()
 
     # Trusted classification is applied with the caller's key convention and
     # after removing any caller-supplied copy, so string-keyed request params
@@ -1043,7 +1044,7 @@ defmodule Renga.Topology do
         :confirmation,
         if(kind == "neighbor_evidence", do: "proposed", else: "confirmed")
       )
-      |> put_default_attr(:asserted_at, Renga.Time.utc_now_ms())
+      |> put_default_attr(:asserted_at, now)
       |> strip_retract_attributes(action)
 
     changeset =
@@ -1051,6 +1052,7 @@ defmodule Renga.Topology do
       |> CableAssertion.changeset(attrs)
 
     unless changeset.valid?, do: Repo.rollback(changeset)
+    reject_future_assertion!(changeset, now)
 
     {interface_a_id, interface_b_id} =
       canonical_cable_pair(
@@ -1064,6 +1066,15 @@ defmodule Renga.Topology do
     |> Ecto.Changeset.put_change(:interface_a_id, interface_a_id)
     |> Ecto.Changeset.put_change(:interface_b_id, interface_b_id)
     |> insert_or_rollback()
+  end
+
+  # Confirmed claims are ordering facts about the present: a caller-supplied
+  # future `asserted_at` would outrank every later assertion, retraction, or
+  # import for the same pair or endpoint and lock ordinary mutations out.
+  defp reject_future_assertion!(changeset, now) do
+    if DateTime.compare(Ecto.Changeset.get_field(changeset, :asserted_at), now) == :gt do
+      Repo.rollback(:cable_asserted_at_in_future)
+    end
   end
 
   # Confirmed cabling is a physical claim, so an assertion needs two real

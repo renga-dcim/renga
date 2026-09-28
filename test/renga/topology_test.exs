@@ -4821,6 +4821,53 @@ defmodule Renga.TopologyTest do
     assert updated.primary_assertion_id == latest.id
   end
 
+  test "rejects future-dated confirmed claims so later mutations still win", %{scope: scope} do
+    first = interface_fixture(scope, "cable-future-first", "eth0")
+    second = interface_fixture(scope, "cable-future-second", "swp1")
+
+    future = DateTime.add(Renga.Time.utc_now_ms(), 86_400, :second)
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.assert_cable(scope, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: future
+             })
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.retract_cable(scope, %{
+               "interface_a_id" => first.id,
+               "interface_b_id" => second.id,
+               "asserted_at" => future
+             })
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "cable-future"})
+
+    assert {:error, :cable_asserted_at_in_future} =
+             Topology.import_cable_assertion(scope, source.id, %{
+               interface_a_id: first.id,
+               interface_b_id: second.id,
+               asserted_at: future
+             })
+
+    # Rejected claims leave no trace: no claim, no cabling, no history.
+    assert Topology.list_cable_assertions(scope) == []
+    assert Topology.list_cables(scope) == []
+
+    # Ordinary mutations still work; a future retraction cannot suppress them.
+    assert {:ok, _assertion} =
+             Topology.assert_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert [cable] = Topology.list_cables(scope)
+
+    assert {:ok, _retraction} =
+             Topology.retract_cable(scope, %{interface_a_id: first.id, interface_b_id: second.id})
+
+    assert Topology.list_cables(scope) == []
+    assert length(Topology.list_cable_assertions(scope)) == 2
+    assert length(Topology.list_cable_change_events(scope, cable.id)) == 2
+  end
+
   test "records who caused a cable transition and what the cable was", %{scope: scope} do
     first = interface_fixture(scope, "cable-history-first", "eth0")
     second = interface_fixture(scope, "cable-history-second", "swp1")
