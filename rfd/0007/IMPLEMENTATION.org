@@ -29,10 +29,10 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 * Phase 4: Cable intent and reconciliation
 
-- [ ] Add separate cable plans, attributed assertions, and reconciled current
+- [X] Add separate cable plans, attributed assertions, and reconciled current
   direct cables with endpoint compatibility, current-only single active
   termination, authorization, and change history.
-- [ ] Ensure neighbor evidence can propose or validate but never automatically
+- [X] Ensure neighbor evidence can propose or validate but never automatically
   create, delete, or move a cable.
 
 * Phase 5: Cross-domain integration and product surfaces
