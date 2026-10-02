@@ -456,6 +456,15 @@ defmodule RengaWeb.VlanLiveTest do
     })
 
     assert has_element?(view, "#flash-error", "no longer available")
+
+    # A tampered detach chip event is equally harmless.
+    view
+    |> render_click("detach_prefix_vlan", %{
+      "prefix-id" => "not-a-uuid",
+      "vlan-id" => "also-not-a-uuid"
+    })
+
+    assert has_element?(view, "#flash-error", "no longer available")
   end
 
   test "distinguishes VLANs that share a VID and name across namespaces", %{
