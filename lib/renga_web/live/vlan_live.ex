@@ -86,6 +86,15 @@ defmodule RengaWeb.VlanLive do
       is_nil(vlan_id) ->
         {:noreply, put_flash(socket, :error, "Choose the VLAN to link")}
 
+      # Malformed IDs cannot match any endpoint; treat them like missing ones
+      # instead of crashing the LiveView on a query-cast error.
+      not valid_uuid?(prefix_id) or not valid_uuid?(vlan_id) ->
+        {:noreply,
+         socket
+         |> put_flash(:error, prefix_vlan_unavailable_message())
+         |> load_vlans(socket.assigns.group_filter)
+         |> load_prefix_links()}
+
       true ->
         {:noreply, attach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
     end
@@ -100,6 +109,11 @@ defmodule RengaWeb.VlanLive do
 
     {:noreply, detach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
   end
+
+  defp valid_uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+
+  defp prefix_vlan_unavailable_message,
+    do: "The chosen IP prefix or VLAN is no longer available"
 
   @impl true
   def render(assigns) do
@@ -496,6 +510,9 @@ defmodule RengaWeb.VlanLive do
   end
 
   defp attach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
+    # scoped_get! inside the transaction raises Ecto.NoResultsError for a stale
+    # or foreign endpoint; surface it as a recoverable message instead of
+    # crashing the LiveView. The context keeps its raising contract for callers.
     case Topology.attach_prefix_vlan(scope, prefix_id, vlan_id) do
       {:ok, relationship} ->
         socket
@@ -513,6 +530,12 @@ defmodule RengaWeb.VlanLive do
       {:error, reason} ->
         put_flash(socket, :error, mutation_error(reason))
     end
+  rescue
+    Ecto.NoResultsError ->
+      socket
+      |> put_flash(:error, prefix_vlan_unavailable_message())
+      |> load_vlans(socket.assigns.group_filter)
+      |> load_prefix_links()
   end
 
   defp detach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
@@ -532,6 +555,13 @@ defmodule RengaWeb.VlanLive do
       {:error, :forbidden} ->
         put_flash(socket, :error, "You are not allowed to manage VLANs")
     end
+  rescue
+    # A cascading endpoint deletion removed the link and its row; the caller
+    # may still hold the stale chip. Refresh like the :not_found case.
+    Ecto.NoResultsError ->
+      socket
+      |> load_vlans(socket.assigns.group_filter)
+      |> load_prefix_links()
   end
 
   defp load_vlans(socket, group_filter) do
@@ -674,7 +704,12 @@ defmodule RengaWeb.VlanLive do
 
   defp prefix_label(prefix), do: "#{prefix_cidr(prefix)} · #{prefix.resource.name}"
 
-  defp vlan_label(vlan), do: "#{vlan.vid} · #{vlan.name}"
+  # Include the namespace so identical VID/name pairs in different groups stay
+  # distinguishable when the manager picks a link target.
+  defp vlan_label(%{vlan_group: %{resource: %{name: group}}} = vlan),
+    do: "#{vlan.vid} · #{vlan.name} · #{group}"
+
+  defp vlan_label(vlan), do: "#{vlan.vid} · #{vlan.name} · no group"
 
   attr :id, :string, required: true
   attr :label, :string, required: true

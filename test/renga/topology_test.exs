@@ -2676,6 +2676,8 @@ defmodule Renga.TopologyTest do
     organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
     foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
     foreign_prefix = prefix_fixture(foreign_scope, "foreign-tenant-prefix", "192.0.2.0/24")
+    {:ok, foreign_group} = vlan_group_fixture(foreign_scope, "foreign-tenant-group", [{1, 100}])
+    {:ok, foreign_vlan} = vlan_fixture(foreign_scope, foreign_group, 10, "Foreign")
 
     assert {:error, changeset} =
              %PrefixVlanRelationship{
@@ -2687,6 +2689,18 @@ defmodule Renga.TopologyTest do
              |> Repo.insert()
 
     assert "does not exist" in errors_on(changeset).prefix
+
+    # The mirrored case: a foreign VLAN endpoint is equally rejected.
+    assert {:error, changeset} =
+             %PrefixVlanRelationship{
+               organization_id: scope.organization_id,
+               prefix_id: prefix_fixture(scope, "local-tenant-prefix", "192.0.2.0/24").id,
+               vlan_id: foreign_vlan.id
+             }
+             |> PrefixVlanRelationship.changeset(%{})
+             |> Repo.insert()
+
+    assert "does not exist" in errors_on(changeset).vlan
 
     assert Topology.list_prefix_vlan_relationships(scope) == []
   end
@@ -2710,6 +2724,21 @@ defmodule Renga.TopologyTest do
     Repo.delete!(Inventory.get_resource!(scope, prefix.resource_id))
 
     assert_raise Ecto.NoResultsError, fn -> Repo.reload!(prefix) end
+  end
+
+  test "deleting the prefix first keeps the VLAN and drops only its links", %{scope: scope} do
+    {:ok, group} = vlan_group_fixture(scope, "prefix-cascades", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Servers")
+    prefix = prefix_fixture(scope, "prefix-cascades-prefix", "192.0.2.0/24")
+
+    assert {:ok, _relationship} = Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+
+    Repo.delete!(prefix)
+
+    assert Topology.list_prefix_vlan_relationships(scope) == []
+    assert Topology.list_vlan_prefixes(scope, vlan.id) == []
+    assert [%Vlan{}] = Topology.list_vlans(scope, group.id)
+    assert Repo.reload(vlan)
   end
 
   test "accepts consistently string-keyed resource attributes", %{scope: scope} do

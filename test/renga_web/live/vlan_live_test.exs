@@ -8,6 +8,7 @@ defmodule RengaWeb.VlanLiveTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Prefix
+  alias Renga.Repo
   alias Renga.Topology
   alias Renga.Topology.Vlan
 
@@ -418,6 +419,70 @@ defmodule RengaWeb.VlanLiveTest do
 
     assert has_element?(view, "#prefix-vlan-form-empty", "No IP prefixes are recorded yet.")
     assert has_element?(view, "#prefix-vlan-form-submit[disabled]")
+  end
+
+  test "recovers when the chosen endpoint is deleted after the form loads", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, group} = create_group(scope, "stale-endpoint", [{1, 100}])
+    {:ok, vlan} = create_vlan(scope, group, 10, "Management")
+    prefix = create_prefix(scope, "stale-endpoint-server", "192.0.2.0/24")
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+
+    # The manager renders the form, another manager removes the endpoint, and
+    # the stale submission must not crash the view.
+    Repo.delete!(prefix)
+
+    view
+    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: vlan.id})
+    |> render_submit()
+
+    assert has_element?(view, "#flash-error", "no longer available")
+    assert Topology.list_vlan_prefixes(scope, vlan.id) == []
+
+    # The view stays usable: a fresh link with the remaining endpoint works.
+    assert has_element?(view, "#prefix-vlan-form")
+    assert has_element?(view, "#vlan-#{vlan.id}")
+  end
+
+  test "treats malformed endpoint ids as missing instead of crashing", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+
+    view
+    |> render_submit("attach_prefix_vlan", %{
+      "prefix_vlan" => %{"prefix_id" => "not-a-uuid", "vlan_id" => "also-not-a-uuid"}
+    })
+
+    assert has_element?(view, "#flash-error", "no longer available")
+  end
+
+  test "distinguishes VLANs that share a VID and name across namespaces", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, first_group} = create_group(scope, "label-prod", [{1, 100}])
+    {:ok, second_group} = create_group(scope, "label-lab", [{1, 100}])
+    {:ok, first_vlan} = create_vlan(scope, first_group, 10, "Management")
+    {:ok, second_vlan} = create_vlan(scope, second_group, 10, "Management")
+    prefix = create_prefix(scope, "label-server", "192.0.2.0/24")
+
+    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+
+    # The options must identify the namespace, not just the VID and name.
+    assert has_element?(view, "#prefix-vlan-form option", "10 · Management · label-prod")
+    assert has_element?(view, "#prefix-vlan-form option", "10 · Management · label-lab")
+
+    view
+    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: first_vlan.id})
+    |> render_submit()
+
+    assert has_element?(view, "#vlan-#{first_vlan.id}-prefixes", "192.0.2.0/24")
+    refute has_element?(view, "#vlan-#{second_vlan.id}-prefixes")
+    assert [%Prefix{} = relationship_prefix] = Topology.list_vlan_prefixes(scope, first_vlan.id)
+    assert relationship_prefix.id == prefix.id
+    assert Topology.list_vlan_prefixes(scope, second_vlan.id) == []
   end
 
   test "requires authentication" do
