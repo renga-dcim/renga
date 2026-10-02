@@ -4200,6 +4200,45 @@ defmodule Renga.TopologyTest do
     assert "does not exist" in errors_on(rejected_snapshot).resource
   end
 
+  test "database tenant foreign keys reject cross-organization VLAN rows", %{scope: scope} do
+    local_resource = resource_fixture(scope, "local-vlan-rows-server")
+    {:ok, local_group} = vlan_group_fixture(scope, "local-vlan-rows", [{1, 100}])
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    {:ok, foreign_group} = vlan_group_fixture(foreign_scope, "foreign-vlan-rows", [{1, 100}])
+    foreign_resource = resource_fixture(foreign_scope, "foreign-vlan-rows-server")
+
+    foreign_group_changeset =
+      %Vlan{
+        organization_id: scope.organization_id,
+        resource_id: local_resource.id,
+        vlan_group_id: foreign_group.id
+      }
+      |> Vlan.changeset(%{vid: 10, name: "Cross-tenant group", status: "active", metadata: %{}})
+
+    assert {:error, rejected_group} = Repo.insert(foreign_group_changeset)
+    assert "does not exist" in errors_on(rejected_group).vlan_group
+
+    foreign_resource_changeset =
+      %Vlan{
+        organization_id: scope.organization_id,
+        resource_id: foreign_resource.id,
+        vlan_group_id: local_group.id
+      }
+      |> Vlan.changeset(%{
+        vid: 11,
+        name: "Cross-tenant resource",
+        status: "active",
+        metadata: %{}
+      })
+
+    assert {:error, rejected_resource} = Repo.insert(foreign_resource_changeset)
+    assert "does not exist" in errors_on(rejected_resource).resource
+  end
+
   test "database rejects direct interface mode evidence mutation", %{scope: scope} do
     resource = resource_fixture(scope, "immutable-mode-server")
     {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})

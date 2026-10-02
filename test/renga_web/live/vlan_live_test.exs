@@ -361,7 +361,6 @@ defmodule RengaWeb.VlanLiveTest do
   end
 
   test "members see linked prefixes read-only", %{
-    conn: conn,
     organization: organization,
     scope: scope
   } do
@@ -414,7 +413,7 @@ defmodule RengaWeb.VlanLiveTest do
     refute has_element?(view, "#prefix-vlan-form option[value='#{foreign_prefix.id}']")
   end
 
-  test "keeps linking available but explains the missing inventory", %{conn: conn, scope: scope} do
+  test "keeps linking available but explains the missing inventory", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
 
     assert has_element?(view, "#prefix-vlan-form-empty", "No IP prefixes are recorded yet.")

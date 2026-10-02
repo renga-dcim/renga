@@ -184,8 +184,8 @@ configuration.
 . Add optional site/location VLAN scope after RFD 5 foundations exist.
 . Add LLDP/CDP evidence, remote endpoint matching, adjacency, and findings.
 . Add confirmed direct cables and drift comparison without automatic mutation.
-. Add prefix/VLAN relationships and later topology protocols through follow-up
-  RFDs.
+. Add optional tenant-safe prefix/VLAN relationships.
+. Add later topology protocols through follow-up RFDs.
 
 == Implementation
 
