@@ -178,12 +178,12 @@ defmodule RengaWeb.ResourceLive.Show do
                 >
                   <div>
                     <p class="font-mono text-sm font-semibold">{interface.name}</p>
-                    <p class="mt-1 text-xs capitalize text-base-content/45">
+                    <p class="mt-1 text-xs capitalize text-base-content/55">
                       {interface.kind} · {interface.status}
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs uppercase tracking-wider text-base-content/40">MAC</p>
+                    <p class="text-xs uppercase tracking-wider text-base-content/55">MAC</p>
                     <p class="mt-1 font-mono text-xs">{format_mac(interface.mac_address)}</p>
                   </div>
                   <div class="flex flex-wrap gap-2">
@@ -194,42 +194,49 @@ defmodule RengaWeb.ResourceLive.Show do
                     >
                       {format_inet(address.address)}
                     </span>
-                    <span :if={interface.addresses == []} class="text-xs text-base-content/35">
+                    <span :if={interface.addresses == []} class="text-xs text-base-content/50">
                       No addresses
                     </span>
                   </div>
-                  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 sm:col-span-3">
-                    <span class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+                  <div class="sm:col-span-3">
+                    <p class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
                       Layer 2
-                    </span>
-                    <.link
-                      id={"interface-#{interface.id}-memberships"}
-                      navigate={~p"/ipam/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
-                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
+                    </p>
+                    <%!-- The four links share one row below the label so the last one does not
+                    wrap alone under the label at the reviewed desktop width. --%>
+                    <div
+                      id={"interface-#{interface.id}-layer2-links"}
+                      class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5"
                     >
-                      <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
-                    </.link>
-                    <.link
-                      id={"interface-#{interface.id}-relationships"}
-                      navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#logical-relationships"}
-                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
-                    >
-                      <.icon name="hero-share" class="size-3.5" /> Logical relationships
-                    </.link>
-                    <.link
-                      id={"interface-#{interface.id}-neighbors"}
-                      navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
-                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
-                    >
-                      <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
-                    </.link>
-                    <.link
-                      id={"interface-#{interface.id}-cables"}
-                      navigate={~p"/network/cables?#{[interface_id: interface.id]}" <> "#current-cables"}
-                      class="inline-flex items-center gap-1 text-xs font-medium text-base-content/60 transition hover:text-orange-600"
-                    >
-                      <.icon name="hero-link" class="size-3.5" /> Confirmed cables
-                    </.link>
+                      <.link
+                        id={"interface-#{interface.id}-memberships"}
+                        navigate={~p"/ipam/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
+                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
+                      >
+                        <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
+                      </.link>
+                      <.link
+                        id={"interface-#{interface.id}-relationships"}
+                        navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#logical-relationships"}
+                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
+                      >
+                        <.icon name="hero-share" class="size-3.5" /> Logical relationships
+                      </.link>
+                      <.link
+                        id={"interface-#{interface.id}-neighbors"}
+                        navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
+                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
+                      >
+                        <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
+                      </.link>
+                      <.link
+                        id={"interface-#{interface.id}-cables"}
+                        navigate={~p"/network/cables?#{[interface_id: interface.id]}" <> "#current-cables"}
+                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
+                      >
+                        <.icon name="hero-link" class="size-3.5" /> Confirmed cables
+                      </.link>
+                    </div>
                   </div>
                 </div>
               </div>

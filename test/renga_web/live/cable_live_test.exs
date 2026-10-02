@@ -65,6 +65,35 @@ defmodule RengaWeb.CableLiveTest do
     assert has_element?(view, "#delete-plan-#{plan.id}")
   end
 
+  test "endpoint selects offer each physical interface with its resource identity", %{
+    conn: conn,
+    scope: scope
+  } do
+    {first, _second, _third} = cable_interfaces(scope)
+    resource = Inventory.get_resource!(scope, first.resource_id)
+    option_text = "#{resource.name} / #{first.name}"
+
+    {:ok, view, _html} = live(conn, ~p"/network/cables")
+
+    assert has_element?(
+             view,
+             "#assert-cable-form option[value='#{first.id}']",
+             option_text
+           )
+
+    assert has_element?(
+             view,
+             "#plan-cable-form option[value='#{first.id}']",
+             option_text
+           )
+
+    assert has_element?(
+             view,
+             "#assert-cable-form option[value='']",
+             "Select a physical interface…"
+           )
+  end
+
   test "managers confirm and retract a cable from the UI", %{conn: conn, scope: scope} do
     {first, second, _third} = cable_interfaces(scope)
 
