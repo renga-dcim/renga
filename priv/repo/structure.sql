@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict HwMkRjTgfUEND0bCu8DpbectEuGh8AnnG9dGMkjBtU2TQcKZiAfu3DXD7jYmBRz
+\restrict rF4z3isyk9edqdJy2Bex5Z9ibAeoTggEoSVexqiai4iQSaq3BWPck7t47Xhk8ZJ
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -1750,6 +1750,20 @@ CREATE TABLE public.placement_findings (
 
 
 --
+-- Name: prefix_vlan_relationships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prefix_vlan_relationships (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    prefix_id uuid NOT NULL,
+    vlan_id uuid NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: prefixes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2665,6 +2679,14 @@ ALTER TABLE ONLY public.placement_evidence
 
 ALTER TABLE ONLY public.placement_findings
     ADD CONSTRAINT placement_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prefix_vlan_relationships prefix_vlan_relationships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prefix_vlan_relationships
+    ADD CONSTRAINT prefix_vlan_relationships_pkey PRIMARY KEY (id);
 
 
 --
@@ -4028,6 +4050,34 @@ CREATE UNIQUE INDEX placement_findings_open_kind_index ON public.placement_findi
 --
 
 CREATE INDEX placement_findings_organization_id_status_kind_index ON public.placement_findings USING btree (organization_id, status, kind);
+
+
+--
+-- Name: prefix_vlan_relationships_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX prefix_vlan_relationships_id_organization_id_index ON public.prefix_vlan_relationships USING btree (id, organization_id);
+
+
+--
+-- Name: prefix_vlan_relationships_prefix_vlan_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX prefix_vlan_relationships_prefix_vlan_index ON public.prefix_vlan_relationships USING btree (organization_id, prefix_id, vlan_id);
+
+
+--
+-- Name: prefix_vlan_relationships_vlan_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX prefix_vlan_relationships_vlan_index ON public.prefix_vlan_relationships USING btree (organization_id, vlan_id);
+
+
+--
+-- Name: prefixes_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX prefixes_id_organization_id_index ON public.prefixes USING btree (id, organization_id);
 
 
 --
@@ -5957,6 +6007,30 @@ ALTER TABLE ONLY public.placement_findings
 
 
 --
+-- Name: prefix_vlan_relationships prefix_vlan_relationships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prefix_vlan_relationships
+    ADD CONSTRAINT prefix_vlan_relationships_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: prefix_vlan_relationships prefix_vlan_relationships_tenant_prefix_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prefix_vlan_relationships
+    ADD CONSTRAINT prefix_vlan_relationships_tenant_prefix_fkey FOREIGN KEY (prefix_id, organization_id) REFERENCES public.prefixes(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: prefix_vlan_relationships prefix_vlan_relationships_tenant_vlan_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prefix_vlan_relationships
+    ADD CONSTRAINT prefix_vlan_relationships_tenant_vlan_fkey FOREIGN KEY (vlan_id, organization_id) REFERENCES public.vlans(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: prefixes prefixes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6376,7 +6450,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict HwMkRjTgfUEND0bCu8DpbectEuGh8AnnG9dGMkjBtU2TQcKZiAfu3DXD7jYmBRz
+\unrestrict rF4z3isyk9edqdJy2Bex5Z9ibAeoTggEoSVexqiai4iQSaq3BWPck7t47Xhk8ZJ
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6415,3 +6489,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260908120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260910090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260916120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260928120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261002120000);

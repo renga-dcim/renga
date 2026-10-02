@@ -18,7 +18,8 @@ defmodule RengaWeb.VlanLive do
        page_title: "VLANs",
        can_manage?: Inventory.organization_manager?(scope),
        status_options: @status_options,
-       vlan_form: vlan_form()
+       vlan_form: vlan_form(),
+       prefix_vlan_form: prefix_vlan_form()
      )}
   end
 
@@ -38,7 +39,8 @@ defmodule RengaWeb.VlanLive do
        filter_form: to_form(%{"group_id" => group_filter}, as: :filters)
      )
      |> load_vlans(group_filter)
-     |> load_membership(interface)}
+     |> load_membership(interface)
+     |> load_prefix_links()}
   end
 
   @impl true
@@ -66,6 +68,37 @@ defmodule RengaWeb.VlanLive do
       true ->
         {:noreply, create_vlan(socket, scope, params, name, vid)}
     end
+  end
+
+  def handle_event("validate_prefix_vlan", %{"prefix_vlan" => params}, socket) do
+    {:noreply, assign(socket, :prefix_vlan_form, to_form(params, as: :prefix_vlan))}
+  end
+
+  def handle_event("attach_prefix_vlan", %{"prefix_vlan" => params}, socket) do
+    scope = socket.assigns.current_scope
+    prefix_id = blank_to_nil(params["prefix_id"])
+    vlan_id = blank_to_nil(params["vlan_id"])
+
+    cond do
+      is_nil(prefix_id) ->
+        {:noreply, put_flash(socket, :error, "Choose the IP prefix to link")}
+
+      is_nil(vlan_id) ->
+        {:noreply, put_flash(socket, :error, "Choose the VLAN to link")}
+
+      true ->
+        {:noreply, attach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
+    end
+  end
+
+  def handle_event(
+        "detach_prefix_vlan",
+        %{"prefix-id" => prefix_id, "vlan-id" => vlan_id},
+        socket
+      ) do
+    scope = socket.assigns.current_scope
+
+    {:noreply, detach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
   end
 
   @impl true
@@ -129,6 +162,62 @@ defmodule RengaWeb.VlanLive do
             icon="hero-globe-alt"
           />
         </section>
+
+        <.form
+          :if={@can_manage?}
+          for={@prefix_vlan_form}
+          id="prefix-vlan-form"
+          phx-submit="attach_prefix_vlan"
+          phx-change="validate_prefix_vlan"
+          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
+        >
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h2 class="font-semibold tracking-tight">Link IP prefix</h2>
+              <p class="mt-1 text-xs text-base-content/55">
+                A prefix may serve several VLANs and a VLAN may carry several prefixes;
+                unlinking never deletes either record.
+              </p>
+            </div>
+            <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
+              Owner/Admin
+            </span>
+          </div>
+
+          <div class="mt-5 grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <.input
+              field={@prefix_vlan_form[:prefix_id]}
+              type="select"
+              label="IP prefix"
+              options={@prefix_link_options}
+              class={input_class()}
+            />
+            <.input
+              field={@prefix_vlan_form[:vlan_id]}
+              type="select"
+              label="VLAN"
+              options={@vlan_select_options}
+              class={input_class()}
+            />
+            <button
+              id="prefix-vlan-form-submit"
+              type="submit"
+              disabled={length(@prefix_link_options) <= 1 or length(@vlan_select_options) <= 1}
+              class="h-10 rounded-lg bg-orange-600 px-5 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Link prefix
+            </button>
+          </div>
+
+          <p
+            :if={length(@prefix_link_options) <= 1 or length(@vlan_select_options) <= 1}
+            id="prefix-vlan-form-empty"
+            class="mt-3 text-xs text-base-content/50"
+          >
+            <span :if={length(@prefix_link_options) <= 1}>No IP prefixes are recorded yet.</span>
+            <span :if={length(@vlan_select_options) <= 1}>No VLANs are recorded yet.</span>
+          </p>
+        </.form>
 
         <section
           :if={@interface}
@@ -314,24 +403,59 @@ defmodule RengaWeb.VlanLive do
             :for={{dom_id, vlan} <- @streams.vlans}
             id={dom_id}
             data-vlan-vid={vlan.vid}
-            class="flex flex-col gap-4 rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm transition hover:border-orange-500/25 sm:flex-row sm:items-center sm:justify-between"
+            class="flex flex-col gap-3 rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm transition hover:border-orange-500/25"
           >
-            <div class="flex min-w-0 items-center gap-4">
-              <span class="grid size-12 shrink-0 place-items-center rounded-xl bg-orange-500/10 font-mono text-sm font-semibold text-orange-700 dark:text-orange-400">
-                {vlan.vid}
-              </span>
-              <div class="min-w-0">
-                <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
-                <p class="mt-1 text-xs text-base-content/55">
-                  {vlan_namespace(vlan, @groups)}
-                  <span :if={vlan.role}>{"· #{vlan.role}"}</span>
-                </p>
-                <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/55">
-                  {vlan.description}
-                </p>
+            <div class="flex items-center justify-between gap-4">
+              <div class="flex min-w-0 items-center gap-4">
+                <span class="grid size-12 shrink-0 place-items-center rounded-xl bg-orange-500/10 font-mono text-sm font-semibold text-orange-700 dark:text-orange-400">
+                  {vlan.vid}
+                </span>
+                <div class="min-w-0">
+                  <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
+                  <p class="mt-1 text-xs text-base-content/55">
+                    {vlan_namespace(vlan, @groups)}
+                    <span :if={vlan.role}>{"· #{vlan.role}"}</span>
+                  </p>
+                  <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/55">
+                    {vlan.description}
+                  </p>
+                </div>
               </div>
+              <span class={status_class(vlan.status)}>{vlan.status}</span>
             </div>
-            <span class={status_class(vlan.status)}>{vlan.status}</span>
+
+            <div
+              :if={Map.has_key?(@prefixes_by_vlan, vlan.id)}
+              id={"vlan-#{vlan.id}-prefixes"}
+              class="flex flex-wrap items-center gap-2 border-t border-base-content/10 pt-3"
+            >
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/45">
+                IP prefixes
+              </span>
+              <ul class="flex flex-wrap items-center gap-2">
+                <li
+                  :for={prefix <- Map.get(@prefixes_by_vlan, vlan.id)}
+                  id={"vlan-#{vlan.id}-prefix-#{prefix.id}"}
+                  title={prefix.resource.name}
+                  data-prefix-cidr={prefix_cidr(prefix)}
+                  class="inline-flex items-center gap-1.5 rounded-lg bg-orange-500/[0.08] px-2.5 py-1 text-xs font-mono text-orange-700 dark:text-orange-400"
+                >
+                  {prefix_cidr(prefix)}
+                  <button
+                    :if={@can_manage?}
+                    id={"vlan-#{vlan.id}-prefix-#{prefix.id}-detach"}
+                    type="button"
+                    phx-click="detach_prefix_vlan"
+                    phx-value-prefix-id={prefix.id}
+                    phx-value-vlan-id={vlan.id}
+                    class="text-orange-600/60 transition hover:text-orange-800"
+                    aria-label={"Unlink IP prefix #{prefix_cidr(prefix)} from VLAN #{vlan.vid}"}
+                  >
+                    <.icon name="hero-x-mark" class="size-3" />
+                  </button>
+                </li>
+              </ul>
+            </div>
           </article>
         </section>
       </main>
@@ -371,6 +495,45 @@ defmodule RengaWeb.VlanLive do
     end
   end
 
+  defp attach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
+    case Topology.attach_prefix_vlan(scope, prefix_id, vlan_id) do
+      {:ok, relationship} ->
+        socket
+        |> put_flash(:info, "Linked IP prefix #{prefix_cidr(relationship.prefix)}")
+        |> assign(:prefix_vlan_form, prefix_vlan_form())
+        |> load_vlans(socket.assigns.group_filter)
+        |> load_prefix_links()
+
+      {:error, :forbidden} ->
+        put_flash(socket, :error, "You are not allowed to manage VLANs")
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        put_flash(socket, :error, first_error(changeset))
+
+      {:error, reason} ->
+        put_flash(socket, :error, mutation_error(reason))
+    end
+  end
+
+  defp detach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
+    case Topology.detach_prefix_vlan(scope, prefix_id, vlan_id) do
+      {:ok, _relationship} ->
+        socket
+        |> put_flash(:info, "Unlinked the IP prefix")
+        |> load_vlans(socket.assigns.group_filter)
+        |> load_prefix_links()
+
+      # A concurrent unlink already removed the link; refresh the visible chips.
+      {:error, :not_found} ->
+        socket
+        |> load_vlans(socket.assigns.group_filter)
+        |> load_prefix_links()
+
+      {:error, :forbidden} ->
+        put_flash(socket, :error, "You are not allowed to manage VLANs")
+    end
+  end
+
   defp load_vlans(socket, group_filter) do
     scope = socket.assigns.current_scope
     groups = Topology.list_vlan_groups(scope)
@@ -389,7 +552,33 @@ defmodule RengaWeb.VlanLive do
       :vlan_group_options,
       [{"No group (global)", ""}] ++ Enum.map(groups, &{&1.resource.name, &1.id})
     )
+    |> assign(
+      :vlan_select_options,
+      [{"Choose a VLAN", ""}] ++ Enum.map(vlans, &{vlan_label(&1), &1.id})
+    )
     |> stream(:vlans, vlans, dom_id: &"vlan-#{&1.id}", reset: true)
+  end
+
+  # One organization-scoped relationship query keeps the prefix chips in step with
+  # the VLAN stream without a per-card lookup.
+  defp load_prefix_links(socket) do
+    scope = socket.assigns.current_scope
+    prefixes = Inventory.list_prefixes(scope)
+    relationships = Topology.list_prefix_vlan_relationships(scope)
+
+    prefixes_by_vlan =
+      relationships
+      |> Enum.group_by(& &1.vlan_id, & &1.prefix)
+      |> Map.new(fn {vlan_id, vlan_prefixes} ->
+        {vlan_id, Enum.sort_by(vlan_prefixes, &{&1.prefix.address, &1.prefix.netmask})}
+      end)
+
+    socket
+    |> assign(:prefixes_by_vlan, prefixes_by_vlan)
+    |> assign(
+      :prefix_link_options,
+      [{"Choose a prefix", ""}] ++ Enum.map(prefixes, &{prefix_label(&1), &1.id})
+    )
   end
 
   defp load_membership(socket, nil) do
@@ -473,6 +662,19 @@ defmodule RengaWeb.VlanLive do
       as: :vlan
     )
   end
+
+  defp prefix_vlan_form do
+    to_form(%{"prefix_id" => "", "vlan_id" => ""}, as: :prefix_vlan)
+  end
+
+  defp prefix_cidr(prefix) do
+    address = prefix.prefix.address |> :inet.ntoa() |> List.to_string()
+    "#{address}/#{prefix.prefix.netmask}"
+  end
+
+  defp prefix_label(prefix), do: "#{prefix_cidr(prefix)} · #{prefix.resource.name}"
+
+  defp vlan_label(vlan), do: "#{vlan.vid} · #{vlan.name}"
 
   attr :id, :string, required: true
   attr :label, :string, required: true
