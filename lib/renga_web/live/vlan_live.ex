@@ -105,19 +105,17 @@ defmodule RengaWeb.VlanLive do
         %{"prefix-id" => prefix_id, "vlan-id" => vlan_id},
         socket
       ) do
-    cond do
-      # Malformed IDs cannot match any endpoint; treat them like missing ones
-      # instead of crashing the LiveView on a query-cast error.
-      not valid_uuid?(prefix_id) or not valid_uuid?(vlan_id) ->
-        {:noreply,
-         socket
-         |> put_flash(:error, prefix_vlan_unavailable_message())
-         |> load_vlans(socket.assigns.group_filter)
-         |> load_prefix_links()}
-
-      true ->
-        scope = socket.assigns.current_scope
-        {:noreply, detach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
+    # Malformed IDs cannot match any endpoint; treat them like missing ones
+    # instead of crashing the LiveView on a query-cast error.
+    if not valid_uuid?(prefix_id) or not valid_uuid?(vlan_id) do
+      {:noreply,
+       socket
+       |> put_flash(:error, prefix_vlan_unavailable_message())
+       |> load_vlans(socket.assigns.group_filter)
+       |> load_prefix_links()}
+    else
+      scope = socket.assigns.current_scope
+      {:noreply, detach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
     end
   end
 
