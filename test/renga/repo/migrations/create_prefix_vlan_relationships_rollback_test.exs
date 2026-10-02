@@ -64,7 +64,15 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
   test "rolls back and re-applies the association schema", %{
     scratch_repo: scratch_repo
   } do
-    [{migration_module, _bytecode}] = Code.require_file(@migration_path)
+    # The scratch setup already migrated the chain, so the migration module is
+    # normally loaded; only require the file when running this test cold.
+    migration_module =
+      if Code.ensure_loaded?(Renga.Repo.Migrations.CreatePrefixVlanRelationships) do
+        Renga.Repo.Migrations.CreatePrefixVlanRelationships
+      else
+        [{migration_module, _bytecode}] = Code.require_file(@migration_path)
+        migration_module
+      end
 
     assert migration_module == Renga.Repo.Migrations.CreatePrefixVlanRelationships
 
