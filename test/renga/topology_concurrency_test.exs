@@ -498,6 +498,44 @@ defmodule Renga.TopologyConcurrencyTest do
     )
   end
 
+  test "competing duplicate prefix/VLAN attaches keep one link" do
+    with_topology(fn scope, suffix ->
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "prefix",
+          name: "prefix-attach-race-#{suffix}",
+          lifecycle_state: "active"
+        })
+
+      {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.0/24"})
+
+      {:ok, group} =
+        Topology.create_vlan_group(
+          scope,
+          %{name: "Prefix attach race group", lifecycle_state: "active"},
+          %{slug: "prefix-attach-race-group-#{suffix}", scope_kind: "global", status: "active"},
+          [%{start_vid: 1, end_vid: 100}]
+        )
+
+      {:ok, vlan} =
+        Topology.create_vlan(
+          scope,
+          %{},
+          %{vlan_group_id: group.id, vid: 10, name: "Prefix attach race VLAN", status: "active"}
+        )
+
+      results =
+        concurrently([
+          fn -> Topology.attach_prefix_vlan(scope, prefix.id, vlan.id) end,
+          fn -> Topology.attach_prefix_vlan(scope, prefix.id, vlan.id) end
+        ])
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+      assert Enum.count(results, &match?({:error, %Ecto.Changeset{}}, &1)) == 1
+      assert [%{vid: 10}] = Topology.list_prefix_vlans(scope, prefix.id)
+    end)
+  end
+
   test "competing confirmed cable assertions keep one termination per endpoint" do
     with_topology(fn scope, suffix ->
       first = cable_interface(scope, "cable-race-first-#{suffix}", "eth0")

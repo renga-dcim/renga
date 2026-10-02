@@ -9,6 +9,7 @@ defmodule Renga.TopologyTest do
   alias Renga.Inventory
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
+  alias Renga.Inventory.Prefix
   alias Renga.Inventory.ResourceRevision
   alias Renga.Inventory.ResourceStore
   alias Renga.Repo
@@ -22,6 +23,7 @@ defmodule Renga.TopologyTest do
   alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.NeighborExpiryWorker
   alias Renga.Topology.NeighborIdentifier
+  alias Renga.Topology.PrefixVlanRelationship
   alias Renga.Topology.TopologySnapshotEvent
   alias Renga.Topology.Vlan
 
@@ -2565,6 +2567,180 @@ defmodule Renga.TopologyTest do
     assert {:error, :forbidden} = vlan_fixture(viewer_scope, group, 10, "Forbidden")
   end
 
+  test "links prefixes to VLANs in both directions without implying ownership", %{scope: scope} do
+    {:ok, group} = vlan_group_fixture(scope, "prefix-links", [{1, 100}])
+    {:ok, first_vlan} = vlan_fixture(scope, group, 10, "Servers")
+    {:ok, second_vlan} = vlan_fixture(scope, group, 20, "Clients")
+    first_prefix = prefix_fixture(scope, "prefix-links-a", "192.0.2.0/24")
+    second_prefix = prefix_fixture(scope, "prefix-links-b", "198.51.100.0/24")
+
+    # A prefix and a VLAN are valid without any link between them.
+    assert Topology.list_prefix_vlans(scope, first_prefix.id) == []
+    assert Topology.list_vlan_prefixes(scope, first_vlan.id) == []
+
+    assert {:ok, first_relationship} =
+             Topology.attach_prefix_vlan(scope, first_prefix.id, first_vlan.id)
+
+    assert first_relationship.prefix_id == first_prefix.id
+    assert first_relationship.vlan_id == first_vlan.id
+    assert first_relationship.prefix.resource.name == "prefix-links-a"
+
+    assert {:ok, _relationship} =
+             Topology.attach_prefix_vlan(scope, second_prefix.id, first_vlan.id)
+
+    assert {:ok, _relationship} =
+             Topology.attach_prefix_vlan(scope, second_prefix.id, second_vlan.id)
+
+    assert [%{vid: 10}, %{vid: 20}] = Topology.list_prefix_vlans(scope, second_prefix.id)
+
+    assert first_vlan_prefixes = Topology.list_vlan_prefixes(scope, first_vlan.id)
+
+    assert Enum.map(first_vlan_prefixes, & &1.resource.name) |> Enum.sort() == [
+             "prefix-links-a",
+             "prefix-links-b"
+           ]
+
+    assert [%Prefix{prefix: %Postgrex.INET{address: {198, 51, 100, 0}, netmask: 24}}] =
+             Topology.list_vlan_prefixes(scope, second_vlan.id)
+
+    assert Enum.count(Topology.list_prefix_vlan_relationships(scope)) == 3
+
+    assert {:ok, _removed} = Topology.detach_prefix_vlan(scope, second_prefix.id, first_vlan.id)
+
+    assert [%{vid: 20}] = Topology.list_prefix_vlans(scope, second_prefix.id)
+
+    assert [%Prefix{prefix: %Postgrex.INET{address: {192, 0, 2, 0}, netmask: 24}}] =
+             Topology.list_vlan_prefixes(scope, first_vlan.id)
+
+    # Detaching an already-detached link stays harmless.
+    assert {:error, :not_found} =
+             Topology.detach_prefix_vlan(scope, second_prefix.id, first_vlan.id)
+  end
+
+  test "rejects duplicate prefix/VLAN links regardless of attach order", %{scope: scope} do
+    {:ok, group} = vlan_group_fixture(scope, "duplicate-links", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Servers")
+    prefix = prefix_fixture(scope, "duplicate-links-prefix", "192.0.2.0/24")
+
+    assert {:ok, _relationship} = Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+
+    assert %{vlan_id: ["has already been taken"]} = errors_on(changeset)
+
+    assert [%PrefixVlanRelationship{}] = Topology.list_prefix_vlan_relationships(scope)
+  end
+
+  test "prefix/VLAN links require an active manager and reject foreign endpoints", %{
+    scope: scope,
+    organization: organization
+  } do
+    {:ok, group} = vlan_group_fixture(scope, "link-authorization", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Authorized")
+    prefix = prefix_fixture(scope, "link-authorization-prefix", "192.0.2.0/24")
+
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+    viewer_scope = Accounts.scope_for_user(viewer, organization.id)
+
+    assert {:error, :forbidden} = Topology.attach_prefix_vlan(viewer_scope, prefix.id, vlan.id)
+    assert Topology.list_prefix_vlan_relationships(viewer_scope) == []
+    assert {:error, :forbidden} = Topology.detach_prefix_vlan(viewer_scope, prefix.id, vlan.id)
+
+    other_user = user_fixture()
+    other_organization = organization_fixture()
+    organization_membership_fixture(other_user, other_organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other_user, other_organization.id)
+    other_prefix = prefix_fixture(other_scope, "foreign-link-prefix", "192.0.2.0/24")
+    {:ok, other_group} = vlan_group_fixture(other_scope, "foreign-link-group", [{1, 100}])
+    {:ok, other_vlan} = vlan_fixture(other_scope, other_group, 10, "Foreign")
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.attach_prefix_vlan(scope, other_prefix.id, vlan.id)
+    end
+
+    assert_raise Ecto.NoResultsError, fn ->
+      Topology.attach_prefix_vlan(scope, prefix.id, other_vlan.id)
+    end
+
+    assert Topology.list_prefix_vlan_relationships(other_scope) == []
+  end
+
+  test "database tenant foreign keys reject cross-organization prefix/VLAN links", %{scope: scope} do
+    {:ok, group} = vlan_group_fixture(scope, "tenant-links", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Local")
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    foreign_prefix = prefix_fixture(foreign_scope, "foreign-tenant-prefix", "192.0.2.0/24")
+    {:ok, foreign_group} = vlan_group_fixture(foreign_scope, "foreign-tenant-group", [{1, 100}])
+    {:ok, foreign_vlan} = vlan_fixture(foreign_scope, foreign_group, 10, "Foreign")
+
+    assert {:error, changeset} =
+             %PrefixVlanRelationship{
+               organization_id: scope.organization_id,
+               prefix_id: foreign_prefix.id,
+               vlan_id: vlan.id
+             }
+             |> PrefixVlanRelationship.changeset(%{})
+             |> Repo.insert()
+
+    assert "does not exist" in errors_on(changeset).prefix
+
+    # The mirrored case: a foreign VLAN endpoint is equally rejected.
+    assert {:error, changeset} =
+             %PrefixVlanRelationship{
+               organization_id: scope.organization_id,
+               prefix_id: prefix_fixture(scope, "local-tenant-prefix", "192.0.2.0/24").id,
+               vlan_id: foreign_vlan.id
+             }
+             |> PrefixVlanRelationship.changeset(%{})
+             |> Repo.insert()
+
+    assert "does not exist" in errors_on(changeset).vlan
+
+    assert Topology.list_prefix_vlan_relationships(scope) == []
+  end
+
+  test "removing either endpoint removes its prefix/VLAN links but never the other side", %{
+    scope: scope
+  } do
+    {:ok, group} = vlan_group_fixture(scope, "link-cascades", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Servers")
+    prefix = prefix_fixture(scope, "link-cascades-prefix", "192.0.2.0/24")
+
+    assert {:ok, _relationship} = Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+
+    # Deleting a VLAN removes its links while the prefix keeps existing.
+    Repo.delete!(vlan)
+
+    assert Topology.list_prefix_vlan_relationships(scope) == []
+    assert Topology.list_prefix_vlans(scope, prefix.id) == []
+    assert Repo.reload(prefix)
+
+    Repo.delete!(Inventory.get_resource!(scope, prefix.resource_id))
+
+    assert_raise Ecto.NoResultsError, fn -> Repo.reload!(prefix) end
+  end
+
+  test "deleting the prefix first keeps the VLAN and drops only its links", %{scope: scope} do
+    {:ok, group} = vlan_group_fixture(scope, "prefix-cascades", [{1, 100}])
+    {:ok, vlan} = vlan_fixture(scope, group, 10, "Servers")
+    prefix = prefix_fixture(scope, "prefix-cascades-prefix", "192.0.2.0/24")
+
+    assert {:ok, _relationship} = Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+
+    Repo.delete!(prefix)
+
+    assert Topology.list_prefix_vlan_relationships(scope) == []
+    assert Topology.list_vlan_prefixes(scope, vlan.id) == []
+    assert [%Vlan{}] = Topology.list_vlans(scope, group.id)
+    assert Repo.reload(vlan)
+  end
+
   test "accepts consistently string-keyed resource attributes", %{scope: scope} do
     assert {:ok, group} =
              Topology.create_vlan_group(
@@ -4051,6 +4227,45 @@ defmodule Renga.TopologyTest do
 
     assert {:error, rejected_snapshot} = Repo.insert(snapshot_changeset)
     assert "does not exist" in errors_on(rejected_snapshot).resource
+  end
+
+  test "database tenant foreign keys reject cross-organization VLAN rows", %{scope: scope} do
+    local_resource = resource_fixture(scope, "local-vlan-rows-server")
+    {:ok, local_group} = vlan_group_fixture(scope, "local-vlan-rows", [{1, 100}])
+
+    foreign_user = user_fixture()
+    foreign_organization = organization_fixture()
+    organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
+    foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
+    {:ok, foreign_group} = vlan_group_fixture(foreign_scope, "foreign-vlan-rows", [{1, 100}])
+    foreign_resource = resource_fixture(foreign_scope, "foreign-vlan-rows-server")
+
+    foreign_group_changeset =
+      %Vlan{
+        organization_id: scope.organization_id,
+        resource_id: local_resource.id,
+        vlan_group_id: foreign_group.id
+      }
+      |> Vlan.changeset(%{vid: 10, name: "Cross-tenant group", status: "active", metadata: %{}})
+
+    assert {:error, rejected_group} = Repo.insert(foreign_group_changeset)
+    assert "does not exist" in errors_on(rejected_group).vlan_group
+
+    foreign_resource_changeset =
+      %Vlan{
+        organization_id: scope.organization_id,
+        resource_id: foreign_resource.id,
+        vlan_group_id: local_group.id
+      }
+      |> Vlan.changeset(%{
+        vid: 11,
+        name: "Cross-tenant resource",
+        status: "active",
+        metadata: %{}
+      })
+
+    assert {:error, rejected_resource} = Repo.insert(foreign_resource_changeset)
+    assert "does not exist" in errors_on(rejected_resource).resource
   end
 
   test "database rejects direct interface mode evidence mutation", %{scope: scope} do
@@ -5682,6 +5897,18 @@ defmodule Renga.TopologyTest do
       %{name: "ignored-by-topology"},
       %{vlan_group_id: group && group.id, vid: vid, name: name, status: "active"}
     )
+  end
+
+  defp prefix_fixture(scope, resource_name, cidr) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "prefix",
+        name: resource_name,
+        lifecycle_state: "active"
+      })
+
+    {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: cidr})
+    prefix
   end
 
   defp site_fixture(scope, slug) do

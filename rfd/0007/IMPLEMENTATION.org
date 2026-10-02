@@ -37,7 +37,7 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 * Phase 5: Cross-domain integration and product surfaces
 
-- [ ] Add optional tenant-safe prefix/VLAN relationships without making VLANs a
+- [X] Add optional tenant-safe prefix/VLAN relationships without making VLANs a
   prerequisite for IPAM.
 - [X] Add authenticated organization-scoped VLAN, topology, cable, and finding
   LiveViews in the existing `live_session :require_authenticated_user` router
@@ -45,7 +45,7 @@ Implements [[file:README.adoc][RFD 7: Layer 2 topology and VLANs]].
 
 * Phase 6: Verification and completion
 
-- [ ] Add tenant, namespace, VLAN/range race, membership concurrency, evidence,
+- [X] Add tenant, namespace, VLAN/range race, membership concurrency, evidence,
   matching, cable, authorization, and LiveView tests.
-- [ ] Run `make check-rfds`, focused topology tests, and `mix precommit` before
+- [X] Run `make check-rfds`, focused topology tests, and `mix precommit` before
   marking the proposal implemented.
