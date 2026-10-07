@@ -10,9 +10,9 @@ Implements link:README.adoc[RFD 1: Renga DCIM architecture].
   while retaining per-installation provenance.
 * [X] Deliver physical sites, locations, racks, and placement under
   link:../0005/README.adoc[RFD 5].
-* [ ] Deliver hardware catalog and component reconciliation under
+* [X] Deliver hardware catalog and component reconciliation under
   link:../0006/README.adoc[RFD 6].
-* [ ] Deliver Layer 2 topology and VLANs under
+* [X] Deliver Layer 2 topology and VLANs under
   link:../0007/README.adoc[RFD 7].
 * [ ] Define power inventory and topology in a dedicated RFD.
 * [ ] Deliver IPAM under link:../0004/README.adoc[RFD 4].
