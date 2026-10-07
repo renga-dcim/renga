@@ -1,0 +1,63 @@
+= RFD 0006 implementation checklist
+
+Implements link:README.adoc[RFD 6: Hardware catalog and components].
+
+== Phase 1: Catalog foundations
+
+* [X] Add resource envelopes and typed projections for manufacturers, hardware
+  types, module types, and versioned typed component templates.
+* [X] Keep catalog specifications typed where queried and preserve variable
+  vendor data without turning metadata into hidden invariants.
+
+== Phase 2: Asset matching and expectations
+
+* [X] Add optional, provenance-aware hardware-type matching for physical device
+  resources with ambiguity findings.
+* [X] Materialize expected components separately from observations and support
+  confirmed per-asset exceptions without mutating shared catalog types.
+
+== Phase 3: Modules and inventory-only parts
+
+* [X] Add module bays, compatibility validation, separate desired and current
+  module assignment per bay, concurrency-safe cycle prevention, and
+  transactional install/remove history.
+* [X] Add nested inventory-only parts with tenant and concurrency-safe cycle
+  constraints.
+* [X] Add an explicit path for promoting topology-bearing inventory parts.
+
+== Phase 4: Component evidence and reconciliation
+
+* [X] Promote high-value shape-open agent components into typed source evidence
+  while preserving unknown kinds in immutable observations.
+* [X] Reconcile CPU, memory, and disk evidence into source-neutral canonical
+  projections with deterministic identity matching.
+* [X] Add unexpected, ambiguous identity, and specification-drift findings for
+  expected and observed CPU, memory, and disk components.
+* [X] Capture provenance-linked, bay-addressable module installation evidence
+  without treating modules as CPU, memory, or disk projections.
+* [X] Resolve observed module installations against catalog bays and module
+  types and add compatibility findings.
+* [X] Add missing-component findings gated by explicit complete snapshots.
+* [X] Link interface templates and NIC/port evidence to the existing canonical
+  interface model rather than creating a parallel network endpoint model.
+
+== Phase 5: Product browsing
+
+* [X] Add authenticated organization-scoped read-only catalog browsing plus
+  device hardware, module, inventory-item, and finding LiveViews in the existing
+  `live_session :require_authenticated_user` router block.
+* [X] Add tenant, catalog revision, matching, module concurrency, evidence,
+  reconciliation, authorization, and LiveView tests.
+* [X] Run `make check-rfds`, focused hardware tests, and `mix precommit` for the
+  completed browsing and resource-management surfaces.
+
+== Phase 6: Catalog authoring and completion
+
+* [X] Add member, admin, and owner catalog identity authoring for manufacturers,
+  hardware types, and module types plus module-type browsing while preserving
+  read-only access for viewers.
+* [X] Add member, admin, and owner immutable revision publishing with typed component
+  templates for hardware and module types.
+* [X] Add tenant, authorization, validation, revision immutability, and LiveView
+  interaction tests, then run `make check-rfds`, focused hardware tests, and
+  `mix precommit` before marking the proposal implemented.

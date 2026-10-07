@@ -174,4 +174,4 @@ topology, environmental sensors, and automatic placement from network data.
 == Implementation
 
 Progress against this proposal is tracked in the
-link:IMPLEMENTATION.org[RFD 5 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 5 implementation checklist].

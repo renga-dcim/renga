@@ -33,8 +33,10 @@ pull-request URL once discussion starts. `labels` is a comma-separated set of
 searchable topics. The document is the single source of truth for this metadata;
 the index intentionally does not duplicate it.
 
-Implementation progress lives separately in `rfd/NNNN/IMPLEMENTATION.org`. The
-checker also accepts `IMPLEMENTATION.md`; an RFD must have exactly one format.
+Implementation progress lives separately in `rfd/NNNN/IMPLEMENTATION.adoc`,
+following the AsciiDoc checklist convention; the checker also accepts the
+legacy `IMPLEMENTATION.org` and `IMPLEMENTATION.md` formats, and an RFD must
+have exactly one format.
 The RFD and checklist link to each other, keeping design and decision history
 stable while implementation tasks are checked off.
 
@@ -72,7 +74,7 @@ its lifecycle.
 ## Lifecycle
 
 Reserve the next unused four-digit number and create `rfd/NNNN/README.adoc` and
-one implementation checklist (`IMPLEMENTATION.org` or `IMPLEMENTATION.md`) on a
+one implementation checklist (`IMPLEMENTATION.adoc` by default) on a
 branch. Cross-link the two documents. Use `prediscussion` while writing or
 `ideation` for a topic placeholder. When the document is ready for review, open
 a pull request, set the state to `discussion`, and add that pull request as the

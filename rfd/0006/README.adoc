@@ -175,4 +175,4 @@ selection, and complete vendor-specific component taxonomies.
 == Implementation
 
 Progress against this proposal is tracked in the
-link:IMPLEMENTATION.org[RFD 6 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 6 implementation checklist].

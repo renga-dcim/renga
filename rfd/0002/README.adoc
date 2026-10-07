@@ -91,4 +91,4 @@ organization owners and administrators.
 == Implementation
 
 The completed delivery outcomes are recorded in the
-link:IMPLEMENTATION.org[RFD 2 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 2 implementation checklist].

@@ -175,4 +175,4 @@ validation, and key user workflows.
 == Implementation
 
 Progress against this direction is tracked in the
-link:IMPLEMENTATION.org[RFD 1 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 1 implementation checklist].
