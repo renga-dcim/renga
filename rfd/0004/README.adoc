@@ -280,4 +280,4 @@ associations rather than prerequisites for prefixes.
 == Implementation
 
 Progress against this proposal is tracked in the
-link:IMPLEMENTATION.org[RFD 4 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 4 implementation checklist].

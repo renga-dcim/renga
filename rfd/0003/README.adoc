@@ -87,4 +87,4 @@ mutation. Plaintext is displayed only on creation.
 == Implementation
 
 The completed rollout and legacy-cleanup outcomes are recorded in the
-link:IMPLEMENTATION.org[RFD 3 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 3 implementation checklist].

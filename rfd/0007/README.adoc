@@ -190,4 +190,4 @@ configuration.
 == Implementation
 
 Progress against this proposal is tracked in the
-link:IMPLEMENTATION.org[RFD 7 implementation checklist].
+link:IMPLEMENTATION.adoc[RFD 7 implementation checklist].

@@ -237,6 +237,81 @@ rfd_changed_from_base() {
   return 1
 }
 
+# Finalized RFD content is immutable, but migrating the implementation
+# checklist between the supported source formats is a lossless presentation
+# change rather than a decision change. Canonicalize an entry's checklist into
+# an equivalent AsciiDoc representation so equivalent documents in different
+# formats compare equal while task text, checkbox states, and README prose
+# still differ.
+normalize_readme_links() {
+  sed -E 's/link:IMPLEMENTATION\.(org|md)\[/link:IMPLEMENTATION.adoc[/g'
+}
+
+normalize_checklist_bullets() {
+  sed -E 's/^([[:space:]]*)[-+]([[:space:]]+\[)/\1*\2/'
+}
+
+org_checklist_to_adoc() {
+  sed -E \
+    -e '1s/^#\+TITLE: RFD ([0-9]+) implementation checklist$/= RFD \1 implementation checklist/' \
+    -e 's/\[\[file:([^]]*)\]\[([^]]*)\]\]/link:\1[\2]/g' \
+    -e 's/^\* ([^[])/== \1/' | normalize_checklist_bullets
+}
+
+md_checklist_to_adoc() {
+  sed -E \
+    -e '1s/^# RFD ([0-9]+) implementation checklist$/= RFD \1 implementation checklist/' \
+    -e 's/\[([^]]+)\]\(([^)]+)\)/link:\2[\1]/g' | normalize_checklist_bullets
+}
+
+canonical_entry_text() {
+  local entry_dir="$1"
+  local implementation_file
+
+  if [[ -f "${entry_dir}/README.adoc" ]]; then
+    normalize_readme_links <"${entry_dir}/README.adoc"
+  fi
+
+  implementation_file=""
+  for candidate in IMPLEMENTATION.adoc IMPLEMENTATION.org IMPLEMENTATION.md; do
+    if [[ -f "${entry_dir}/${candidate}" ]]; then
+      implementation_file="${candidate}"
+      break
+    fi
+  done
+
+  case "${implementation_file}" in
+  IMPLEMENTATION.adoc) normalize_checklist_bullets <"${entry_dir}/${implementation_file}" ;;
+  IMPLEMENTATION.org) org_checklist_to_adoc <"${entry_dir}/${implementation_file}" ;;
+  IMPLEMENTATION.md) md_checklist_to_adoc <"${entry_dir}/${implementation_file}" ;;
+  esac
+}
+
+finalized_entry_equivalent() {
+  local entry_name="$1"
+  local temp_dir
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/renga-rfd-base.XXXXXX")"
+  mkdir "${temp_dir}/rfd"
+
+  if [[ -n "${base_rfd_root}" ]]; then
+    if [[ -d "${base_rfd_root}/${entry_name}" ]]; then
+      cp -R "${base_rfd_root}/${entry_name}" "${temp_dir}/rfd/${entry_name}"
+    fi
+  elif [[ -n "${base_ref}" ]]; then
+    (cd "${repo_root}" && git archive "${base_ref}" "rfd/${entry_name}" | tar -x -C "${temp_dir}") || true
+  fi
+
+  if ! diff <(canonical_entry_text "${rfd_root}/${entry_name}") \
+    <(canonical_entry_text "${temp_dir}/rfd/${entry_name}") >/dev/null 2>&1; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+
+  rm -rf "${temp_dir}"
+  return 0
+}
+
 valid_state_transition() {
   local previous="$1"
   local current="$2"
@@ -346,13 +421,14 @@ for entry_name in "${entry_names[@]}"; do
   [[ -n "${number}" ]] || number=0
 
   implementations=()
+  [[ -f "${entry}/IMPLEMENTATION.adoc" ]] && implementations+=("${entry}/IMPLEMENTATION.adoc")
   [[ -f "${entry}/IMPLEMENTATION.org" ]] && implementations+=("${entry}/IMPLEMENTATION.org")
   [[ -f "${entry}/IMPLEMENTATION.md" ]] && implementations+=("${entry}/IMPLEMENTATION.md")
   complete_count=0
   total_count=0
 
   if [[ "${#implementations[@]}" -eq 0 ]]; then
-    printf "%smissing implementation checklist%s: %s/IMPLEMENTATION.org or IMPLEMENTATION.md\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
+    printf "%smissing implementation checklist%s: %s/IMPLEMENTATION.adoc, IMPLEMENTATION.org, or IMPLEMENTATION.md\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
     failures=$((failures + 1))
   elif [[ "${#implementations[@]}" -gt 1 ]]; then
     printf "%smultiple implementation checklist formats%s: %s\n" "${color_red}" "${color_reset}" "${entry_name}" >&2
@@ -362,6 +438,9 @@ for entry_name in "${entry_names[@]}"; do
     implementation_name="$(basename "${implementation}")"
 
     case "${implementation_name}" in
+    IMPLEMENTATION.adoc)
+      expected_heading="= RFD ${entry_name} implementation checklist"
+      ;;
     IMPLEMENTATION.org)
       expected_heading="#+TITLE: RFD ${entry_name} implementation checklist"
       ;;
@@ -376,6 +455,9 @@ for entry_name in "${entry_names[@]}"; do
     fi
 
     case "${implementation_name}" in
+    IMPLEMENTATION.adoc)
+      backlink_pattern='link:README\.adoc\[[^]]+\]'
+      ;;
     IMPLEMENTATION.org)
       backlink_pattern='\[\[file:README\.adoc\]\[[^]]+\]\]'
       ;;
@@ -435,7 +517,7 @@ for entry_name in "${entry_names[@]}"; do
     failures=$((failures + 1))
   fi
 
-  if [[ "${previous_state}" =~ ^(committed|abandoned)$ ]] && rfd_changed_from_base "${entry_name}"; then
+  if [[ "${previous_state}" =~ ^(committed|abandoned)$ ]] && ! finalized_entry_equivalent "${entry_name}"; then
     printf "%sfinal RFD content is immutable%s: %s (%s)\n" "${color_red}" "${color_reset}" "${entry_name}" "${previous_state}" >&2
     failures=$((failures + 1))
   fi
