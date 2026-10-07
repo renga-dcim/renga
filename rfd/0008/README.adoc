@@ -327,6 +327,10 @@ those tokens.
 Each person chooses a theme (light, dark, or match system) and one of five
 accents: Copper, Petrol, Cobalt, Iris, or Monochrome. Copper is the
 organization default, and owners may change the default for new members.
+Each person also chooses a density: comfortable (the default) or compact.
+Density is expressed only through tokens (row height, padding, table text size,
+and rack-unit height) consumed by shared components; no screen handles density
+on its own. On touch devices, tap targets stay at least 44px at either density.
 Preferences are stored per user so they follow the person across devices.
 
 Status colors are fixed and independent of accent and theme: green for
@@ -399,6 +403,9 @@ only surfaces them.
   Inbox disagree with observed reality.
 * *Moving all resources on catalog publish.* Keeps the fleet uniform but can
   open hundreds of findings at once.
+* *One density, or density per saved view.* A single density compromises for
+  both operators and on-floor tablet use; per-view density makes shared views
+  look different to each viewer and adds settings to every view.
 * *A single fixed palette.* Simpler, but the team preferred personal choice;
   fixed status colors keep the meaning shared.
 * *One address visualization for all prefixes.* Works for small IPv4 subnets
@@ -409,8 +416,6 @@ only surfaces them.
 
 == Open questions
 
-* Should density (comfortable or compact) be a personal preference alongside
-  theme and accent?
 * Which screens must be fully usable on a phone, as opposed to readable?
 * Should triage rules support conditions beyond subnet and intake key in the
   first release?
