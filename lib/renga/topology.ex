@@ -13,6 +13,7 @@ defmodule Renga.Topology do
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.Prefix
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceStore
   alias Renga.Inventory.Source
@@ -33,6 +34,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.InterfaceVlanEvidence
   alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.NeighborReconciler
+  alias Renga.Topology.PrefixVlanRelationship
   alias Renga.Topology.SourceVlanGroupMapping
   alias Renga.Topology.TopologyFinding
   alias Renga.Topology.TopologySnapshotEvent
@@ -199,6 +201,112 @@ defmodule Renga.Topology do
       changeset
       |> update_or_rollback()
       |> Repo.preload([:resource, vlan_group: :resource], force: true)
+    end)
+  end
+
+  @doc """
+  Lists the optional prefix/VLAN relationships of the organization.
+
+  The association is a link, not ownership: each row only records that an
+  operator connected one canonical prefix with one canonical VLAN.
+  """
+  def list_prefix_vlan_relationships(%Scope{organization_id: organization_id}) do
+    PrefixVlanRelationship
+    |> where([relationship], relationship.organization_id == ^organization_id)
+    |> order_by([relationship], asc: relationship.vlan_id, asc: relationship.prefix_id)
+    |> preload(prefix: :resource)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists the VLANs an organization prefix is explicitly linked to.
+
+  A prefix without links is valid and returns an empty list; VRF, name, and VID
+  coincidences never imply a link.
+  """
+  def list_prefix_vlans(%Scope{organization_id: organization_id}, prefix_id) do
+    query =
+      from vlan in Vlan,
+        as: :vlan,
+        where: vlan.organization_id == ^organization_id,
+        where:
+          exists(
+            from relationship in PrefixVlanRelationship,
+              where: relationship.organization_id == ^organization_id,
+              where: relationship.prefix_id == ^prefix_id,
+              where: relationship.vlan_id == parent_as(:vlan).id
+          ),
+        order_by: [asc: vlan.vid, asc: vlan.id]
+
+    Repo.all(query)
+  end
+
+  @doc """
+  Lists the prefixes an organization VLAN is explicitly linked to.
+  """
+  def list_vlan_prefixes(%Scope{organization_id: organization_id}, vlan_id) do
+    query =
+      from prefix in Prefix,
+        as: :prefix,
+        where: prefix.organization_id == ^organization_id,
+        where:
+          exists(
+            from relationship in PrefixVlanRelationship,
+              where: relationship.organization_id == ^organization_id,
+              where: relationship.vlan_id == ^vlan_id,
+              where: relationship.prefix_id == parent_as(:prefix).id
+          ),
+        order_by: [asc: prefix.prefix],
+        preload: [:resource]
+
+    Repo.all(query)
+  end
+
+  @doc """
+  Links an organization prefix to an organization VLAN.
+
+  Both endpoints are re-read inside the transaction under the organization
+  scope, so a stale or foreign identifier cannot create a cross-tenant row.
+  Duplicate links are rejected by the organization/prefix/VLAN unique index.
+  """
+  def attach_prefix_vlan(%Scope{} = scope, prefix_id, vlan_id) do
+    managed_transaction(scope, fn ->
+      prefix = scoped_get!(Prefix, scope.organization_id, prefix_id)
+      vlan = scoped_get!(Vlan, scope.organization_id, vlan_id)
+
+      relationship =
+        %PrefixVlanRelationship{
+          organization_id: scope.organization_id,
+          prefix_id: prefix.id,
+          vlan_id: vlan.id
+        }
+        |> PrefixVlanRelationship.changeset(%{})
+        |> insert_or_rollback()
+
+      Repo.preload(relationship, prefix: :resource)
+    end)
+  end
+
+  @doc """
+  Removes the link between an organization prefix and an organization VLAN.
+
+  Removing a link that is already gone reports `{:error, :not_found}` so a
+  concurrent detach in the UI stays harmless.
+  """
+  def detach_prefix_vlan(%Scope{} = scope, prefix_id, vlan_id) do
+    managed_transaction(scope, fn ->
+      PrefixVlanRelationship
+      |> where(
+        [relationship],
+        relationship.organization_id == ^scope.organization_id and
+          relationship.prefix_id == ^prefix_id and relationship.vlan_id == ^vlan_id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> case do
+        %PrefixVlanRelationship{} = relationship -> Repo.delete(relationship)
+        nil -> Repo.rollback(:not_found)
+      end
     end)
   end
 

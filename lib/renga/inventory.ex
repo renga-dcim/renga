@@ -1389,6 +1389,17 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Lists the organization's typed canonical IPAM prefixes.
+  """
+  def list_prefixes(%Scope{organization_id: organization_id}) do
+    Prefix
+    |> where([prefix], prefix.organization_id == ^organization_id)
+    |> order_by([prefix], asc: prefix.prefix, asc: prefix.resource_id)
+    |> preload(:resource)
+    |> Repo.all()
+  end
+
+  @doc """
   Creates a typed canonical IPAM prefix for a resource envelope.
   """
   def create_prefix(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
