@@ -262,7 +262,16 @@ IPv6 presentation additionally:
 * shows dual-stack coverage for the VLAN the prefix serves.
 
 An address-family switch (IPv4, IPv6, both) and a routing-table switch (global
-or a VRF) apply to the whole view. An optional organization addressing plan
+or a VRF) apply to the whole view.
+
+The "both" view shows each family's own tree side by side; it never merges
+families into one row, because containment hierarchies differ between families.
+A prefix linked to a VLAN that also carries the other family shows a link to
+its counterpart, and selecting either highlights both. A VLAN-linked prefix
+whose VLAN lacks the other family is marked as single-stack. The VLAN, not the
+prefix tree, is where both families are shown together, with dual-stack host
+coverage and the hosts missing a family. Pairing derives from the existing
+optional prefix-to-VLAN relationship and needs no new model. An optional organization addressing plan
 (for example /48 site, /56 hall, /64 VLAN) drives next-free allocation.
 
 [[components]]
@@ -394,11 +403,12 @@ only surfaces them.
   fixed status colors keep the meaning shared.
 * *One address visualization for all prefixes.* Works for small IPv4 subnets
   only and is meaningless for IPv6.
+* *Pairing IPv4 and IPv6 prefixes on one row.* Shows dual-stack at a glance,
+  but the families' containment hierarchies differ, so a paired row has no
+  correct parent, and it only works for VLAN-linked prefixes.
 
 == Open questions
 
-* Should the prefix tree pair an IPv4 and IPv6 prefix serving the same VLAN on
-  one row in the "both" view?
 * Should density (comfortable or compact) be a personal preference alongside
   theme and accent?
 * Which screens must be fully usable on a phone, as opposed to readable?
