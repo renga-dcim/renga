@@ -340,6 +340,53 @@ Copper accent. Every status also has a distinct shape.
 
 The page title drops the generator's " · Phoenix Framework" suffix.
 
+== Phone and tablet
+
+Phones are used in two situations: an operator on call acting on one problem,
+and facilities staff at a rack finding a device and recording physical work.
+A short list of tasks is designed and tested to be fully usable at phone width
+(390px); every other screen remains readable, with wide tables scrolling
+horizontally and edits linking to the desktop view.
+
+[cols="1,3"]
+|===
+|Situation |Phone-complete task
+
+|On call
+|Inbox: read a finding, assign it, snooze it, or accept it as an exception
+
+|On call
+|Object page: read all tabs and change lifecycle
+
+|Both
+|Search and the command menu
+
+|On the floor
+|Find a device by name, serial number, or asset tag
+
+|On the floor
+|Rack elevation, one face at a time, scrolling vertically
+
+|On the floor
+|Place a device in a rack by choosing a unit from a list instead of dragging
+
+|On the floor
+|Hardware tab: record "out temporarily" or "replacement installed"
+
+|On the floor
+|Triage: place or assign one item at a time
+|===
+
+Topology, switch ports, VLANs, prefixes, catalog editing, bulk moves, and
+settings other than appearance are readable but not editable on a phone.
+Tablets use the desktop layout with the touch rule from <<_visual_design>>.
+The list grows when a recurring phone task appears; additions are amendments
+to this RFD.
+
+Scanning an asset tag or serial-number barcode with the device camera to open
+a resource is a natural follow-up for on-floor work. It needs camera
+permissions and label conventions and is left to a later RFD.
+
 [[extensions]]
 == Extension points
 
@@ -406,6 +453,10 @@ only surfaces them.
 * *One density, or density per saved view.* A single density compromises for
   both operators and on-floor tablet use; per-view density makes shared views
   look different to each viewer and adds settings to every view.
+* *Full phone parity, or no phone guarantees.* Parity is expensive for screens
+  that do not fit 390px, such as topology and switch front panels; no
+  guarantees leave on-call and on-floor work stuck until someone reaches a
+  desk.
 * *A single fixed palette.* Simpler, but the team preferred personal choice;
   fixed status colors keep the meaning shared.
 * *One address visualization for all prefixes.* Works for small IPv4 subnets
@@ -416,7 +467,6 @@ only surfaces them.
 
 == Open questions
 
-* Which screens must be fully usable on a phone, as opposed to readable?
 * Should triage rules support conditions beyond subnet and intake key in the
   first release?
 
