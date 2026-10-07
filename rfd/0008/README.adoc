@@ -1,6 +1,6 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: published
+:discussion: https://github.com/renga-dcim/renga/pull/72
 :labels: product, design, ui, ux
 
 = RFD 8 Product experience
