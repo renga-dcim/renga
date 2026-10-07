@@ -1,0 +1,430 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: product, design, ui, ux
+
+= RFD 8 Product experience
+
+== Goal
+
+Give Renga one coherent product experience that facilities staff and
+infrastructure operators share, with the speed and polish of a modern
+keyboard-first tool. The experience must make Renga's distinctive model
+(observed versus desired state, provenance, freshness, and findings) easy to
+read and act on, and it must give later capabilities such as osquery and
+virtualization defined places to plug in instead of new top-level pages.
+
+This RFD owns information architecture, shared interaction patterns, the
+Inbox and triage workflows, visual design tokens, and the user-facing
+extension points. Domain behavior stays in RFDs 1 through 7; where this RFD
+needs new domain state, it says so and the owning domain implements it.
+
+== Problem
+
+The current web UI was built feature by feature and mirrors the data model:
+
+* the sidebar has eleven destinations, roughly one per table or RFD;
+* findings live on three separate pages (component, topology, and placement),
+  and placement findings are not reachable from the sidebar;
+* most screens place always-open create forms above the data they create;
+* three visual languages coexist: a dense operator table on Resources,
+  spacious card dashboards elsewhere, and stock generated authentication and
+  settings pages;
+* LiveViews hand-roll their markup, with duplicated private helpers and
+  daisyUI classes mixed with hard-coded Tailwind colors; and
+* status is shown differently on every screen, and observed versus expected
+  values sit in separate cards that the reader must compare.
+
+Each new domain has added pages. Without a shared structure, osquery and
+virtualization would add more.
+
+== Audience
+
+Facilities staff (placement, assets, warranty, replacements) and operators
+(freshness, agents, drift, network) use the same objects, lists, and Inbox.
+Neither group gets a separate application or vocabulary. Saved views are the
+only role-specific surface. Both groups' actions appear in the same activity
+history so each can see what the other changed and why.
+
+The interface is designed for frequent, keyboard-driven use and must remain
+readable for occasional visitors. Copy names things the way people recognize
+them ("Expected" and "Observed", not "canonical projection").
+
+== Principles
+
+. Organize around the operator's questions, not the data model.
+. One object, one page; domains contribute tabs rather than pages.
+. One list grammar for every collection.
+. Observed versus desired is a visual language on each value, not a section.
+. Lifecycle, freshness, agent connectivity, and drift are always shown as
+  separate signals in one fixed strip.
+. Creating and editing are actions (keyboard, command menu, side panels), not
+  page sections.
+. The system opens and closes findings; people add judgment to them.
+. Edits never overwrite observed evidence; the UI says which layer an edit
+  changes.
+. Changes with a wide blast radius show their impact before they happen.
+. Status colors carry one meaning everywhere and never depend on user theme.
+
+== Information architecture
+
+The top level has six areas that do not grow per feature:
+
+[cols="1,1,3"]
+|===
+|Question |Area |Contents
+
+|What needs me?
+|Inbox
+|Findings from every domain, member requests, and triage, in one queue
+
+|What exists?
+|Inventory
+|Every resource kind in one list with saved views
+
+|Where is it?
+|Places
+|Sites, nested locations, racks, and rack elevations
+
+|How is it connected?
+|Network
+|Topology, VLANs, prefixes, and cables as tabs of one area
+
+|What changed?
+|Activity
+|Organization-wide change feed; each object also has its own history
+
+|What can exist?
+|Catalog
+|Manufacturers, hardware types, and module types
+|===
+
+"Who reported this?" has no page. Provenance is available on every value
+(see <<values>>).
+
+The sidebar holds the six areas, pinned saved views, and sites. The mobile menu
+and the command menu are generated from the same navigation definition so they
+cannot diverge. Organization and personal settings live under one Settings area.
+
+Existing routes are kept as redirects to their new homes during migration.
+
+== Shared patterns
+
+=== Lists
+
+Every collection uses one list component with filtering, grouping, sorting,
+column choice, pagination, and keyboard navigation (`J`/`K` to move, `Enter`
+to open, `X` to select, `F` to filter, `C` to create). Filters, grouping, and
+selection live in the URL so any view can be shared. A saved view is a named
+filter, grouping, and column set; members may save personal views and pin
+organization views. Bulk actions appear in a floating bar when rows are
+selected.
+
+=== Object pages
+
+Every resource kind opens into the same layout: title, status strip, editable
+properties panel, related objects, and history. Domains contribute tabs, for
+example Hardware, Network, Placement, Ports, Virtual machines, or Software. A
+tab may declare a capability requirement (such as an agent capability) and is
+hidden or explained when the requirement is not met.
+
+[[values]]
+=== Values, provenance, and drift
+
+Any displayed value can reveal its sources: each source's value, observation
+time, freshness, and which source won and why. When a desired or expected
+value differs from the observed value, the drift marker sits on the value
+itself ("496 GB, expected 512 GB") and links to the related finding.
+Overrides are offered from the same place.
+
+=== Status strip
+
+Lifecycle, freshness, agent connectivity, and drift are shown in that order
+everywhere: list rows, object headers, rack elevations, and topology nodes.
+Each signal uses shape as well as color so it remains legible in grayscale.
+
+=== Actions
+
+The command menu (`Ctrl/⌘ K`) offers navigation and actions for the current
+object. Unavailable actions state why ("osquery is off on this agent",
+"Disabled by organization policy"). Creation opens a modal or side panel. Every
+action is recorded in Activity with its actor.
+
+=== Live updates
+
+Lists and object pages update over LiveView as reconciliation and other users
+change data. Pages do not offer a manual refresh control.
+
+== Inbox
+
+The Inbox contains three item types, grouped by default as Requests, Triage,
+Drift, and Health.
+
+Findings are opened and closed only by reconciliation. People add workflow
+state on top:
+
+* an assignee;
+* a snooze until a time; and
+* "accept as exception" with a required reason and optional expiry, visible to
+  everyone who views the resource.
+
+A person cannot mark a finding resolved while the system still observes the
+condition. An expired exception returns the finding to the open queue. This
+generalizes the existing expected-component exception to all finding types.
+
+Requests are permanent changes a member proposed but may not apply directly
+(see <<components>>). They carry the proposer, reason, the before and after
+values, and the effect of approval. When the same request is open on several
+resources, the request suggests changing the shared definition instead.
+
+The domain implication is one organization-scoped workflow record keyed by
+finding identity (assignee, snooze, exception, and history) that every
+finding-producing domain uses, plus a request record with approval state.
+
+== Triage
+
+Triage is a computed view, not a flag. A resource is in triage while it lacks
+facts a person usually supplies: a placement, a hardware type, an owner, or a
+resolution of a suspected duplicate identity. It leaves triage automatically
+when those facts arrive, whether from a person, a rule, or a collector.
+
+Triage never gates inventory. Untriaged resources appear in every list and
+count. Virtual machines and other short-lived resources never enter triage;
+they inherit their placement from their host.
+
+To handle onboarding bursts, triage groups items by pattern and suggests rules
+such as "hosts reporting from 10.20.0.0/16 belong to Ashburn DC1, Data Hall A".
+The first rule kinds map a subnet or intake key to a site and location. Rules
+apply to existing and future discoveries and are recorded in Activity.
+
+== Places
+
+Places presents site, location, and rack hierarchy and ends in a rack
+elevation. The elevation draws empty units as faint rows, devices as single
+blocks spanning their height, front and rear side by side, and full-depth
+devices on the rear face. A device observed in a rack (for example through
+LLDP from the rack's switch) but planned elsewhere is drawn as a dashed block
+with a one-step resolution. Unplaced resources in the location can be dragged
+onto free units.
+
+== Network
+
+=== Topology
+
+The topology view keeps RFD 7's three layers visible: the cable plan, LLDP/CDP
+evidence, and the confirmed cable record. Each link's line style encodes their
+agreement: confirmed and agreeing, evidence without a record, planned but not
+seen, and plan and evidence disagreeing. Selecting a link shows all three
+layers side by side with actions that never change the cable record without
+an explicit operator assertion. Unresolved neighbors are listed with the map.
+
+=== Switch ports
+
+Switch object pages have a Ports tab with a front-panel view colored by port
+state and a port table showing link speed, LLDP neighbor, cable, mode, and
+untagged and tagged VLANs. A port with VLAN drift expands in place to show
+desired and observed membership.
+
+=== VLANs
+
+The VLAN area lists VLAN groups with an ID-range usage strip, then VLANs with
+planned and observed member counts. A VLAN's detail lists interfaces with
+planned versus observed membership and its linked prefixes.
+
+=== Prefixes
+
+The prefix view changes with the size of the space:
+
+[cols="2,2,2"]
+|===
+|Selection |Visualization |"Used" means
+
+|IPv4 prefix with at most 1,024 addresses
+|Per-address map
+|Host utilization percentage
+
+|Any container, IPv4 or IPv6
+|Child-prefix space map; each cell is the next planning level and opens it
+|Children allocated, such as "5 of 256 /56s"
+
+|IPv6 /64 or larger IPv4 leaf
+|Address table
+|Address counts, never a percentage
+|===
+
+IPv6 presentation additionally:
+
+* dims the shared prefix so interface identifiers stand out;
+* shows how each address was assigned (static, SLAAC, or DHCPv6);
+* hides temporary privacy addresses by default;
+* treats observed-only addresses as normal rather than as findings, with an
+  explicit "adopt" action when an address needs managed state; and
+* shows dual-stack coverage for the VLAN the prefix serves.
+
+An address-family switch (IPv4, IPv6, both) and a routing-table switch (global
+or a VRF) apply to the whole view. An optional organization addressing plan
+(for example /48 site, /56 hall, /64 VLAN) drives next-free allocation.
+
+[[components]]
+== Editing hardware components
+
+=== On a resource
+
+The Hardware tab compares expected and observed components slot by slot, with
+runs of matching slots collapsed. Each row has one of four states: match,
+missing, not expected, or local change. Editing a component asks what
+happened rather than presenting raw fields:
+
+[cols="2,3,1"]
+|===
+|Choice |Effect |Who
+
+|It is out temporarily
+|Accepts the gap until a date; the expectation stays
+|Any member
+
+|A replacement was installed
+|Records the part as confirmed; the finding closes when a collector reports it
+|Any member
+
+|This resource should expect something else
+|Changes the expectation for this resource only; the catalog is unchanged
+|Owner or admin; members create a request
+|===
+
+=== In the catalog
+
+Editing a hardware or module type creates a draft revision that saves
+automatically. Templates are edited in groups using name patterns such as
+`DIMM {A,B}{1..16}`, attributes are key/value rows instead of raw JSON, and
+each template explains how collector reports are matched to it. Before
+publishing, the draft lists its changes and the impact on resources pinned to
+earlier revisions.
+
+Publishing never moves existing resources. New resources use the latest
+revision. Existing resources move individually from their Hardware tab or in
+bulk from the type's "Used by" list. Bulk moves use the standard list with a
+preview of findings opened and closed, and a shortcut to select resources
+whose observed hardware already fits the new revision. An optional per-type
+setting moves a resource automatically once it fits, which can only close
+findings and never opens them.
+
+== Visual design
+
+The UI moves to plain Tailwind with design tokens defined as CSS custom
+properties, and stops using daisyUI. Shared components are built against
+those tokens.
+
+Each person chooses a theme (light, dark, or match system) and one of five
+accents: Copper, Petrol, Cobalt, Iris, or Monochrome. Copper is the
+organization default, and owners may change the default for new members.
+Preferences are stored per user so they follow the person across devices.
+
+Status colors are fixed and independent of accent and theme: green for
+healthy, yellow-ochre for warnings and drift, red for failures, and a neutral
+for unknown. Warnings use ochre rather than amber so they never resemble the
+Copper accent. Every status also has a distinct shape.
+
+The page title drops the generator's " · Phoenix Framework" suffix.
+
+[[extensions]]
+== Extension points
+
+Later capabilities plug into the shared patterns rather than adding top-level
+areas:
+
+[cols="1,2,2"]
+|===
+|Extension point |osquery |Virtualization
+
+|Resource kinds
+|None required
+|Virtual machine and hypervisor kinds related by "runs on"
+
+|Object tabs
+|Software, users, and processes
+|Virtual machines on a host; host on a virtual machine
+
+|Sources and provenance
+|osquery as another evidence source
+|libvirt and other providers as evidence sources
+
+|Findings and Inbox
+|Policy or compliance findings
+|Drift, orphaned disks, and placement conflicts
+
+|Actions
+|"Run query", gated by capability and policy
+|Lifecycle operations, gated by capability and policy
+
+|Collector capabilities
+|Shown on the collector and the resource
+|Shown on the collector and the resource
+|===
+
+Every future RFD that adds user-facing behavior states which extension points
+it uses. A proposal that needs a new top-level area must explain why none of
+these points fit.
+
+== Security and authorization
+
+Presentation never replaces context-level authorization. Inbox workflow
+changes, exceptions, requests, approvals, triage rules, revision moves, and
+appearance defaults are authorized in their contexts and recorded in
+Activity. Requests exist because a member lacks permission; approving one
+applies the change as the approver with the requester recorded. Saved views
+and preferences are scoped to the organization or user that owns them, and a
+shared view never reveals data its viewer cannot otherwise read.
+
+Actions that later control hosts (queries, terminal access, virtual machine
+operations) continue to follow RFD 1's control-plane rules; the command menu
+only surfaces them.
+
+== Alternatives considered
+
+* *Polish the existing pages.* Cheaper, but keeps the per-domain structure
+  that makes every new capability add navigation.
+* *A manual triage flag.* Simpler to explain, but adds a status to read, does
+  not leave the queue on its own, and floods during onboarding.
+* *Letting people resolve findings.* Familiar from issue trackers, but lets the
+  Inbox disagree with observed reality.
+* *Moving all resources on catalog publish.* Keeps the fleet uniform but can
+  open hundreds of findings at once.
+* *A single fixed palette.* Simpler, but the team preferred personal choice;
+  fixed status colors keep the meaning shared.
+* *One address visualization for all prefixes.* Works for small IPv4 subnets
+  only and is meaningless for IPv6.
+
+== Open questions
+
+* Should the prefix tree pair an IPv4 and IPv6 prefix serving the same VLAN on
+  one row in the "both" view?
+* Should density (comfortable or compact) be a personal preference alongside
+  theme and accent?
+* Which screens must be fully usable on a phone, as opposed to readable?
+* Should triage rules support conditions beyond subnet and intake key in the
+  first release?
+
+== Rollout
+
+. Introduce design tokens, remove daisyUI, and build the shared component set:
+  list, object page, properties panel, status strip, side panel, command menu
+  actions, and confirmations.
+. Replace navigation with the six areas, generated from one definition, and
+  redirect existing routes.
+. Move Inventory and resource object pages onto the shared list and object
+  page, including provenance and drift on values.
+. Add finding workflow state and the unified Inbox; retire the three findings
+  pages.
+. Add computed triage and the first triage rules.
+. Rebuild Places with the rack elevation.
+. Rebuild Network: topology, switch ports, VLANs, and scale-aware prefixes.
+. Add component editing, member requests, catalog draft revisions, and
+  revision moves.
+. Add appearance preferences and the organization default.
+. Restyle authentication and settings pages onto the shared components.
+
+== Implementation
+
+Progress against this proposal is tracked in the
+link:IMPLEMENTATION.adoc[RFD 8 implementation checklist].

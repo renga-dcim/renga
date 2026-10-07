@@ -1,0 +1,66 @@
+= RFD 0008 implementation checklist
+
+Implements link:README.adoc[RFD 8: Product experience].
+
+== Phase 1: Foundation
+
+* [ ] Define color, type, spacing, and radius tokens as CSS custom properties
+  on plain Tailwind, including fixed status colors with an ochre warning.
+* [ ] Remove daisyUI and migrate core components to the tokens.
+* [ ] Build the shared list, object page, properties panel, status strip, side
+  panel, and confirmation components.
+* [ ] Drop the generator suffix from the page title.
+
+== Phase 2: Navigation
+
+* [ ] Generate the sidebar, mobile menu, and command menu from one navigation
+  definition with the six top-level areas.
+* [ ] Redirect existing routes to their new locations.
+* [ ] Add contextual command menu actions that explain unavailable actions.
+
+== Phase 3: Inventory and object pages
+
+* [ ] Move Inventory onto the shared list with URL state, saved views, and
+  keyboard navigation.
+* [ ] Move resource object pages onto the shared layout with domain tabs.
+* [ ] Show provenance and drift on individual values.
+
+== Phase 4: Inbox
+
+* [ ] Add organization-scoped finding workflow state: assignee, snooze, and
+  exceptions with reason and expiry, used by every finding domain.
+* [ ] Build the unified Inbox and retire the separate findings pages.
+* [ ] Add member requests with approval and similar-request suggestions.
+
+== Phase 5: Triage
+
+* [ ] Compute triage from missing placement, hardware type, owner, and
+  duplicate-identity facts, excluding virtual machines.
+* [ ] Group triage by pattern and add subnet and intake-key rules.
+
+== Phase 6: Places
+
+* [ ] Build the rack elevation with front and rear faces, observed-elsewhere
+  devices, and drag-to-place for unplaced resources.
+
+== Phase 7: Network
+
+* [ ] Rebuild topology with plan, evidence, and cable record shown per link.
+* [ ] Add the switch Ports tab with front-panel view and in-place VLAN drift.
+* [ ] Rebuild VLAN views with ID-range usage and planned versus observed
+  membership.
+* [ ] Add scale-aware prefix views, IPv6 presentation, and address-family and
+  routing-table switches.
+
+== Phase 8: Component editing
+
+* [ ] Add the expected-versus-observed Hardware tab with intent-based edits and
+  role-based permissions.
+* [ ] Add catalog draft revisions with grouped templates and impact preview.
+* [ ] Add per-resource and bulk revision moves with preview and optional
+  automatic moves.
+
+== Phase 9: Appearance and remaining pages
+
+* [ ] Store theme and accent per user with an organization default accent.
+* [ ] Restyle authentication and settings pages onto the shared components.
