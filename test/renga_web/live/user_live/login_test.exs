@@ -12,6 +12,13 @@ defmodule RengaWeb.UserLive.LoginTest do
       assert html =~ "Sign up"
       assert html =~ "Log in with email"
     end
+
+    test "titles the page with the product name only", %{conn: conn} do
+      html = conn |> get(~p"/users/log-in") |> html_response(200)
+
+      title = html |> LazyHTML.from_document() |> LazyHTML.query("title") |> LazyHTML.text()
+      assert String.trim(title) == "Renga"
+    end
   end
 
   describe "user login - magic link" do
