@@ -194,8 +194,39 @@ they inherit their placement from their host.
 
 To handle onboarding bursts, triage groups items by pattern and suggests rules
 such as "hosts reporting from 10.20.0.0/16 belong to Ashburn DC1, Data Hall A".
-The first rule kinds map a subnet or intake key to a site and location. Rules
-apply to existing and future discoveries and are recorded in Activity.
+The first release has a small fixed set of rule types, each turning one strong
+signal into one fact:
+
+[cols="1,2,2"]
+|===
+|Rule type |Condition |Sets
+
+|Network location
+|Reporting subnet or intake key
+|Site and location
+
+|Top-of-rack switch
+|The resource's LLDP neighbor is a switch placed in a rack
+|That rack, without a rack unit
+
+|Ownership
+|Hostname pattern or a label reported by the collector
+|Owner team
+|===
+
+Hardware type needs no rule: RFD 6 catalog matching assigns it from reported
+manufacturer and model, and an ambiguous match becomes a finding.
+
+Every rule:
+
+* shows a preview of the existing resources it matches and the facts it would
+  set before it is saved;
+* applies to existing and future discoveries, with each value it sets carrying
+  the rule as its provenance and each application recorded in Activity; and
+* never overwrites a fact a person set and never chooses a rack unit.
+
+New rule types are added individually when a recurring case needs one, rather
+than through a general rule builder.
 
 == Places
 
@@ -446,6 +477,9 @@ only surfaces them.
   that makes every new capability add navigation.
 * *A manual triage flag.* Simpler to explain, but adds a status to read, does
   not leave the queue on its own, and floods during onboarding.
+* *A general triage rule builder.* Covers every case, but broad rules can write
+  wrong data at scale, are hard to preview and explain, and turn Renga into a
+  rules engine.
 * *Letting people resolve findings.* Familiar from issue trackers, but lets the
   Inbox disagree with observed reality.
 * *Moving all resources on catalog publish.* Keeps the fleet uniform but can
@@ -464,11 +498,6 @@ only surfaces them.
 * *Pairing IPv4 and IPv6 prefixes on one row.* Shows dual-stack at a glance,
   but the families' containment hierarchies differ, so a paired row has no
   correct parent, and it only works for VLAN-linked prefixes.
-
-== Open questions
-
-* Should triage rules support conditions beyond subnet and intake key in the
-  first release?
 
 == Rollout
 

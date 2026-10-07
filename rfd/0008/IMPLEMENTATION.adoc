@@ -38,7 +38,10 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 * [ ] Compute triage from missing placement, hardware type, owner, and
   duplicate-identity facts, excluding virtual machines.
-* [ ] Group triage by pattern and add subnet and intake-key rules.
+* [ ] Group triage by pattern and suggest rules for common patterns.
+* [ ] Add network-location, top-of-rack switch, and ownership rule types with
+  match previews, rule provenance on set values, Activity entries, and no
+  overwriting of person-set facts or rack units.
 
 == Phase 6: Places
 
