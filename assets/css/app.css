@@ -13,11 +13,6 @@
    The heroicons installation itself is managed by your mix.exs */
 @plugin "../vendor/heroicons";
 
-/* daisyUI components only; its themes are replaced by the token layer. */
-@plugin "../vendor/daisyui" {
-  themes: false;
-}
-
 /*
   Tailwind names for the tokens. `inline` keeps the var() references so
   accent, theme and density switch at runtime without regenerating CSS.
@@ -62,9 +57,9 @@
   --text-table: var(--rg-table-text);
 
   /*
-    Transitional aliases for the daisyUI color names that existing screens
-    still use (bg-base-100, text-base-content/60, ...). Screens move to the
-    token names as later RFD 8 phases rebuild them; remove these then.
+    Transitional aliases for the former daisyUI color names that existing
+    screens still use (bg-base-100, text-base-content/60, ...). Screens move
+    to the token names as later RFD 8 phases rebuild them; remove these then.
   */
   --color-base-100: var(--rg-canvas);
   --color-base-200: var(--rg-sunken);
@@ -84,18 +79,6 @@
   --color-warning-content: var(--rg-fg);
   --color-error: var(--rg-crit);
   --color-error-content: var(--rg-surface);
-}
-
-/* daisyUI component sizing variables, until the components are replaced. */
-:root {
-  --radius-selector: 0.25rem;
-  --radius-field: 0.375rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
 }
 
 /* Add variants based on LiveView classes */

@@ -389,7 +389,7 @@ defmodule RengaWeb.Layouts do
         aria-label="Command palette"
       >
         <div class="border-b border-base-content/10 p-3">
-          <div class="relative [&_.fieldset]:!mb-0">
+          <div class="relative [&_.field]:!mb-0">
             <.icon
               name="hero-magnifying-glass"
               class="pointer-events-none absolute left-3 top-2.5 z-10 size-4 text-base-content/40"

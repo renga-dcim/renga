@@ -17,7 +17,7 @@ defmodule RengaWeb.UserLive.Login do
               <% else %>
                 Don't have an account? <.link
                   navigate={~p"/users/register"}
-                  class="font-semibold text-brand hover:underline"
+                  class="font-semibold text-link hover:underline"
                   phx-no-format
                 >Sign up</.link> for an account now.
               <% end %>
@@ -25,8 +25,11 @@ defmodule RengaWeb.UserLive.Login do
           </.header>
         </div>
 
-        <div :if={local_mail_adapter?()} class="alert alert-info">
-          <.icon name="hero-information-circle" class="size-6 shrink-0" />
+        <div
+          :if={local_mail_adapter?()}
+          class="flex gap-3 rounded-lg border border-edge bg-surface p-3 text-sm text-fg"
+        >
+          <.icon name="hero-information-circle" class="size-5 shrink-0 text-info" />
           <div>
             <p>You are running the local mail adapter.</p>
             <p>
@@ -52,12 +55,14 @@ defmodule RengaWeb.UserLive.Login do
             required
             phx-mounted={JS.focus()}
           />
-          <.button class="btn btn-primary w-full">
+          <.button variant="primary" class="w-full">
             Log in with email <span aria-hidden="true">→</span>
           </.button>
         </.form>
 
-        <div class="divider">or</div>
+        <div class="flex items-center gap-3 text-xs text-fg-muted">
+          <span class="h-px flex-1 bg-edge" /> or <span class="h-px flex-1 bg-edge" />
+        </div>
 
         <.form
           :let={f}
@@ -83,10 +88,15 @@ defmodule RengaWeb.UserLive.Login do
             autocomplete="current-password"
             spellcheck="false"
           />
-          <.button class="btn btn-primary w-full" name={@form[:remember_me].name} value="true">
+          <.button
+            variant="primary"
+            class="w-full"
+            name={@form[:remember_me].name}
+            value="true"
+          >
             Log in and stay logged in <span aria-hidden="true">→</span>
           </.button>
-          <.button class="btn btn-primary btn-soft w-full mt-2">
+          <.button class="mt-2 w-full">
             Log in only this time
           </.button>
         </.form>

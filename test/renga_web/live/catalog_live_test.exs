@@ -525,18 +525,18 @@ defmodule RengaWeb.CatalogLiveTest do
     )
     |> render_change()
 
-    assert has_element?(view, "#revision_width_mm.input-error")
-    assert has_element?(view, "#revision_specifications.textarea-error")
+    assert has_element?(view, "#revision_width_mm[aria-invalid='true']")
+    assert has_element?(view, "#revision_specifications[aria-invalid='true']")
     assert has_element?(view, "#component-template-fields [id$='-errors']", "Component 1")
 
     assert has_element?(
              view,
-             "#component-template-fields input[name$='[name]'].input-error[aria-invalid='true'][aria-describedby$='_name-error']"
+             "#component-template-fields input[name$='[name]'][aria-invalid='true'][aria-describedby$='_name-error']"
            )
 
     assert has_element?(
              view,
-             "#component-template-fields textarea[name$='[attributes]'].textarea-error[aria-invalid='true'][aria-describedby$='_attributes-error']"
+             "#component-template-fields textarea[name$='[attributes]'][aria-invalid='true'][aria-describedby$='_attributes-error']"
            )
 
     refute has_element?(view, "#flash-error")
@@ -557,8 +557,8 @@ defmodule RengaWeb.CatalogLiveTest do
     )
     |> render_submit()
 
-    assert has_element?(view, "#revision_part_number.input-error")
-    assert has_element?(view, "#revision_width_mm.input-error")
+    assert has_element?(view, "#revision_part_number[aria-invalid='true']")
+    assert has_element?(view, "#revision_width_mm[aria-invalid='true']")
     assert has_element?(view, "#new-revision-form input[value='#{oversized}']")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
@@ -587,9 +587,9 @@ defmodule RengaWeb.CatalogLiveTest do
       }
     })
 
-    assert has_element?(view, "#revision_width_mm.input-error")
-    assert has_element?(view, "#revision_weight_kg.input-error")
-    assert has_element?(view, "#revision_specifications.textarea-error")
+    assert has_element?(view, "#revision_width_mm[aria-invalid='true']")
+    assert has_element?(view, "#revision_weight_kg[aria-invalid='true']")
+    assert has_element?(view, "#revision_specifications[aria-invalid='true']")
     assert has_element?(view, "#component-template-fields [role='alert']")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
@@ -644,7 +644,7 @@ defmodule RengaWeb.CatalogLiveTest do
       "revision" => %{"specifications" => ~s({"scaled":#{scaled}})}
     })
 
-    assert has_element?(view, "#revision_specifications.textarea-error")
+    assert has_element?(view, "#revision_specifications[aria-invalid='true']")
     assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
   end
 

@@ -14,7 +14,7 @@ defmodule RengaWeb.UserLive.Registration do
             Register for an account
             <:subtitle>
               Already registered?
-              <.link navigate={~p"/users/log-in"} class="font-semibold text-brand hover:underline">
+              <.link navigate={~p"/users/log-in"} class="font-semibold text-link hover:underline">
                 Log in
               </.link>
               to your account now.
@@ -33,7 +33,7 @@ defmodule RengaWeb.UserLive.Registration do
             phx-mounted={JS.focus()}
           />
 
-          <.button phx-disable-with="Creating account..." class="btn btn-primary w-full">
+          <.button phx-disable-with="Creating account..." variant="primary" class="w-full">
             Create an account
           </.button>
         </.form>

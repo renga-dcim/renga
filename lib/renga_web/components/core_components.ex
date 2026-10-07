@@ -8,16 +8,17 @@ defmodule RengaWeb.CoreComponents do
   with doc strings and declarative assigns. You may customize and style
   them in any way you want, based on your application growth and needs.
 
-  The foundation for styling is Tailwind CSS, a utility-first CSS framework,
-  augmented with daisyUI, a Tailwind CSS plugin that provides UI components
-  and themes. Here are useful references:
-
-    * [daisyUI](https://daisyui.com/docs/intro/) - a good place to get
-      started and see the available components.
+  Styling uses Tailwind CSS with Renga's design tokens (RFD 8). Components use
+  the token names (`bg-surface`, `text-fg-muted`, `border-edge`, `h-control`,
+  `h-row`, ...) rather than raw colors so accent, theme, and density apply
+  everywhere without per-screen handling. Here are useful references:
 
     * [Tailwind CSS](https://tailwindcss.com) - the foundational framework
       we build on. You will use it for layout, sizing, flexbox, grid, and
       spacing.
+
+    * `assets/css/tokens.css` - the token values for each accent, theme,
+      and density.
 
     * [Heroicons](https://heroicons.com) - see `icon/1` for usage.
 
@@ -56,23 +57,34 @@ defmodule RengaWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="fixed right-4 top-4 z-50"
       {@rest}
     >
       <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
-        @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
+        "flex w-80 max-w-[calc(100vw-2rem)] gap-3 rounded-lg border p-3 text-sm shadow-lg sm:w-96",
+        @kind == :info && "border-edge bg-surface text-fg",
+        @kind == :error && "border-crit-line bg-crit-fill text-fg"
       ]}>
-        <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
-        <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
-        <div>
+        <.icon
+          :if={@kind == :info}
+          name="hero-information-circle"
+          class="size-5 shrink-0 text-info"
+        />
+        <.icon
+          :if={@kind == :error}
+          name="hero-exclamation-circle"
+          class="size-5 shrink-0 text-crit"
+        />
+        <div class="min-w-0 flex-1">
           <p :if={@title} class="font-semibold">{@title}</p>
-          <p>{msg}</p>
+          <p class="text-pretty">{msg}</p>
         </div>
-        <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
-          <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
+        <button
+          type="button"
+          class="group grid size-6 shrink-0 cursor-pointer place-items-center rounded-md"
+          aria-label={gettext("close")}
+        >
+          <.icon name="hero-x-mark" class="size-4 text-fg-muted group-hover:text-fg" />
         </button>
       </div>
     </div>
@@ -89,17 +101,14 @@ defmodule RengaWeb.CoreComponents do
       <.button navigate={~p"/"}>Home</.button>
   """
   attr :rest, :global, include: ~w(href navigate patch method download name value disabled)
-  attr :class, :string
-  attr :variant, :string, values: ~w(primary)
+  attr :class, :any, default: nil, doc: "extra classes added to the variant's classes"
+  attr :variant, :string, default: "secondary", values: ~w(primary secondary ghost danger)
+  attr :size, :string, default: "md", values: ~w(sm md)
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    variants = %{"primary" => "btn-primary", nil => "btn-primary btn-soft"}
-
     assigns =
-      assign_new(assigns, :class, fn ->
-        ["btn", Map.fetch!(variants, assigns[:variant])]
-      end)
+      assign(assigns, :class, button_classes(assigns.variant, assigns.size, assigns.class))
 
     if rest[:href] || rest[:navigate] || rest[:patch] do
       ~H"""
@@ -114,6 +123,23 @@ defmodule RengaWeb.CoreComponents do
       </button>
       """
     end
+  end
+
+  # Height comes from the density tokens; min-h-tap keeps a 44px target on
+  # touch devices even in compact density.
+  defp button_classes(variant, size, extra) do
+    [
+      "inline-flex min-h-tap cursor-pointer items-center justify-center gap-2 rounded-md font-medium",
+      "transition-colors focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
+      "disabled:cursor-not-allowed disabled:opacity-50 phx-submit-loading:opacity-70",
+      size == "md" && "h-control px-3 text-sm",
+      size == "sm" && "h-7 px-2.5 text-xs",
+      variant == "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
+      variant == "secondary" && "border border-edge bg-surface text-fg hover:bg-sunken",
+      variant == "ghost" && "text-fg-muted hover:bg-sunken hover:text-fg",
+      variant == "danger" && "bg-crit text-surface hover:opacity-90",
+      extra
+    ]
   end
 
   @doc """
@@ -191,17 +217,17 @@ defmodule RengaWeb.CoreComponents do
       end)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label>
+    <div class="field mb-3">
+      <label class="inline-flex min-h-tap cursor-pointer items-center gap-2 text-sm text-fg">
         <input type="hidden" name={@name} value="false" disabled={@rest[:disabled]} />
-        <span class="label">
+        <span class="inline-flex items-center gap-2">
           <input
             type="checkbox"
             id={@id}
             name={@name}
             value="true"
             checked={@checked}
-            class={@class || "checkbox checkbox-sm"}
+            class={@class || "size-4 rounded border-edge accent-accent"}
             aria-invalid={if(@errors == [], do: nil, else: "true")}
             aria-describedby={@described_by}
             {@rest}
@@ -219,13 +245,16 @@ defmodule RengaWeb.CoreComponents do
     assigns = assign_error_id(assigns)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+    <div class="field mb-3">
+      <label class="block">
+        <span :if={@label} class={@label_class}>{@label}</span>
         <select
           id={@id}
           name={@name}
-          class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
+          class={[
+            @class || [@control_class, "pr-8"],
+            @errors != [] && (@error_class || @error_control_class)
+          ]}
           multiple={@multiple}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
           aria-describedby={@described_by}
@@ -246,15 +275,15 @@ defmodule RengaWeb.CoreComponents do
     assigns = assign_error_id(assigns)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+    <div class="field mb-3">
+      <label class="block">
+        <span :if={@label} class={@label_class}>{@label}</span>
         <textarea
           id={@id}
           name={@name}
           class={[
-            @class || "w-full textarea",
-            @errors != [] && (@error_class || "textarea-error")
+            @class || [@control_class, "h-auto min-h-20 py-2"],
+            @errors != [] && (@error_class || @error_control_class)
           ]}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
           aria-describedby={@described_by}
@@ -273,17 +302,17 @@ defmodule RengaWeb.CoreComponents do
     assigns = assign_error_id(assigns)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label>
-        <span :if={@label} class="label mb-1">{@label}</span>
+    <div class="field mb-3">
+      <label class="block">
+        <span :if={@label} class={@label_class}>{@label}</span>
         <input
           type={@type}
           name={@name}
           id={@id}
           value={Phoenix.HTML.Form.normalize_value(@type, @value)}
           class={[
-            @class || "w-full input",
-            @errors != [] && (@error_class || "input-error")
+            @class || @control_class,
+            @errors != [] && (@error_class || @error_control_class)
           ]}
           aria-invalid={if(@errors == [], do: nil, else: "true")}
           aria-describedby={@described_by}
@@ -300,12 +329,18 @@ defmodule RengaWeb.CoreComponents do
   # Helper used by inputs to generate form errors
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
-      <.icon name="hero-exclamation-circle" class="size-5" />
+    <p class="mt-1.5 flex items-center gap-1.5 text-xs text-crit">
+      <.icon name="hero-exclamation-circle" class="size-4 shrink-0" />
       {render_slot(@inner_block)}
     </p>
     """
   end
+
+  @control_class [
+    "block h-control min-h-tap w-full rounded-md border border-edge bg-surface px-3 text-sm text-fg",
+    "placeholder:text-fg-subtle transition-colors focus:border-accent focus:outline-none",
+    "focus:ring-4 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+  ]
 
   defp assign_error_id(assigns) do
     assigns =
@@ -326,6 +361,9 @@ defmodule RengaWeb.CoreComponents do
     assigns
     |> assign(:rest, Map.delete(assigns.rest, :"aria-describedby"))
     |> assign(:described_by, described_by)
+    |> assign(:label_class, "mb-1 block text-xs font-medium text-fg-muted")
+    |> assign(:control_class, @control_class)
+    |> assign(:error_control_class, "border-crit focus:border-crit focus:ring-crit-fill")
   end
 
   @doc """
@@ -339,10 +377,10 @@ defmodule RengaWeb.CoreComponents do
     ~H"""
     <header class={[@actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
       <div>
-        <h1 class="text-lg font-semibold leading-8">
+        <h1 class="text-lg font-semibold leading-8 tracking-tight text-fg text-balance">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="text-sm text-base-content/70">
+        <p :if={@subtitle != []} class="text-sm text-fg-muted">
           {render_slot(@subtitle)}
         </p>
       </div>
@@ -383,25 +421,29 @@ defmodule RengaWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table table-zebra">
-      <thead>
-        <tr>
-          <th :for={col <- @col}>{col[:label]}</th>
-          <th :if={@action != []}>
+    <table class="w-full text-left text-table text-fg">
+      <thead class="text-xs text-fg-muted">
+        <tr class="h-row border-b border-edge">
+          <th :for={col <- @col} class="px-cell font-medium">{col[:label]}</th>
+          <th :if={@action != []} class="px-cell">
             <span class="sr-only">{gettext("Actions")}</span>
           </th>
         </tr>
       </thead>
       <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr :for={row <- @rows} id={@row_id && @row_id.(row)}>
+        <tr
+          :for={row <- @rows}
+          id={@row_id && @row_id.(row)}
+          class="h-row border-b border-line hover:bg-sunken/60"
+        >
           <td
             :for={col <- @col}
             phx-click={@row_click && @row_click.(row)}
-            class={@row_click && "hover:cursor-pointer"}
+            class={["px-cell", @row_click && "hover:cursor-pointer"]}
           >
             {render_slot(col, @row_item.(row))}
           </td>
-          <td :if={@action != []} class="w-0 font-semibold">
+          <td :if={@action != []} class="w-0 px-cell font-medium">
             <div class="flex gap-4">
               <%= for action <- @action do %>
                 {render_slot(action, @row_item.(row))}
@@ -430,14 +472,12 @@ defmodule RengaWeb.CoreComponents do
 
   def list(assigns) do
     ~H"""
-    <ul class="list">
-      <li :for={item <- @item} class="list-row">
-        <div class="list-col-grow">
-          <div class="font-bold">{item.title}</div>
-          <div>{render_slot(item)}</div>
-        </div>
-      </li>
-    </ul>
+    <dl class="divide-y divide-line border-y border-line">
+      <div :for={item <- @item} class="grid grid-cols-[minmax(8rem,1fr)_2fr] gap-4 py-2 text-sm">
+        <dt class="text-fg-muted">{item.title}</dt>
+        <dd class="min-w-0 text-fg">{render_slot(item)}</dd>
+      </div>
+    </dl>
     """
   end
 
