@@ -86,6 +86,8 @@ defmodule RengaWeb do
       import Phoenix.HTML
       # Core UI components
       import RengaWeb.CoreComponents
+      # Shared RFD 8 building blocks: status strip, object page, properties, overlays
+      import RengaWeb.UI
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

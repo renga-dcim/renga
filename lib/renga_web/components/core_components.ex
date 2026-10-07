@@ -390,7 +390,12 @@ defmodule RengaWeb.CoreComponents do
   end
 
   @doc """
-  Renders a table with generic styling.
+  Renders the shared list used by every collection (RFD 8, "Lists").
+
+  Rows follow the density tokens, the header stays visible while scrolling,
+  and wide tables scroll inside their own container. Rows can open an object
+  with `row_navigate` and mark the open one with `row_selected`. The `:empty`
+  slot shows when there are no rows, including for streams.
 
   ## Examples
 
@@ -398,21 +403,43 @@ defmodule RengaWeb.CoreComponents do
         <:col :let={user} label="id">{user.id}</:col>
         <:col :let={user} label="username">{user.username}</:col>
       </.table>
+
+      <.table
+        id="resources"
+        rows={@streams.resources}
+        row_navigate={fn {_id, resource} -> ~p"/inventory/resources/\#{resource}" end}
+        row_selected={fn {_id, resource} -> resource.id == @selected_id end}
+      >
+        <:col :let={{_id, resource}} label="Name" class="w-1/3 font-medium">{resource.name}</:col>
+        <:empty>No resources match these filters.</:empty>
+      </.table>
   """
   attr :id, :string, required: true
   attr :rows, :list, required: true
   attr :row_id, :any, default: nil, doc: "the function for generating the row id"
   attr :row_click, :any, default: nil, doc: "the function for handling phx-click on each row"
 
+  attr :row_navigate, :any,
+    default: nil,
+    doc: "the function returning a path that clicking the row navigates to"
+
+  attr :row_selected, :any,
+    default: nil,
+    doc: "the function returning whether a row is the currently open object"
+
   attr :row_item, :any,
     default: &Function.identity/1,
     doc: "the function for mapping each row before calling the :col and :action slots"
 
+  attr :class, :any, default: nil, doc: "classes for the scroll container"
+
   slot :col, required: true do
     attr :label, :string
+    attr :class, :any
   end
 
   slot :action, doc: "the slot for showing user actions in the last table column"
+  slot :empty, doc: "the content shown when there are no rows"
 
   def table(assigns) do
     assigns =
@@ -420,66 +447,70 @@ defmodule RengaWeb.CoreComponents do
         assign(assigns, row_id: assigns.row_id || fn {id, _item} -> id end)
       end
 
+    assigns =
+      assign(
+        assigns,
+        :column_count,
+        length(assigns.col) + if(assigns.action == [], do: 0, else: 1)
+      )
+
     ~H"""
-    <table class="w-full text-left text-table text-fg">
-      <thead class="text-xs text-fg-muted">
-        <tr class="h-row border-b border-edge">
-          <th :for={col <- @col} class="px-cell font-medium">{col[:label]}</th>
-          <th :if={@action != []} class="px-cell">
-            <span class="sr-only">{gettext("Actions")}</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
-        <tr
-          :for={row <- @rows}
-          id={@row_id && @row_id.(row)}
-          class="h-row border-b border-line hover:bg-sunken/60"
-        >
-          <td
-            :for={col <- @col}
-            phx-click={@row_click && @row_click.(row)}
-            class={["px-cell", @row_click && "hover:cursor-pointer"]}
+    <div class={["overflow-x-auto", @class]}>
+      <table class="w-full text-left text-table text-fg">
+        <thead class="sticky top-0 z-10 bg-canvas text-xs text-fg-muted">
+          <tr class="h-row border-b border-edge">
+            <th :for={col <- @col} scope="col" class={["px-cell font-medium", col[:class]]}>
+              {col[:label]}
+            </th>
+            <th :if={@action != []} scope="col" class="px-cell">
+              <span class="sr-only">{gettext("Actions")}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id={@id} phx-update={is_struct(@rows, Phoenix.LiveView.LiveStream) && "stream"}>
+          <tr :if={@empty != []} id={"#{@id}-empty"} class="hidden only:table-row">
+            <td colspan={@column_count} class="px-cell py-10 text-center text-sm text-fg-muted">
+              {render_slot(@empty)}
+            </td>
+          </tr>
+          <tr
+            :for={row <- @rows}
+            id={@row_id && @row_id.(row)}
+            aria-current={@row_selected && @row_selected.(row) && "true"}
+            class={[
+              "h-row border-b border-line transition-colors",
+              @row_selected && @row_selected.(row) && "bg-accent-tint",
+              !(@row_selected && @row_selected.(row)) && "hover:bg-sunken/60"
+            ]}
           >
-            {render_slot(col, @row_item.(row))}
-          </td>
-          <td :if={@action != []} class="w-0 px-cell font-medium">
-            <div class="flex gap-4">
-              <%= for action <- @action do %>
-                {render_slot(action, @row_item.(row))}
-              <% end %>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+            <td
+              :for={col <- @col}
+              phx-click={row_command(@row_click, @row_navigate, row)}
+              class={[
+                "px-cell",
+                (@row_click || @row_navigate) && "hover:cursor-pointer",
+                col[:class]
+              ]}
+            >
+              {render_slot(col, @row_item.(row))}
+            </td>
+            <td :if={@action != []} class="w-0 px-cell font-medium">
+              <div class="flex gap-4">
+                <%= for action <- @action do %>
+                  {render_slot(action, @row_item.(row))}
+                <% end %>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
 
-  @doc """
-  Renders a data list.
-
-  ## Examples
-
-      <.list>
-        <:item title="Title">{@post.title}</:item>
-        <:item title="Views">{@post.views}</:item>
-      </.list>
-  """
-  slot :item, required: true do
-    attr :title, :string, required: true
-  end
-
-  def list(assigns) do
-    ~H"""
-    <dl class="divide-y divide-line border-y border-line">
-      <div :for={item <- @item} class="grid grid-cols-[minmax(8rem,1fr)_2fr] gap-4 py-2 text-sm">
-        <dt class="text-fg-muted">{item.title}</dt>
-        <dd class="min-w-0 text-fg">{render_slot(item)}</dd>
-      </div>
-    </dl>
-    """
-  end
+  defp row_command(nil, nil, _row), do: nil
+  defp row_command(row_click, nil, row), do: row_click.(row)
+  defp row_command(_row_click, row_navigate, row), do: JS.navigate(row_navigate.(row))
 
   @doc """
   Renders a [Heroicon](https://heroicons.com).
