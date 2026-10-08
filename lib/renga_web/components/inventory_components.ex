@@ -129,9 +129,10 @@ defmodule RengaWeb.InventoryComponents do
   defp nonzero(0), do: nil
   defp nonzero(count), do: count
 
-  defp kind_icon(kind) when kind in ~w(server storage), do: "hero-server-stack"
-  defp kind_icon("switch"), do: "hero-arrows-right-left"
-  defp kind_icon("pdu"), do: "hero-bolt"
-  defp kind_icon(kind) when kind in ~w(vm container), do: "hero-square-3-stack-3d"
-  defp kind_icon(_kind), do: "hero-cube"
+  @doc "The icon name for a resource kind."
+  def kind_icon(kind) when kind in ~w(server storage), do: "hero-server-stack"
+  def kind_icon("switch"), do: "hero-arrows-right-left"
+  def kind_icon("pdu"), do: "hero-bolt"
+  def kind_icon(kind) when kind in ~w(vm container), do: "hero-square-3-stack-3d"
+  def kind_icon(_kind), do: "hero-cube"
 end
