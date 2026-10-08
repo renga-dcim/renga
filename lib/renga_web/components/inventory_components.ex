@@ -5,6 +5,7 @@ defmodule RengaWeb.InventoryComponents do
   """
   use RengaWeb, :html
 
+  alias Renga.Topology.Ports
   alias RengaWeb.Format
 
   @doc """
@@ -61,13 +62,18 @@ defmodule RengaWeb.InventoryComponents do
   @doc """
   The frame every resource tab shares (RFD 8, "Object pages"): breadcrumb,
   title, status strip, and the domain tabs. Tabs within the resource page
-  patch; the Hardware tab, a separate page, navigates.
+  patch; the Hardware and Ports tabs, separate pages, navigate.
 
   The Hardware tab only exists for physical device kinds; the command menu
-  explains its absence on other kinds.
+  explains its absence on other kinds. The Ports tab only exists for
+  switches, whose ports are the point of the device.
   """
   attr :resource, :map, required: true
-  attr :tab, :atom, required: true, values: [:overview, :hardware, :network, :sources, :activity]
+
+  attr :tab, :atom,
+    required: true,
+    values: [:overview, :hardware, :ports, :network, :sources, :activity]
+
   attr :hardware?, :boolean, required: true
   slot :inner_block, required: true
   slot :aside
@@ -83,6 +89,8 @@ defmodule RengaWeb.InventoryComponents do
             assigns.hardware? &&
               {:hardware, "Hardware", ~p"/inventory/#{resource}/hardware",
                nonzero(resource.drift_count)},
+            resource.kind == "switch" &&
+              {:ports, "Ports", ~p"/inventory/#{resource}/ports", port_count(resource)},
             {:network, "Network", ~p"/inventory/#{resource}/network",
              nonzero(length(resource.interfaces))},
             {:sources, "Sources", ~p"/inventory/#{resource}/sources",
@@ -107,8 +115,8 @@ defmodule RengaWeb.InventoryComponents do
       <:status><.resource_status id="resource-status" resource={@resource} size="header" /></:status>
       <:tab
         :for={{id, label, path, count} <- @tabs}
-        patch={if(id != :hardware and @tab != :hardware, do: path)}
-        navigate={if(id == :hardware or @tab == :hardware, do: path)}
+        patch={if(not separate_page?(id) and not separate_page?(@tab), do: path)}
+        navigate={if(separate_page?(id) or separate_page?(@tab), do: path)}
         active={id == @tab}
         count={count}
       >
@@ -125,6 +133,11 @@ defmodule RengaWeb.InventoryComponents do
       do: "#{resource.name} · #{Format.humanize(resource.kind)}",
       else: Format.humanize(resource.kind)
   end
+
+  defp separate_page?(tab), do: tab in [:hardware, :ports]
+
+  defp port_count(resource),
+    do: resource.interfaces |> Enum.count(&(&1.kind in Ports.port_kinds())) |> nonzero()
 
   defp nonzero(0), do: nil
   defp nonzero(count), do: count

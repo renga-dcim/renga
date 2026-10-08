@@ -7,15 +7,20 @@ defmodule Renga.TopologyFixtures do
   alias Renga.Inventory
   alias Renga.Topology
 
-  @doc "Creates a resource of `kind` with one interface per name."
+  @doc """
+  Creates a resource of `kind` with one interface per name. An entry may be
+  `{name, attrs}` to set interface fields such as status or speed.
+  """
   def device_fixture(scope, kind, name, interface_names) do
     {:ok, resource} =
       Inventory.create_resource(scope, %{kind: kind, name: name, lifecycle_state: "active"})
 
     interfaces =
-      Map.new(interface_names, fn interface_name ->
+      Map.new(interface_names, fn entry ->
+        {interface_name, attrs} = if is_tuple(entry), do: entry, else: {entry, %{}}
+
         {:ok, interface} =
-          Inventory.create_interface(scope, resource.id, %{name: interface_name})
+          Inventory.create_interface(scope, resource.id, Map.put(attrs, :name, interface_name))
 
         {interface_name, interface}
       end)
