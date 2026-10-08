@@ -61,6 +61,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/network/topology",
              "/network/vlans",
              "/network/vlan-groups",
+             "/network/prefixes",
              "/network/cables"
            ]
 

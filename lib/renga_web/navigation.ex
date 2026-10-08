@@ -73,6 +73,9 @@ defmodule RengaWeb.Navigation do
           section(:vlan_groups, "VLAN groups", ~p"/network/vlan-groups", "hero-rectangle-group",
             keywords: ~w(layer2)
           ),
+          section(:prefixes, "Prefixes", ~p"/network/prefixes", "hero-globe-alt",
+            keywords: ~w(ipam subnets addresses ipv4 ipv6 vrf)
+          ),
           section(:cables, "Cables", ~p"/network/cables", "hero-link", keywords: ~w(cabling))
         ]
       },

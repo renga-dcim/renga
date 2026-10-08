@@ -159,6 +159,8 @@ defmodule RengaWeb.Router do
       live "/network/vlans", VlanLive, :index
       live "/network/vlans/:id", VlanDetailLive, :show
       live "/network/vlan-groups", VlanGroupLive, :index
+      live "/network/prefixes", PrefixLive, :index
+      live "/network/prefixes/:id", PrefixDetailLive, :show
       live "/network/cables", CableLive, :index
 
       live "/activity", ActivityLive, :index
