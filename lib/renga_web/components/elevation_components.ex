@@ -7,8 +7,9 @@ defmodule RengaWeb.ElevationComponents do
   compact density draws a shorter rack without any screen special-casing it.
 
   Free units are buttons for people who can place devices: choosing one
-  opens the placement panel at that unit. Drag-to-place drops onto the same
-  elements, so both paths share one target.
+  opens the placement panel at that unit. Drag-to-place (the `RackDrag`
+  hook) highlights and drops onto the same buttons, so both paths agree on
+  which units are free.
   """
   use RengaWeb, :html
 
@@ -55,7 +56,13 @@ defmodule RengaWeb.ElevationComponents do
             {unit}
           </li>
         </ol>
-        <div class="grid" style={rows_style(@height)} data-rack-face={@face}>
+        <div
+          class="grid"
+          style={rows_style(@height)}
+          data-rack-face={@face}
+          data-rows={@height}
+          data-bottom-up={to_string(@bottom_up?)}
+        >
           <%= for unit <- @units, Elevation.free_unit?(@elevation, unit, @face) do %>
             <button
               :if={@can_place?}
@@ -69,7 +76,10 @@ defmodule RengaWeb.ElevationComponents do
               }
               style={area_style(@height, @bottom_up?, unit, 1)}
               aria-label={"Place a device at U#{unit} #{@face}"}
-              class="col-start-1 cursor-pointer border-b border-edge/50 transition-colors hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none"
+              class={[
+                "col-start-1 cursor-pointer border-b border-edge/50 transition-colors",
+                "hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none"
+              ]}
             />
             <div
               :if={!@can_place?}
@@ -79,6 +89,16 @@ defmodule RengaWeb.ElevationComponents do
               class="col-start-1 border-b border-edge/40"
             />
           <% end %>
+
+          <%!-- Preview spans occupied units too, without intercepting click or drag targets. --%>
+          <div
+            :for={unit <- @units}
+            :if={@can_place?}
+            data-drop-unit={unit}
+            aria-hidden="true"
+            style={area_style(@height, @bottom_up?, unit, 1)}
+            class="pointer-events-none z-30 col-start-1 data-[drop-target=valid]:bg-accent/20 data-[drop-target=valid]:ring-1 data-[drop-target=valid]:ring-accent data-[drop-target=invalid]:bg-crit/20 data-[drop-target=invalid]:ring-1 data-[drop-target=invalid]:ring-crit"
+          />
 
           <.link
             :for={block <- @blocks}

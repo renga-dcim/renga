@@ -197,3 +197,6 @@ jobs:
 
       - name: Test overlay lifecycle
         run: node --test assets/js/overlay.test.mjs
+
+      - name: Test rack drag geometry
+        run: node --test assets/js/rack_drag.test.mjs
