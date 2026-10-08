@@ -406,6 +406,7 @@ defmodule Renga.Findings do
           resolution_key: finding.resolution_key,
           status: finding.status,
           message: finding.message,
+          details: finding.details,
           opened_at: finding.inserted_at,
           last_observed_at: finding.last_observed_at,
           resolved_at: finding.resolved_at
@@ -424,6 +425,7 @@ defmodule Renga.Findings do
           resolution_key: type(^"", :string),
           status: finding.status,
           message: finding.message,
+          details: finding.details,
           opened_at: finding.inserted_at,
           last_observed_at: finding.updated_at,
           resolved_at: finding.resolved_at
@@ -442,6 +444,7 @@ defmodule Renga.Findings do
           resolution_key: type(^"", :string),
           status: finding.status,
           message: finding.message,
+          details: finding.details,
           opened_at: finding.inserted_at,
           last_observed_at: finding.updated_at,
           resolved_at: finding.resolved_at
@@ -463,6 +466,7 @@ defmodule Renga.Findings do
           resolution_key: finding.resolution_key,
           status: finding.status,
           message: finding.message,
+          details: finding.details,
           opened_at: finding.inserted_at,
           last_observed_at: finding.last_observed_at,
           resolved_at: finding.resolved_at
@@ -594,6 +598,7 @@ defmodule Renga.Findings do
         state: state(row.status, workflow, now),
         status: row.status,
         message: row.message,
+        details: row.details,
         resolution_key: row.resolution_key,
         subject_id: row.subject_id,
         resource: result.resource,

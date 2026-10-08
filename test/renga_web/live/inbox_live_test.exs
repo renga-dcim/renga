@@ -1,5 +1,6 @@
 defmodule RengaWeb.InboxLiveTest do
-  use RengaWeb.ConnCase, async: true
+  # The real expiry timer test holds its fixture transaction for 30 seconds.
+  use RengaWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
@@ -72,6 +73,87 @@ defmodule RengaWeb.InboxLiveTest do
     assert has_element?(view, "#findings-#{topology.id}")
     refute has_element?(view, "#findings-#{drift.id}")
     assert has_element?(view, "#inbox-clear-scope", "One interface")
+  end
+
+  test "legacy topology filters preserve resolved and all-kind semantics", context do
+    open = topology_finding_fixture(context.interface, "missing_vlan")
+    resolved = topology_finding_fixture(context.interface, "unexpected_vlan", key: "resolved")
+
+    Renga.Repo.update!(
+      Ecto.Changeset.change(resolved, status: "resolved", resolved_at: DateTime.utc_now())
+    )
+
+    for route <- ["/inbox/topology", "/network/topology-findings"] do
+      target =
+        context.conn
+        |> get("#{route}?status=resolved&kind=all&interface_id=#{context.interface.id}")
+        |> redirected_to(301)
+
+      {:ok, view, _} = live(context.conn, target)
+      assert has_element?(view, "#findings-#{resolved.id}")
+      refute has_element?(view, "#findings-#{open.id}")
+      {:ok, view, _} = live(context.conn, target <> "&state=open")
+      assert has_element?(view, "#findings-#{open.id}")
+      refute has_element?(view, "#findings-#{resolved.id}")
+    end
+  end
+
+  test "diagnostics distinguish occurrences including resolved snapshots", context do
+    for {key, remote, status} <- [{"a", "remote-a", "open"}, {"b", "remote-b", "resolved"}] do
+      row = topology_finding_fixture(context.interface, "ambiguous_neighbor", key: key)
+
+      Renga.Repo.update!(
+        Ecto.Changeset.change(row,
+          details: %{"chassis_id" => remote},
+          status: status,
+          resolved_at: if(status == "resolved", do: DateTime.utc_now())
+        )
+      )
+
+      {:ok, view, _} = live(context.conn, ~p"/inbox?#{[finding: "topology:#{row.id}"]}")
+      assert has_element?(view, "#finding-details", remote)
+
+      refute has_element?(
+               view,
+               "#finding-details",
+               if(remote == "remote-a", do: "remote-b", else: "remote-a")
+             )
+    end
+  end
+
+  @tag timeout: 45_000
+  test "idle connected views refresh timed workflow expiry without broadcasts", context do
+    snoozed = component_finding_fixture(context.resource, "component_drift")
+    excepted = component_finding_fixture(context.resource, "missing_expected_component", key: "b")
+    until = DateTime.add(Renga.Time.utc_now_ms(), 1)
+
+    {:ok, _} =
+      Findings.snooze(
+        context.scope,
+        Findings.get_finding!(context.scope, "component", snoozed.id),
+        until
+      )
+
+    {:ok, _} =
+      Findings.accept_exception(
+        context.scope,
+        Findings.get_finding!(context.scope, "component", excepted.id),
+        %{"exception_reason" => "Temporary", "exception_expires_at" => until}
+      )
+
+    {:ok, view, _} = live(context.conn, ~p"/inbox?#{[finding: "component:#{excepted.id}"]}")
+    {:ok, resource_view, _} = live(context.conn, ~p"/inventory/#{context.resource.id}")
+    refute has_element?(view, "#findings-#{snoozed.id}")
+    assert has_element?(view, "#finding-state", "Exception")
+    assert has_element?(resource_view, "#resource-exceptions", "Temporary")
+    assert eventually(fn -> has_element?(view, "#findings-#{snoozed.id}") end, 640)
+    assert has_element?(view, "#findings-#{excepted.id}")
+    assert has_element?(view, "#finding-state", "Open")
+    assert has_element?(view, "#inbox-group-drift", "2")
+
+    assert eventually(fn ->
+             not has_element?(resource_view, "#resource-exceptions", "Temporary")
+           end)
   end
 
   test "a member assigns, snoozes, and accepts a finding as an exception", %{
