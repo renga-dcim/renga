@@ -19,6 +19,36 @@ defmodule Renga.Inventory.FieldProvenanceTest do
   end
 
   describe "field_provenance/2" do
+    test "sparse reports retain each source's last field-bearing observation", context do
+      resource = report(context, context.agent, 1, %{"vendor" => "Agent"})
+      report(context, context.bmc, 2, %{"vendor" => "Dell"})
+      original = Inventory.field_provenance(context.scope, resource)["vendor"]
+      report(context, context.bmc, 3, %{"hostname" => "bmc-name"})
+
+      assert Inventory.field_provenance(context.scope, resource)["vendor"] == original
+
+      {:ok, _} =
+        Inventory.set_field_override(context.scope, resource, "vendor", %{"value" => "HPE"})
+
+      {:ok, host} = Inventory.clear_field_override(context.scope, resource, "vendor")
+      assert host.vendor == "Dell"
+
+      assert host.metadata["field_owners"]["vendor"]["observation_id"] ==
+               hd(original.candidates).observation_id
+    end
+
+    test "removing an override after a sparse single-source report does not clear the value",
+         context do
+      resource = report(context, context.agent, 1, %{"vendor" => "Agent"})
+      report(context, context.agent, 2, %{"hostname" => "agent-name"})
+
+      {:ok, _} =
+        Inventory.set_field_override(context.scope, resource, "vendor", %{"value" => "HPE"})
+
+      {:ok, host} = Inventory.clear_field_override(context.scope, resource, "vendor")
+      assert host.vendor == "Agent"
+    end
+
     test "lists every source's report, the winner first, and why it won", context do
       resource =
         report(context, context.agent, 1, %{"hostname" => "agent-name", "vendor" => "Agent"})

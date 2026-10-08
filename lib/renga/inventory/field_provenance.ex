@@ -93,8 +93,8 @@ defmodule Renga.Inventory.FieldProvenance do
     end)
   end
 
-  # Latest succeeded observation per source that reconciliation matched to
-  # this resource.
+  # Sparse reports leave omitted fields unchanged. Keep history until we
+  # have selected the latest field-bearing report for each source.
   defp latest_observations(organization_id, resource_id) do
     from(observation in Observation,
       join: reconciliation in ObservationReconciliation,
@@ -104,7 +104,6 @@ defmodule Renga.Inventory.FieldProvenance do
           reconciliation.organization_id == ^organization_id and
           reconciliation.matched_resource_id == ^resource_id and
           reconciliation.status == "succeeded",
-      distinct: observation.source_id,
       order_by: [asc: observation.source_id, desc: observation.observed_at, desc: observation.id],
       preload: [:source]
     )
@@ -125,6 +124,7 @@ defmodule Renga.Inventory.FieldProvenance do
         }
       end
 
+    candidates = Enum.uniq_by(candidates, & &1.source.id)
     winner = recorded_winner(candidates, owner) || best_candidate(candidates, path)
 
     candidates
@@ -143,8 +143,8 @@ defmodule Renga.Inventory.FieldProvenance do
   defp recorded_winner(_candidates, nil), do: nil
   defp recorded_winner(_candidates, %{"source_kind" => "manual"}), do: nil
 
-  defp recorded_winner(candidates, %{"source_id" => source_id}),
-    do: Enum.find(candidates, &(&1.source.id == source_id))
+  defp recorded_winner(candidates, %{"observation_id" => observation_id}),
+    do: Enum.find(candidates, &(&1.observation_id == observation_id))
 
   defp recorded_winner(_candidates, _owner), do: nil
 
