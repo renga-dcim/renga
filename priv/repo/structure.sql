@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict yrMi4AyYHUly2EgYdOrrSaFNtFCKCG5SlDcBiASjGKRaydtVczYzZiCB3nemK0o
+\restrict d1PFh6zx9lb512ocSEKrnVSykKFuUoQFGpVitaol3aMqvE9FNuC0kv5PCr6vQ0d
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -907,7 +907,9 @@ CREATE TABLE public.change_events (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     occurred_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    actor_user_id uuid,
+    finding_workflow_id uuid
 );
 
 
@@ -1199,6 +1201,31 @@ CREATE TABLE public.expected_components (
     attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: finding_workflows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.finding_workflows (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    domain character varying(255) NOT NULL,
+    subject_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    resolution_key character varying(255) DEFAULT ''::character varying NOT NULL,
+    assignee_user_id uuid,
+    snoozed_until timestamp without time zone,
+    exception_reason text,
+    exception_expires_at timestamp without time zone,
+    exception_at timestamp without time zone,
+    exception_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT finding_workflows_exception_state CHECK ((((exception_reason IS NULL) AND (exception_at IS NULL) AND (exception_expires_at IS NULL)) OR ((exception_reason IS NOT NULL) AND (exception_at IS NOT NULL)))),
+    CONSTRAINT finding_workflows_valid_domain CHECK (((domain)::text = ANY ((ARRAY['component'::character varying, 'hardware_match'::character varying, 'placement'::character varying, 'topology'::character varying])::text[])))
 );
 
 
@@ -2484,6 +2511,14 @@ ALTER TABLE ONLY public.expected_components
 
 
 --
+-- Name: finding_workflows finding_workflows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.finding_workflows
+    ADD CONSTRAINT finding_workflows_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: hardware_assignments hardware_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3197,6 +3232,13 @@ CREATE UNIQUE INDEX catalog_type_revisions_module_revision_index ON public.catal
 
 
 --
+-- Name: change_events_finding_workflow_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_events_finding_workflow_id_index ON public.change_events USING btree (finding_workflow_id);
+
+
+--
 -- Name: change_events_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3460,6 +3502,27 @@ CREATE UNIQUE INDEX expected_components_assignment_kind_name_index ON public.exp
 --
 
 CREATE INDEX expected_components_assignment_suppressed_index ON public.expected_components USING btree (organization_id, hardware_assignment_id, suppressed);
+
+
+--
+-- Name: finding_workflows_identity_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX finding_workflows_identity_index ON public.finding_workflows USING btree (organization_id, domain, subject_id, kind, resolution_key);
+
+
+--
+-- Name: finding_workflows_organization_id_assignee_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX finding_workflows_organization_id_assignee_user_id_index ON public.finding_workflows USING btree (organization_id, assignee_user_id);
+
+
+--
+-- Name: finding_workflows_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX finding_workflows_organization_id_resource_id_index ON public.finding_workflows USING btree (organization_id, resource_id);
 
 
 --
@@ -5093,6 +5156,22 @@ ALTER TABLE ONLY public.catalog_type_revisions
 
 
 --
+-- Name: change_events change_events_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_events change_events_finding_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_events
+    ADD CONSTRAINT change_events_finding_workflow_id_fkey FOREIGN KEY (finding_workflow_id) REFERENCES public.finding_workflows(id) ON DELETE SET NULL;
+
+
+--
 -- Name: change_events change_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5514,6 +5593,30 @@ ALTER TABLE ONLY public.expected_components
 
 ALTER TABLE ONLY public.expected_components
     ADD CONSTRAINT expected_components_template_fkey FOREIGN KEY (component_template_id, organization_id, catalog_type_revision_id) REFERENCES public.component_templates(id, organization_id, catalog_type_revision_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: finding_workflows finding_workflows_assignee_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.finding_workflows
+    ADD CONSTRAINT finding_workflows_assignee_user_id_fkey FOREIGN KEY (assignee_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: finding_workflows finding_workflows_exception_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.finding_workflows
+    ADD CONSTRAINT finding_workflows_exception_by_user_id_fkey FOREIGN KEY (exception_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: finding_workflows finding_workflows_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.finding_workflows
+    ADD CONSTRAINT finding_workflows_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -6528,7 +6631,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict yrMi4AyYHUly2EgYdOrrSaFNtFCKCG5SlDcBiASjGKRaydtVczYzZiCB3nemK0o
+\unrestrict d1PFh6zx9lb512ocSEKrnVSykKFuUoQFGpVitaol3aMqvE9FNuC0kv5PCr6vQ0d
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6569,3 +6672,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260916120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260928120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261002120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261008120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261009120000);

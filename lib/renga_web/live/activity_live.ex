@@ -2,9 +2,10 @@ defmodule RengaWeb.ActivityLive do
   @moduledoc """
   The organization-wide Activity feed (RFD 8: "What changed?").
 
-  It starts with the inventory change events reconciliation already records:
-  discoveries, field updates, conflicts, staleness, and overrides. Later
-  phases add people's actions to the same feed rather than new pages.
+  It shows the inventory change events reconciliation records (discoveries,
+  field updates, conflicts, staleness) and people's actions (overrides and
+  finding workflow changes) in one feed, each attributed to the person or
+  the source behind it.
   """
   use RengaWeb, :live_view
 
@@ -96,8 +97,8 @@ defmodule RengaWeb.ActivityLive do
             </.link>
             <span :if={is_nil(event.resource)} class="text-fg-subtle">—</span>
           </:col>
-          <:col :let={event} label="Source" class="text-fg-muted">
-            {(event.source && event.source.name) || "Renga"}
+          <:col :let={event} label="By" class="text-fg-muted">
+            <span data-actor={event.actor_user && "person"}>{actor(event)}</span>
           </:col>
           <:empty>
             Nothing has changed yet. Changes appear here as collectors report and people edit.
@@ -125,7 +126,43 @@ defmodule RengaWeb.ActivityLive do
   defp describe(%{kind: "override_removed", field: field}),
     do: with_field("Override removed from", field)
 
+  defp describe(%{kind: "finding_assigned", new_value: nil, field: field}),
+    do: "Unassigned #{finding_label(field)}"
+
+  defp describe(%{kind: "finding_assigned", new_value: %{"assignee" => assignee}, field: field}),
+    do: "Assigned #{finding_label(field)} to #{assignee}"
+
+  defp describe(%{kind: "finding_snoozed", new_value: nil, field: field}),
+    do: "Woke #{finding_label(field)}"
+
+  defp describe(%{kind: "finding_snoozed", new_value: %{"snoozed_until" => until}, field: field}),
+    do: "Snoozed #{finding_label(field)} until #{format_iso(until)}"
+
+  defp describe(%{kind: "finding_exception", field: field}),
+    do: "Accepted #{finding_label(field)} as an exception"
+
+  defp describe(%{kind: "finding_exception_removed", field: field}),
+    do: "Removed the exception on #{finding_label(field)}"
+
   defp describe(%{kind: kind}), do: String.capitalize(String.replace(kind, "_", " "))
+
+  # Finding events name the finding as "domain.kind"; the kind reads best.
+  defp finding_label(field) do
+    field |> to_string() |> String.split(".") |> List.last() |> String.replace("_", " ")
+  end
+
+  defp format_iso(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, datetime, _offset} -> Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
+      _invalid -> iso
+    end
+  end
+
+  # A person when someone acted, otherwise the source that reported it, or
+  # Renga itself for changes it derived.
+  defp actor(%{actor_user: %{email: email}}), do: email
+  defp actor(%{source: %{name: name}}), do: name
+  defp actor(_event), do: "Renga"
 
   defp with_field(verb, nil), do: verb
   defp with_field(verb, field), do: "#{verb} #{String.replace(field, "_", " ")}"

@@ -2089,7 +2089,7 @@ defmodule Renga.Inventory do
     |> activity_since(Keyword.get(opts, :since))
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> limit(^Keyword.get(opts, :limit, 50))
-    |> preload([:resource, :source])
+    |> preload([:resource, :source, :actor_user])
     |> Repo.all()
   end
 
@@ -2127,13 +2127,18 @@ defmodule Renga.Inventory do
   Records a resource or observation state transition.
 
   Optional linked ids are resolved through the caller scope before insertion so
-  audit trails cannot silently join rows from another organization.
+  audit trails cannot silently join rows from another organization. The actor
+  is always the scope's user, never an attr, so an event cannot be attributed
+  to someone else; `finding_workflow_id` is trusted because only
+  `Renga.Findings` passes it, for a workflow it just loaded in scope.
   """
   def create_change_event(%Scope{organization_id: organization_id} = scope, attrs) do
     attrs = normalize_change_event_attrs(scope, attrs)
 
     %ChangeEvent{
       organization_id: organization_id,
+      actor_user_id: scope.user && scope.user.id,
+      finding_workflow_id: Map.get(attrs, :finding_workflow_id),
       source_id: Map.get(attrs, :source_id) || Map.get(attrs, "source_id"),
       resource_id: Map.get(attrs, :resource_id) || Map.get(attrs, "resource_id"),
       sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),

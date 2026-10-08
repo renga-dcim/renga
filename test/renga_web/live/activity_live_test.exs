@@ -70,6 +70,48 @@ defmodule RengaWeb.ActivityLiveTest do
     refute has_element?(view, "#activity-load-older")
   end
 
+  test "attributes each change to the person or source behind it", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "rack-agent"})
+    service = Renga.Accounts.scope_for(scope.organization)
+
+    reported =
+      event!(service, %{
+        resource_id: resource.id,
+        source_id: source.id,
+        kind: "updated",
+        field: "hostname",
+        occurred_at: minutes_ago(3)
+      })
+
+    derived =
+      event!(service, %{resource_id: resource.id, kind: "stale", occurred_at: minutes_ago(2)})
+
+    assigned =
+      event!(scope, %{
+        resource_id: resource.id,
+        kind: "finding_assigned",
+        field: "component.component_drift",
+        new_value: %{"assignee" => "oncall@example.com"},
+        occurred_at: minutes_ago(1)
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    assert has_element?(view, "#events-#{reported.id}", "rack-agent")
+    assert has_element?(view, "#events-#{derived.id}", "Renga")
+    assert has_element?(view, "#events-#{assigned.id} [data-actor=person]", scope.user.email)
+
+    assert has_element?(
+             view,
+             "#events-#{assigned.id}",
+             "Assigned component drift to oncall@example.com"
+           )
+  end
+
   test "shows an empty state before anything changes", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/activity")
 
