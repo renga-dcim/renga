@@ -249,17 +249,14 @@ defmodule RengaWeb.DcimLive do
         id="sites"
         rows={@sites}
         row_id={&"site-#{&1.id}"}
-        row_click={&JS.navigate(~p"/places/sites/#{&1.id}")}
+        row_navigate={&~p"/places/sites/#{&1.id}"}
         class="rounded-lg border border-edge bg-surface"
       >
         <:col :let={site} label="Site" class="py-2">
-          <.link
-            navigate={~p"/places/sites/#{site.id}"}
-            class="block font-medium text-fg hover:underline"
-          >
-            {site.resource.name}
-          </.link>
-          <span class="block font-mono text-xs text-fg-muted">{site.slug}</span>
+          <div>
+            <span class="block font-medium text-fg">{site.resource.name}</span>
+            <span class="block font-mono text-xs text-fg-muted">{site.slug}</span>
+          </div>
         </:col>
         <:col :let={site} label="Locations" class="text-right font-mono tabular-nums">
           {count(@site_counts, site.id, :locations)}
@@ -368,7 +365,7 @@ defmodule RengaWeb.DcimLive do
             <li :for={child <- @location.children} id={"location-#{child.id}"}>
               <.link
                 navigate={~p"/places/locations/#{child.id}"}
-                class="flex min-h-row items-center gap-2 px-3 text-sm transition-colors hover:bg-sunken"
+                class="flex min-h-[max(var(--rg-row-h),var(--rg-tap-min))] items-center gap-2 px-3 text-sm transition-colors hover:bg-sunken"
               >
                 <.icon name="hero-map-pin-mini" class="size-4 text-fg-subtle" />
                 <span class="font-medium text-fg">{child.resource.name}</span>
@@ -445,7 +442,7 @@ defmodule RengaWeb.DcimLive do
         <li :for={{location, depth} <- @tree} id={"location-#{location.id}"} data-depth={depth}>
           <.link
             navigate={~p"/places/locations/#{location.id}"}
-            class="flex min-h-row items-center gap-2 pr-3 text-sm transition-colors hover:bg-sunken"
+            class="flex min-h-[max(var(--rg-row-h),var(--rg-tap-min))] items-center gap-2 pr-3 text-sm transition-colors hover:bg-sunken"
             style={"padding-left: #{0.75 + depth * 1.25}rem"}
           >
             <.icon name="hero-map-pin-mini" class="size-4 text-fg-subtle" />
@@ -472,19 +469,16 @@ defmodule RengaWeb.DcimLive do
         id={@id}
         rows={@racks}
         row_id={&"rack-#{&1.id}"}
-        row_click={&JS.navigate(~p"/places/racks/#{&1.id}")}
+        row_navigate={&~p"/places/racks/#{&1.id}"}
         class="rounded-lg border border-edge bg-surface"
       >
         <:col :let={rack} label="Rack" class="py-2">
-          <.link
-            navigate={~p"/places/racks/#{rack.id}"}
-            class="block font-medium text-fg hover:underline"
-          >
-            {rack.resource.name}
-          </.link>
-          <span :if={rack.facility_id} class="block font-mono text-xs text-fg-muted">
-            {rack.facility_id}
-          </span>
+          <div>
+            <span class="block font-medium text-fg">{rack.resource.name}</span>
+            <span :if={rack.facility_id} class="block font-mono text-xs text-fg-muted">
+              {rack.facility_id}
+            </span>
+          </div>
         </:col>
         <:col :let={rack} :if={@show_place} label="Where" class="text-fg-muted">
           {rack.site.resource.name}{if rack.location, do: " / #{rack.location.resource.name}"}
