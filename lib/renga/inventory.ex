@@ -21,6 +21,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
   alias Renga.Inventory.ComponentEvidence
+  alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.Host
   alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Interface
@@ -2241,6 +2242,127 @@ defmodule Renga.Inventory do
     |> Changes.broadcast(organization_id)
   end
 
+  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
+  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
+  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
+  @interface_statuses ~w(up down dormant not_present unknown)
+  @signed_int_max 2_147_483_647
+
+  @doc """
+  Where each host value of a resource comes from: every source's latest
+  report, the winner and why, any override, and drift from desired state.
+  See `Renga.Inventory.FieldProvenance`.
+  """
+  def field_provenance(%Scope{} = scope, %Resource{} = resource),
+    do: FieldProvenance.for_host(scope, resource)
+
+  @doc """
+  Pins a host field to a value people chose, replacing any earlier override
+  on the field.
+
+  An override outranks every source until removed, so only owners and
+  admins may set one, rechecked inside the transaction like other
+  management changes.
+  """
+  def set_field_override(%Scope{} = scope, %Resource{} = resource, field, attrs)
+      when field in @host_override_fields do
+    path = "host." <> field
+
+    value =
+      case attrs |> Map.get("value") |> to_string() |> String.trim() do
+        "" -> nil
+        value -> %{"value" => value}
+      end
+
+    organization_management_transaction(scope, fn ->
+      lock_organization!(scope.organization_id)
+      delete_override(scope, resource.id, path)
+
+      create_resource_override(scope, resource.id, %{
+        field: path,
+        value: value,
+        reason: Map.get(attrs, "reason")
+      })
+    end)
+    |> Changes.broadcast(scope.organization_id)
+  end
+
+  @doc """
+  Removes the override on a host field and hands the field back to its
+  sources: the value becomes what reconciliation would choose now, or nil
+  when no source reports the field. Owners and admins only.
+  """
+  def clear_field_override(%Scope{} = scope, %Resource{} = resource, field)
+      when field in @host_override_fields do
+    path = "host." <> field
+
+    organization_management_transaction(scope, fn ->
+      lock_organization!(scope.organization_id)
+      resource = get_resource!(scope, resource.id)
+
+      case delete_override(scope, resource.id, path) do
+        nil -> {:error, :not_found}
+        override -> restore_host_field(scope, resource, field, override)
+      end
+    end)
+    |> Changes.broadcast(scope.organization_id)
+  end
+
+  defp delete_override(%Scope{organization_id: organization_id}, resource_id, path) do
+    case Repo.get_by(ResourceOverride,
+           organization_id: organization_id,
+           resource_id: resource_id,
+           field: path
+         ) do
+      nil ->
+        nil
+
+      override ->
+        Repo.delete!(override)
+    end
+  end
+
+  defp restore_host_field(scope, resource, field, override) do
+    host = Repo.get_by!(Host, organization_id: scope.organization_id, resource_id: resource.id)
+    old_value = Map.get(host, String.to_existing_atom(field))
+    choice = FieldProvenance.source_choice(scope, resource, field)
+    value = choice && choice.value
+    owners = get_in(host.metadata || %{}, ["field_owners"]) || %{}
+
+    owners =
+      if choice,
+        do: Map.put(owners, field, source_owner(choice)),
+        else: Map.delete(owners, field)
+
+    metadata = Map.put(host.metadata || %{}, "field_owners", owners)
+
+    with {:ok, host} <-
+           host |> Host.changeset(%{field => value, "metadata" => metadata}) |> Repo.update(),
+         {:ok, _event} <-
+           create_change_event(scope, %{
+             kind: "override_removed",
+             field: override.field,
+             resource_id: resource.id,
+             old_value: ChangeEvent.audit_value(old_value),
+             new_value: ChangeEvent.audit_value(Map.get(host, String.to_existing_atom(field))),
+             metadata: override_provenance(override),
+             occurred_at: Renga.Time.utc_now_ms()
+           }) do
+      maybe_refresh_topology(scope)
+      {:ok, host}
+    end
+  end
+
+  # The same owner shape reconciliation records when a report wins a field.
+  defp source_owner(%{source: source, observed_at: observed_at, observation_id: observation_id}) do
+    %{
+      "source_id" => source.id,
+      "source_kind" => source.kind,
+      "observed_at" => DateTime.to_iso8601(observed_at),
+      "observation_id" => observation_id
+    }
+  end
+
   @doc false
   def lock_organization!(organization_id) do
     Organization
@@ -2252,12 +2374,6 @@ defmodule Renga.Inventory do
     Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
     :ok
   end
-
-  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
-  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
-  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
-  @interface_statuses ~w(up down dormant not_present unknown)
-  @signed_int_max 2_147_483_647
 
   defp validate_override_contract(changeset) do
     field = Ecto.Changeset.get_field(changeset, :field)
