@@ -65,6 +65,53 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     assert has_element?(view, "#hardware-assignment-clear")
   end
 
+  test "external lifecycle and reconciled hardware changes refresh the mounted tab", %{
+    conn: conn,
+    resource: resource,
+    scope: scope
+  } do
+    {:ok, _} =
+      Inventory.create_resource_identifier(scope, resource.id, %{
+        kind: "machine_id",
+        value: "live-hardware"
+      })
+
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "live-agent"})
+    {:ok, view, _} = live(conn, ~p"/inventory/#{resource.id}/hardware")
+    {:ok, _} = Inventory.update_resource_lifecycle(scope, resource, "retired")
+    now = DateTime.utc_now()
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "live-hardware",
+        observed_at: now,
+        payload: %{
+          "observation_id" => "live-hardware",
+          "observed_at" => DateTime.to_iso8601(now),
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "live-hardware"},
+              "attributes" => %{"hostname" => "live-host"},
+              "components" => [%{"kind" => "cpu", "name" => "Live CPU", "slot" => "CPU1"}]
+            }
+          ]
+        }
+      })
+
+    {:ok, _, _} = Inventory.reconcile_observation(scope, observation.id)
+    assert eventually(fn -> has_element?(view, "#actual-components-list", "Live CPU") end)
+    assert has_element?(view, "#resource-status", "Retired")
+  end
+
+  defp eventually(fun, attempts \\ 40) do
+    cond do
+      fun.() -> true
+      attempts == 0 -> false
+      true -> Process.sleep(25) && eventually(fun, attempts - 1)
+    end
+  end
+
   test "labels asset-suppressed expectations instead of presenting them as required", %{
     conn: conn,
     resource: resource,

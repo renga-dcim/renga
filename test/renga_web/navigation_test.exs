@@ -31,8 +31,7 @@ defmodule RengaWeb.NavigationTest do
 
   test "every destination is a live page, not a redirect" do
     paths =
-      for(area <- [Navigation.settings() | Navigation.areas()], s <- area.sections, do: s.path) ++
-        Enum.map(Navigation.views(), & &1.path)
+      for area <- [Navigation.settings() | Navigation.areas()], s <- area.sections, do: s.path
 
     for path <- paths do
       %URI{path: route} = URI.parse(path)

@@ -389,6 +389,8 @@ defmodule RengaWeb.CoreComponents do
     """
   end
 
+  @checkbox_class "size-4 cursor-pointer rounded border-edge accent-[var(--rg-accent)] align-middle"
+
   @doc """
   Renders the shared list used by every collection (RFD 8, "Lists").
 
@@ -435,6 +437,31 @@ defmodule RengaWeb.CoreComponents do
     default: &Function.identity/1,
     doc: "the function for mapping each row before calling the :col and :action slots"
 
+  attr :row_group, :any,
+    default: nil,
+    doc: """
+    the function returning `%{label: ..., count: ...}` for rows that are group
+    headers and `nil` for data rows. Headers are ordinary entries in `rows`
+    (so they work with streams) placed before the rows of their group.
+    """
+
+  attr :row_checked, :any,
+    default: nil,
+    doc: """
+    the function returning whether a row is selected. Setting it adds a
+    leading checkbox column; `on_check` receives `%{"id" => row_check_id}`.
+    """
+
+  attr :row_check_id, :any, default: nil, doc: "the function returning the value sent on check"
+  attr :row_check_label, :any, default: nil, doc: "the function returning the checkbox label"
+  attr :on_check, :string, default: nil, doc: "the event pushed when a row checkbox toggles"
+
+  attr :on_check_all, :string,
+    default: nil,
+    doc: "the event pushed by the header checkbox, which selects every row on the page"
+
+  attr :all_checked, :boolean, default: false
+
   attr :class, :any, default: nil, doc: "classes for the scroll container"
 
   slot :col, required: true do
@@ -446,6 +473,8 @@ defmodule RengaWeb.CoreComponents do
   slot :empty, doc: "the content shown when there are no rows"
 
   def table(assigns) do
+    assigns = assign(assigns, :checkbox_class, @checkbox_class)
+
     assigns =
       with %{rows: %Phoenix.LiveView.LiveStream{}} <- assigns do
         assign(assigns, row_id: assigns.row_id || fn {id, _item} -> id end)
@@ -455,7 +484,8 @@ defmodule RengaWeb.CoreComponents do
       assign(
         assigns,
         :column_count,
-        length(assigns.col) + if(assigns.action == [], do: 0, else: 1)
+        length(assigns.col) + if(assigns.action == [], do: 0, else: 1) +
+          if(assigns.row_checked, do: 1, else: 0)
       )
 
     ~H"""
@@ -463,6 +493,17 @@ defmodule RengaWeb.CoreComponents do
       <table class="w-full text-left text-table text-fg">
         <thead class="sticky top-0 z-10 bg-canvas text-xs text-fg-muted">
           <tr class="h-row border-b border-edge">
+            <th :if={@row_checked} scope="col" class="w-0 pl-cell">
+              <input
+                :if={@on_check_all}
+                id={"#{@id}-check-all"}
+                type="checkbox"
+                checked={@all_checked}
+                phx-click={@on_check_all}
+                aria-label={gettext("Select every row on this page")}
+                class={@checkbox_class}
+              />
+            </th>
             <th :for={col <- @col} scope="col" class={["px-cell font-medium", col[:class]]}>
               {col[:label]}
             </th>
@@ -477,53 +518,84 @@ defmodule RengaWeb.CoreComponents do
               {render_slot(@empty)}
             </td>
           </tr>
-          <tr
-            :for={row <- @rows}
-            id={@row_id && @row_id.(row)}
-            aria-current={@row_selected && @row_selected.(row) && "true"}
-            class={[
-              "h-row border-b border-line transition-colors",
-              @row_selected && @row_selected.(row) && "bg-accent-tint",
-              !(@row_selected && @row_selected.(row)) && "hover:bg-sunken/60"
-            ]}
-          >
-            <td
-              :for={{col, index} <- Enum.with_index(@col)}
-              phx-click={
-                !(index == 0 && @row_navigate) && row_command(@row_click, @row_navigate, row)
-              }
-              class={[
-                "px-cell",
-                (@row_click || @row_navigate) && "hover:cursor-pointer",
-                col[:class]
-              ]}
-            >
-              <%!-- The link fills the row so the whole first cell is the tap target.
-                    It stops 1px short of the row height to leave room for the
-                    divider, keeping rows on the density pitch; touch screens
-                    still get the 44px minimum. --%>
-              <.link
-                :if={index == 0 && @row_navigate}
-                navigate={@row_navigate.(row)}
-                class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
-              >
-                {render_slot(col, @row_item.(row))}
-              </.link>
-              <%= if !(index == 0 && @row_navigate) do %>
-                {render_slot(col, @row_item.(row))}
-              <% end %>
-            </td>
-            <td :if={@action != []} class="w-0 px-cell font-medium">
-              <div class="flex gap-4">
-                <%= for action <- @action do %>
-                  {render_slot(action, @row_item.(row))}
-                <% end %>
-              </div>
-            </td>
-          </tr>
+          <%= for row <- @rows do %>
+            <%= case @row_group && @row_group.(row) do %>
+              <% %{label: label} = group -> %>
+                <tr id={@row_id && @row_id.(row)} data-list-group class="h-row bg-sunken">
+                  <th
+                    colspan={@column_count}
+                    scope="colgroup"
+                    class="px-cell text-left text-xs font-medium text-fg-muted"
+                  >
+                    <span class="text-fg">{label}</span>
+                    <span :if={group[:count]} class="ml-2 tabular-nums">{group.count}</span>
+                  </th>
+                </tr>
+              <% _data_row -> %>
+                <.table_row {assigns} row={row} />
+            <% end %>
+          <% end %>
         </tbody>
       </table>
     </div>
+    """
+  end
+
+  defp table_row(assigns) do
+    ~H"""
+    <tr
+      id={@row_id && @row_id.(@row)}
+      data-list-row
+      aria-current={@row_selected && @row_selected.(@row) && "true"}
+      class={[
+        "h-row border-b border-line transition-colors",
+        @row_selected && @row_selected.(@row) && "bg-accent-tint",
+        @row_checked && @row_checked.(@row) && "bg-accent-tint",
+        !(@row_selected && @row_selected.(@row)) && "hover:bg-sunken/60"
+      ]}
+    >
+      <td :if={@row_checked} class="w-0 pl-cell">
+        <input
+          type="checkbox"
+          data-list-check
+          checked={@row_checked.(@row)}
+          phx-click={JS.push(@on_check, value: %{id: @row_check_id.(@row)})}
+          aria-label={(@row_check_label && @row_check_label.(@row)) || gettext("Select row")}
+          class={@checkbox_class}
+        />
+      </td>
+      <td
+        :for={{col, index} <- Enum.with_index(@col)}
+        phx-click={!(index == 0 && @row_navigate) && row_command(@row_click, @row_navigate, @row)}
+        class={[
+          "px-cell",
+          (@row_click || @row_navigate) && "hover:cursor-pointer",
+          col[:class]
+        ]}
+      >
+        <%!-- The link fills the row so the whole first cell is the tap target.
+              It stops 1px short of the row height to leave room for the
+              divider, keeping rows on the density pitch; touch screens
+              still get the 44px minimum. --%>
+        <.link
+          :if={index == 0 && @row_navigate}
+          navigate={@row_navigate.(@row)}
+          class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+        >
+          {render_slot(col, @row_item.(@row))}
+        </.link>
+        <%= if !(index == 0 && @row_navigate) do %>
+          {render_slot(col, @row_item.(@row))}
+        <% end %>
+      </td>
+      <td :if={@action != []} class="w-0 px-cell font-medium">
+        <div class="flex gap-4">
+          <%= for action <- @action do %>
+            {render_slot(action, @row_item.(@row))}
+          <% end %>
+        </div>
+      </td>
+    </tr>
     """
   end
 

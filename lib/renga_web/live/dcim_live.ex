@@ -141,7 +141,12 @@ defmodule RengaWeb.DcimLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={dcim_nav(@live_action)}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={dcim_nav(@live_action)}
+    >
       <section id="dcim-workspace" class="mx-auto max-w-7xl space-y-6">
         <header class="flex flex-col gap-4 border-b border-base-content/10 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>

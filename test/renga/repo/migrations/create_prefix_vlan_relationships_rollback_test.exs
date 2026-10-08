@@ -47,7 +47,7 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
         log: false
       )
 
-    assert List.last(migrated) == @migration_version
+    assert @migration_version in migrated
 
     on_exit(fn ->
       # The scratch repo is linked to the test process and stops with it, so

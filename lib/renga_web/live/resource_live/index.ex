@@ -1,775 +1,975 @@
 defmodule RengaWeb.ResourceLive.Index do
+  @moduledoc """
+  Inventory (RFD 8: "What exists?"): every resource kind in one shared list.
+
+  All list state (search, filters, grouping, sorting, columns, page) lives in
+  the URL through `RengaWeb.InventoryQuery`, so any view can be shared or
+  bookmarked. Rows open the resource's object page; there is no second,
+  partial view of a resource here. The list re-reads itself when the
+  organization's inventory changes, so it has no refresh control.
+  """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
-  alias Renga.Inventory
+  import RengaWeb.InventoryComponents
 
-  @condition_options [
-    {"Any condition", ""},
-    {"Inventory current", "InventoryCurrent"},
-    {"Agent connected", "AgentConnected"},
-    {"Ready", "Ready"},
-    {"Degraded", "Degraded"},
-    {"Reconciling", "Reconciling"}
-  ]
-  @lifecycle_options [
-    {"Any lifecycle", ""},
-    {"Active", "active"},
-    {"Inactive", "inactive"},
-    {"Retired", "retired"},
-    {"Unknown", "unknown"}
-  ]
-  @lifecycle_edit_options [
-    {"Active — in service", "active"},
-    {"Inactive — out of service", "inactive"},
-    {"Retired — no longer used", "retired"},
-    {"Unknown — not classified", "unknown"}
-  ]
+  alias Renga.Inventory
+  alias Renga.Inventory.Changes
+  alias Renga.SavedViews
+  alias Renga.SavedViews.SavedView
+  alias RengaWeb.Format
+  alias RengaWeb.InventoryQuery
+
+  @column_labels %{
+    "kind" => "Kind",
+    "hardware" => "Hardware",
+    "status" => "Lifecycle · Freshness · Agent · Drift",
+    "sources" => "Sources",
+    "seen" => "Seen"
+  }
+
+  # Collector reports arrive in bursts; wait this long after a change before
+  # re-reading so one burst causes one reload.
+  @reload_after_ms 400
 
   @impl true
   def mount(_params, _session, socket) do
-    sources = Inventory.list_sources(socket.assigns.current_scope)
+    scope = socket.assigns.current_scope
+    if connected?(socket), do: Changes.subscribe(scope)
 
     {:ok,
      assign(socket,
-       page_title: "Resources",
-       lifecycle_options: @lifecycle_options,
-       lifecycle_edit_options: @lifecycle_edit_options,
-       can_manage_lifecycle?: Inventory.organization_manager?(socket.assigns.current_scope),
-       condition_options: @condition_options,
-       source_options: [{"Any source", ""} | Enum.map(sources, &{&1.name, &1.id})]
+       page_title: "Inventory",
+       can_manage?: Inventory.organization_manager?(scope),
+       kinds: Inventory.list_resource_kinds(scope),
+       sources: Inventory.list_sources(scope),
+       column_labels: @column_labels,
+       reload_timer: nil,
+       views: SavedViews.list_views(scope, "inventory"),
+       view_form: new_view_form()
      )}
   end
 
   @impl true
+  # The list used to open a side panel with ?selected=; resources now have
+  # one page, so old links go there.
+  def handle_params(%{"selected" => id}, _uri, socket) when id != "" do
+    {:noreply, push_navigate(socket, to: ~p"/inventory/#{id}", replace: true)}
+  end
+
   def handle_params(params, _uri, socket) do
-    filters = parse_filters(params)
-    result = list_resources(socket.assigns.current_scope, filters)
-
-    selected_resource =
-      case params["selected"] do
-        id when is_binary(id) and id != "" ->
-          Inventory.get_operational_resource!(socket.assigns.current_scope, id)
-
-        _none ->
-          nil
-      end
+    query = InventoryQuery.parse(params)
 
     {:noreply,
      socket
-     |> assign(:filters, filters)
-     |> assign(:filter_form, to_form(filter_form_params(filters), as: :filters))
-     |> assign(:resources_empty?, result.entries == [])
-     |> assign(:page, result.page)
-     |> assign(:has_next_page?, result.has_next?)
-     |> assign(:resource_count, result.total)
-     |> assign(:selected_resource, selected_resource)
-     |> assign(:lifecycle_form, lifecycle_form(selected_resource))
-     |> stream(:resources, result.entries, reset: true)}
+     |> assign(:query, query)
+     |> assign(:active_view, active_view(socket.assigns.views, query))
+     |> load_resources()}
   end
 
   @impl true
-  def handle_event("filter", %{"filters" => params}, socket) do
-    filters = %{
-      socket.assigns.filters
-      | search: String.trim(params["search"] || ""),
-        lifecycle: params["lifecycle"] || "",
-        condition: params["condition"] || "",
-        source_id: params["source_id"] || "",
+  def handle_event("search", %{"q" => search}, socket) do
+    {:noreply, patch(socket, %{socket.assigns.query | search: String.trim(search), page: 1})}
+  end
+
+  def handle_event("filter", %{"filter" => filter}, socket) do
+    query = %{
+      socket.assigns.query
+      | kinds: Enum.filter(List.wrap(filter["kinds"]), &(&1 in socket.assigns.kinds)),
+        lifecycle: blank_to_nil(filter["lifecycle"]),
+        freshness: blank_to_nil(filter["freshness"]),
+        source_id: blank_to_nil(filter["source"]),
         page: 1
     }
 
-    {:noreply, push_patch(socket, to: workspace_path(filters, selected_id(socket)))}
+    {:noreply, patch(socket, query)}
   end
 
-  def handle_event("refresh", _params, socket) do
-    result = list_resources(socket.assigns.current_scope, socket.assigns.filters)
+  def handle_event("display", %{"display" => display}, socket) do
+    params =
+      socket.assigns.query
+      |> InventoryQuery.to_params()
+      |> Map.merge(%{
+        "group" => display["group"],
+        "sort" => if(display["direction"] == "desc", do: "-", else: "") <> display["sort"],
+        "cols" =>
+          display
+          |> Map.get("columns", [])
+          |> List.wrap()
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.join(",")
+          |> none_if_blank()
+      })
 
-    {:noreply,
-     socket
-     |> assign(:resources_empty?, result.entries == [])
-     |> assign(:has_next_page?, result.has_next?)
-     |> assign(:resource_count, result.total)
-     |> stream(:resources, result.entries, reset: true)}
+    {:noreply, patch(socket, %{InventoryQuery.parse(params) | page: 1})}
   end
 
-  def handle_event("clear_stale", _params, socket) do
-    filters = %{socket.assigns.filters | stale_only?: false, page: 1}
-    {:noreply, push_patch(socket, to: workspace_path(filters, selected_id(socket)))}
+  # Selection lives in the URL (`sel`), like every other piece of list state,
+  # so a selection can be shared and survives paging and filtering.
+  def handle_event("toggle_selection", %{"id" => id}, socket) do
+    query = socket.assigns.query
+
+    selected =
+      if id in query.selected, do: List.delete(query.selected, id), else: query.selected ++ [id]
+
+    {:noreply, patch(socket, %{query | selected: selected})}
   end
 
-  def handle_event(
-        "update_lifecycle",
-        %{"lifecycle" => %{"lifecycle_state" => _lifecycle_state}},
-        %{assigns: %{selected_resource: nil}} = socket
-      ) do
-    {:noreply, socket}
+  def handle_event("toggle_page", _params, socket) do
+    %{query: query, page_ids: page_ids} = socket.assigns
+
+    selected =
+      if all_selected?(query.selected, page_ids),
+        do: query.selected -- page_ids,
+        else: Enum.uniq(query.selected ++ page_ids)
+
+    {:noreply, patch(socket, %{query | selected: selected})}
   end
 
-  def handle_event(
-        "update_lifecycle",
-        %{"lifecycle" => %{"lifecycle_state" => lifecycle_state}},
-        socket
-      ) do
-    resource = socket.assigns.selected_resource
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, patch(socket, %{socket.assigns.query | selected: []})}
+  end
 
-    case Inventory.update_resource_lifecycle(
-           socket.assigns.current_scope,
-           resource,
-           lifecycle_state
-         ) do
-      {:ok, _resource} ->
+  def handle_event("bulk_lifecycle", %{"state" => state}, socket)
+      when state in ~w(active inactive retired unknown) do
+    %{current_scope: scope, query: query} = socket.assigns
+
+    case Inventory.update_resources_lifecycle(scope, query.selected, state) do
+      {:ok, count} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Resource lifecycle updated")
-         |> reload_workspace_resource(resource.id)}
-
-      {:error, :stale} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Resource changed elsewhere; review the latest lifecycle and retry")
-         |> reload_workspace_resource(resource.id)}
+         |> put_flash(:info, "Set #{count_label(count)} to #{state}")
+         |> patch(%{query | selected: []})}
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "You are not allowed to manage resource lifecycle")}
 
-      {:error, %Ecto.Changeset{}} ->
-        {:noreply, put_flash(socket, :error, "Select a valid lifecycle state")}
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Resources changed while saving; review them and try again")
+         |> load_resources()}
     end
   end
+
+  def handle_event("validate_view", %{"saved_view" => attrs}, socket) do
+    form =
+      %SavedView{}
+      |> SavedViews.change_view(Map.put(attrs, "area", "inventory"))
+      |> Map.put(:action, :validate)
+      |> to_form()
+
+    {:noreply, assign(socket, :view_form, form)}
+  end
+
+  def handle_event("save_view", %{"saved_view" => attrs}, socket) do
+    %{current_scope: scope, query: query} = socket.assigns
+
+    attrs =
+      attrs
+      |> Map.take(["name", "shared", "pinned"])
+      |> Map.merge(%{"area" => "inventory", "params" => InventoryQuery.view_params(query)})
+
+    case SavedViews.create_view(scope, attrs) do
+      {:ok, view} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Saved view #{view.name}")
+         |> close_overlay("save-view")
+         |> assign(view_form: new_view_form())
+         |> reload_views()
+         |> patch(%{query | view_id: view.id})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins can share views")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :view_form, to_form(changeset))}
+    end
+  end
+
+  def handle_event(
+        "toggle_pin",
+        _params,
+        %{assigns: %{active_view: %SavedView{} = view}} = socket
+      ) do
+    case SavedViews.update_view(socket.assigns.current_scope, view, %{pinned: !view.pinned}) do
+      {:ok, view} ->
+        message = if view.pinned, do: "Pinned to the sidebar", else: "Removed from the sidebar"
+        {:noreply, socket |> put_flash(:info, message) |> reload_views()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "You cannot change this view")}
+    end
+  end
+
+  def handle_event(
+        "delete_view",
+        _params,
+        %{assigns: %{active_view: %SavedView{} = view}} = socket
+      ) do
+    case SavedViews.delete_view(socket.assigns.current_scope, view) do
+      {:ok, view} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Deleted view #{view.name}")
+         |> reload_views()
+         |> push_patch(to: ~p"/inventory")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "You cannot delete this view")}
+    end
+  end
+
+  @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
+    {:noreply,
+     assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
+  end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
+
+  def handle_info(:reload, socket) do
+    scope = socket.assigns.current_scope
+
+    {:noreply,
+     socket
+     |> assign(reload_timer: nil, kinds: Inventory.list_resource_kinds(scope))
+     |> load_resources()}
+  end
+
+  defp patch(socket, query), do: push_patch(socket, to: list_path(query))
+
+  defp reload_views(socket) do
+    views = SavedViews.list_views(socket.assigns.current_scope, "inventory")
+
+    socket
+    |> assign(views: views, active_view: active_view(views, socket.assigns.query))
+    |> RengaWeb.SidebarViews.refresh()
+  end
+
+  # Identity is separate from filters: personal and organization views may
+  # intentionally have the same query. Modified filters show as unsaved.
+  defp active_view(views, query) do
+    params = InventoryQuery.view_params(query)
+    Enum.find(views, &(&1.id == query.view_id and &1.params == params))
+  end
+
+  defp new_view_form, do: %SavedView{} |> SavedViews.change_view() |> to_form()
+
+  defp view_path(%SavedView{id: id, params: params}),
+    do: params |> Map.put("view", id) |> InventoryQuery.parse() |> list_path()
+
+  defp load_resources(socket) do
+    scope = socket.assigns.current_scope
+    query = socket.assigns.query
+    options = InventoryQuery.list_options(query)
+    result = Inventory.list_operational_resources(scope, options)
+
+    group_counts =
+      if query.group, do: Inventory.count_operational_resources_by(scope, options, query.group)
+
+    socket
+    |> assign(
+      resource_count: result.total,
+      page: result.page,
+      has_next_page?: result.has_next?,
+      page_ids: Enum.map(result.entries, & &1.id)
+    )
+    |> stream(:resources, with_group_headers(result.entries, query.group, group_counts),
+      reset: true
+    )
+  end
+
+  # Group headers are stream entries placed before the first row of each
+  # group; the shared table renders them as full-width header rows.
+  defp with_group_headers(resources, nil, _counts), do: resources
+
+  defp with_group_headers(resources, group, counts) do
+    resources
+    |> Enum.chunk_by(&group_key(&1, group))
+    |> Enum.flat_map(fn [first | _] = rows ->
+      key = group_key(first, group)
+
+      header = %{
+        id: "group-#{group}-#{key}",
+        group: %{label: group_label(group, key), count: Map.get(counts, key, length(rows))}
+      }
+
+      [header | rows]
+    end)
+  end
+
+  defp group_key(resource, :kind), do: resource.kind
+  defp group_key(resource, :lifecycle), do: resource.lifecycle_state
+
+  defp group_key(resource, :freshness) do
+    case Enum.find(resource.conditions, &(&1.type == "InventoryCurrent")) do
+      %{status: "true"} -> "current"
+      %{status: "false"} -> "stale"
+      _missing -> "unknown"
+    end
+  end
+
+  defp group_label(:freshness, key), do: freshness_label(key)
+  defp group_label(_group, key), do: key |> Format.humanize() |> String.capitalize()
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
       flash={@flash}
+      sidebar_views={@sidebar_views}
       current_scope={@current_scope}
       active_nav={:inventory}
-      content_class="p-0"
     >
-      <section id="resource-list" class="flex h-full min-h-0 flex-col">
-        <header class="flex h-[104px] shrink-0 items-end justify-between border-b border-base-content/10 px-4 pb-4 sm:px-6">
-          <div>
-            <p class="text-[11px] text-base-content/45">
-              {@current_scope.organization.name} <span class="px-1.5">/</span> Resources
-            </p>
-            <div class="mt-3 flex items-center gap-2.5">
-              <h1 class="text-xl font-semibold tracking-tight">Resources</h1>
-              <span
-                id="resource-count"
-                class="rounded-md bg-base-content/[0.06] px-2 py-0.5 font-mono text-[11px] text-base-content/55"
-              >
-                {@resource_count}
-              </span>
-            </div>
+      <section id="resource-list" class={["space-y-4", @query.selected != [] && "pb-20"]}>
+        <header class="flex flex-wrap items-end justify-between gap-3">
+          <div class="flex items-baseline gap-2.5">
+            <h1 class="text-xl font-semibold tracking-tight text-fg">Inventory</h1>
+            <span id="resource-count" class="font-mono text-xs tabular-nums text-fg-muted">
+              {@resource_count}
+            </span>
           </div>
-          <div class="flex items-center gap-1">
-            <button
-              id="refresh-resources"
-              type="button"
-              phx-click="refresh"
-              class="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-base-content/55 transition hover:bg-base-content/[0.05] hover:text-base-content"
-            >
-              <.icon name="hero-arrow-path" class="size-3.5" /> Refresh
-            </button>
+          <div class="flex items-center gap-2">
+            <.display_menu query={@query} column_labels={@column_labels} />
           </div>
         </header>
 
-        <.form
-          for={@filter_form}
-          id="resource-filters"
-          phx-change="filter"
-          class="flex h-[70px] shrink-0 items-center gap-2 overflow-x-auto border-b border-base-content/10 px-4 sm:px-6 [&_.field]:!mb-0"
-        >
-          <div class="relative min-w-52 flex-1">
-            <.icon
-              name="hero-magnifying-glass"
-              class="pointer-events-none absolute left-3 top-2.5 z-10 size-4 text-base-content/35"
-            />
-            <.input
-              field={@filter_form[:search]}
-              type="search"
-              placeholder="Search resources..."
-              autocomplete="off"
-              phx-debounce="250"
-              class="h-9 w-full rounded-md border border-base-content/10 bg-base-100 py-0 pl-9 pr-3 text-xs outline-none transition placeholder:text-base-content/30 focus:border-orange-600/50"
-            />
-          </div>
-          <.input
-            field={@filter_form[:lifecycle]}
-            type="select"
-            options={@lifecycle_options}
-            class="h-9 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-xs outline-none transition focus:border-orange-600/50"
-          />
-          <.input
-            field={@filter_form[:condition]}
-            type="select"
-            options={@condition_options}
-            class="h-9 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-xs outline-none transition focus:border-orange-600/50"
-          />
-          <.input
-            field={@filter_form[:source_id]}
-            type="select"
-            options={@source_options}
-            class="h-9 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-xs outline-none transition focus:border-orange-600/50"
-          />
-          <button
-            :if={@filters.stale_only?}
-            id="clear-stale-filter"
-            type="button"
-            phx-click="clear_stale"
-            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-amber-500/25 px-2.5 text-xs text-amber-700 transition hover:bg-amber-500/5 dark:text-amber-400"
-            aria-label="Clear stale inventory filter"
-          >
-            <span class="size-1.5 rounded-full bg-amber-500" /> Stale only
-            <.icon name="hero-x-mark" class="size-3.5" />
-          </button>
-        </.form>
+        <.view_tabs
+          views={@views}
+          active_view={@active_view}
+          query={@query}
+          current_scope={@current_scope}
+        />
 
-        <div class="flex min-h-0 flex-1">
-          <div class="min-w-0 flex-1 overflow-auto">
-            <table class="w-full min-w-[1100px] table-fixed text-left text-xs">
-              <thead class="sticky top-0 z-10 border-b border-base-content/10 bg-base-200/70 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/40 backdrop-blur-sm">
-                <tr class="h-9">
-                  <th class="w-[22%] px-4 font-semibold">Resource</th>
-                  <th class="w-[22%] px-3 font-semibold">Hardware</th>
-                  <th class="w-[10%] px-3 font-semibold">Lifecycle</th>
-                  <th class="w-[14%] px-3 font-semibold">Conditions</th>
-                  <th class="w-[18%] px-3 font-semibold">Source</th>
-                  <th class="w-[14%] px-3 font-semibold">Observed</th>
-                </tr>
-              </thead>
-              <tbody id="resources" phx-update="stream" class="divide-y divide-base-content/[0.07]">
-                <tr :if={@resources_empty?} id="resources-empty">
-                  <td colspan="6" class="px-5 py-16 text-center text-base-content/45">
-                    <.icon name="hero-cube" class="mx-auto size-6" />
-                    <p class="mt-2 text-xs font-medium text-base-content/65">No resources match</p>
-                    <p class="mt-1 text-[11px]">Try removing one or more filters.</p>
-                  </td>
-                </tr>
-                <tr
-                  :for={{id, resource} <- @streams.resources}
-                  id={id}
-                  class={[
-                    "group h-10 transition hover:bg-base-content/[0.025]",
-                    selected?(@selected_resource, resource) &&
-                      "bg-orange-500/[0.055] shadow-[inset_2px_0_0_0] shadow-orange-600"
-                  ]}
-                >
-                  <td
-                    class="truncate px-4"
-                    title={
-                      "#{resource.display_name || resource.name} · #{humanize(resource.kind)}"
-                    }
-                  >
-                    <.link
-                      patch={workspace_path(@filters, resource.id)}
-                      class="block truncate font-medium outline-none group-hover:text-base-content focus:text-orange-600"
-                    >
-                      {resource.display_name || resource.name}
-                      <span class="ml-1 font-normal text-base-content/35">
-                        · {humanize(resource.kind)}
-                      </span>
-                    </.link>
-                  </td>
-                  <td
-                    class="truncate px-3 text-base-content/60"
-                    title={hardware_name(resource)}
-                  >
-                    {hardware_name(resource)}
-                  </td>
-                  <td class="px-3">
-                    <span class="inline-flex items-center gap-1.5 capitalize text-base-content/65">
-                      <span class={lifecycle_dot(resource.lifecycle_state)} />
-                      {resource.lifecycle_state}
-                    </span>
-                  </td>
-                  <td class="truncate px-3" title={condition_summary(resource.conditions)}>
-                    <span class="inline-flex max-w-full items-center gap-1.5 text-base-content/60">
-                      <span class={condition_dot(resource.conditions)} />
-                      <span class="truncate">{condition_summary(resource.conditions)}</span>
-                    </span>
-                  </td>
-                  <td class="truncate px-3 text-base-content/55" title={source_names(resource)}>
-                    <span class="inline-flex max-w-full items-center gap-1.5">
-                      <.icon name="hero-circle-stack" class="size-3.5 shrink-0 text-base-content/35" />
-                      <span class="truncate">{source_names(resource)}</span>
-                    </span>
-                  </td>
-                  <td
-                    class="truncate px-3 font-mono text-[10px] text-base-content/45"
-                    title={format_time(last_observed_at(resource))}
-                  >
-                    {format_time(last_observed_at(resource))}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <form id="resource-search" phx-change="search" phx-submit="search" class="w-full sm:w-72">
+            <label for="resource-search-input" class="sr-only">Search inventory</label>
+            <div class="relative">
+              <.icon
+                name="hero-magnifying-glass"
+                class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-fg-subtle"
+              />
+              <input
+                id="resource-search-input"
+                name="q"
+                type="search"
+                value={@query.search}
+                placeholder="Search names, hosts, serials"
+                autocomplete="off"
+                phx-debounce="250"
+                class="h-control min-h-tap w-full rounded-md border border-edge bg-surface pl-8 pr-3 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </form>
 
-          <.resource_panel
-            :if={@selected_resource}
-            resource={@selected_resource}
-            close_path={workspace_path(@filters, nil)}
-            lifecycle_form={@lifecycle_form}
-            lifecycle_options={@lifecycle_edit_options}
-            can_manage_lifecycle?={@can_manage_lifecycle?}
-          />
+          <.filter_chips query={@query} sources={@sources} />
+          <.filter_menu query={@query} kinds={@kinds} sources={@sources} />
         </div>
+
+        <div id="resource-keys" phx-hook="ListKeys" data-filter="#resource-search-input">
+          <.table
+            id="resources"
+            rows={@streams.resources}
+            row_item={fn {_id, item} -> item end}
+            row_group={fn {_id, item} -> Map.get(item, :group) end}
+            row_navigate={fn {_id, resource} -> ~p"/inventory/#{resource}" end}
+            row_checked={fn {_id, resource} -> resource.id in @query.selected end}
+            row_check_id={fn {_id, resource} -> resource.id end}
+            row_check_label={
+              fn {_id, resource} -> "Select #{resource.display_name || resource.name}" end
+            }
+            on_check="toggle_selection"
+            on_check_all="toggle_page"
+            all_checked={all_selected?(@query.selected, @page_ids)}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={resource} label="Name" class="min-w-56">
+              <span class="truncate font-medium text-fg">
+                {resource.display_name || resource.name}
+              </span>
+              <span
+                :if={resource.display_name && resource.display_name != resource.name}
+                class="ml-2 truncate text-fg-subtle"
+              >
+                {resource.name}
+              </span>
+            </:col>
+            <:col :let={resource} :if={"kind" in @query.columns} label="Kind" class="text-fg-muted">
+              {Format.humanize(resource.kind)}
+            </:col>
+            <:col
+              :let={resource}
+              :if={"hardware" in @query.columns}
+              label="Hardware"
+              class="max-w-56 truncate text-fg-muted"
+            >
+              {hardware_name(resource)}
+            </:col>
+            <:col :let={resource} :if={"status" in @query.columns} label={@column_labels["status"]}>
+              <.resource_status resource={resource} />
+            </:col>
+            <:col
+              :let={resource}
+              :if={"sources" in @query.columns}
+              label="Sources"
+              class="max-w-48 truncate text-fg-muted"
+            >
+              {source_names(resource)}
+            </:col>
+            <:col
+              :let={resource}
+              :if={"seen" in @query.columns}
+              label="Seen"
+              class="whitespace-nowrap font-mono text-xs text-fg-muted"
+            >
+              <time
+                :if={resource.last_observed_at}
+                datetime={DateTime.to_iso8601(resource.last_observed_at)}
+                title={Format.datetime(resource.last_observed_at)}
+              >
+                {Format.age(resource.last_observed_at)}
+              </time>
+              <span :if={is_nil(resource.last_observed_at)} class="text-fg-subtle">Never</span>
+            </:col>
+            <:empty>
+              <%= if InventoryQuery.filtered?(@query) do %>
+                No resources match these filters.
+                <.link patch={~p"/inventory"} class="ml-1 text-link hover:underline">
+                  Clear filters
+                </.link>
+              <% else %>
+                Nothing here yet. Resources appear as collectors report them.
+              <% end %>
+            </:empty>
+          </.table>
+        </div>
+
+        <p
+          id="list-keys-legend"
+          class="hidden items-center gap-4 text-xs text-fg-subtle md:flex"
+          aria-hidden="true"
+        >
+          <span><kbd class="font-mono">J</kbd> <kbd class="font-mono">K</kbd> move</span>
+          <span><kbd class="font-mono">↵</kbd> open</span>
+          <span><kbd class="font-mono">X</kbd> select</span>
+          <span><kbd class="font-mono">F</kbd> filter</span>
+        </p>
 
         <nav
           :if={@page > 1 or @has_next_page?}
           id="resources-pagination"
-          class="flex h-11 shrink-0 items-center justify-between border-t border-base-content/10 px-4 text-xs"
-          aria-label="Resource pages"
+          class="flex items-center justify-between text-sm"
+          aria-label="Inventory pages"
         >
           <.link
             :if={@page > 1}
             id="resources-previous"
-            patch={workspace_path(%{@filters | page: @page - 1}, selected_id(assigns))}
-            class="rounded-md px-2.5 py-1.5 text-base-content/55 transition hover:bg-base-content/[0.05] hover:text-base-content"
+            patch={list_path(%{@query | page: @page - 1})}
+            class="text-link hover:underline"
           >
             Previous
           </.link>
           <span :if={@page == 1} />
-          <span class="font-mono text-[10px] text-base-content/35">Page {@page}</span>
+          <span class="font-mono text-xs text-fg-muted">Page {@page}</span>
           <.link
             :if={@has_next_page?}
             id="resources-next"
-            patch={workspace_path(%{@filters | page: @page + 1}, selected_id(assigns))}
-            class="rounded-md px-2.5 py-1.5 text-base-content/55 transition hover:bg-base-content/[0.05] hover:text-base-content"
+            patch={list_path(%{@query | page: @page + 1})}
+            class="text-link hover:underline"
           >
             Next
           </.link>
+          <span :if={!@has_next_page?} />
         </nav>
+
+        <.save_view_panel form={@view_form} can_share?={@can_manage?} />
+
+        <.bulk_bar
+          :if={@query.selected != []}
+          count={length(@query.selected)}
+          can_manage?={@can_manage?}
+        />
       </section>
     </Layouts.app>
     """
   end
 
-  attr :resource, :map, required: true
-  attr :close_path, :string, required: true
-  attr :lifecycle_form, :map, required: true
-  attr :lifecycle_options, :list, required: true
-  attr :can_manage_lifecycle?, :boolean, required: true
+  # "All" plus the organization's and the person's views. A view is active
+  # when the list shows exactly its query; otherwise a changed list offers
+  # to be saved as a new view.
+  attr :views, :list, required: true
+  attr :active_view, :any, required: true
+  attr :query, :map, required: true
+  attr :current_scope, :map, required: true
 
-  defp resource_panel(assigns) do
+  defp view_tabs(assigns) do
+    custom? = InventoryQuery.view_params(assigns.query) != %{}
+
+    assigns =
+      assign(assigns,
+        all?: is_nil(assigns.active_view) and not custom?,
+        unsaved?: is_nil(assigns.active_view) and custom?,
+        manage?:
+          assigns.active_view != nil and
+            SavedViews.can_manage?(assigns.current_scope, assigns.active_view)
+      )
+
     ~H"""
-    <aside
-      id="resource-detail-panel"
-      phx-hook="ResizablePanel"
-      data-narrow-layout="overlay"
-      class="fixed inset-0 z-30 w-full shrink-0 overflow-hidden border-l border-base-content/10 bg-base-100 lg:relative lg:inset-auto lg:z-auto lg:w-96 lg:bg-base-200/25"
-    >
-      <div
-        id="resource-detail-resize-handle"
-        data-resize-handle
-        role="separator"
-        tabindex="0"
-        aria-label="Resize detail panel"
-        aria-orientation="vertical"
-        aria-valuemin="384"
-        aria-valuemax="768"
-        aria-valuenow="384"
-        class="group absolute inset-y-0 left-0 z-20 hidden w-2 touch-none cursor-col-resize items-center justify-center outline-none lg:flex"
+    <div class="flex items-center gap-2 border-b border-edge">
+      <nav id="view-tabs" aria-label="Views" class="-mb-px flex min-w-0 gap-1 overflow-x-auto">
+        <.link
+          id="view-all"
+          patch={~p"/inventory"}
+          aria-current={@all? && "page"}
+          class={view_tab_class(@all?)}
+        >
+          All
+        </.link>
+        <.link
+          :for={view <- @views}
+          id={"view-#{view.id}"}
+          patch={view_path(view)}
+          aria-current={@active_view && @active_view.id == view.id && "page"}
+          class={view_tab_class(@active_view && @active_view.id == view.id)}
+        >
+          <.icon
+            :if={is_nil(view.user_id)}
+            name="hero-rectangle-stack-mini"
+            class="size-3.5 text-fg-subtle"
+          />
+          {view.name}
+          <span :if={is_nil(view.user_id)} class="sr-only">(organization view)</span>
+        </.link>
+      </nav>
+      <span class="flex-1" />
+      <.button
+        :if={@unsaved?}
+        id="save-view-button"
+        size="sm"
+        variant="ghost"
+        phx-click={show_overlay("save-view")}
       >
-        <span class="h-12 w-0.5 rounded-full bg-base-content/10 transition group-hover:bg-orange-500/50 group-focus:bg-orange-500/70" />
-      </div>
-      <div class="h-full overflow-y-auto">
-        <header class="border-b border-base-content/10 px-5 pb-4 pt-5">
-          <div class="flex items-start justify-between gap-3">
-            <div class="flex min-w-0 items-center gap-3">
-              <.icon name="hero-server-stack" class="size-7 shrink-0 text-base-content/55" />
-              <div class="min-w-0">
-                <h2
-                  class="truncate text-lg font-semibold tracking-tight"
-                  title={@resource.display_name || @resource.name}
-                >
-                  {@resource.display_name || @resource.name}
-                </h2>
-                <p class="mt-1 text-[10px] uppercase tracking-[0.1em] text-base-content/40">
-                  {@resource.kind}
-                  <%= if !@can_manage_lifecycle? do %>
-                    <span class="px-1">·</span> {@resource.lifecycle_state}
-                  <% end %>
-                </p>
-              </div>
-            </div>
-            <div class="flex items-center">
-              <button
-                id="resource-detail-expand"
-                type="button"
-                data-expand-panel
-                aria-label="Expand detail panel"
-                aria-pressed="false"
-                class="hidden rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content lg:block"
-              >
-                <.icon name="hero-arrows-pointing-out" class="size-4" />
-              </button>
-              <.link
-                navigate={~p"/inventory/#{@resource.id}"}
-                class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
-                aria-label="Open full resource page"
-              >
-                <.icon name="hero-arrow-top-right-on-square" class="size-4" />
-              </.link>
-              <.link
-                patch={@close_path}
-                class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
-                aria-label="Close resource details"
-              >
-                <.icon name="hero-x-mark" class="size-4" />
-              </.link>
-            </div>
-          </div>
-
-          <div class="mt-5 grid grid-cols-3 gap-2">
-            <.status_summary
-              label="Inventory"
-              condition={find_condition(@resource, "InventoryCurrent")}
-            />
-            <.status_summary
-              label="Reachable"
-              condition={find_condition(@resource, "AgentConnected")}
-            />
-            <div class="rounded-md border border-base-content/10 px-2.5 py-2">
-              <p class="text-[9px] text-base-content/40">Observed</p>
-              <p
-                class="mt-1 truncate font-mono text-[10px] text-base-content/70"
-                title={format_time(@resource.last_observed_at)}
-              >
-                {format_time(@resource.last_observed_at)}
-              </p>
-            </div>
-          </div>
-
-          <div class="mt-4 flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-t border-base-content/10 pt-4">
-            <div class="min-w-48 flex-1">
-              <p class="text-[10px] font-semibold uppercase tracking-[0.1em] text-base-content/45">
-                Inventory lifecycle
-              </p>
-              <p
-                id="resource-panel-lifecycle-help"
-                class="mt-1 max-w-md text-[11px] leading-4 text-base-content/45"
-              >
-                Classifies this resource for planning and filters. It does not control the device or
-                reflect agent connectivity.
-              </p>
-            </div>
-            <.form
-              :if={@can_manage_lifecycle?}
-              for={@lifecycle_form}
-              id="resource-panel-lifecycle-form"
-              phx-submit="update_lifecycle"
-              class="flex w-72 shrink-0 items-start gap-2"
-            >
-              <div class="min-w-0 flex-1">
-                <.input
-                  field={@lifecycle_form[:lifecycle_state]}
-                  type="select"
-                  aria-label="Lifecycle state"
-                  aria-describedby="resource-panel-lifecycle-help"
-                  options={@lifecycle_options}
-                  class="h-9 w-full rounded-lg border border-base-content/15 bg-base-100 px-2.5 text-xs font-medium capitalize outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-                />
-              </div>
-              <button
-                id="resource-panel-lifecycle-save"
-                type="submit"
-                phx-disable-with="Saving…"
-                class="h-9 rounded-lg bg-orange-500 px-3 text-xs font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
-              >
-                Save
-              </button>
-            </.form>
-            <span
-              :if={!@can_manage_lifecycle?}
-              class="rounded-full border border-base-content/15 px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
-            >
-              {@resource.lifecycle_state}
-            </span>
-          </div>
-        </header>
-
-        <div class="border-b border-base-content/10 px-5">
-          <span class="inline-flex h-10 items-center border-b-2 border-orange-600 text-xs font-medium">
-            Details
-          </span>
-          <span class="ml-5 inline-flex h-10 items-center text-xs text-base-content/40">
-            Activity
-          </span>
+        <.icon name="hero-plus-mini" class="size-4" /> Save view
+      </.button>
+      <details :if={@manage?} id="view-options" class="relative">
+        <summary
+          class="grid size-8 min-h-tap min-w-tap cursor-pointer list-none place-items-center rounded-md text-fg-muted hover:bg-sunken hover:text-fg"
+          aria-label={"Options for view #{@active_view.name}"}
+        >
+          <.icon name="hero-ellipsis-horizontal" class="size-5" />
+        </summary>
+        <div
+          phx-click-away={JS.remove_attribute("open", to: "#view-options")}
+          class="absolute right-0 z-30 mt-1 w-52 rounded-lg border border-edge bg-surface p-1 shadow-lg"
+        >
+          <button
+            id="view-pin"
+            type="button"
+            phx-click={JS.remove_attribute("open", to: "#view-options") |> JS.push("toggle_pin")}
+            class="flex min-h-tap w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-fg hover:bg-sunken"
+          >
+            <.icon name="hero-bookmark" class="size-4 text-fg-subtle" />
+            {if @active_view.pinned, do: "Remove from sidebar", else: "Pin to sidebar"}
+          </button>
+          <button
+            id="view-delete"
+            type="button"
+            phx-click={
+              JS.remove_attribute("open", to: "#view-options") |> show_overlay("delete-view")
+            }
+            class="flex min-h-tap w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-crit hover:bg-crit-fill"
+          >
+            <.icon name="hero-trash" class="size-4" /> Delete view
+          </button>
         </div>
-
-        <div class="divide-y divide-base-content/10 px-5">
-          <.detail_section title="Canonical projection">
-            <.detail_row label="FQDN" value={host_field(@resource, :fqdn)} />
-            <.detail_row label="Vendor" value={host_field(@resource, :vendor)} />
-            <.detail_row label="Model" value={host_field(@resource, :model)} />
-            <.detail_row label="Asset tag" value={host_field(@resource, :asset_tag)} />
-          </.detail_section>
-
-          <.detail_section title="Network">
-            <.detail_row label="Interface" value={interface_field(@resource, :name)} />
-            <.detail_row label="IP address" value={primary_address(@resource)} />
-            <.detail_row label="MAC address" value={interface_field(@resource, :mac_address)} />
-          </.detail_section>
-
-          <.detail_section title="Provenance">
-            <.detail_row label="Sources" value={source_names(@resource)} />
-            <.detail_row label="Generation" value={to_string(@resource.generation)} />
-            <.detail_row label="Identifiers" value={to_string(length(@resource.identifiers))} />
-          </.detail_section>
-
-          <.detail_section title="Recent changes">
-            <ol id="panel-change-events" class="space-y-3">
-              <li :for={event <- Enum.take(@resource.change_events, 5)} class="flex gap-2.5">
-                <span class="mt-1 size-1.5 shrink-0 rounded-full bg-base-content/30" />
-                <div class="min-w-0">
-                  <p class="break-words text-[11px] font-medium capitalize">
-                    {humanize(event.kind)}
-                  </p>
-                  <p class="mt-0.5 break-words text-[10px] text-base-content/40">
-                    {event.field || "Resource"} · {format_time(event.occurred_at)}
-                  </p>
-                </div>
-              </li>
-              <li :if={@resource.change_events == []} class="text-[11px] text-base-content/40">
-                No changes recorded.
-              </li>
-            </ol>
-          </.detail_section>
-        </div>
-      </div>
-    </aside>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :condition, :map, default: nil
-
-  defp status_summary(assigns) do
-    ~H"""
-    <div class="rounded-md border border-base-content/10 px-2.5 py-2">
-      <p class="text-[9px] text-base-content/40">{@label}</p>
-      <p
-        class="mt-1 flex items-center gap-1.5 truncate text-[10px] text-base-content/70"
-        title={condition_value(@condition)}
+      </details>
+      <.confirm_dialog
+        :if={@manage?}
+        id="delete-view"
+        title={"Delete view #{@active_view.name}?"}
+        confirm_label="Delete view"
+        on_confirm="delete_view"
       >
-        <span class={condition_status_dot(@condition)} />
-        {condition_value(@condition)}
-      </p>
+        {if is_nil(@active_view.user_id),
+          do: "It disappears for everyone in the organization. The resources are not affected.",
+          else: "Only the saved view is deleted. The resources are not affected."}
+      </.confirm_dialog>
     </div>
     """
   end
 
-  attr :title, :string, required: true
-  slot :inner_block, required: true
+  defp view_tab_class(active?) do
+    [
+      "inline-flex min-h-tap shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors",
+      active? && "border-accent font-medium text-fg",
+      !active? && "border-transparent text-fg-muted hover:text-fg"
+    ]
+  end
 
-  defp detail_section(assigns) do
+  attr :form, :map, required: true
+  attr :can_share?, :boolean, required: true
+
+  defp save_view_panel(assigns) do
     ~H"""
-    <section class="py-5">
-      <h3 class="text-[10px] font-semibold uppercase tracking-[0.1em] text-base-content/45">
-        {@title}
-      </h3>
-      <dl class="mt-3 space-y-2.5">{render_slot(@inner_block)}</dl>
-    </section>
+    <.side_panel
+      id="save-view"
+      title="Save view"
+      description="Keeps these filters, grouping, ordering, and columns under a name."
+    >
+      <.form for={@form} id="save-view-form" phx-change="validate_view" phx-submit="save_view">
+        <.input field={@form[:name]} type="text" label="Name" required autocomplete="off" />
+        <.input
+          :if={@can_share?}
+          field={@form[:shared]}
+          type="checkbox"
+          label="Share with everyone in the organization"
+        />
+        <p :if={!@can_share?} id="save-view-personal" class="mb-3 text-sm text-fg-muted">
+          Only you will see this view. Owners and admins can share views with the organization.
+        </p>
+        <.input field={@form[:pinned]} type="checkbox" label="Show in the sidebar" />
+        <div class="mt-4 flex justify-end gap-2">
+          <.button type="button" phx-click={hide_overlay("save-view")}>Cancel</.button>
+          <.button id="save-view-submit" variant="primary" phx-disable-with="Saving…">
+            Save view
+          </.button>
+        </div>
+      </.form>
+    </.side_panel>
     """
   end
 
+  @bulk_lifecycles [
+    {"active", "Active", "in service"},
+    {"inactive", "Inactive", "out of service"},
+    {"retired", "Retired", "no longer used"},
+    {"unknown", "Unknown", "not classified"}
+  ]
+
+  # Floats over the list while rows are selected (RFD 8: bulk actions appear
+  # in a floating bar). Each lifecycle choice confirms with the count first.
+  attr :count, :integer, required: true
+  attr :can_manage?, :boolean, required: true
+
+  defp bulk_bar(assigns) do
+    assigns = assign(assigns, lifecycles: @bulk_lifecycles)
+
+    ~H"""
+    <div
+      id="bulk-bar"
+      role="region"
+      aria-label="Selected resources"
+      class="fixed inset-x-4 bottom-4 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-edge bg-surface px-3 py-2 shadow-xl sm:inset-x-0"
+    >
+      <span id="bulk-count" class="px-1 text-sm font-medium text-fg">
+        {count_label(@count)} selected
+      </span>
+      <span class="flex-1" />
+      <%= if @can_manage? do %>
+        <details id="bulk-lifecycle-menu" class="relative">
+          <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-accent-fg hover:bg-accent-hover">
+            Set lifecycle <.icon name="hero-chevron-up-mini" class="size-4" />
+          </summary>
+          <div
+            phx-click-away={JS.remove_attribute("open", to: "#bulk-lifecycle-menu")}
+            class="absolute bottom-full right-0 mb-2 w-56 rounded-lg border border-edge bg-surface p-1 shadow-lg"
+          >
+            <button
+              :for={{state, label, meaning} <- @lifecycles}
+              id={"bulk-lifecycle-#{state}-option"}
+              type="button"
+              phx-click={
+                JS.remove_attribute("open", to: "#bulk-lifecycle-menu")
+                |> show_overlay("bulk-lifecycle-#{state}")
+              }
+              class="flex min-h-tap w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-sm text-fg hover:bg-sunken"
+            >
+              {label} <span class="text-xs text-fg-subtle">{meaning}</span>
+            </button>
+          </div>
+        </details>
+      <% else %>
+        <span
+          id="bulk-lifecycle-unavailable"
+          class="inline-flex h-control items-center gap-1.5 rounded-md border border-edge px-3 text-sm text-fg-subtle"
+          aria-disabled="true"
+        >
+          Set lifecycle <span class="text-xs">· Requires the owner or admin role</span>
+        </span>
+      <% end %>
+      <.button id="bulk-clear" size="sm" variant="ghost" phx-click="clear_selection">Clear</.button>
+
+      <.confirm_dialog
+        :for={{state, label, _meaning} <- @lifecycles}
+        :if={@can_manage?}
+        id={"bulk-lifecycle-#{state}"}
+        title={"Set #{count_label(@count)} to #{label}?"}
+        confirm_label={"Set to #{label}"}
+        variant="primary"
+        on_confirm={JS.push("bulk_lifecycle", value: %{state: state})}
+      >
+        Lifecycle classifies resources for planning and filters. It does not change the devices
+        or what collectors report.
+      </.confirm_dialog>
+    </div>
+    """
+  end
+
+  # Active filters as removable chips ("Kind is server, switch"), so the list
+  # always says what it is showing.
+  attr :query, :map, required: true
+  attr :sources, :list, required: true
+
+  defp filter_chips(assigns) do
+    ~H"""
+    <ul id="resource-filter-chips" class="contents" aria-label="Active filters">
+      <.filter_chip
+        :if={@query.kinds != []}
+        id="chip-kind"
+        label="Kind"
+        value={Enum.map_join(@query.kinds, ", ", &Format.humanize/1)}
+        clear={list_path(%{@query | kinds: [], page: 1})}
+      />
+      <.filter_chip
+        :if={@query.lifecycle}
+        id="chip-lifecycle"
+        label="Lifecycle"
+        value={@query.lifecycle}
+        clear={list_path(%{@query | lifecycle: nil, page: 1})}
+      />
+      <.filter_chip
+        :if={@query.freshness}
+        id="chip-freshness"
+        label="Freshness"
+        value={freshness_label(@query.freshness)}
+        clear={list_path(%{@query | freshness: nil, page: 1})}
+      />
+      <.filter_chip
+        :if={@query.source_id}
+        id="chip-source"
+        label="Source"
+        value={source_name(@sources, @query.source_id)}
+        clear={list_path(%{@query | source_id: nil, page: 1})}
+      />
+    </ul>
+    """
+  end
+
+  attr :id, :string, required: true
   attr :label, :string, required: true
   attr :value, :string, required: true
+  attr :clear, :string, required: true
 
-  defp detail_row(assigns) do
+  defp filter_chip(assigns) do
     ~H"""
-    <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 text-[11px]">
-      <dt class="text-base-content/40">{@label}</dt>
-      <dd class="min-w-0 select-text break-words text-base-content/75">{@value}</dd>
-    </div>
+    <li
+      id={@id}
+      class="inline-flex h-control min-h-tap items-center gap-1 rounded-md border border-edge bg-surface pl-2.5 text-xs"
+    >
+      <span class="text-fg-muted">{@label} is</span>
+      <span class="font-medium text-fg">{@value}</span>
+      <.link
+        patch={@clear}
+        class="grid h-full min-w-tap place-items-center rounded-r-md px-1.5 text-fg-subtle hover:text-fg"
+        aria-label={"Remove #{@label} filter"}
+      >
+        <.icon name="hero-x-mark-mini" class="size-4" />
+      </.link>
+    </li>
     """
   end
 
-  defp parse_filters(params) do
-    %{
-      search: String.trim(params["q"] || ""),
-      lifecycle: params["lifecycle"] || "",
-      condition: params["condition"] || "",
-      source_id: params["source"] || "",
-      stale_only?: params["stale"] == "true",
-      page: parse_page(params["page"])
-    }
+  attr :query, :map, required: true
+  attr :kinds, :list, required: true
+  attr :sources, :list, required: true
+
+  defp filter_menu(assigns) do
+    ~H"""
+    <details id="filter-menu" class="relative">
+      <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md border border-dashed border-edge px-2.5 text-xs text-fg-muted transition hover:border-fg-subtle hover:text-fg">
+        <.icon name="hero-plus-mini" class="size-4" /> Filter
+      </summary>
+      <div
+        phx-click-away={JS.remove_attribute("open", to: "#filter-menu")}
+        class="absolute left-0 z-30 mt-2 w-72 rounded-lg border border-edge bg-surface p-3 shadow-lg"
+      >
+        <.form for={%{}} as={:filter} id="filter-form" phx-change="filter">
+          <fieldset :if={@kinds != []} class="mb-3">
+            <legend class="mb-1.5 text-xs font-medium text-fg-muted">Kind</legend>
+            <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+              <label
+                :for={kind <- @kinds}
+                class="inline-flex min-h-tap items-center gap-2 text-sm text-fg"
+              >
+                <input
+                  type="checkbox"
+                  name="filter[kinds][]"
+                  value={kind}
+                  checked={kind in @query.kinds}
+                  class="size-4 rounded border-edge accent-[var(--rg-accent)]"
+                />
+                {Format.humanize(kind)}
+              </label>
+            </div>
+          </fieldset>
+          <.input
+            id="filter-lifecycle"
+            name="filter[lifecycle]"
+            type="select"
+            label="Lifecycle"
+            value={@query.lifecycle}
+            prompt="Any lifecycle"
+            options={Enum.map(InventoryQuery.lifecycles(), &{String.capitalize(&1), &1})}
+          />
+          <.input
+            id="filter-freshness"
+            name="filter[freshness]"
+            type="select"
+            label="Freshness"
+            value={@query.freshness}
+            prompt="Any freshness"
+            options={Enum.map(InventoryQuery.freshness_states(), &{freshness_label(&1), &1})}
+          />
+          <.input
+            :if={@sources != []}
+            id="filter-source"
+            name="filter[source]"
+            type="select"
+            label="Source"
+            value={@query.source_id}
+            prompt="Any source"
+            options={Enum.map(@sources, &{&1.name, &1.id})}
+          />
+        </.form>
+      </div>
+    </details>
+    """
   end
 
-  defp filter_form_params(filters) do
-    %{
-      "search" => filters.search,
-      "lifecycle" => filters.lifecycle,
-      "condition" => filters.condition,
-      "source_id" => filters.source_id
-    }
+  # Grouping, ordering, and columns decide how the list is shown; filters
+  # decide what is in it.
+  attr :query, :map, required: true
+  attr :column_labels, :map, required: true
+
+  defp display_menu(assigns) do
+    {sort, direction} = assigns.query.sort
+    assigns = assign(assigns, sort: Atom.to_string(sort), direction: Atom.to_string(direction))
+
+    ~H"""
+    <details id="display-menu" class="relative">
+      <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-xs text-fg transition hover:border-fg-subtle">
+        <.icon name="hero-adjustments-horizontal-mini" class="size-4" /> Display
+      </summary>
+      <div
+        phx-click-away={JS.remove_attribute("open", to: "#display-menu")}
+        class="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-edge bg-surface p-3 shadow-lg"
+      >
+        <.form for={%{}} as={:display} id="display-form" phx-change="display">
+          <.input
+            id="display-group"
+            name="display[group]"
+            type="select"
+            label="Grouping"
+            value={@query.group && Atom.to_string(@query.group)}
+            options={[
+              {"No grouping", ""},
+              {"Kind", "kind"},
+              {"Lifecycle", "lifecycle"},
+              {"Freshness", "freshness"}
+            ]}
+          />
+          <div class="grid grid-cols-[1fr_auto] gap-2">
+            <.input
+              id="display-sort"
+              name="display[sort]"
+              type="select"
+              label="Ordering"
+              value={@sort}
+              options={[
+                {"Name", "name"},
+                {"Kind", "kind"},
+                {"Lifecycle", "lifecycle"},
+                {"Last seen", "last_seen"}
+              ]}
+            />
+            <.input
+              id="display-direction"
+              name="display[direction]"
+              type="select"
+              label="Direction"
+              value={@direction}
+              options={[{"Ascending", "asc"}, {"Descending", "desc"}]}
+            />
+          </div>
+          <fieldset>
+            <legend class="mb-1.5 text-xs font-medium text-fg-muted">Columns</legend>
+            <%!-- Keeps the key present when every box is cleared. --%>
+            <input type="hidden" name="display[columns][]" value="" />
+            <label
+              :for={column <- InventoryQuery.columns()}
+              class="flex min-h-tap items-center gap-2 text-sm text-fg"
+            >
+              <input
+                type="checkbox"
+                name="display[columns][]"
+                value={column}
+                checked={column in @query.columns}
+                class="size-4 rounded border-edge accent-[var(--rg-accent)]"
+              />
+              {if(column == "status", do: "Status", else: @column_labels[column])}
+            </label>
+          </fieldset>
+        </.form>
+      </div>
+    </details>
+    """
   end
 
-  defp list_resources(scope, filters) do
-    Inventory.list_operational_resources(scope,
-      search: filters.search,
-      lifecycle: filters.lifecycle,
-      condition: filters.condition,
-      source_id: filters.source_id,
-      stale_only?: filters.stale_only?,
-      page: filters.page
-    )
-  end
-
-  defp workspace_path(filters, selected_id) do
-    query =
-      %{
-        "q" => filters.search,
-        "lifecycle" => filters.lifecycle,
-        "condition" => filters.condition,
-        "source" => filters.source_id,
-        "stale" => filters.stale_only? && "true",
-        "page" => filters.page > 1 && filters.page,
-        "selected" => selected_id
-      }
-      |> Enum.reject(fn {_key, value} -> value in [nil, "", false] end)
-      |> Map.new()
-
-    ~p"/inventory?#{query}"
-  end
-
-  defp selected_id(%{assigns: assigns}), do: selected_id(assigns)
-  defp selected_id(%{selected_resource: nil}), do: nil
-  defp selected_id(%{selected_resource: resource}), do: resource.id
-
-  defp selected?(nil, _resource), do: false
-  defp selected?(selected_resource, resource), do: selected_resource.id == resource.id
-
-  defp lifecycle_form(nil), do: nil
-
-  defp lifecycle_form(resource) do
-    to_form(%{"lifecycle_state" => resource.lifecycle_state}, as: :lifecycle)
-  end
-
-  defp reload_workspace_resource(socket, resource_id) do
-    selected_resource =
-      Inventory.get_operational_resource!(socket.assigns.current_scope, resource_id)
-
-    result = list_resources(socket.assigns.current_scope, socket.assigns.filters)
-
-    socket
-    |> assign(:selected_resource, selected_resource)
-    |> assign(:lifecycle_form, lifecycle_form(selected_resource))
-    |> assign(:resources_empty?, result.entries == [])
-    |> assign(:page, result.page)
-    |> assign(:has_next_page?, result.has_next?)
-    |> assign(:resource_count, result.total)
-    |> stream(:resources, result.entries, reset: true)
-  end
-
-  defp parse_page(page) when is_binary(page) do
-    case Integer.parse(page) do
-      {page, ""} when page > 0 -> page
-      _invalid -> 1
+  defp list_path(query) do
+    case InventoryQuery.to_params(query) do
+      params when params == %{} -> ~p"/inventory"
+      params -> ~p"/inventory?#{params}"
     end
   end
 
-  defp parse_page(_page), do: 1
+  defp freshness_label("current"), do: "Current"
+  defp freshness_label("stale"), do: "Stale"
+  defp freshness_label("unknown"), do: "Not reported yet"
 
-  defp lifecycle_dot("active"), do: "size-1.5 rounded-full bg-emerald-500"
-  defp lifecycle_dot("inactive"), do: "size-1.5 rounded-full bg-amber-500"
-  defp lifecycle_dot("retired"), do: "size-1.5 rounded-full bg-base-content/25"
-  defp lifecycle_dot(_state), do: "size-1.5 rounded-full border border-base-content/35"
-
-  defp condition_dot(conditions), do: condition_status_dot(primary_condition(conditions))
-
-  defp condition_status_dot(%{status: "true"}),
-    do: "size-1.5 shrink-0 rounded-full bg-emerald-500"
-
-  defp condition_status_dot(%{status: "false"}), do: "size-1.5 shrink-0 rounded-full bg-amber-500"
-
-  defp condition_status_dot(_condition),
-    do: "size-1.5 shrink-0 rounded-full border border-base-content/35"
-
-  defp condition_summary([]), do: "Unknown"
-
-  defp condition_summary(conditions) do
-    condition = primary_condition(conditions)
-    condition.type
+  defp source_name(sources, id) do
+    case Enum.find(sources, &(&1.id == id)) do
+      nil -> "Unknown source"
+      source -> source.name
+    end
   end
 
-  defp primary_condition(conditions) do
-    Enum.find(conditions, &(&1.status == "false")) || List.first(conditions)
-  end
-
-  defp find_condition(resource, type), do: Enum.find(resource.conditions, &(&1.type == type))
-  defp condition_value(nil), do: "Unknown"
-  defp condition_value(%{status: "true"}), do: "Yes"
-  defp condition_value(%{status: "false", reason: reason}), do: reason || "No"
-  defp condition_value(%{status: status}), do: humanize(status)
-
-  defp hardware_name(%{host: host}) when not is_nil(host) do
-    [host.vendor, host.model]
-    |> Enum.reject(&(&1 in [nil, ""]))
-    |> Enum.join(" ")
-    |> case do
-      "" -> "Not reported"
+  defp hardware_name(%{host: %{vendor: vendor, model: model}}) do
+    case [vendor, model] |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(" ") do
+      "" -> "—"
       name -> name
     end
   end
 
-  defp hardware_name(_resource), do: "Not reported"
+  defp hardware_name(_resource), do: "—"
 
-  defp source_names(resource) do
-    resource.source_names
-    |> Enum.join(", ")
-    |> case do
-      "" -> "No source evidence"
-      names -> names
-    end
-  end
+  defp source_names(%{source_names: []}), do: "—"
+  defp source_names(%{source_names: names}), do: Enum.join(names, ", ")
 
-  defp last_observed_at(resource), do: resource.last_observed_at
+  defp all_selected?(_selected, []), do: false
+  defp all_selected?(selected, page_ids), do: Enum.all?(page_ids, &(&1 in selected))
 
-  defp host_field(%{host: nil}, _field), do: "Not reported"
-  defp host_field(%{host: host}, field), do: Map.get(host, field) || "Not reported"
+  defp count_label(1), do: "1 resource"
+  defp count_label(count), do: "#{count} resources"
 
-  defp interface_field(%{interfaces: []}, _field), do: "Not reported"
+  defp blank_to_nil(value) when value in [nil, ""], do: nil
+  defp blank_to_nil(value), do: value
 
-  defp interface_field(%{interfaces: [interface | _]}, :mac_address),
-    do: format_mac(interface.mac_address)
-
-  defp interface_field(%{interfaces: [interface | _]}, field),
-    do: Map.get(interface, field) || "Not reported"
-
-  defp primary_address(%{interfaces: interfaces}) do
-    interfaces
-    |> Enum.flat_map(& &1.addresses)
-    |> List.first()
-    |> case do
-      nil -> "Not reported"
-      address -> format_inet(address.address)
-    end
-  end
-
-  defp format_mac(nil), do: "Not reported"
-
-  defp format_mac(%Postgrex.MACADDR{address: address}) do
-    address
-    |> Tuple.to_list()
-    |> Enum.map_join(":", &(Integer.to_string(&1, 16) |> String.pad_leading(2, "0")))
-  end
-
-  defp format_inet(%Postgrex.INET{address: address, netmask: nil}),
-    do: "#{:inet.ntoa(address)}/#{host_prefix(address)}"
-
-  defp format_inet(%Postgrex.INET{address: address, netmask: mask}),
-    do: "#{:inet.ntoa(address)}/#{mask}"
-
-  defp host_prefix(address) when tuple_size(address) == 4, do: 32
-  defp host_prefix(address) when tuple_size(address) == 8, do: 128
-
-  defp format_time(nil), do: "Never"
-  defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
-
-  defp humanize(value), do: String.replace(value, "_", " ")
+  defp none_if_blank(""), do: "none"
+  defp none_if_blank(value), do: value
 end

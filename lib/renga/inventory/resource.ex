@@ -42,6 +42,8 @@ defmodule Renga.Inventory.Resource do
     field :deletion_requested_at, :utc_datetime_usec
     field :source_names, {:array, :string}, virtual: true, default: []
     field :last_observed_at, :utc_datetime_usec, virtual: true
+    # Open component findings, filled by the operational list query.
+    field :drift_count, :integer, virtual: true, default: 0
 
     belongs_to :organization, Organization
     has_one :host, Host

@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict rF4z3isyk9edqdJy2Bex5Z9ibAeoTggEoSVexqiai4iQSaq3BWPck7t47Xhk8ZJ
+\restrict yrMi4AyYHUly2EgYdOrrSaFNtFCKCG5SlDcBiASjGKRaydtVczYzZiCB3nemK0o
 
--- Dumped from database version 18.4
--- Dumped by pg_dump version 18.4
+-- Dumped from database version 18.6
+-- Dumped by pg_dump version 18.6
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1988,6 +1988,24 @@ CREATE TABLE public.resources (
 
 
 --
+-- Name: saved_views; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.saved_views (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    user_id uuid,
+    created_by_id uuid,
+    area character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    params jsonb DEFAULT '{}'::jsonb NOT NULL,
+    pinned boolean DEFAULT false NOT NULL,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2783,6 +2801,14 @@ ALTER TABLE ONLY public.resource_revisions
 
 ALTER TABLE ONLY public.resources
     ADD CONSTRAINT resources_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: saved_views saved_views_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_pkey PRIMARY KEY (id);
 
 
 --
@@ -4344,6 +4370,34 @@ CREATE INDEX resources_organization_id_lifecycle_state_index ON public.resources
 --
 
 CREATE INDEX resources_organization_id_resource_version_index ON public.resources USING btree (organization_id, resource_version);
+
+
+--
+-- Name: saved_views_organization_id_area_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX saved_views_organization_id_area_index ON public.saved_views USING btree (organization_id, area);
+
+
+--
+-- Name: saved_views_organization_id_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX saved_views_organization_id_user_id_index ON public.saved_views USING btree (organization_id, user_id);
+
+
+--
+-- Name: saved_views_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX saved_views_organization_name_index ON public.saved_views USING btree (organization_id, area, lower((name)::text)) WHERE (user_id IS NULL);
+
+
+--
+-- Name: saved_views_personal_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX saved_views_personal_name_index ON public.saved_views USING btree (organization_id, user_id, area, lower((name)::text)) WHERE (user_id IS NOT NULL);
 
 
 --
@@ -6263,6 +6317,30 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: saved_views saved_views_created_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_created_by_id_fkey FOREIGN KEY (created_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: saved_views saved_views_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: saved_views saved_views_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: site_groups site_groups_organization_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6450,7 +6528,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict rF4z3isyk9edqdJy2Bex5Z9ibAeoTggEoSVexqiai4iQSaq3BWPck7t47Xhk8ZJ
+\unrestrict yrMi4AyYHUly2EgYdOrrSaFNtFCKCG5SlDcBiASjGKRaydtVczYzZiCB3nemK0o
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6490,3 +6568,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260910090000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260916120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20260928120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261002120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261008120000);

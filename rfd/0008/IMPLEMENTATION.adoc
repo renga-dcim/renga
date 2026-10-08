@@ -22,10 +22,10 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 == Phase 3: Inventory and object pages
 
-* [ ] Move Inventory onto the shared list with URL state, saved views, and
+* [X] Move Inventory onto the shared list with URL state, saved views, and
   keyboard navigation.
-* [ ] Move resource object pages onto the shared layout with domain tabs.
-* [ ] Show provenance and drift on individual values.
+* [X] Move resource object pages onto the shared layout with domain tabs.
+* [X] Show provenance and drift on individual values.
 
 == Phase 4: Inbox
 

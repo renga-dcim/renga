@@ -47,7 +47,7 @@ defmodule RengaWeb.NavigationLiveTest do
 
     command_paths = hrefs(view, "#command-palette a[data-command-item]")
 
-    for path <- every_section ++ Enum.map(Navigation.views(), & &1.path) do
+    for path <- every_section do
       assert path in command_paths, "command menu is missing #{path}"
     end
   end

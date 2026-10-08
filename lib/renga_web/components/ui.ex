@@ -260,6 +260,7 @@ defmodule RengaWeb.UI do
   slot :item, required: true do
     attr :label, :string, required: true
     attr :on_edit, :any, doc: "a JS command or event name; makes the row editable"
+    attr :edit_label, :string, doc: "screen reader text for the row action; defaults to Edit"
     attr :blank, :boolean
     attr :placeholder, :string
   end
@@ -285,7 +286,9 @@ defmodule RengaWeb.UI do
                 item[:blank] && "text-fg-subtle"
               ]}
             >
-              <span class="sr-only">{gettext("Edit %{property}:", property: item.label)}</span>
+              <span class="sr-only">
+                {item[:edit_label] || gettext("Edit %{property}:", property: item.label)}
+              </span>
               {if item[:blank], do: item[:placeholder] || gettext("Not set"), else: render_slot(item)}
             </button>
             <span :if={!item[:on_edit]} class={["block truncate", item[:blank] && "text-fg-subtle"]}>
@@ -477,6 +480,15 @@ defmodule RengaWeb.UI do
   """
   def hide_overlay(js \\ %JS{}, id) when is_binary(id) do
     JS.dispatch(js, "renga:overlay-close", to: "##{id}")
+  end
+
+  @doc """
+  Closes an overlay from the server, for example after its form saved.
+  Unlike `hide_overlay/2` in a `phx-submit`, the overlay stays open when the
+  action fails, so validation errors remain visible.
+  """
+  def close_overlay(%Phoenix.LiveView.Socket{} = socket, id) when is_binary(id) do
+    Phoenix.LiveView.push_event(socket, "close-overlay", %{id: id})
   end
 
   defp overlay_show(id) do

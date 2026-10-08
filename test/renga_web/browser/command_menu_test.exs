@@ -185,7 +185,7 @@ defmodule RengaWeb.Browser.CommandMenuTest do
     |> assert_has("#flash-info", text: "Resource lifecycle updated")
     |> assert_has("#command-resource-search a:focus")
     |> press("#command-resource-search a", "Enter")
-    |> assert_has("#filters_search[value='hardware']")
+    |> assert_has("#resource-search-input[value='hardware']")
     |> assert_has("body .phx-connected")
   end
 end

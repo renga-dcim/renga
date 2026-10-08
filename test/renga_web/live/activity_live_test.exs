@@ -109,4 +109,86 @@ defmodule RengaWeb.ActivityLiveTest do
     assert has_element?(view, "#events-#{oldest.id}", "Marked stale")
     refute has_element?(view, "#activity-load-older")
   end
+
+  test "adds new changes on top as they happen", %{conn: conn, scope: scope, resource: resource} do
+    older =
+      event!(scope, %{resource_id: resource.id, kind: "discovered", occurred_at: minutes_ago(5)})
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    newer = event!(scope, %{resource_id: resource.id, kind: "stale"})
+    Renga.Inventory.Changes.broadcast({:ok, newer}, scope.organization_id)
+
+    row_ids =
+      view
+      |> render()
+      |> LazyHTML.from_document()
+      |> LazyHTML.query("#activity-events tr[data-phx-stream]")
+      |> LazyHTML.attribute("id")
+
+    assert row_ids == ["events-#{newer.id}", "events-#{older.id}"]
+  end
+
+  test "refresh includes a burst larger than a page in an initially empty feed", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    events =
+      for minute <- 1..53 do
+        event!(scope, %{resource_id: resource.id, kind: "stale", occurred_at: minutes_ago(minute)})
+      end
+
+    Renga.Inventory.Changes.broadcast({:ok, nil}, scope.organization_id)
+    assert event_ids(view) == Enum.map(events, &"events-#{&1.id}")
+    refute has_element?(view, "#activity-load-older")
+  end
+
+  test "refresh preserves loaded pages and inserts late arrivals without gaps", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    events =
+      for minute <- 1..105 do
+        event!(scope, %{resource_id: resource.id, kind: "stale", occurred_at: minutes_ago(minute)})
+      end
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+    view |> element("#activity-load-older") |> render_click()
+
+    late =
+      event!(scope, %{
+        resource_id: resource.id,
+        kind: "updated",
+        occurred_at: minutes_ago(25) |> DateTime.add(30)
+      })
+
+    burst =
+      for second <- 1..51 do
+        event!(scope, %{
+          resource_id: resource.id,
+          kind: "updated",
+          occurred_at: DateTime.add(~U[2030-01-01 00:00:00Z], -second)
+        })
+      end
+
+    Renga.Inventory.Changes.broadcast({:ok, nil}, scope.organization_id)
+    {first, rest} = Enum.split(events, 24)
+    expected = burst ++ first ++ [late] ++ Enum.take(rest, 76)
+    assert event_ids(view) == Enum.map(expected, &"events-#{&1.id}")
+    view |> element("#activity-load-older") |> render_click()
+    assert event_ids(view) == Enum.map(burst ++ first ++ [late] ++ rest, &"events-#{&1.id}")
+    refute has_element?(view, "#activity-load-older")
+  end
+
+  defp event_ids(view) do
+    view
+    |> render()
+    |> LazyHTML.from_document()
+    |> LazyHTML.query("#activity-events tr[data-phx-stream]")
+    |> LazyHTML.attribute("id")
+  end
 end

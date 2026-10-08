@@ -49,6 +49,14 @@ defmodule Renga.InventoryTest do
     }
   end
 
+  # A scope for a new user holding `role` in the scope's organization.
+  defp member_scope(%{organization_id: organization_id}, role) do
+    user = Renga.AccountsFixtures.user_fixture()
+    organization = %Accounts.Organization{id: organization_id}
+    Renga.InventoryFixtures.organization_membership_fixture(user, organization, %{role: role})
+    Accounts.scope_for_user(user, organization_id)
+  end
+
   describe "sources" do
     setup do
       scoped_organizations()
@@ -552,6 +560,56 @@ defmodule Renga.InventoryTest do
                """)
     end
 
+    test "operational list filters by kind and freshness, groups, and sorts", %{scope: scope} do
+      resource = fn kind, name, lifecycle ->
+        {:ok, resource} =
+          Inventory.create_resource(scope, %{kind: kind, name: name, lifecycle_state: lifecycle})
+
+        resource
+      end
+
+      stale = resource.("server", "b-stale", "active")
+      current = resource.("server", "a-current", "inactive")
+      unreported = resource.("switch", "c-unreported", "active")
+
+      for {target, status} <- [{stale, "false"}, {current, "true"}] do
+        {:ok, _condition} =
+          Inventory.put_resource_condition(scope, target.id, %{
+            type: "InventoryCurrent",
+            status: status
+          })
+      end
+
+      names = fn options ->
+        scope
+        |> Inventory.list_operational_resources(options)
+        |> Map.fetch!(:entries)
+        |> Enum.map(& &1.name)
+      end
+
+      assert names.(kinds: ["server"]) == ["a-current", "b-stale"]
+      assert names.(kinds: ["server", "switch"]) == ["a-current", "b-stale", "c-unreported"]
+      assert names.(freshness: "stale") == ["b-stale"]
+      assert names.(freshness: "current") == ["a-current"]
+      assert names.(freshness: "unknown") == ["c-unreported"]
+
+      # Groups lead the ordering; the sort applies within each group.
+      assert names.(group: :freshness) == ["b-stale", "a-current", "c-unreported"]
+
+      assert names.(group: :kind, sort: {:name, :desc}) == [
+               "b-stale",
+               "a-current",
+               "c-unreported"
+             ]
+
+      assert names.(group: :lifecycle) == ["b-stale", "c-unreported", "a-current"]
+      assert names.(sort: {:name, :desc}) == ["c-unreported", "b-stale", "a-current"]
+      assert names.(sort: {:last_seen, :desc}) == ["a-current", "b-stale", "c-unreported"]
+
+      assert Inventory.list_resource_kinds(scope) == ["server", "switch"]
+      assert Enum.all?(Inventory.list_operational_resources(scope), &(&1.drift_count == 0))
+    end
+
     test "create_resource/2 validates kind and lifecycle state", %{scope: scope} do
       assert {:error, changeset} =
                Inventory.create_resource(scope, %{
@@ -591,6 +649,92 @@ defmodule Renga.InventoryTest do
                })
 
       assert resource.organization_id == scope.organization_id
+    end
+
+    test "update_resources_lifecycle/3 sets many resources and ignores ids it cannot see", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      admin_scope = member_scope(scope, "admin")
+
+      {:ok, active} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-a",
+          lifecycle_state: "active"
+        })
+
+      {:ok, done} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-b",
+          lifecycle_state: "retired"
+        })
+
+      {:ok, foreign} =
+        Inventory.create_resource(other_scope, %{
+          kind: "server",
+          name: "theirs",
+          lifecycle_state: "active"
+        })
+
+      assert {:ok, 1} =
+               Inventory.update_resources_lifecycle(
+                 admin_scope,
+                 [active.id, done.id, foreign.id, "not-a-uuid"],
+                 "retired"
+               )
+
+      assert Inventory.get_resource!(scope, active.id).lifecycle_state == "retired"
+      assert Inventory.get_resource!(other_scope, foreign.id).lifecycle_state == "active"
+    end
+
+    test "bulk lifecycle rolls back earlier writes if a later resource fails validation", %{
+      scope: scope
+    } do
+      admin_scope = member_scope(scope, "admin")
+
+      resources =
+        for name <- ["rollback-a", "rollback-b"] do
+          {:ok, resource} =
+            Inventory.create_resource(scope, %{
+              kind: "server",
+              name: name,
+              lifecycle_state: "active"
+            })
+
+          resource
+        end
+
+      [first, second] = Enum.sort_by(resources, & &1.id)
+      # Simulate a legacy record that no longer satisfies current validation.
+      Renga.Repo.update_all(from(r in Resource, where: r.id == ^second.id), set: [name: ""])
+      before = Inventory.list_resource_revisions(scope, first.id)
+
+      assert {:error, %Ecto.Changeset{}} =
+               Inventory.update_resources_lifecycle(admin_scope, [first.id, second.id], "retired")
+
+      assert Inventory.get_resource!(scope, first.id).lifecycle_state == "active"
+      assert Inventory.get_resource!(scope, second.id).lifecycle_state == "active"
+      assert Inventory.list_resource_revisions(scope, first.id) == before
+    end
+
+    test "update_resources_lifecycle/3 is for owners and admins only", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-c",
+          lifecycle_state: "active"
+        })
+
+      assert {:error, :forbidden} =
+               Inventory.update_resources_lifecycle(
+                 member_scope(scope, "viewer"),
+                 [resource.id],
+                 "retired"
+               )
+
+      assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
 
     test "update_resource/3 rejects a resource outside the caller's organization", %{

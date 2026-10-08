@@ -2225,6 +2225,7 @@ defmodule Renga.Catalog do
         result -> result
       end
     end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
   defp reconciliation_transaction(%Scope{} = scope, mutation) do
@@ -2237,6 +2238,7 @@ defmodule Renga.Catalog do
         result -> result
       end
     end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
   defp authorize_catalog_author!(

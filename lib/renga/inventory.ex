@@ -19,7 +19,9 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Inventory.ComponentEvidence
+  alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.Host
   alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Interface
@@ -594,11 +596,51 @@ defmodule Renga.Inventory do
     |> Repo.all()
   end
 
+  # The InventoryCurrent status of a resource, or NULL before its first
+  # report. Shared by the freshness filter and grouping.
+  defmacrop inventory_status(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT conditions.status FROM resource_conditions AS conditions WHERE conditions.resource_id = ? AND conditions.organization_id = ? AND conditions.type = 'InventoryCurrent')",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
+
+  defmacrop last_seen_at(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
+
   @doc """
   Lists resources with operational projections and bounded provenance summaries.
 
   Full identifier claim history is intentionally reserved for the resource
   detail loader.
+
+  ## Options
+
+    * `:search` - matches names, kind, and host identity fields
+    * `:kinds` - resource kinds to include; empty means all
+    * `:lifecycle` - one lifecycle state
+    * `:freshness` - `"current"`, `"stale"`, or `"unknown"` (no inventory
+      condition reported yet)
+    * `:condition` - resources carrying a condition of this type
+    * `:source_id` - resources claimed by this source
+    * `:group` - `:kind`, `:lifecycle`, or `:freshness`; rows are ordered by
+      the group first so each page shows whole groups in order
+    * `:sort` - `{field, direction}` where field is `:name`, `:kind`,
+      `:lifecycle`, or `:last_seen` and direction is `:asc` or `:desc`
+    * `:page` - 1-based page
+
+  Each entry also carries `source_names`, `last_observed_at`, and
+  `drift_count`, the number of open component findings.
   """
   def list_operational_resources(%Scope{} = scope) do
     scope
@@ -608,21 +650,14 @@ defmodule Renga.Inventory do
 
   def list_operational_resources(%Scope{organization_id: organization_id}, options) do
     page = max(Keyword.get(options, :page, 1), 1)
-
-    query =
-      Resource
-      |> where([resource], resource.organization_id == ^organization_id)
-      |> maybe_filter_stale_resources(organization_id, Keyword.get(options, :stale_only?, false))
-      |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
-      |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
-      |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
-      |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
-
+    query = operational_resource_query(organization_id, options)
     total = Repo.aggregate(query, :count, :id)
 
     entries =
       query
-      |> order_by([resource], asc: resource.name, asc: resource.id)
+      |> order_resources_by_group(organization_id, Keyword.get(options, :group))
+      |> order_resources_by(organization_id, Keyword.get(options, :sort, {:name, :asc}))
+      |> order_by([resource], asc: resource.id)
       |> select_merge([resource], %{
         source_names:
           fragment(
@@ -638,6 +673,12 @@ defmodule Renga.Inventory do
               type(^organization_id, :binary_id)
             ),
             :utc_datetime_usec
+          ),
+        drift_count:
+          fragment(
+            "(SELECT count(*) FROM component_findings AS findings WHERE findings.resource_id = ? AND findings.organization_id = ? AND findings.status = 'open')",
+            resource.id,
+            type(^organization_id, :binary_id)
           )
       })
       |> limit(^(@operational_resource_page_size + 1))
@@ -653,17 +694,136 @@ defmodule Renga.Inventory do
     }
   end
 
-  defp maybe_filter_stale_resources(query, _organization_id, false), do: query
+  @doc """
+  Counts the resources matching the same filters as
+  `list_operational_resources/2`, per value of `group` (`:kind`,
+  `:lifecycle`, or `:freshness`). Group headers use these so a count covers
+  the whole filtered list, not only the current page. Freshness keys are
+  `"current"`, `"stale"`, and `"unknown"`.
+  """
+  def count_operational_resources_by(%Scope{organization_id: organization_id}, options, group)
+      when group in [:kind, :lifecycle, :freshness] do
+    organization_id
+    |> operational_resource_query(options)
+    |> group_by_operational_key(organization_id, group)
+    |> Repo.all()
+    |> Map.new()
+  end
 
-  defp maybe_filter_stale_resources(query, organization_id, true) do
-    stale_resource_ids =
-      ResourceCondition
-      |> where([condition], condition.organization_id == ^organization_id)
-      |> where([condition], condition.type == "InventoryCurrent")
-      |> where([condition], condition.status == "false")
-      |> select([condition], condition.resource_id)
+  defp group_by_operational_key(query, _organization_id, :kind) do
+    query |> group_by([resource], resource.kind) |> select([r], {r.kind, count(r.id)})
+  end
 
-    where(query, [resource], resource.id in subquery(stale_resource_ids))
+  defp group_by_operational_key(query, _organization_id, :lifecycle) do
+    query
+    |> group_by([resource], resource.lifecycle_state)
+    |> select([r], {r.lifecycle_state, count(r.id)})
+  end
+
+  defp group_by_operational_key(query, organization_id, :freshness) do
+    query
+    |> select([resource], %{
+      state:
+        fragment(
+          "CASE ? WHEN 'true' THEN 'current' WHEN 'false' THEN 'stale' ELSE 'unknown' END",
+          inventory_status(resource, organization_id)
+        )
+    })
+    |> subquery()
+    |> group_by([row], row.state)
+    |> select([row], {row.state, count()})
+  end
+
+  defp operational_resource_query(organization_id, options) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> maybe_filter_resource_freshness(organization_id, Keyword.get(options, :freshness))
+    |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
+    |> maybe_filter_resource_kinds(Keyword.get(options, :kinds, []))
+    |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
+    |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
+    |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
+  end
+
+  @doc """
+  Lists the resource kinds present in the organization, for kind filters.
+  """
+  def list_resource_kinds(%Scope{organization_id: organization_id}) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> distinct(true)
+    |> order_by([resource], asc: resource.kind)
+    |> select([resource], resource.kind)
+    |> Repo.all()
+  end
+
+  defp maybe_filter_resource_freshness(query, _organization_id, freshness)
+       when freshness in [nil, ""],
+       do: query
+
+  defp maybe_filter_resource_freshness(query, organization_id, "current"),
+    do: where(query, [resource], inventory_status(resource, organization_id) == "true")
+
+  defp maybe_filter_resource_freshness(query, organization_id, "stale"),
+    do: where(query, [resource], inventory_status(resource, organization_id) == "false")
+
+  defp maybe_filter_resource_freshness(query, organization_id, "unknown"),
+    do: where(query, [resource], is_nil(inventory_status(resource, organization_id)))
+
+  defp maybe_filter_resource_kinds(query, []), do: query
+
+  defp maybe_filter_resource_kinds(query, kinds),
+    do: where(query, [resource], resource.kind in ^kinds)
+
+  defp order_resources_by_group(query, _organization_id, nil), do: query
+
+  defp order_resources_by_group(query, _organization_id, :kind),
+    do: order_by(query, [resource], asc: resource.kind)
+
+  defp order_resources_by_group(query, _organization_id, :lifecycle),
+    do: order_by(query, [resource], asc: resource.lifecycle_state)
+
+  # Stale first, then current, then not yet reported: the order an operator
+  # works through them.
+  defp order_resources_by_group(query, organization_id, :freshness) do
+    order_by(query, [resource],
+      asc:
+        fragment(
+          "CASE ? WHEN 'false' THEN 0 WHEN 'true' THEN 1 ELSE 2 END",
+          inventory_status(resource, organization_id)
+        )
+    )
+  end
+
+  # Lists show the display name when there is one, so ordering follows what
+  # people read rather than the internal name, ignoring case.
+  defmacrop shown_name(resource) do
+    quote do
+      fragment("lower(coalesce(?, ?))", unquote(resource).display_name, unquote(resource).name)
+    end
+  end
+
+  defp order_resources_by(query, _organization_id, {:name, direction}),
+    do: order_by(query, [resource], [{^direction, shown_name(resource)}])
+
+  defp order_resources_by(query, _organization_id, {:kind, direction}),
+    do: order_by(query, [resource], [{^direction, resource.kind}, asc: shown_name(resource)])
+
+  defp order_resources_by(query, _organization_id, {:lifecycle, direction}),
+    do:
+      order_by(query, [resource], [
+        {^direction, resource.lifecycle_state},
+        asc: shown_name(resource)
+      ])
+
+  # Never-seen resources sort last in either direction.
+  defp order_resources_by(query, organization_id, {:last_seen, direction}) do
+    direction = if direction == :asc, do: :asc_nulls_last, else: :desc_nulls_last
+
+    order_by(query, [resource], [
+      {^direction, last_seen_at(resource, organization_id)},
+      asc: shown_name(resource)
+    ])
   end
 
   defp maybe_filter_resource_search(query, _organization_id, search)
@@ -844,8 +1004,22 @@ defmodule Renga.Inventory do
       resource
       | interfaces: interfaces,
         source_names: source_names,
-        last_observed_at: last_observed_at
+        last_observed_at: last_observed_at,
+        drift_count: open_component_finding_count(resource)
     }
+  end
+
+  # Drift on a resource is its open component findings (RFD 6). Counted
+  # here rather than through the catalog context so the inventory loader
+  # stays one call for its pages.
+  defp open_component_finding_count(%Resource{id: id, organization_id: organization_id}) do
+    from(finding in "component_findings",
+      where:
+        finding.organization_id == type(^organization_id, :binary_id) and
+          finding.resource_id == type(^id, :binary_id) and finding.status == "open",
+      select: count()
+    )
+    |> Repo.one()
   end
 
   defp latest_datetime(nil, latest), do: latest
@@ -878,6 +1052,7 @@ defmodule Renga.Inventory do
       reject_context_managed_resource_creation!(organization_id, kind, attrs)
       create_resource_record(organization_id, attrs)
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -939,6 +1114,7 @@ defmodule Renga.Inventory do
       maybe_refresh_topology(scope)
       resource
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -955,9 +1131,45 @@ defmodule Renga.Inventory do
           else: {:error, changeset}
 
       result ->
-        result
+        Changes.broadcast(result, scope.organization_id)
     end
   end
+
+  @doc """
+  Sets one lifecycle state on several resources at once, for the list's bulk
+  action. Runs in one transaction under the same owner/admin check as
+  `update_resource_lifecycle/3`, so either every resource changes or none
+  does.
+
+  Ids outside the caller's organization, or not ids at all, are ignored
+  rather than raising: they come from a shareable URL. Resources already in
+  the state are left untouched. Returns `{:ok, changed_count}`.
+  """
+  def update_resources_lifecycle(%Scope{organization_id: organization_id} = scope, ids, state)
+      when is_list(ids) do
+    ids = Enum.flat_map(ids, &List.wrap(Ecto.UUID.cast(&1) |> ok_value()))
+
+    organization_management_transaction(scope, fn ->
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> where([resource], resource.id in ^ids)
+      |> where([resource], resource.lifecycle_state != ^state)
+      |> order_by([resource], asc: resource.id)
+      |> Repo.all()
+      |> Enum.reduce_while({:ok, 0}, &set_lifecycle(scope, &1, state, &2))
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp set_lifecycle(scope, resource, state, {:ok, count}) do
+    case update_resource(scope, resource, %{lifecycle_state: state}) do
+      {:ok, _resource} -> {:cont, {:ok, count + 1}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp ok_value({:ok, value}), do: value
+  defp ok_value(:error), do: nil
 
   @doc """
   Builds a resource changeset for UI/API validation.
@@ -1049,6 +1261,7 @@ defmodule Renga.Inventory do
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -1771,14 +1984,17 @@ defmodule Renga.Inventory do
   """
   def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
-    Reconciler.reconcile(scope, observation)
+
+    scope
+    |> Reconciler.reconcile(observation)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile(scope, observation,
-        authorize: fn -> authorize_reconciliation!(scope) end
-      )
+      scope
+      |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -1788,14 +2004,19 @@ defmodule Renga.Inventory do
   """
   def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
-    Reconciler.reconcile_once(scope, observation)
+
+    scope
+    |> Reconciler.reconcile_once(observation)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation_once(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile_once(scope, observation,
+      scope
+      |> Reconciler.reconcile_once(observation,
         authorize: fn -> authorize_reconciliation!(scope) end
       )
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -1855,16 +2076,41 @@ defmodule Renga.Inventory do
   ## Options
 
     * `:before` - the last `%ChangeEvent{}` of the previous page
-    * `:limit` - page size, 50 by default
+    * `:after` - only events newer than this `%ChangeEvent{}`, for adding
+      what arrived since the feed was loaded
+    * `:since` - events at or newer than this cursor, to refresh a loaded window
+    * `:limit` - page size, 50 by default; nil for the entire window
   """
   def list_activity(%Scope{organization_id: organization_id}, opts \\ []) do
     ChangeEvent
     |> where([event], event.organization_id == ^organization_id)
     |> activity_before(Keyword.get(opts, :before))
+    |> activity_after(Keyword.get(opts, :after))
+    |> activity_since(Keyword.get(opts, :since))
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :source])
     |> Repo.all()
+  end
+
+  defp activity_since(query, nil), do: query
+
+  defp activity_since(query, %ChangeEvent{occurred_at: occurred_at, id: id}) do
+    where(
+      query,
+      [event],
+      event.occurred_at > ^occurred_at or (event.occurred_at == ^occurred_at and event.id >= ^id)
+    )
+  end
+
+  defp activity_after(query, nil), do: query
+
+  defp activity_after(query, %ChangeEvent{occurred_at: occurred_at, id: id}) do
+    where(
+      query,
+      [event],
+      event.occurred_at > ^occurred_at or (event.occurred_at == ^occurred_at and event.id > ^id)
+    )
   end
 
   defp activity_before(query, nil), do: query
@@ -1951,6 +2197,7 @@ defmodule Renga.Inventory do
 
       condition
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -2006,6 +2253,128 @@ defmodule Renga.Inventory do
         {:error, error} -> Repo.rollback(error)
       end
     end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
+  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
+  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
+  @interface_statuses ~w(up down dormant not_present unknown)
+  @signed_int_max 2_147_483_647
+
+  @doc """
+  Where each host value of a resource comes from: every source's latest
+  report, the winner and why, any override, and drift from desired state.
+  See `Renga.Inventory.FieldProvenance`.
+  """
+  def field_provenance(%Scope{} = scope, %Resource{} = resource),
+    do: FieldProvenance.for_host(scope, resource)
+
+  @doc """
+  Pins a host field to a value people chose, replacing any earlier override
+  on the field.
+
+  An override outranks every source until removed, so only owners and
+  admins may set one, rechecked inside the transaction like other
+  management changes.
+  """
+  def set_field_override(%Scope{} = scope, %Resource{} = resource, field, attrs)
+      when field in @host_override_fields do
+    path = "host." <> field
+
+    value =
+      case attrs |> Map.get("value") |> to_string() |> String.trim() do
+        "" -> nil
+        value -> %{"value" => value}
+      end
+
+    organization_management_transaction(scope, fn ->
+      lock_organization!(scope.organization_id)
+      delete_override(scope, resource.id, path)
+
+      create_resource_override(scope, resource.id, %{
+        field: path,
+        value: value,
+        reason: Map.get(attrs, "reason")
+      })
+    end)
+    |> Changes.broadcast(scope.organization_id)
+  end
+
+  @doc """
+  Removes the override on a host field and hands the field back to its
+  sources: the value becomes what reconciliation would choose now, or nil
+  when no source reports the field. Owners and admins only.
+  """
+  def clear_field_override(%Scope{} = scope, %Resource{} = resource, field)
+      when field in @host_override_fields do
+    path = "host." <> field
+
+    organization_management_transaction(scope, fn ->
+      lock_organization!(scope.organization_id)
+      resource = get_resource!(scope, resource.id)
+
+      case delete_override(scope, resource.id, path) do
+        nil -> {:error, :not_found}
+        override -> restore_host_field(scope, resource, field, override)
+      end
+    end)
+    |> Changes.broadcast(scope.organization_id)
+  end
+
+  defp delete_override(%Scope{organization_id: organization_id}, resource_id, path) do
+    case Repo.get_by(ResourceOverride,
+           organization_id: organization_id,
+           resource_id: resource_id,
+           field: path
+         ) do
+      nil ->
+        nil
+
+      override ->
+        Repo.delete!(override)
+    end
+  end
+
+  defp restore_host_field(scope, resource, field, override) do
+    host = Repo.get_by!(Host, organization_id: scope.organization_id, resource_id: resource.id)
+    old_value = Map.get(host, String.to_existing_atom(field))
+    choice = FieldProvenance.source_choice(scope, resource, field)
+    value = choice && choice.value
+    owners = get_in(host.metadata || %{}, ["field_owners"]) || %{}
+
+    owners =
+      if choice,
+        do: Map.put(owners, field, source_owner(choice)),
+        else: Map.delete(owners, field)
+
+    metadata = Map.put(host.metadata || %{}, "field_owners", owners)
+
+    with {:ok, host} <-
+           host |> Host.changeset(%{field => value, "metadata" => metadata}) |> Repo.update(),
+         {:ok, _event} <-
+           create_change_event(scope, %{
+             kind: "override_removed",
+             field: override.field,
+             resource_id: resource.id,
+             old_value: ChangeEvent.audit_value(old_value),
+             new_value: ChangeEvent.audit_value(Map.get(host, String.to_existing_atom(field))),
+             metadata: override_provenance(override),
+             occurred_at: Renga.Time.utc_now_ms()
+           }) do
+      maybe_refresh_topology(scope)
+      {:ok, host}
+    end
+  end
+
+  # The same owner shape reconciliation records when a report wins a field.
+  defp source_owner(%{source: source, observed_at: observed_at, observation_id: observation_id}) do
+    %{
+      "source_id" => source.id,
+      "source_kind" => source.kind,
+      "observed_at" => DateTime.to_iso8601(observed_at),
+      "observation_id" => observation_id
+    }
   end
 
   @doc false
@@ -2019,12 +2388,6 @@ defmodule Renga.Inventory do
     Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
     :ok
   end
-
-  @host_override_fields ~w(hostname fqdn vendor model asset_tag)
-  @interface_override_fields ~w(mac_address kind status mtu speed_mbps)
-  @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
-  @interface_statuses ~w(up down dormant not_present unknown)
-  @signed_int_max 2_147_483_647
 
   defp validate_override_contract(changeset) do
     field = Ecto.Changeset.get_field(changeset, :field)

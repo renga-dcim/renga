@@ -42,6 +42,10 @@ defmodule RengaWeb.Layouts do
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
 
+  attr :sidebar_views, :list,
+    default: [],
+    doc: "the person's pinned saved views, from `RengaWeb.SidebarViews`"
+
   attr :commands, :list,
     default: [],
     doc: """
@@ -67,7 +71,7 @@ defmodule RengaWeb.Layouts do
         section: section,
         areas: Navigation.areas(),
         settings: Navigation.settings(),
-        views: Navigation.views()
+        views: Enum.map(assigns.sidebar_views, &Navigation.view_link/1)
       )
 
     ~H"""
@@ -306,20 +310,23 @@ defmodule RengaWeb.Layouts do
 
   defp saved_views(assigns) do
     ~H"""
-    <div class={@class}>
+    <div :if={@views != []} class={@class}>
       <p class="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">Views</p>
       <nav class="mt-2 space-y-0.5" aria-label="Saved views">
         <.link
           :for={view <- @views}
           navigate={view.path}
+          data-view-id={view.id}
           class="flex h-8 min-h-tap items-center gap-2.5 rounded-md px-2.5 text-xs text-fg-muted transition hover:bg-surface hover:text-fg"
         >
-          <span class={[
-            "size-2 rounded-full border-2",
-            view.tone == :crit && "border-crit",
-            view.tone == :warn && "border-warn"
-          ]} />
-          <span>{view.label}</span>
+          <.icon
+            name={if(view.shared?, do: "hero-rectangle-stack-mini", else: "hero-user-mini")}
+            class="size-3.5 shrink-0 text-fg-subtle"
+          />
+          <span class="truncate">{view.label}</span>
+          <span class="sr-only">
+            {if(view.shared?, do: "(organization view)", else: "(your view)")}
+          </span>
         </.link>
       </nav>
     </div>
@@ -396,14 +403,16 @@ defmodule RengaWeb.Layouts do
             />
           <% end %>
 
-          <.command_group label="Views" />
-          <.command_link
-            :for={view <- @views}
-            navigate={view.path}
-            icon="hero-funnel"
-            label={view.label}
-            keywords={["view"]}
-          />
+          <div :if={@views != []}>
+            <.command_group label="Views" />
+            <.command_link
+              :for={view <- @views}
+              navigate={view.path}
+              icon="hero-funnel"
+              label={view.label}
+              keywords={["view"]}
+            />
+          </div>
 
           <.command_group label={@settings.label} />
           <.command_link

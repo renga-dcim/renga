@@ -88,6 +88,23 @@ if Mix.env() == :dev do
 
       scope = Accounts.scope_for_user(user, organization.id)
 
+      # Shared Inventory views; the first two are pinned to the sidebar.
+      for {name, params, pinned} <- [
+            {"Stale inventory", %{"freshness" => "stale"}, true},
+            {"Servers", %{"kind" => "server", "group" => "lifecycle"}, true},
+            {"Not reported yet", %{"freshness" => "unknown"}, false}
+          ],
+          not Enum.any?(Renga.SavedViews.list_views(scope, "inventory"), &(&1.name == name)) do
+        {:ok, _view} =
+          Renga.SavedViews.create_view(scope, %{
+            "name" => name,
+            "area" => "inventory",
+            "params" => params,
+            "shared" => true,
+            "pinned" => pinned
+          })
+      end
+
       ensure_source = fn kind, name, metadata ->
         Repo.get_by(Source, organization_id: organization.id, name: name) ||
           case Inventory.create_source(scope, %{kind: kind, name: name, metadata: metadata}) do

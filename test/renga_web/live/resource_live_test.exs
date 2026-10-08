@@ -96,144 +96,6 @@ defmodule RengaWeb.ResourceLiveTest do
     }
   end
 
-  test "lists canonical inventory with provenance and last observed time", %{
-    conn: conn,
-    resource: resource
-  } do
-    {:ok, view, _html} = live(conn, ~p"/inventory")
-
-    assert has_element?(view, "#resource-list")
-    assert has_element?(view, "#app-sidebar")
-    assert has_element?(view, "#app-mobile-header")
-    assert has_element?(view, "#mobile-navigation-trigger")
-    assert has_element?(view, "#command-palette")
-
-    for route <- ["/catalog/hardware-types", "/inbox/components"] do
-      assert has_element?(view, "#primary-navigation a[href='#{route}']")
-      assert has_element?(view, "#app-mobile-navigation a[href='#{route}']")
-      assert has_element?(view, "#command-palette a[href='#{route}']")
-    end
-
-    assert has_element?(view, "#resource-filters")
-    assert has_element?(view, "#resources")
-    assert has_element?(view, "#resources-#{resource.id}", "compute-01")
-    assert has_element?(view, "#resources-#{resource.id}", "Acme DenseBox")
-    assert has_element?(view, "#resources-#{resource.id}", "InventoryCurrent")
-    assert has_element?(view, "#resources-#{resource.id}", "rack-agent")
-    assert has_element?(view, "#resources-#{resource.id}", "2026-08-07 10:00 UTC")
-  end
-
-  test "filters the dense workspace without leaving the index", %{conn: conn, resource: resource} do
-    {:ok, view, _html} = live(conn, ~p"/inventory")
-
-    view
-    |> form("#resource-filters", %{
-      "filters" => %{
-        "search" => "missing-host",
-        "lifecycle" => "",
-        "condition" => "",
-        "source_id" => ""
-      }
-    })
-    |> render_change()
-
-    assert has_element?(view, "#resources-empty")
-    refute has_element?(view, "#resources-#{resource.id}")
-
-    view
-    |> form("#resource-filters", %{
-      "filters" => %{
-        "search" => "compute-01",
-        "lifecycle" => "active",
-        "condition" => "InventoryCurrent",
-        "source_id" => ""
-      }
-    })
-    |> render_change()
-
-    assert has_element?(view, "#resources-#{resource.id}")
-    refute has_element?(view, "#resource-detail-panel")
-  end
-
-  test "opens and closes an organization-scoped contextual detail panel", %{
-    conn: conn,
-    resource: resource
-  } do
-    {:ok, view, _html} = live(conn, ~p"/inventory")
-
-    view
-    |> element("#resources-#{resource.id} a")
-    |> render_click()
-
-    assert has_element?(view, "#resource-detail-panel", "compute-01.example.net")
-    assert has_element?(view, "#resource-detail-panel", "192.0.2.10/24")
-    assert has_element?(view, "#resource-detail-panel", "rack-agent")
-    assert has_element?(view, "#resource-detail-panel", "2026-08-07 10:00 UTC")
-
-    assert has_element?(
-             view,
-             "#resource-detail-panel[data-narrow-layout='overlay'][phx-hook='ResizablePanel']"
-           )
-
-    assert has_element?(
-             view,
-             "#resource-detail-resize-handle[role='separator'][tabindex='0']"
-           )
-
-    assert has_element?(view, "#resource-detail-expand[aria-label='Expand detail panel']")
-    assert has_element?(view, "#resource-panel-lifecycle-form")
-
-    assert has_element?(
-             view,
-             "#resource-panel-lifecycle-help",
-             "does not control the device"
-           )
-
-    assert has_element?(
-             view,
-             "#resource-panel-lifecycle-form select[aria-describedby='resource-panel-lifecycle-help']"
-           )
-
-    assert has_element?(
-             view,
-             "#resource-panel-lifecycle-form option[value='active']",
-             "Active — in service"
-           )
-
-    assert has_element?(view, "#panel-change-events", "discovered")
-
-    view
-    |> element("#resource-detail-panel a[aria-label='Close resource details']")
-    |> render_click()
-
-    refute has_element?(view, "#resource-detail-panel")
-    assert has_element?(view, "#resources-#{resource.id}")
-  end
-
-  test "organization managers update lifecycle from the contextual panel", %{
-    conn: conn,
-    scope: scope,
-    resource: resource
-  } do
-    {:ok, view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
-
-    view
-    |> form("#resource-panel-lifecycle-form", lifecycle: %{lifecycle_state: "inactive"})
-    |> render_submit()
-
-    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "inactive"
-    assert has_element?(view, "#resources-#{resource.id}", "inactive")
-
-    assert List.last(Inventory.list_resource_revisions(scope, resource.id)).snapshot[
-             "lifecycle_state"
-           ] == "inactive"
-
-    assert has_element?(
-             view,
-             "#resource-panel-lifecycle-form select option[value='inactive'][selected]"
-           )
-  end
-
   test "organization managers update lifecycle from the full resource detail", %{
     conn: conn,
     scope: scope,
@@ -258,30 +120,6 @@ defmodule RengaWeb.ResourceLiveTest do
 
     assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "retired"
     assert has_element?(view, "#flash-error", "valid lifecycle")
-  end
-
-  test "contextual lifecycle edit reloads after a concurrent resource change", %{
-    conn: conn,
-    scope: scope,
-    resource: resource
-  } do
-    {:ok, view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
-
-    assert {:ok, _resource} =
-             Inventory.update_resource(scope, resource, %{lifecycle_state: "inactive"})
-
-    view
-    |> form("#resource-panel-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
-    |> render_submit()
-
-    assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "inactive"
-    assert has_element?(view, "#flash-error", "changed elsewhere")
-    assert has_element?(view, "#resources-#{resource.id}", "inactive")
-
-    assert has_element?(
-             view,
-             "#resource-panel-lifecycle-form select option[value='inactive'][selected]"
-           )
   end
 
   test "full lifecycle edit reloads after a concurrent resource change", %{
@@ -320,15 +158,6 @@ defmodule RengaWeb.ResourceLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, index_view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
-    refute has_element?(index_view, "#resource-panel-lifecycle-form")
-
-    assert has_element?(
-             index_view,
-             "#resource-panel-lifecycle-help",
-             "does not control the device"
-           )
-
     {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
     refute has_element?(view, "#resource-lifecycle-form")
     assert has_element?(view, "#resource-lifecycle-help", "does not control the device")
@@ -360,61 +189,15 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#flash-error", "not allowed")
   end
 
-  test "filters to stale inventory", %{conn: conn, scope: scope, resource: resource} do
-    {:ok, current_resource} =
-      Inventory.create_resource(scope, %{kind: "server", name: "compute-02"})
-
-    {:ok, _condition} =
-      Inventory.put_resource_condition(scope, current_resource.id, %{
-        type: "InventoryCurrent",
-        status: "true",
-        reason: "ObservationAccepted"
-      })
-
-    {:ok, view, _html} = live(conn, ~p"/inventory?stale=true&q=compute")
-
-    assert has_element?(view, "#resources-#{resource.id}")
-    refute has_element?(view, "#resources-#{current_resource.id}")
-
-    view
-    |> element("#clear-stale-filter")
-    |> render_click()
-
-    assert has_element?(view, "#resources-#{resource.id}")
-    assert has_element?(view, "#resources-#{current_resource.id}")
-    assert has_element?(view, "#filters_search[value='compute']")
-  end
-
-  test "paginates the operational resource list", %{conn: conn, scope: scope} do
-    for index <- 1..50 do
-      {:ok, _resource} =
-        Inventory.create_resource(scope, %{
-          kind: "server",
-          name: "page-#{String.pad_leading(Integer.to_string(index), 3, "0")}"
-        })
-    end
-
-    {:ok, view, _html} = live(conn, ~p"/inventory")
-
-    assert has_element?(view, "#resources tr[id^='resources-']:nth-child(50)")
-    refute has_element?(view, "#resources tr[id^='resources-']:nth-child(51)")
-
-    assert has_element?(view, "#resources-next")
-    view |> element("#resources-next") |> render_click()
-    assert has_element?(view, "#resources-previous")
-  end
-
   test "uses singular evidence count for one identifier claim", %{
     conn: conn,
+    scope: scope,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
+    [claim] = Inventory.list_resource_identifier_claims(scope, resource.id)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/sources")
 
-    assert has_element?(
-             view,
-             "#identifier-claims [data-claim-kind='serial_number']",
-             "1 observation"
-           )
+    assert has_element?(view, "#claim-#{claim.id}", "1 observation")
   end
 
   test "shows desired state, canonical projections, provenance, and audit history", %{
@@ -445,28 +228,46 @@ defmodule RengaWeb.ResourceLiveTest do
     assert [%{observation_count: 2}] =
              Enum.filter(operational_resource.identifier_claims, &(&1.kind == "serial_number"))
 
+    [latest_claim] =
+      Enum.filter(operational_resource.identifier_claims, &(&1.kind == "serial_number"))
+
     {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
-    assert has_element?(view, "#resource-detail")
-
-    assert has_element?(
-             view,
-             "#resource-hardware-link[href='/inventory/#{resource.id}/hardware']"
-           )
-
+    # Overview: status, intent, conditions, and the properties aside.
+    assert has_element?(view, "#resource-detail h1", "compute-01")
+    assert has_element?(view, "#resource-status [data-signal='lifecycle']", "Active")
     assert has_element?(view, "#desired-state", "power")
-    assert has_element?(view, "#canonical-projection", "compute-01.example.net")
+    assert has_element?(view, "#resource-conditions", "InventoryCurrent")
+    assert has_element?(view, "#resource-properties", "compute-01.example.net")
+    assert has_element?(view, "#resource-properties", "rack-agent")
+
+    for {tab, path} <- [
+          {"Hardware", "/inventory/#{resource.id}/hardware"},
+          {"Network", "/inventory/#{resource.id}/network"},
+          {"Sources", "/inventory/#{resource.id}/sources"},
+          {"Activity", "/inventory/#{resource.id}/activity"}
+        ] do
+      assert has_element?(view, "#resource-detail-tabs a[href='#{path}']", tab)
+    end
+
+    assert has_element?(view, "#resource-detail-tabs a[aria-current='page']", "Overview")
+
+    # Tabs within the page patch rather than reload.
+    view |> element("#resource-detail-tabs a", "Sources") |> render_click()
+    assert_patch(view, ~p"/inventory/#{resource.id}/sources")
     assert has_element?(view, "#canonical-identifiers", "SN-123")
-    assert has_element?(view, "#identifier-claims", "rack-agent")
+    assert has_element?(view, "#claims", "rack-agent")
 
     assert has_element?(
              view,
-             "#identifier-claims [data-claim-kind='serial_number']",
+             "#claim-#{latest_claim.id}",
              "100% 2026-08-07 10:00 UTC 2026-08-07 10:01 UTC 2 observations"
            )
 
+    view |> element("#resource-detail-tabs a", "Network") |> render_click()
     assert has_element?(view, "#resource-interfaces", "192.0.2.10/24")
-    assert has_element?(view, "#resource-conditions", "InventoryCurrent")
+
+    view |> element("#resource-detail-tabs a", "Activity") |> render_click()
     assert has_element?(view, "#change-events", "discovered")
   end
 
@@ -488,7 +289,7 @@ defmodule RengaWeb.ResourceLiveTest do
         address: %Postgrex.INET{address: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 7}, netmask: nil}
       })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/network")
 
     assert has_element?(
              view,
@@ -508,7 +309,7 @@ defmodule RengaWeb.ResourceLiveTest do
     resource: resource,
     interface: interface
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/network")
 
     assert has_element?(
              view,
@@ -559,6 +360,68 @@ defmodule RengaWeb.ResourceLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/inventory/#{vm.id}")
 
-    refute has_element?(view, "#resource-hardware-link")
+    # Hardware applies to physical devices only; the tab is absent and the
+    # command menu explains why instead.
+    assert has_element?(view, "#resource-detail-tabs a", "Network")
+    refute has_element?(view, "#resource-detail-tabs a", "Hardware")
+    assert has_element?(view, "#command-open-hardware[aria-disabled='true']")
+  end
+
+  test "shows open hardware findings as drift in the list, header, and Hardware tab", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    for status <- ["open", "open", "resolved"] do
+      %Renga.Catalog.ComponentFinding{
+        organization_id: scope.organization_id,
+        resource_id: resource.id
+      }
+      |> Renga.Catalog.ComponentFinding.changeset(%{
+        kind: "component_drift",
+        resolution_key: "drift:#{System.unique_integer([:positive])}",
+        status: status,
+        message: "Component drift",
+        resolved_at: if(status == "resolved", do: ~U[2026-08-20 13:00:00.000000Z]),
+        last_observed_at: ~U[2026-08-20 12:00:00.000000Z]
+      })
+      |> Renga.Repo.insert!()
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
+
+    assert has_element?(view, "#resource-status [data-signal='drift']", "2 drift findings")
+
+    assert has_element?(
+             view,
+             "#resource-drift[href='/inventory/#{resource.id}/hardware']",
+             "2 open"
+           )
+
+    assert has_element?(view, "#resource-detail-tabs a[href$='/hardware']", "2")
+
+    {:ok, list, _html} = live(conn, ~p"/inventory")
+
+    assert has_element?(
+             list,
+             "#resources-#{resource.id} [data-signal='drift']",
+             "2 drift findings"
+           )
+  end
+
+  test "updates when the resource changes elsewhere", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
+    assert has_element?(view, "#resource-status [data-signal='lifecycle']", "Active")
+
+    {:ok, _resource} = Inventory.update_resource_lifecycle(scope, resource, "retired")
+
+    assert Enum.any?(1..40, fn _attempt ->
+             has_element?(view, "#resource-status [data-signal='lifecycle']", "Retired") or
+               (Process.sleep(25) && false)
+           end)
   end
 end

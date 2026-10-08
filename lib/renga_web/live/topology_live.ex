@@ -30,7 +30,12 @@ defmodule RengaWeb.TopologyLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:topology}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={:topology}
+    >
       <main id="network-topology" class="space-y-7">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>

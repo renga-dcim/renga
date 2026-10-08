@@ -210,7 +210,12 @@ defmodule RengaWeb.CatalogLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={catalog_nav(@live_action)}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={catalog_nav(@live_action)}
+    >
       <main id="catalog-browser" class="space-y-8">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 sm:flex-row sm:items-end sm:justify-between">
           <div>

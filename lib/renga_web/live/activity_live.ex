@@ -11,11 +11,13 @@ defmodule RengaWeb.ActivityLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
 
   @page_size 50
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket), do: Changes.subscribe(socket.assigns.current_scope)
     events = Inventory.list_activity(socket.assigns.current_scope, limit: @page_size)
 
     {:ok,
@@ -23,6 +25,22 @@ defmodule RengaWeb.ActivityLive do
      |> assign(page_title: "Activity")
      |> assign_page(events)
      |> stream(:events, events)}
+  end
+
+  # Observation time is not insertion time: refresh the whole displayed
+  # window so late reports and bursts cannot leave permanent gaps.
+  @impl true
+  def handle_info({:inventory_changed, _organization_id}, socket) do
+    events =
+      Inventory.list_activity(socket.assigns.current_scope,
+        since: if(socket.assigns.more?, do: socket.assigns.oldest),
+        limit: nil
+      )
+
+    {:noreply,
+     socket
+     |> assign(:oldest, List.last(events))
+     |> stream(:events, events, reset: true)}
   end
 
   @impl true
@@ -47,7 +65,12 @@ defmodule RengaWeb.ActivityLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:activity}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={:activity}
+    >
       <div id="activity" class="mx-auto max-w-5xl space-y-6">
         <.header>
           Activity
