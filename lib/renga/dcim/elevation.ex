@@ -249,6 +249,10 @@ defmodule Renga.DCIM.Elevation do
     end)
   end
 
+  @doc false
+  def observed_by_lldp?(%Scope{organization_id: organization_id}, %Rack{} = rack, resource_id),
+    do: resource_id in lldp_neighbor_ids(organization_id, rack)
+
   # Devices whose current LLDP neighbor is a switch placed in this rack.
   defp lldp_neighbor_ids(organization_id, rack) do
     from(evidence in subquery(current_neighbors(organization_id)),
@@ -374,17 +378,29 @@ defmodule Renga.DCIM.Elevation do
     do: %{resource: resource, height: Map.get(heights, resource.id, 1)}
 
   @doc false
-  # Catalog heights by resource id, for devices whose type has one.
+  # Catalog heights take precedence over recorded geometry for every placing UI.
   def heights(%Scope{organization_id: organization_id}, resource_ids) do
-    HardwareAssignment
-    |> join(:inner, [assignment], revision in TypeRevision,
-      on: revision.id == assignment.catalog_type_revision_id
-    )
-    |> where([assignment], assignment.organization_id == ^organization_id)
-    |> where([assignment], assignment.resource_id in ^Enum.uniq(resource_ids))
-    |> where([_assignment, revision], not is_nil(revision.height_units))
-    |> select([assignment, revision], {assignment.resource_id, revision.height_units})
-    |> Repo.all()
-    |> Map.new()
+    recorded =
+      CurrentPlacement
+      |> where([placement], placement.organization_id == ^organization_id)
+      |> where([placement], placement.resource_id in ^Enum.uniq(resource_ids))
+      |> where([placement], not is_nil(placement.height_units))
+      |> select([placement], {placement.resource_id, placement.height_units})
+      |> Repo.all()
+      |> Map.new()
+
+    catalog =
+      HardwareAssignment
+      |> join(:inner, [assignment], revision in TypeRevision,
+        on: revision.id == assignment.catalog_type_revision_id
+      )
+      |> where([assignment], assignment.organization_id == ^organization_id)
+      |> where([assignment], assignment.resource_id in ^Enum.uniq(resource_ids))
+      |> where([_assignment, revision], not is_nil(revision.height_units))
+      |> select([assignment, revision], {assignment.resource_id, revision.height_units})
+      |> Repo.all()
+      |> Map.new()
+
+    Map.merge(recorded, catalog)
   end
 end

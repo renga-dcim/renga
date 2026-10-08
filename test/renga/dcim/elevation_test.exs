@@ -177,9 +177,68 @@ defmodule Renga.DCIM.ElevationTest do
       assert {:error, :forbidden} = DCIM.place_in_rack(member_scope, web.id, rack.id, 1, "front")
       assert {:error, :forbidden} = DCIM.place_observed(member_scope, web.id, rack.id)
     end
+
+    test "invalid units leave the recorded geometry unchanged", %{scope: scope, rack: rack} do
+      web = server_fixture(scope, "web-01")
+      place!(scope, web, rack, position: 10, height_units: 2, face: "front")
+
+      for position <- ["", "abc", "12x", nil, 0, -1, "0", "-1"] do
+        assert {:error, :invalid_position} =
+                 DCIM.place_in_rack(scope, web.id, rack.id, position, "rear")
+
+        assert [%{position: 10, height: 2}] = DCIM.rack_elevation(scope, rack.id).front
+        assert DCIM.rack_elevation(scope, rack.id).rear == []
+      end
+    end
   end
 
   describe "observed elsewhere" do
+    test "missing or stale evidence cannot move a device or resolve its conflict", context do
+      %{scope: scope, rack: rack, other_rack: other_rack} = context
+      web = server_fixture(scope, "web-01")
+      place!(scope, web, other_rack, position: 3, height_units: 2, face: "front")
+      assert {:error, :not_observed} = DCIM.place_observed(scope, web.id, rack.id)
+
+      observe!(scope, web, rack_identifier: "R12", position: 15, height_units: 2, face: "front")
+
+      Repo.update_all(
+        from(e in Renga.DCIM.PlacementEvidence, where: e.resource_id == ^web.id),
+        set: [stale_at: Renga.Time.utc_now_ms()]
+      )
+
+      assert {:error, :not_observed} = DCIM.place_observed(scope, web.id, rack.id)
+      assert open_conflict?(scope, web)
+      assert [%{position: 3, height: 2}] = DCIM.rack_elevation(scope, other_rack.id).front
+    end
+
+    test "expired LLDP or a moved neighbor cannot confirm the old rack", context do
+      %{scope: scope, rack: rack, other_rack: other_rack} = context
+      switch = resource_fixture(scope, "switch", "leaf-12")
+      place!(scope, switch, rack, position: 42, height_units: 1, face: "front")
+      web = server_fixture(scope, "web-01")
+      place!(scope, web, other_rack, position: 3, height_units: 4, face: "front")
+      lldp_fixture(scope, web, switch)
+
+      assert [%{height: 4}] = DCIM.rack_elevation(scope, rack.id).observed
+      refute 40 in Elevation.free_positions(DCIM.rack_elevation(scope, rack.id), 4, "rear")
+
+      assert {:ok, %{height_units: 4}} =
+               DCIM.place_in_rack(scope, web.id, other_rack.id, 10, "front")
+
+      place!(scope, switch, other_rack, position: 42, height_units: 1, face: "front")
+      assert {:error, :not_observed} = DCIM.place_observed(scope, web.id, rack.id)
+      place!(scope, switch, rack, position: 42, height_units: 1, face: "front")
+
+      assert {:ok, _} =
+               Renga.Topology.expire_interface_neighbors(
+                 scope,
+                 DateTime.add(Renga.Time.utc_now_ms(), 121, :second)
+               )
+
+      assert {:error, :not_observed} = DCIM.place_observed(scope, web.id, rack.id)
+      assert [%{position: 10, height: 4}] = DCIM.rack_elevation(scope, other_rack.id).front
+    end
+
     test "evidence for this rack against a confirmed placement elsewhere is placed in one step",
          context do
       %{scope: scope, rack: rack, other_rack: other_rack} = context

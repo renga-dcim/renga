@@ -275,9 +275,18 @@ defmodule Renga.DCIM do
       resource = lock_resource!(scope.organization_id, resource_id)
       rack = scoped_get!(Rack, scope.organization_id, rack_id)
 
+      position =
+        if is_integer(position) or is_binary(position), do: to_string(position), else: ""
+
+      position =
+        case Integer.parse(position) do
+          {unit, ""} when unit > 0 -> unit
+          _ -> Repo.rollback(:invalid_position)
+        end
+
       do_put_current_placement(scope, resource.id, %{
         rack_id: rack.id,
-        position: to_integer(position),
+        position: position,
         height_units: device_height(scope, resource.id),
         face: face,
         confirmed: true,
@@ -311,6 +320,7 @@ defmodule Renga.DCIM do
             |> without_taken_units(scope, rack, resource.id)
 
           :none ->
+            Elevation.observed_by_lldp?(scope, rack, resource.id) || Repo.rollback(:not_observed)
             %{rack_id: rack.id, position: nil, confirmed: true, provenance: provenance}
         end
 
@@ -358,15 +368,7 @@ defmodule Renga.DCIM do
 
   defp device_height(scope, resource_id) do
     Elevation.heights(scope, [resource_id])
-    |> Map.get(resource_id)
-    |> Kernel.||(
-      CurrentPlacement
-      |> where([placement], placement.organization_id == ^scope.organization_id)
-      |> where([placement], placement.resource_id == ^resource_id)
-      |> select([placement], placement.height_units)
-      |> Repo.one()
-    )
-    |> Kernel.||(1)
+    |> Map.get(resource_id, 1)
   end
 
   def remove_current_placement(%Scope{} = scope, resource_id) do
