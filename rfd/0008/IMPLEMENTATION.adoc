@@ -29,10 +29,10 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 == Phase 4: Inbox
 
-* [ ] Add organization-scoped finding workflow state: assignee, snooze, and
+* [X] Add organization-scoped finding workflow state: assignee, snooze, and
   exceptions with reason and expiry, used by every finding domain.
-* [ ] Build the unified Inbox and retire the separate findings pages.
-* [ ] Add member requests with approval and similar-request suggestions.
+* [X] Build the unified Inbox and retire the separate findings pages.
+* [X] Add member requests with approval and similar-request suggestions.
 
 == Phase 5: Triage
 
