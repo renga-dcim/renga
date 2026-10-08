@@ -18,12 +18,14 @@ defmodule RengaWeb.ResourceLive.Index do
   alias Renga.Inventory.Changes
   alias Renga.SavedViews
   alias Renga.SavedViews.SavedView
+  alias Renga.Teams
   alias RengaWeb.Format
   alias RengaWeb.InventoryQuery
 
   @column_labels %{
     "kind" => "Kind",
     "hardware" => "Hardware",
+    "owner" => "Owner",
     "status" => "Lifecycle · Freshness · Agent · Drift",
     "sources" => "Sources",
     "seen" => "Seen"
@@ -44,6 +46,7 @@ defmodule RengaWeb.ResourceLive.Index do
        can_manage?: Inventory.organization_manager?(scope),
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
+       teams: Teams.list_teams(scope),
        column_labels: @column_labels,
        reload_timer: nil,
        views: SavedViews.list_views(scope, "inventory"),
@@ -80,6 +83,7 @@ defmodule RengaWeb.ResourceLive.Index do
         lifecycle: blank_to_nil(filter["lifecycle"]),
         freshness: blank_to_nil(filter["freshness"]),
         source_id: blank_to_nil(filter["source"]),
+        owner: owner_filter(filter["owner"], socket.assigns.teams),
         page: 1
     }
 
@@ -150,6 +154,28 @@ defmodule RengaWeb.ResourceLive.Index do
          socket
          |> put_flash(:error, "Resources changed while saving; review them and try again")
          |> load_resources()}
+    end
+  end
+
+  def handle_event("bulk_owner", %{"team" => team_id}, socket) do
+    %{current_scope: scope, query: query} = socket.assigns
+    team_id = if team_id == "", do: nil, else: team_id
+
+    case Teams.set_owners(scope, query.selected, team_id) do
+      {:ok, count} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Set the owner of #{count_label(count)}")
+         |> patch(%{query | selected: []})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Setting owners requires the owner or admin role")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That team no longer exists")
+         |> assign(:teams, Teams.list_teams(scope))}
     end
   end
 
@@ -368,8 +394,8 @@ defmodule RengaWeb.ResourceLive.Index do
             </div>
           </form>
 
-          <.filter_chips query={@query} sources={@sources} />
-          <.filter_menu query={@query} kinds={@kinds} sources={@sources} />
+          <.filter_chips query={@query} sources={@sources} teams={@teams} />
+          <.filter_menu query={@query} kinds={@kinds} sources={@sources} teams={@teams} />
         </div>
 
         <div id="resource-keys" phx-hook="ListKeys" data-filter="#resource-search-input">
@@ -410,6 +436,17 @@ defmodule RengaWeb.ResourceLive.Index do
               class="max-w-56 truncate text-fg-muted"
             >
               {hardware_name(resource)}
+            </:col>
+            <:col
+              :let={resource}
+              :if={"owner" in @query.columns}
+              label="Owner"
+              class="max-w-40 truncate"
+            >
+              <span :if={resource.owner_team} data-owner class="text-fg">
+                {resource.owner_team.name}
+              </span>
+              <span :if={!resource.owner_team} class="text-fg-subtle">Unowned</span>
             </:col>
             <:col :let={resource} :if={"status" in @query.columns} label={@column_labels["status"]}>
               <.resource_status resource={resource} />
@@ -494,6 +531,7 @@ defmodule RengaWeb.ResourceLive.Index do
           :if={@query.selected != []}
           count={length(@query.selected)}
           can_manage?={@can_manage?}
+          teams={@teams}
         />
       </section>
     </Layouts.app>
@@ -656,6 +694,7 @@ defmodule RengaWeb.ResourceLive.Index do
   # in a floating bar). Each lifecycle choice confirms with the count first.
   attr :count, :integer, required: true
   attr :can_manage?, :boolean, required: true
+  attr :teams, :list, required: true
 
   defp bulk_bar(assigns) do
     assigns = assign(assigns, lifecycles: @bulk_lifecycles)
@@ -694,6 +733,23 @@ defmodule RengaWeb.ResourceLive.Index do
             </button>
           </div>
         </details>
+        <form
+          :if={@teams != []}
+          id="bulk-owner-form"
+          phx-submit="bulk_owner"
+          class="flex items-center gap-1.5"
+        >
+          <label for="bulk-owner-team" class="sr-only">Owner</label>
+          <select
+            id="bulk-owner-team"
+            name="team"
+            class="h-control min-h-tap max-w-36 rounded-md border border-edge bg-surface px-2 text-sm text-fg"
+          >
+            <option value="">No owner</option>
+            <option :for={team <- @teams} value={team.id}>{team.name}</option>
+          </select>
+          <.button id="bulk-owner-submit" size="sm">Set owner</.button>
+        </form>
       <% else %>
         <span
           id="bulk-lifecycle-unavailable"
@@ -725,6 +781,7 @@ defmodule RengaWeb.ResourceLive.Index do
   # always says what it is showing.
   attr :query, :map, required: true
   attr :sources, :list, required: true
+  attr :teams, :list, required: true
 
   defp filter_chips(assigns) do
     ~H"""
@@ -757,6 +814,13 @@ defmodule RengaWeb.ResourceLive.Index do
         value={source_name(@sources, @query.source_id)}
         clear={list_path(%{@query | source_id: nil, page: 1})}
       />
+      <.filter_chip
+        :if={@query.owner}
+        id="chip-owner"
+        label="Owner"
+        value={owner_label(@teams, @query.owner)}
+        clear={list_path(%{@query | owner: nil, page: 1})}
+      />
     </ul>
     """
   end
@@ -788,6 +852,7 @@ defmodule RengaWeb.ResourceLive.Index do
   attr :query, :map, required: true
   attr :kinds, :list, required: true
   attr :sources, :list, required: true
+  attr :teams, :list, required: true
 
   defp filter_menu(assigns) do
     ~H"""
@@ -845,6 +910,15 @@ defmodule RengaWeb.ResourceLive.Index do
             value={@query.source_id}
             prompt="Any source"
             options={Enum.map(@sources, &{&1.name, &1.id})}
+          />
+          <.input
+            id="filter-owner"
+            name="filter[owner]"
+            type="select"
+            label="Owner"
+            value={@query.owner}
+            prompt="Any owner"
+            options={[{"No owner", "none"} | Enum.map(@teams, &{&1.name, &1.id})]}
           />
         </.form>
       </div>
@@ -941,6 +1015,22 @@ defmodule RengaWeb.ResourceLive.Index do
   defp freshness_label("current"), do: "Current"
   defp freshness_label("stale"), do: "Stale"
   defp freshness_label("unknown"), do: "Not reported yet"
+
+  defp owner_label(_teams, "none"), do: "nobody"
+
+  defp owner_label(teams, id) do
+    case Enum.find(teams, &(&1.id == id)) do
+      nil -> "Unknown team"
+      team -> team.name
+    end
+  end
+
+  # Only offered teams or "none" reach the URL from the filter form.
+  defp owner_filter("none", _teams), do: "none"
+
+  defp owner_filter(id, teams) do
+    if Enum.any?(teams, &(&1.id == id)), do: id
+  end
 
   defp source_name(sources, id) do
     case Enum.find(sources, &(&1.id == id)) do

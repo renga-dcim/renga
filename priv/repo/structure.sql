@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict fSvKNtFZbRJEJAcHwqYnMFFMtrTZF1QzEYPn7XOqecKaBeUdVi3Tg7vH1iRI2R6
+\restrict j1ceygFQt127iXaOK9rMzNbMMavMvaBwZBBKclxbMtv9QDBT255k8VjsfQAASyG
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -934,7 +934,7 @@ CREATE TABLE public.change_requests (
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     CONSTRAINT change_requests_decision_state CHECK (((((status)::text = 'open'::text) AND (decided_at IS NULL)) OR (((status)::text <> 'open'::text) AND (decided_at IS NOT NULL)))),
-    CONSTRAINT change_requests_valid_kind CHECK (((kind)::text = ANY ((ARRAY['lifecycle'::character varying, 'field_override'::character varying])::text[]))),
+    CONSTRAINT change_requests_valid_kind CHECK (((kind)::text = ANY ((ARRAY['lifecycle'::character varying, 'field_override'::character varying, 'owner'::character varying])::text[]))),
     CONSTRAINT change_requests_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'approved'::character varying, 'rejected'::character varying, 'withdrawn'::character varying])::text[])))
 );
 
@@ -2036,7 +2036,11 @@ CREATE TABLE public.resources (
     annotations jsonb DEFAULT '{}'::jsonb NOT NULL,
     deletion_requested_at timestamp(3) without time zone,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    owner_team_id uuid,
+    owner_source character varying(255),
+    owner_set_at timestamp without time zone,
+    CONSTRAINT resources_owner_source_state CHECK ((((owner_team_id IS NULL) AND (owner_source IS NULL)) OR ((owner_team_id IS NOT NULL) AND ((owner_source)::text = ANY ((ARRAY['person'::character varying, 'rule'::character varying])::text[])))))
 );
 
 
@@ -2154,6 +2158,20 @@ CREATE TABLE public.sync_runs (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT sync_runs_completion_state CHECK (((((status)::text = 'running'::text) AND (completed_at IS NULL)) OR (((status)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'partial'::character varying])::text[])) AND (completed_at IS NOT NULL) AND (completed_at >= started_at))))
+);
+
+
+--
+-- Name: teams; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.teams (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    description text,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -2926,6 +2944,14 @@ ALTER TABLE ONLY public.sources
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: teams teams_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.teams
+    ADD CONSTRAINT teams_pkey PRIMARY KEY (id);
 
 
 --
@@ -4484,6 +4510,13 @@ CREATE INDEX resources_organization_id_lifecycle_state_index ON public.resources
 
 
 --
+-- Name: resources_organization_id_owner_team_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resources_organization_id_owner_team_id_index ON public.resources USING btree (organization_id, owner_team_id);
+
+
+--
 -- Name: resources_organization_id_resource_version_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4642,6 +4675,20 @@ CREATE INDEX sync_runs_organization_id_started_at_index ON public.sync_runs USIN
 --
 
 CREATE INDEX sync_runs_organization_id_status_index ON public.sync_runs USING btree (organization_id, status);
+
+
+--
+-- Name: teams_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX teams_id_organization_id_index ON public.teams USING btree (id, organization_id);
+
+
+--
+-- Name: teams_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX teams_organization_name_index ON public.teams USING btree (organization_id, lower((name)::text));
 
 
 --
@@ -6499,6 +6546,14 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: resources resources_owner_team_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resources
+    ADD CONSTRAINT resources_owner_team_fkey FOREIGN KEY (owner_team_id, organization_id) REFERENCES public.teams(id, organization_id) ON DELETE SET NULL (owner_team_id);
+
+
+--
 -- Name: saved_views saved_views_created_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6600,6 +6655,14 @@ ALTER TABLE ONLY public.sync_runs
 
 ALTER TABLE ONLY public.sync_runs
     ADD CONSTRAINT sync_runs_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE SET NULL (source_id);
+
+
+--
+-- Name: teams teams_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.teams
+    ADD CONSTRAINT teams_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -6710,7 +6773,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict fSvKNtFZbRJEJAcHwqYnMFFMtrTZF1QzEYPn7XOqecKaBeUdVi3Tg7vH1iRI2R6
+\unrestrict j1ceygFQt127iXaOK9rMzNbMMavMvaBwZBBKclxbMtv9QDBT255k8VjsfQAASyG
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6753,3 +6816,5 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261002120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261008120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261009120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261009130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261010120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261010130000);

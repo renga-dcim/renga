@@ -15,6 +15,7 @@ defmodule RengaWeb.RequestComponents do
 
   @doc "The changed property: \"Lifecycle\" or \"Vendor override\"."
   def change_label(%{kind: "lifecycle"}), do: "Lifecycle"
+  def change_label(%{kind: "owner"}), do: "Owner"
 
   def change_label(%{kind: "field_override", field: field}),
     do: "#{field_label(field)} override"
@@ -244,6 +245,10 @@ defmodule RengaWeb.RequestComponents do
 
   defp effect(%{kind: "lifecycle"}),
     do: "Approving sets the resource's lifecycle. It does not control the device."
+
+  defp effect(%{kind: "owner"}),
+    do:
+      "Approving makes this team the resource's owner, which takes it out of triage for ownership."
 
   defp effect(%{kind: "field_override"}),
     do: "Approving sets an override, which wins over every source until it is removed."
