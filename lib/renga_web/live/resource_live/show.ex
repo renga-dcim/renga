@@ -671,6 +671,9 @@ defmodule RengaWeb.ResourceLive.Show do
     """
   end
 
+  defp owner_provenance(%{owner_source: "rule", owner_rule: %{name: name}, owner_set_at: at}),
+    do: "Set by the triage rule #{name} · #{Format.datetime(at)}"
+
   defp owner_provenance(%{owner_source: "rule", owner_set_at: at}),
     do: "Set by a triage rule · #{Format.datetime(at)}"
 

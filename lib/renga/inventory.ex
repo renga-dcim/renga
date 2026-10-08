@@ -993,6 +993,7 @@ defmodule Renga.Inventory do
       |> Repo.preload([
         :host,
         :owner_team,
+        :owner_rule,
         conditions: conditions_query,
         identifiers: identifiers_query,
         identifier_claims: claims_query,
