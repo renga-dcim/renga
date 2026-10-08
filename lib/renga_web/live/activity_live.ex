@@ -13,6 +13,7 @@ defmodule RengaWeb.ActivityLive do
 
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias RengaWeb.ChangeDescription
 
   @page_size 50
 
@@ -86,7 +87,9 @@ defmodule RengaWeb.ActivityLive do
               {Calendar.strftime(event.occurred_at, "%Y-%m-%d %H:%M UTC")}
             </time>
           </:col>
-          <:col :let={event} label="Change" class="font-medium">{describe(event)}</:col>
+          <:col :let={event} label="Change" class="font-medium">
+            {ChangeDescription.describe(event)}
+          </:col>
           <:col :let={event} label="Resource">
             <.link
               :if={event.resource}
@@ -113,91 +116,10 @@ defmodule RengaWeb.ActivityLive do
     """
   end
 
-  # Field names come from the reconciler (for example "lifecycle_state"); the
-  # feed shows them as words so a change reads as a sentence.
-  defp describe(%{kind: "discovered"}), do: "Discovered"
-  defp describe(%{kind: "stale"}), do: "Marked stale"
-  defp describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
-  defp describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
-
-  defp describe(%{kind: "manual_override", field: field}),
-    do: with_field("Override set on", field)
-
-  defp describe(%{kind: "override_removed", field: field}),
-    do: with_field("Override removed from", field)
-
-  defp describe(%{kind: "finding_assigned", new_value: nil, field: field}),
-    do: "Unassigned #{finding_label(field)}"
-
-  defp describe(%{kind: "finding_assigned", new_value: %{"assignee" => assignee}, field: field}),
-    do: "Assigned #{finding_label(field)} to #{assignee}"
-
-  defp describe(%{kind: "finding_snoozed", new_value: nil, field: field}),
-    do: "Woke #{finding_label(field)}"
-
-  defp describe(%{kind: "finding_snoozed", new_value: %{"snoozed_until" => until}, field: field}),
-    do: "Snoozed #{finding_label(field)} until #{format_iso(until)}"
-
-  defp describe(%{kind: "finding_exception", field: field}),
-    do: "Accepted #{finding_label(field)} as an exception"
-
-  defp describe(%{kind: "finding_exception_removed", field: field}),
-    do: "Removed the exception on #{finding_label(field)}"
-
-  defp describe(%{kind: "owner_changed", new_value: %{"name" => name}}),
-    do: "Owner set to #{name}"
-
-  defp describe(%{kind: "owner_changed"}), do: "Owner removed"
-
-  defp describe(%{kind: "rule_applied", field: "placement", new_value: value} = event),
-    do: "Placed at #{value["value"]} by #{rule_label(event)}"
-
-  defp describe(%{kind: "rule_applied", new_value: value} = event),
-    do: "Owner set to #{value["name"]} by #{rule_label(event)}"
-
-  defp describe(%{kind: "request_" <> action} = event) do
-    verb =
-      case action do
-        "created" -> "Requested"
-        "approved" -> "Approved request:"
-        "rejected" -> "Rejected request:"
-        "withdrawn" -> "Withdrew request:"
-      end
-
-    "#{verb} #{request_change(event)}"
-  end
-
-  defp describe(%{kind: kind}), do: String.capitalize(String.replace(kind, "_", " "))
-
-  defp request_change(%{field: field, new_value: %{"value" => value}}) do
-    property =
-      field |> to_string() |> String.replace_prefix("host.", "") |> String.replace("_", " ")
-
-    "#{property} → #{value}"
-  end
-
-  # Finding events name the finding as "domain.kind"; the kind reads best.
-  defp finding_label(field) do
-    field |> to_string() |> String.split(".") |> List.last() |> String.replace("_", " ")
-  end
-
-  defp format_iso(iso) do
-    case DateTime.from_iso8601(iso) do
-      {:ok, datetime, _offset} -> Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
-      _invalid -> iso
-    end
-  end
-
   # A person when someone acted, otherwise the source that reported it, or
   # Renga itself for changes it derived.
   defp actor(%{actor_user: %{email: email}}), do: email
   defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"
   defp actor(%{source: %{name: name}}), do: name
   defp actor(_event), do: "Renga"
-
-  defp rule_label(%{metadata: %{"rule_name" => name}}), do: "the rule #{name}"
-  defp rule_label(_event), do: "a triage rule"
-
-  defp with_field(verb, nil), do: verb
-  defp with_field(verb, field), do: "#{verb} #{String.replace(field, "_", " ")}"
 end

@@ -118,6 +118,12 @@ defmodule RengaWeb.TriageRuleLiveTest do
     {:ok, resource_view, _html} = live(context.admin_conn, ~p"/inventory/#{context.web}")
     assert has_element?(resource_view, "#resource-owner", "Set by the triage rule Web")
 
+    assert has_element?(
+             resource_view,
+             "[id^=change-event-]",
+             "Owner set to Platform by the rule Web"
+           )
+
     {:ok, activity, _html} = live(context.admin_conn, ~p"/activity")
     assert render(activity) =~ "Owner set to Platform by the rule Web"
   end
