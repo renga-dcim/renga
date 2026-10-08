@@ -43,6 +43,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.Vlan
   alias Renga.Topology.VlanGroup
   alias Renga.Topology.VlanGroupVidRange
+  alias Renga.Topology.VlanUsage
 
   @vlan_finding_kinds ~w(ambiguous_scope conflicting_interface_mode conflicting_tagging_mode conflicting_untagged_vlan missing_vlan out_of_range_vid unexpected_vlan unknown_vlan)
   @neighbor_finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency)
@@ -81,6 +82,51 @@ defmodule Renga.Topology do
     |> order_by([vlan], asc: vlan.vid)
     |> preload([:resource, vlan_group: :resource])
     |> Repo.all()
+  end
+
+  @doc """
+  Counts each VLAN's planned and observed member interfaces, as
+  `%{vlan_id => %{planned: n, observed: n}}`. VLANs without members are
+  absent.
+  """
+  def vlan_member_counts(%Scope{organization_id: organization_id}) do
+    count = fn schema ->
+      schema
+      |> where([record], record.organization_id == ^organization_id)
+      |> group_by([record], record.vlan_id)
+      |> select([record], {record.vlan_id, count(record.interface_id, :distinct)})
+      |> Repo.all()
+      |> Map.new()
+    end
+
+    planned = count.(DesiredInterfaceVlanAssignment)
+    observed = count.(CurrentInterfaceVlanMembership)
+
+    planned
+    |> Map.keys()
+    |> Enum.concat(Map.keys(observed))
+    |> Map.new(&{&1, %{planned: Map.get(planned, &1, 0), observed: Map.get(observed, &1, 0)}})
+  end
+
+  @doc """
+  Lists one VLAN's member interfaces with planned versus observed
+  membership. See `Renga.Topology.VlanUsage.members/2`.
+  """
+  def list_vlan_members(%Scope{organization_id: organization_id}, vlan_id) do
+    load = fn schema ->
+      schema
+      |> where(
+        [record],
+        record.organization_id == ^organization_id and record.vlan_id == ^vlan_id
+      )
+      |> preload(interface: :resource)
+      |> Repo.all()
+    end
+
+    VlanUsage.members(
+      load.(DesiredInterfaceVlanAssignment),
+      load.(CurrentInterfaceVlanMembership)
+    )
   end
 
   def get_vlan!(%Scope{organization_id: organization_id}, id) do
