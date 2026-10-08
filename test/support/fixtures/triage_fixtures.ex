@@ -63,7 +63,7 @@ defmodule Renga.TriageFixtures do
           "resources" => [
             %{
               "kind" => "server",
-              "identifiers" => %{"machine_id" => machine_id},
+              "identifiers" => %{"machine_id" => machine_id, "hostname" => machine_id},
               "attributes" => %{"hostname" => machine_id},
               "labels" => opts[:labels] || %{}
             }
