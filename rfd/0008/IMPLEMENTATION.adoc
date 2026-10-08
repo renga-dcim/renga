@@ -51,7 +51,7 @@ Implements link:README.adoc[RFD 8: Product experience].
 == Phase 7: Network
 
 * [x] Rebuild topology with plan, evidence, and cable record shown per link.
-* [ ] Add the switch Ports tab with front-panel view and in-place VLAN drift.
+* [x] Add the switch Ports tab with front-panel view and in-place VLAN drift.
 * [ ] Rebuild VLAN views with ID-range usage and planned versus observed
   membership.
 * [ ] Add scale-aware prefix views, IPv6 presentation, and address-family and
