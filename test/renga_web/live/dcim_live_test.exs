@@ -28,7 +28,7 @@ defmodule RengaWeb.DcimLiveTest do
     assert has_element?(view, "#dcim-workspace")
     assert has_element?(view, "#sites-empty")
     assert has_element?(view, "#new-site-form")
-    assert has_element?(view, "#primary-navigation", "Physical inventory")
+    assert has_element?(view, "#primary-navigation a[aria-current='page']", "Places")
 
     redirect =
       view

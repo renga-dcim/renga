@@ -140,13 +140,6 @@ defmodule RengaWeb.VlanLive do
               observed membership stay separate from the VLAN itself.
             </p>
           </div>
-          <.link
-            id="vlans-to-vlan-groups"
-            navigate={~p"/network/vlan-groups"}
-            class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
-          >
-            <.icon name="hero-rectangle-group" class="size-4" /> VLAN groups
-          </.link>
         </header>
 
         <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">

@@ -76,7 +76,7 @@ defmodule RengaWeb.ResourceHardwareLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:resources}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:inventory}>
       <main id="resource-hardware" class="space-y-7">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>

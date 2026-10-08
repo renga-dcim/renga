@@ -5,6 +5,8 @@ defmodule RengaWeb.Layouts do
   """
   use RengaWeb, :html
 
+  alias RengaWeb.Navigation
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
@@ -33,181 +35,92 @@ defmodule RengaWeb.Layouts do
 
   attr :active_nav, :atom,
     default: nil,
-    values: [
-      nil,
-      :overview,
-      :resources,
-      :collectors,
-      :dcim,
-      :catalog,
-      :findings,
-      :vlan_groups,
-      :vlans,
-      :topology,
-      :cables,
-      :topology_findings,
-      :activity
-    ],
-    doc: "the active inventory navigation destination"
+    doc: """
+    the page's section id in `RengaWeb.Navigation`, such as `:vlans`; its area
+    is highlighted and the area's tabs are shown. Unknown ids raise.
+    """
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
 
   slot :inner_block, required: true
 
   def app(assigns) do
+    {area, section} = Navigation.locate(assigns.active_nav)
+
+    assigns =
+      assign(assigns,
+        area: area,
+        section: section,
+        areas: Navigation.areas(),
+        settings: Navigation.settings(),
+        views: Navigation.views()
+      )
+
     ~H"""
-    <div :if={@current_scope && @current_scope.organization_id} class="flex min-h-screen bg-base-100">
+    <div :if={@current_scope && @current_scope.organization_id} class="flex min-h-screen bg-canvas">
       <aside
         id="app-sidebar"
-        class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col overflow-y-auto border-r border-base-content/10 bg-base-200/45 px-3 py-4 lg:flex"
+        class="sticky top-0 hidden h-screen w-56 shrink-0 flex-col overflow-y-auto border-r border-edge bg-sunken px-3 py-4 lg:flex"
       >
-        <.link
-          navigate={~p"/inventory"}
-          class="flex h-10 items-center gap-2.5 px-2 text-sm font-semibold tracking-tight"
-          aria-label="Renga overview"
-        >
-          <span class="grid size-7 place-items-center text-orange-600">
-            <.icon name="hero-server-stack-solid" class="size-6" />
-          </span>
-          <span class="text-base">Renga</span>
-        </.link>
+        <.brand />
 
         <.link
           id="organization-switcher"
           navigate={~p"/organizations"}
-          class="mt-3 flex h-10 items-center gap-2 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-xs font-medium transition hover:border-base-content/20 hover:bg-base-200"
+          class="mt-3 flex h-10 items-center gap-2 rounded-md border border-edge bg-surface px-2.5 text-xs font-medium text-fg transition hover:border-fg-subtle"
         >
-          <.icon name="hero-cube" class="size-4 text-base-content/55" />
+          <.icon name="hero-cube" class="size-4 text-fg-muted" />
           <span class="min-w-0 flex-1 truncate">{@current_scope.organization.name}</span>
-          <.icon name="hero-chevron-up-down" class="size-3.5 text-base-content/40" />
+          <.icon name="hero-chevron-up-down" class="size-3.5 text-fg-subtle" />
         </.link>
 
         <button
           id="command-palette-trigger"
           type="button"
-          class="mt-3 flex h-10 w-full items-center gap-2 rounded-md border border-base-content/10 bg-base-100 px-2.5 text-left text-xs text-base-content/60 transition hover:border-base-content/20 hover:text-base-content"
+          class="mt-3 flex h-10 w-full cursor-pointer items-center gap-2 rounded-md border border-edge bg-surface px-2.5 text-left text-xs text-fg-muted transition hover:border-fg-subtle hover:text-fg"
           phx-click={JS.dispatch("renga:open-command-palette")}
         >
           <.icon name="hero-magnifying-glass" class="size-4" />
-          <span class="flex-1">Search</span>
-          <kbd class="rounded border border-base-content/10 bg-base-200 px-1.5 py-0.5 font-mono text-[10px] text-base-content/45">
+          <span class="min-w-0 flex-1 truncate">Search</span>
+          <kbd class="rounded border border-edge bg-sunken px-1.5 py-0.5 font-mono text-[10px] text-fg-subtle">
             Ctrl K
           </kbd>
         </button>
 
-        <nav id="primary-navigation" class="mt-5 space-y-1" aria-label="Primary navigation">
-          <.sidebar_link
-            navigate={~p"/inventory"}
-            icon="hero-home"
-            label="Overview"
-            active?={@active_nav == :overview}
-          />
-          <.sidebar_link
-            navigate={~p"/inventory"}
-            icon="hero-cube"
-            label="Resources"
-            active?={@active_nav == :resources}
-          />
-          <.sidebar_link
-            navigate={~p"/settings/collectors"}
-            icon="hero-circle-stack"
-            label="Collectors"
-            active?={@active_nav == :collectors}
-          />
-          <.sidebar_link
-            navigate={~p"/places"}
-            icon="hero-building-office-2"
-            label="Physical inventory"
-            active?={@active_nav == :dcim}
-          />
-          <.sidebar_link
-            navigate={~p"/catalog/hardware-types"}
-            icon="hero-cpu-chip"
-            label="Hardware catalog"
-            active?={@active_nav == :catalog}
-          />
-          <.sidebar_link
-            navigate={~p"/inbox/components"}
-            icon="hero-exclamation-triangle"
-            label="Component findings"
-            active?={@active_nav == :findings}
-          />
-
-          <p class="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-            Layer 2
-          </p>
-          <.sidebar_link
-            navigate={~p"/network/vlan-groups"}
-            icon="hero-rectangle-group"
-            label="VLAN groups"
-            active?={@active_nav == :vlan_groups}
-          />
-          <.sidebar_link
-            navigate={~p"/network/vlans"}
-            icon="hero-tag"
-            label="VLANs"
-            active?={@active_nav == :vlans}
-          />
-          <.sidebar_link
-            navigate={~p"/network/topology"}
-            icon="hero-share"
-            label="Topology"
-            active?={@active_nav == :topology}
-          />
-          <.sidebar_link
-            navigate={~p"/network/cables"}
-            icon="hero-link"
-            label="Cables"
-            active?={@active_nav == :cables}
-          />
-          <.sidebar_link
-            navigate={~p"/inbox/topology"}
-            icon="hero-signal"
-            label="Topology findings"
-            active?={@active_nav == :topology_findings}
+        <nav id="primary-navigation" class="mt-5 space-y-0.5" aria-label="Primary navigation">
+          <.nav_link
+            :for={area <- @areas}
+            navigate={Navigation.path(area)}
+            icon={area.icon}
+            label={area.label}
+            title={area.question}
+            active?={@area && @area.id == area.id}
           />
         </nav>
 
-        <div class="mt-5 border-t border-base-content/10 pt-5">
-          <p class="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-            Saved views
-          </p>
-          <nav class="mt-2 space-y-1" aria-label="Saved views">
-            <.saved_view
-              navigate={~p"/inventory?stale=true"}
-              label="Needs attention"
-              tone="critical"
-            />
-            <.saved_view
-              navigate={~p"/inventory?stale=true"}
-              label="Stale inventory"
-              tone="warning"
-            />
-            <.saved_view
-              navigate={~p"/settings/collectors?disconnected=true"}
-              label="Disconnected agents"
-              tone="neutral"
-            />
-          </nav>
-        </div>
+        <.saved_views views={@views} class="mt-5 border-t border-edge pt-5" />
 
-        <div class="mt-auto border-t border-base-content/10 pt-3">
+        <div class="mt-auto space-y-1 border-t border-edge pt-3">
+          <.nav_link
+            id="settings-link"
+            navigate={Navigation.path(@settings)}
+            icon={@settings.icon}
+            label={@settings.label}
+            active?={@area && @area.id == :settings}
+          />
           <div class="flex items-center gap-1 px-1">
             <.link
               navigate={~p"/users/settings"}
               title={@current_scope.user.email}
               aria-label={"Account settings for #{@current_scope.user.email}"}
-              class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 transition hover:bg-base-content/[0.05]"
+              class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 transition hover:bg-surface"
             >
-              <span class="grid size-7 shrink-0 place-items-center rounded-full border border-base-content/15 bg-base-100 text-[11px] font-semibold uppercase">
+              <span class="grid size-7 shrink-0 place-items-center rounded-full border border-edge bg-surface text-[11px] font-semibold uppercase text-fg">
                 {String.first(@current_scope.user.email)}
               </span>
               <%!-- The sidebar is 14rem wide, so a long email is truncated on purpose; the
               title and aria-label carry the full address without leaking anything else. --%>
-              <span
-                class="min-w-0 truncate text-xs text-base-content/70"
-                title={@current_scope.user.email}
-              >
+              <span class="min-w-0 truncate text-xs text-fg-muted" title={@current_scope.user.email}>
                 {@current_scope.user.email}
               </span>
             </.link>
@@ -215,7 +128,7 @@ defmodule RengaWeb.Layouts do
             <.link
               href={~p"/users/log-out"}
               method="delete"
-              class="rounded-md p-2 text-base-content/45 transition hover:bg-base-content/[0.05] hover:text-base-content"
+              class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
               aria-label="Log out"
             >
               <.icon name="hero-arrow-right-start-on-rectangle" class="size-4" />
@@ -226,133 +139,80 @@ defmodule RengaWeb.Layouts do
 
       <main
         id="app-content"
-        class="flex min-h-screen min-w-0 flex-1 flex-col overflow-x-hidden bg-base-100"
+        class="flex min-h-screen min-w-0 flex-1 flex-col overflow-x-hidden bg-canvas"
       >
         <header
           id="app-mobile-header"
-          class="flex h-12 shrink-0 items-center gap-2 border-b border-base-content/10 bg-base-200/45 px-3 lg:hidden"
+          class="flex h-12 shrink-0 items-center gap-2 border-b border-edge bg-sunken px-3 lg:hidden"
         >
           <details id="app-mobile-navigation" class="group relative">
             <summary
               id="mobile-navigation-trigger"
-              class="grid size-8 cursor-pointer list-none place-items-center rounded-md text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
+              class="grid size-8 min-h-tap min-w-tap cursor-pointer list-none place-items-center rounded-md text-fg-muted transition hover:bg-surface hover:text-fg"
               aria-label="Open navigation"
             >
               <.icon name="hero-bars-3" class="size-5" />
             </summary>
-            <div class="absolute left-0 top-10 z-40 w-64 rounded-lg border border-base-content/10 bg-base-200 p-2 shadow-xl">
-              <p class="truncate px-2 py-2 text-[10px] font-medium text-base-content/40">
+            <div class="absolute left-0 top-10 z-40 max-h-[80vh] w-64 overflow-y-auto rounded-lg border border-edge bg-surface p-2 shadow-xl">
+              <p class="truncate px-2 py-2 text-[10px] font-medium text-fg-subtle">
                 {@current_scope.organization.name}
               </p>
-              <nav class="space-y-1" aria-label="Mobile navigation">
-                <.sidebar_link
-                  navigate={~p"/inventory"}
-                  icon="hero-home"
-                  label="Overview"
-                  active?={@active_nav == :overview}
-                />
-                <.sidebar_link
-                  navigate={~p"/inventory"}
-                  icon="hero-cube"
-                  label="Resources"
-                  active?={@active_nav == :resources}
-                />
-                <.sidebar_link
-                  navigate={~p"/settings/collectors"}
-                  icon="hero-circle-stack"
-                  label="Collectors"
-                  active?={@active_nav == :collectors}
-                />
-                <.sidebar_link
-                  navigate={~p"/places"}
-                  icon="hero-building-office-2"
-                  label="Physical inventory"
-                  active?={@active_nav == :dcim}
-                />
-                <.sidebar_link
-                  navigate={~p"/catalog/hardware-types"}
-                  icon="hero-cpu-chip"
-                  label="Hardware catalog"
-                  active?={@active_nav == :catalog}
-                />
-                <.sidebar_link
-                  navigate={~p"/inbox/components"}
-                  icon="hero-exclamation-triangle"
-                  label="Component findings"
-                  active?={@active_nav == :findings}
-                />
-                <.sidebar_link
-                  navigate={~p"/network/vlans"}
-                  icon="hero-tag"
-                  label="VLANs"
-                  active?={@active_nav in [:vlans, :vlan_groups]}
-                />
-                <.sidebar_link
-                  navigate={~p"/network/topology"}
-                  icon="hero-share"
-                  label="Topology"
-                  active?={@active_nav == :topology}
-                />
-                <.sidebar_link
-                  navigate={~p"/network/cables"}
-                  icon="hero-link"
-                  label="Cables"
-                  active?={@active_nav == :cables}
-                />
-                <.sidebar_link
-                  navigate={~p"/inbox/topology"}
-                  icon="hero-signal"
-                  label="Topology findings"
-                  active?={@active_nav == :topology_findings}
+              <nav class="space-y-0.5" aria-label="Mobile navigation">
+                <.nav_link
+                  :for={area <- @areas}
+                  navigate={Navigation.path(area)}
+                  icon={area.icon}
+                  label={area.label}
+                  active?={@area && @area.id == area.id}
                 />
               </nav>
-              <div class="mt-2 border-t border-base-content/10 pt-2">
-                <.link
-                  navigate={~p"/organizations"}
-                  class="flex h-9 items-center gap-2.5 rounded-md px-2.5 text-xs text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
-                >
-                  <.icon name="hero-building-office-2" class="size-4" /> Switch organization
-                </.link>
-                <.link
-                  navigate={~p"/users/settings"}
-                  class="flex h-9 items-center gap-2.5 rounded-md px-2.5 text-xs text-base-content/60 transition hover:bg-base-content/[0.05] hover:text-base-content"
-                >
-                  <.icon name="hero-cog-6-tooth" class="size-4" /> Account settings
-                </.link>
-              </div>
+              <.saved_views views={@views} class="mt-2 border-t border-edge pt-2" />
+              <nav class="mt-2 space-y-0.5 border-t border-edge pt-2" aria-label="Settings">
+                <.nav_link
+                  :for={item <- @settings.sections}
+                  navigate={item.path}
+                  icon={item.icon}
+                  label={item.label}
+                  active?={@section && @section.id == item.id}
+                />
+              </nav>
             </div>
           </details>
-          <.link navigate={~p"/inventory"} class="flex items-center gap-2 text-sm font-semibold">
-            <.icon name="hero-server-stack-solid" class="size-5 text-orange-600" /> Renga
-          </.link>
+          <.brand class="h-auto" />
           <div class="ml-auto flex items-center gap-1">
             <button
               type="button"
               phx-click={JS.dispatch("renga:open-command-palette")}
-              class="rounded-md p-2 text-base-content/45 transition hover:bg-base-content/[0.05] hover:text-base-content"
-              aria-label="Open command palette"
+              class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
+              aria-label="Open command menu"
             >
               <.icon name="hero-magnifying-glass" class="size-4" />
             </button>
             <.theme_toggle />
           </div>
         </header>
-        <div class={["min-h-0 flex-1", @content_class]}>{render_slot(@inner_block)}</div>
+        <div class={["min-h-0 flex-1", @content_class]}>
+          <.area_tabs :if={@area && length(@area.sections) > 1} area={@area} section={@section} />
+          {render_slot(@inner_block)}
+        </div>
       </main>
     </div>
 
-    <.command_palette :if={@current_scope && @current_scope.organization_id} />
+    <.command_palette
+      :if={@current_scope && @current_scope.organization_id}
+      areas={@areas}
+      settings={@settings}
+      views={@views}
+    />
 
     <div :if={is_nil(@current_scope) || is_nil(@current_scope.organization_id)}>
-      <header class="border-b border-base-content/10 bg-base-100">
+      <header class="border-b border-edge bg-canvas">
         <div class="mx-auto flex min-h-16 max-w-screen-xl items-center px-4 sm:px-6 lg:px-8">
           <.link
             navigate={if(@current_scope, do: ~p"/organizations", else: ~p"/")}
-            class="flex items-center gap-2.5 font-semibold tracking-tight"
+            class="flex items-center gap-2.5 font-semibold tracking-tight text-fg"
           >
-            <span class="text-orange-600">
-              <.icon name="hero-server-stack-solid" class="size-6" />
-            </span>
+            <span class="text-accent"><.icon name="hero-server-stack-solid" class="size-6" /></span>
             <span>Renga</span>
           </.link>
           <div class="ml-auto flex items-center gap-1">
@@ -361,7 +221,7 @@ defmodule RengaWeb.Layouts do
               :if={@current_scope && @current_scope.user}
               href={~p"/users/log-out"}
               method="delete"
-              class="rounded-md p-2 text-base-content/45 transition hover:bg-base-200 hover:text-base-content"
+              class="rounded-md p-2 text-fg-subtle transition hover:bg-sunken hover:text-fg"
               aria-label="Log out"
             >
               <.icon name="hero-arrow-right-start-on-rectangle" class="size-4" />
@@ -370,7 +230,7 @@ defmodule RengaWeb.Layouts do
         </div>
       </header>
 
-      <main class="min-h-[calc(100vh-4rem)] bg-base-200/45 px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <main class="min-h-[calc(100vh-4rem)] bg-sunken px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
         <div class="mx-auto max-w-screen-xl space-y-6">
           {render_slot(@inner_block)}
         </div>
@@ -381,19 +241,92 @@ defmodule RengaWeb.Layouts do
     """
   end
 
+  attr :class, :string, default: "h-10"
+
+  defp brand(assigns) do
+    ~H"""
+    <.link
+      navigate={~p"/inbox"}
+      class={["flex items-center gap-2.5 px-2 text-sm font-semibold tracking-tight text-fg", @class]}
+      aria-label="Renga home"
+    >
+      <.icon name="hero-server-stack-solid" class="size-6 text-accent" />
+      <span class="text-base">Renga</span>
+    </.link>
+    """
+  end
+
+  # Tabs for the sections of the current area, such as Network's Topology,
+  # VLANs, VLAN groups, and Cables. Generated here so every area's tabs look
+  # and behave the same and pages do not each build their own.
+  attr :area, :map, required: true
+  attr :section, :map, required: true
+
+  defp area_tabs(assigns) do
+    ~H"""
+    <nav
+      id="area-tabs"
+      aria-label={"#{@area.label} sections"}
+      class="-mt-2 mb-6 flex gap-1 overflow-x-auto border-b border-edge"
+    >
+      <.link
+        :for={item <- @area.sections}
+        navigate={item.path}
+        aria-current={item.id == @section.id && "page"}
+        class={[
+          "-mb-px flex min-h-tap shrink-0 items-center border-b-2 px-3 py-2 text-sm transition-colors",
+          item.id == @section.id && "border-accent font-medium text-fg",
+          item.id != @section.id && "border-transparent text-fg-muted hover:text-fg"
+        ]}
+      >
+        {item.label}
+      </.link>
+    </nav>
+    """
+  end
+
+  attr :views, :list, required: true
+  attr :class, :string, default: nil
+
+  defp saved_views(assigns) do
+    ~H"""
+    <div class={@class}>
+      <p class="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">Views</p>
+      <nav class="mt-2 space-y-0.5" aria-label="Saved views">
+        <.link
+          :for={view <- @views}
+          navigate={view.path}
+          class="flex h-8 min-h-tap items-center gap-2.5 rounded-md px-2.5 text-xs text-fg-muted transition hover:bg-surface hover:text-fg"
+        >
+          <span class={[
+            "size-2 rounded-full border-2",
+            view.tone == :crit && "border-crit",
+            view.tone == :warn && "border-warn"
+          ]} />
+          <span>{view.label}</span>
+        </.link>
+      </nav>
+    </div>
+    """
+  end
+
+  attr :areas, :list, required: true
+  attr :settings, :map, required: true
+  attr :views, :list, required: true
+
   defp command_palette(assigns) do
     ~H"""
     <div id="command-palette-root" phx-hook="CommandPalette" phx-update="ignore">
       <dialog
         id="command-palette"
-        class="m-auto w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-base-content/15 bg-base-200 p-0 text-base-content shadow-2xl backdrop:bg-black/60"
-        aria-label="Command palette"
+        class="m-auto w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-edge bg-surface p-0 text-fg shadow-2xl backdrop:bg-black/60"
+        aria-label="Command menu"
       >
-        <div class="border-b border-base-content/10 p-3">
+        <div class="border-b border-edge p-3">
           <div class="relative [&_.field]:!mb-0">
             <.icon
               name="hero-magnifying-glass"
-              class="pointer-events-none absolute left-3 top-2.5 z-10 size-4 text-base-content/40"
+              class="pointer-events-none absolute left-3 top-2.5 z-10 size-4 text-fg-subtle"
             />
             <.input
               id="command-palette-input"
@@ -402,9 +335,9 @@ defmodule RengaWeb.Layouts do
               value=""
               placeholder="Type a command or search resources..."
               autocomplete="off"
-              class="h-9 w-full rounded-md border border-base-content/10 bg-base-100 py-0 pl-9 pr-12 text-xs outline-none placeholder:text-base-content/30 focus:border-orange-600/50"
+              class="h-9 w-full rounded-md border border-edge bg-canvas py-0 pl-9 pr-12 text-xs text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
             />
-            <kbd class="pointer-events-none absolute right-2.5 top-2 rounded border border-base-content/10 bg-base-200 px-1.5 py-0.5 font-mono text-[10px] text-base-content/40">
+            <kbd class="pointer-events-none absolute right-2.5 top-2 rounded border border-edge bg-sunken px-1.5 py-0.5 font-mono text-[10px] text-fg-subtle">
               Esc
             </kbd>
           </div>
@@ -412,83 +345,60 @@ defmodule RengaWeb.Layouts do
 
         <div class="max-h-[28rem] overflow-y-auto p-2">
           <div id="command-resource-search" data-command-item data-search="" hidden>
-            <p class="px-2 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
-              Search
-            </p>
+            <.command_group label="Search" />
             <a
               href={~p"/inventory"}
-              class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06]"
+              class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-sunken focus:bg-sunken"
             >
-              <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+              <.icon name="hero-magnifying-glass" class="size-4 text-fg-subtle" />
               <span>Search resources</span>
-              <span class="ml-auto font-mono text-[10px] text-base-content/35">Enter</span>
+              <span class="ml-auto font-mono text-[10px] text-fg-subtle">Enter</span>
             </a>
           </div>
 
-          <p class="px-2 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
-            Navigate
-          </p>
-          <.command_link navigate={~p"/inventory"} icon="hero-home" label="Overview" />
-          <.command_link navigate={~p"/inventory"} icon="hero-cube" label="Resources" />
+          <.command_group label="Go to" />
+          <%= for area <- @areas, item <- area.sections do %>
+            <.command_link
+              navigate={item.path}
+              icon={item.icon}
+              label={item.label}
+              context={length(area.sections) > 1 && area.label}
+              keywords={[area.label | item.keywords]}
+            />
+          <% end %>
+
+          <.command_group label="Views" />
           <.command_link
-            navigate={~p"/settings/collectors"}
-            icon="hero-circle-stack"
-            label="Collectors"
-          />
-          <.command_link
-            navigate={~p"/catalog/hardware-types"}
-            icon="hero-cpu-chip"
-            label="Hardware catalog"
-          />
-          <.command_link
-            navigate={~p"/inbox/components"}
-            icon="hero-exclamation-triangle"
-            label="Component findings"
-          />
-          <.command_link
-            navigate={~p"/network/vlan-groups"}
-            icon="hero-rectangle-group"
-            label="VLAN groups"
-          />
-          <.command_link navigate={~p"/network/vlans"} icon="hero-tag" label="VLANs" />
-          <.command_link navigate={~p"/network/topology"} icon="hero-share" label="Topology" />
-          <.command_link navigate={~p"/network/cables"} icon="hero-link" label="Cables" />
-          <.command_link
-            navigate={~p"/inbox/topology"}
-            icon="hero-signal"
-            label="Topology findings"
+            :for={view <- @views}
+            navigate={view.path}
+            icon="hero-funnel"
+            label={view.label}
+            keywords={["view"]}
           />
 
-          <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
-            Saved views
-          </p>
+          <.command_group label={@settings.label} />
           <.command_link
-            navigate={~p"/inventory?stale=true"}
-            icon="hero-clock"
-            label="Stale inventory"
-          />
-          <.command_link
-            navigate={~p"/settings/collectors?disconnected=true"}
-            icon="hero-signal-slash"
-            label="Disconnected agents"
+            :for={item <- @settings.sections}
+            navigate={item.path}
+            icon={item.icon}
+            label={item.label}
+            keywords={[@settings.label | item.keywords]}
           />
 
-          <p class="px-2 pb-1 pt-4 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/35">
-            Actions
-          </p>
+          <.command_group label="Actions" />
           <button
             type="button"
             data-command-item
             data-search="switch theme light dark"
             data-command-action="toggle-theme"
-            class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-base-content/65 outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06] focus:text-base-content"
+            class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
           >
-            <.icon name="hero-moon" class="size-4 text-base-content/45" />
+            <.icon name="hero-moon" class="size-4 text-fg-subtle" />
             <span>Switch theme</span>
           </button>
         </div>
 
-        <footer class="flex h-9 items-center gap-4 border-t border-base-content/10 px-4 text-[9px] text-base-content/35">
+        <footer class="flex h-9 items-center gap-4 border-t border-edge px-4 text-[10px] text-fg-subtle">
           <span><kbd class="font-mono">↑↓</kbd> Navigate</span>
           <span><kbd class="font-mono">Enter</kbd> Open</span>
           <span><kbd class="font-mono">Esc</kbd> Close</span>
@@ -498,20 +408,35 @@ defmodule RengaWeb.Layouts do
     """
   end
 
+  attr :label, :string, required: true
+
+  defp command_group(assigns) do
+    ~H"""
+    <p class="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+      {@label}
+    </p>
+    """
+  end
+
   attr :navigate, :string, required: true
   attr :icon, :string, required: true
   attr :label, :string, required: true
+  attr :context, :any, default: nil, doc: "the area name, shown when the label alone is ambiguous"
+  attr :keywords, :list, default: []
 
   defp command_link(assigns) do
     ~H"""
     <.link
       navigate={@navigate}
       data-command-item
-      data-search={String.downcase(@label)}
-      class="flex h-10 items-center gap-3 rounded-md px-2.5 text-xs text-base-content/65 outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06] focus:text-base-content"
+      data-search={
+        [@label, @context | @keywords] |> Enum.filter(& &1) |> Enum.join(" ") |> String.downcase()
+      }
+      class="flex h-10 items-center gap-3 rounded-md px-2.5 text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
     >
-      <.icon name={@icon} class="size-4 text-base-content/45" />
-      <span>{@label}</span>
+      <.icon name={@icon} class="size-4 text-fg-subtle" />
+      <span class="text-fg">{@label}</span>
+      <span :if={@context} class="text-fg-subtle">{@context}</span>
     </.link>
     """
   end
@@ -519,42 +444,25 @@ defmodule RengaWeb.Layouts do
   attr :navigate, :string, required: true
   attr :icon, :string, required: true
   attr :label, :string, required: true
+  attr :title, :string, default: nil
+  attr :id, :string, default: nil
   attr :active?, :boolean, required: true
 
-  defp sidebar_link(assigns) do
+  defp nav_link(assigns) do
     ~H"""
     <.link
+      id={@id}
       navigate={@navigate}
+      title={@title}
       aria-current={@active? && "page"}
       class={[
-        "relative flex h-9 items-center gap-2.5 rounded-md px-2.5 text-xs transition",
-        @active? && "bg-base-content/[0.07] font-medium text-base-content",
-        !@active? && "text-base-content/60 hover:bg-base-content/[0.04] hover:text-base-content"
+        "relative flex h-9 min-h-tap items-center gap-2.5 rounded-md px-2.5 text-xs transition-colors",
+        @active? && "bg-nav-active font-medium text-fg",
+        !@active? && "text-fg-muted hover:bg-surface hover:text-fg"
       ]}
     >
-      <span :if={@active?} class="absolute inset-y-2 -left-3 w-0.5 rounded-r bg-orange-600" />
+      <span :if={@active?} class="absolute inset-y-2 -left-3 w-0.5 rounded-r bg-accent" />
       <.icon name={@icon} class="size-4" />
-      <span>{@label}</span>
-    </.link>
-    """
-  end
-
-  attr :navigate, :string, required: true
-  attr :label, :string, required: true
-  attr :tone, :string, required: true
-
-  defp saved_view(assigns) do
-    ~H"""
-    <.link
-      navigate={@navigate}
-      class="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs text-base-content/55 transition hover:bg-base-content/[0.04] hover:text-base-content"
-    >
-      <span class={[
-        "size-2 rounded-full border",
-        @tone == "critical" && "border-rose-500",
-        @tone == "warning" && "border-amber-500",
-        @tone == "neutral" && "border-base-content/45"
-      ]} />
       <span>{@label}</span>
     </.link>
     """
@@ -612,7 +520,7 @@ defmodule RengaWeb.Layouts do
     ~H"""
     <button
       type="button"
-      class="rounded-md p-2 text-base-content/45 transition hover:bg-base-content/[0.05] hover:text-base-content"
+      class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
       phx-click={JS.dispatch("phx:toggle-theme")}
       aria-label="Toggle color theme"
     >

@@ -210,7 +210,7 @@ defmodule RengaWeb.CatalogLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:catalog}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={catalog_nav(@live_action)}>
       <main id="catalog-browser" class="space-y-8">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -224,30 +224,6 @@ defmodule RengaWeb.CatalogLive do
               Organization-scoped, revision-pinned definitions for physical infrastructure.
             </p>
           </div>
-          <nav
-            id="catalog-navigation"
-            aria-label="Catalog"
-            class="flex rounded-xl bg-base-content/5 p-1"
-          >
-            <.link
-              navigate={~p"/catalog/manufacturers"}
-              class={nav_class(@live_action == :manufacturers)}
-            >
-              Manufacturers
-            </.link>
-            <.link
-              navigate={~p"/catalog/hardware-types"}
-              class={nav_class(@live_action in [:hardware_types, :hardware_type])}
-            >
-              Hardware types
-            </.link>
-            <.link
-              navigate={~p"/catalog/module-types"}
-              class={nav_class(@live_action in [:module_types, :module_type])}
-            >
-              Module types
-            </.link>
-          </nav>
         </header>
 
         <%= case @live_action do %>
@@ -1450,15 +1426,9 @@ defmodule RengaWeb.CatalogLive do
     end
   end
 
-  defp nav_class(active?) do
-    [
-      "rounded-lg px-3 py-2 text-sm font-medium transition",
-      if(active?,
-        do: "bg-base-100 text-base-content shadow-sm",
-        else: "text-base-content/55 hover:text-base-content"
-      )
-    ]
-  end
+  defp catalog_nav(action) when action in [:hardware_types, :hardware_type], do: :hardware_types
+  defp catalog_nav(action) when action in [:module_types, :module_type], do: :module_types
+  defp catalog_nav(:manufacturers), do: :manufacturers
 
   defp humanize(nil), do: "Not specified"
 

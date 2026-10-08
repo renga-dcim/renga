@@ -62,13 +62,6 @@ defmodule RengaWeb.VlanGroupLive do
               identity; it never assigns interface membership.
             </p>
           </div>
-          <.link
-            id="vlan-groups-to-vlans"
-            navigate={~p"/network/vlans"}
-            class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
-          >
-            <.icon name="hero-tag" class="size-4" /> Browse VLANs
-          </.link>
         </header>
 
         <section class="grid gap-3 sm:grid-cols-3">

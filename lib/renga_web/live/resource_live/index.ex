@@ -145,7 +145,7 @@ defmodule RengaWeb.ResourceLive.Index do
     <Layouts.app
       flash={@flash}
       current_scope={@current_scope}
-      active_nav={:resources}
+      active_nav={:inventory}
       content_class="p-0"
     >
       <section id="resource-list" class="flex h-full min-h-0 flex-col">

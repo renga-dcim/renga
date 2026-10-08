@@ -141,37 +141,16 @@ defmodule RengaWeb.DcimLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:dcim}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={dcim_nav(@live_action)}>
       <section id="dcim-workspace" class="mx-auto max-w-7xl space-y-6">
         <header class="flex flex-col gap-4 border-b border-base-content/10 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-orange-600">DCIM</p>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-orange-600">
+              {if(@live_action == :findings, do: "Inbox", else: "Places")}
+            </p>
             <h1 class="mt-2 text-3xl font-semibold tracking-tight">{@page_title}</h1>
             <p class="mt-2 max-w-2xl text-sm text-base-content/55">{@page_description}</p>
           </div>
-          <nav
-            id="dcim-navigation"
-            class="flex gap-1 rounded-lg border border-base-content/10 bg-base-200/50 p-1"
-          >
-            <.link
-              navigate={~p"/places"}
-              class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
-            >
-              Sites
-            </.link>
-            <.link
-              navigate={~p"/places/racks"}
-              class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
-            >
-              Racks
-            </.link>
-            <.link
-              navigate={~p"/inbox/placement"}
-              class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
-            >
-              Findings
-            </.link>
-          </nav>
         </header>
 
         <%= case @live_action do %>
@@ -736,4 +715,10 @@ defmodule RengaWeb.DcimLive do
       errors -> errors |> Map.values() |> List.flatten() |> List.first()
     end
   end
+
+  # The area tabs come from RengaWeb.Navigation; placement findings belong to
+  # the Inbox even though this LiveView renders them.
+  defp dcim_nav(:findings), do: :placement_findings
+  defp dcim_nav(action) when action in [:racks, :rack], do: :racks
+  defp dcim_nav(_action), do: :sites
 end
