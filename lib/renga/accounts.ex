@@ -104,6 +104,20 @@ defmodule Renga.Accounts do
   end
 
   @doc """
+  Active members of the caller's organization with one of `roles`, users
+  preloaded and ordered by email, for pickers such as a finding's assignee.
+  """
+  def list_active_members(%Scope{organization_id: organization_id}, roles) when is_list(roles) do
+    OrganizationMembership
+    |> join(:inner, [membership], user in assoc(membership, :user))
+    |> where([membership], membership.organization_id == ^organization_id)
+    |> where([membership], membership.status == "active" and membership.role in ^roles)
+    |> order_by([_membership, user], asc: user.email)
+    |> preload([_membership, user], user: user)
+    |> Repo.all()
+  end
+
+  @doc """
   Fetches a membership only when it belongs to the caller's organization scope.
   """
   def get_organization_membership!(%Scope{organization_id: organization_id}, id) do
