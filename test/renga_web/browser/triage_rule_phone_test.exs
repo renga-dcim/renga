@@ -9,6 +9,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Renga.TriageFixtures
 
   alias Renga.Inventory
   alias Renga.Teams
@@ -82,7 +83,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
     conn
     |> visit("/inbox?group=triage")
     |> assert_has("body .phx-connected")
-    |> assert_has("#triage-pattern-hostname-web-", text: "web-01, web-02")
+    |> assert_has("#triage-pattern-row-aG9zdG5hbWUtd2ViLQ", text: "web-01, web-02")
     |> evaluate(pattern_link_height_js(), &assert(round(&1) >= 44))
     |> click_link("Create a rule")
     |> assert_has("#rule-panel [role=dialog]")
@@ -95,7 +96,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
   end
 
   defp pattern_link_height_js do
-    "document.querySelector('#triage-pattern-hostname-web--rule').getBoundingClientRect().height"
+    "document.querySelector('#triage-pattern-rule-aG9zdG5hbWUtd2ViLQ').getBoundingClientRect().height"
   end
 
   test "turn on opens the impact preview before enabling at phone width", context do
@@ -125,6 +126,37 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
     |> assert_has("#rule-#{rule.id}[data-enabled=true]")
 
     assert Renga.Repo.reload!(context.server).owner_team_id == context.team.id
+  end
+
+  test "distinct label patterns keep their identity when LiveView removes one", context do
+    first = report_fixture(context.scope, "alpha", labels: %{"team" => "ops.us"})
+    report_fixture(context.scope, "beta", labels: %{"team" => "ops.us"})
+    report_fixture(context.scope, "gamma", labels: %{"team" => "ops-us"})
+    report_fixture(context.scope, "delta", labels: %{"team" => "ops-us"})
+
+    session =
+      context.conn
+      |> visit("/inbox?group=triage")
+      |> assert_has("body .phx-connected")
+      |> assert_has("#triage-patterns li", text: "Label team=ops.us")
+      |> assert_has("#triage-patterns li", text: "Label team=ops-us")
+      |> evaluate(
+        """
+        (() => {
+          const ids = [...document.querySelectorAll('#triage-patterns [id]')].map(el => el.id);
+          return ids.length === new Set(ids).size;
+        })()
+        """,
+        &assert(&1 == true)
+      )
+
+    {:ok, _resource} = Teams.set_owner(context.scope, first, context.team.id)
+
+    session
+    |> refute_has("#triage-patterns li", text: "Label team=ops.us")
+    |> assert_has("#triage-patterns li", text: "Label team=ops-us")
+    |> assert_has("#triage-patterns a[href*='label_value=ops-us']", text: "Create a rule")
+    |> refute_has("#triage-patterns a[href*='label_value=ops.us']")
   end
 
   defp fits_screen_js do

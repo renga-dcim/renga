@@ -31,12 +31,17 @@ defmodule RengaWeb.InboxTriagePatternsLiveTest do
   test "a triage pattern opens its suggested rule, prefilled, and saving clears it", context do
     {:ok, inbox, _html} = live(context.admin_conn, ~p"/inbox?group=triage")
 
-    assert has_element?(inbox, "#triage-pattern-hostname-web-", "Hostname web-*")
-    assert has_element?(inbox, "#triage-pattern-hostname-web-[data-fact=owner]", "web-01, web-02")
+    assert has_element?(inbox, "#triage-pattern-row-aG9zdG5hbWUtd2ViLQ", "Hostname web-*")
+
+    assert has_element?(
+             inbox,
+             "#triage-pattern-row-aG9zdG5hbWUtd2ViLQ[data-fact=owner]",
+             "web-01, web-02"
+           )
 
     {:ok, rules, _html} =
       inbox
-      |> element("#triage-pattern-hostname-web--rule")
+      |> element("#triage-pattern-rule-aG9zdG5hbWUtd2ViLQ")
       |> render_click()
       |> follow_redirect(context.admin_conn)
 
@@ -58,12 +63,12 @@ defmodule RengaWeb.InboxTriagePatternsLiveTest do
     assert Repo.reload!(context.web1).owner_team_id == context.team.id
 
     {:ok, inbox, _html} = live(context.admin_conn, ~p"/inbox?group=triage")
-    refute has_element?(inbox, "#triage-pattern-hostname-web-")
+    refute has_element?(inbox, "#triage-pattern-row-aG9zdG5hbWUtd2ViLQ")
   end
 
   test "patterns follow the missing-fact filter", context do
     {:ok, view, _html} = live(context.admin_conn, ~p"/inbox?group=triage&missing=placement")
-    refute has_element?(view, "#triage-pattern-hostname-web-")
+    refute has_element?(view, "#triage-pattern-row-aG9zdG5hbWUtd2ViLQ")
 
     {:ok, view, _html} = live(context.admin_conn, ~p"/inbox?group=triage&missing=hardware_type")
     refute has_element?(view, "#triage-patterns")
@@ -72,8 +77,8 @@ defmodule RengaWeb.InboxTriagePatternsLiveTest do
   test "members see patterns but cannot create rules from them", context do
     {:ok, view, _html} = live(context.member_conn, ~p"/inbox?group=triage")
 
-    assert has_element?(view, "#triage-pattern-hostname-web-")
-    refute has_element?(view, "#triage-pattern-hostname-web--rule")
+    assert has_element?(view, "#triage-pattern-row-aG9zdG5hbWUtd2ViLQ")
+    refute has_element?(view, "#triage-pattern-rule-aG9zdG5hbWUtd2ViLQ")
 
     {:ok, rules, _html} =
       live(context.member_conn, ~p"/settings/triage-rules?kind=ownership&hostname_pattern=web-*")

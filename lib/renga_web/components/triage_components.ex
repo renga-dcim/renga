@@ -43,7 +43,7 @@ defmodule RengaWeb.TriageComponents do
       <ul class="grid gap-2 sm:grid-cols-2">
         <li
           :for={pattern <- @patterns}
-          id={"triage-pattern-#{pattern_dom_id(pattern.id)}"}
+          id={"triage-pattern-row-#{pattern_dom_id(pattern.id)}"}
           data-fact={pattern.fact}
           class="flex flex-col gap-2 rounded-lg border border-edge bg-surface px-3 py-2.5 transition-colors hover:border-fg-subtle"
         >
@@ -62,7 +62,7 @@ defmodule RengaWeb.TriageComponents do
           </p>
           <.link
             :if={@can_create_rules?}
-            id={"triage-pattern-#{pattern_dom_id(pattern.id)}-rule"}
+            id={"triage-pattern-rule-#{pattern_dom_id(pattern.id)}"}
             navigate={~p"/settings/triage-rules?#{pattern.suggestion}"}
             class="inline-flex min-h-tap items-center gap-1 self-start text-sm text-link hover:underline sm:min-h-0"
           >
@@ -74,8 +74,9 @@ defmodule RengaWeb.TriageComponents do
     """
   end
 
-  # Pattern ids carry subnets and labels; keep DOM ids to safe characters.
-  defp pattern_dom_id(id), do: String.replace(id, ~r/[^A-Za-z0-9_-]/, "-")
+  # Encode the complete identity: replacing punctuation makes distinct
+  # collector labels share a LiveView patch key (for example ops.us/ops-us).
+  defp pattern_dom_id(id), do: Base.url_encode64(id, padding: false)
 
   attr :id, :string, required: true
   attr :entries, :any, required: true
