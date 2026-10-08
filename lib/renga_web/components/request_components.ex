@@ -24,7 +24,7 @@ defmodule RengaWeb.RequestComponents do
 
   attr :id, :string, required: true
   attr :requests, :any, required: true
-  attr :row_click, :any, required: true
+  attr :row_path, :any, required: true
   attr :selected_id, :string, default: nil
   attr :empty, :string, required: true
 
@@ -35,18 +35,24 @@ defmodule RengaWeb.RequestComponents do
       id={@id}
       rows={@requests}
       row_item={fn {_id, item} -> item end}
-      row_click={@row_click}
+      row_click={fn {_id, request} -> JS.patch(@row_path.(request)) end}
       row_selected={fn {_id, request} -> request.id == @selected_id end}
       class="rounded-lg border border-edge bg-surface"
     >
       <:col :let={request} label="Change" class="min-w-0 max-w-[28rem] py-2">
-        <span class="block truncate font-medium text-fg" data-request-kind={request.kind}>
-          {change_summary(request)}
-        </span>
-        <span class="block truncate text-xs text-fg-muted">{request.reason}</span>
-        <span class="block truncate text-xs text-fg-subtle sm:hidden">
-          {resource_name(request.resource)} · {Format.age(request.inserted_at)}
-        </span>
+        <.link
+          id={"request-link-#{request.id}"}
+          patch={@row_path.(request)}
+          class="block rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+        >
+          <span class="block truncate font-medium text-fg" data-request-kind={request.kind}>
+            {change_summary(request)}
+          </span>
+          <span class="block truncate text-xs text-fg-muted">{request.reason}</span>
+          <span class="block truncate text-xs text-fg-subtle sm:hidden">
+            {resource_name(request.resource)} · {Format.age(request.inserted_at)}
+          </span>
+        </.link>
       </:col>
       <:col :let={request} label="Resource" class="hidden max-w-48 truncate sm:table-cell">
         {resource_name(request.resource)}
@@ -85,6 +91,7 @@ defmodule RengaWeb.RequestComponents do
   attr :request, :map, required: true
   attr :current_value, :any, required: true
   attr :similar, :list, required: true
+  attr :similar_current, :map, required: true
   attr :can_decide?, :boolean, required: true
   attr :current_user_id, :string, required: true
   attr :decision_form, :any, required: true
@@ -162,7 +169,17 @@ defmodule RengaWeb.RequestComponents do
           </p>
           <ul class="text-xs text-fg-muted">
             <li :for={other <- @similar} id={"request-similar-#{other.id}"}>
-              {resource_name(other.resource)}
+              <p class="font-medium">{resource_name(other.resource)}</p>
+              <p class="break-words font-mono">
+                {value(other.before_value) || "not set"} → {other.after_value["value"]}
+              </p>
+              <p
+                :if={@similar_current[other.id] != value(other.before_value)}
+                id={"request-similar-moved-#{other.id}"}
+                class="break-words text-warn-text"
+              >
+                Changed since requested; it is now {@similar_current[other.id] || "not set"}.
+              </p>
             </li>
           </ul>
           <p :if={@can_decide?} class="text-xs text-fg-muted">

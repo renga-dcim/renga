@@ -144,13 +144,17 @@ defmodule RengaWeb.RequestLiveTest do
 
     attrs = %{"value" => "retired", "reason" => "Refresh"}
     {:ok, first} = Requests.request_lifecycle(context.member, context.resource, attrs)
-    {:ok, _second} = Requests.request_lifecycle(context.member, other, attrs)
+    {:ok, second} = Requests.request_lifecycle(context.member, other, attrs)
+    {:ok, _} = Inventory.update_resource_lifecycle(context.admin, other, "inactive")
 
     {:ok, view, _html} =
       live(context.admin_conn, ~p"/inbox?#{[group: "requests", request: first.id]}")
 
     assert has_element?(view, "#request-similar", "1 other resource")
     assert has_element?(view, "#request-similar", "web-02")
+    refute has_element?(view, "#request-moved")
+    assert has_element?(view, "#request-similar-#{second.id}", "active → retired")
+    assert has_element?(view, "#request-similar-moved-#{second.id}", "it is now inactive")
 
     view
     |> form("#request-decision-form")

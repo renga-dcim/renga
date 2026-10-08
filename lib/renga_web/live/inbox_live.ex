@@ -372,6 +372,7 @@ defmodule RengaWeb.InboxLive do
         assign(socket,
           selected_request: request,
           similar: similar,
+          similar_current: Map.new(similar, &{&1.id, Requests.current_value(scope, &1)}),
           request_current: Requests.current_value(scope, request)
         )
     end
@@ -564,9 +565,7 @@ defmodule RengaWeb.InboxLive do
           <.request_table
             id="requests"
             requests={@streams.requests}
-            row_click={
-              fn {_id, request} -> JS.patch(inbox_path(@query, request: request.id, finding: nil)) end
-            }
+            row_path={fn request -> inbox_path(@query, request: request.id, finding: nil) end}
             selected_id={@selected_request && @selected_request.id}
             empty="No open requests."
           />
@@ -711,6 +710,7 @@ defmodule RengaWeb.InboxLive do
         request={@selected_request}
         current_value={@request_current}
         similar={@similar}
+        similar_current={@similar_current}
         can_decide?={@can_decide?}
         current_user_id={@current_scope.user.id}
         decision_form={@decision_form}
@@ -737,7 +737,7 @@ defmodule RengaWeb.InboxLive do
       <.request_table
         id="requests"
         requests={@streams.requests}
-        row_click={fn {_id, request} -> JS.patch(inbox_path(@query, request: request.id)) end}
+        row_path={fn request -> inbox_path(@query, request: request.id) end}
         selected_id={@selected_request && @selected_request.id}
         empty={request_empty(@query.status)}
       />

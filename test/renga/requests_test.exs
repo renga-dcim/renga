@@ -103,6 +103,23 @@ defmodule Renga.RequestsTest do
   end
 
   describe "deciding" do
+    test "a member can pin the observed value without changing its text", context do
+      assert Inventory.list_resource_overrides(context.admin, context.resource.id) == []
+
+      assert {:ok, request} =
+               Requests.request_field_override(context.member, context.resource, "vendor", %{
+                 "value" => "Dell",
+                 "reason" => "Verified chassis label"
+               })
+
+      assert request.before_value == request.after_value
+      assert {:ok, 1} = Requests.approve(context.admin, request)
+      assert [override] = Inventory.list_resource_overrides(context.admin, context.resource.id)
+      assert override.value == %{"value" => "Dell"}
+      assert override.reason == "Verified chassis label"
+      assert override.created_by_user_id == context.admin.user.id
+    end
+
     test "approval applies the change as the approver and records the requester", context do
       {:ok, request} =
         Requests.request_lifecycle(context.member, context.resource, %{

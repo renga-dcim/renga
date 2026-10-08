@@ -86,7 +86,9 @@ defmodule Renga.Requests.Request do
   defp normalize(_value), do: nil
 
   defp validate_changed(changeset) do
-    if get_field(changeset, :after_value) == get_field(changeset, :before_value) and
+    # Pinning an observed value changes its ownership even if its text stays the same.
+    if get_field(changeset, :kind) == "lifecycle" and
+         get_field(changeset, :after_value) == get_field(changeset, :before_value) and
          not is_nil(get_field(changeset, :after_value)) do
       add_error(changeset, :after_value, "is already the current value")
     else
