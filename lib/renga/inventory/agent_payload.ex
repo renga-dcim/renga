@@ -29,6 +29,11 @@ defmodule Renga.Inventory.AgentPayload do
   @interface_relationship_kinds ~w(parent lower_device lag_member bridge_member bridged peer vrf_member backed_by)
   @address_kinds ~w(ipv4 ipv6)
   @prohibited_resource_keys ~w(id organization_id resource_id source_id sync_run_id)
+  # Mirrors the agent's own label validation (agent/src/config.rs).
+  @max_labels 32
+  @max_label_key_length 63
+  @max_label_value_length 255
+  @label_key_pattern ~r/\A[A-Za-z0-9]([A-Za-z0-9._\/-]*[A-Za-z0-9])?\z/
 
   @doc """
   Returns the maximum accepted JSON observation payload size in bytes.
@@ -278,7 +283,50 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_coherent_host_identity(resource, path)
     |> validate_interfaces(resource, path)
     |> validate_components(resource, path)
+    |> validate_labels(resource, path)
   end
+
+  # Operator-configured labels the agent sends with each report; triage
+  # rules match them, so keys and sizes are bounded like resource labels.
+  defp validate_labels(errors, resource, path) do
+    case Map.fetch(resource, "labels") do
+      :error ->
+        errors
+
+      {:ok, %{} = labels} when map_size(labels) > @max_labels ->
+        [error("#{path}.labels", "must have at most #{@max_labels} entries") | errors]
+
+      {:ok, %{} = labels} ->
+        Enum.reduce(labels, errors, &validate_label(&1, &2, path))
+
+      {:ok, _invalid} ->
+        [error("#{path}.labels", "must be an object") | errors]
+    end
+  end
+
+  defp validate_label({key, value}, errors, path) do
+    cond do
+      not label_key?(key) ->
+        [error("#{path}.labels", "has an invalid key #{inspect(key)}") | errors]
+
+      not is_binary(value) ->
+        [error("#{path}.labels.#{key}", "must be a string") | errors]
+
+      String.length(value) > @max_label_value_length ->
+        [
+          error("#{path}.labels.#{key}", "must be at most #{@max_label_value_length} characters")
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp label_key?(key) when is_binary(key),
+    do: byte_size(key) <= @max_label_key_length and Regex.match?(@label_key_pattern, key)
+
+  defp label_key?(_key), do: false
 
   defp validate_resource_kind(errors, resource, path) do
     case Map.get(resource, "kind") do

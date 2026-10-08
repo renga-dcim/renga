@@ -138,6 +138,64 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
     end
 
+    test "records where a report came from, its intake key, and its labels", %{conn: conn} do
+      %{scope: scope, source: source, token: token} = source_fixture(%{name: "Rack B fleet"})
+
+      payload =
+        source
+        |> valid_observation_payload()
+        |> put_in(["resources", Access.at(0), "labels"], %{"team" => "storage", "rack.row" => "B"})
+
+      conn =
+        %{conn | remote_ip: {10, 20, 3, 44}}
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+
+      assert %{
+               "observation" => %{"id" => observation_id},
+               "reconciliation" => %{"matched_resource_id" => resource_id}
+             } = json_response(conn, 202)
+
+      observation = Repo.get!(Observation, observation_id) |> Repo.preload(:intake_api_key)
+      assert observation.reported_from == %Postgrex.INET{address: {10, 20, 3, 44}, netmask: nil}
+      assert observation.intake_api_key.name == "Rack B fleet"
+
+      resource = Inventory.get_resource!(scope, resource_id)
+      assert [signal] = Renga.Inventory.ReportingSignals.for_resource(scope, resource)
+      assert signal.source.id == source.id
+      assert signal.reported_from == observation.reported_from
+      assert signal.intake_api_key.name == "Rack B fleet"
+      assert signal.labels == %{"team" => "storage", "rack.row" => "B"}
+    end
+
+    test "rejects malformed labels before raw storage", %{conn: conn} do
+      %{source: source, token: token} = source_fixture()
+
+      for labels <- [
+            %{"-team" => "storage"},
+            %{"team" => 5},
+            %{"team" => String.duplicate("x", 256)},
+            Map.new(0..32, &{"k#{&1}", "v"}),
+            ["team"]
+          ] do
+        payload =
+          source
+          |> valid_observation_payload()
+          |> put_in(["resources", Access.at(0), "labels"], labels)
+
+        response =
+          conn
+          |> authorize(token)
+          |> post(~p"/api/v1/observations", payload)
+          |> json_response(422)
+
+        assert [%{"path" => "resources.0.labels" <> _rest} | _] = response["errors"],
+               "expected #{inspect(labels)} to be rejected"
+      end
+
+      assert Repo.aggregate(Observation, :count) == 0
+    end
+
     test "ingests, replays, partially preserves, and completely withdraws VLAN membership" do
       %{scope: scope, admin_scope: admin_scope, source: source, token: token} = source_fixture()
 

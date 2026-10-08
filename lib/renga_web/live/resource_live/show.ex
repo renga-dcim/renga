@@ -79,7 +79,7 @@ defmodule RengaWeb.ResourceLive.Show do
   end
 
   @impl true
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+  def handle_params(_params, _uri, socket), do: {:noreply, assign_signals(socket)}
 
   @impl true
   def handle_event(
@@ -304,7 +304,7 @@ defmodule RengaWeb.ResourceLive.Show do
           <% :network -> %>
             <.network resource={@resource} />
           <% :sources -> %>
-            <.sources resource={@resource} />
+            <.sources resource={@resource} signals={@signals} />
           <% :activity -> %>
             <.activity events={@resource.change_events} />
         <% end %>
@@ -980,9 +980,54 @@ defmodule RengaWeb.ResourceLive.Show do
 
   attr :resource, :map, required: true
 
+  attr :signals, :list, required: true
+
   defp sources(assigns) do
     ~H"""
     <div class="space-y-6">
+      <section
+        :if={@signals != []}
+        id="reporting-signals"
+        aria-labelledby="reporting-signals-title"
+      >
+        <h2 id="reporting-signals-title" class="mb-1 text-sm font-semibold text-fg">
+          How collectors report it
+        </h2>
+        <p class="mb-2 text-xs text-fg-muted">
+          From each collector's latest report. Triage rules can match the address, intake key,
+          and labels.
+        </p>
+        <ul class="divide-y divide-line rounded-lg border border-edge bg-surface">
+          <li
+            :for={signal <- @signals}
+            id={"signal-#{signal.source.id}"}
+            class="space-y-1 px-4 py-2.5 text-sm"
+          >
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <span class="font-medium text-fg">{signal.source.name}</span>
+              <span :if={signal.reported_from} class="font-mono text-xs text-fg-muted">
+                from {format_inet(signal.reported_from)}
+              </span>
+              <span :if={signal.intake_api_key} class="text-xs text-fg-muted">
+                key {signal.intake_api_key.name}
+              </span>
+              <span class="ml-auto font-mono text-xs text-fg-subtle">
+                {Format.age(signal.observed_at)}
+              </span>
+            </div>
+            <div :if={signal.labels != %{}} class="flex flex-wrap gap-1">
+              <span
+                :for={{key, value} <- Enum.sort(signal.labels)}
+                data-label={key}
+                class="rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-fg"
+              >
+                {key}={value}
+              </span>
+            </div>
+          </li>
+        </ul>
+      </section>
+
       <section id="canonical-identifiers" aria-labelledby="canonical-identifiers-title">
         <h2 id="canonical-identifiers-title" class="mb-2 text-sm font-semibold text-fg">
           Identifiers
@@ -1133,6 +1178,7 @@ defmodule RengaWeb.ResourceLive.Show do
     |> assign_provenance()
     |> assign_findings()
     |> assign_requests()
+    |> assign_signals()
   end
 
   # Members propose lifecycle and override changes instead of applying them;
@@ -1241,6 +1287,14 @@ defmodule RengaWeb.ResourceLive.Show do
 
   defp host_prefix(address) when tuple_size(address) == 4, do: 32
   defp host_prefix(address) when tuple_size(address) == 8, do: 128
+
+  # Only the Sources tab shows reporting signals, so only it loads them.
+  defp assign_signals(%{assigns: %{live_action: :sources}} = socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+    assign(socket, :signals, Renga.Inventory.ReportingSignals.for_resource(scope, resource))
+  end
+
+  defp assign_signals(socket), do: assign(socket, :signals, [])
 
   defp observation_count_label(1), do: "1 observation"
   defp observation_count_label(count), do: "#{count} observations"

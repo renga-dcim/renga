@@ -235,6 +235,8 @@ defmodule Renga.Inventory do
       installation_id,
       agent_attrs,
       fn agent, lease, source ->
+        observation_attrs = Map.put(observation_attrs, :intake_api_key_id, intake_api_key.id)
+
         case accept_observation(scope, source.id, observation_attrs) do
           {:ok, observation, disposition} ->
             {agent, lease, observation, disposition}
@@ -1987,10 +1989,14 @@ defmodule Renga.Inventory do
     source = get_source!(scope, source_id)
     attrs = normalize_observation_attrs(scope, source.id, attrs)
 
+    # Intake signals are trusted only as atom keys, which callers set
+    # server-side; decoded JSON payloads only ever carry string keys.
     %Observation{
       organization_id: organization_id,
       source_id: source.id,
-      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id")
+      sync_run_id: Map.get(attrs, :sync_run_id) || Map.get(attrs, "sync_run_id"),
+      reported_from: Map.get(attrs, :reported_from),
+      intake_api_key_id: Map.get(attrs, :intake_api_key_id)
     }
     |> Observation.changeset(attrs)
     |> Repo.insert()

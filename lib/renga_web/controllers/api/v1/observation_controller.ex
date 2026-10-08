@@ -16,7 +16,7 @@ defmodule RengaWeb.Api.V1.ObservationController do
              intake_api_key,
              conn.assigns.current_installation_id,
              %{},
-             attrs
+             Map.put(attrs, :reported_from, reported_from(conn))
            ) do
       respond_to_accepted_observation(conn, observation, disposition)
     else
@@ -29,6 +29,13 @@ defmodule RengaWeb.Api.V1.ObservationController do
     |> put_status(:forbidden)
     |> json(%{errors: [%{path: "source.kind", message: "must be host_agent"}]})
   end
+
+  # The address the endpoint saw. Behind a proxy, deployments rewrite
+  # `remote_ip` from forwarding headers before it reaches here.
+  defp reported_from(%{remote_ip: address}) when is_tuple(address),
+    do: %Postgrex.INET{address: address, netmask: nil}
+
+  defp reported_from(_conn), do: nil
 
   defp respond_to_accepted_observation(conn, observation, disposition) do
     reconciliation =

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict j1ceygFQt127iXaOK9rMzNbMMavMvaBwZBBKclxbMtv9QDBT255k8VjsfQAASyG
+\restrict ZpDp9CtsrAJbXCxkGXMPJAonlxsshZN93lOMBEGMGZ5HcedGhDbu1qHy6Rn3YKQ
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -1725,7 +1725,9 @@ CREATE TABLE public.observations (
     observed_at timestamp(3) without time zone NOT NULL,
     payload_digest bytea NOT NULL,
     payload jsonb NOT NULL,
-    inserted_at timestamp(3) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    reported_from inet,
+    intake_api_key_id uuid
 );
 
 
@@ -3698,6 +3700,13 @@ CREATE UNIQUE INDEX hosts_organization_id_resource_id_index ON public.hosts USIN
 
 
 --
+-- Name: intake_api_keys_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX intake_api_keys_id_organization_id_index ON public.intake_api_keys USING btree (id, organization_id);
+
+
+--
 -- Name: intake_api_keys_organization_id_status_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4129,6 +4138,13 @@ CREATE UNIQUE INDEX observations_id_organization_id_index ON public.observations
 --
 
 CREATE UNIQUE INDEX observations_id_organization_id_source_id_index ON public.observations USING btree (id, organization_id, source_id);
+
+
+--
+-- Name: observations_organization_id_intake_api_key_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX observations_organization_id_intake_api_key_id_index ON public.observations USING btree (organization_id, intake_api_key_id);
 
 
 --
@@ -6226,6 +6242,14 @@ ALTER TABLE ONLY public.observation_reconciliations
 
 
 --
+-- Name: observations observations_intake_api_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_intake_api_key_fkey FOREIGN KEY (intake_api_key_id, organization_id) REFERENCES public.intake_api_keys(id, organization_id) ON DELETE SET NULL (intake_api_key_id);
+
+
+--
 -- Name: observations observations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6773,7 +6797,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict j1ceygFQt127iXaOK9rMzNbMMavMvaBwZBBKclxbMtv9QDBT255k8VjsfQAASyG
+\unrestrict ZpDp9CtsrAJbXCxkGXMPJAonlxsshZN93lOMBEGMGZ5HcedGhDbu1qHy6Rn3YKQ
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6818,3 +6842,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261009120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261009130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261010140000);
