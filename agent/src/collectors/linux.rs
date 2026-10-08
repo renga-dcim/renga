@@ -189,6 +189,7 @@ fn collect_from_with_sources(
         }),
         interfaces,
         components,
+        labels: Default::default(),
     })
 }
 

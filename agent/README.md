@@ -57,6 +57,11 @@ file values:
 * `RENGA_REQUEST_TIMEOUT_SECONDS`
 * `RENGA_MAX_RETRY_ATTEMPTS`
 
+An optional `[labels]` table adds key/value labels to every observation, for
+example `team = "storage"`; Renga's triage rules can match them. Labels are
+read only from the file, not from environment variables, and follow the limits
+documented in the example.
+
 `checkin_interval_seconds` must be between 1 and 60 seconds. The 60-second
 maximum keeps check-ins within the server's fixed 90-second lease while
 reserving a 25-second total check-in delivery budget. Request timeouts may not

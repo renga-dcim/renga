@@ -8,6 +8,7 @@ use renga_agent::{
     transport::HttpClient,
 };
 use std::{
+    collections::BTreeMap,
     error::Error,
     path::PathBuf,
     thread,
@@ -73,6 +74,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let operations = RuntimeOperations {
         client: &client,
         stopped: &stopped,
+        labels: &config.labels,
     };
     let startup_failures = deliver_startup(&operations);
     if args.once {
@@ -118,10 +120,13 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         }
                         let inventory_client = client.clone();
                         let inventory_stopped = stopped.clone();
+                        let inventory_labels = config.labels.clone();
                         inventory_worker = Some(thread::spawn(move || {
-                            if let Err(failure) =
-                                send_inventory(&inventory_client, &inventory_stopped)
-                            {
+                            if let Err(failure) = send_inventory(
+                                &inventory_client,
+                                &inventory_stopped,
+                                &inventory_labels,
+                            ) {
                                 warn!(error = %failure, "inventory failed");
                             }
                         }));
@@ -174,8 +179,12 @@ fn send_checkin(client: &HttpClient) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn send_inventory(client: &HttpClient, stopped: &Cancellation) -> Result<(), Box<dyn Error>> {
-    let observation = Observation::new(collectors::collect(stopped)?);
+fn send_inventory(
+    client: &HttpClient,
+    stopped: &Cancellation,
+    labels: &BTreeMap<String, String>,
+) -> Result<(), Box<dyn Error>> {
+    let observation = Observation::new(collectors::collect(stopped)?).with_labels(labels);
     client.post_observation(&observation)?;
     info!(observation_id = %observation.observation_id, "observation posted");
     Ok(())
@@ -189,6 +198,7 @@ trait Operations {
 struct RuntimeOperations<'a> {
     client: &'a HttpClient,
     stopped: &'a Cancellation,
+    labels: &'a BTreeMap<String, String>,
 }
 
 impl Operations for RuntimeOperations<'_> {
@@ -196,7 +206,7 @@ impl Operations for RuntimeOperations<'_> {
         send_checkin(self.client)
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
-        send_inventory(self.client, self.stopped)
+        send_inventory(self.client, self.stopped, self.labels)
     }
 }
 

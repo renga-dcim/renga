@@ -17,3 +17,12 @@ checkin_interval_seconds = 60
 config_refresh_interval_seconds = 300
 request_timeout_seconds = 20
 max_retry_attempts = 5
+
+# Optional labels sent with every observation. Renga's triage rules can match
+# them, for example to set the owning team. At most 32 labels; keys are 1-63
+# letters, digits, ".", "_", "-", or "/", starting and ending with a letter or
+# digit; values are at most 255 characters. Labels describe how you run the
+# host and are not collected from it.
+# [labels]
+# team = "storage"
+# environment = "production"

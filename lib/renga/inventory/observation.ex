@@ -27,10 +27,14 @@ defmodule Renga.Inventory.Observation do
     field :observed_at, :utc_datetime_usec
     field :payload_digest, :binary
     field :payload, :map
+    # Set by the server at intake, never from the payload: the address the
+    # report arrived from and the intake key it authenticated with.
+    field :reported_from, Renga.Types.Inet
 
     belongs_to :organization, Organization
     belongs_to :source, Source
     belongs_to :sync_run, SyncRun
+    belongs_to :intake_api_key, Renga.Inventory.IntakeApiKey
     has_many :reconciliations, ObservationReconciliation
     has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :change_events, ChangeEvent

@@ -3,6 +3,7 @@
 use crate::identity;
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     env, fmt, fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -18,6 +19,11 @@ const RETRIES_DEFAULT: u32 = 5;
 const TIMEOUT_MAX: u64 = 20;
 const RETRIES_MAX: u32 = 5;
 pub const DELIVERY_BUDGET: Duration = Duration::from_secs(25);
+// Must match `Renga.Inventory.AgentPayload` so the server never rejects a
+// report for labels the agent accepted.
+const LABELS_MAX: usize = 32;
+const LABEL_KEY_MAX: usize = 63;
+const LABEL_VALUE_MAX: usize = 255;
 
 /// Validated runtime configuration. The token is intentionally redacted from Debug.
 #[derive(Clone)]
@@ -32,6 +38,9 @@ pub struct Config {
     pub config_refresh_interval: Duration,
     pub request_timeout: Duration,
     pub max_retry_attempts: u32,
+    /// Operator-chosen key/value labels sent with every observation, so
+    /// Renga's triage rules can match them (for example `team = "storage"`).
+    pub labels: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for Config {
@@ -47,6 +56,7 @@ impl fmt::Debug for Config {
             .field("config_refresh_interval", &self.config_refresh_interval)
             .field("request_timeout", &self.request_timeout)
             .field("max_retry_attempts", &self.max_retry_attempts)
+            .field("labels", &self.labels)
             .finish()
     }
 }
@@ -73,6 +83,7 @@ struct RawConfig {
     config_refresh_interval_seconds: Option<u64>,
     request_timeout_seconds: Option<u64>,
     max_retry_attempts: Option<u32>,
+    labels: Option<BTreeMap<String, String>>,
 }
 
 impl Config {
@@ -207,6 +218,7 @@ impl Config {
                 "request_timeout_seconds must not exceed {TIMEOUT_MAX}"
             )));
         }
+        let labels = validate_labels(raw.labels.unwrap_or_default())?;
         Ok(Self {
             config_path,
             renga_url,
@@ -226,8 +238,43 @@ impl Config {
             )?,
             request_timeout,
             max_retry_attempts,
+            labels,
         })
     }
+}
+
+fn validate_labels(
+    labels: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ConfigError> {
+    if labels.len() > LABELS_MAX {
+        return Err(ConfigError(format!(
+            "labels must have at most {LABELS_MAX} entries"
+        )));
+    }
+    for (key, value) in &labels {
+        if !valid_label_key(key) {
+            return Err(ConfigError(format!(
+                "label key {key:?} must be 1-{LABEL_KEY_MAX} letters, digits, '.', '_', '-', or '/', starting and ending with a letter or digit"
+            )));
+        }
+        if value.chars().count() > LABEL_VALUE_MAX {
+            return Err(ConfigError(format!(
+                "label {key:?} must be at most {LABEL_VALUE_MAX} characters"
+            )));
+        }
+    }
+    Ok(labels)
+}
+
+fn valid_label_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= LABEL_KEY_MAX
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
 }
 
 #[cfg(test)]
@@ -251,6 +298,38 @@ mod tests {
             installation_id: Some("67e55044-10b1-426f-9247-bb680e5fe0c8".into()),
             ..Default::default()
         }
+    }
+    #[test]
+    fn labels_are_optional_and_validated() {
+        assert!(from_raw(raw()).unwrap().labels.is_empty());
+
+        let r: RawConfig = toml::from_str(
+            "renga_url='https://renga.test'\nintake_api_key='y'\n[labels]\nteam='storage'\n\"rack.row\"='B'\n",
+        )
+        .unwrap();
+        let mut r = r;
+        r.installation_id = raw().installation_id;
+        let labels = from_raw(r).unwrap().labels;
+        assert_eq!(labels.get("team").map(String::as_str), Some("storage"));
+        assert_eq!(labels.get("rack.row").map(String::as_str), Some("B"));
+
+        for key in ["", "-team", "team-", "has space", &"k".repeat(64)] {
+            let mut r = raw();
+            r.labels = Some(BTreeMap::from([(key.to_string(), "v".to_string())]));
+            assert!(from_raw(r).is_err(), "{key:?} should be rejected");
+        }
+
+        let mut r = raw();
+        r.labels = Some(BTreeMap::from([("team".to_string(), "v".repeat(256))]));
+        assert!(from_raw(r).is_err());
+
+        let mut r = raw();
+        r.labels = Some(
+            (0..33)
+                .map(|i| (format!("k{i}"), "v".to_string()))
+                .collect(),
+        );
+        assert!(from_raw(r).is_err());
     }
     #[test]
     fn defaults_are_sane_and_secret_is_redacted() {
