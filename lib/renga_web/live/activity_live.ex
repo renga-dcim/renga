@@ -11,18 +11,38 @@ defmodule RengaWeb.ActivityLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
 
   @page_size 50
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket), do: Changes.subscribe(socket.assigns.current_scope)
     events = Inventory.list_activity(socket.assigns.current_scope, limit: @page_size)
 
     {:ok,
      socket
-     |> assign(page_title: "Activity")
+     |> assign(page_title: "Activity", newest: List.first(events))
      |> assign_page(events)
      |> stream(:events, events)}
+  end
+
+  # New changes are added on top without reloading, so older pages someone
+  # has loaded stay on screen.
+  @impl true
+  def handle_info({:inventory_changed, _organization_id}, socket) do
+    newer =
+      Inventory.list_activity(socket.assigns.current_scope,
+        after: socket.assigns.newest,
+        limit: @page_size
+      )
+
+    socket =
+      newer
+      |> Enum.reverse()
+      |> Enum.reduce(socket, &stream_insert(&2, :events, &1, at: 0))
+
+    {:noreply, assign(socket, :newest, List.first(newer) || socket.assigns.newest)}
   end
 
   @impl true

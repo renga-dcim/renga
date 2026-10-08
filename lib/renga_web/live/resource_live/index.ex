@@ -5,7 +5,8 @@ defmodule RengaWeb.ResourceLive.Index do
   All list state (search, filters, grouping, sorting, columns, page) lives in
   the URL through `RengaWeb.InventoryQuery`, so any view can be shared or
   bookmarked. Rows open the resource's object page; there is no second,
-  partial view of a resource here.
+  partial view of a resource here. The list re-reads itself when the
+  organization's inventory changes, so it has no refresh control.
   """
   use RengaWeb, :live_view
 
@@ -14,6 +15,7 @@ defmodule RengaWeb.ResourceLive.Index do
   import RengaWeb.InventoryComponents
 
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
   alias RengaWeb.Format
   alias RengaWeb.InventoryQuery
 
@@ -25,9 +27,14 @@ defmodule RengaWeb.ResourceLive.Index do
     "seen" => "Seen"
   }
 
+  # Collector reports arrive in bursts; wait this long after a change before
+  # re-reading so one burst causes one reload.
+  @reload_after_ms 400
+
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
+    if connected?(socket), do: Changes.subscribe(scope)
 
     {:ok,
      assign(socket,
@@ -35,7 +42,8 @@ defmodule RengaWeb.ResourceLive.Index do
        can_manage?: Inventory.organization_manager?(scope),
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
-       column_labels: @column_labels
+       column_labels: @column_labels,
+       reload_timer: nil
      )}
   end
 
@@ -88,8 +96,6 @@ defmodule RengaWeb.ResourceLive.Index do
     {:noreply, patch(socket, %{InventoryQuery.parse(params) | page: 1})}
   end
 
-  def handle_event("refresh", _params, socket), do: {:noreply, load_resources(socket)}
-
   # Selection lives in the URL (`sel`), like every other piece of list state,
   # so a selection can be shared and survives paging and filtering.
   def handle_event("toggle_selection", %{"id" => id}, socket) do
@@ -136,6 +142,26 @@ defmodule RengaWeb.ResourceLive.Index do
          |> put_flash(:error, "Resources changed while saving; review them and try again")
          |> load_resources()}
     end
+  end
+
+  @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
+    {:noreply,
+     assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
+  end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
+
+  def handle_info(:reload, socket) do
+    scope = socket.assigns.current_scope
+
+    {:noreply,
+     socket
+     |> assign(reload_timer: nil, kinds: Inventory.list_resource_kinds(scope))
+     |> load_resources()}
   end
 
   defp patch(socket, query), do: push_patch(socket, to: list_path(query))
@@ -208,9 +234,6 @@ defmodule RengaWeb.ResourceLive.Index do
           </div>
           <div class="flex items-center gap-2">
             <.display_menu query={@query} column_labels={@column_labels} />
-            <.button id="refresh-resources" size="sm" variant="ghost" phx-click="refresh">
-              <.icon name="hero-arrow-path" class="size-4" /> Refresh
-            </.button>
           </div>
         </header>
 

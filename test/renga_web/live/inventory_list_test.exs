@@ -278,4 +278,30 @@ defmodule RengaWeb.InventoryListTest do
       refute Inventory.get_resource!(scope, server.id).lifecycle_state == "retired"
     end
   end
+
+  describe "live updates" do
+    # Polls instead of sleeping a fixed time: the list waits briefly after a
+    # change so a burst of reports causes one reload.
+    defp eventually(fun, attempts \\ 40) do
+      cond do
+        fun.() -> true
+        attempts == 0 -> false
+        true -> Process.sleep(25) && eventually(fun, attempts - 1)
+      end
+    end
+
+    test "re-reads the list when the organization's inventory changes", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, view, _html} = live(conn, ~p"/inventory")
+      refute has_element?(view, "#refresh-resources")
+
+      new = resource!(scope, %{kind: "server", name: "arrived-01"})
+      refute has_element?(view, "#resources-#{new.id}")
+
+      Renga.Inventory.Changes.broadcast({:ok, new}, scope.organization_id)
+      assert eventually(fn -> has_element?(view, "#resources-#{new.id}") end)
+    end
+  end
 end

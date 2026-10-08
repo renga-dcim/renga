@@ -109,4 +109,23 @@ defmodule RengaWeb.ActivityLiveTest do
     assert has_element?(view, "#events-#{oldest.id}", "Marked stale")
     refute has_element?(view, "#activity-load-older")
   end
+
+  test "adds new changes on top as they happen", %{conn: conn, scope: scope, resource: resource} do
+    older =
+      event!(scope, %{resource_id: resource.id, kind: "discovered", occurred_at: minutes_ago(5)})
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    newer = event!(scope, %{resource_id: resource.id, kind: "stale"})
+    Renga.Inventory.Changes.broadcast({:ok, newer}, scope.organization_id)
+
+    row_ids =
+      view
+      |> render()
+      |> LazyHTML.from_document()
+      |> LazyHTML.query("#activity-events tr[data-phx-stream]")
+      |> LazyHTML.attribute("id")
+
+    assert row_ids == ["events-#{newer.id}", "events-#{older.id}"]
+  end
 end

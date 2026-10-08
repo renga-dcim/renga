@@ -19,6 +19,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.Host
   alias Renga.Inventory.IntakeApiKey
@@ -1113,7 +1114,7 @@ defmodule Renga.Inventory do
           else: {:error, changeset}
 
       result ->
-        result
+        Changes.broadcast(result, scope.organization_id)
     end
   end
 
@@ -1140,6 +1141,7 @@ defmodule Renga.Inventory do
       |> Repo.all()
       |> Enum.reduce_while({:ok, 0}, &set_lifecycle(scope, &1, state, &2))
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   defp set_lifecycle(scope, resource, state, {:ok, count}) do
@@ -1242,6 +1244,7 @@ defmodule Renga.Inventory do
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -1964,14 +1967,17 @@ defmodule Renga.Inventory do
   """
   def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
-    Reconciler.reconcile(scope, observation)
+
+    scope
+    |> Reconciler.reconcile(observation)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile(scope, observation,
-        authorize: fn -> authorize_reconciliation!(scope) end
-      )
+      scope
+      |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -1981,14 +1987,19 @@ defmodule Renga.Inventory do
   """
   def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
-    Reconciler.reconcile_once(scope, observation)
+
+    scope
+    |> Reconciler.reconcile_once(observation)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation_once(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile_once(scope, observation,
+      scope
+      |> Reconciler.reconcile_once(observation,
         authorize: fn -> authorize_reconciliation!(scope) end
       )
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -2048,16 +2059,29 @@ defmodule Renga.Inventory do
   ## Options
 
     * `:before` - the last `%ChangeEvent{}` of the previous page
+    * `:after` - only events newer than this `%ChangeEvent{}`, for adding
+      what arrived since the feed was loaded
     * `:limit` - page size, 50 by default
   """
   def list_activity(%Scope{organization_id: organization_id}, opts \\ []) do
     ChangeEvent
     |> where([event], event.organization_id == ^organization_id)
     |> activity_before(Keyword.get(opts, :before))
+    |> activity_after(Keyword.get(opts, :after))
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :source])
     |> Repo.all()
+  end
+
+  defp activity_after(query, nil), do: query
+
+  defp activity_after(query, %ChangeEvent{occurred_at: occurred_at, id: id}) do
+    where(
+      query,
+      [event],
+      event.occurred_at > ^occurred_at or (event.occurred_at == ^occurred_at and event.id > ^id)
+    )
   end
 
   defp activity_before(query, nil), do: query
@@ -2144,6 +2168,7 @@ defmodule Renga.Inventory do
 
       condition
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -2199,6 +2224,7 @@ defmodule Renga.Inventory do
         {:error, error} -> Repo.rollback(error)
       end
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc false
