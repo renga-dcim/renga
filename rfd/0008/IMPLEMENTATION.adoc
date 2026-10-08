@@ -36,10 +36,10 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 == Phase 5: Triage
 
-* [ ] Compute triage from missing placement, hardware type, owner, and
+* [X] Compute triage from missing placement, hardware type, owner, and
   duplicate-identity facts, excluding virtual machines.
-* [ ] Group triage by pattern and suggest rules for common patterns.
-* [ ] Add network-location, top-of-rack switch, and ownership rule types with
+* [X] Group triage by pattern and suggest rules for common patterns.
+* [X] Add network-location, top-of-rack switch, and ownership rule types with
   match previews, rule provenance on set values, Activity entries, and no
   overwriting of person-set facts or rack units.
 
