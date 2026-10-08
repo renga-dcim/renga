@@ -88,6 +88,53 @@ defmodule Renga.TriageTest do
     assert Triage.identity_candidates(scope, first) == []
   end
 
+  test "a newer clean report clears only its own reporting identity", %{scope: scope} do
+    first = resource!(scope, "server", "web-01")
+    second = resource!(scope, "server", "web-02")
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "shared"})
+    old = observation!(scope, source, ~U[2026-10-01 00:00:00Z])
+    claim!(scope, old, "machine_id", "host-a")
+    claim!(scope, old, "hostname", "shared-name")
+    {:ok, _attempt} = ambiguous_attempt(scope, old, 1, [first.id, second.id])
+
+    # Same source, candidate and hostname, but a different host must not clear it.
+    other_host = observation!(scope, source, ~U[2026-10-02 00:00:00Z])
+    claim!(scope, other_host, "machine_id", "host-b")
+    claim!(scope, other_host, "hostname", "shared-name")
+    succeed!(scope, other_host, first)
+    assert :identity in Triage.missing(scope, first)
+
+    clean = observation!(scope, source, ~U[2026-10-03 00:00:00Z])
+    claim!(scope, clean, "machine_id", "host-a")
+    succeed!(scope, clean, first)
+
+    refute :identity in Triage.missing(scope, first)
+    refute :identity in Triage.missing(scope, second)
+    assert Triage.identity_candidates(scope, first) == []
+    assert %{identity: 0} = Triage.counts(scope)
+    assert {[], 0} = Triage.list_triage(scope, missing: :identity)
+  end
+
+  test "old clean reports and another source cannot supersede ambiguity", %{scope: scope} do
+    first = resource!(scope, "server", "web-01")
+    second = resource!(scope, "server", "web-02")
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-a"})
+    old = observation!(scope, source, ~U[2026-10-01 00:00:00Z])
+    claim!(scope, old, "machine_id", "host-a")
+    succeed!(scope, old, first)
+    ambiguous = observation!(scope, source, ~U[2026-10-02 00:00:00Z])
+    claim!(scope, ambiguous, "machine_id", "host-a")
+    {:ok, _attempt} = ambiguous_attempt(scope, ambiguous, 1, [first.id, second.id])
+
+    {:ok, other} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-b"})
+    clean = observation!(scope, other, ~U[2026-10-03 00:00:00Z])
+    claim!(scope, clean, "machine_id", "host-a")
+    succeed!(scope, clean, first)
+
+    assert :identity in Triage.missing(scope, first)
+    assert Enum.map(Triage.identity_candidates(scope, first), & &1.id) == [second.id]
+  end
+
   test "filters by a missing fact and counts each", %{scope: scope} do
     owned = resource!(scope, "server", "web-01")
     resource!(scope, "server", "web-02")
@@ -122,17 +169,44 @@ defmodule Renga.TriageTest do
     resource
   end
 
-  defp observation!(scope) do
-    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent"})
+  defp observation!(scope, source \\ nil, observed_at \\ DateTime.utc_now()) do
+    source =
+      source ||
+        elem(Inventory.create_source(scope, %{kind: "host_agent", name: "agent"}), 1)
 
     {:ok, observation} =
       Inventory.create_observation(scope, source.id, %{
-        idempotency_key: "report-1",
-        observed_at: DateTime.utc_now(),
+        idempotency_key: "report-#{System.unique_integer([:positive])}",
+        observed_at: observed_at,
         payload: %{"resources" => []}
       })
 
     observation
+  end
+
+  defp claim!(scope, observation, kind, value) do
+    {:ok, claim} =
+      Inventory.create_resource_identifier_claim(scope, observation.source_id, observation.id, %{
+        kind: kind,
+        value: value,
+        first_seen_at: observation.observed_at,
+        last_seen_at: observation.observed_at
+      })
+
+    claim
+  end
+
+  defp succeed!(scope, observation, resource) do
+    {:ok, result} =
+      Inventory.create_observation_reconciliation(scope, observation.id, %{
+        status: "succeeded",
+        attempt: 1,
+        matched_resource_id: resource.id,
+        started_at: DateTime.utc_now(),
+        completed_at: DateTime.utc_now()
+      })
+
+    result
   end
 
   defp ambiguous_attempt(scope, observation, attempt, candidates) do

@@ -595,6 +595,10 @@ defmodule Renga.TriageRules do
          organization_id: organization_id
        })
        when not is_nil(membership_id) do
+    # Match Teams/DCIM: organization before membership, including across
+    # nested mutations, so concurrent manager actions cannot deadlock.
+    unless active_organization?(organization_id), do: Repo.rollback(:forbidden)
+
     manager? =
       OrganizationMembership
       |> where([membership], membership.id == ^membership_id)
@@ -605,7 +609,7 @@ defmodule Renga.TriageRules do
       |> lock("FOR UPDATE")
       |> Repo.exists?()
 
-    unless active_organization?(organization_id) and manager?, do: Repo.rollback(:forbidden)
+    unless manager?, do: Repo.rollback(:forbidden)
   end
 
   defp authorize!(%Scope{}), do: Repo.rollback(:forbidden)

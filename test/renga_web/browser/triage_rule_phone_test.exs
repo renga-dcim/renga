@@ -12,6 +12,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
 
   alias Renga.Inventory
   alias Renga.Teams
+  alias Renga.TriageRules
 
   @moduletag :playwright
   @moduletag browser_context_opts: [
@@ -43,7 +44,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
       })
 
     {:ok, _host} = Inventory.create_host(scope, other.id, %{hostname: "web-02"})
-    {:ok, _team} = Teams.create_team(scope, %{"name" => "Platform"})
+    {:ok, team} = Teams.create_team(scope, %{"name" => "Platform"})
 
     conn =
       add_session_cookie(
@@ -57,7 +58,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn}
+    %{conn: conn, scope: scope, team: team, server: server}
   end
 
   test "previews and saves an ownership rule at phone width", %{conn: conn} do
@@ -91,6 +92,35 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
     |> evaluate(fits_screen_js(), &assert(&1 == true))
     |> click_button("Save and apply")
     |> assert_has("#rules-ownership li", text: "hostname web-*")
+  end
+
+  test "turn on opens the impact preview before enabling at phone width", context do
+    {:ok, %{rule: rule}} =
+      TriageRules.create_rule(context.scope, %{
+        kind: "ownership",
+        name: "Web",
+        enabled: false,
+        hostname_pattern: "web-*",
+        team_id: context.team.id
+      })
+
+    session =
+      context.conn
+      |> visit("/settings/triage-rules")
+      |> assert_has("body .phx-connected")
+      |> click_button("Turn on")
+      |> assert_has("#rule-panel [role=dialog]")
+      |> assert_has("#rule-preview-will-set", text: "Sets the owner on 2 resources")
+      |> evaluate(fits_screen_js(), &assert(&1 == true))
+
+    refute TriageRules.get_rule(context.scope, rule.id).enabled
+    assert Renga.Repo.reload!(context.server).owner_team_id == nil
+
+    session
+    |> click_button("Save and apply")
+    |> assert_has("#rule-#{rule.id}[data-enabled=true]")
+
+    assert Renga.Repo.reload!(context.server).owner_team_id == context.team.id
   end
 
   defp pattern_link_height_js do
