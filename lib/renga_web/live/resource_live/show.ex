@@ -5,6 +5,11 @@ defmodule RengaWeb.ResourceLive.Show do
   Overview, Network, Sources, and Activity tabs; Hardware is its own page in
   the same frame (`RengaWeb.ResourceHardwareLive`).
 
+  Each host value in the aside opens a panel that shows where it comes from
+  (RFD 8, "Values, provenance, and drift"): every source's report, which one
+  won and why, drift from desired state, and, for owners and admins, an
+  override.
+
   The page re-reads the resource when the organization's inventory changes,
   so collector reports and other people's edits appear without a refresh.
   """
@@ -17,6 +22,8 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.FieldProvenance
+  alias Renga.Inventory.SourcePrecedence
   alias RengaWeb.Format
 
   @lifecycle_options [
@@ -24,6 +31,14 @@ defmodule RengaWeb.ResourceLive.Show do
     {"Inactive — out of service", "inactive"},
     {"Retired — no longer used", "retired"},
     {"Unknown — not classified", "unknown"}
+  ]
+
+  @host_fields [
+    {"hostname", "Hostname"},
+    {"fqdn", "FQDN"},
+    {"vendor", "Vendor"},
+    {"model", "Model"},
+    {"asset_tag", "Asset tag"}
   ]
 
   @reload_after_ms 400
@@ -42,8 +57,11 @@ defmodule RengaWeb.ResourceLive.Show do
        lifecycle_form: lifecycle_form(resource),
        hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
        can_manage_lifecycle?: Inventory.organization_manager?(scope),
+       host_fields: @host_fields,
        reload_timer: nil
-     )}
+     )
+     |> assign_provenance()
+     |> reset_override_forms()}
   end
 
   @impl true
@@ -77,6 +95,61 @@ defmodule RengaWeb.ResourceLive.Show do
 
       {:error, %Ecto.Changeset{}} ->
         {:noreply, put_flash(socket, :error, "Select a valid lifecycle state")}
+    end
+  end
+
+  def handle_event("set_override", %{"field" => field, "override" => params}, socket)
+      when is_map(params) do
+    with true <- field in FieldProvenance.fields(),
+         {:ok, _override} <-
+           Inventory.set_field_override(
+             socket.assigns.current_scope,
+             socket.assigns.resource,
+             field,
+             params
+           ) do
+      {:noreply,
+       socket
+       |> put_flash(:info, "#{field_label(field)} override saved")
+       |> close_overlay("provenance-#{field}")
+       |> reload_resource()
+       |> reset_override_forms()}
+    else
+      false ->
+        {:noreply, socket}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = to_form(params, as: :override, id: "override-#{field}", errors: changeset.errors)
+        {:noreply, update(socket, :override_forms, &Map.put(&1, field, form))}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Overrides require the owner or admin role")}
+    end
+  end
+
+  def handle_event("clear_override", %{"field" => field}, socket) do
+    with true <- field in FieldProvenance.fields(),
+         {:ok, _host} <-
+           Inventory.clear_field_override(
+             socket.assigns.current_scope,
+             socket.assigns.resource,
+             field
+           ) do
+      {:noreply,
+       socket
+       |> put_flash(:info, "#{field_label(field)} returned to its sources")
+       |> close_overlay("provenance-#{field}")
+       |> reload_resource()
+       |> reset_override_forms()}
+    else
+      false ->
+        {:noreply, socket}
+
+      {:error, :not_found} ->
+        {:noreply, reload_resource(socket)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Overrides require the owner or admin role")}
     end
   end
 
@@ -128,27 +201,14 @@ defmodule RengaWeb.ResourceLive.Show do
           <.properties id="resource-properties">
             <:item label="Kind">{Format.humanize(@resource.kind)}</:item>
             <:item
-              label="Hostname"
-              blank={blank_host?(@resource, :hostname)}
+              :for={{field, label} <- @host_fields}
+              label={label}
+              blank={is_nil(@provenance[field].value) and !@provenance[field].drift?}
               placeholder="Not reported"
+              on_edit={show_overlay("provenance-#{field}")}
+              edit_label={"Where #{label} comes from:"}
             >
-              {host_value(@resource, :hostname)}
-            </:item>
-            <:item label="FQDN" blank={blank_host?(@resource, :fqdn)} placeholder="Not reported">
-              {host_value(@resource, :fqdn)}
-            </:item>
-            <:item label="Vendor" blank={blank_host?(@resource, :vendor)} placeholder="Not reported">
-              {host_value(@resource, :vendor)}
-            </:item>
-            <:item label="Model" blank={blank_host?(@resource, :model)} placeholder="Not reported">
-              {host_value(@resource, :model)}
-            </:item>
-            <:item
-              label="Asset tag"
-              blank={blank_host?(@resource, :asset_tag)}
-              placeholder="Not reported"
-            >
-              {host_value(@resource, :asset_tag)}
+              <.provenance_value id={"property-#{field}"} provenance={@provenance[field]} />
             </:item>
             <:item
               label="Sources"
@@ -161,7 +221,192 @@ defmodule RengaWeb.ResourceLive.Show do
           </.properties>
         </:aside>
       </.resource_frame>
+
+      <.provenance_panel
+        :for={{field, label} <- @host_fields}
+        label={label}
+        provenance={@provenance[field]}
+        form={@override_forms[field]}
+        can_manage?={@can_manage_lifecycle?}
+      />
     </Layouts.app>
+    """
+  end
+
+  # A value as the aside shows it. Drift sits on the value itself ("R750,
+  # expected R760") with a shape marker, so it reads without color; the
+  # expected value takes its own line so truncation cannot hide it.
+  attr :id, :string, required: true
+  attr :provenance, :map, required: true
+
+  defp provenance_value(assigns) do
+    ~H"""
+    <span id={@id} data-drift={to_string(@provenance.drift?)}>
+      <span class="block truncate">
+        <.icon
+          :if={@provenance.override}
+          name="hero-lock-closed-mini"
+          class="mr-0.5 size-3.5 align-[-2px] text-fg-muted"
+        />
+        <span :if={@provenance.override} class="sr-only">Overridden:</span>
+        {@provenance.value || "Not reported"}<span :if={@provenance.drift?} class="sr-only">,</span>
+      </span>
+      <span
+        :if={@provenance.drift?}
+        title={"Expected #{@provenance.expected}"}
+        class="block truncate text-xs text-warn-text"
+      >
+        <span aria-hidden="true" class="mr-1 font-mono">≠</span>expected {@provenance.expected}
+      </span>
+    </span>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :provenance, :map, required: true
+  attr :form, :map, required: true
+  attr :can_manage?, :boolean, required: true
+
+  defp provenance_panel(assigns) do
+    ~H"""
+    <.side_panel
+      id={"provenance-#{@provenance.field}"}
+      title={@label}
+      description="Where this value comes from"
+    >
+      <div class="space-y-6">
+        <section class="space-y-2">
+          <p
+            id={"provenance-#{@provenance.field}-value"}
+            class={["font-mono text-sm", is_nil(@provenance.value) && "text-fg-subtle"]}
+          >
+            {@provenance.value || "Not reported"}
+          </p>
+          <p
+            :if={@provenance.expected}
+            id={"provenance-#{@provenance.field}-expected"}
+            class={[
+              "flex items-center gap-1.5 text-sm",
+              @provenance.drift? && "text-warn-text",
+              !@provenance.drift? && "text-fg-muted"
+            ]}
+          >
+            <span aria-hidden="true" class="font-mono">
+              {if @provenance.drift?, do: "≠", else: "="}
+            </span>
+            {if @provenance.drift?, do: "Expected", else: "Matches desired state"}
+            <span :if={@provenance.drift?} class="font-mono">{@provenance.expected}</span>
+          </p>
+          <p
+            id={"provenance-#{@provenance.field}-reason"}
+            class="rounded-md bg-sunken px-3 py-2 text-sm text-fg-muted"
+          >
+            {@provenance.reason}
+          </p>
+        </section>
+
+        <section aria-labelledby={"provenance-#{@provenance.field}-sources-title"}>
+          <h3
+            id={"provenance-#{@provenance.field}-sources-title"}
+            class="mb-2 text-xs font-medium text-fg-muted"
+          >
+            Reported by
+          </h3>
+          <ul
+            id={"provenance-#{@provenance.field}-sources"}
+            class="divide-y divide-line rounded-lg border border-edge"
+          >
+            <li
+              :for={candidate <- @provenance.candidates}
+              id={"provenance-#{@provenance.field}-source-#{candidate.source.id}"}
+              data-winner={to_string(candidate.winner?)}
+              class="space-y-0.5 px-3 py-2"
+            >
+              <div class="flex items-baseline gap-2">
+                <span class="truncate text-sm font-medium text-fg">{candidate.source.name}</span>
+                <span class="text-xs text-fg-muted">
+                  {SourcePrecedence.kind_label(candidate.source.kind)}
+                </span>
+                <span
+                  :if={candidate.winner?}
+                  class="ml-auto inline-flex items-center gap-1 text-xs font-medium text-ok"
+                >
+                  <.icon name="hero-check-mini" class="size-3.5" /> In use
+                </span>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">
+                  {candidate.value}
+                </span>
+                <time
+                  datetime={DateTime.to_iso8601(candidate.observed_at)}
+                  title={Format.datetime(candidate.observed_at)}
+                  class="shrink-0 font-mono text-xs text-fg-muted"
+                >
+                  {Format.age(candidate.observed_at)}
+                </time>
+              </div>
+            </li>
+            <li :if={@provenance.candidates == []} class="px-3 py-2 text-sm text-fg-muted">
+              No source reports this field.
+            </li>
+          </ul>
+        </section>
+
+        <section
+          id={"provenance-#{@provenance.field}-override"}
+          aria-labelledby={"provenance-#{@provenance.field}-override-title"}
+          class="space-y-2"
+        >
+          <h3
+            id={"provenance-#{@provenance.field}-override-title"}
+            class="text-xs font-medium text-fg-muted"
+          >
+            Override
+          </h3>
+          <p :if={@provenance.override} class="text-sm text-fg-muted">
+            Set by {override_author(@provenance.override)} on {Format.datetime(
+              @provenance.override.inserted_at
+            )}<span :if={@provenance.override.reason}>: “{@provenance.override.reason}”</span>
+          </p>
+          <.form
+            :if={@can_manage?}
+            for={@form}
+            id={"override-#{@provenance.field}-form"}
+            phx-submit="set_override"
+          >
+            <input type="hidden" name="field" value={@provenance.field} />
+            <.input field={@form[:value]} type="text" label="Value" autocomplete="off" />
+            <.input field={@form[:reason]} type="text" label="Reason" autocomplete="off" />
+            <div class="mt-4 flex justify-end gap-2">
+              <.button
+                :if={@provenance.override}
+                id={"override-#{@provenance.field}-clear"}
+                type="button"
+                phx-click={JS.push("clear_override", value: %{field: @provenance.field})}
+              >
+                Remove override
+              </.button>
+              <.button
+                id={"override-#{@provenance.field}-save"}
+                variant="primary"
+                phx-disable-with="Saving…"
+              >
+                {if @provenance.override, do: "Update override", else: "Override value"}
+              </.button>
+            </div>
+          </.form>
+          <p
+            :if={!@can_manage?}
+            id={"override-#{@provenance.field}-unavailable"}
+            class="text-sm text-fg-muted"
+          >
+            An override replaces what sources report until it is removed. Requires the owner or
+            admin role.
+          </p>
+        </section>
+      </div>
+    </.side_panel>
     """
   end
 
@@ -494,13 +739,38 @@ defmodule RengaWeb.ResourceLive.Show do
     socket
     |> assign(:resource, resource)
     |> assign(:lifecycle_form, lifecycle_form(resource))
+    |> assign_provenance()
   end
 
-  defp blank_host?(%{host: nil}, _field), do: true
-  defp blank_host?(%{host: host}, field), do: Map.get(host, field) in [nil, ""]
+  defp assign_provenance(socket) do
+    assign(
+      socket,
+      :provenance,
+      Inventory.field_provenance(socket.assigns.current_scope, socket.assigns.resource)
+    )
+  end
 
-  defp host_value(%{host: nil}, _field), do: nil
-  defp host_value(%{host: host}, field), do: Map.get(host, field)
+  # Forms start from the value in effect, so an override is an edit of what
+  # people see. Live reloads keep the forms, so typing is not lost.
+  defp reset_override_forms(socket) do
+    forms =
+      Map.new(socket.assigns.provenance, fn {field, provenance} ->
+        reason = provenance.override && provenance.override.reason
+
+        {field,
+         to_form(%{"value" => provenance.value, "reason" => reason},
+           as: :override,
+           id: "override-#{field}"
+         )}
+      end)
+
+    assign(socket, :override_forms, forms)
+  end
+
+  defp field_label(field), do: @host_fields |> List.keyfind(field, 0) |> elem(1)
+
+  defp override_author(%{created_by_user: %{email: email}}), do: email
+  defp override_author(_override), do: "someone no longer in the organization"
 
   defp drift_label(1), do: "1 open hardware finding"
   defp drift_label(count), do: "#{count} open hardware findings"
