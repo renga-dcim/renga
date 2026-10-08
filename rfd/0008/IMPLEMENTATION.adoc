@@ -45,7 +45,7 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 == Phase 6: Places
 
-* [ ] Build the rack elevation with front and rear faces, observed-elsewhere
+* [X] Build the rack elevation with front and rear faces, observed-elsewhere
   devices, and drag-to-place for unplaced resources.
 
 == Phase 7: Network
