@@ -18,12 +18,16 @@ defmodule RengaWeb.InboxLive do
   use RengaWeb, :live_view
 
   import RengaWeb.RequestComponents
+  import RengaWeb.TriageComponents
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Findings
+  alias Renga.DCIM
   alias Renga.Requests
   alias Renga.Requests.Request
+  alias Renga.Teams
+  alias Renga.Triage
   alias Renga.Inventory.Changes
   alias RengaWeb.Format
 
@@ -64,7 +68,9 @@ defmodule RengaWeb.InboxLive do
        selected_request: nil,
        similar: [],
        request_current: nil,
-       decision_form: decision_form()
+       decision_form: decision_form(),
+       can_triage?: Teams.can_manage?(scope),
+       selected_triage: nil
      )}
   end
 
@@ -84,7 +90,9 @@ defmodule RengaWeb.InboxLive do
      |> load_findings()
      |> load_selected()
      |> load_requests()
-     |> load_selected_request()}
+     |> load_selected_request()
+     |> load_triage()
+     |> load_selected_triage()}
   end
 
   @impl true
@@ -163,6 +171,32 @@ defmodule RengaWeb.InboxLive do
     {:noreply, socket |> decision_flash(result) |> after_decision()}
   end
 
+  # Triage actions supply one fact for the open resource. Both contexts
+  # recheck the owner/admin role; the resource id comes from the URL and is
+  # re-read in the caller's organization.
+  def handle_event("triage_owner", %{"team" => team_id}, socket) do
+    with %{resource: resource} <- socket.assigns.selected_triage,
+         {:ok, _resource} <- Teams.set_owner(socket.assigns.current_scope, resource, team_id) do
+      {:noreply, socket |> put_flash(:info, "Owner set") |> after_triage()}
+    else
+      nil -> {:noreply, socket}
+      {:error, reason} -> {:noreply, triage_error(socket, reason)}
+    end
+  end
+
+  def handle_event("triage_place", %{"placement" => params}, socket) do
+    %{current_scope: scope, selected_triage: selected} = socket.assigns
+
+    with %{resource: resource} <- selected,
+         {:ok, attrs} <- placement_attrs(params, scope),
+         {:ok, _placement} <- DCIM.put_current_placement_if_missing(scope, resource.id, attrs) do
+      {:noreply, socket |> put_flash(:info, "Placed") |> after_triage()}
+    else
+      nil -> {:noreply, socket}
+      {:error, reason} -> {:noreply, triage_error(socket, reason)}
+    end
+  end
+
   @impl true
   def handle_info(
         {:inventory_changed, _organization_id},
@@ -181,7 +215,9 @@ defmodule RengaWeb.InboxLive do
      |> load_findings()
      |> load_selected()
      |> load_requests()
-     |> load_selected_request()}
+     |> load_selected_request()
+     |> load_triage()
+     |> load_selected_triage()}
   end
 
   def handle_info(:refresh_expiry, socket) do
@@ -254,6 +290,51 @@ defmodule RengaWeb.InboxLive do
     |> load_selected_request()
   end
 
+  # A rack decides the site and location; without one a site is required.
+  # Triage never chooses a rack unit, so position stays empty.
+  defp placement_attrs(params, scope) do
+    provenance = %{"confirmed_by_user_id" => scope.user.id, "via" => "triage"}
+
+    case {blank_to_nil(params["rack_id"]), blank_to_nil(params["site_id"])} do
+      {nil, nil} ->
+        {:error, :no_place}
+
+      {nil, site_id} ->
+        {:ok,
+         %{
+           site_id: site_id,
+           location_id: blank_to_nil(params["location_id"]),
+           confirmed: true,
+           provenance: provenance
+         }}
+
+      {rack_id, _site} ->
+        {:ok, %{rack_id: rack_id, confirmed: true, provenance: provenance}}
+    end
+  end
+
+  defp after_triage(socket), do: socket |> load_triage() |> load_selected_triage()
+
+  defp triage_error(socket, :forbidden),
+    do: put_flash(socket, :error, "Triage changes require the owner or admin role")
+
+  defp triage_error(socket, :no_place), do: put_flash(socket, :error, "Choose a rack or a site")
+
+  defp triage_error(socket, :already_placed),
+    do: socket |> put_flash(:info, "Already placed elsewhere; nothing changed") |> after_triage()
+
+  defp triage_error(socket, %Ecto.Changeset{} = changeset) do
+    message =
+      changeset
+      |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+      |> Enum.map_join("; ", fn {field, messages} -> "#{field} #{Enum.join(messages, ", ")}" end)
+
+    put_flash(socket, :error, "Could not save: #{message}")
+  end
+
+  defp triage_error(socket, _reason),
+    do: socket |> put_flash(:error, "That changed elsewhere; try again") |> after_triage()
+
   defp decision_form, do: to_form(%{"note" => ""}, as: :decision_form)
 
   defp assigned_message(_socket, nil), do: "Unassigned"
@@ -281,7 +362,8 @@ defmodule RengaWeb.InboxLive do
   ## Loading
 
   # The Requests tab lists requests instead; findings still feed the counts.
-  defp load_findings(%{assigns: %{query: %{group: "requests"}}} = socket) do
+  defp load_findings(%{assigns: %{query: %{group: group}}} = socket)
+       when group in ["requests", "triage"] do
     %{query: query, current_scope: scope} = socket.assigns
 
     socket
@@ -355,6 +437,79 @@ defmodule RengaWeb.InboxLive do
     end
   end
 
+  defp load_triage(socket) do
+    %{query: query, current_scope: scope} = socket.assigns
+    counts = Triage.counts(scope)
+    socket = assign(socket, :triage_counts, counts)
+
+    cond do
+      query.group == "triage" ->
+        {entries, total} = Triage.list_triage(scope, missing: query.missing, page: query.page)
+
+        socket
+        |> assign(
+          triage_total: total,
+          triage_preview?: false,
+          has_next_page?: query.page * Triage.per_page() < total
+        )
+        |> stream(:triage, with_ids(entries), reset: true)
+
+      # The All view shows a few resources in triage after requests.
+      query.group == nil and query.state == "open" and not scoped?(query) ->
+        {entries, _total} = Triage.list_triage(scope)
+        preview = Enum.take(entries, 5)
+
+        socket
+        |> assign(triage_total: 0, triage_preview?: preview != [])
+        |> stream(:triage, with_ids(preview), reset: true)
+
+      true ->
+        socket
+        |> assign(triage_total: 0, triage_preview?: false)
+        |> stream(:triage, [], reset: true)
+    end
+  end
+
+  defp with_ids(entries), do: Enum.map(entries, &Map.put(&1, :id, &1.resource.id))
+
+  defp load_selected_triage(%{assigns: %{query: %{triage: nil}}} = socket),
+    do: assign(socket, :selected_triage, nil)
+
+  defp load_selected_triage(socket) do
+    %{query: %{triage: id}, current_scope: scope} = socket.assigns
+
+    case Renga.Repo.get_by(Renga.Inventory.Resource,
+           id: id,
+           organization_id: scope.organization_id
+         ) do
+      nil ->
+        assign(socket, :selected_triage, nil)
+
+      resource ->
+        resource = Renga.Repo.preload(resource, [:host, :owner_team])
+        missing = Triage.missing(scope, resource)
+
+        assign(socket, :selected_triage, %{
+          resource: resource,
+          missing: missing,
+          candidates:
+            if(:identity in missing, do: Triage.identity_candidates(scope, resource), else: []),
+          teams: Teams.list_teams(scope),
+          places: places(scope, missing)
+        })
+    end
+  end
+
+  defp places(scope, missing) do
+    if :placement in missing,
+      do: %{
+        sites: DCIM.list_sites(scope),
+        locations: DCIM.list_locations(scope),
+        racks: DCIM.list_racks(scope)
+      },
+      else: %{sites: [], locations: [], racks: []}
+  end
+
   defp load_selected_request(%{assigns: %{query: %{request: nil}}} = socket),
     do: assign(socket, selected_request: nil, similar: [], request_current: nil)
 
@@ -397,7 +552,9 @@ defmodule RengaWeb.InboxLive do
 
   defp parse(params) do
     %{
-      group: one_of(params["group"], ["requests" | Findings.groups()]),
+      group: one_of(params["group"], ["requests", "triage" | Findings.groups()]),
+      missing: missing_param(params["missing"]),
+      triage: uuid(params["triage"]),
       status: one_of(params["status"], Request.statuses()) || "open",
       request: uuid(params["request"]),
       state: one_of(params["state"] || params["status"], Findings.states()) || "open",
@@ -444,7 +601,9 @@ defmodule RengaWeb.InboxLive do
         status: if(query.status != "open", do: query.status),
         page: if(query.page > 1, do: query.page),
         finding: finding_value(query.finding),
-        request: query.request
+        request: query.request,
+        missing: query.missing && Atom.to_string(query.missing),
+        triage: query.triage
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
@@ -452,6 +611,11 @@ defmodule RengaWeb.InboxLive do
   end
 
   defp one_of(value, allowed), do: if(value in allowed, do: value)
+
+  defp missing_param(value) do
+    Enum.find(Triage.facts(), &(Atom.to_string(&1) == value))
+  end
+
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
@@ -503,7 +667,7 @@ defmodule RengaWeb.InboxLive do
           <div class="flex items-baseline gap-2.5">
             <h1 class="text-xl font-semibold tracking-tight text-fg">Inbox</h1>
             <span id="inbox-count" class="font-mono text-xs tabular-nums text-fg-muted">
-              {if(@query.group == "requests", do: @request_total, else: @total)}
+              {header_count(@query.group, assigns)}
             </span>
           </div>
         </header>
@@ -519,6 +683,13 @@ defmodule RengaWeb.InboxLive do
             group="requests"
             label="Requests"
             count={@open_request_count}
+          />
+          <.group_tab
+            id="inbox-group-triage"
+            query={@query}
+            group="triage"
+            label="Triage"
+            count={@triage_counts.total}
           />
           <.group_tab
             id="inbox-group-all"
@@ -543,6 +714,7 @@ defmodule RengaWeb.InboxLive do
         </nav>
 
         <.requests_view :if={@query.group == "requests"} {assigns} />
+        <.triage_view :if={@query.group == "triage"} {assigns} />
 
         <section
           :if={@request_preview?}
@@ -571,7 +743,34 @@ defmodule RengaWeb.InboxLive do
           />
         </section>
 
-        <div :if={@query.group != "requests"} class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <section
+          :if={@triage_preview?}
+          id="inbox-triage-preview"
+          aria-labelledby="inbox-triage-title"
+          class="space-y-2"
+        >
+          <div class="flex items-baseline justify-between">
+            <h2 id="inbox-triage-title" class="text-sm font-semibold text-fg">
+              Triage <span class="ml-1 font-mono text-xs text-fg-muted">{@triage_counts.total}</span>
+            </h2>
+            <.link
+              id="inbox-triage-all"
+              patch={inbox_path(@query, group: "triage", page: 1, finding: nil, triage: nil)}
+              class="text-xs text-link hover:underline"
+            >
+              See all triage
+            </.link>
+          </div>
+          <.triage_table
+            id="triage"
+            entries={@streams.triage}
+            row_path={fn resource -> inbox_path(@query, triage: resource.id, finding: nil) end}
+            selected_id={@selected_triage && @selected_triage.resource.id}
+            empty="Nothing is missing facts."
+          />
+        </section>
+
+        <div :if={findings_group?(@query)} class="flex flex-wrap items-center gap-x-4 gap-y-2">
           <.segmented id="inbox-states" label="State">
             <:option
               :for={{value, label} <- state_options()}
@@ -604,7 +803,7 @@ defmodule RengaWeb.InboxLive do
         </div>
 
         <.table
-          :if={@query.group != "requests"}
+          :if={findings_group?(@query)}
           id="findings"
           rows={@streams.findings}
           row_item={fn {_id, item} -> item end}
@@ -668,7 +867,7 @@ defmodule RengaWeb.InboxLive do
         </.table>
 
         <nav
-          :if={@query.group != "requests" and (@query.page > 1 or @has_next_page?)}
+          :if={findings_group?(@query) and (@query.page > 1 or @has_next_page?)}
           id="inbox-pagination"
           class="flex items-center justify-between text-sm"
           aria-label="Inbox pages"
@@ -716,9 +915,79 @@ defmodule RengaWeb.InboxLive do
         decision_form={@decision_form}
         on_cancel={JS.patch(inbox_path(@query, request: nil))}
       />
+
+      <.triage_panel
+        :if={@selected_triage}
+        resource={@selected_triage.resource}
+        missing={@selected_triage.missing}
+        candidates={@selected_triage.candidates}
+        teams={@selected_triage.teams}
+        places={@selected_triage.places}
+        can_manage?={@can_triage?}
+        on_cancel={JS.patch(inbox_path(@query, triage: nil))}
+      />
     </Layouts.app>
     """
   end
+
+  defp triage_view(assigns) do
+    ~H"""
+    <div class="space-y-4">
+      <.segmented id="inbox-triage-facts" label="Missing fact">
+        <:option
+          :for={{value, label} <- triage_filter_options(@triage_counts)}
+          patch={inbox_path(@query, missing: value, page: 1, triage: nil)}
+          active={@query.missing == value}
+          id={"inbox-missing-#{value || "any"}"}
+        >
+          {label}
+        </:option>
+      </.segmented>
+
+      <.triage_table
+        id="triage"
+        entries={@streams.triage}
+        row_path={fn resource -> inbox_path(@query, triage: resource.id) end}
+        selected_id={@selected_triage && @selected_triage.resource.id}
+        empty="Nothing is missing facts. Resources enter triage when they lack a placement, hardware type, owner, or a clear identity."
+      />
+
+      <nav
+        :if={@query.page > 1 or @has_next_page?}
+        id="inbox-triage-pagination"
+        class="flex items-center justify-between text-sm"
+        aria-label="Triage pages"
+      >
+        <.link
+          :if={@query.page > 1}
+          patch={inbox_path(@query, page: @query.page - 1, triage: nil)}
+          class="text-link hover:underline"
+        >
+          Previous
+        </.link>
+        <span :if={@query.page == 1} />
+        <.link
+          :if={@has_next_page?}
+          patch={inbox_path(@query, page: @query.page + 1, triage: nil)}
+          class="text-link hover:underline"
+        >
+          Next
+        </.link>
+      </nav>
+    </div>
+    """
+  end
+
+  defp triage_filter_options(counts) do
+    [{nil, "Any (#{counts.total})"}] ++
+      Enum.map(Triage.facts(), &{&1, "#{fact_label(&1)} (#{Map.fetch!(counts, &1)})"})
+  end
+
+  defp header_count("requests", assigns), do: assigns.request_total
+  defp header_count("triage", assigns), do: assigns.triage_total
+  defp header_count(_group, assigns), do: assigns.total
+
+  defp findings_group?(query), do: query.group not in ["requests", "triage"]
 
   defp requests_view(assigns) do
     ~H"""
@@ -791,7 +1060,16 @@ defmodule RengaWeb.InboxLive do
     ~H"""
     <.link
       id={@id}
-      patch={inbox_path(@query, group: @group, page: 1, finding: nil, request: nil)}
+      patch={
+        inbox_path(@query,
+          group: @group,
+          page: 1,
+          finding: nil,
+          request: nil,
+          triage: nil,
+          missing: nil
+        )
+      }
       aria-current={@query.group == @group && "page"}
       class={[
         "inline-flex min-h-tap shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors",
