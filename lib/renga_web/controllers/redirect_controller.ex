@@ -30,6 +30,10 @@ defmodule RengaWeb.RedirectController do
 
   defp fill_segment(segment, _path_params), do: segment
 
+  # A target may carry its own query (a retired page that became a filter);
+  # the request's query is appended to it.
   defp with_query(path, ""), do: path
-  defp with_query(path, query), do: path <> "?" <> query
+
+  defp with_query(path, query),
+    do: path <> if(String.contains?(path, "?"), do: "&", else: "?") <> query
 end

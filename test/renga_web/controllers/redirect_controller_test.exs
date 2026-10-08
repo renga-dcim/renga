@@ -8,10 +8,13 @@ defmodule RengaWeb.RedirectControllerTest do
     {"/inventory/resources", "/inventory"},
     {"/inventory/resources/#{@id}", "/inventory/#{@id}"},
     {"/inventory/resources/#{@id}/hardware", "/inventory/#{@id}/hardware"},
-    {"/inventory/component-findings", "/inbox/components"},
+    {"/inventory/component-findings", "/inbox?domain=component"},
+    {"/inbox/components", "/inbox?domain=component"},
+    {"/inbox/topology", "/inbox?domain=topology"},
+    {"/inbox/placement", "/inbox?domain=placement"},
     {"/inventory/operations", "/settings/collectors"},
-    {"/network/topology-findings", "/inbox/topology"},
-    {"/dcim/placement-findings", "/inbox/placement"},
+    {"/network/topology-findings", "/inbox?domain=topology"},
+    {"/dcim/placement-findings", "/inbox?domain=placement"},
     {"/dcim/sites", "/places"},
     {"/dcim/sites/#{@id}", "/places/sites/#{@id}"},
     {"/dcim/locations/#{@id}", "/places/locations/#{@id}"},
@@ -41,6 +44,12 @@ defmodule RengaWeb.RedirectControllerTest do
     assert redirected_to(conn, 301) == "/network/vlans?group_id=#{@id}&q=edge"
   end
 
+  test "joins carried filters onto a target that has its own query", %{conn: conn} do
+    conn = get(conn, "/inbox/topology?interface_id=#{@id}")
+
+    assert redirected_to(conn, 301) == "/inbox?domain=topology&interface_id=#{@id}"
+  end
+
   test "re-encodes path parameters instead of letting them reshape the target", %{conn: conn} do
     conn = get(conn, "/dcim/racks/a%3Fb")
 
@@ -49,7 +58,6 @@ defmodule RengaWeb.RedirectControllerTest do
 
   test "area entry points redirect temporarily to their first tab", %{conn: conn} do
     for {from, to} <- [
-          {"/inbox", "/inbox/components"},
           {"/network", "/network/topology"},
           {"/catalog", "/catalog/hardware-types"},
           {"/settings", "/settings/collectors"}

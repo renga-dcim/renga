@@ -26,6 +26,6 @@ defmodule RengaWeb.PageControllerTest do
       |> put_session(:current_organization_id, organization.id)
       |> get(~p"/")
 
-    assert redirected_to(conn) == ~p"/inbox/components"
+    assert redirected_to(conn) == ~p"/inbox"
   end
 end

@@ -30,14 +30,8 @@ defmodule RengaWeb.Navigation do
         question: "What needs me?",
         icon: "hero-inbox",
         sections: [
-          section(:component_findings, "Components", ~p"/inbox/components", "hero-cpu-chip",
-            keywords: ~w(findings drift hardware)
-          ),
-          section(:topology_findings, "Topology", ~p"/inbox/topology", "hero-share",
-            keywords: ~w(findings vlan neighbor cabling)
-          ),
-          section(:placement_findings, "Placement", ~p"/inbox/placement", "hero-map-pin",
-            keywords: ~w(findings rack unracked)
+          section(:inbox, "Queue", ~p"/inbox", "hero-inbox",
+            keywords: ~w(findings drift health hardware vlan neighbor cabling rack placement)
           )
         ]
       },

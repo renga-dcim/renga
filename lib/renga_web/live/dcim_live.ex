@@ -151,7 +151,7 @@ defmodule RengaWeb.DcimLive do
         <header class="flex flex-col gap-4 border-b border-base-content/10 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.16em] text-orange-600">
-              {if(@live_action == :findings, do: "Inbox", else: "Places")}
+              Places
             </p>
             <h1 class="mt-2 text-3xl font-semibold tracking-tight">{@page_title}</h1>
             <p class="mt-2 max-w-2xl text-sm text-base-content/55">{@page_description}</p>
@@ -169,8 +169,6 @@ defmodule RengaWeb.DcimLive do
             <.racks_view {assigns} />
           <% :rack -> %>
             <.rack_view {assigns} />
-          <% :findings -> %>
-            <.findings_view {assigns} />
         <% end %>
       </section>
     </Layouts.app>
@@ -510,36 +508,6 @@ defmodule RengaWeb.DcimLive do
     """
   end
 
-  defp findings_view(assigns) do
-    ~H"""
-    <div id="placement-findings" class="space-y-3">
-      <div
-        :if={@findings == []}
-        id="findings-empty"
-        class="rounded-xl border border-dashed border-base-content/15 p-10 text-center text-sm text-base-content/50"
-      >
-        No open placement findings.
-      </div>
-      <article
-        :for={finding <- @findings}
-        id={"finding-#{finding.id}"}
-        class="flex gap-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-5"
-      >
-        <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-700">
-          <.icon name="hero-exclamation-triangle" class="size-5" />
-        </span>
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-wider text-amber-700">
-            {String.replace(finding.kind, "_", " ")}
-          </p>
-          <h2 class="mt-1 font-semibold">{finding.resource.name}</h2>
-          <p class="mt-1 text-sm text-base-content/60">{finding.message}</p>
-        </div>
-      </article>
-    </div>
-    """
-  end
-
   attr :label, :string, required: true
   attr :value, :any, required: true
 
@@ -686,14 +654,6 @@ defmodule RengaWeb.DcimLive do
     )
   end
 
-  defp load_action(socket, :findings, _params),
-    do:
-      assign(socket,
-        findings: DCIM.list_placement_findings(socket.assigns.current_scope),
-        page_title: "Placement findings",
-        page_description: "Unresolved, conflicting, or blocked physical placement assertions."
-      )
-
   defp occupancy_maps(occupancies) do
     Enum.reduce(occupancies, {%{}, %{}}, fn occupancy, {front, rear} ->
       units = occupancy.units.lower..(occupancy.units.upper - 1)
@@ -721,9 +681,7 @@ defmodule RengaWeb.DcimLive do
     end
   end
 
-  # The area tabs come from RengaWeb.Navigation; placement findings belong to
-  # the Inbox even though this LiveView renders them.
-  defp dcim_nav(:findings), do: :placement_findings
+  # The area tabs come from RengaWeb.Navigation.
   defp dcim_nav(action) when action in [:racks, :rack], do: :racks
   defp dcim_nav(_action), do: :sites
 end

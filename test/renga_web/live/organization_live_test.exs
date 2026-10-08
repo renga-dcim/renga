@@ -36,7 +36,7 @@ defmodule RengaWeb.OrganizationLiveTest do
       })
 
     assert get_session(conn, :current_organization_id) == organization.id
-    assert redirected_to(conn) == ~p"/inbox/components"
+    assert redirected_to(conn) == ~p"/inbox"
   end
 
   test "lists only the signed-in user's active memberships", %{conn: conn, user: user} do
