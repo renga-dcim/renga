@@ -270,7 +270,7 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#resource-interfaces", "192.0.2.10/24")
 
     view |> element("#resource-detail-tabs a", "Activity") |> render_click()
-    assert has_element?(view, "#change-events", "discovered")
+    assert has_element?(view, "#change-events", "Discovered")
   end
 
   test "renders host prefixes for inet addresses without a netmask", %{

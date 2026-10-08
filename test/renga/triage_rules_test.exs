@@ -4,6 +4,7 @@ defmodule Renga.TriageRulesTest do
   import Renga.AccountsFixtures
   import Ecto.Query
   import Renga.InventoryFixtures
+  import Renga.TriageFixtures
 
   alias Renga.Accounts
   alias Renga.DCIM
@@ -12,7 +13,6 @@ defmodule Renga.TriageRulesTest do
   alias Renga.Inventory.ChangeEvent
   alias Renga.Repo
   alias Renga.Teams
-  alias Renga.Topology
   alias Renga.TriageRules
 
   setup do
@@ -31,9 +31,9 @@ defmodule Renga.TriageRulesTest do
   describe "network location" do
     test "puts resources reporting from a subnet at the site, unconfirmed", context do
       %{scope: scope, site: site} = context
-      unplaced = server!(scope, "web-01", address: "10.20.3.44/24")
-      elsewhere = server!(scope, "web-02", address: "10.99.0.5/24")
-      confirmed = server!(scope, "web-03", address: "10.20.3.45/24")
+      unplaced = server_fixture(scope, "web-01", address: "10.20.3.44/24")
+      elsewhere = server_fixture(scope, "web-02", address: "10.99.0.5/24")
+      confirmed = server_fixture(scope, "web-03", address: "10.20.3.45/24")
 
       {:ok, _placement} =
         DCIM.put_current_placement(scope, confirmed.id, %{site_id: site.id, confirmed: true})
@@ -81,13 +81,13 @@ defmodule Renga.TriageRulesTest do
           "site_id" => site.id
         })
 
-      resource = report!(scope, "m-1", intake_api_key_id: key.id)
+      resource = report_fixture(scope, "m-1", intake_api_key_id: key.id)
 
       assert %{site_id: site_id, confirmed: false} = placement(scope, resource)
       assert site_id == site.id
       assert [%{actor_user_id: nil}] = events(scope, resource, "rule_applied")
 
-      other = report!(scope, "m-2", reported_from: {10, 1, 1, 1})
+      other = report_fixture(scope, "m-2", reported_from: {10, 1, 1, 1})
       assert placement(scope, other) == nil
     end
 
@@ -101,8 +101,8 @@ defmodule Renga.TriageRulesTest do
           "site_id" => site.id
         })
 
-      inside = report!(scope, "m-1", reported_from: {192, 0, 2, 9})
-      outside = report!(scope, "m-2", reported_from: {192, 0, 2, 99})
+      inside = report_fixture(scope, "m-1", reported_from: {192, 0, 2, 9})
+      outside = report_fixture(scope, "m-2", reported_from: {192, 0, 2, 99})
 
       assert placement(scope, inside).site_id == site.id
       assert placement(scope, outside) == nil
@@ -134,14 +134,14 @@ defmodule Renga.TriageRulesTest do
   describe "top of rack" do
     test "puts servers in their LLDP neighbor switch's rack, never at a unit", context do
       %{scope: scope, rack: rack} = context
-      server = server!(scope, "web-01")
-      switch = resource!(scope, "switch", "leaf-01")
+      server = server_fixture(scope, "web-01")
+      switch = resource_fixture(scope, "switch", "leaf-01")
       {:ok, _placement} = DCIM.put_current_placement(scope, switch.id, %{rack_id: rack.id})
-      lldp!(scope, server, switch)
+      lldp_fixture(scope, server, switch)
 
       # A switch seen from another switch is an uplink, not its rack.
-      spine = resource!(scope, "switch", "spine-01")
-      lldp!(scope, spine, switch, "uplink")
+      spine = resource_fixture(scope, "switch", "spine-01")
+      lldp_fixture(scope, spine, switch, "uplink")
 
       attrs = %{"kind" => "top_of_rack", "name" => "Top of rack"}
 
@@ -162,12 +162,12 @@ defmodule Renga.TriageRulesTest do
     test "leaves resources whose neighbors sit in different racks", context do
       %{scope: scope, rack: rack, site: site} = context
       {:ok, other_rack} = DCIM.create_rack(scope, %{name: "R13"}, %{site_id: site.id})
-      server = server!(scope, "web-01")
+      server = server_fixture(scope, "web-01")
 
       for {name, rack} <- [{"leaf-01", rack}, {"leaf-02", other_rack}] do
-        switch = resource!(scope, "switch", name)
+        switch = resource_fixture(scope, "switch", name)
         {:ok, _placement} = DCIM.put_current_placement(scope, switch.id, %{rack_id: rack.id})
-        lldp!(scope, server, switch, "eth-#{name}")
+        lldp_fixture(scope, server, switch, "eth-#{name}")
       end
 
       assert {:ok, %{applied: 0}} =
@@ -182,10 +182,10 @@ defmodule Renga.TriageRulesTest do
          context do
       %{scope: scope, team: team} = context
       {:ok, storage} = Teams.create_team(scope, %{"name" => "Storage"})
-      web = server!(scope, "web-01", hostname: "web-01.dc1")
-      chosen = server!(scope, "web-02", hostname: "web-02.dc1")
-      underscore = server!(scope, "db_1", hostname: "db_1")
-      lookalike = server!(scope, "dbx1", hostname: "dbx1")
+      web = server_fixture(scope, "web-01", hostname: "web-01.dc1")
+      chosen = server_fixture(scope, "web-02", hostname: "web-02.dc1")
+      underscore = server_fixture(scope, "db_1", hostname: "db_1")
+      lookalike = server_fixture(scope, "dbx1", hostname: "dbx1")
       {:ok, _chosen} = Teams.set_owner(scope, chosen, storage.id)
 
       attrs = %{
@@ -230,8 +230,8 @@ defmodule Renga.TriageRulesTest do
           "team_id" => team.id
         })
 
-      labelled = report!(scope, "m-1", labels: %{"team" => "platform"})
-      other = report!(scope, "m-2", labels: %{"team" => "storage"})
+      labelled = report_fixture(scope, "m-1", labels: %{"team" => "platform"})
+      other = report_fixture(scope, "m-2", labels: %{"team" => "storage"})
 
       assert %{owner_team_id: team_id, owner_source: "rule"} = Repo.reload!(labelled)
       assert team_id == team.id
@@ -240,7 +240,7 @@ defmodule Renga.TriageRulesTest do
 
     test "a person setting the owner takes it over from the rule", context do
       %{scope: scope, team: team} = context
-      web = server!(scope, "web-01", hostname: "web-01")
+      web = server_fixture(scope, "web-01", hostname: "web-01")
 
       {:ok, %{rule: _rule}} =
         TriageRules.create_rule(scope, %{
@@ -319,11 +319,11 @@ defmodule Renga.TriageRulesTest do
           "team_id" => team.id
         })
 
-      first = report!(scope, "m-1", labels: %{"team" => "platform"})
+      first = report_fixture(scope, "m-1", labels: %{"team" => "platform"})
       assert Repo.reload!(first).owner_rule_id == rule.id
 
       assert {:ok, %{rule: %{enabled: false}}} = TriageRules.set_enabled(scope, rule, false)
-      second = report!(scope, "m-2", labels: %{"team" => "platform"})
+      second = report_fixture(scope, "m-2", labels: %{"team" => "platform"})
       assert Repo.reload!(second).owner_team_id == nil
 
       assert {:ok, %{applied: 1}} = TriageRules.set_enabled(scope, rule, true)
@@ -344,108 +344,6 @@ defmodule Renga.TriageRulesTest do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: "admin"})
     Accounts.scope_for_user(user, organization.id)
-  end
-
-  defp resource!(scope, kind, name) do
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{kind: kind, name: name, lifecycle_state: "active"})
-
-    resource
-  end
-
-  defp server!(scope, name, opts \\ []) do
-    resource = resource!(scope, "server", name)
-
-    if hostname = opts[:hostname] do
-      {:ok, _host} = Inventory.create_host(scope, resource.id, %{hostname: hostname})
-    end
-
-    if address = opts[:address] do
-      {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
-
-      {:ok, _address} =
-        Inventory.create_address(scope, interface.id, %{kind: "ipv4", address: address})
-    end
-
-    resource
-  end
-
-  # A collector report reconciled as ingestion does, so rules apply as the system.
-  defp report!(scope, machine_id, opts) do
-    source =
-      case Inventory.list_sources(scope) do
-        [source | _rest] ->
-          source
-
-        [] ->
-          {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent"})
-          source
-      end
-
-    reported_from =
-      opts[:reported_from] && %Postgrex.INET{address: opts[:reported_from], netmask: nil}
-
-    {:ok, observation} =
-      Inventory.create_observation(scope, source.id, %{
-        idempotency_key: machine_id,
-        observed_at: DateTime.utc_now(),
-        reported_from: reported_from,
-        intake_api_key_id: opts[:intake_api_key_id],
-        payload: %{
-          "resources" => [
-            %{
-              "kind" => "server",
-              "identifiers" => %{"machine_id" => machine_id},
-              "attributes" => %{"hostname" => machine_id},
-              "labels" => opts[:labels] || %{}
-            }
-          ]
-        }
-      })
-
-    system = %Accounts.Scope{organization_id: scope.organization_id}
-    {:ok, resource, true} = Inventory.reconcile_observation_once(system, observation.id)
-    resource
-  end
-
-  defp lldp!(scope, local, switch, interface_name \\ "eth0") do
-    {:ok, local_interface} = Inventory.create_interface(scope, local.id, %{name: interface_name})
-
-    {:ok, remote_interface} =
-      Inventory.create_interface(scope, switch.id, %{name: "swp-#{interface_name}"})
-
-    {:ok, source} =
-      Inventory.create_source(scope, %{kind: "manual", name: "lldp-#{local.name}-#{switch.name}"})
-
-    {:ok, observation} =
-      Inventory.create_observation(scope, source.id, %{
-        idempotency_key: "lldp-#{local.name}-#{switch.name}",
-        observed_at: DateTime.utc_now(),
-        payload: %{}
-      })
-
-    {:ok, [_evidence]} =
-      Topology.reconcile_interface_neighbors(
-        scope,
-        source,
-        observation,
-        local.id,
-        [
-          %{
-            "name" => local_interface.name,
-            "neighbors" => [
-              %{
-                "protocol" => "lldp",
-                "remote_chassis_id" => switch.name,
-                "remote_port_id" => remote_interface.name,
-                "ttl_seconds" => 120,
-                "metadata" => %{}
-              }
-            ]
-          }
-        ],
-        true
-      )
   end
 
   defp placement(scope, resource) do

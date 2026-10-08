@@ -1121,8 +1121,7 @@ defmodule RengaWeb.ResourceLive.Show do
       >
         <span class="absolute -left-1 top-1.5 size-2 rounded-full bg-fg-subtle" />
         <p class="text-sm text-fg">
-          <span class="font-medium capitalize">{Format.humanize(event.kind)}</span>
-          <span :if={event.field} class="text-fg-muted">{Format.humanize(event.field)}</span>
+          <span class="font-medium">{RengaWeb.ChangeDescription.describe(event)}</span>
         </p>
         <p class="mt-0.5 text-xs text-fg-muted">
           {Format.datetime(event.occurred_at)}<span :if={event.source}> · via {event.source.name}</span>

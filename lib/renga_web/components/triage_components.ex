@@ -18,6 +18,66 @@ defmodule RengaWeb.TriageComponents do
   @doc "The label for a missing fact."
   def fact_label(fact), do: Map.fetch!(@fact_labels, fact)
 
+  attr :patterns, :list, required: true
+  attr :can_create_rules?, :boolean, default: false
+
+  @doc """
+  Resources in triage that share a signal, each with the rule that would
+  fill their missing fact. Creating the rule opens it prefilled, with its
+  preview, in Settings → Triage rules.
+  """
+  def triage_patterns(assigns) do
+    ~H"""
+    <section
+      :if={@patterns != []}
+      id="triage-patterns"
+      aria-labelledby="triage-patterns-title"
+      class="space-y-2"
+    >
+      <div>
+        <h2 id="triage-patterns-title" class="text-sm font-semibold text-fg">Patterns</h2>
+        <p class="text-xs text-fg-muted">
+          Resources missing the same fact for the same reason. One rule can fill them all.
+        </p>
+      </div>
+      <ul class="grid gap-2 sm:grid-cols-2">
+        <li
+          :for={pattern <- @patterns}
+          id={"triage-pattern-row-#{pattern_dom_id(pattern.id)}"}
+          data-fact={pattern.fact}
+          class="flex flex-col gap-2 rounded-lg border border-edge bg-surface px-3 py-2.5 transition-colors hover:border-fg-subtle"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <p class="min-w-0 font-mono text-sm text-fg">{pattern.label}</p>
+            <span class="shrink-0 font-mono text-xs tabular-nums text-fg-muted">
+              {pattern.count}
+            </span>
+          </div>
+          <p class="text-xs text-fg-muted">
+            Missing {String.downcase(fact_label(pattern.fact))} ·
+            <span class="font-mono">{Enum.join(pattern.examples, ", ")}</span>
+            <span :if={pattern.count > length(pattern.examples)}>
+              and {pattern.count - length(pattern.examples)} more
+            </span>
+          </p>
+          <.link
+            :if={@can_create_rules?}
+            id={"triage-pattern-rule-#{pattern_dom_id(pattern.id)}"}
+            navigate={~p"/settings/triage-rules?#{pattern.suggestion}"}
+            class="inline-flex min-h-tap items-center gap-1 self-start text-sm text-link hover:underline sm:min-h-0"
+          >
+            <.icon name="hero-sparkles-mini" class="size-4" /> Create a rule
+          </.link>
+        </li>
+      </ul>
+    </section>
+    """
+  end
+
+  # Encode the complete identity: replacing punctuation makes distinct
+  # collector labels share a LiveView patch key (for example ops.us/ops-us).
+  defp pattern_dom_id(id), do: Base.url_encode64(id, padding: false)
+
   attr :id, :string, required: true
   attr :entries, :any, required: true
   attr :row_path, :any, required: true, doc: "a function from resource to its triage path"

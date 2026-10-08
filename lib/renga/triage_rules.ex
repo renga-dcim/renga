@@ -316,9 +316,11 @@ defmodule Renga.TriageRules do
     })
   end
 
+  @doc false
   # Each source's latest successful report of each resource, so a host that
-  # moved networks or changed labels matches on what it says now.
-  defp latest_reports(organization_id) do
+  # moved networks or changed labels matches on what it says now. Triage
+  # patterns group by the same signals rules match.
+  def latest_reports(organization_id) do
     from observation in Observation,
       join: reconciliation in ObservationReconciliation,
       on:
