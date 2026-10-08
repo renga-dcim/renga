@@ -2442,6 +2442,7 @@ defmodule Renga.Topology do
         result -> result
       end
     end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
   defp reconciliation_transaction(%Scope{} = scope, mutation) do
@@ -2454,6 +2455,7 @@ defmodule Renga.Topology do
         result -> result
       end
     end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
   defp authorize_manager!(%Scope{membership_id: membership_id, user: %{id: user_id}} = scope)

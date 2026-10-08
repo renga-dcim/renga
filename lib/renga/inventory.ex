@@ -1052,6 +1052,7 @@ defmodule Renga.Inventory do
       reject_context_managed_resource_creation!(organization_id, kind, attrs)
       create_resource_record(organization_id, attrs)
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -1113,6 +1114,7 @@ defmodule Renga.Inventory do
       maybe_refresh_topology(scope)
       resource
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   @doc """
@@ -2076,17 +2078,29 @@ defmodule Renga.Inventory do
     * `:before` - the last `%ChangeEvent{}` of the previous page
     * `:after` - only events newer than this `%ChangeEvent{}`, for adding
       what arrived since the feed was loaded
-    * `:limit` - page size, 50 by default
+    * `:since` - events at or newer than this cursor, to refresh a loaded window
+    * `:limit` - page size, 50 by default; nil for the entire window
   """
   def list_activity(%Scope{organization_id: organization_id}, opts \\ []) do
     ChangeEvent
     |> where([event], event.organization_id == ^organization_id)
     |> activity_before(Keyword.get(opts, :before))
     |> activity_after(Keyword.get(opts, :after))
+    |> activity_since(Keyword.get(opts, :since))
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :source])
     |> Repo.all()
+  end
+
+  defp activity_since(query, nil), do: query
+
+  defp activity_since(query, %ChangeEvent{occurred_at: occurred_at, id: id}) do
+    where(
+      query,
+      [event],
+      event.occurred_at > ^occurred_at or (event.occurred_at == ^occurred_at and event.id >= ^id)
+    )
   end
 
   defp activity_after(query, nil), do: query

@@ -7,15 +7,32 @@ defmodule RengaWeb.ResourceHardwareLive do
 
   alias Renga.Catalog
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
+    if connected?(socket), do: Changes.subscribe(socket.assigns.current_scope)
     resource = Inventory.get_operational_resource!(socket.assigns.current_scope, id)
 
     {:ok,
      socket
      |> assign(:resource, resource)
+     |> assign(:reload_timer, nil)
      |> load_hardware()}
+  end
+
+  @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
+    {:noreply, assign(socket, :reload_timer, Process.send_after(self(), :reload, 400))}
+  end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
+
+  def handle_info(:reload, socket) do
+    {:noreply, socket |> assign(:reload_timer, nil) |> load_hardware()}
   end
 
   @impl true
@@ -341,7 +358,7 @@ defmodule RengaWeb.ResourceHardwareLive do
 
   defp load_hardware(socket) do
     scope = socket.assigns.current_scope
-    resource = socket.assigns.resource
+    resource = Inventory.get_operational_resource!(scope, socket.assigns.resource.id)
     hardware_types = Catalog.list_hardware_types(scope)
     assignment = Catalog.get_hardware_assignment(scope, resource.id)
     hardware_assignable? = Catalog.hardware_assignable_resource?(resource)
@@ -360,6 +377,7 @@ defmodule RengaWeb.ResourceHardwareLive do
 
     socket
     |> assign(
+      resource: resource,
       page_title: "#{resource.display_name || resource.name} hardware",
       assignment: assignment,
       hardware_assignable?: hardware_assignable?,

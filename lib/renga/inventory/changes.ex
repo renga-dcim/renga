@@ -26,11 +26,15 @@ defmodule Renga.Inventory.Changes do
 
   def broadcast(result, organization_id)
       when is_tuple(result) and elem(result, 0) == :ok and is_binary(organization_id) do
-    Phoenix.PubSub.broadcast(
-      Renga.PubSub,
-      topic(organization_id),
-      {:inventory_changed, organization_id}
-    )
+    # Nested mutations cannot announce a commit. Their transaction-owning
+    # context publishes after the enclosing transaction succeeds.
+    unless Renga.Repo.in_transaction?() do
+      Phoenix.PubSub.broadcast(
+        Renga.PubSub,
+        topic(organization_id),
+        {:inventory_changed, organization_id}
+      )
+    end
 
     result
   end

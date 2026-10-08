@@ -689,6 +689,36 @@ defmodule Renga.InventoryTest do
       assert Inventory.get_resource!(other_scope, foreign.id).lifecycle_state == "active"
     end
 
+    test "bulk lifecycle rolls back earlier writes if a later resource fails validation", %{
+      scope: scope
+    } do
+      admin_scope = member_scope(scope, "admin")
+
+      resources =
+        for name <- ["rollback-a", "rollback-b"] do
+          {:ok, resource} =
+            Inventory.create_resource(scope, %{
+              kind: "server",
+              name: name,
+              lifecycle_state: "active"
+            })
+
+          resource
+        end
+
+      [first, second] = Enum.sort_by(resources, & &1.id)
+      # Simulate a legacy record that no longer satisfies current validation.
+      Renga.Repo.update_all(from(r in Resource, where: r.id == ^second.id), set: [name: ""])
+      before = Inventory.list_resource_revisions(scope, first.id)
+
+      assert {:error, %Ecto.Changeset{}} =
+               Inventory.update_resources_lifecycle(admin_scope, [first.id, second.id], "retired")
+
+      assert Inventory.get_resource!(scope, first.id).lifecycle_state == "active"
+      assert Inventory.get_resource!(scope, second.id).lifecycle_state == "active"
+      assert Inventory.list_resource_revisions(scope, first.id) == before
+    end
+
     test "update_resources_lifecycle/3 is for owners and admins only", %{scope: scope} do
       {:ok, resource} =
         Inventory.create_resource(scope, %{

@@ -47,6 +47,8 @@ defmodule Renga.Inventory.ChangesTest do
         lifecycle_state: "active"
       })
 
+    assert_receive {:inventory_changed, ^id}
+
     {:ok, _condition} =
       Inventory.put_resource_condition(scope, resource.id, %{
         type: "InventoryCurrent",
@@ -61,5 +63,33 @@ defmodule Renga.Inventory.ChangesTest do
     resource = Inventory.get_resource!(scope, resource.id)
     {:ok, _resource} = Inventory.update_resource_lifecycle(scope, resource, "active")
     assert_receive {:inventory_changed, ^id}
+    refute_receive {:inventory_changed, _}
+  end
+
+  test "nested mutations do not publish before an outer rollback", %{
+    scope: scope,
+    organization_id: id
+  } do
+    {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "rolled-back"})
+    assert_receive {:inventory_changed, ^id}
+
+    assert {:error, :abort} =
+             Renga.Repo.transaction(fn ->
+               {:ok, _} =
+                 Inventory.put_resource_condition(scope, resource.id, %{
+                   type: "InventoryCurrent",
+                   status: "false"
+                 })
+
+               {:ok, _} =
+                 Inventory.set_field_override(scope, resource, "vendor", %{"value" => "HPE"})
+
+               refute_receive {:inventory_changed, _}
+               Renga.Repo.rollback(:abort)
+             end)
+
+    refute_receive {:inventory_changed, _}
+    assert Inventory.list_resource_conditions(scope, resource.id) == []
+    assert Inventory.list_resource_overrides(scope, resource.id) == []
   end
 end

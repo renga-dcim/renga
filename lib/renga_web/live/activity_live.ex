@@ -22,27 +22,25 @@ defmodule RengaWeb.ActivityLive do
 
     {:ok,
      socket
-     |> assign(page_title: "Activity", newest: List.first(events))
+     |> assign(page_title: "Activity")
      |> assign_page(events)
      |> stream(:events, events)}
   end
 
-  # New changes are added on top without reloading, so older pages someone
-  # has loaded stay on screen.
+  # Observation time is not insertion time: refresh the whole displayed
+  # window so late reports and bursts cannot leave permanent gaps.
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
-    newer =
+    events =
       Inventory.list_activity(socket.assigns.current_scope,
-        after: socket.assigns.newest,
-        limit: @page_size
+        since: if(socket.assigns.more?, do: socket.assigns.oldest),
+        limit: nil
       )
 
-    socket =
-      newer
-      |> Enum.reverse()
-      |> Enum.reduce(socket, &stream_insert(&2, :events, &1, at: 0))
-
-    {:noreply, assign(socket, :newest, List.first(newer) || socket.assigns.newest)}
+    {:noreply,
+     socket
+     |> assign(:oldest, List.last(events))
+     |> stream(:events, events, reset: true)}
   end
 
   @impl true
