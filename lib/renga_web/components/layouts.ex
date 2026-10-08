@@ -42,6 +42,20 @@ defmodule RengaWeb.Layouts do
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
 
+  attr :commands, :list,
+    default: [],
+    doc: """
+    actions on the page's object, listed first in the command menu. Each is a
+    map with `:id`, `:label`, `:icon`, and either `:run` (a `Phoenix.LiveView.JS`
+    command or event name) or `:unavailable`, a sentence saying why it cannot
+    run right now. RFD 8 asks the menu to explain unavailable actions rather
+    than hide them, so people learn what is possible and what is blocking it.
+    """
+
+  attr :command_context, :string,
+    default: nil,
+    doc: "the object the commands act on, such as a resource name"
+
   slot :inner_block, required: true
 
   def app(assigns) do
@@ -203,6 +217,8 @@ defmodule RengaWeb.Layouts do
       areas={@areas}
       settings={@settings}
       views={@views}
+      commands={@commands}
+      command_context={@command_context}
     />
 
     <div :if={is_nil(@current_scope) || is_nil(@current_scope.organization_id)}>
@@ -313,16 +329,22 @@ defmodule RengaWeb.Layouts do
   attr :areas, :list, required: true
   attr :settings, :map, required: true
   attr :views, :list, required: true
+  attr :commands, :list, required: true
+  attr :command_context, :string, required: true
 
+  # The menu stays server-rendered so page actions update while it is open:
+  # the dialog keeps its client-side `open` state, the query input is left
+  # alone, and the CommandPalette hook re-applies the filter after each patch.
   defp command_palette(assigns) do
     ~H"""
-    <div id="command-palette-root" phx-hook="CommandPalette" phx-update="ignore">
+    <div id="command-palette-root" phx-hook="CommandPalette">
       <dialog
         id="command-palette"
+        phx-mounted={JS.ignore_attributes("open")}
         class="m-auto w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-edge bg-surface p-0 text-fg shadow-2xl backdrop:bg-black/60"
         aria-label="Command menu"
       >
-        <div class="border-b border-edge p-3">
+        <div id="command-palette-query" phx-update="ignore" class="border-b border-edge p-3">
           <div class="relative [&_.field]:!mb-0">
             <.icon
               name="hero-magnifying-glass"
@@ -354,6 +376,13 @@ defmodule RengaWeb.Layouts do
               <span>Search resources</span>
               <span class="ml-auto font-mono text-[10px] text-fg-subtle">Enter</span>
             </a>
+          </div>
+
+          <div :if={@commands != []} id="command-actions">
+            <.command_group label={
+              if(@command_context, do: "Actions on #{@command_context}", else: "Actions")
+            } />
+            <.command_action :for={command <- @commands} command={command} />
           </div>
 
           <.command_group label="Go to" />
@@ -405,6 +434,44 @@ defmodule RengaWeb.Layouts do
         </footer>
       </dialog>
     </div>
+    """
+  end
+
+  attr :command, :map, required: true
+
+  defp command_action(%{command: %{unavailable: reason}} = assigns) when is_binary(reason) do
+    ~H"""
+    <button
+      id={"command-#{@command.id}"}
+      type="button"
+      data-command-item
+      data-search={String.downcase("#{@command.label} #{@command.unavailable}")}
+      aria-disabled="true"
+      aria-describedby={"command-#{@command.id}-reason"}
+      class="flex min-h-10 w-full cursor-not-allowed items-center gap-3 rounded-md px-2.5 py-2 text-left text-xs outline-none focus:bg-sunken"
+    >
+      <.icon name={@command.icon} class="size-4 shrink-0 text-fg-subtle" />
+      <span class="text-fg-muted">{@command.label}</span>
+      <span id={"command-#{@command.id}-reason"} class="ml-auto text-right text-fg-subtle">
+        {@command.unavailable}
+      </span>
+    </button>
+    """
+  end
+
+  defp command_action(assigns) do
+    ~H"""
+    <button
+      id={"command-#{@command.id}"}
+      type="button"
+      data-command-item
+      data-search={String.downcase(@command.label)}
+      phx-click={@command.run}
+      class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg outline-none transition hover:bg-sunken focus:bg-sunken"
+    >
+      <.icon name={@command.icon} class="size-4 shrink-0 text-fg-subtle" />
+      <span>{@command.label}</span>
+    </button>
     """
   end
 

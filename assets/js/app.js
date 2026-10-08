@@ -47,6 +47,8 @@ const CommandPalette = {
 
       const item = event.target.closest("[data-command-item]")
       if (!item) return
+      // Unavailable actions stay open so their reason can be read.
+      if (item.getAttribute("aria-disabled") === "true") return
 
       if (item.dataset.commandAction === "toggle-theme") {
         window.dispatchEvent(new CustomEvent("phx:toggle-theme"))
@@ -90,6 +92,12 @@ const CommandPalette = {
     window.addEventListener("keydown", this.onKeydown)
     this.input.addEventListener("input", this.onInput)
     this.dialog.addEventListener("click", this.onClick)
+  },
+
+  // The server re-renders the menu when page actions change; restore the
+  // current filter and highlight on the patched items.
+  updated() {
+    this.updateItems()
   },
 
   destroyed() {

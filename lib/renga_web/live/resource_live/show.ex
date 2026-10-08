@@ -62,7 +62,13 @@ defmodule RengaWeb.ResourceLive.Show do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:inventory}>
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      active_nav={:inventory}
+      commands={commands(assigns)}
+      command_context={@resource.display_name || @resource.name}
+    >
       <article id="resource-detail" class="space-y-6">
         <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -353,6 +359,34 @@ defmodule RengaWeb.ResourceLive.Show do
       </article>
     </Layouts.app>
     """
+  end
+
+  # Command menu actions for this resource. Each one that cannot run says why,
+  # using the same checks that gate the page's own controls.
+  defp commands(assigns) do
+    [
+      %{
+        id: "change-lifecycle",
+        label: "Change lifecycle",
+        icon: "hero-arrow-path-rounded-square",
+        run: JS.focus(to: "#resource-lifecycle-form select"),
+        unavailable:
+          if(!assigns.can_manage_lifecycle?,
+            do: "Requires the owner or admin role"
+          )
+      },
+      %{
+        id: "open-hardware",
+        label: "Open hardware",
+        icon: "hero-cpu-chip",
+        run: JS.navigate(~p"/inventory/#{assigns.resource.id}/hardware"),
+        unavailable:
+          if(!assigns.hardware_assignable?,
+            do:
+              "Only physical devices have hardware; this is a #{humanize(assigns.resource.kind)}"
+          )
+      }
+    ]
   end
 
   defp lifecycle_form(resource) do
