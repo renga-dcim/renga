@@ -142,7 +142,7 @@ defmodule RengaWeb.VlanLive do
           </div>
           <.link
             id="vlans-to-vlan-groups"
-            navigate={~p"/ipam/vlan-groups"}
+            navigate={~p"/network/vlan-groups"}
             class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
           >
             <.icon name="hero-rectangle-group" class="size-4" /> VLAN groups
@@ -162,7 +162,7 @@ defmodule RengaWeb.VlanLive do
           <.link
             :if={@interface}
             id="vlans-clear-interface"
-            navigate={~p"/ipam/vlans"}
+            navigate={~p"/network/vlans"}
             class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/55 transition hover:text-orange-600"
           >
             <.icon name="hero-x-mark" class="size-3.5" /> Clear interface filter
@@ -256,7 +256,7 @@ defmodule RengaWeb.VlanLive do
             </div>
             <.link
               id="interface-membership-resource"
-              navigate={~p"/inventory/resources/#{@resource.id}"}
+              navigate={~p"/inventory/#{@resource.id}"}
               class="inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
             >
               Resource detail <.icon name="hero-arrow-right" class="size-3.5" />
@@ -661,7 +661,7 @@ defmodule RengaWeb.VlanLive do
       |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
       |> Map.new()
 
-    ~p"/ipam/vlans?#{params}"
+    ~p"/network/vlans?#{params}"
   end
 
   defp vlan_namespace(%{vlan_group: nil}, _groups), do: "No group (global)"

@@ -36,8 +36,8 @@ defmodule RengaWeb.InventoryOperationsLive do
   def handle_event("filter", %{"filters" => filters}, socket) do
     path =
       if filters["disconnected"] == "true",
-        do: ~p"/inventory/operations?disconnected=true",
-        else: ~p"/inventory/operations"
+        do: ~p"/settings/collectors?disconnected=true",
+        else: ~p"/settings/collectors"
 
     {:noreply, push_patch(socket, to: path)}
   end
@@ -336,9 +336,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                     <td class="px-5 py-4">
                       <.link
                         :if={Map.get(@resource_by_source, source.id)}
-                        navigate={
-                          ~p"/inventory/resources/#{Map.fetch!(@resource_by_source, source.id).id}"
-                        }
+                        navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
                         class="font-medium transition hover:text-orange-600"
                       >
                         {Map.fetch!(@resource_by_source, source.id).display_name ||

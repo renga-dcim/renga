@@ -64,7 +64,7 @@ defmodule RengaWeb.VlanGroupLive do
           </div>
           <.link
             id="vlan-groups-to-vlans"
-            navigate={~p"/ipam/vlans"}
+            navigate={~p"/network/vlans"}
             class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
           >
             <.icon name="hero-tag" class="size-4" /> Browse VLANs
@@ -210,7 +210,7 @@ defmodule RengaWeb.VlanGroupLive do
               </div>
               <.link
                 id={"vlan-group-#{group.id}-vlans"}
-                navigate={~p"/ipam/vlans?group_id=#{group.id}"}
+                navigate={~p"/network/vlans?group_id=#{group.id}"}
                 class="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
               >
                 View VLANs <.icon name="hero-arrow-right" class="size-3.5" />

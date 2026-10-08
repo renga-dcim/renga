@@ -67,7 +67,7 @@ defmodule RengaWeb.ResourceLive.Show do
         <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <.link
-              navigate={~p"/inventory/resources"}
+              navigate={~p"/inventory"}
               class="inline-flex items-center gap-1.5 text-xs font-medium text-base-content/50 transition hover:text-orange-600"
             >
               <.icon name="hero-arrow-left" class="size-3.5" /> Resources
@@ -90,7 +90,7 @@ defmodule RengaWeb.ResourceLive.Show do
             <.link
               :if={@hardware_assignable?}
               id="resource-hardware-link"
-              navigate={~p"/inventory/resources/#{@resource.id}/hardware"}
+              navigate={~p"/inventory/#{@resource.id}/hardware"}
               class="mb-2 inline-flex h-10 items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
             >
               <.icon name="hero-cpu-chip" class="size-4" /> Hardware inventory
@@ -210,7 +210,7 @@ defmodule RengaWeb.ResourceLive.Show do
                     >
                       <.link
                         id={"interface-#{interface.id}-memberships"}
-                        navigate={~p"/ipam/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
+                        navigate={~p"/network/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
                         class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
                       >
                         <.icon name="hero-tag" class="size-3.5" /> VLAN memberships

@@ -7,7 +7,7 @@ defmodule RengaWeb.OrganizationSessionController do
     conn = UserAuth.put_current_organization(conn, organization_id)
 
     if conn.assigns.current_scope.organization_id == organization_id do
-      redirect(conn, to: ~p"/inventory")
+      redirect(conn, to: ~p"/inbox/components")
     else
       conn
       |> put_flash(:error, "You do not have access to that organization.")

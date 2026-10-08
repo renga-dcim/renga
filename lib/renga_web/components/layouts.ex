@@ -103,31 +103,31 @@ defmodule RengaWeb.Layouts do
             active?={@active_nav == :overview}
           />
           <.sidebar_link
-            navigate={~p"/inventory/resources"}
+            navigate={~p"/inventory"}
             icon="hero-cube"
             label="Resources"
             active?={@active_nav == :resources}
           />
           <.sidebar_link
-            navigate={~p"/inventory/operations"}
+            navigate={~p"/settings/collectors"}
             icon="hero-circle-stack"
             label="Collectors"
             active?={@active_nav == :collectors}
           />
           <.sidebar_link
-            navigate={~p"/dcim/sites"}
+            navigate={~p"/places"}
             icon="hero-building-office-2"
             label="Physical inventory"
             active?={@active_nav == :dcim}
           />
           <.sidebar_link
-            navigate={~p"/dcim/hardware-types"}
+            navigate={~p"/catalog/hardware-types"}
             icon="hero-cpu-chip"
             label="Hardware catalog"
             active?={@active_nav == :catalog}
           />
           <.sidebar_link
-            navigate={~p"/inventory/component-findings"}
+            navigate={~p"/inbox/components"}
             icon="hero-exclamation-triangle"
             label="Component findings"
             active?={@active_nav == :findings}
@@ -137,13 +137,13 @@ defmodule RengaWeb.Layouts do
             Layer 2
           </p>
           <.sidebar_link
-            navigate={~p"/ipam/vlan-groups"}
+            navigate={~p"/network/vlan-groups"}
             icon="hero-rectangle-group"
             label="VLAN groups"
             active?={@active_nav == :vlan_groups}
           />
           <.sidebar_link
-            navigate={~p"/ipam/vlans"}
+            navigate={~p"/network/vlans"}
             icon="hero-tag"
             label="VLANs"
             active?={@active_nav == :vlans}
@@ -161,7 +161,7 @@ defmodule RengaWeb.Layouts do
             active?={@active_nav == :cables}
           />
           <.sidebar_link
-            navigate={~p"/network/topology-findings"}
+            navigate={~p"/inbox/topology"}
             icon="hero-signal"
             label="Topology findings"
             active?={@active_nav == :topology_findings}
@@ -174,17 +174,17 @@ defmodule RengaWeb.Layouts do
           </p>
           <nav class="mt-2 space-y-1" aria-label="Saved views">
             <.saved_view
-              navigate={~p"/inventory/resources?stale=true"}
+              navigate={~p"/inventory?stale=true"}
               label="Needs attention"
               tone="critical"
             />
             <.saved_view
-              navigate={~p"/inventory/resources?stale=true"}
+              navigate={~p"/inventory?stale=true"}
               label="Stale inventory"
               tone="warning"
             />
             <.saved_view
-              navigate={~p"/inventory/operations?disconnected=true"}
+              navigate={~p"/settings/collectors?disconnected=true"}
               label="Disconnected agents"
               tone="neutral"
             />
@@ -252,37 +252,37 @@ defmodule RengaWeb.Layouts do
                   active?={@active_nav == :overview}
                 />
                 <.sidebar_link
-                  navigate={~p"/inventory/resources"}
+                  navigate={~p"/inventory"}
                   icon="hero-cube"
                   label="Resources"
                   active?={@active_nav == :resources}
                 />
                 <.sidebar_link
-                  navigate={~p"/inventory/operations"}
+                  navigate={~p"/settings/collectors"}
                   icon="hero-circle-stack"
                   label="Collectors"
                   active?={@active_nav == :collectors}
                 />
                 <.sidebar_link
-                  navigate={~p"/dcim/sites"}
+                  navigate={~p"/places"}
                   icon="hero-building-office-2"
                   label="Physical inventory"
                   active?={@active_nav == :dcim}
                 />
                 <.sidebar_link
-                  navigate={~p"/dcim/hardware-types"}
+                  navigate={~p"/catalog/hardware-types"}
                   icon="hero-cpu-chip"
                   label="Hardware catalog"
                   active?={@active_nav == :catalog}
                 />
                 <.sidebar_link
-                  navigate={~p"/inventory/component-findings"}
+                  navigate={~p"/inbox/components"}
                   icon="hero-exclamation-triangle"
                   label="Component findings"
                   active?={@active_nav == :findings}
                 />
                 <.sidebar_link
-                  navigate={~p"/ipam/vlans"}
+                  navigate={~p"/network/vlans"}
                   icon="hero-tag"
                   label="VLANs"
                   active?={@active_nav in [:vlans, :vlan_groups]}
@@ -300,7 +300,7 @@ defmodule RengaWeb.Layouts do
                   active?={@active_nav == :cables}
                 />
                 <.sidebar_link
-                  navigate={~p"/network/topology-findings"}
+                  navigate={~p"/inbox/topology"}
                   icon="hero-signal"
                   label="Topology findings"
                   active?={@active_nav == :topology_findings}
@@ -416,7 +416,7 @@ defmodule RengaWeb.Layouts do
               Search
             </p>
             <a
-              href={~p"/inventory/resources"}
+              href={~p"/inventory"}
               class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-base-content/[0.06] focus:bg-base-content/[0.06]"
             >
               <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
@@ -429,32 +429,32 @@ defmodule RengaWeb.Layouts do
             Navigate
           </p>
           <.command_link navigate={~p"/inventory"} icon="hero-home" label="Overview" />
-          <.command_link navigate={~p"/inventory/resources"} icon="hero-cube" label="Resources" />
+          <.command_link navigate={~p"/inventory"} icon="hero-cube" label="Resources" />
           <.command_link
-            navigate={~p"/inventory/operations"}
+            navigate={~p"/settings/collectors"}
             icon="hero-circle-stack"
             label="Collectors"
           />
           <.command_link
-            navigate={~p"/dcim/hardware-types"}
+            navigate={~p"/catalog/hardware-types"}
             icon="hero-cpu-chip"
             label="Hardware catalog"
           />
           <.command_link
-            navigate={~p"/inventory/component-findings"}
+            navigate={~p"/inbox/components"}
             icon="hero-exclamation-triangle"
             label="Component findings"
           />
           <.command_link
-            navigate={~p"/ipam/vlan-groups"}
+            navigate={~p"/network/vlan-groups"}
             icon="hero-rectangle-group"
             label="VLAN groups"
           />
-          <.command_link navigate={~p"/ipam/vlans"} icon="hero-tag" label="VLANs" />
+          <.command_link navigate={~p"/network/vlans"} icon="hero-tag" label="VLANs" />
           <.command_link navigate={~p"/network/topology"} icon="hero-share" label="Topology" />
           <.command_link navigate={~p"/network/cables"} icon="hero-link" label="Cables" />
           <.command_link
-            navigate={~p"/network/topology-findings"}
+            navigate={~p"/inbox/topology"}
             icon="hero-signal"
             label="Topology findings"
           />
@@ -463,12 +463,12 @@ defmodule RengaWeb.Layouts do
             Saved views
           </p>
           <.command_link
-            navigate={~p"/inventory/resources?stale=true"}
+            navigate={~p"/inventory?stale=true"}
             icon="hero-clock"
             label="Stale inventory"
           />
           <.command_link
-            navigate={~p"/inventory/operations?disconnected=true"}
+            navigate={~p"/settings/collectors?disconnected=true"}
             icon="hero-signal-slash"
             label="Disconnected agents"
           />

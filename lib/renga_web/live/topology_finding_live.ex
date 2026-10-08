@@ -125,7 +125,7 @@ defmodule RengaWeb.TopologyFindingLive do
               <div>
                 <p class="text-xs uppercase tracking-wider text-base-content/55">Interface</p>
                 <.link
-                  navigate={~p"/inventory/resources/#{finding.interface.resource_id}"}
+                  navigate={~p"/inventory/#{finding.interface.resource_id}"}
                   class="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
                 >
                   <span class="font-mono">{finding.interface.name}</span>
@@ -201,7 +201,7 @@ defmodule RengaWeb.TopologyFindingLive do
       |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
       |> Map.new()
 
-    ~p"/network/topology-findings?#{params}"
+    ~p"/inbox/topology?#{params}"
   end
 
   defp normalize_status(status) when status in @statuses, do: status

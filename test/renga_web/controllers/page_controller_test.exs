@@ -15,7 +15,7 @@ defmodule RengaWeb.PageControllerTest do
     assert redirected_to(conn) == ~p"/organizations"
   end
 
-  test "GET / sends an organization-scoped user to inventory", %{conn: conn} do
+  test "GET / sends an organization-scoped user to their inbox", %{conn: conn} do
     user = user_fixture()
     organization = organization_fixture()
     organization_membership_fixture(user, organization)
@@ -26,6 +26,6 @@ defmodule RengaWeb.PageControllerTest do
       |> put_session(:current_organization_id, organization.id)
       |> get(~p"/")
 
-    assert redirected_to(conn) == ~p"/inventory"
+    assert redirected_to(conn) == ~p"/inbox/components"
   end
 end

@@ -66,7 +66,7 @@ defmodule RengaWeb.ActivityLive do
           <:col :let={event} label="Resource">
             <.link
               :if={event.resource}
-              navigate={~p"/inventory/resources/#{event.resource}"}
+              navigate={~p"/inventory/#{event.resource}"}
               class="text-link hover:underline"
             >
               {event.resource.name}

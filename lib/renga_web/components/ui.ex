@@ -137,8 +137,8 @@ defmodule RengaWeb.UI do
       <.object_page id="resource" title="Primary compute node" subtitle="compute-01 · server">
         <:breadcrumb><.link navigate={~p"/inventory"}>Inventory</.link></:breadcrumb>
         <:status><.status_strip size="header" lifecycle="active" /></:status>
-        <:tab patch={~p"/inventory/resources/1"} active>Overview</:tab>
-        <:tab patch={~p"/inventory/resources/1/hardware"} count={2}>Hardware</:tab>
+        <:tab patch={~p"/inventory/1"} active>Overview</:tab>
+        <:tab patch={~p"/inventory/1/hardware"} count={2}>Hardware</:tab>
         Overview content
         <:aside><.properties>...</.properties></:aside>
       </.object_page>

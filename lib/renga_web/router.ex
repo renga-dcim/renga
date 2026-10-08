@@ -63,6 +63,60 @@ defmodule RengaWeb.Router do
     end
   end
 
+  # Entry points and retired URLs. Declared before the area routes so that
+  # literal paths such as /inventory/resources win over /inventory/:id. The
+  # targets require sign-in themselves, so these need only the browser
+  # pipeline.
+  scope "/", RengaWeb do
+    pipe_through :browser
+
+    get "/inbox", RedirectController, :show, assigns: %{to: "/inbox/components", status: :found}
+    get "/network", RedirectController, :show, assigns: %{to: "/network/topology", status: :found}
+
+    get "/catalog", RedirectController, :show,
+      assigns: %{to: "/catalog/hardware-types", status: :found}
+
+    get "/settings", RedirectController, :show,
+      assigns: %{to: "/settings/collectors", status: :found}
+
+    get "/inventory/resources", RedirectController, :show, assigns: %{to: "/inventory"}
+    get "/inventory/resources/:id", RedirectController, :show, assigns: %{to: "/inventory/:id"}
+
+    get "/inventory/resources/:id/hardware", RedirectController, :show,
+      assigns: %{to: "/inventory/:id/hardware"}
+
+    get "/inventory/component-findings", RedirectController, :show,
+      assigns: %{to: "/inbox/components"}
+
+    get "/inventory/operations", RedirectController, :show, assigns: %{to: "/settings/collectors"}
+
+    get "/network/topology-findings", RedirectController, :show, assigns: %{to: "/inbox/topology"}
+
+    get "/dcim/placement-findings", RedirectController, :show, assigns: %{to: "/inbox/placement"}
+
+    get "/dcim/sites", RedirectController, :show, assigns: %{to: "/places"}
+    get "/dcim/sites/:id", RedirectController, :show, assigns: %{to: "/places/sites/:id"}
+    get "/dcim/locations/:id", RedirectController, :show, assigns: %{to: "/places/locations/:id"}
+    get "/dcim/racks", RedirectController, :show, assigns: %{to: "/places/racks"}
+    get "/dcim/racks/:id", RedirectController, :show, assigns: %{to: "/places/racks/:id"}
+
+    get "/dcim/manufacturers", RedirectController, :show, assigns: %{to: "/catalog/manufacturers"}
+
+    get "/dcim/hardware-types", RedirectController, :show,
+      assigns: %{to: "/catalog/hardware-types"}
+
+    get "/dcim/hardware-types/:id", RedirectController, :show,
+      assigns: %{to: "/catalog/hardware-types/:id"}
+
+    get "/dcim/module-types", RedirectController, :show, assigns: %{to: "/catalog/module-types"}
+
+    get "/dcim/module-types/:id", RedirectController, :show,
+      assigns: %{to: "/catalog/module-types/:id"}
+
+    get "/ipam/vlans", RedirectController, :show, assigns: %{to: "/network/vlans"}
+    get "/ipam/vlan-groups", RedirectController, :show, assigns: %{to: "/network/vlan-groups"}
+  end
+
   ## Authentication routes
 
   scope "/", RengaWeb do
@@ -74,31 +128,36 @@ defmodule RengaWeb.Router do
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/organizations", OrganizationLive.Index, :index
 
-      live "/inventory", InventoryDashboardLive, :index
-      live "/inventory/resources", ResourceLive.Index, :index
-      live "/inventory/resources/:id", ResourceLive.Show, :show
-      live "/inventory/resources/:id/hardware", ResourceHardwareLive, :show
-      live "/inventory/component-findings", ComponentFindingLive, :index
-      live "/inventory/operations", InventoryOperationsLive, :index
+      # The six RFD 8 areas. Inbox shows the findings domains as tabs until
+      # the unified queue replaces them.
+      live "/inbox/components", ComponentFindingLive, :index
+      live "/inbox/topology", TopologyFindingLive, :index
+      live "/inbox/placement", DcimLive, :findings
+
+      live "/inventory", ResourceLive.Index, :index
+      live "/inventory/:id", ResourceLive.Show, :show
+      live "/inventory/:id/hardware", ResourceHardwareLive, :show
+
+      live "/places", DcimLive, :sites
+      live "/places/sites/:id", DcimLive, :site
+      live "/places/locations/:id", DcimLive, :location
+      live "/places/racks", DcimLive, :racks
+      live "/places/racks/:id", DcimLive, :rack
+
+      live "/network/topology", TopologyLive, :index
+      live "/network/vlans", VlanLive, :index
+      live "/network/vlan-groups", VlanGroupLive, :index
+      live "/network/cables", CableLive, :index
+
       live "/activity", ActivityLive, :index
 
-      live "/ipam/vlan-groups", VlanGroupLive, :index
-      live "/ipam/vlans", VlanLive, :index
-      live "/network/topology", TopologyLive, :index
-      live "/network/cables", CableLive, :index
-      live "/network/topology-findings", TopologyFindingLive, :index
+      live "/catalog/hardware-types", CatalogLive, :hardware_types
+      live "/catalog/hardware-types/:id", CatalogLive, :hardware_type
+      live "/catalog/module-types", CatalogLive, :module_types
+      live "/catalog/module-types/:id", CatalogLive, :module_type
+      live "/catalog/manufacturers", CatalogLive, :manufacturers
 
-      live "/dcim/sites", DcimLive, :sites
-      live "/dcim/sites/:id", DcimLive, :site
-      live "/dcim/locations/:id", DcimLive, :location
-      live "/dcim/racks", DcimLive, :racks
-      live "/dcim/racks/:id", DcimLive, :rack
-      live "/dcim/placement-findings", DcimLive, :findings
-      live "/dcim/manufacturers", CatalogLive, :manufacturers
-      live "/dcim/hardware-types", CatalogLive, :hardware_types
-      live "/dcim/hardware-types/:id", CatalogLive, :hardware_type
-      live "/dcim/module-types", CatalogLive, :module_types
-      live "/dcim/module-types/:id", CatalogLive, :module_type
+      live "/settings/collectors", InventoryOperationsLive, :index
     end
 
     post "/organizations/select", OrganizationSessionController, :create

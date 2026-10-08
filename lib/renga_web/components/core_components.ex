@@ -411,7 +411,7 @@ defmodule RengaWeb.CoreComponents do
       <.table
         id="resources"
         rows={@streams.resources}
-        row_navigate={fn {_id, resource} -> ~p"/inventory/resources/\#{resource}" end}
+        row_navigate={fn {_id, resource} -> ~p"/inventory/\#{resource}" end}
         row_selected={fn {_id, resource} -> resource.id == @selected_id end}
       >
         <:col :let={{_id, resource}} label="Name" class="w-1/3 font-medium">{resource.name}</:col>

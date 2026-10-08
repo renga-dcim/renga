@@ -50,7 +50,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     key: key,
     source: source
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
 
     assert has_element?(view, "#intake-key-management")
     assert has_element?(view, "#intake-key-#{key.id}", "Existing fleet")
@@ -62,7 +62,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
   end
 
   test "creates and reveals an intake key once", %{conn: conn, scope: scope} do
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
 
     view |> element("#new-intake-key-button") |> render_click()
     assert has_element?(view, "#new-intake-key-panel")
@@ -119,7 +119,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     source: source,
     agent: agent
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
     view |> element("#revoke-intake-key-#{key.id}") |> render_click()
 
     assert has_element?(view, "#intake-key-#{key.id}", "Revoked")
@@ -139,7 +139,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
     refute has_element?(view, "#new-intake-key-button")
 
     render_hook(view, "create_intake_key", %{"intake_api_key" => %{"name" => "Forged"}})
@@ -152,7 +152,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     membership: membership,
     key: key
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
     {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "viewer"})
 
     render_hook(view, "create_intake_key", %{"intake_api_key" => %{"name" => "Forged"}})
@@ -171,7 +171,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       set: [renewed_at: DateTime.add(expired_at, -90, :second), expires_at: expired_at]
     )
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations?disconnected=true")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors?disconnected=true")
     assert has_element?(view, "#collector-#{source.id}", "Disconnected")
   end
 
@@ -182,7 +182,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     other_scope = Accounts.scope_for_user(other_user, organization.id)
     {:ok, {foreign_key, _token}} = Inventory.create_intake_api_key(other_scope, %{name: "Secret"})
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/operations")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
     refute has_element?(view, "#intake-key-#{foreign_key.id}")
     refute has_element?(view, "#intake-api-keys", "Secret")
   end

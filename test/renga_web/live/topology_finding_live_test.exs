@@ -47,7 +47,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
     open = finding_fixture(scope, interface, "cable_plan_drift", "open")
     resolved = finding_fixture(scope, interface, "missing_vlan", "resolved")
 
-    {:ok, view, _html} = live(conn, ~p"/network/topology-findings")
+    {:ok, view, _html} = live(conn, ~p"/inbox/topology")
 
     assert has_element?(view, "#topology-findings")
 
@@ -82,11 +82,11 @@ defmodule RengaWeb.TopologyFindingLiveTest do
   } do
     finding = finding_fixture(scope, interface, "cable_neighbor_mismatch", "open")
 
-    {:ok, view, _html} = live(conn, ~p"/network/topology-findings")
+    {:ok, view, _html} = live(conn, ~p"/inbox/topology")
 
     assert has_element?(
              view,
-             "#topology-finding-#{finding.id} a[href='/inventory/resources/#{resource.id}']"
+             "#topology-finding-#{finding.id} a[href='/inventory/#{resource.id}']"
            )
 
     assert has_element?(view, "#topology-finding-#{finding.id}", "eth0")
@@ -117,7 +117,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
 
     foreign = finding_fixture(foreign_scope, foreign_interface, "cable_plan_drift", "open")
 
-    {:ok, view, _html} = live(conn, ~p"/network/topology-findings")
+    {:ok, view, _html} = live(conn, ~p"/inbox/topology")
 
     assert has_element?(view, "#topology-finding-#{local.id}")
     refute has_element?(view, "#topology-finding-#{foreign.id}")
@@ -138,7 +138,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(member_conn, ~p"/network/topology-findings")
+    {:ok, view, _html} = live(member_conn, ~p"/inbox/topology")
 
     assert has_element?(view, "#topology-finding-#{finding.id}")
     refute has_element?(view, "#topology-findings-list form")
@@ -146,7 +146,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
   end
 
   test "requires authentication" do
-    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/network/topology-findings")
+    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/inbox/topology")
     assert path =~ "/users/log-in"
   end
 
@@ -161,7 +161,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
     second = finding_fixture(scope, other_interface, "missing_vlan", "open")
 
     {:ok, view, _html} =
-      live(conn, ~p"/network/topology-findings?#{[interface_id: interface.id]}")
+      live(conn, ~p"/inbox/topology?#{[interface_id: interface.id]}")
 
     assert has_element?(view, "#topology-finding-#{first.id}")
     refute has_element?(view, "#topology-finding-#{second.id}")
@@ -195,7 +195,7 @@ defmodule RengaWeb.TopologyFindingLiveTest do
     foreign = finding_fixture(foreign_scope, foreign_interface, "cable_plan_drift", "open")
 
     {:ok, foreign_view, _html} =
-      live(conn, ~p"/network/topology-findings?#{[interface_id: foreign_interface.id]}")
+      live(conn, ~p"/inbox/topology?#{[interface_id: foreign_interface.id]}")
 
     refute has_element?(foreign_view, "#topology-finding-#{foreign.id}")
     refute has_element?(foreign_view, "#topology-finding-#{first.id}")
@@ -210,14 +210,14 @@ defmodule RengaWeb.TopologyFindingLiveTest do
     missing = finding_fixture(scope, interface, "missing_vlan", "open")
 
     for params <- [%{}, %{kind: ""}, %{kind: "all"}] do
-      {:ok, view, _html} = live(conn, ~p"/network/topology-findings?#{params}")
+      {:ok, view, _html} = live(conn, ~p"/inbox/topology?#{params}")
 
       assert has_element?(view, "#topology-finding-#{drift.id}")
       assert has_element?(view, "#topology-finding-#{missing.id}")
     end
 
     {:ok, view, _html} =
-      live(conn, ~p"/network/topology-findings?#{[kind: "missing_vlan"]}")
+      live(conn, ~p"/inbox/topology?#{[kind: "missing_vlan"]}")
 
     refute has_element?(view, "#topology-finding-#{drift.id}")
     assert has_element?(view, "#topology-finding-#{missing.id}")

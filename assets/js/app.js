@@ -105,7 +105,7 @@ const CommandPalette = {
     const searchLabel = this.searchItem.querySelector("a > span")
 
     this.searchItem.hidden = query === ""
-    searchLink.href = `/inventory/resources?q=${encodeURIComponent(query)}`
+    searchLink.href = `/inventory?q=${encodeURIComponent(query)}`
     searchLabel.textContent = `Search resources for “${this.input.value.trim()}”`
 
     this.el.querySelectorAll("[data-command-item]:not(#command-resource-search)").forEach(item => {

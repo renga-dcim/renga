@@ -116,7 +116,7 @@ defmodule RengaWeb.CatalogLive do
         {:noreply,
          socket
          |> put_flash(:info, "Manufacturer created")
-         |> push_navigate(to: ~p"/dcim/manufacturers")}
+         |> push_navigate(to: ~p"/catalog/manufacturers")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
@@ -230,19 +230,19 @@ defmodule RengaWeb.CatalogLive do
             class="flex rounded-xl bg-base-content/5 p-1"
           >
             <.link
-              navigate={~p"/dcim/manufacturers"}
+              navigate={~p"/catalog/manufacturers"}
               class={nav_class(@live_action == :manufacturers)}
             >
               Manufacturers
             </.link>
             <.link
-              navigate={~p"/dcim/hardware-types"}
+              navigate={~p"/catalog/hardware-types"}
               class={nav_class(@live_action in [:hardware_types, :hardware_type])}
             >
               Hardware types
             </.link>
             <.link
-              navigate={~p"/dcim/module-types"}
+              navigate={~p"/catalog/module-types"}
               class={nav_class(@live_action in [:module_types, :module_type])}
             >
               Module types
@@ -446,7 +446,7 @@ defmodule RengaWeb.CatalogLive do
           {manufacturer.description || "No manufacturer description provided."}
         </p>
         <.link
-          navigate={~p"/dcim/hardware-types"}
+          navigate={~p"/catalog/hardware-types"}
           class="mt-5 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
         >
           Browse hardware types <.icon name="hero-arrow-right" class="size-4" />
@@ -490,7 +490,7 @@ defmodule RengaWeb.CatalogLive do
         </h2>
         <p class="mt-2 text-sm text-base-content/55">{type.description || type.resource.name}</p>
         <.link
-          navigate={~p"/dcim/hardware-types/#{type.id}"}
+          navigate={~p"/catalog/hardware-types/#{type.id}"}
           class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 group-hover:text-orange-700"
         >
           View revisions <.icon name="hero-arrow-right" class="size-4" />
@@ -534,7 +534,7 @@ defmodule RengaWeb.CatalogLive do
         </h2>
         <p class="mt-2 text-sm text-base-content/55">{type.description || type.resource.name}</p>
         <.link
-          navigate={~p"/dcim/module-types/#{type.id}"}
+          navigate={~p"/catalog/module-types/#{type.id}"}
           class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 group-hover:text-orange-700"
         >
           View revisions <.icon name="hero-arrow-right" class="size-4" />
@@ -992,8 +992,8 @@ defmodule RengaWeb.CatalogLive do
       {:ok, catalog_type} ->
         path =
           case route do
-            :hardware_type -> ~p"/dcim/hardware-types/#{catalog_type.id}"
-            :module_type -> ~p"/dcim/module-types/#{catalog_type.id}"
+            :hardware_type -> ~p"/catalog/hardware-types/#{catalog_type.id}"
+            :module_type -> ~p"/catalog/module-types/#{catalog_type.id}"
           end
 
         {:noreply,
@@ -1040,7 +1040,7 @@ defmodule RengaWeb.CatalogLive do
            hardware_type,
            revision_attrs,
            templates
-         ), ~p"/dcim/hardware-types/#{hardware_type.id}"}
+         ), ~p"/catalog/hardware-types/#{hardware_type.id}"}
 
       :module_type ->
         module_type = socket.assigns.module_type
@@ -1050,7 +1050,7 @@ defmodule RengaWeb.CatalogLive do
            module_type,
            revision_attrs,
            templates
-         ), ~p"/dcim/module-types/#{module_type.id}"}
+         ), ~p"/catalog/module-types/#{module_type.id}"}
     end
   end
 

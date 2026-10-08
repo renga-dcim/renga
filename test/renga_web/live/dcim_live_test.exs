@@ -23,7 +23,7 @@ defmodule RengaWeb.DcimLiveTest do
   end
 
   test "creates and navigates physical containment", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/dcim/sites")
+    {:ok, view, _html} = live(conn, ~p"/places")
 
     assert has_element?(view, "#dcim-workspace")
     assert has_element?(view, "#sites-empty")
@@ -36,7 +36,7 @@ defmodule RengaWeb.DcimLiveTest do
       |> render_submit()
 
     {path, _flash} = assert_redirect(view)
-    assert path =~ "/dcim/sites/"
+    assert path =~ "/places/sites/"
 
     {:ok, site_view, _html} = follow_redirect(redirect, conn)
     assert has_element?(site_view, "#site-detail")
@@ -86,7 +86,7 @@ defmodule RengaWeb.DcimLiveTest do
         message: "Import reports a different rack"
       })
 
-    {:ok, rack_view, _html} = live(conn, ~p"/dcim/racks/#{rack.id}")
+    {:ok, rack_view, _html} = live(conn, ~p"/places/racks/#{rack.id}")
     assert has_element?(rack_view, "#rack-elevation")
     assert has_element?(rack_view, "#rack-unit-4", "compute-01")
     assert has_element?(rack_view, "#rack-unit-4", "Active · Inferred")
@@ -102,7 +102,7 @@ defmodule RengaWeb.DcimLiveTest do
     assert has_element?(rack_view, "#rack-unit-8", "compute-02")
     assert has_element?(rack_view, "#rack-unit-8", "Active · Confirmed")
 
-    {:ok, findings_view, _html} = live(conn, ~p"/dcim/placement-findings")
+    {:ok, findings_view, _html} = live(conn, ~p"/inbox/placement")
     assert has_element?(findings_view, "#placement-findings")
     assert has_element?(findings_view, "[id^='finding-']", "compute-01")
   end
@@ -116,7 +116,7 @@ defmodule RengaWeb.DcimLiveTest do
 
     {:ok, _membership} = Accounts.update_organization_membership(membership, %{role: "member"})
 
-    {:ok, view, _html} = live(conn, ~p"/dcim/sites")
+    {:ok, view, _html} = live(conn, ~p"/places")
     refute has_element?(view, "#new-site-form")
   end
 end

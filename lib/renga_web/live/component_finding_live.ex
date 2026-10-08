@@ -100,7 +100,7 @@ defmodule RengaWeb.ComponentFindingLive do
               <div>
                 <p class="text-xs uppercase tracking-wider text-base-content/40">Resource</p>
                 <.link
-                  navigate={~p"/inventory/resources/#{finding.resource_id}/hardware"}
+                  navigate={~p"/inventory/#{finding.resource_id}/hardware"}
                   class="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
                 >
                   {finding.resource.display_name || finding.resource.name}

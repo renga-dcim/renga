@@ -46,7 +46,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
         %{kind: "interface", name: "Management", position: "eth0"}
       ])
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     assert has_element?(view, "#resource-hardware")
     assert has_element?(view, "#hardware-assignment-form")
@@ -94,7 +94,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
              })
 
     expected = Enum.find(Catalog.list_expected_components(scope, resource.id), & &1.suppressed)
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     assert has_element?(view, "#expected-component-#{expected.id}", "suppressed for this asset")
     refute has_element?(view, "#expected-component-#{expected.id}", "required")
@@ -107,7 +107,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     {:ok, vm} = Inventory.create_resource(scope, %{kind: "vm", name: "unsupported-vm"})
     hardware_type = hardware_type_fixture(scope, "VM-INVALID", [])
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{vm.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{vm.id}/hardware")
 
     assert has_element?(view, "#hardware-unsupported")
     refute has_element?(view, "#hardware-assignment-form")
@@ -156,7 +156,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
                position: "fan-1"
              })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     assert has_element?(view, "#module-bay-#{bay.id}", "Expansion slot 1")
     assert has_element?(view, "#module-bay-#{bay.id}", "LINE-CARD-48")
@@ -218,7 +218,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
       |> ActualComponentEvidenceMatch.changeset(%{match_strategy: "discovered"})
       |> Repo.insert!()
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     assert has_element?(view, "#actual-component-#{actual.id}", "Processor 1")
 
@@ -243,7 +243,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(viewer_conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(viewer_conn, ~p"/inventory/#{resource.id}/hardware")
     assert has_element?(view, "#hardware-read-only")
     refute has_element?(view, "#hardware-assignment-form")
 
@@ -269,7 +269,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(member_conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(member_conn, ~p"/inventory/#{resource.id}/hardware")
     assert has_element?(view, "#hardware-assignment-form")
 
     view
@@ -291,7 +291,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     other_scope = Accounts.scope_for_user(other_user, other_organization.id)
     foreign_type = hardware_type_fixture(other_scope, "FOREIGN-TYPE", [])
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     render_hook(view, "assign_hardware_type", %{
       "hardware" => %{"hardware_type_id" => foreign_type.id}
@@ -315,7 +315,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
                %{manufacturer_id: manufacturer.id, model: "UNFINISHED", device_class: "server"}
              )
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}/hardware")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
     view
     |> form("#hardware-assignment-form", hardware: %{hardware_type_id: hardware_type.id})
@@ -333,7 +333,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     {:ok, foreign} = Inventory.create_resource(other_scope, %{kind: "server", name: "foreign"})
 
     assert_raise Ecto.NoResultsError, fn ->
-      live(conn, ~p"/inventory/resources/#{foreign.id}/hardware")
+      live(conn, ~p"/inventory/#{foreign.id}/hardware")
     end
   end
 

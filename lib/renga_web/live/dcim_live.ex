@@ -42,7 +42,7 @@ defmodule RengaWeb.DcimLive do
         {:noreply,
          socket
          |> put_flash(:info, "Site created")
-         |> push_navigate(to: ~p"/dcim/sites/#{site.id}")}
+         |> push_navigate(to: ~p"/places/sites/#{site.id}")}
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "You are not allowed to manage physical inventory")}
@@ -71,7 +71,7 @@ defmodule RengaWeb.DcimLive do
         {:noreply,
          socket
          |> put_flash(:info, "Location created")
-         |> push_navigate(to: ~p"/dcim/locations/#{location.id}")}
+         |> push_navigate(to: ~p"/places/locations/#{location.id}")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, put_flash(socket, :error, first_error(changeset))}
@@ -101,7 +101,7 @@ defmodule RengaWeb.DcimLive do
         {:noreply,
          socket
          |> put_flash(:info, "Rack created")
-         |> push_navigate(to: ~p"/dcim/racks/#{rack.id}")}
+         |> push_navigate(to: ~p"/places/racks/#{rack.id}")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, put_flash(socket, :error, first_error(changeset))}
@@ -154,19 +154,19 @@ defmodule RengaWeb.DcimLive do
             class="flex gap-1 rounded-lg border border-base-content/10 bg-base-200/50 p-1"
           >
             <.link
-              navigate={~p"/dcim/sites"}
+              navigate={~p"/places"}
               class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
             >
               Sites
             </.link>
             <.link
-              navigate={~p"/dcim/racks"}
+              navigate={~p"/places/racks"}
               class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
             >
               Racks
             </.link>
             <.link
-              navigate={~p"/dcim/placement-findings"}
+              navigate={~p"/inbox/placement"}
               class="rounded-md px-3 py-2 text-xs font-medium transition hover:bg-base-100"
             >
               Findings
@@ -207,7 +207,7 @@ defmodule RengaWeb.DcimLive do
         <.link
           :for={site <- @sites}
           id={"site-#{site.id}"}
-          navigate={~p"/dcim/sites/#{site.id}"}
+          navigate={~p"/places/sites/#{site.id}"}
           class="group rounded-xl border border-base-content/10 bg-base-100 p-5 transition hover:-translate-y-0.5 hover:border-orange-500/40 hover:shadow-lg"
         >
           <div class="flex items-start justify-between">
@@ -279,7 +279,7 @@ defmodule RengaWeb.DcimLive do
             <.link
               :for={location <- @site.locations}
               id={"location-#{location.id}"}
-              navigate={~p"/dcim/locations/#{location.id}"}
+              navigate={~p"/places/locations/#{location.id}"}
               class="flex items-center gap-3 rounded-lg border border-base-content/10 p-3 transition hover:border-orange-500/30"
             >
               <.icon name="hero-map-pin" class="size-4 text-orange-600" />
@@ -332,7 +332,7 @@ defmodule RengaWeb.DcimLive do
         <p class="text-sm text-base-content/55">
           Site
           <.link
-            navigate={~p"/dcim/sites/#{@location.site.id}"}
+            navigate={~p"/places/sites/#{@location.site.id}"}
             class="font-medium text-orange-600 hover:underline"
           >
             {@location.site.resource.name}
@@ -367,7 +367,7 @@ defmodule RengaWeb.DcimLive do
         <.link
           :for={rack <- @racks}
           id={"rack-#{rack.id}"}
-          navigate={~p"/dcim/racks/#{rack.id}"}
+          navigate={~p"/places/racks/#{rack.id}"}
           class="flex items-center gap-4 rounded-xl border border-base-content/10 p-4 transition hover:border-orange-500/30"
         >
           <span class="grid size-10 place-items-center rounded-lg bg-base-200">
@@ -594,8 +594,8 @@ defmodule RengaWeb.DcimLive do
           :for={record <- @records}
           navigate={
             if(@path == :rack,
-              do: ~p"/dcim/racks/#{record.id}",
-              else: ~p"/dcim/locations/#{record.id}"
+              do: ~p"/places/racks/#{record.id}",
+              else: ~p"/places/locations/#{record.id}"
             )
           }
           class="block rounded-md bg-base-200/60 px-3 py-2 text-sm font-medium transition hover:bg-base-200"

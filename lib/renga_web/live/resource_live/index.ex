@@ -408,7 +408,7 @@ defmodule RengaWeb.ResourceLive.Index do
                 <.icon name="hero-arrows-pointing-out" class="size-4" />
               </button>
               <.link
-                navigate={~p"/inventory/resources/#{@resource.id}"}
+                navigate={~p"/inventory/#{@resource.id}"}
                 class="rounded-md p-1.5 text-base-content/40 transition hover:bg-base-content/[0.05] hover:text-base-content"
                 aria-label="Open full resource page"
               >
@@ -634,7 +634,7 @@ defmodule RengaWeb.ResourceLive.Index do
       |> Enum.reject(fn {_key, value} -> value in [nil, "", false] end)
       |> Map.new()
 
-    ~p"/inventory/resources?#{query}"
+    ~p"/inventory?#{query}"
   end
 
   defp selected_id(%{assigns: assigns}), do: selected_id(assigns)

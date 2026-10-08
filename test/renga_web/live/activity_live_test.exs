@@ -63,7 +63,7 @@ defmodule RengaWeb.ActivityLiveTest do
 
     assert has_element?(
              view,
-             "#events-#{newer.id} a[href='/inventory/resources/#{resource.id}']",
+             "#events-#{newer.id} a[href='/inventory/#{resource.id}']",
              "compute-01"
            )
 
