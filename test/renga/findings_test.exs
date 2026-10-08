@@ -177,6 +177,58 @@ defmodule Renga.FindingsTest do
       assert id == recurrence.id
     end
 
+    test "expired exceptions must get a future or explicitly cleared expiry", context do
+      component_finding(context, "component_drift")
+      [finding] = open_findings(context)
+      past = DateTime.add(Renga.Time.utc_now_ms(), -60)
+
+      {:ok, workflow} =
+        Findings.accept_exception(context.scope, finding, %{"exception_reason" => "Known"})
+
+      Repo.update!(Ecto.Changeset.change(workflow, exception_expires_at: past))
+
+      for attrs <- [
+            %{"exception_reason" => "Again"},
+            %{"exception_reason" => "Again", "exception_expires_at" => past}
+          ] do
+        assert {:error, changeset} = Findings.accept_exception(context.scope, finding, attrs)
+        assert "must be in the future" in errors_on(changeset).exception_expires_at
+      end
+
+      finding = Findings.get_finding!(context.scope, finding.domain, finding.id)
+      assert length(Findings.list_history(context.scope, finding)) == 1
+
+      assert {:ok, _} =
+               Findings.accept_exception(context.scope, finding, %{
+                 "exception_reason" => "Indefinite",
+                 "exception_expires_at" => nil
+               })
+
+      assert {[%{state: :excepted}], 1} = Findings.list_findings(context.scope, state: "excepted")
+    end
+
+    test "old resolved occurrences cannot clear a recurrence's workflow", context do
+      first = component_finding(context, "component_drift")
+      [finding] = open_findings(context)
+      {:ok, _} = Findings.assign(context.scope, finding, context.scope.user.id)
+      {:ok, _} = Findings.snooze(context.scope, finding, DateTime.add(DateTime.utc_now(), 3600))
+
+      {:ok, workflow} =
+        Findings.accept_exception(context.scope, finding, %{"exception_reason" => "Known"})
+
+      Repo.update!(
+        Ecto.Changeset.change(first, status: "resolved", resolved_at: DateTime.utc_now())
+      )
+
+      component_finding(context, "component_drift")
+
+      assert {:error, :resolved} = Findings.assign(context.scope, finding, nil)
+      assert {:error, :resolved} = Findings.snooze(context.scope, finding, nil)
+      assert {:error, :resolved} = Findings.remove_exception(context.scope, finding)
+      assert Repo.get!(Renga.Findings.Workflow, workflow.id) == workflow
+      assert length(Findings.list_history(context.scope, %{finding | workflow: workflow})) == 3
+    end
+
     test "resolved findings cannot be snoozed, assigned, or excepted", context do
       component_finding(context, "component_drift", status: "resolved")
       {[finding], 1} = Findings.list_findings(context.scope, state: "resolved")
