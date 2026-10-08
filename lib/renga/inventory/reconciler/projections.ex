@@ -25,6 +25,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
   alias Renga.Inventory.Observation
   alias Renga.Inventory.Resource
   alias Renga.Inventory.Source
+  alias Renga.Inventory.SourcePrecedence
   alias Renga.Repo
   alias Renga.Topology
   alias Renga.Types.Inet
@@ -497,18 +498,28 @@ defmodule Renga.Inventory.Reconciler.Projections do
   defp component_metadata(%{"metadata" => metadata}) when is_map(metadata), do: metadata
   defp component_metadata(_component), do: %{}
 
-  defp reconcile_host(scope, source, observation, resource, payload, overrides) do
+  @doc false
+  # The host fields an observation reports, normalized the way reconciliation
+  # stores them. Field provenance reads each source's latest observation
+  # through this so "what each source said" matches what reconciliation saw.
+  def host_attrs(%{"resources" => [_resource]} = observation_payload) do
+    payload = resource_payload(observation_payload)
     identifiers = Map.get(payload, "identifiers", %{})
 
-    attrs =
-      payload
-      |> Map.get("attributes", %{})
-      |> Map.take(@host_fields)
-      |> Map.put_new("hostname", single_identifier(identifiers, "hostname"))
-      |> Map.put_new("fqdn", single_identifier(identifiers, "fqdn"))
-      |> Enum.reject(fn {_field, value} -> is_nil(value) end)
-      |> Map.new()
-      |> normalize_host_attrs()
+    payload
+    |> Map.get("attributes", %{})
+    |> Map.take(@host_fields)
+    |> Map.put_new("hostname", single_identifier(identifiers, "hostname"))
+    |> Map.put_new("fqdn", single_identifier(identifiers, "fqdn"))
+    |> Enum.reject(fn {_field, value} -> is_nil(value) end)
+    |> Map.new()
+    |> normalize_host_attrs()
+  end
+
+  def host_attrs(_payload), do: %{}
+
+  defp reconcile_host(scope, source, observation, resource, payload, overrides) do
+    attrs = host_attrs(%{"resources" => [payload]})
 
     host = Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id)
 
@@ -1379,13 +1390,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     incoming >= existing
   end
 
-  defp source_priority("manual", _path), do: 500
-  defp source_priority("bmc", "host." <> field) when field in ~w(vendor model asset_tag), do: 400
-  defp source_priority("switch_poller", "interfaces." <> _rest), do: 400
-  defp source_priority("host_agent", _path), do: 300
-  defp source_priority("vm_provider", _path), do: 200
-  defp source_priority("bmc", _path), do: 100
-  defp source_priority(_kind, _path), do: 0
+  defp source_priority(kind, path), do: SourcePrecedence.priority(kind, path)
 
   defp owner(source, observation) do
     %{
