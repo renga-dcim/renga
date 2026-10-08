@@ -41,7 +41,7 @@ defmodule Renga.Inventory.Resource do
     field :annotations, :map, default: %{}
     field :deletion_requested_at, :utc_datetime_usec
     # Who answers for the resource, and whether a person or a triage rule
-    # set it. Only `owner_changeset/3` writes these.
+    # set it. Only `owner_changeset/5` writes these.
     field :owner_source, :string
     field :owner_set_at, :utc_datetime_usec
     field :source_names, {:array, :string}, virtual: true, default: []
@@ -51,6 +51,7 @@ defmodule Renga.Inventory.Resource do
 
     belongs_to :organization, Organization
     belongs_to :owner_team, Renga.Teams.Team
+    belongs_to :owner_rule, Renga.TriageRules.Rule
     has_one :host, Host
     has_many :addresses, Address
     has_many :change_events, ChangeEvent
@@ -92,17 +93,39 @@ defmodule Renga.Inventory.Resource do
   end
 
   @doc """
-  Sets or clears the owning team. `source` is `"person"` or `"rule"`; the
-  caller has already checked the team belongs to the resource's
-  organization and that a rule is not replacing a person's choice.
+  Sets or clears the owning team. `source` is `"person"` or `"rule"`, and
+  `rule_id` names the triage rule when a rule set it; the caller has
+  already checked the team belongs to the resource's organization and that
+  a rule is not replacing a person's choice.
   """
-  def owner_changeset(resource, nil, _source, _now),
-    do: change(resource, owner_team_id: nil, owner_source: nil, owner_set_at: nil)
+  def owner_changeset(resource, team_id, source, now, rule_id \\ nil)
 
-  def owner_changeset(resource, team_id, source, now) when source in ~w(person rule) do
+  def owner_changeset(resource, nil, _source, _now, _rule_id) do
+    change(resource,
+      owner_team_id: nil,
+      owner_source: nil,
+      owner_set_at: nil,
+      owner_rule_id: nil
+    )
+  end
+
+  def owner_changeset(resource, team_id, "person", now, _rule_id) do
     resource
-    |> change(owner_team_id: team_id, owner_source: source, owner_set_at: now)
+    |> change(owner_team_id: team_id, owner_source: "person", owner_set_at: now)
+    |> put_change(:owner_rule_id, nil)
     |> foreign_key_constraint(:owner_team_id, name: :resources_owner_team_fkey)
+  end
+
+  def owner_changeset(resource, team_id, "rule", now, rule_id) do
+    resource
+    |> change(
+      owner_team_id: team_id,
+      owner_source: "rule",
+      owner_set_at: now,
+      owner_rule_id: rule_id
+    )
+    |> foreign_key_constraint(:owner_team_id, name: :resources_owner_team_fkey)
+    |> foreign_key_constraint(:owner_rule_id, name: :resources_owner_rule_fkey)
   end
 
   defp reject_kind_change(%Ecto.Changeset{data: %{id: id}} = changeset) when not is_nil(id) do

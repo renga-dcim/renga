@@ -125,6 +125,9 @@ defmodule RengaWeb.Navigation do
         section(:teams, "Teams", ~p"/settings/teams", "hero-user-group",
           keywords: ~w(owners ownership)
         ),
+        section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
+          keywords: ~w(rules triage automation subnet hostname labels)
+        ),
         section(:organizations, "Organizations", ~p"/organizations", "hero-building-office",
           keywords: ~w(switch workspace)
         ),

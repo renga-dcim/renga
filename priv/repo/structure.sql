@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ZpDp9CtsrAJbXCxkGXMPJAonlxsshZN93lOMBEGMGZ5HcedGhDbu1qHy6Rn3YKQ
+\restrict KUhmeZG03Ery0IXc0zBBRjvxACYdzNt5andq2VIsZyeYT5OeMbZtCLN7exdxEj0
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -2042,6 +2042,8 @@ CREATE TABLE public.resources (
     owner_team_id uuid,
     owner_source character varying(255),
     owner_set_at timestamp without time zone,
+    owner_rule_id uuid,
+    CONSTRAINT resources_owner_rule_state CHECK (((owner_rule_id IS NULL) OR ((owner_source)::text = 'rule'::text))),
     CONSTRAINT resources_owner_source_state CHECK ((((owner_team_id IS NULL) AND (owner_source IS NULL)) OR ((owner_team_id IS NOT NULL) AND ((owner_source)::text = ANY ((ARRAY['person'::character varying, 'rule'::character varying])::text[])))))
 );
 
@@ -2213,6 +2215,31 @@ CREATE TABLE public.topology_snapshot_events (
     observed_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     CONSTRAINT topology_snapshot_events_valid_section CHECK (((section)::text = ANY ((ARRAY['interface_vlans'::character varying, 'interface_neighbors'::character varying, 'interface_relationships'::character varying])::text[])))
+);
+
+
+--
+-- Name: triage_rules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.triage_rules (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    subnet inet,
+    intake_api_key_id uuid,
+    hostname_pattern character varying(255),
+    label_key character varying(255),
+    label_value character varying(255),
+    site_id uuid,
+    location_id uuid,
+    team_id uuid,
+    created_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT triage_rules_valid_shape CHECK (((((kind)::text = 'network_location'::text) AND (site_id IS NOT NULL) AND (team_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL) AND ((subnet IS NOT NULL) <> (intake_api_key_id IS NOT NULL))) OR (((kind)::text = 'top_of_rack'::text) AND (site_id IS NULL) AND (location_id IS NULL) AND (team_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL)) OR (((kind)::text = 'ownership'::text) AND (team_id IS NOT NULL) AND (site_id IS NULL) AND (location_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND ((hostname_pattern IS NOT NULL) <> (label_key IS NOT NULL)) AND ((label_key IS NULL) = (label_value IS NULL)))))
 );
 
 
@@ -2970,6 +2997,14 @@ ALTER TABLE ONLY public.topology_findings
 
 ALTER TABLE ONLY public.topology_snapshot_events
     ADD CONSTRAINT topology_snapshot_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: triage_rules triage_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_pkey PRIMARY KEY (id);
 
 
 --
@@ -4740,6 +4775,27 @@ CREATE UNIQUE INDEX topology_snapshot_events_observation_section_index ON public
 --
 
 CREATE INDEX topology_snapshot_events_source_resource_section_index ON public.topology_snapshot_events USING btree (organization_id, resource_id, section, source_id, observed_at DESC, observation_id DESC);
+
+
+--
+-- Name: triage_rules_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX triage_rules_id_organization_id_index ON public.triage_rules USING btree (id, organization_id);
+
+
+--
+-- Name: triage_rules_organization_id_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX triage_rules_organization_id_kind_index ON public.triage_rules USING btree (organization_id, kind);
+
+
+--
+-- Name: triage_rules_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX triage_rules_organization_name_index ON public.triage_rules USING btree (organization_id, lower((name)::text));
 
 
 --
@@ -6570,6 +6626,14 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: resources resources_owner_rule_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resources
+    ADD CONSTRAINT resources_owner_rule_fkey FOREIGN KEY (owner_rule_id, organization_id) REFERENCES public.triage_rules(id, organization_id) ON DELETE SET NULL (owner_rule_id);
+
+
+--
 -- Name: resources resources_owner_team_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6738,6 +6802,54 @@ ALTER TABLE ONLY public.topology_snapshot_events
 
 
 --
+-- Name: triage_rules triage_rules_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: triage_rules triage_rules_intake_api_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_intake_api_key_fkey FOREIGN KEY (intake_api_key_id, organization_id) REFERENCES public.intake_api_keys(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: triage_rules triage_rules_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_location_fkey FOREIGN KEY (location_id, organization_id) REFERENCES public.locations(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: triage_rules triage_rules_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: triage_rules triage_rules_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: triage_rules triage_rules_team_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_team_fkey FOREIGN KEY (team_id, organization_id) REFERENCES public.teams(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: users_tokens users_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6797,7 +6909,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ZpDp9CtsrAJbXCxkGXMPJAonlxsshZN93lOMBEGMGZ5HcedGhDbu1qHy6Rn3YKQ
+\unrestrict KUhmeZG03Ery0IXc0zBBRjvxACYdzNt5andq2VIsZyeYT5OeMbZtCLN7exdxEj0
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6843,3 +6955,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261009130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010140000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261010150000);

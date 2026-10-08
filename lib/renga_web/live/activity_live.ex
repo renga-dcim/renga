@@ -149,6 +149,12 @@ defmodule RengaWeb.ActivityLive do
 
   defp describe(%{kind: "owner_changed"}), do: "Owner removed"
 
+  defp describe(%{kind: "rule_applied", field: "placement", new_value: value} = event),
+    do: "Placed at #{value["value"]} by #{rule_label(event)}"
+
+  defp describe(%{kind: "rule_applied", new_value: value} = event),
+    do: "Owner set to #{value["name"]} by #{rule_label(event)}"
+
   defp describe(%{kind: "request_" <> action} = event) do
     verb =
       case action do
@@ -185,8 +191,12 @@ defmodule RengaWeb.ActivityLive do
   # A person when someone acted, otherwise the source that reported it, or
   # Renga itself for changes it derived.
   defp actor(%{actor_user: %{email: email}}), do: email
+  defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"
   defp actor(%{source: %{name: name}}), do: name
   defp actor(_event), do: "Renga"
+
+  defp rule_label(%{metadata: %{"rule_name" => name}}), do: "the rule #{name}"
+  defp rule_label(_event), do: "a triage rule"
 
   defp with_field(verb, nil), do: verb
   defp with_field(verb, field), do: "#{verb} #{String.replace(field, "_", " ")}"

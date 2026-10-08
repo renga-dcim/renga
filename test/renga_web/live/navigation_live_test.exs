@@ -93,6 +93,7 @@ defmodule RengaWeb.NavigationLiveTest do
     assert hrefs(view, "#area-tabs a") == [
              "/settings/collectors",
              "/settings/teams",
+             "/settings/triage-rules",
              "/organizations",
              "/users/settings"
            ]
