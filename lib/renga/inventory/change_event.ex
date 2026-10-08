@@ -23,7 +23,7 @@ defmodule Renga.Inventory.ChangeEvent do
   @kinds ~w(discovered updated conflict stale manual_override override_removed
              finding_assigned finding_snoozed finding_exception finding_exception_removed
              request_created request_approved request_rejected request_withdrawn
-             owner_changed)
+             owner_changed rule_applied)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do

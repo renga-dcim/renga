@@ -8,6 +8,8 @@ defmodule Renga.Inventory do
 
   import Ecto.Query, warn: false
 
+  require Logger
+
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
@@ -1158,6 +1160,39 @@ defmodule Renga.Inventory do
     end
   end
 
+  @doc false
+  # Gives an ownerless resource the team a triage rule names, inside the
+  # caller's transaction. A resource that already has an owner, from a
+  # person or another rule, is left alone: rules only fill missing facts.
+  # `Renga.TriageRules` authorizes the caller and checks the team.
+  def fill_resource_owner!(
+        %Scope{organization_id: organization_id},
+        resource_id,
+        team_id,
+        rule_id
+      ) do
+    stored =
+      Resource
+      |> where([stored], stored.id == ^resource_id and stored.organization_id == ^organization_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    if stored.owner_team_id do
+      :skipped
+    else
+      revision = ResourceStore.next_revision!()
+
+      resource =
+        stored
+        |> Resource.owner_changeset(team_id, "rule", Renga.Time.utc_now_ms(), rule_id)
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> update_or_rollback()
+
+      insert_resource_revision!(resource, revision, "updated")
+      {:filled, resource}
+    end
+  end
+
   @doc """
   Updates operator-owned lifecycle intent after rechecking current organization management access.
   """
@@ -2032,6 +2067,7 @@ defmodule Renga.Inventory do
 
     scope
     |> Reconciler.reconcile(observation)
+    |> apply_triage_rules(scope)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2039,6 +2075,7 @@ defmodule Renga.Inventory do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
       scope
       |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
+      |> apply_triage_rules(scope)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2052,6 +2089,7 @@ defmodule Renga.Inventory do
 
     scope
     |> Reconciler.reconcile_once(observation)
+    |> apply_triage_rules(scope)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2061,9 +2099,35 @@ defmodule Renga.Inventory do
       |> Reconciler.reconcile_once(observation,
         authorize: fn -> authorize_reconciliation!(scope) end
       )
+      |> apply_triage_rules(scope)
       |> Changes.broadcast(scope.organization_id)
     end
   end
+
+  # Triage rules fill facts for what a collector just reported, after the
+  # report is committed so rules see its signals. A rule failing never fails
+  # the report: the resource stays in triage for a person instead.
+  defp apply_triage_rules({:ok, %Resource{} = resource, _discovered?} = result, scope) do
+    case Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id) do
+      {:ok, _applied} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("triage rules did not apply to #{resource.id}: #{inspect(reason)}")
+    end
+
+    result
+  rescue
+    exception ->
+      Logger.error(
+        "triage rules failed for #{resource.id}: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      result
+  end
+
+  defp apply_triage_rules(result, _scope), do: result
 
   @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.

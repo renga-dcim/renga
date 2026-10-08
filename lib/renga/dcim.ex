@@ -226,6 +226,29 @@ defmodule Renga.DCIM do
     managed_transaction(scope, fn -> do_put_current_placement(scope, resource_id, attrs) end)
   end
 
+  @doc false
+  # Places an unplaced resource for a triage rule, inside the caller's
+  # transaction. A resource that already has a current placement, confirmed
+  # or not, is left alone: rules only fill missing facts. Rules never pick a
+  # rack unit, so the placement is at most a rack. `Renga.TriageRules`
+  # authorizes the caller and checks the site, location, or rack.
+  def fill_current_placement!(%Scope{} = scope, resource_id, attrs) do
+    resource = lock_resource!(scope.organization_id, resource_id)
+
+    placed? =
+      CurrentPlacement
+      |> where([placement], placement.organization_id == ^scope.organization_id)
+      |> where([placement], placement.resource_id == ^resource.id)
+      |> Repo.exists?()
+
+    if placed? do
+      :skipped
+    else
+      attrs = Map.drop(attrs, [:position, :height_units, :face])
+      {:filled, do_put_current_placement(scope, resource.id, attrs)}
+    end
+  end
+
   def remove_current_placement(%Scope{} = scope, resource_id) do
     managed_transaction(scope, fn ->
       lock_resource!(scope.organization_id, resource_id)
