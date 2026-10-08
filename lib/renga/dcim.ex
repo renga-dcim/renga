@@ -88,6 +88,55 @@ defmodule Renga.DCIM do
     |> Repo.all()
   end
 
+  @doc """
+  How many units each rack has taken per face, for rack lists:
+  `%{rack_id => %{front: units, rear: units}}`. Racks with nothing placed
+  are absent.
+  """
+  def rack_fill(%Scope{organization_id: organization_id}, rack_ids) do
+    RackOccupancy
+    |> where([occupancy], occupancy.organization_id == ^organization_id)
+    |> where([occupancy], occupancy.rack_id in ^rack_ids)
+    |> group_by([occupancy], [occupancy.rack_id, occupancy.face])
+    |> select([occupancy], {
+      occupancy.rack_id,
+      occupancy.face,
+      sum(fragment("upper(?) - lower(?)", occupancy.units, occupancy.units))
+    })
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {rack_id, face, units}, fill ->
+      Map.update(
+        fill,
+        rack_id,
+        Map.put(%{front: 0, rear: 0}, String.to_existing_atom(face), units),
+        &Map.put(&1, String.to_existing_atom(face), units)
+      )
+    end)
+  end
+
+  @doc "Locations and racks per site: `%{site_id => %{locations: n, racks: n}}`."
+  def site_counts(%Scope{organization_id: organization_id}) do
+    locations =
+      Location
+      |> where([location], location.organization_id == ^organization_id)
+      |> group_by([location], location.site_id)
+      |> select([location], {location.site_id, count()})
+      |> Repo.all()
+      |> Map.new()
+
+    racks =
+      Rack
+      |> where([rack], rack.organization_id == ^organization_id)
+      |> group_by([rack], rack.site_id)
+      |> select([rack], {rack.site_id, count()})
+      |> Repo.all()
+      |> Map.new()
+
+    (Map.keys(locations) ++ Map.keys(racks))
+    |> Enum.uniq()
+    |> Map.new(&{&1, %{locations: Map.get(locations, &1, 0), racks: Map.get(racks, &1, 0)}})
+  end
+
   def get_rack!(%Scope{organization_id: organization_id}, id) do
     Rack
     |> where([rack], rack.organization_id == ^organization_id and rack.id == ^id)
