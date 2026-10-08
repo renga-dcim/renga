@@ -35,6 +35,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.InterfaceVlanModeEvidence
   alias Renga.Topology.Links
   alias Renga.Topology.NeighborReconciler
+  alias Renga.Topology.Ports
   alias Renga.Topology.PrefixVlanRelationship
   alias Renga.Topology.SourceVlanGroupMapping
   alias Renga.Topology.TopologyFinding
@@ -975,21 +976,133 @@ defmodule Renga.Topology do
   def get_link(%Scope{} = scope, key) do
     case Links.parse_key(key) do
       {:ok, {interface_a_id, interface_b_id}} ->
-        load = fn list ->
-          Enum.uniq_by(
-            list.(scope, interface_id: interface_a_id) ++
-              list.(scope, interface_id: interface_b_id),
-            & &1.id
-          )
-        end
-
-        load.(&list_cable_plans/2)
-        |> Links.build(load.(&list_cables/2), load.(&list_organization_interface_adjacencies/2))
+        scope
+        |> load_link_layers([interface_a_id, interface_b_id])
+        |> build_links()
         |> Enum.find(&(&1.key == Links.key(interface_a_id, interface_b_id)))
 
       :error ->
         nil
     end
+  end
+
+  @doc """
+  Lists the links touching any of `interface_ids`, such as one device's ports.
+
+  The layers touching the far ends are loaded too, so a far end claimed by
+  another link still marks the link as disagreeing.
+  """
+  def list_interface_links(%Scope{} = scope, interface_ids) do
+    near = load_link_layers(scope, interface_ids)
+
+    far_ids =
+      near
+      |> Tuple.to_list()
+      |> Enum.concat()
+      |> Enum.flat_map(&[&1.interface_a_id, &1.interface_b_id])
+
+    wanted = MapSet.new(interface_ids)
+
+    scope
+    |> load_link_layers(Enum.uniq(interface_ids ++ far_ids))
+    |> build_links()
+    |> Enum.filter(
+      &(MapSet.member?(wanted, &1.interface_a.id) or MapSet.member?(wanted, &1.interface_b.id))
+    )
+  end
+
+  defp build_links({plans, cables, adjacencies}), do: Links.build(plans, cables, adjacencies)
+
+  @doc """
+  Lists one device's physical ports for its Ports tab. See
+  `Renga.Topology.Ports`.
+
+  Every record is loaded in one batch for the device, never per port, so a
+  large switch costs the same handful of queries as a small one.
+  """
+  def list_resource_ports(%Scope{organization_id: organization_id} = scope, resource_id) do
+    interfaces =
+      Interface
+      |> where(
+        [interface],
+        interface.organization_id == ^organization_id and interface.resource_id == ^resource_id and
+          interface.kind in ^Ports.port_kinds()
+      )
+      |> preload(:resource)
+      |> Repo.all()
+
+    ids = Enum.map(interfaces, & &1.id)
+
+    per_interface = fn schema, preloads ->
+      schema
+      |> where(
+        [record],
+        record.organization_id == ^organization_id and record.interface_id in ^ids
+      )
+      |> preload(^preloads)
+      |> Repo.all()
+    end
+
+    Ports.build(interfaces, %{
+      links: list_interface_links(scope, ids),
+      unresolved: unresolved_evidence_for(organization_id, ids),
+      desired: per_interface.(DesiredInterfaceVlanAssignment, [:vlan]),
+      observed: per_interface.(CurrentInterfaceVlanMembership, [:vlan]),
+      desired_modes: per_interface.(DesiredInterfaceVlanMode, []),
+      observed_modes: per_interface.(CurrentInterfaceVlanMode, []),
+      findings:
+        TopologyFinding
+        |> where(
+          [finding],
+          finding.organization_id == ^organization_id and finding.interface_id in ^ids and
+            finding.status == "open" and finding.kind in ^@vlan_finding_kinds
+        )
+        |> order_by([finding], asc: finding.kind)
+        |> Repo.all()
+    })
+  end
+
+  defp unresolved_evidence_for(organization_id, interface_ids) do
+    InterfaceNeighborEvidence
+    |> join(:left, [evidence], match in InterfaceNeighborMatch,
+      on:
+        match.organization_id == evidence.organization_id and
+          match.interface_neighbor_evidence_id == evidence.id
+    )
+    |> where(
+      [evidence, match],
+      evidence.organization_id == ^organization_id and is_nil(evidence.stale_at) and
+        evidence.local_interface_id in ^interface_ids and
+        (is_nil(match.id) or match.status != "matched")
+    )
+    |> order_by([evidence], desc: evidence.observed_at)
+    |> Repo.all()
+  end
+
+  defp load_link_layers(%Scope{organization_id: organization_id}, interface_ids) do
+    touching = fn schema ->
+      where(
+        schema,
+        [record],
+        record.organization_id == ^organization_id and
+          (record.interface_a_id in ^interface_ids or record.interface_b_id in ^interface_ids)
+      )
+    end
+
+    {
+      CablePlan
+      |> touching.()
+      |> preload(interface_a: :resource, interface_b: :resource)
+      |> Repo.all(),
+      Cable
+      |> touching.()
+      |> preload([:primary_assertion, interface_a: :resource, interface_b: :resource])
+      |> Repo.all(),
+      CurrentInterfaceAdjacency
+      |> touching.()
+      |> preload(interface_a: :resource, interface_b: :resource, primary_evidence: :source)
+      |> Repo.all()
+    }
   end
 
   def list_cables(%Scope{organization_id: organization_id}, opts \\ []) do
