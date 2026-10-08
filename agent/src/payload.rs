@@ -20,6 +20,12 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// Attaches configured labels to the reported server.
+    pub fn with_labels(mut self, labels: &BTreeMap<String, String>) -> Self {
+        self.resources[0].labels = labels.clone();
+        self
+    }
+
     pub fn new(resource: ServerResource) -> Self {
         Self {
             observation_id: Uuid::new_v4(),
@@ -55,6 +61,9 @@ pub struct ServerResource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<Vec<Interface>>,
     pub components: Vec<Component>,
+    /// Labels from the agent configuration, not collected from the host.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -175,6 +184,7 @@ mod tests {
             attributes: None,
             interfaces: None,
             components: vec![],
+            labels: BTreeMap::new(),
         };
         let value = serde_json::to_value(Observation {
             observation_id: Uuid::nil(),
@@ -207,6 +217,7 @@ mod tests {
             attributes: None,
             interfaces: Some(vec![]),
             components: vec![],
+            labels: BTreeMap::new(),
         };
 
         let value = serde_json::to_value(resource).unwrap();

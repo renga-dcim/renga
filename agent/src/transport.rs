@@ -275,6 +275,7 @@ mod tests {
             config_refresh_interval: Duration::from_secs(300),
             request_timeout: Duration::from_secs(30),
             max_retry_attempts: 1,
+            labels: BTreeMap::new(),
         }
     }
 
@@ -308,6 +309,7 @@ mod tests {
                     json!("x".repeat(MAX_OBSERVATION_BYTES)),
                 )]),
             }],
+            labels: BTreeMap::new(),
         })
     }
 

@@ -275,6 +275,7 @@ fn collect_from_sources(
         }),
         interfaces,
         components,
+        labels: Default::default(),
     })
 }
 
