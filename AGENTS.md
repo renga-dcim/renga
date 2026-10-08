@@ -3,6 +3,7 @@ This is a web application written using the Phoenix web framework.
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
+- Test behavior that only a real browser can show (layout, density, focus, touch targets, JS hooks) with PhoenixTest.Playwright browser tests in `test/renga_web/browser`, tagged `:playwright`; keep everything else in LiveViewTest. See the README's Tests section for setup
 - Make small, logical commits as work is completed. Each commit should be independently reviewable, scoped to one concern, and backed by relevant tests run before committing
 - When Jujutsu is available for the workspace, use `jj` to record changes with detailed explanations; use Git commits only when `jj` is unavailable
 - When creating a pull request, use a Conventional Commit title such as `feat: add collector enrollment` or `fix(agent): recover credential renewal`
