@@ -186,9 +186,8 @@ defmodule Renga.Findings do
 
   @doc "Assigns the finding to an active owner, admin, or member, or unassigns it with nil."
   def assign(%Scope{} = scope, %Finding{} = finding, assignee_user_id) do
-    change_workflow(scope, finding, "finding_assigned", fn finding, workflow, _now ->
-      with :ok <- validate_assignee(scope, assignee_user_id),
-           :ok <- require_open(finding, assignee_user_id) do
+    change_workflow(scope, finding, "finding_assigned", fn _finding, workflow, _now ->
+      with :ok <- validate_assignee(scope, assignee_user_id) do
         {:ok, Workflow.assign_changeset(workflow, assignee_user_id)}
       end
     end)
@@ -196,10 +195,8 @@ defmodule Renga.Findings do
 
   @doc "Snoozes the finding until a future time, or wakes it with nil."
   def snooze(%Scope{} = scope, %Finding{} = finding, until) do
-    change_workflow(scope, finding, "finding_snoozed", fn finding, workflow, now ->
-      with :ok <- require_open(finding, until) do
-        {:ok, Workflow.snooze_changeset(workflow, until, now)}
-      end
+    change_workflow(scope, finding, "finding_snoozed", fn _finding, workflow, now ->
+      {:ok, Workflow.snooze_changeset(workflow, until, now)}
     end)
   end
 
@@ -209,10 +206,8 @@ defmodule Renga.Findings do
   the exception lasts until removed.
   """
   def accept_exception(%Scope{} = scope, %Finding{} = finding, attrs) do
-    change_workflow(scope, finding, "finding_exception", fn finding, workflow, now ->
-      with :ok <- require_open(finding, :accept) do
-        {:ok, Workflow.exception_changeset(workflow, attrs, scope.user.id, now)}
-      end
+    change_workflow(scope, finding, "finding_exception", fn _finding, workflow, now ->
+      {:ok, Workflow.exception_changeset(workflow, attrs, scope.user.id, now)}
     end)
   end
 
@@ -237,6 +232,8 @@ defmodule Renga.Findings do
       authorize_actor!(scope)
       now = Renga.Time.utc_now_ms()
       finding = get_finding(scope, finding.domain, finding.id) || Repo.rollback(:not_found)
+      # An old occurrence must never mutate the workflow of its recurrence.
+      if finding.status != "open", do: Repo.rollback(:resolved)
       workflow = lock_workflow!(scope, finding)
 
       with {:ok, changeset} <- build.(finding, workflow, now),
@@ -334,12 +331,6 @@ defmodule Renga.Findings do
     |> Repo.exists?()
     |> if(do: :ok, else: {:error, :invalid_assignee})
   end
-
-  # Setting workflow state on a resolved finding would only hide its next
-  # recurrence; clearing state is always allowed.
-  defp require_open(_finding, nil), do: :ok
-  defp require_open(%Finding{status: "open"}, _change), do: :ok
-  defp require_open(%Finding{}, _change), do: {:error, :resolved}
 
   defp authorize_actor!(%Scope{
          membership_id: membership_id,
