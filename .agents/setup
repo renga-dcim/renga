@@ -4,13 +4,16 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Elapsed markers expose cold downloads and compilation separately from warm
+# setup work without tracing commands that may contain credentials.
 step() {
-  printf '\n[setup] %s\n' "$*"
+  printf '\n[setup +%ss] %s\n' "$SECONDS" "$*"
 }
 
 # shellcheck source=.agents/tailscale
 . "$repo_root/.agents/tailscale"
 
+step "Checking Tailscale installation"
 tailscale_install
 
 # A previous setup may have installed Nix but the current process may predate
@@ -159,9 +162,11 @@ if ! psql --host=127.0.0.1 --port=5435 --username=postgres --dbname=postgres --t
   createdb --host=127.0.0.1 --port=5435 --username=postgres renga_dev
 fi
 
+step "Installing Hex and Rebar if missing"
+mix local.hex --force --if-missing
+mix local.rebar --force --if-missing
+
 step "Installing Phoenix dependencies, assets, and database schema"
-mix local.hex --force
-mix local.rebar --force
 mix setup
 
 step "Building and starting the Renga host agent"
