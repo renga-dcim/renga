@@ -552,6 +552,56 @@ defmodule Renga.InventoryTest do
                """)
     end
 
+    test "operational list filters by kind and freshness, groups, and sorts", %{scope: scope} do
+      resource = fn kind, name, lifecycle ->
+        {:ok, resource} =
+          Inventory.create_resource(scope, %{kind: kind, name: name, lifecycle_state: lifecycle})
+
+        resource
+      end
+
+      stale = resource.("server", "b-stale", "active")
+      current = resource.("server", "a-current", "inactive")
+      unreported = resource.("switch", "c-unreported", "active")
+
+      for {target, status} <- [{stale, "false"}, {current, "true"}] do
+        {:ok, _condition} =
+          Inventory.put_resource_condition(scope, target.id, %{
+            type: "InventoryCurrent",
+            status: status
+          })
+      end
+
+      names = fn options ->
+        scope
+        |> Inventory.list_operational_resources(options)
+        |> Map.fetch!(:entries)
+        |> Enum.map(& &1.name)
+      end
+
+      assert names.(kinds: ["server"]) == ["a-current", "b-stale"]
+      assert names.(kinds: ["server", "switch"]) == ["a-current", "b-stale", "c-unreported"]
+      assert names.(freshness: "stale") == ["b-stale"]
+      assert names.(freshness: "current") == ["a-current"]
+      assert names.(freshness: "unknown") == ["c-unreported"]
+
+      # Groups lead the ordering; the sort applies within each group.
+      assert names.(group: :freshness) == ["b-stale", "a-current", "c-unreported"]
+
+      assert names.(group: :kind, sort: {:name, :desc}) == [
+               "b-stale",
+               "a-current",
+               "c-unreported"
+             ]
+
+      assert names.(group: :lifecycle) == ["b-stale", "c-unreported", "a-current"]
+      assert names.(sort: {:name, :desc}) == ["c-unreported", "b-stale", "a-current"]
+      assert names.(sort: {:last_seen, :desc}) == ["a-current", "b-stale", "c-unreported"]
+
+      assert Inventory.list_resource_kinds(scope) == ["server", "switch"]
+      assert Enum.all?(Inventory.list_operational_resources(scope), &(&1.drift_count == 0))
+    end
+
     test "create_resource/2 validates kind and lifecycle state", %{scope: scope} do
       assert {:error, changeset} =
                Inventory.create_resource(scope, %{

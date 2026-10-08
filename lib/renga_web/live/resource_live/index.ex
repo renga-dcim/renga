@@ -615,7 +615,7 @@ defmodule RengaWeb.ResourceLive.Index do
       lifecycle: filters.lifecycle,
       condition: filters.condition,
       source_id: filters.source_id,
-      stale_only?: filters.stale_only?,
+      freshness: if(filters.stale_only?, do: "stale"),
       page: filters.page
     )
   end

@@ -599,6 +599,24 @@ defmodule Renga.Inventory do
 
   Full identifier claim history is intentionally reserved for the resource
   detail loader.
+
+  ## Options
+
+    * `:search` - matches names, kind, and host identity fields
+    * `:kinds` - resource kinds to include; empty means all
+    * `:lifecycle` - one lifecycle state
+    * `:freshness` - `"current"`, `"stale"`, or `"unknown"` (no inventory
+      condition reported yet)
+    * `:condition` - resources carrying a condition of this type
+    * `:source_id` - resources claimed by this source
+    * `:group` - `:kind`, `:lifecycle`, or `:freshness`; rows are ordered by
+      the group first so each page shows whole groups in order
+    * `:sort` - `{field, direction}` where field is `:name`, `:kind`,
+      `:lifecycle`, or `:last_seen` and direction is `:asc` or `:desc`
+    * `:page` - 1-based page
+
+  Each entry also carries `source_names`, `last_observed_at`, and
+  `drift_count`, the number of open component findings.
   """
   def list_operational_resources(%Scope{} = scope) do
     scope
@@ -612,8 +630,9 @@ defmodule Renga.Inventory do
     query =
       Resource
       |> where([resource], resource.organization_id == ^organization_id)
-      |> maybe_filter_stale_resources(organization_id, Keyword.get(options, :stale_only?, false))
+      |> maybe_filter_resource_freshness(organization_id, Keyword.get(options, :freshness))
       |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
+      |> maybe_filter_resource_kinds(Keyword.get(options, :kinds, []))
       |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
       |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
       |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
@@ -622,7 +641,9 @@ defmodule Renga.Inventory do
 
     entries =
       query
-      |> order_by([resource], asc: resource.name, asc: resource.id)
+      |> order_resources_by_group(organization_id, Keyword.get(options, :group))
+      |> order_resources_by(organization_id, Keyword.get(options, :sort, {:name, :asc}))
+      |> order_by([resource], asc: resource.id)
       |> select_merge([resource], %{
         source_names:
           fragment(
@@ -638,6 +659,12 @@ defmodule Renga.Inventory do
               type(^organization_id, :binary_id)
             ),
             :utc_datetime_usec
+          ),
+        drift_count:
+          fragment(
+            "(SELECT count(*) FROM component_findings AS findings WHERE findings.resource_id = ? AND findings.organization_id = ? AND findings.status = 'open')",
+            resource.id,
+            type(^organization_id, :binary_id)
           )
       })
       |> limit(^(@operational_resource_page_size + 1))
@@ -653,17 +680,95 @@ defmodule Renga.Inventory do
     }
   end
 
-  defp maybe_filter_stale_resources(query, _organization_id, false), do: query
+  @doc """
+  Lists the resource kinds present in the organization, for kind filters.
+  """
+  def list_resource_kinds(%Scope{organization_id: organization_id}) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> distinct(true)
+    |> order_by([resource], asc: resource.kind)
+    |> select([resource], resource.kind)
+    |> Repo.all()
+  end
 
-  defp maybe_filter_stale_resources(query, organization_id, true) do
-    stale_resource_ids =
-      ResourceCondition
-      |> where([condition], condition.organization_id == ^organization_id)
-      |> where([condition], condition.type == "InventoryCurrent")
-      |> where([condition], condition.status == "false")
-      |> select([condition], condition.resource_id)
+  # The InventoryCurrent status of a resource, or NULL before its first
+  # report. Shared by the freshness filter and grouping.
+  defmacrop inventory_status(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT conditions.status FROM resource_conditions AS conditions WHERE conditions.resource_id = ? AND conditions.organization_id = ? AND conditions.type = 'InventoryCurrent')",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
 
-    where(query, [resource], resource.id in subquery(stale_resource_ids))
+  defmacrop last_seen_at(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
+
+  defp maybe_filter_resource_freshness(query, _organization_id, freshness)
+       when freshness in [nil, ""],
+       do: query
+
+  defp maybe_filter_resource_freshness(query, organization_id, "current"),
+    do: where(query, [resource], inventory_status(resource, organization_id) == "true")
+
+  defp maybe_filter_resource_freshness(query, organization_id, "stale"),
+    do: where(query, [resource], inventory_status(resource, organization_id) == "false")
+
+  defp maybe_filter_resource_freshness(query, organization_id, "unknown"),
+    do: where(query, [resource], is_nil(inventory_status(resource, organization_id)))
+
+  defp maybe_filter_resource_kinds(query, []), do: query
+
+  defp maybe_filter_resource_kinds(query, kinds),
+    do: where(query, [resource], resource.kind in ^kinds)
+
+  defp order_resources_by_group(query, _organization_id, nil), do: query
+
+  defp order_resources_by_group(query, _organization_id, :kind),
+    do: order_by(query, [resource], asc: resource.kind)
+
+  defp order_resources_by_group(query, _organization_id, :lifecycle),
+    do: order_by(query, [resource], asc: resource.lifecycle_state)
+
+  # Stale first, then current, then not yet reported: the order an operator
+  # works through them.
+  defp order_resources_by_group(query, organization_id, :freshness) do
+    order_by(query, [resource],
+      asc:
+        fragment(
+          "CASE ? WHEN 'false' THEN 0 WHEN 'true' THEN 1 ELSE 2 END",
+          inventory_status(resource, organization_id)
+        )
+    )
+  end
+
+  defp order_resources_by(query, _organization_id, {:name, direction}),
+    do: order_by(query, [resource], [{^direction, resource.name}])
+
+  defp order_resources_by(query, _organization_id, {:kind, direction}),
+    do: order_by(query, [resource], [{^direction, resource.kind}, asc: resource.name])
+
+  defp order_resources_by(query, _organization_id, {:lifecycle, direction}),
+    do: order_by(query, [resource], [{^direction, resource.lifecycle_state}, asc: resource.name])
+
+  # Never-seen resources sort last in either direction.
+  defp order_resources_by(query, organization_id, {:last_seen, direction}) do
+    direction = if direction == :asc, do: :asc_nulls_last, else: :desc_nulls_last
+
+    order_by(query, [resource], [
+      {^direction, last_seen_at(resource, organization_id)},
+      asc: resource.name
+    ])
   end
 
   defp maybe_filter_resource_search(query, _organization_id, search)
