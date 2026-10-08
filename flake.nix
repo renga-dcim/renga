@@ -66,6 +66,10 @@
               # Rust
               rust-toolchain
 
+              # Browser tests: Node runs the Playwright driver from
+              # assets/node_modules; the browsers come from Nix below.
+              nodejs
+
               # LSPs
               beamPackages.expert
               erlang-language-platform
@@ -98,6 +102,18 @@
             ''}
 
             mkdir -p "$MIX_HOME" "$HEX_HOME" "$REBAR_CACHE_DIR"
+
+            # Playwright's downloaded browsers do not run on NixOS, so browser
+            # tests use the Nix-built ones. Each Playwright release expects
+            # specific browser builds, so the npm package in assets/package.json
+            # must match the nixpkgs version exactly.
+            export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+            export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+            npm_playwright="$(sed -n 's/.*"playwright": *"\([^"]*\)".*/\1/p' "$repo_root/assets/package.json")"
+            if [ "$npm_playwright" != "${pkgs.playwright-driver.version}" ]; then
+              echo "warning: assets/package.json pins playwright $npm_playwright but nixpkgs provides ${pkgs.playwright-driver.version}; browser tests will not find their browsers" >&2
+            fi
           '';
 
         };

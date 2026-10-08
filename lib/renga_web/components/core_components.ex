@@ -498,10 +498,14 @@ defmodule RengaWeb.CoreComponents do
                 col[:class]
               ]}
             >
+              <%!-- The link fills the row so the whole first cell is the tap target.
+                    It stops 1px short of the row height to leave room for the
+                    divider, keeping rows on the density pitch; touch screens
+                    still get the 44px minimum. --%>
               <.link
                 :if={index == 0 && @row_navigate}
                 navigate={@row_navigate.(row)}
-                class="flex min-h-row items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
               >
                 {render_slot(col, @row_item.(row))}
               </.link>

@@ -6,7 +6,7 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 * [X] Define color, type, spacing, and radius tokens as CSS custom properties
   on plain Tailwind, including fixed status colors with an ochre warning.
-* [ ] Define comfortable and compact density tokens, with 44px minimum tap
+* [X] Define comfortable and compact density tokens, with 44px minimum tap
   targets on touch devices, and exercise both densities in UI tests.
 * [X] Remove daisyUI and migrate core components to the tokens.
 * [X] Build the shared list, object page, properties panel, status strip, side
