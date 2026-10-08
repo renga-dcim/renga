@@ -189,7 +189,7 @@ defmodule RengaWeb.InboxLive do
 
     with %{resource: resource} <- selected,
          {:ok, attrs} <- placement_attrs(params, scope),
-         {:ok, _placement} <- DCIM.put_current_placement(scope, resource.id, attrs) do
+         {:ok, _placement} <- DCIM.put_current_placement_if_missing(scope, resource.id, attrs) do
       {:noreply, socket |> put_flash(:info, "Placed") |> after_triage()}
     else
       nil -> {:noreply, socket}
@@ -319,6 +319,9 @@ defmodule RengaWeb.InboxLive do
     do: put_flash(socket, :error, "Triage changes require the owner or admin role")
 
   defp triage_error(socket, :no_place), do: put_flash(socket, :error, "Choose a rack or a site")
+
+  defp triage_error(socket, :already_placed),
+    do: socket |> put_flash(:info, "Already placed elsewhere; nothing changed") |> after_triage()
 
   defp triage_error(socket, %Ecto.Changeset{} = changeset) do
     message =
