@@ -14,6 +14,7 @@ defmodule Renga.DCIM do
   alias Renga.Accounts.Scope
   alias Renga.DCIM.CurrentPlacement
   alias Renga.DCIM.DesiredPlacement
+  alias Renga.DCIM.Elevation
   alias Renga.DCIM.Location
   alias Renga.DCIM.PlacementEvidence
   alias Renga.DCIM.PlacementFinding
@@ -252,6 +253,122 @@ defmodule Renga.DCIM do
       attrs = Map.drop(attrs, [:position, :height_units, :face])
       {:filled, do_put_current_placement(scope, resource.id, attrs)}
     end
+  end
+
+  @doc """
+  The rack's elevation: devices per face, devices seen here but recorded
+  elsewhere, and what can be placed here. See `Renga.DCIM.Elevation`.
+  """
+  def rack_elevation(%Scope{} = scope, rack_id) do
+    Elevation.build(scope, get_rack!(scope, rack_id))
+  end
+
+  @doc """
+  Places a device in a rack at a unit and face a person chose, as a
+  confirmed placement. Its height comes from its catalog hardware type,
+  then its current placement, then one unit. Overlaps, units past the top
+  of the rack, and unknown faces are refused. Owners and admins only.
+  """
+  def place_in_rack(%Scope{} = scope, resource_id, rack_id, position, face)
+      when face in ~w(front rear full) do
+    managed_transaction(scope, fn ->
+      resource = lock_resource!(scope.organization_id, resource_id)
+      rack = scoped_get!(Rack, scope.organization_id, rack_id)
+
+      position =
+        if is_integer(position) or is_binary(position), do: to_string(position), else: ""
+
+      position =
+        case Integer.parse(position) do
+          {unit, ""} when unit > 0 -> unit
+          _ -> Repo.rollback(:invalid_position)
+        end
+
+      do_put_current_placement(scope, resource.id, %{
+        rack_id: rack.id,
+        position: position,
+        height_units: device_height(scope, resource.id),
+        face: face,
+        confirmed: true,
+        provenance: %{"confirmed_by_user_id" => scope.user.id, "via" => "elevation"}
+      })
+    end)
+  end
+
+  def place_in_rack(%Scope{}, _resource_id, _rack_id, _position, _face),
+    do: {:error, :invalid_face}
+
+  @doc """
+  Records a device where it was observed in a rack, in one step. With
+  placement evidence for the rack, the device goes to the evidence's units
+  when they are free (or into the rack without a unit), and the conflict
+  with its old confirmed placement is resolved. Seen only through LLDP, it
+  goes into the rack without a unit. Owners and admins only.
+  """
+  def place_observed(%Scope{} = scope, resource_id, rack_id) do
+    managed_transaction(scope, fn ->
+      resource = lock_resource!(scope.organization_id, resource_id)
+      rack = scoped_get!(Rack, scope.organization_id, rack_id)
+      provenance = %{"confirmed_by_user_id" => scope.user.id, "via" => "observed"}
+
+      attrs =
+        case observed_evidence(scope, resource.id, rack.id) do
+          {:ok, attrs} ->
+            attrs
+            |> Map.put(:confirmed, true)
+            |> Map.update!(:provenance, &Map.merge(&1, provenance))
+            |> without_taken_units(scope, rack, resource.id)
+
+          :none ->
+            Elevation.observed_by_lldp?(scope, rack, resource.id) || Repo.rollback(:not_observed)
+            %{rack_id: rack.id, position: nil, confirmed: true, provenance: provenance}
+        end
+
+      placement = do_put_current_placement(scope, resource.id, attrs)
+      do_resolve_placement_finding(scope, resource.id, "confirmed_placement_conflict")
+      placement
+    end)
+  end
+
+  @doc false
+  # Resolves one evidence row to placement attributes, for the elevation.
+  def resolve_placement_evidence(%Scope{} = scope, %PlacementEvidence{} = evidence),
+    do: resolve_evidence(scope, evidence)
+
+  defp observed_evidence(scope, resource_id, rack_id) do
+    PlacementEvidence
+    |> where([evidence], evidence.organization_id == ^scope.organization_id)
+    |> where([evidence], evidence.resource_id == ^resource_id and is_nil(evidence.stale_at))
+    |> order_by([evidence],
+      desc: evidence.confidence,
+      desc: evidence.observed_at,
+      desc: evidence.id
+    )
+    |> Repo.all()
+    |> Enum.find_value(:none, fn evidence ->
+      case resolve_evidence(scope, evidence) do
+        {:ok, %{rack_id: ^rack_id} = attrs, _evidence} -> {:ok, attrs}
+        _elsewhere -> nil
+      end
+    end)
+  end
+
+  # Observed units another device now holds would make the move fail; the
+  # device still goes in the rack, and a person picks the unit.
+  defp without_taken_units(%{position: nil} = attrs, _scope, _rack, _resource_id), do: attrs
+
+  defp without_taken_units(attrs, scope, rack, resource_id) do
+    if desired_units_occupied?(
+         scope,
+         Map.merge(attrs, %{rack_id: rack.id, resource_id: resource_id})
+       ),
+       do: %{attrs | position: nil, height_units: nil, face: nil},
+       else: attrs
+  end
+
+  defp device_height(scope, resource_id) do
+    Elevation.heights(scope, [resource_id])
+    |> Map.get(resource_id, 1)
   end
 
   def remove_current_placement(%Scope{} = scope, resource_id) do
