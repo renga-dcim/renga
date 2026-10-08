@@ -110,7 +110,7 @@ defmodule RengaWeb.ResourceProvenanceLiveTest do
     assert has_element?(view, "#property-vendor", "Dell")
   end
 
-  test "members see provenance but not the override form", %{
+  test "members see provenance and may request, not set, an override", %{
     organization: organization,
     resource: resource
   } do
@@ -126,7 +126,7 @@ defmodule RengaWeb.ResourceProvenanceLiveTest do
 
     assert has_element?(view, "#provenance-vendor-reason")
     refute has_element?(view, "#override-vendor-form")
-    assert has_element?(view, "#override-vendor-unavailable", "owner or admin")
+    assert has_element?(view, "#override-vendor-request-form")
 
     assert render_submit(view, "set_override", %{
              "field" => "vendor",
@@ -134,6 +134,24 @@ defmodule RengaWeb.ResourceProvenanceLiveTest do
            }) =~ "Overrides require the owner or admin role"
 
     assert has_element?(view, "#property-vendor", "Dell")
+  end
+
+  test "viewers see why overrides are unavailable", %{
+    organization: organization,
+    resource: resource
+  } do
+    viewer = user_fixture()
+    organization_membership_fixture(viewer, organization, %{role: "viewer"})
+
+    conn =
+      build_conn()
+      |> log_in_user(viewer)
+      |> put_session(:current_organization_id, organization.id)
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource}")
+
+    refute has_element?(view, "#override-vendor-request-form")
+    assert has_element?(view, "#override-vendor-unavailable", "owner or admin")
   end
 
   defp report(scope, source, second, attributes) do

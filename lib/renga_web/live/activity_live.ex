@@ -144,7 +144,26 @@ defmodule RengaWeb.ActivityLive do
   defp describe(%{kind: "finding_exception_removed", field: field}),
     do: "Removed the exception on #{finding_label(field)}"
 
+  defp describe(%{kind: "request_" <> action} = event) do
+    verb =
+      case action do
+        "created" -> "Requested"
+        "approved" -> "Approved request:"
+        "rejected" -> "Rejected request:"
+        "withdrawn" -> "Withdrew request:"
+      end
+
+    "#{verb} #{request_change(event)}"
+  end
+
   defp describe(%{kind: kind}), do: String.capitalize(String.replace(kind, "_", " "))
+
+  defp request_change(%{field: field, new_value: %{"value" => value}}) do
+    property =
+      field |> to_string() |> String.replace_prefix("host.", "") |> String.replace("_", " ")
+
+    "#{property} → #{value}"
+  end
 
   # Finding events name the finding as "domain.kind"; the kind reads best.
   defp finding_label(field) do

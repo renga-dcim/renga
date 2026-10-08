@@ -1,8 +1,9 @@
 defmodule RengaWeb.InboxLive do
   @moduledoc """
-  The Inbox (RFD 8: "What needs me?"): findings from every domain in one
-  queue, grouped as Drift and Health, replacing the separate component,
-  topology, and placement findings pages.
+  The Inbox (RFD 8: "What needs me?"): member requests and findings from
+  every domain in one place, grouped as Requests, Drift, and Health,
+  replacing the separate component, topology, and placement findings pages.
+  Owners and admins approve or reject requests from the request panel.
 
   Reconciliation opens and closes findings; people add judgment in the
   finding panel: assign, snooze, or accept as an exception. All list state
@@ -16,9 +17,13 @@ defmodule RengaWeb.InboxLive do
   """
   use RengaWeb, :live_view
 
+  import RengaWeb.RequestComponents
+
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Findings
+  alias Renga.Requests
+  alias Renga.Requests.Request
   alias Renga.Inventory.Changes
   alias RengaWeb.Format
 
@@ -48,7 +53,12 @@ defmodule RengaWeb.InboxLive do
        reload_timer: nil,
        selected: nil,
        history: [],
-       exception_form: nil
+       exception_form: nil,
+       can_decide?: Requests.can_decide?(scope),
+       selected_request: nil,
+       similar: [],
+       request_current: nil,
+       decision_form: decision_form()
      )}
   end
 
@@ -66,7 +76,9 @@ defmodule RengaWeb.InboxLive do
      socket
      |> assign(:query, query)
      |> load_findings()
-     |> load_selected()}
+     |> load_selected()
+     |> load_requests()
+     |> load_selected_request()}
   end
 
   @impl true
@@ -123,6 +135,28 @@ defmodule RengaWeb.InboxLive do
     |> reply()
   end
 
+  def handle_event("decide", %{"decision" => decision} = params, socket)
+      when decision in ~w(approve approve_all reject) do
+    %{selected_request: request, similar: similar, current_scope: scope} = socket.assigns
+    note = get_in(params, ["decision_form", "note"])
+
+    result =
+      case {decision, request} do
+        {_decision, nil} -> {:error, :not_found}
+        {"approve", request} -> Requests.approve(scope, request, note)
+        {"approve_all", request} -> Requests.approve(scope, [request | similar], note)
+        {"reject", request} -> Requests.reject(scope, request, note)
+      end
+
+    {:noreply, socket |> decision_flash(result) |> after_decision()}
+  end
+
+  def handle_event("withdraw_request", _params, socket) do
+    %{selected_request: request, current_scope: scope} = socket.assigns
+    result = if request, do: Requests.withdraw(scope, request), else: {:error, :not_found}
+    {:noreply, socket |> decision_flash(result) |> after_decision()}
+  end
+
   @impl true
   def handle_info(
         {:inventory_changed, _organization_id},
@@ -135,7 +169,13 @@ defmodule RengaWeb.InboxLive do
   def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
 
   def handle_info(:reload, socket) do
-    {:noreply, socket |> assign(:reload_timer, nil) |> load_findings() |> load_selected()}
+    {:noreply,
+     socket
+     |> assign(:reload_timer, nil)
+     |> load_findings()
+     |> load_selected()
+     |> load_requests()
+     |> load_selected_request()}
   end
 
   # Runs a workflow change on the open finding. The context re-reads the
@@ -173,6 +213,38 @@ defmodule RengaWeb.InboxLive do
 
   defp reply(socket), do: {:noreply, socket}
 
+  defp decision_flash(socket, {:ok, 1}), do: put_flash(socket, :info, "Request approved")
+
+  defp decision_flash(socket, {:ok, count}) when is_integer(count),
+    do: put_flash(socket, :info, "#{count} requests approved")
+
+  defp decision_flash(socket, {:ok, %Request{status: status}}),
+    do: put_flash(socket, :info, "Request #{status}")
+
+  defp decision_flash(socket, {:error, :forbidden}),
+    do: put_flash(socket, :error, "Only owners and admins decide requests")
+
+  defp decision_flash(socket, {:error, reason}) when reason in [:closed, :not_found],
+    do: put_flash(socket, :error, "That request is no longer open")
+
+  defp decision_flash(socket, {:error, _reason}),
+    do:
+      put_flash(
+        socket,
+        :error,
+        "The change could not be applied; review the resource and try again"
+      )
+
+  defp after_decision(socket) do
+    socket
+    |> assign(:decision_form, decision_form())
+    |> load_findings()
+    |> load_requests()
+    |> load_selected_request()
+  end
+
+  defp decision_form, do: to_form(%{"note" => ""}, as: :decision_form)
+
   defp assigned_message(_socket, nil), do: "Unassigned"
 
   defp assigned_message(socket, user_id) do
@@ -196,6 +268,15 @@ defmodule RengaWeb.InboxLive do
   end
 
   ## Loading
+
+  # The Requests tab lists requests instead; findings still feed the counts.
+  defp load_findings(%{assigns: %{query: %{group: "requests"}}} = socket) do
+    %{query: query, current_scope: scope} = socket.assigns
+
+    socket
+    |> assign(total: 0, counts: Findings.count_by_group(scope, list_options(query, scope)))
+    |> stream(:findings, [], reset: true)
+  end
 
   defp load_findings(socket) do
     %{query: query, current_scope: scope} = socket.assigns
@@ -231,6 +312,60 @@ defmodule RengaWeb.InboxLive do
     end
   end
 
+  defp load_requests(socket) do
+    %{query: query, current_scope: scope} = socket.assigns
+    socket = assign(socket, :open_request_count, Requests.count_open(scope))
+
+    cond do
+      query.group == "requests" ->
+        {requests, total} = Requests.list_requests(scope, status: query.status, page: query.page)
+
+        socket
+        |> assign(
+          request_total: total,
+          request_preview?: false,
+          has_next_page?: query.page * Requests.per_page() < total
+        )
+        |> stream(:requests, requests, reset: true)
+
+      # The All view leads with a few open requests, the RFD's first group.
+      query.group == nil and query.state == "open" and not scoped?(query) ->
+        {requests, _total} = Requests.list_requests(scope)
+        preview = Enum.take(requests, 5)
+
+        socket
+        |> assign(request_total: 0, request_preview?: preview != [])
+        |> stream(:requests, preview, reset: true)
+
+      true ->
+        socket
+        |> assign(request_total: 0, request_preview?: false)
+        |> stream(:requests, [], reset: true)
+    end
+  end
+
+  defp load_selected_request(%{assigns: %{query: %{request: nil}}} = socket),
+    do: assign(socket, selected_request: nil, similar: [], request_current: nil)
+
+  defp load_selected_request(socket) do
+    %{query: %{request: id}, current_scope: scope} = socket.assigns
+
+    case Requests.get_request(scope, id) do
+      nil ->
+        assign(socket, selected_request: nil, similar: [], request_current: nil)
+
+      request ->
+        similar =
+          if request.status == "open", do: Requests.similar_requests(scope, request), else: []
+
+        assign(socket,
+          selected_request: request,
+          similar: similar,
+          request_current: Requests.current_value(scope, request)
+        )
+    end
+  end
+
   defp exception_form(finding),
     do: finding |> Findings.change_exception() |> to_form(as: :exception)
 
@@ -250,7 +385,9 @@ defmodule RengaWeb.InboxLive do
 
   defp parse(params) do
     %{
-      group: one_of(params["group"], Findings.groups()),
+      group: one_of(params["group"], ["requests" | Findings.groups()]),
+      status: one_of(params["status"], Request.statuses()) || "open",
+      request: uuid(params["request"]),
       state: one_of(params["state"], Findings.states()) || "open",
       assignee: assignee_param(params["assignee"]),
       domain: one_of(params["domain"], Renga.Findings.Workflow.domains()),
@@ -292,8 +429,10 @@ defmodule RengaWeb.InboxLive do
         kind: query.kind,
         resource: query.resource,
         interface_id: query.interface,
+        status: if(query.status != "open", do: query.status),
         page: if(query.page > 1, do: query.page),
-        finding: finding_value(query.finding)
+        finding: finding_value(query.finding),
+        request: query.request
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
@@ -352,7 +491,7 @@ defmodule RengaWeb.InboxLive do
           <div class="flex items-baseline gap-2.5">
             <h1 class="text-xl font-semibold tracking-tight text-fg">Inbox</h1>
             <span id="inbox-count" class="font-mono text-xs tabular-nums text-fg-muted">
-              {@total}
+              {if(@query.group == "requests", do: @request_total, else: @total)}
             </span>
           </div>
         </header>
@@ -362,6 +501,13 @@ defmodule RengaWeb.InboxLive do
           class="-mb-px flex gap-1 overflow-x-auto border-b border-edge"
           aria-label="Queue groups"
         >
+          <.group_tab
+            id="inbox-group-requests"
+            query={@query}
+            group="requests"
+            label="Requests"
+            count={@open_request_count}
+          />
           <.group_tab
             id="inbox-group-all"
             query={@query}
@@ -384,7 +530,38 @@ defmodule RengaWeb.InboxLive do
           />
         </nav>
 
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <.requests_view :if={@query.group == "requests"} {assigns} />
+
+        <section
+          :if={@request_preview?}
+          id="inbox-requests-preview"
+          aria-labelledby="inbox-requests-title"
+          class="space-y-2"
+        >
+          <div class="flex items-baseline justify-between">
+            <h2 id="inbox-requests-title" class="text-sm font-semibold text-fg">
+              Requests <span class="ml-1 font-mono text-xs text-fg-muted">{@open_request_count}</span>
+            </h2>
+            <.link
+              id="inbox-requests-all"
+              patch={inbox_path(@query, group: "requests", page: 1, finding: nil, request: nil)}
+              class="text-xs text-link hover:underline"
+            >
+              See all requests
+            </.link>
+          </div>
+          <.request_table
+            id="requests"
+            requests={@streams.requests}
+            row_click={
+              fn {_id, request} -> JS.patch(inbox_path(@query, request: request.id, finding: nil)) end
+            }
+            selected_id={@selected_request && @selected_request.id}
+            empty="No open requests."
+          />
+        </section>
+
+        <div :if={@query.group != "requests"} class="flex flex-wrap items-center gap-x-4 gap-y-2">
           <.segmented id="inbox-states" label="State">
             <:option
               :for={{value, label} <- state_options()}
@@ -417,6 +594,7 @@ defmodule RengaWeb.InboxLive do
         </div>
 
         <.table
+          :if={@query.group != "requests"}
           id="findings"
           rows={@streams.findings}
           row_item={fn {_id, item} -> item end}
@@ -480,7 +658,7 @@ defmodule RengaWeb.InboxLive do
         </.table>
 
         <nav
-          :if={@query.page > 1 or @has_next_page?}
+          :if={@query.group != "requests" and (@query.page > 1 or @has_next_page?)}
           id="inbox-pagination"
           class="flex items-center justify-between text-sm"
           aria-label="Inbox pages"
@@ -516,9 +694,81 @@ defmodule RengaWeb.InboxLive do
         expiries={@expiries}
         exception_form={@exception_form}
       />
+
+      <.request_panel
+        :if={@selected_request}
+        request={@selected_request}
+        current_value={@request_current}
+        similar={@similar}
+        can_decide?={@can_decide?}
+        current_user_id={@current_scope.user.id}
+        decision_form={@decision_form}
+        on_cancel={JS.patch(inbox_path(@query, request: nil))}
+      />
     </Layouts.app>
     """
   end
+
+  defp requests_view(assigns) do
+    ~H"""
+    <div class="space-y-4">
+      <.segmented id="inbox-request-statuses" label="Request status">
+        <:option
+          :for={{value, label} <- request_status_options()}
+          patch={inbox_path(@query, status: value, page: 1, request: nil)}
+          active={@query.status == value}
+          id={"inbox-status-#{value}"}
+        >
+          {label}
+        </:option>
+      </.segmented>
+
+      <.request_table
+        id="requests"
+        requests={@streams.requests}
+        row_click={fn {_id, request} -> JS.patch(inbox_path(@query, request: request.id)) end}
+        selected_id={@selected_request && @selected_request.id}
+        empty={request_empty(@query.status)}
+      />
+
+      <nav
+        :if={@query.page > 1 or @has_next_page?}
+        id="inbox-request-pagination"
+        class="flex items-center justify-between text-sm"
+        aria-label="Request pages"
+      >
+        <.link
+          :if={@query.page > 1}
+          patch={inbox_path(@query, page: @query.page - 1, request: nil)}
+          class="text-link hover:underline"
+        >
+          Previous
+        </.link>
+        <span :if={@query.page == 1} />
+        <.link
+          :if={@has_next_page?}
+          patch={inbox_path(@query, page: @query.page + 1, request: nil)}
+          class="text-link hover:underline"
+        >
+          Next
+        </.link>
+      </nav>
+    </div>
+    """
+  end
+
+  defp request_status_options,
+    do: [
+      {"open", "Open"},
+      {"approved", "Approved"},
+      {"rejected", "Rejected"},
+      {"withdrawn", "Withdrawn"}
+    ]
+
+  defp request_empty("open"),
+    do: "No open requests. Members request changes they cannot make themselves."
+
+  defp request_empty(status), do: "No #{status} requests."
 
   attr :id, :string, required: true
   attr :query, :map, required: true
@@ -530,7 +780,7 @@ defmodule RengaWeb.InboxLive do
     ~H"""
     <.link
       id={@id}
-      patch={inbox_path(@query, group: @group, page: 1, finding: nil)}
+      patch={inbox_path(@query, group: @group, page: 1, finding: nil, request: nil)}
       aria-current={@query.group == @group && "page"}
       class={[
         "inline-flex min-h-tap shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors",

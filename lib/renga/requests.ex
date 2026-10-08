@@ -82,6 +82,15 @@ defmodule Renga.Requests do
     |> Changes.broadcast(organization_id)
   end
 
+  @doc """
+  The value the request would change, as it is now, so an approver can see
+  whether it moved since the request was made.
+  """
+  def current_value(%Scope{} = scope, %Request{} = request) do
+    resource = Inventory.get_resource!(scope, request.resource_id)
+    current_value(scope, resource, request.kind, request.field)
+  end
+
   defp current_value(_scope, resource, "lifecycle", _field), do: resource.lifecycle_state
 
   defp current_value(scope, resource, "field_override", field) do
