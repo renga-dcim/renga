@@ -204,4 +204,78 @@ defmodule RengaWeb.InventoryListTest do
     assert length(row_ids(view)) == 1
     assert has_element?(view, "#resources-previous")
   end
+
+  describe "selection" do
+    test "lives in the URL and shows the floating bar", %{
+      conn: conn,
+      server: server,
+      switch: switch
+    } do
+      {:ok, view, _html} = live(conn, ~p"/inventory")
+      refute has_element?(view, "#bulk-bar")
+
+      view |> element("#resources-#{server.id} [data-list-check]") |> render_click()
+      assert_patch(view, ~p"/inventory?sel=#{server.id}")
+      assert has_element?(view, "#bulk-count", "1 resource selected")
+      assert has_element?(view, "#resources-#{server.id} [data-list-check][checked]")
+
+      view |> element("#resources-check-all") |> render_click()
+      assert has_element?(view, "#bulk-count", "2 resources selected")
+      assert has_element?(view, "#resources-#{switch.id} [data-list-check][checked]")
+
+      view |> element("#resources-check-all") |> render_click()
+      refute has_element?(view, "#bulk-bar")
+
+      view |> element("#resources-#{switch.id} [data-list-check]") |> render_click()
+      view |> element("#bulk-clear") |> render_click()
+      assert_patch(view, ~p"/inventory")
+    end
+
+    test "sets lifecycle on every selected resource after confirming", %{
+      conn: conn,
+      scope: scope,
+      server: server,
+      switch: switch
+    } do
+      {:ok, view, _html} = live(conn, ~p"/inventory?#{%{"sel" => "#{server.id},#{switch.id}"}}")
+
+      assert has_element?(view, "#bulk-lifecycle-retired", "Set 2 resources to Retired?")
+      view |> element("#bulk-lifecycle-retired-confirm") |> render_click()
+
+      assert_patch(view, ~p"/inventory")
+      assert has_element?(view, "#flash-info", "Set 2 resources to retired")
+      assert Inventory.get_resource!(scope, server.id).lifecycle_state == "retired"
+      assert Inventory.get_resource!(scope, switch.id).lifecycle_state == "retired"
+    end
+
+    test "explains why members cannot change lifecycle", %{
+      conn: conn,
+      scope: scope,
+      server: server
+    } do
+      viewer = user_fixture()
+
+      organization_membership_fixture(
+        viewer,
+        %Renga.Accounts.Organization{id: scope.organization_id},
+        %{
+          role: "viewer"
+        }
+      )
+
+      conn =
+        conn
+        |> log_in_user(viewer)
+        |> put_session(:current_organization_id, scope.organization_id)
+
+      {:ok, view, _html} = live(conn, ~p"/inventory?sel=#{server.id}")
+
+      assert has_element?(view, "#bulk-lifecycle-unavailable", "Requires the owner or admin role")
+      refute has_element?(view, "#bulk-lifecycle-retired")
+
+      render_hook(view, "bulk_lifecycle", %{"state" => "retired"})
+      assert has_element?(view, "#flash-error", "not allowed")
+      refute Inventory.get_resource!(scope, server.id).lifecycle_state == "retired"
+    end
+  end
 end

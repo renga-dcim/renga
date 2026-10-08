@@ -32,6 +32,7 @@ defmodule RengaWeb.ResourceLive.Index do
     {:ok,
      assign(socket,
        page_title: "Inventory",
+       can_manage?: Inventory.organization_manager?(scope),
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
        column_labels: @column_labels
@@ -89,6 +90,54 @@ defmodule RengaWeb.ResourceLive.Index do
 
   def handle_event("refresh", _params, socket), do: {:noreply, load_resources(socket)}
 
+  # Selection lives in the URL (`sel`), like every other piece of list state,
+  # so a selection can be shared and survives paging and filtering.
+  def handle_event("toggle_selection", %{"id" => id}, socket) do
+    query = socket.assigns.query
+
+    selected =
+      if id in query.selected, do: List.delete(query.selected, id), else: query.selected ++ [id]
+
+    {:noreply, patch(socket, %{query | selected: selected})}
+  end
+
+  def handle_event("toggle_page", _params, socket) do
+    %{query: query, page_ids: page_ids} = socket.assigns
+
+    selected =
+      if all_selected?(query.selected, page_ids),
+        do: query.selected -- page_ids,
+        else: Enum.uniq(query.selected ++ page_ids)
+
+    {:noreply, patch(socket, %{query | selected: selected})}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, patch(socket, %{socket.assigns.query | selected: []})}
+  end
+
+  def handle_event("bulk_lifecycle", %{"state" => state}, socket)
+      when state in ~w(active inactive retired unknown) do
+    %{current_scope: scope, query: query} = socket.assigns
+
+    case Inventory.update_resources_lifecycle(scope, query.selected, state) do
+      {:ok, count} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Set #{count_label(count)} to #{state}")
+         |> patch(%{query | selected: []})}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "You are not allowed to manage resource lifecycle")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Resources changed while saving; review them and try again")
+         |> load_resources()}
+    end
+  end
+
   defp patch(socket, query), do: push_patch(socket, to: list_path(query))
 
   defp load_resources(socket) do
@@ -104,7 +153,8 @@ defmodule RengaWeb.ResourceLive.Index do
     |> assign(
       resource_count: result.total,
       page: result.page,
-      has_next_page?: result.has_next?
+      has_next_page?: result.has_next?,
+      page_ids: Enum.map(result.entries, & &1.id)
     )
     |> stream(:resources, with_group_headers(result.entries, query.group, group_counts),
       reset: true
@@ -148,7 +198,7 @@ defmodule RengaWeb.ResourceLive.Index do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:inventory}>
-      <section id="resource-list" class="space-y-4">
+      <section id="resource-list" class={["space-y-4", @query.selected != [] && "pb-20"]}>
         <header class="flex flex-wrap items-end justify-between gap-3">
           <div class="flex items-baseline gap-2.5">
             <h1 class="text-xl font-semibold tracking-tight text-fg">Inventory</h1>
@@ -189,73 +239,94 @@ defmodule RengaWeb.ResourceLive.Index do
           <.filter_menu query={@query} kinds={@kinds} sources={@sources} />
         </div>
 
-        <.table
-          id="resources"
-          rows={@streams.resources}
-          row_item={fn {_id, item} -> item end}
-          row_group={fn {_id, item} -> Map.get(item, :group) end}
-          row_navigate={fn {_id, resource} -> ~p"/inventory/#{resource}" end}
-          class="rounded-lg border border-edge bg-surface"
+        <div id="resource-keys" phx-hook="ListKeys" data-filter="#resource-search-input">
+          <.table
+            id="resources"
+            rows={@streams.resources}
+            row_item={fn {_id, item} -> item end}
+            row_group={fn {_id, item} -> Map.get(item, :group) end}
+            row_navigate={fn {_id, resource} -> ~p"/inventory/#{resource}" end}
+            row_checked={fn {_id, resource} -> resource.id in @query.selected end}
+            row_check_id={fn {_id, resource} -> resource.id end}
+            row_check_label={
+              fn {_id, resource} -> "Select #{resource.display_name || resource.name}" end
+            }
+            on_check="toggle_selection"
+            on_check_all="toggle_page"
+            all_checked={all_selected?(@query.selected, @page_ids)}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={resource} label="Name" class="min-w-56">
+              <span class="truncate font-medium text-fg">
+                {resource.display_name || resource.name}
+              </span>
+              <span
+                :if={resource.display_name && resource.display_name != resource.name}
+                class="ml-2 truncate text-fg-subtle"
+              >
+                {resource.name}
+              </span>
+            </:col>
+            <:col :let={resource} :if={"kind" in @query.columns} label="Kind" class="text-fg-muted">
+              {Format.humanize(resource.kind)}
+            </:col>
+            <:col
+              :let={resource}
+              :if={"hardware" in @query.columns}
+              label="Hardware"
+              class="max-w-56 truncate text-fg-muted"
+            >
+              {hardware_name(resource)}
+            </:col>
+            <:col :let={resource} :if={"status" in @query.columns} label={@column_labels["status"]}>
+              <.resource_status resource={resource} />
+            </:col>
+            <:col
+              :let={resource}
+              :if={"sources" in @query.columns}
+              label="Sources"
+              class="max-w-48 truncate text-fg-muted"
+            >
+              {source_names(resource)}
+            </:col>
+            <:col
+              :let={resource}
+              :if={"seen" in @query.columns}
+              label="Seen"
+              class="whitespace-nowrap font-mono text-xs text-fg-muted"
+            >
+              <time
+                :if={resource.last_observed_at}
+                datetime={DateTime.to_iso8601(resource.last_observed_at)}
+                title={Format.datetime(resource.last_observed_at)}
+              >
+                {Format.age(resource.last_observed_at)}
+              </time>
+              <span :if={is_nil(resource.last_observed_at)} class="text-fg-subtle">Never</span>
+            </:col>
+            <:empty>
+              <%= if InventoryQuery.filtered?(@query) do %>
+                No resources match these filters.
+                <.link patch={~p"/inventory"} class="ml-1 text-link hover:underline">
+                  Clear filters
+                </.link>
+              <% else %>
+                Nothing here yet. Resources appear as collectors report them.
+              <% end %>
+            </:empty>
+          </.table>
+        </div>
+
+        <p
+          id="list-keys-legend"
+          class="hidden items-center gap-4 text-xs text-fg-subtle md:flex"
+          aria-hidden="true"
         >
-          <:col :let={resource} label="Name" class="min-w-56">
-            <span class="truncate font-medium text-fg">
-              {resource.display_name || resource.name}
-            </span>
-            <span
-              :if={resource.display_name && resource.display_name != resource.name}
-              class="ml-2 truncate text-fg-subtle"
-            >
-              {resource.name}
-            </span>
-          </:col>
-          <:col :let={resource} :if={"kind" in @query.columns} label="Kind" class="text-fg-muted">
-            {Format.humanize(resource.kind)}
-          </:col>
-          <:col
-            :let={resource}
-            :if={"hardware" in @query.columns}
-            label="Hardware"
-            class="max-w-56 truncate text-fg-muted"
-          >
-            {hardware_name(resource)}
-          </:col>
-          <:col :let={resource} :if={"status" in @query.columns} label={@column_labels["status"]}>
-            <.resource_status resource={resource} />
-          </:col>
-          <:col
-            :let={resource}
-            :if={"sources" in @query.columns}
-            label="Sources"
-            class="max-w-48 truncate text-fg-muted"
-          >
-            {source_names(resource)}
-          </:col>
-          <:col
-            :let={resource}
-            :if={"seen" in @query.columns}
-            label="Seen"
-            class="whitespace-nowrap font-mono text-xs text-fg-muted"
-          >
-            <time
-              :if={resource.last_observed_at}
-              datetime={DateTime.to_iso8601(resource.last_observed_at)}
-              title={Format.datetime(resource.last_observed_at)}
-            >
-              {Format.age(resource.last_observed_at)}
-            </time>
-            <span :if={is_nil(resource.last_observed_at)} class="text-fg-subtle">Never</span>
-          </:col>
-          <:empty>
-            <%= if InventoryQuery.filtered?(@query) do %>
-              No resources match these filters.
-              <.link patch={~p"/inventory"} class="ml-1 text-link hover:underline">
-                Clear filters
-              </.link>
-            <% else %>
-              Nothing here yet. Resources appear as collectors report them.
-            <% end %>
-          </:empty>
-        </.table>
+          <span><kbd class="font-mono">J</kbd> <kbd class="font-mono">K</kbd> move</span>
+          <span><kbd class="font-mono">↵</kbd> open</span>
+          <span><kbd class="font-mono">X</kbd> select</span>
+          <span><kbd class="font-mono">F</kbd> filter</span>
+        </p>
 
         <nav
           :if={@page > 1 or @has_next_page?}
@@ -283,8 +354,90 @@ defmodule RengaWeb.ResourceLive.Index do
           </.link>
           <span :if={!@has_next_page?} />
         </nav>
+
+        <.bulk_bar
+          :if={@query.selected != []}
+          count={length(@query.selected)}
+          can_manage?={@can_manage?}
+        />
       </section>
     </Layouts.app>
+    """
+  end
+
+  @bulk_lifecycles [
+    {"active", "Active", "in service"},
+    {"inactive", "Inactive", "out of service"},
+    {"retired", "Retired", "no longer used"},
+    {"unknown", "Unknown", "not classified"}
+  ]
+
+  # Floats over the list while rows are selected (RFD 8: bulk actions appear
+  # in a floating bar). Each lifecycle choice confirms with the count first.
+  attr :count, :integer, required: true
+  attr :can_manage?, :boolean, required: true
+
+  defp bulk_bar(assigns) do
+    assigns = assign(assigns, lifecycles: @bulk_lifecycles)
+
+    ~H"""
+    <div
+      id="bulk-bar"
+      role="region"
+      aria-label="Selected resources"
+      class="fixed inset-x-4 bottom-4 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-edge bg-surface px-3 py-2 shadow-xl sm:inset-x-0"
+    >
+      <span id="bulk-count" class="px-1 text-sm font-medium text-fg">
+        {count_label(@count)} selected
+      </span>
+      <span class="flex-1" />
+      <%= if @can_manage? do %>
+        <details id="bulk-lifecycle-menu" class="relative">
+          <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-accent-fg hover:bg-accent-hover">
+            Set lifecycle <.icon name="hero-chevron-up-mini" class="size-4" />
+          </summary>
+          <div
+            phx-click-away={JS.remove_attribute("open", to: "#bulk-lifecycle-menu")}
+            class="absolute bottom-full right-0 mb-2 w-56 rounded-lg border border-edge bg-surface p-1 shadow-lg"
+          >
+            <button
+              :for={{state, label, meaning} <- @lifecycles}
+              id={"bulk-lifecycle-#{state}-option"}
+              type="button"
+              phx-click={
+                JS.remove_attribute("open", to: "#bulk-lifecycle-menu")
+                |> show_overlay("bulk-lifecycle-#{state}")
+              }
+              class="flex min-h-tap w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-sm text-fg hover:bg-sunken"
+            >
+              {label} <span class="text-xs text-fg-subtle">{meaning}</span>
+            </button>
+          </div>
+        </details>
+      <% else %>
+        <span
+          id="bulk-lifecycle-unavailable"
+          class="inline-flex h-control items-center gap-1.5 rounded-md border border-edge px-3 text-sm text-fg-subtle"
+          aria-disabled="true"
+        >
+          Set lifecycle <span class="text-xs">· Requires the owner or admin role</span>
+        </span>
+      <% end %>
+      <.button id="bulk-clear" size="sm" variant="ghost" phx-click="clear_selection">Clear</.button>
+
+      <.confirm_dialog
+        :for={{state, label, _meaning} <- @lifecycles}
+        :if={@can_manage?}
+        id={"bulk-lifecycle-#{state}"}
+        title={"Set #{count_label(@count)} to #{label}?"}
+        confirm_label={"Set to #{label}"}
+        variant="primary"
+        on_confirm={JS.push("bulk_lifecycle", value: %{state: state})}
+      >
+        Lifecycle classifies resources for planning and filters. It does not change the devices
+        or what collectors report.
+      </.confirm_dialog>
+    </div>
     """
   end
 
@@ -527,6 +680,12 @@ defmodule RengaWeb.ResourceLive.Index do
 
   defp source_names(%{source_names: []}), do: "—"
   defp source_names(%{source_names: names}), do: Enum.join(names, ", ")
+
+  defp all_selected?(_selected, []), do: false
+  defp all_selected?(selected, page_ids), do: Enum.all?(page_ids, &(&1 in selected))
+
+  defp count_label(1), do: "1 resource"
+  defp count_label(count), do: "#{count} resources"
 
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value

@@ -1118,6 +1118,41 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Sets one lifecycle state on several resources at once, for the list's bulk
+  action. Runs in one transaction under the same owner/admin check as
+  `update_resource_lifecycle/3`, so either every resource changes or none
+  does.
+
+  Ids outside the caller's organization, or not ids at all, are ignored
+  rather than raising: they come from a shareable URL. Resources already in
+  the state are left untouched. Returns `{:ok, changed_count}`.
+  """
+  def update_resources_lifecycle(%Scope{organization_id: organization_id} = scope, ids, state)
+      when is_list(ids) do
+    ids = Enum.flat_map(ids, &List.wrap(Ecto.UUID.cast(&1) |> ok_value()))
+
+    organization_management_transaction(scope, fn ->
+      Resource
+      |> where([resource], resource.organization_id == ^organization_id)
+      |> where([resource], resource.id in ^ids)
+      |> where([resource], resource.lifecycle_state != ^state)
+      |> order_by([resource], asc: resource.id)
+      |> Repo.all()
+      |> Enum.reduce_while({:ok, 0}, &set_lifecycle(scope, &1, state, &2))
+    end)
+  end
+
+  defp set_lifecycle(scope, resource, state, {:ok, count}) do
+    case update_resource(scope, resource, %{lifecycle_state: state}) do
+      {:ok, _resource} -> {:cont, {:ok, count + 1}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp ok_value({:ok, value}), do: value
+  defp ok_value(:error), do: nil
+
+  @doc """
   Builds a resource changeset for UI/API validation.
   """
   def change_resource(%Resource{} = resource, attrs \\ %{}) do

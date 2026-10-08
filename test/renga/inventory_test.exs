@@ -49,6 +49,14 @@ defmodule Renga.InventoryTest do
     }
   end
 
+  # A scope for a new user holding `role` in the scope's organization.
+  defp member_scope(%{organization_id: organization_id}, role) do
+    user = Renga.AccountsFixtures.user_fixture()
+    organization = %Accounts.Organization{id: organization_id}
+    Renga.InventoryFixtures.organization_membership_fixture(user, organization, %{role: role})
+    Accounts.scope_for_user(user, organization_id)
+  end
+
   describe "sources" do
     setup do
       scoped_organizations()
@@ -641,6 +649,62 @@ defmodule Renga.InventoryTest do
                })
 
       assert resource.organization_id == scope.organization_id
+    end
+
+    test "update_resources_lifecycle/3 sets many resources and ignores ids it cannot see", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      admin_scope = member_scope(scope, "admin")
+
+      {:ok, active} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-a",
+          lifecycle_state: "active"
+        })
+
+      {:ok, done} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-b",
+          lifecycle_state: "retired"
+        })
+
+      {:ok, foreign} =
+        Inventory.create_resource(other_scope, %{
+          kind: "server",
+          name: "theirs",
+          lifecycle_state: "active"
+        })
+
+      assert {:ok, 1} =
+               Inventory.update_resources_lifecycle(
+                 admin_scope,
+                 [active.id, done.id, foreign.id, "not-a-uuid"],
+                 "retired"
+               )
+
+      assert Inventory.get_resource!(scope, active.id).lifecycle_state == "retired"
+      assert Inventory.get_resource!(other_scope, foreign.id).lifecycle_state == "active"
+    end
+
+    test "update_resources_lifecycle/3 is for owners and admins only", %{scope: scope} do
+      {:ok, resource} =
+        Inventory.create_resource(scope, %{
+          kind: "server",
+          name: "bulk-c",
+          lifecycle_state: "active"
+        })
+
+      assert {:error, :forbidden} =
+               Inventory.update_resources_lifecycle(
+                 member_scope(scope, "viewer"),
+                 [resource.id],
+                 "retired"
+               )
+
+      assert Inventory.get_resource!(scope, resource.id).lifecycle_state == "active"
     end
 
     test "update_resource/3 rejects a resource outside the caller's organization", %{
