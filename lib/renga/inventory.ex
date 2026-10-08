@@ -2089,7 +2089,7 @@ defmodule Renga.Inventory do
     |> activity_since(Keyword.get(opts, :since))
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> limit(^Keyword.get(opts, :limit, 50))
-    |> preload([:resource, :source])
+    |> preload([:resource, :source, :actor_user])
     |> Repo.all()
   end
 
