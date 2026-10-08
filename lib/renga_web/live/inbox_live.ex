@@ -32,6 +32,7 @@ defmodule RengaWeb.InboxLive do
   alias RengaWeb.Format
 
   @reload_after_ms 400
+  @pattern_limit 6
   # Expiry changes queue membership without an inventory broadcast.
   @expiry_refresh_ms 30_000
 
@@ -447,6 +448,7 @@ defmodule RengaWeb.InboxLive do
         |> assign(
           triage_total: total,
           triage_preview?: false,
+          triage_patterns: triage_patterns(scope, query),
           has_next_page?: query.page * Triage.per_page() < total
         )
         |> stream(:triage, with_ids(entries), reset: true)
@@ -457,15 +459,23 @@ defmodule RengaWeb.InboxLive do
         preview = Enum.take(entries, 5)
 
         socket
-        |> assign(triage_total: 0, triage_preview?: preview != [])
+        |> assign(triage_total: 0, triage_preview?: preview != [], triage_patterns: [])
         |> stream(:triage, with_ids(preview), reset: true)
 
       true ->
         socket
-        |> assign(triage_total: 0, triage_preview?: false)
+        |> assign(triage_total: 0, triage_preview?: false, triage_patterns: [])
         |> stream(:triage, [], reset: true)
     end
   end
+
+  # Patterns lead the first page of triage when the filter is a fact a rule
+  # can fill; hardware types and identities have no rule (RFD 8).
+  defp triage_patterns(scope, %{page: 1, missing: missing})
+       when missing in [nil, :placement, :owner],
+       do: scope |> Triage.Patterns.list(fact: missing) |> Enum.take(@pattern_limit)
+
+  defp triage_patterns(_scope, _query), do: []
 
   defp with_ids(entries), do: Enum.map(entries, &Map.put(&1, :id, &1.resource.id))
 
@@ -940,6 +950,8 @@ defmodule RengaWeb.InboxLive do
           {label}
         </:option>
       </.segmented>
+
+      <.triage_patterns patterns={@triage_patterns} can_create_rules?={@can_triage?} />
 
       <.triage_table
         id="triage"

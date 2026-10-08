@@ -28,6 +28,9 @@ defmodule RengaWeb.TriageRuleLive do
      "A hostname pattern, or a label the collector sends, sets the owning team."}
   ]
 
+  @suggestion_fields ~w(kind name match_on subnet intake_api_key_id hostname_pattern
+                         label_key label_value site_id location_id team_id)
+
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
@@ -45,8 +48,30 @@ defmodule RengaWeb.TriageRuleLive do
        intake_keys: Enum.filter(Inventory.list_intake_api_keys(scope), &(&1.status == "active"))
      )
      |> load_rules()
+     |> assign(:suggested?, false)
      |> start_form(%Rule{kind: "network_location"})}
   end
+
+  # A suggestion from an Inbox triage pattern arrives as rule attributes in
+  # the URL and opens the panel prefilled, with its preview. Nothing is saved
+  # until the person completes it.
+  @impl true
+  def handle_params(%{"kind" => kind} = params, _uri, socket)
+      when kind in ~w(network_location top_of_rack ownership) do
+    if socket.assigns.can_manage? and not socket.assigns.suggested? do
+      attrs = Map.take(params, @suggestion_fields)
+
+      {:noreply,
+       socket
+       |> assign(editing: nil, suggested?: true)
+       |> start_form(%Rule{kind: kind})
+       |> update_form(attrs, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("new", _params, socket) do
@@ -80,7 +105,8 @@ defmodule RengaWeb.TriageRuleLive do
          |> put_flash(:info, "#{rule.name} saved. #{applied_label(rule, applied)}")
          |> close_overlay("rule-panel")
          |> assign(:editing, nil)
-         |> load_rules()}
+         |> load_rules()
+         |> clear_suggestion()}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, form: to_form(changeset), preview: nil)}
@@ -123,6 +149,15 @@ defmodule RengaWeb.TriageRuleLive do
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_rules(socket)}
+
+  # Once a suggested rule is saved, the URL no longer describes the page.
+  defp clear_suggestion(%{assigns: %{suggested?: true}} = socket) do
+    socket
+    |> assign(:suggested?, false)
+    |> push_patch(to: ~p"/settings/triage-rules")
+  end
+
+  defp clear_suggestion(socket), do: socket
 
   defp load_rules(socket) do
     rules = TriageRules.list_rules(socket.assigns.current_scope)
@@ -336,6 +371,7 @@ defmodule RengaWeb.TriageRuleLive do
       <.side_panel
         :if={@can_manage?}
         id="rule-panel"
+        show={@suggested?}
         title={if @editing, do: "Edit #{@editing.name}", else: "New triage rule"}
       >
         <.form for={@form} id="rule-form" phx-change="validate" phx-submit="save" class="space-y-1">
