@@ -13,12 +13,7 @@ defmodule RengaWeb.DcimLive do
        site_form: to_form(%{"name" => "", "slug" => "", "time_zone" => "Etc/UTC"}, as: :site),
        location_form: to_form(%{"name" => "", "kind" => ""}, as: :location),
        rack_form:
-         to_form(%{"name" => "", "height_units" => "42", "width" => "19_inch"}, as: :rack),
-       placement_form:
-         to_form(
-           %{"resource_id" => "", "position" => "", "height_units" => "1", "face" => "front"},
-           as: :placement
-         )
+         to_form(%{"name" => "", "height_units" => "42", "width" => "19_inch"}, as: :rack)
      )}
   end
 
@@ -111,33 +106,6 @@ defmodule RengaWeb.DcimLive do
     end
   end
 
-  def handle_event("place_resource", %{"placement" => params}, socket) do
-    rack = socket.assigns.rack
-
-    attrs = %{
-      rack_id: rack.id,
-      position: blank_to_nil(params["position"]),
-      height_units: blank_to_nil(params["height_units"]),
-      face: blank_to_nil(params["face"]),
-      confirmed: true,
-      provenance: %{"confirmed_by_user_id" => socket.assigns.current_scope.user.id}
-    }
-
-    case DCIM.put_current_placement(socket.assigns.current_scope, params["resource_id"], attrs) do
-      {:ok, _placement} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Resource placed")
-         |> load_action(:rack, %{"id" => rack.id})}
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, put_flash(socket, :error, first_error(changeset))}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, mutation_error(reason))}
-    end
-  end
-
   @impl true
   def render(assigns) do
     ~H"""
@@ -167,8 +135,6 @@ defmodule RengaWeb.DcimLive do
             <.location_view {assigns} />
           <% :racks -> %>
             <.racks_view {assigns} />
-          <% :rack -> %>
-            <.rack_view {assigns} />
         <% end %>
       </section>
     </Layouts.app>
@@ -414,100 +380,6 @@ defmodule RengaWeb.DcimLive do
     """
   end
 
-  defp rack_view(assigns) do
-    ~H"""
-    <div id="rack-detail" class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
-      <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-4">
-        <div class="mb-3 grid grid-cols-[3rem_1fr_1fr] gap-2 text-center text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
-          <span>Unit</span><span>Front</span><span>Rear</span>
-        </div>
-        <div id="rack-elevation" class="space-y-1">
-          <div
-            :for={unit <- @rack_units}
-            id={"rack-unit-#{unit}"}
-            class="grid min-h-9 grid-cols-[3rem_1fr_1fr] gap-2"
-          >
-            <span class="grid place-items-center font-mono text-[10px] text-base-content/45">
-              {unit}U
-            </span>
-            <.rack_cell occupancy={Map.get(@front_occupancy, unit)} /><.rack_cell occupancy={
-              Map.get(@rear_occupancy, unit)
-            } />
-          </div>
-        </div>
-      </div>
-      <aside class="space-y-4">
-        <div class="rounded-xl border border-base-content/10 p-5">
-          <h2 class="font-semibold">Rack details</h2>
-          <dl class="mt-4 space-y-3 text-sm">
-            <.detail label="Site" value={@rack.site.resource.name} /><.detail
-              label="Location"
-              value={if @rack.location, do: @rack.location.resource.name, else: "Unassigned"}
-            /><.detail
-              label="Geometry"
-              value={"#{@rack.height_units}U · #{String.replace(@rack.width, "_", " ")}"}
-            /><.detail label="Facility ID" value={@rack.facility_id || "Not set"} />
-          </dl>
-        </div>
-        <div id="unplaced-resources" class="rounded-xl border border-base-content/10 p-5">
-          <h2 class="font-semibold">Unplaced resources</h2>
-          <p class="mt-1 text-xs text-base-content/50">
-            {length(@unplaced_resources)} available for placement
-          </p>
-          <ul class="mt-3 space-y-2">
-            <li
-              :for={resource <- Enum.take(@unplaced_resources, 8)}
-              class="truncate rounded-md bg-base-200/60 px-3 py-2 text-xs"
-            >
-              {resource.name}
-            </li>
-          </ul>
-        </div>
-        <.form
-          :if={@can_manage? and @unplaced_resources != []}
-          for={@placement_form}
-          id="rack-placement-form"
-          phx-submit="place_resource"
-          class="space-y-3 rounded-xl border border-base-content/10 bg-base-200/40 p-5"
-        >
-          <div>
-            <h2 class="font-semibold">Place resource</h2>
-            <p class="mt-1 text-xs text-base-content/50">
-              Leave the position blank for zero-U or non-consuming equipment.
-            </p>
-          </div>
-          <.input
-            field={@placement_form[:resource_id]}
-            type="select"
-            label="Resource"
-            prompt="Select resource"
-            options={Enum.map(@unplaced_resources, &{&1.name, &1.id})}
-            required
-          />
-          <div class="grid grid-cols-2 gap-2">
-            <.input field={@placement_form[:position]} type="number" label="Starting U" min="1" />
-            <.input field={@placement_form[:height_units]} type="number" label="Height" min="1" />
-          </div>
-          <.input
-            field={@placement_form[:face]}
-            type="select"
-            label="Face"
-            options={[{"Front", "front"}, {"Rear", "rear"}, {"Full depth", "full"}]}
-          />
-          <button
-            id="place-resource"
-            type="submit"
-            phx-disable-with="Placing…"
-            class="w-full rounded-lg bg-orange-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-600"
-          >
-            Confirm placement
-          </button>
-        </.form>
-      </aside>
-    </div>
-    """
-  end
-
   attr :label, :string, required: true
   attr :value, :any, required: true
 
@@ -516,18 +388,6 @@ defmodule RengaWeb.DcimLive do
     <div>
       <p class="text-[10px] font-semibold uppercase tracking-wider text-base-content/40">{@label}</p>
       <p class="mt-1 text-lg font-semibold">{@value}</p>
-    </div>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :value, :string, required: true
-
-  defp detail(assigns) do
-    ~H"""
-    <div class="flex justify-between gap-3">
-      <dt class="text-base-content/45">{@label}</dt>
-      <dd class="text-right font-medium capitalize">{@value}</dd>
     </div>
     """
   end
@@ -557,48 +417,6 @@ defmodule RengaWeb.DcimLive do
       </div>
     </section>
     """
-  end
-
-  attr :occupancy, :any, default: nil
-
-  defp rack_cell(assigns) do
-    ~H"""
-    <div class={[
-      "grid place-items-center rounded border px-2 py-1 text-center text-xs",
-      if(@occupancy,
-        do: "border-orange-500/30 bg-orange-500/10 font-medium text-orange-800",
-        else: "border-base-content/10 bg-base-100 text-base-content/45"
-      )
-    ]}>
-      <%= if @occupancy do %>
-        <span class="max-w-full truncate">{@occupancy.current_placement.resource.name}</span>
-        <span class="max-w-full truncate text-[9px] font-normal opacity-70">
-          {placement_status(@occupancy.current_placement)}
-        </span>
-      <% else %>
-        Available
-      <% end %>
-    </div>
-    """
-  end
-
-  defp placement_status(placement) do
-    state = String.capitalize(placement.resource.lifecycle_state)
-
-    cond do
-      placement.confirmed ->
-        "#{state} · Confirmed"
-
-      placement.evidence_stale? ->
-        "#{state} · Stale evidence"
-
-      placement.evidence_observed_at ->
-        observed_on = placement.evidence_observed_at |> DateTime.to_date() |> Date.to_iso8601()
-        "#{state} · Observed #{observed_on}"
-
-      true ->
-        "#{state} · Inferred"
-    end
   end
 
   defp load_action(socket, :sites, _params),
@@ -639,36 +457,6 @@ defmodule RengaWeb.DcimLive do
         page_description: "Geometry-aware rack inventory and elevations."
       )
 
-  defp load_action(socket, :rack, %{"id" => id}) do
-    rack = DCIM.get_rack!(socket.assigns.current_scope, id)
-    {front, rear} = occupancy_maps(rack.occupancies)
-
-    assign(socket,
-      rack: rack,
-      rack_units: Enum.to_list(rack.height_units..1//-1),
-      front_occupancy: front,
-      rear_occupancy: rear,
-      unplaced_resources: DCIM.list_unplaced_resources(socket.assigns.current_scope),
-      page_title: rack.resource.name,
-      page_description: "Front and rear occupancy with overlap-safe rack units."
-    )
-  end
-
-  defp occupancy_maps(occupancies) do
-    Enum.reduce(occupancies, {%{}, %{}}, fn occupancy, {front, rear} ->
-      units = occupancy.units.lower..(occupancy.units.upper - 1)
-
-      target =
-        Enum.reduce(
-          units,
-          if(occupancy.face == "front", do: front, else: rear),
-          &Map.put(&2, &1, occupancy)
-        )
-
-      if occupancy.face == "front", do: {target, rear}, else: {front, target}
-    end)
-  end
-
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
   defp mutation_error(:forbidden), do: "You are not allowed to manage physical inventory"
@@ -682,6 +470,6 @@ defmodule RengaWeb.DcimLive do
   end
 
   # The area tabs come from RengaWeb.Navigation.
-  defp dcim_nav(action) when action in [:racks, :rack], do: :racks
+  defp dcim_nav(:racks), do: :racks
   defp dcim_nav(_action), do: :sites
 end
