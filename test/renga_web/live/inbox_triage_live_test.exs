@@ -82,6 +82,41 @@ defmodule RengaWeb.InboxTriageLiveTest do
     assert {placement.rack_id, placement.position, placement.confirmed} == {rack.id, nil, true}
   end
 
+  test "a stale triage placement leaves a concurrent confirmed rack position untouched",
+       context do
+    {:ok, site} = DCIM.create_site(context.admin, %{name: "DC1"}, %{slug: "dc1"})
+    {:ok, first} = DCIM.create_rack(context.admin, %{name: "R1"}, %{site_id: site.id})
+    {:ok, second} = DCIM.create_rack(context.admin, %{name: "R2"}, %{site_id: site.id})
+
+    {:ok, view, _html} =
+      live(context.admin_conn, ~p"/inbox?#{[group: "triage", triage: context.server.id]}")
+
+    {:ok, original} =
+      DCIM.put_current_placement(context.admin, context.server.id, %{
+        rack_id: first.id,
+        position: 10,
+        height_units: 2,
+        face: "front",
+        confirmed: true,
+        provenance: %{"via" => "operator"}
+      })
+
+    occupancy = Renga.Repo.get_by!(Renga.DCIM.RackOccupancy, current_placement_id: original.id)
+
+    # Submit the stale event directly, even if a broadcast has refreshed its form.
+    render_submit(view, "triage_place", %{"placement" => %{"rack_id" => second.id}})
+
+    assert has_element?(view, "#flash-info", "Already placed elsewhere")
+    refute has_element?(view, "#triage-placement-form")
+
+    current =
+      Renga.Repo.get!(Renga.DCIM.CurrentPlacement, original.id)
+      |> Renga.Repo.preload([:site, :location, :rack])
+
+    assert current == original
+    assert Renga.Repo.get!(Renga.DCIM.RackOccupancy, occupancy.id) == occupancy
+  end
+
   test "members see what is missing but owners and admins supply it", context do
     {:ok, _team} = Teams.create_team(context.admin, %{"name" => "Platform"})
 
