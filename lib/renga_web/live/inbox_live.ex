@@ -1095,40 +1095,6 @@ defmodule RengaWeb.InboxLive do
     """
   end
 
-  attr :id, :string, required: true
-  attr :label, :string, required: true
-
-  slot :option, required: true do
-    attr :patch, :string, required: true
-    attr :active, :boolean, required: true
-    attr :id, :string, required: true
-  end
-
-  defp segmented(assigns) do
-    ~H"""
-    <div
-      id={@id}
-      role="group"
-      aria-label={@label}
-      class="inline-flex rounded-md border border-edge bg-surface p-0.5"
-    >
-      <.link
-        :for={option <- @option}
-        id={option.id}
-        patch={option.patch}
-        aria-current={option.active && "true"}
-        class={[
-          "inline-flex min-h-tap items-center rounded px-2.5 text-xs transition-colors sm:min-h-7",
-          option.active && "bg-sunken font-medium text-fg",
-          !option.active && "text-fg-muted hover:text-fg"
-        ]}
-      >
-        {render_slot(option)}
-      </.link>
-    </div>
-    """
-  end
-
   attr :finding, :map, required: true
 
   defp state_badge(assigns) do
