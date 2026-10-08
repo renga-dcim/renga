@@ -22,6 +22,7 @@ export const RackDrag = {
     this.marked = []
 
     this.handlers = {
+      pointerdown: event => { this.pointerType = event.pointerType },
       dragstart: event => this.start(event),
       dragover: event => this.over(event),
       drop: event => this.drop(event),
@@ -36,11 +37,18 @@ export const RackDrag = {
 
   destroyed() {
     Object.entries(this.handlers).forEach(([name, handler]) => this.el.removeEventListener(name, handler))
+    this.end()
   },
 
   start(event) {
     const item = event.target.closest?.("[data-drag-resource]")
     if (!item) return
+
+    if (this.pointerType === "touch" || !window.matchMedia("(min-width: 1024px) and (any-pointer: fine)").matches) {
+      event.preventDefault()
+      this.end()
+      return
+    }
 
     this.dragging = {id: item.dataset.dragResource, size: parseInt(item.dataset.height, 10) || 1}
     event.dataTransfer.effectAllowed = "move"
@@ -53,7 +61,7 @@ export const RackDrag = {
     this.clear()
     if (!target) return
 
-    target.cells.forEach(cell => {
+    target.preview.forEach(cell => {
       cell.dataset.dropTarget = target.valid ? "valid" : "invalid"
       this.marked.push(cell)
     })
@@ -104,7 +112,7 @@ export const RackDrag = {
     return {
       face: grid.dataset.rackFace,
       start: Math.min(...units),
-      cells,
+      preview: units.map(covered => grid.querySelector(`[data-drop-unit="${covered}"]`)).filter(Boolean),
       valid: cells.length === units.length && units.every(covered => covered >= 1 && covered <= rows),
     }
   },

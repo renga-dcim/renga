@@ -78,8 +78,7 @@ defmodule RengaWeb.ElevationComponents do
               aria-label={"Place a device at U#{unit} #{@face}"}
               class={[
                 "col-start-1 cursor-pointer border-b border-edge/50 transition-colors",
-                "hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none",
-                "data-[drop-target=valid]:bg-accent-tint data-[drop-target=invalid]:bg-crit-fill"
+                "hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none"
               ]}
             />
             <div
@@ -90,6 +89,16 @@ defmodule RengaWeb.ElevationComponents do
               class="col-start-1 border-b border-edge/40"
             />
           <% end %>
+
+          <%!-- Preview spans occupied units too, without intercepting click or drag targets. --%>
+          <div
+            :for={unit <- @units}
+            :if={@can_place?}
+            data-drop-unit={unit}
+            aria-hidden="true"
+            style={area_style(@height, @bottom_up?, unit, 1)}
+            class="pointer-events-none z-30 col-start-1 data-[drop-target=valid]:bg-accent/20 data-[drop-target=valid]:ring-1 data-[drop-target=valid]:ring-accent data-[drop-target=invalid]:bg-crit/20 data-[drop-target=invalid]:ring-1 data-[drop-target=invalid]:ring-crit"
+          />
 
           <.link
             :for={block <- @blocks}
