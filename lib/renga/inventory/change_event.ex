@@ -4,7 +4,8 @@ defmodule Renga.Inventory.ChangeEvent do
 
   Change events are intentionally small and field-oriented so later UI and
   alerting code can explain when resources appeared, changed, conflicted, or
-  became stale.
+  became stale. `actor_user_id` names the person behind a change; it is nil
+  for changes reconciliation made from collector reports.
   """
 
   use Ecto.Schema
@@ -19,7 +20,8 @@ defmodule Renga.Inventory.ChangeEvent do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(discovered updated conflict stale manual_override override_removed)
+  @kinds ~w(discovered updated conflict stale manual_override override_removed
+             finding_assigned finding_snoozed finding_exception finding_exception_removed)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do
@@ -35,6 +37,8 @@ defmodule Renga.Inventory.ChangeEvent do
     belongs_to :source, Source
     belongs_to :sync_run, SyncRun
     belongs_to :observation, Observation
+    belongs_to :actor_user, Renga.Accounts.User
+    belongs_to :finding_workflow, Renga.Findings.Workflow
 
     timestamps()
   end
