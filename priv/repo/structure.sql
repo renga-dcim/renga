@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict d1PFh6zx9lb512ocSEKrnVSykKFuUoQFGpVitaol3aMqvE9FNuC0kv5PCr6vQ0d
+\restrict fSvKNtFZbRJEJAcHwqYnMFFMtrTZF1QzEYPn7XOqecKaBeUdVi3Tg7vH1iRI2R6
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -910,6 +910,32 @@ CREATE TABLE public.change_events (
     updated_at timestamp(3) without time zone NOT NULL,
     actor_user_id uuid,
     finding_workflow_id uuid
+);
+
+
+--
+-- Name: change_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.change_requests (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    field character varying(255) DEFAULT ''::character varying NOT NULL,
+    before_value jsonb,
+    after_value jsonb NOT NULL,
+    reason text NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    requested_by_user_id uuid,
+    decided_by_user_id uuid,
+    decided_at timestamp without time zone,
+    decision_note text,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT change_requests_decision_state CHECK (((((status)::text = 'open'::text) AND (decided_at IS NULL)) OR (((status)::text <> 'open'::text) AND (decided_at IS NOT NULL)))),
+    CONSTRAINT change_requests_valid_kind CHECK (((kind)::text = ANY ((ARRAY['lifecycle'::character varying, 'field_override'::character varying])::text[]))),
+    CONSTRAINT change_requests_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'approved'::character varying, 'rejected'::character varying, 'withdrawn'::character varying])::text[])))
 );
 
 
@@ -2391,6 +2417,14 @@ ALTER TABLE ONLY public.change_events
 
 
 --
+-- Name: change_requests change_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_requests
+    ADD CONSTRAINT change_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: component_evidence component_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3271,6 +3305,27 @@ CREATE INDEX change_events_organization_id_source_id_index ON public.change_even
 --
 
 CREATE INDEX change_events_organization_id_sync_run_id_index ON public.change_events USING btree (organization_id, sync_run_id);
+
+
+--
+-- Name: change_requests_open_change_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX change_requests_open_change_index ON public.change_requests USING btree (organization_id, resource_id, kind, field) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: change_requests_organization_id_kind_field_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_requests_organization_id_kind_field_status_index ON public.change_requests USING btree (organization_id, kind, field, status);
+
+
+--
+-- Name: change_requests_organization_id_status_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_requests_organization_id_status_inserted_at_index ON public.change_requests USING btree (organization_id, status, inserted_at);
 
 
 --
@@ -5212,6 +5267,30 @@ ALTER TABLE ONLY public.change_events
 
 
 --
+-- Name: change_requests change_requests_decided_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_requests
+    ADD CONSTRAINT change_requests_decided_by_user_id_fkey FOREIGN KEY (decided_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_requests change_requests_requested_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_requests
+    ADD CONSTRAINT change_requests_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: change_requests change_requests_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_requests
+    ADD CONSTRAINT change_requests_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: component_evidence component_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6631,7 +6710,7 @@ ALTER TABLE ONLY public.vlans
 -- PostgreSQL database dump complete
 --
 
-\unrestrict d1PFh6zx9lb512ocSEKrnVSykKFuUoQFGpVitaol3aMqvE9FNuC0kv5PCr6vQ0d
+\unrestrict fSvKNtFZbRJEJAcHwqYnMFFMtrTZF1QzEYPn7XOqecKaBeUdVi3Tg7vH1iRI2R6
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6673,3 +6752,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20260928120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261002120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261008120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261009120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261009130000);

@@ -25,6 +25,7 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Inventory.Changes
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.SourcePrecedence
+  alias Renga.Requests
   alias RengaWeb.Format
 
   @lifecycle_options [
@@ -65,10 +66,13 @@ defmodule RengaWeb.ResourceLive.Show do
        hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
        can_manage_lifecycle?: Inventory.organization_manager?(scope),
        host_fields: @host_fields,
+       can_request?: Requests.can_request?(scope),
        reload_timer: nil
      )
      |> assign_provenance()
      |> assign_findings()
+     |> assign_requests()
+     |> reset_request_forms()
      |> reset_override_forms()}
   end
 
@@ -161,6 +165,60 @@ defmodule RengaWeb.ResourceLive.Show do
     end
   end
 
+  def handle_event("request_lifecycle", %{"request" => params}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    case Requests.request_lifecycle(scope, resource, params) do
+      {:ok, _request} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Lifecycle change requested; an owner or admin will review it")
+         |> reload_resource()
+         |> reset_request_forms()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = request_form("lifecycle-request", params, request_errors(changeset))
+        {:noreply, assign(socket, :lifecycle_request_form, form)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only members request changes")}
+    end
+  end
+
+  def handle_event("request_override", %{"field" => field, "request" => params}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    case Requests.request_field_override(scope, resource, field, params) do
+      {:ok, _request} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{field_label(field)} override requested")
+         |> close_overlay("provenance-#{field}")
+         |> reload_resource()
+         |> reset_request_forms()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = request_form("override-#{field}-request", params, request_errors(changeset))
+        {:noreply, update(socket, :override_request_forms, &Map.put(&1, field, form))}
+
+      {:error, reason} when reason in [:forbidden, :invalid_field] ->
+        {:noreply, put_flash(socket, :error, "Only members request changes")}
+    end
+  end
+
+  def handle_event("withdraw_request", %{"id" => id}, socket) do
+    scope = socket.assigns.current_scope
+
+    with %Requests.Request{} = request <- Requests.get_request(scope, id),
+         {:ok, _request} <- Requests.withdraw(scope, request) do
+      {:noreply, socket |> put_flash(:info, "Request withdrawn") |> reload_resource()}
+    else
+      _error ->
+        {:noreply,
+         socket |> put_flash(:error, "That request is no longer open") |> reload_resource()}
+    end
+  end
+
   @impl true
   def handle_info(
         {:inventory_changed, _organization_id},
@@ -215,6 +273,10 @@ defmodule RengaWeb.ResourceLive.Show do
             form={@lifecycle_form}
             options={@lifecycle_options}
             can_manage?={@can_manage_lifecycle?}
+            can_request?={@can_request?}
+            request={@lifecycle_request}
+            request_form={@lifecycle_request_form}
+            current_user_id={@current_scope.user.id}
           />
           <.properties id="resource-properties">
             <:item label="Kind">{Format.humanize(@resource.kind)}</:item>
@@ -246,6 +308,10 @@ defmodule RengaWeb.ResourceLive.Show do
         provenance={@provenance[field]}
         form={@override_forms[field]}
         can_manage?={@can_manage_lifecycle?}
+        can_request?={@can_request?}
+        request={@override_requests[field]}
+        request_form={@override_request_forms[field]}
+        current_user_id={@current_scope.user.id}
       />
     </Layouts.app>
     """
@@ -284,6 +350,10 @@ defmodule RengaWeb.ResourceLive.Show do
   attr :provenance, :map, required: true
   attr :form, :map, required: true
   attr :can_manage?, :boolean, required: true
+  attr :can_request?, :boolean, required: true
+  attr :request, :any, required: true
+  attr :request_form, :any, required: true
+  attr :current_user_id, :string, required: true
 
   defp provenance_panel(assigns) do
     ~H"""
@@ -414,8 +484,37 @@ defmodule RengaWeb.ResourceLive.Show do
               </.button>
             </div>
           </.form>
+          <.pending_request
+            :if={@request}
+            id={"override-#{@provenance.field}-request"}
+            request={@request}
+            current_user_id={@current_user_id}
+          />
+          <.form
+            :if={@can_request? and is_nil(@request)}
+            for={@request_form}
+            id={"override-#{@provenance.field}-request-form"}
+            phx-submit="request_override"
+          >
+            <input type="hidden" name="field" value={@provenance.field} />
+            <p class="mb-2 text-sm text-fg-muted">
+              An override replaces what sources report until it is removed. Owners and admins
+              review requests.
+            </p>
+            <.input field={@request_form[:value]} type="text" label="Value" autocomplete="off" />
+            <.input field={@request_form[:reason]} type="text" label="Why" autocomplete="off" />
+            <div class="mt-4 flex justify-end">
+              <.button
+                id={"override-#{@provenance.field}-request-submit"}
+                variant="primary"
+                phx-disable-with="Sending…"
+              >
+                Request override
+              </.button>
+            </div>
+          </.form>
           <p
-            :if={!@can_manage?}
+            :if={!@can_manage? and !@can_request?}
             id={"override-#{@provenance.field}-unavailable"}
             class="text-sm text-fg-muted"
           >
@@ -428,10 +527,54 @@ defmodule RengaWeb.ResourceLive.Show do
     """
   end
 
+  # An open request, shown where the change would be made. Its requester can
+  # withdraw it; owners and admins decide it from the Inbox.
+  attr :id, :string, required: true
+  attr :request, :map, required: true
+  attr :current_user_id, :string, required: true
+
+  defp pending_request(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-1 rounded-md border border-edge bg-sunken px-3 py-2 text-sm">
+      <p class="text-fg">
+        <span class="font-medium">Requested:</span>
+        <span class="font-mono">{@request.after_value["value"]}</span>
+      </p>
+      <p class="text-xs text-fg-muted">
+        {request_author(@request)} · waiting for an owner or admin
+      </p>
+      <div class="flex gap-3 text-xs">
+        <.link
+          navigate={~p"/inbox?#{[group: "requests", request: @request.id]}"}
+          class="text-link hover:underline"
+        >
+          View request
+        </.link>
+        <button
+          :if={@request.requested_by_user_id == @current_user_id}
+          id={"#{@id}-withdraw"}
+          type="button"
+          phx-click={JS.push("withdraw_request", value: %{id: @request.id})}
+          class="cursor-pointer text-fg-muted hover:text-fg hover:underline"
+        >
+          Withdraw
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp request_author(%{requested_by_user: %{email: email}}), do: "By #{email}"
+  defp request_author(_request), do: "By a former member"
+
   attr :resource, :map, required: true
   attr :form, :map, required: true
   attr :options, :list, required: true
   attr :can_manage?, :boolean, required: true
+  attr :can_request?, :boolean, required: true
+  attr :request, :any, required: true
+  attr :request_form, :any, required: true
+  attr :current_user_id, :string, required: true
 
   defp lifecycle(assigns) do
     ~H"""
@@ -460,6 +603,45 @@ defmodule RengaWeb.ResourceLive.Show do
       <p :if={!@can_manage?} class="text-sm font-medium capitalize text-fg">
         {@resource.lifecycle_state}
       </p>
+      <.pending_request
+        :if={@request}
+        id="resource-lifecycle-request"
+        request={@request}
+        current_user_id={@current_user_id}
+      />
+      <details
+        :if={@can_request? and is_nil(@request)}
+        id="resource-lifecycle-request-toggle"
+        open={@request_form.errors != []}
+        class="group"
+      >
+        <summary class="inline-flex min-h-tap cursor-pointer list-none items-center text-xs text-link hover:underline sm:min-h-0">
+          Request a change
+        </summary>
+        <.form
+          for={@request_form}
+          id="resource-lifecycle-request-form"
+          phx-submit="request_lifecycle"
+          class="mt-2 space-y-2"
+        >
+          <.input
+            field={@request_form[:value]}
+            type="select"
+            label="New lifecycle"
+            options={@options}
+          />
+          <.input field={@request_form[:reason]} type="textarea" label="Why" rows="2" />
+          <div class="flex justify-end">
+            <.button
+              id="resource-lifecycle-request-submit"
+              variant="primary"
+              phx-disable-with="Sending…"
+            >
+              Request change
+            </.button>
+          </div>
+        </.form>
+      </details>
       <p id="resource-lifecycle-help" class="text-xs leading-5 text-fg-muted">
         Classifies this resource for planning and filters. It does not control the device or
         reflect agent connectivity.
@@ -801,6 +983,40 @@ defmodule RengaWeb.ResourceLive.Show do
     |> assign(:lifecycle_form, lifecycle_form(resource))
     |> assign_provenance()
     |> assign_findings()
+    |> assign_requests()
+  end
+
+  # Members propose lifecycle and override changes instead of applying them;
+  # the page shows each change's open request, if any.
+  defp assign_requests(socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    assign(socket,
+      lifecycle_request: Requests.open_request(scope, resource.id, "lifecycle"),
+      override_requests:
+        Map.new(FieldProvenance.fields(), fn field ->
+          {field, Requests.open_request(scope, resource.id, "field_override", field)}
+        end)
+    )
+  end
+
+  defp reset_request_forms(socket) do
+    assign(socket,
+      lifecycle_request_form: request_form("lifecycle-request", %{}),
+      override_request_forms:
+        Map.new(FieldProvenance.fields(), &{&1, request_form("override-#{&1}-request", %{})})
+    )
+  end
+
+  defp request_form(id, params, errors \\ []),
+    do: to_form(params, as: :request, id: id, errors: errors)
+
+  defp request_errors(%Ecto.Changeset{errors: errors}) do
+    Enum.map(errors, fn
+      {:after_value, error} -> {:value, error}
+      {:organization_id, error} -> {:value, error}
+      other -> other
+    end)
   end
 
   # Accepted exceptions are shown on the resource so everyone who views it
