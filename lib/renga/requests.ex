@@ -26,6 +26,7 @@ defmodule Renga.Requests do
   alias Renga.Inventory.Resource
   alias Renga.Repo
   alias Renga.Requests.Request
+  alias Renga.Teams
 
   @lifecycle_states ~w(active inactive retired unknown)
   @per_page 50
@@ -51,10 +52,41 @@ defmodule Renga.Requests do
       else: {:error, :invalid_field}
   end
 
+  @doc """
+  Proposes an owning team with `%{"value" => team_id, "reason" => ...}`. The
+  request stores the team's name as its value, for display, and its id for
+  approval.
+  """
+  def request_owner(%Scope{} = scope, %Resource{} = resource, attrs) do
+    case Teams.get_team(scope, Map.get(attrs, "value")) do
+      nil ->
+        changeset =
+          %Request{}
+          |> Request.create_changeset(Map.delete(attrs, "value"))
+          |> Ecto.Changeset.add_error(:after_value, "choose a team")
+
+        {:error, changeset}
+
+      team ->
+        create(scope, resource, "owner", "", Map.put(attrs, "value", team.name), %{
+          "team_id" => team.id
+        })
+    end
+  end
+
   @doc "A blank changeset for a request form."
   def change_request(attrs \\ %{}), do: Ecto.Changeset.cast(%Request{}, attrs, [:reason])
 
-  defp create(%Scope{organization_id: organization_id} = scope, resource, kind, field, attrs) do
+  defp create(scope, resource, kind, field, attrs, extra \\ %{})
+
+  defp create(
+         %Scope{organization_id: organization_id} = scope,
+         resource,
+         kind,
+         field,
+         attrs,
+         extra
+       ) do
     Repo.transaction(fn ->
       authorize!(scope, ["member"])
       resource = Inventory.get_resource!(scope, resource.id)
@@ -66,10 +98,11 @@ defmodule Renga.Requests do
           resource_id: resource.id,
           kind: kind,
           field: field,
-          before_value: wrap(current_value(scope, resource, kind, field)),
+          before_value: before_value(scope, resource, kind, field),
           requested_by_user_id: scope.user.id
         }
         |> Request.create_changeset(attrs)
+        |> merge_after_value(extra)
         |> validate_value(kind)
 
       with {:ok, request} <- Repo.insert(changeset),
@@ -93,12 +126,19 @@ defmodule Renga.Requests do
 
   defp current_value(_scope, resource, "lifecycle", _field), do: resource.lifecycle_state
 
+  defp current_value(_scope, resource, "owner", _field) do
+    resource = Repo.preload(resource, :owner_team)
+    resource.owner_team && resource.owner_team.name
+  end
+
   defp current_value(scope, resource, "field_override", field) do
     case Repo.get_by(Host, organization_id: scope.organization_id, resource_id: resource.id) do
       nil -> nil
       host -> Map.get(host, String.to_existing_atom(field))
     end
   end
+
+  defp validate_value(changeset, "owner"), do: changeset
 
   defp validate_value(changeset, "lifecycle") do
     Ecto.Changeset.validate_change(changeset, :after_value, fn :after_value,
@@ -114,6 +154,26 @@ defmodule Renga.Requests do
         do: [],
         else: [after_value: "must be at most 255 characters"]
     end)
+  end
+
+  # Owner values carry the team id beside the name, so the same team reads
+  # as an unchanged value and approval does not depend on the name.
+  defp before_value(_scope, %Resource{owner_team_id: team_id} = resource, "owner", _field)
+       when not is_nil(team_id) do
+    resource = Repo.preload(resource, :owner_team)
+    %{"value" => resource.owner_team.name, "team_id" => team_id}
+  end
+
+  defp before_value(scope, resource, kind, field),
+    do: wrap(current_value(scope, resource, kind, field))
+
+  defp merge_after_value(changeset, extra) when extra == %{}, do: changeset
+
+  defp merge_after_value(changeset, extra) do
+    case Ecto.Changeset.get_change(changeset, :after_value) do
+      nil -> changeset
+      value -> Ecto.Changeset.put_change(changeset, :after_value, Map.merge(value, extra))
+    end
   end
 
   defp wrap(nil), do: nil
@@ -269,6 +329,11 @@ defmodule Renga.Requests do
     Inventory.update_resource_lifecycle(scope, resource, request.after_value["value"])
   end
 
+  defp apply_change(scope, %Request{kind: "owner"} = request) do
+    resource = Inventory.get_resource!(scope, request.resource_id)
+    Teams.set_owner(scope, resource, request.after_value["team_id"])
+  end
+
   defp apply_change(scope, %Request{kind: "field_override"} = request) do
     resource = Inventory.get_resource!(scope, request.resource_id)
 
@@ -314,6 +379,7 @@ defmodule Renga.Requests do
   end
 
   defp event_field(%Request{kind: "lifecycle"}), do: "lifecycle_state"
+  defp event_field(%Request{kind: "owner"}), do: "owner_team"
   defp event_field(%Request{field: field}), do: "host." <> field
 
   defp authorize!(

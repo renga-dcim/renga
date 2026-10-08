@@ -40,12 +40,17 @@ defmodule Renga.Inventory.Resource do
     field :labels, :map, default: %{}
     field :annotations, :map, default: %{}
     field :deletion_requested_at, :utc_datetime_usec
+    # Who answers for the resource, and whether a person or a triage rule
+    # set it. Only `owner_changeset/3` writes these.
+    field :owner_source, :string
+    field :owner_set_at, :utc_datetime_usec
     field :source_names, {:array, :string}, virtual: true, default: []
     field :last_observed_at, :utc_datetime_usec, virtual: true
     # Open component findings, filled by the operational list query.
     field :drift_count, :integer, virtual: true, default: 0
 
     belongs_to :organization, Organization
+    belongs_to :owner_team, Renga.Teams.Team
     has_one :host, Host
     has_many :addresses, Address
     has_many :change_events, ChangeEvent
@@ -84,6 +89,20 @@ defmodule Renga.Inventory.Resource do
     |> validate_map(:annotations)
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :kind, :name])
+  end
+
+  @doc """
+  Sets or clears the owning team. `source` is `"person"` or `"rule"`; the
+  caller has already checked the team belongs to the resource's
+  organization and that a rule is not replacing a person's choice.
+  """
+  def owner_changeset(resource, nil, _source, _now),
+    do: change(resource, owner_team_id: nil, owner_source: nil, owner_set_at: nil)
+
+  def owner_changeset(resource, team_id, source, now) when source in ~w(person rule) do
+    resource
+    |> change(owner_team_id: team_id, owner_source: source, owner_set_at: now)
+    |> foreign_key_constraint(:owner_team_id, name: :resources_owner_team_fkey)
   end
 
   defp reject_kind_change(%Ecto.Changeset{data: %{id: id}} = changeset) when not is_nil(id) do

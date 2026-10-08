@@ -17,7 +17,7 @@ defmodule Renga.Requests.Request do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
-  @kinds ~w(lifecycle field_override)
+  @kinds ~w(lifecycle field_override owner)
   @statuses ~w(open approved rejected withdrawn)
 
   schema "change_requests" do
@@ -87,14 +87,18 @@ defmodule Renga.Requests.Request do
 
   defp validate_changed(changeset) do
     # Pinning an observed value changes its ownership even if its text stays the same.
-    if get_field(changeset, :kind) == "lifecycle" and
-         get_field(changeset, :after_value) == get_field(changeset, :before_value) and
-         not is_nil(get_field(changeset, :after_value)) do
+    after_value = changeset |> get_field(:after_value) |> plain_value()
+
+    if get_field(changeset, :kind) in ["lifecycle", "owner"] and not is_nil(after_value) and
+         after_value == changeset |> get_field(:before_value) |> plain_value() do
       add_error(changeset, :after_value, "is already the current value")
     else
       changeset
     end
   end
+
+  defp plain_value(%{"value" => value}), do: value
+  defp plain_value(_missing), do: nil
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value

@@ -633,6 +633,7 @@ defmodule Renga.Inventory do
       condition reported yet)
     * `:condition` - resources carrying a condition of this type
     * `:source_id` - resources claimed by this source
+    * `:owner` - an owning team id, or `:none` for unowned resources
     * `:group` - `:kind`, `:lifecycle`, or `:freshness`; rows are ordered by
       the group first so each page shows whole groups in order
     * `:sort` - `{field, direction}` where field is `:name`, `:kind`,
@@ -683,7 +684,7 @@ defmodule Renga.Inventory do
       })
       |> limit(^(@operational_resource_page_size + 1))
       |> offset(^((page - 1) * @operational_resource_page_size))
-      |> preload([:host, :conditions])
+      |> preload([:host, :conditions, :owner_team])
       |> Repo.all()
 
     %{
@@ -743,7 +744,16 @@ defmodule Renga.Inventory do
     |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
     |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
     |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
+    |> maybe_filter_resource_owner(Keyword.get(options, :owner))
   end
+
+  defp maybe_filter_resource_owner(query, nil), do: query
+
+  defp maybe_filter_resource_owner(query, :none),
+    do: where(query, [resource], is_nil(resource.owner_team_id))
+
+  defp maybe_filter_resource_owner(query, team_id),
+    do: where(query, [resource], resource.owner_team_id == ^team_id)
 
   @doc """
   Lists the resource kinds present in the organization, for kind filters.
@@ -978,6 +988,7 @@ defmodule Renga.Inventory do
       |> get_resource!(id)
       |> Repo.preload([
         :host,
+        :owner_team,
         conditions: conditions_query,
         identifiers: identifiers_query,
         identifier_claims: claims_query,
@@ -1115,6 +1126,34 @@ defmodule Renga.Inventory do
       resource
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  @doc false
+  # Sets or clears a resource's owning team inside the caller's transaction,
+  # as a new resource revision. Owners do not conflict with other edits, so
+  # there is no stale-version check. `Renga.Teams` authorizes the caller and
+  # checks the team; this only writes.
+  def put_resource_owner!(%Scope{organization_id: organization_id}, resource_id, team_id, source) do
+    stored =
+      Resource
+      |> where([stored], stored.id == ^resource_id and stored.organization_id == ^organization_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    if stored.owner_team_id == team_id and (is_nil(team_id) or stored.owner_source == source) do
+      {:unchanged, stored}
+    else
+      revision = ResourceStore.next_revision!()
+
+      resource =
+        stored
+        |> Resource.owner_changeset(team_id, source, Renga.Time.utc_now_ms())
+        |> Ecto.Changeset.put_change(:resource_version, revision)
+        |> update_or_rollback()
+
+      insert_resource_revision!(resource, revision, "updated")
+      {:changed, stored, resource}
+    end
   end
 
   @doc """
@@ -2630,7 +2669,9 @@ defmodule Renga.Inventory do
       "resource_version" => resource.resource_version,
       "labels" => resource.labels,
       "annotations" => resource.annotations,
-      "deletion_requested_at" => resource.deletion_requested_at
+      "deletion_requested_at" => resource.deletion_requested_at,
+      "owner_team_id" => resource.owner_team_id,
+      "owner_source" => resource.owner_source
     }
   end
 
