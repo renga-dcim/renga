@@ -117,6 +117,15 @@ defmodule Renga.Triage do
     |> Repo.all()
   end
 
+  @doc false
+  # Ids of resources in triage that lack `fact`, for queries that group or
+  # count them (`Renga.Triage.Patterns`).
+  def missing_ids_query(%Scope{} = scope, fact) when fact in @facts do
+    scope
+    |> triage_query(fact)
+    |> select([row], row.id)
+  end
+
   defp triage_query(scope, missing) do
     scope
     |> flagged_query()
