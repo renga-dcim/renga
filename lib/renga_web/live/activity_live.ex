@@ -67,7 +67,12 @@ defmodule RengaWeb.ActivityLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:activity}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={:activity}
+    >
       <div id="activity" class="mx-auto max-w-5xl space-y-6">
         <.header>
           Activity

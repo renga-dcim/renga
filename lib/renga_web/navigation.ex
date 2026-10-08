@@ -139,18 +139,12 @@ defmodule RengaWeb.Navigation do
   end
 
   @doc """
-  Saved views shown under the areas. Until people can save their own, these
-  are fixed organization views.
+  The sidebar link for a saved view: its name, the list it opens with its
+  query, and whether it is shared with the organization.
   """
-  def views do
-    [
-      %{label: "Stale inventory", path: ~p"/inventory?freshness=stale", tone: :warn},
-      %{
-        label: "Disconnected agents",
-        path: ~p"/settings/collectors?disconnected=true",
-        tone: :crit
-      }
-    ]
+  def view_link(%Renga.SavedViews.SavedView{area: "inventory"} = view) do
+    path = if view.params == %{}, do: ~p"/inventory", else: ~p"/inventory?#{view.params}"
+    %{id: view.id, label: view.name, path: path, shared?: is_nil(view.user_id)}
   end
 
   @doc "Every section id a page may pass as `active_nav`."

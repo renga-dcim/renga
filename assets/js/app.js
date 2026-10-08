@@ -213,6 +213,12 @@ topbar.config({barColors: {0: "#ea580c"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
+// Lets the server close a side panel or dialog once its action succeeded
+// (see RengaWeb.UI.close_overlay/2), keeping it open on validation errors.
+window.addEventListener("phx:close-overlay", ({detail}) => {
+  document.getElementById(detail.id)?.dispatchEvent(new Event("renga:overlay-close"))
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

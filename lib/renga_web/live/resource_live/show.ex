@@ -64,6 +64,7 @@ defmodule RengaWeb.ResourceLive.Show do
     ~H"""
     <Layouts.app
       flash={@flash}
+      sidebar_views={@sidebar_views}
       current_scope={@current_scope}
       active_nav={:inventory}
       commands={commands(assigns)}

@@ -479,6 +479,15 @@ defmodule RengaWeb.UI do
     JS.dispatch(js, "renga:overlay-close", to: "##{id}")
   end
 
+  @doc """
+  Closes an overlay from the server, for example after its form saved.
+  Unlike `hide_overlay/2` in a `phx-submit`, the overlay stays open when the
+  action fails, so validation errors remain visible.
+  """
+  def close_overlay(%Phoenix.LiveView.Socket{} = socket, id) when is_binary(id) do
+    Phoenix.LiveView.push_event(socket, "close-overlay", %{id: id})
+  end
+
   defp overlay_show(id) do
     %JS{}
     |> JS.show(to: "##{id}")

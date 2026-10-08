@@ -123,7 +123,11 @@ defmodule RengaWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :require_authenticated_user,
-      on_mount: [RengaWeb.SQLSandbox, {RengaWeb.UserAuth, :require_authenticated}] do
+      on_mount: [
+        RengaWeb.SQLSandbox,
+        {RengaWeb.UserAuth, :require_authenticated},
+        RengaWeb.SidebarViews
+      ] do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/organizations", OrganizationLive.Index, :index

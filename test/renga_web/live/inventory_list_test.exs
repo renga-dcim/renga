@@ -304,4 +304,101 @@ defmodule RengaWeb.InventoryListTest do
       assert eventually(fn -> has_element?(view, "#resources-#{new.id}") end)
     end
   end
+
+  describe "saved views" do
+    defp member_conn(scope, role) do
+      user = user_fixture()
+
+      organization_membership_fixture(
+        user,
+        %Renga.Accounts.Organization{id: scope.organization_id},
+        %{
+          role: role
+        }
+      )
+
+      build_conn()
+      |> log_in_user(user)
+      |> put_session(:current_organization_id, scope.organization_id)
+    end
+
+    test "admins save a changed list as a shared, pinned view", %{conn: conn, server: server} do
+      {:ok, view, _html} = live(conn, ~p"/inventory")
+      assert has_element?(view, "#view-all[aria-current='page']")
+      refute has_element?(view, "#save-view-button")
+
+      {:ok, view, _html} = live(conn, ~p"/inventory?freshness=stale")
+      refute has_element?(view, "#view-all[aria-current='page']")
+      assert has_element?(view, "#save-view-button")
+
+      view
+      |> form("#save-view-form", saved_view: %{name: "Stale", shared: "true", pinned: "true"})
+      |> render_submit()
+
+      assert has_element?(view, "#flash-info", "Saved view Stale")
+      assert has_element?(view, "#view-tabs a[aria-current='page']", "Stale")
+      assert has_element?(view, "#view-tabs a[aria-current='page']", "organization view")
+      assert has_element?(view, "#app-sidebar nav[aria-label='Saved views'] a", "Stale")
+      refute has_element?(view, "#save-view-button")
+
+      # The view opens the list with its query, for everyone in the organization.
+      other = member_conn(%{organization_id: server.organization_id}, "member")
+      {:ok, member_view, _html} = live(other, ~p"/inventory")
+
+      assert has_element?(
+               member_view,
+               "#app-sidebar nav[aria-label='Saved views'] a[href='/inventory?freshness=stale']",
+               "Stale"
+             )
+
+      member_view |> element("#view-tabs a", "Stale") |> render_click()
+      assert_patch(member_view, ~p"/inventory?freshness=stale")
+      refute has_element?(member_view, "#view-options")
+    end
+
+    test "members save personal views that nobody else sees", %{scope: scope} do
+      member = member_conn(scope, "member")
+      {:ok, view, _html} = live(member, ~p"/inventory?kind=server")
+
+      assert has_element?(view, "#save-view-personal")
+
+      refute has_element?(
+               view,
+               "#save-view-form input[name='saved_view[shared]'][type='checkbox']"
+             )
+
+      view |> form("#save-view-form", saved_view: %{name: "My servers"}) |> render_submit()
+      assert has_element?(view, "#view-tabs a[aria-current='page']", "My servers")
+      assert has_element?(view, "#view-options")
+
+      {:ok, other_view, _html} = live(member_conn(scope, "member"), ~p"/inventory")
+      refute has_element?(other_view, "#view-tabs", "My servers")
+    end
+
+    test "shows why a view could not be saved", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/inventory?kind=server")
+      view |> form("#save-view-form", saved_view: %{name: "Servers"}) |> render_submit()
+
+      {:ok, view, _html} = live(conn, ~p"/inventory?kind=switch")
+      html = view |> form("#save-view-form", saved_view: %{name: "servers"}) |> render_submit()
+
+      assert html =~ "you already have a view with this name"
+    end
+
+    test "pins and deletes the active view", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/inventory?kind=server")
+      view |> form("#save-view-form", saved_view: %{name: "Servers"}) |> render_submit()
+      refute has_element?(view, "#app-sidebar nav[aria-label='Saved views']")
+
+      view |> element("#view-pin") |> render_click()
+      assert has_element?(view, "#app-sidebar nav[aria-label='Saved views'] a", "Servers")
+      assert has_element?(view, "#view-pin", "Remove from sidebar")
+
+      view |> element("#delete-view-confirm") |> render_click()
+      assert_patch(view, ~p"/inventory")
+      assert has_element?(view, "#flash-info", "Deleted view Servers")
+      refute has_element?(view, "#view-tabs", "Servers")
+      refute has_element?(view, "#app-sidebar nav[aria-label='Saved views']")
+    end
+  end
 end

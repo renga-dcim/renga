@@ -16,6 +16,8 @@ defmodule RengaWeb.ResourceLive.Index do
 
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.SavedViews
+  alias Renga.SavedViews.SavedView
   alias RengaWeb.Format
   alias RengaWeb.InventoryQuery
 
@@ -43,7 +45,9 @@ defmodule RengaWeb.ResourceLive.Index do
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
        column_labels: @column_labels,
-       reload_timer: nil
+       reload_timer: nil,
+       views: SavedViews.list_views(scope, "inventory"),
+       view_form: new_view_form()
      )}
   end
 
@@ -56,7 +60,12 @@ defmodule RengaWeb.ResourceLive.Index do
 
   def handle_params(params, _uri, socket) do
     query = InventoryQuery.parse(params)
-    {:noreply, socket |> assign(:query, query) |> load_resources()}
+
+    {:noreply,
+     socket
+     |> assign(:query, query)
+     |> assign(:active_view, active_view(socket.assigns.views, query))
+     |> load_resources()}
   end
 
   @impl true
@@ -144,6 +153,74 @@ defmodule RengaWeb.ResourceLive.Index do
     end
   end
 
+  def handle_event("validate_view", %{"saved_view" => attrs}, socket) do
+    form =
+      %SavedView{}
+      |> SavedViews.change_view(Map.put(attrs, "area", "inventory"))
+      |> Map.put(:action, :validate)
+      |> to_form()
+
+    {:noreply, assign(socket, :view_form, form)}
+  end
+
+  def handle_event("save_view", %{"saved_view" => attrs}, socket) do
+    %{current_scope: scope, query: query} = socket.assigns
+
+    attrs =
+      attrs
+      |> Map.take(["name", "shared", "pinned"])
+      |> Map.merge(%{"area" => "inventory", "params" => InventoryQuery.view_params(query)})
+
+    case SavedViews.create_view(scope, attrs) do
+      {:ok, view} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Saved view #{view.name}")
+         |> close_overlay("save-view")
+         |> assign(view_form: new_view_form())
+         |> reload_views()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins can share views")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, :view_form, to_form(changeset))}
+    end
+  end
+
+  def handle_event(
+        "toggle_pin",
+        _params,
+        %{assigns: %{active_view: %SavedView{} = view}} = socket
+      ) do
+    case SavedViews.update_view(socket.assigns.current_scope, view, %{pinned: !view.pinned}) do
+      {:ok, view} ->
+        message = if view.pinned, do: "Pinned to the sidebar", else: "Removed from the sidebar"
+        {:noreply, socket |> put_flash(:info, message) |> reload_views()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "You cannot change this view")}
+    end
+  end
+
+  def handle_event(
+        "delete_view",
+        _params,
+        %{assigns: %{active_view: %SavedView{} = view}} = socket
+      ) do
+    case SavedViews.delete_view(socket.assigns.current_scope, view) do
+      {:ok, view} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Deleted view #{view.name}")
+         |> reload_views()
+         |> push_patch(to: ~p"/inventory")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "You cannot delete this view")}
+    end
+  end
+
   @impl true
   def handle_info(
         {:inventory_changed, _organization_id},
@@ -165,6 +242,25 @@ defmodule RengaWeb.ResourceLive.Index do
   end
 
   defp patch(socket, query), do: push_patch(socket, to: list_path(query))
+
+  defp reload_views(socket) do
+    views = SavedViews.list_views(socket.assigns.current_scope, "inventory")
+
+    socket
+    |> assign(views: views, active_view: active_view(views, socket.assigns.query))
+    |> RengaWeb.SidebarViews.refresh()
+  end
+
+  # The view whose query the list is showing, if any. Page and selection do
+  # not count: a view stays active while paging through it.
+  defp active_view(views, query) do
+    params = InventoryQuery.view_params(query)
+    Enum.find(views, &(&1.params == params))
+  end
+
+  defp new_view_form, do: %SavedView{} |> SavedViews.change_view() |> to_form()
+
+  defp view_path(%SavedView{params: params}), do: params |> InventoryQuery.parse() |> list_path()
 
   defp load_resources(socket) do
     scope = socket.assigns.current_scope
@@ -223,7 +319,12 @@ defmodule RengaWeb.ResourceLive.Index do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:inventory}>
+    <Layouts.app
+      flash={@flash}
+      sidebar_views={@sidebar_views}
+      current_scope={@current_scope}
+      active_nav={:inventory}
+    >
       <section id="resource-list" class={["space-y-4", @query.selected != [] && "pb-20"]}>
         <header class="flex flex-wrap items-end justify-between gap-3">
           <div class="flex items-baseline gap-2.5">
@@ -236,6 +337,13 @@ defmodule RengaWeb.ResourceLive.Index do
             <.display_menu query={@query} column_labels={@column_labels} />
           </div>
         </header>
+
+        <.view_tabs
+          views={@views}
+          active_view={@active_view}
+          query={@query}
+          current_scope={@current_scope}
+        />
 
         <div class="flex flex-wrap items-center gap-2">
           <form id="resource-search" phx-change="search" phx-submit="search" class="w-full sm:w-72">
@@ -378,6 +486,8 @@ defmodule RengaWeb.ResourceLive.Index do
           <span :if={!@has_next_page?} />
         </nav>
 
+        <.save_view_panel form={@view_form} can_share?={@can_manage?} />
+
         <.bulk_bar
           :if={@query.selected != []}
           count={length(@query.selected)}
@@ -385,6 +495,151 @@ defmodule RengaWeb.ResourceLive.Index do
         />
       </section>
     </Layouts.app>
+    """
+  end
+
+  # "All" plus the organization's and the person's views. A view is active
+  # when the list shows exactly its query; otherwise a changed list offers
+  # to be saved as a new view.
+  attr :views, :list, required: true
+  attr :active_view, :any, required: true
+  attr :query, :map, required: true
+  attr :current_scope, :map, required: true
+
+  defp view_tabs(assigns) do
+    custom? = InventoryQuery.view_params(assigns.query) != %{}
+
+    assigns =
+      assign(assigns,
+        all?: is_nil(assigns.active_view) and not custom?,
+        unsaved?: is_nil(assigns.active_view) and custom?,
+        manage?:
+          assigns.active_view != nil and
+            SavedViews.can_manage?(assigns.current_scope, assigns.active_view)
+      )
+
+    ~H"""
+    <div class="flex items-center gap-2 border-b border-edge">
+      <nav id="view-tabs" aria-label="Views" class="-mb-px flex min-w-0 gap-1 overflow-x-auto">
+        <.link
+          id="view-all"
+          patch={~p"/inventory"}
+          aria-current={@all? && "page"}
+          class={view_tab_class(@all?)}
+        >
+          All
+        </.link>
+        <.link
+          :for={view <- @views}
+          id={"view-#{view.id}"}
+          patch={view_path(view)}
+          aria-current={@active_view && @active_view.id == view.id && "page"}
+          class={view_tab_class(@active_view && @active_view.id == view.id)}
+        >
+          <.icon
+            :if={is_nil(view.user_id)}
+            name="hero-rectangle-stack-mini"
+            class="size-3.5 text-fg-subtle"
+          />
+          {view.name}
+          <span :if={is_nil(view.user_id)} class="sr-only">(organization view)</span>
+        </.link>
+      </nav>
+      <span class="flex-1" />
+      <.button
+        :if={@unsaved?}
+        id="save-view-button"
+        size="sm"
+        variant="ghost"
+        phx-click={show_overlay("save-view")}
+      >
+        <.icon name="hero-plus-mini" class="size-4" /> Save view
+      </.button>
+      <details :if={@manage?} id="view-options" class="relative">
+        <summary
+          class="grid size-8 min-h-tap min-w-tap cursor-pointer list-none place-items-center rounded-md text-fg-muted hover:bg-sunken hover:text-fg"
+          aria-label={"Options for view #{@active_view.name}"}
+        >
+          <.icon name="hero-ellipsis-horizontal" class="size-5" />
+        </summary>
+        <div
+          phx-click-away={JS.remove_attribute("open", to: "#view-options")}
+          class="absolute right-0 z-30 mt-1 w-52 rounded-lg border border-edge bg-surface p-1 shadow-lg"
+        >
+          <button
+            id="view-pin"
+            type="button"
+            phx-click={JS.remove_attribute("open", to: "#view-options") |> JS.push("toggle_pin")}
+            class="flex min-h-tap w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-fg hover:bg-sunken"
+          >
+            <.icon name="hero-bookmark" class="size-4 text-fg-subtle" />
+            {if @active_view.pinned, do: "Remove from sidebar", else: "Pin to sidebar"}
+          </button>
+          <button
+            id="view-delete"
+            type="button"
+            phx-click={
+              JS.remove_attribute("open", to: "#view-options") |> show_overlay("delete-view")
+            }
+            class="flex min-h-tap w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-crit hover:bg-crit-fill"
+          >
+            <.icon name="hero-trash" class="size-4" /> Delete view
+          </button>
+        </div>
+      </details>
+      <.confirm_dialog
+        :if={@manage?}
+        id="delete-view"
+        title={"Delete view #{@active_view.name}?"}
+        confirm_label="Delete view"
+        on_confirm="delete_view"
+      >
+        {if is_nil(@active_view.user_id),
+          do: "It disappears for everyone in the organization. The resources are not affected.",
+          else: "Only the saved view is deleted. The resources are not affected."}
+      </.confirm_dialog>
+    </div>
+    """
+  end
+
+  defp view_tab_class(active?) do
+    [
+      "inline-flex min-h-tap shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors",
+      active? && "border-accent font-medium text-fg",
+      !active? && "border-transparent text-fg-muted hover:text-fg"
+    ]
+  end
+
+  attr :form, :map, required: true
+  attr :can_share?, :boolean, required: true
+
+  defp save_view_panel(assigns) do
+    ~H"""
+    <.side_panel
+      id="save-view"
+      title="Save view"
+      description="Keeps these filters, grouping, ordering, and columns under a name."
+    >
+      <.form for={@form} id="save-view-form" phx-change="validate_view" phx-submit="save_view">
+        <.input field={@form[:name]} type="text" label="Name" required autocomplete="off" />
+        <.input
+          :if={@can_share?}
+          field={@form[:shared]}
+          type="checkbox"
+          label="Share with everyone in the organization"
+        />
+        <p :if={!@can_share?} id="save-view-personal" class="mb-3 text-sm text-fg-muted">
+          Only you will see this view. Owners and admins can share views with the organization.
+        </p>
+        <.input field={@form[:pinned]} type="checkbox" label="Show in the sidebar" />
+        <div class="mt-4 flex justify-end gap-2">
+          <.button type="button" phx-click={hide_overlay("save-view")}>Cancel</.button>
+          <.button id="save-view-submit" variant="primary" phx-disable-with="Saving…">
+            Save view
+          </.button>
+        </div>
+      </.form>
+    </.side_panel>
     """
   end
 
