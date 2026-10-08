@@ -111,6 +111,24 @@ defmodule RengaWeb.RackLiveTest do
     assert web.id == hd(DCIM.rack_elevation(admin, rack.id).front).resource.id
   end
 
+  test "dropping a dragged device on a free unit places it there", context do
+    %{admin: admin, rack: rack} = context
+    web = server_fixture(admin, "web-01")
+
+    {:ok, view, _html} = live(context.admin_conn, ~p"/places/racks/#{rack}")
+    assert has_element?(view, "#rack-workspace[phx-hook=RackDrag]")
+
+    assert has_element?(
+             view,
+             "#placeable-#{web.id}[draggable=true][data-drag-resource='#{web.id}']"
+           )
+
+    render_hook(view, "drop_place", %{"resource_id" => web.id, "position" => 5, "face" => "rear"})
+
+    assert render(view) =~ "web-01 placed at U5"
+    assert [%{position: 5}] = DCIM.rack_elevation(admin, rack.id).rear
+  end
+
   test "a device seen here but recorded elsewhere is dashed and placed in one step", context do
     %{admin: admin, rack: rack, other_rack: other_rack} = context
     web = server_fixture(admin, "web-01")
@@ -173,6 +191,8 @@ defmodule RengaWeb.RackLiveTest do
     refute has_element?(view, "#place-device")
     refute has_element?(view, "#place-panel")
     refute has_element?(view, "button#unit-front-1")
+    refute has_element?(view, "#rack-workspace[phx-hook]")
+    refute has_element?(view, "[draggable=true]")
     assert has_element?(view, "div#unit-front-1")
   end
 

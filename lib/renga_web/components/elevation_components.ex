@@ -7,8 +7,9 @@ defmodule RengaWeb.ElevationComponents do
   compact density draws a shorter rack without any screen special-casing it.
 
   Free units are buttons for people who can place devices: choosing one
-  opens the placement panel at that unit. Drag-to-place drops onto the same
-  elements, so both paths share one target.
+  opens the placement panel at that unit. Drag-to-place (the `RackDrag`
+  hook) highlights and drops onto the same buttons, so both paths agree on
+  which units are free.
   """
   use RengaWeb, :html
 
@@ -55,7 +56,13 @@ defmodule RengaWeb.ElevationComponents do
             {unit}
           </li>
         </ol>
-        <div class="grid" style={rows_style(@height)} data-rack-face={@face}>
+        <div
+          class="grid"
+          style={rows_style(@height)}
+          data-rack-face={@face}
+          data-rows={@height}
+          data-bottom-up={to_string(@bottom_up?)}
+        >
           <%= for unit <- @units, Elevation.free_unit?(@elevation, unit, @face) do %>
             <button
               :if={@can_place?}
@@ -69,7 +76,11 @@ defmodule RengaWeb.ElevationComponents do
               }
               style={area_style(@height, @bottom_up?, unit, 1)}
               aria-label={"Place a device at U#{unit} #{@face}"}
-              class="col-start-1 cursor-pointer border-b border-edge/50 transition-colors hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none"
+              class={[
+                "col-start-1 cursor-pointer border-b border-edge/50 transition-colors",
+                "hover:bg-accent-tint focus-visible:bg-accent-tint focus-visible:outline-none",
+                "data-[drop-target=valid]:bg-accent-tint data-[drop-target=invalid]:bg-crit-fill"
+              ]}
             />
             <div
               :if={!@can_place?}

@@ -6,7 +6,8 @@ defmodule RengaWeb.RackLive do
 
   On a phone the elevation shows one face at a time (`?face=rear`), and a
   device is placed by choosing a free unit from a list in the placement
-  panel; on larger screens free units are also targets to click. Owners and
+  panel. On larger screens free units are also targets to click, and a
+  device can be dragged from "Can go in this rack" onto them. Owners and
   admins place devices; everyone else reads the rack.
   """
   use RengaWeb, :live_view
@@ -54,29 +55,17 @@ defmodule RengaWeb.RackLive do
   end
 
   def handle_event("place", %{"place" => params}, socket) do
-    %{current_scope: scope, elevation: elevation} = socket.assigns
+    {:noreply, place_device(socket, params["resource_id"], params["position"], params["face"])}
+  end
 
-    with {:ok, resource} <- placeable_resource(elevation, params["resource_id"]),
-         {:ok, placement} <-
-           DCIM.place_in_rack(
-             scope,
-             resource.id,
-             elevation.rack.id,
-             params["position"],
-             params["face"]
-           ) do
-      {:noreply,
-       socket
-       |> put_flash(
-         :info,
-         "#{resource.name} placed at #{unit_range(placement.position, placement.height_units)}"
-       )
-       |> close_overlay("place-panel")
-       |> load_elevation()
-       |> assign_place(%{})}
-    else
-      {:error, reason} -> {:noreply, place_error(socket, reason)}
-    end
+  # Drag-to-place drops a device's top on a free unit of a face.
+  def handle_event(
+        "drop_place",
+        %{"resource_id" => id, "position" => position, "face" => face},
+        socket
+      )
+      when face in ~w(front rear) do
+    {:noreply, place_device(socket, id, position, face)}
   end
 
   def handle_event("place_observed", %{"id" => id}, socket) do
@@ -96,6 +85,25 @@ defmodule RengaWeb.RackLive do
 
   def handle_info(:reload, socket) do
     {:noreply, socket |> assign(:reload_timer, nil) |> load_elevation() |> refresh_place()}
+  end
+
+  defp place_device(socket, resource_id, position, face) do
+    %{current_scope: scope, elevation: elevation} = socket.assigns
+
+    with {:ok, resource} <- placeable_resource(elevation, resource_id),
+         {:ok, placement} <-
+           DCIM.place_in_rack(scope, resource.id, elevation.rack.id, position, face) do
+      socket
+      |> put_flash(
+        :info,
+        "#{resource.name} placed at #{unit_range(placement.position, placement.height_units)}"
+      )
+      |> close_overlay("place-panel")
+      |> load_elevation()
+      |> assign_place(%{})
+    else
+      {:error, reason} -> place_error(socket, reason)
+    end
   end
 
   defp place_observed(socket, ghost) do
@@ -225,136 +233,138 @@ defmodule RengaWeb.RackLive do
       current_scope={@current_scope}
       active_nav={:racks}
     >
-      <.object_page
-        id="rack"
-        title={@elevation.rack.resource.name}
-        subtitle={rack_subtitle(@elevation.rack)}
-      >
-        <:breadcrumb>
-          <.link navigate={~p"/places"} class="hover:text-fg">Places</.link>
-          <span aria-hidden="true">/</span>
-          <.link navigate={~p"/places/sites/#{@elevation.rack.site.id}"} class="hover:text-fg">
-            {@elevation.rack.site.resource.name}
-          </.link>
-          <%= if @elevation.rack.location do %>
+      <div id="rack-workspace" phx-hook={@can_place? && "RackDrag"}>
+        <.object_page
+          id="rack"
+          title={@elevation.rack.resource.name}
+          subtitle={rack_subtitle(@elevation.rack)}
+        >
+          <:breadcrumb>
+            <.link navigate={~p"/places"} class="hover:text-fg">Places</.link>
             <span aria-hidden="true">/</span>
-            <.link
-              navigate={~p"/places/locations/#{@elevation.rack.location.id}"}
-              class="hover:text-fg"
-            >
-              {@elevation.rack.location.resource.name}
+            <.link navigate={~p"/places/sites/#{@elevation.rack.site.id}"} class="hover:text-fg">
+              {@elevation.rack.site.resource.name}
             </.link>
-          <% end %>
-        </:breadcrumb>
-        <:icon><.icon name="hero-server-stack" class="size-5" /></:icon>
-        <:actions>
-          <.button
-            :if={@can_place? and @place_options != []}
-            id="place-device"
-            size="sm"
-            variant="primary"
-            phx-click={JS.push("open_place", value: %{}) |> show_overlay("place-panel")}
-          >
-            Place a device
-          </.button>
-        </:actions>
-
-        <div class="space-y-3">
-          <.segmented id="rack-face-toggle" label="Rack face" class="lg:hidden">
-            <:option
-              id="rack-face-front"
-              patch={~p"/places/racks/#{@rack_id}"}
-              active={@face == "front"}
+            <%= if @elevation.rack.location do %>
+              <span aria-hidden="true">/</span>
+              <.link
+                navigate={~p"/places/locations/#{@elevation.rack.location.id}"}
+                class="hover:text-fg"
+              >
+                {@elevation.rack.location.resource.name}
+              </.link>
+            <% end %>
+          </:breadcrumb>
+          <:icon><.icon name="hero-server-stack" class="size-5" /></:icon>
+          <:actions>
+            <.button
+              :if={@can_place? and @place_options != []}
+              id="place-device"
+              size="sm"
+              variant="primary"
+              phx-click={JS.push("open_place", value: %{}) |> show_overlay("place-panel")}
             >
-              Front
-            </:option>
-            <:option
-              id="rack-face-rear"
-              patch={~p"/places/racks/#{@rack_id}?face=rear"}
-              active={@face == "rear"}
-            >
-              Rear
-            </:option>
-          </.segmented>
+              Place a device
+            </.button>
+          </:actions>
 
-          <div id="rack-elevation" class="grid gap-4 lg:grid-cols-2">
-            <.rack_face
-              id="rack-face-front-view"
-              face="front"
-              elevation={@elevation}
-              can_place?={@can_place?}
-              class={@face != "front" && "hidden lg:block"}
-            />
-            <.rack_face
-              id="rack-face-rear-view"
-              face="rear"
-              elevation={@elevation}
-              can_place?={@can_place?}
-              class={@face != "rear" && "hidden lg:block"}
-            />
-          </div>
-        </div>
+          <div class="space-y-3">
+            <.segmented id="rack-face-toggle" label="Rack face" class="lg:hidden">
+              <:option
+                id="rack-face-front"
+                patch={~p"/places/racks/#{@rack_id}"}
+                active={@face == "front"}
+              >
+                Front
+              </:option>
+              <:option
+                id="rack-face-rear"
+                patch={~p"/places/racks/#{@rack_id}?face=rear"}
+                active={@face == "rear"}
+              >
+                Rear
+              </:option>
+            </.segmented>
 
-        <:aside>
-          <section :if={@elevation.observed != []} id="observed" class="space-y-2">
-            <div>
-              <h2 class="text-xs font-medium text-fg-muted">Seen here, recorded elsewhere</h2>
-              <p class="text-xs text-fg-subtle">
-                Placing one here records it where it was seen.
-              </p>
+            <div id="rack-elevation" class="grid gap-4 lg:grid-cols-2">
+              <.rack_face
+                id="rack-face-front-view"
+                face="front"
+                elevation={@elevation}
+                can_place?={@can_place?}
+                class={@face != "front" && "hidden lg:block"}
+              />
+              <.rack_face
+                id="rack-face-rear-view"
+                face="rear"
+                elevation={@elevation}
+                can_place?={@can_place?}
+                class={@face != "rear" && "hidden lg:block"}
+              />
             </div>
-            <ul class="space-y-2">
-              <.observed_item
-                :for={ghost <- @elevation.observed}
-                ghost={ghost}
+          </div>
+
+          <:aside>
+            <section :if={@elevation.observed != []} id="observed" class="space-y-2">
+              <div>
+                <h2 class="text-xs font-medium text-fg-muted">Seen here, recorded elsewhere</h2>
+                <p class="text-xs text-fg-subtle">
+                  Placing one here records it where it was seen.
+                </p>
+              </div>
+              <ul class="space-y-2">
+                <.observed_item
+                  :for={ghost <- @elevation.observed}
+                  ghost={ghost}
+                  can_place?={@can_place?}
+                />
+              </ul>
+            </section>
+
+            <section id="placeable" class="space-y-3">
+              <h2 class="text-xs font-medium text-fg-muted">Can go in this rack</h2>
+              <.placeable_group
+                id="placeable-in-rack"
+                title="In this rack, no unit yet"
+                items={@elevation.in_rack}
                 can_place?={@can_place?}
               />
-            </ul>
-          </section>
+              <.placeable_group
+                id="placeable-at-location"
+                title={"At #{(@elevation.rack.location || @elevation.rack.site).resource.name}"}
+                items={@elevation.at_location}
+                can_place?={@can_place?}
+              />
+              <.placeable_group
+                id="placeable-unplaced"
+                title="Not placed anywhere"
+                items={@elevation.unplaced}
+                total={@elevation.unplaced_total}
+                can_place?={@can_place?}
+              />
+              <p
+                :if={@place_options == []}
+                id="placeable-empty"
+                class="text-sm text-fg-muted"
+              >
+                Nothing is waiting for a place.
+              </p>
+            </section>
 
-          <section id="placeable" class="space-y-3">
-            <h2 class="text-xs font-medium text-fg-muted">Can go in this rack</h2>
-            <.placeable_group
-              id="placeable-in-rack"
-              title="In this rack, no unit yet"
-              items={@elevation.in_rack}
-              can_place?={@can_place?}
-            />
-            <.placeable_group
-              id="placeable-at-location"
-              title={"At #{(@elevation.rack.location || @elevation.rack.site).resource.name}"}
-              items={@elevation.at_location}
-              can_place?={@can_place?}
-            />
-            <.placeable_group
-              id="placeable-unplaced"
-              title="Not placed anywhere"
-              items={@elevation.unplaced}
-              total={@elevation.unplaced_total}
-              can_place?={@can_place?}
-            />
-            <p
-              :if={@place_options == []}
-              id="placeable-empty"
-              class="text-sm text-fg-muted"
-            >
-              Nothing is waiting for a place.
-            </p>
-          </section>
-
-          <.properties id="rack-properties" title="Rack">
-            <:item label="Site">{@elevation.rack.site.resource.name}</:item>
-            <:item label="Location" blank={is_nil(@elevation.rack.location)} placeholder="None">
-              {@elevation.rack.location && @elevation.rack.location.resource.name}
-            </:item>
-            <:item label="Height">{@elevation.rack.height_units}U</:item>
-            <:item label="Width">{String.replace(@elevation.rack.width, "_", " ")}</:item>
-            <:item label="Facility ID" blank={is_nil(@elevation.rack.facility_id)}>
-              {@elevation.rack.facility_id}
-            </:item>
-          </.properties>
-        </:aside>
-      </.object_page>
+            <.properties id="rack-properties" title="Rack">
+              <:item label="Site">{@elevation.rack.site.resource.name}</:item>
+              <:item label="Location" blank={is_nil(@elevation.rack.location)} placeholder="None">
+                {@elevation.rack.location && @elevation.rack.location.resource.name}
+              </:item>
+              <:item label="Height">{@elevation.rack.height_units}U</:item>
+              <:item label="Width">{String.replace(@elevation.rack.width, "_", " ")}</:item>
+              <:item label="Facility ID" blank={is_nil(@elevation.rack.facility_id)}>
+                {@elevation.rack.facility_id}
+              </:item>
+            </.properties>
+          </:aside>
+        </.object_page>
+      </div>
 
       <.side_panel :if={@can_place?} id="place-panel" title="Place a device">
         <.form
@@ -430,8 +440,18 @@ defmodule RengaWeb.RackLive do
           :for={item <- @items}
           id={"placeable-#{item.resource.id}"}
           data-height={item.height}
-          class="flex min-h-tap items-center gap-2 px-2.5 py-1 text-sm sm:min-h-8"
+          data-drag-resource={@can_place? && item.resource.id}
+          draggable={@can_place? && "true"}
+          class={[
+            "flex min-h-tap items-center gap-2 px-2.5 py-1 text-sm sm:min-h-8",
+            @can_place? && "lg:cursor-grab lg:active:cursor-grabbing"
+          ]}
         >
+          <.icon
+            :if={@can_place?}
+            name="hero-bars-2-mini"
+            class="hidden size-3.5 shrink-0 text-fg-subtle lg:block"
+          />
           <.link
             navigate={~p"/inventory/#{item.resource}"}
             class="min-w-0 flex-1 truncate hover:underline"
