@@ -119,18 +119,26 @@ defmodule RengaWeb.TriageRuleLive do
   def handle_event("toggle", %{"id" => id}, socket) do
     scope = socket.assigns.current_scope
 
-    with %Rule{} = rule <- TriageRules.get_rule(scope, id),
-         {:ok, %{rule: rule, applied: applied}} <-
-           TriageRules.set_enabled(scope, rule, !rule.enabled) do
-      message =
-        if rule.enabled,
-          do: "#{rule.name} is on. #{applied_label(rule, applied)}",
-          else: "#{rule.name} is off. What it already set stays."
+    case TriageRules.get_rule(scope, id) do
+      %Rule{enabled: false} = rule ->
+        # Enabling applies to the accumulated inventory, so review its
+        # current impact in the same panel used for saving a rule.
+        {:noreply, socket |> assign(:editing, rule) |> start_form(%{rule | enabled: true})}
 
-      {:noreply, socket |> put_flash(:info, message) |> load_rules()}
-    else
-      {:error, reason} -> {:noreply, socket |> put_flash(:error, error_message(reason))}
-      nil -> {:noreply, load_rules(socket)}
+      %Rule{} = rule ->
+        case TriageRules.set_enabled(scope, rule, false) do
+          {:ok, %{rule: rule}} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "#{rule.name} is off. What it already set stays.")
+             |> load_rules()}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, error_message(reason))}
+        end
+
+      nil ->
+        {:noreply, load_rules(socket)}
     end
   end
 
@@ -165,12 +173,23 @@ defmodule RengaWeb.TriageRuleLive do
   end
 
   defp start_form(socket, %Rule{} = rule) do
-    attrs = %{"match_on" => Rule.match_on(rule)}
+    attrs =
+      rule
+      |> Map.take(
+        ~w(kind name enabled subnet intake_api_key_id hostname_pattern label_key label_value site_id location_id team_id)a
+      )
+      |> Map.put(:match_on, Rule.match_on(rule))
+
+    preview =
+      case TriageRules.preview(socket.assigns.current_scope, attrs) do
+        {:ok, preview} -> preview
+        {:error, _changeset} -> nil
+      end
 
     socket
     |> assign(:base_rule, rule)
     |> assign(:form, to_form(TriageRules.change_rule(rule, attrs)))
-    |> assign(:preview, nil)
+    |> assign(:preview, preview)
     |> assign_locations(rule.site_id)
   end
 
@@ -325,8 +344,11 @@ defmodule RengaWeb.TriageRuleLive do
                 <button
                   id={"rule-#{rule.id}-toggle"}
                   type="button"
-                  phx-click="toggle"
-                  phx-value-id={rule.id}
+                  phx-click={
+                    if rule.enabled,
+                      do: JS.push("toggle", value: %{id: rule.id}),
+                      else: JS.push("toggle", value: %{id: rule.id}) |> show_overlay("rule-panel")
+                  }
                   class="min-h-tap cursor-pointer text-sm text-link hover:underline"
                 >
                   {if rule.enabled, do: "Turn off", else: "Turn on"}
@@ -375,6 +397,12 @@ defmodule RengaWeb.TriageRuleLive do
         title={if @editing, do: "Edit #{@editing.name}", else: "New triage rule"}
       >
         <.form for={@form} id="rule-form" phx-change="validate" phx-submit="save" class="space-y-1">
+          <input
+            id="rule_enabled"
+            type="hidden"
+            name={@form[:enabled].name}
+            value={to_string(@form[:enabled].value)}
+          />
           <.input
             :if={is_nil(@editing)}
             field={@form[:kind]}

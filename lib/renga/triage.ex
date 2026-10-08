@@ -10,7 +10,8 @@ defmodule Renga.Triage do
     * `:owner` - no owning team;
     * `:identity` - reconciliation could not tell it apart from another
       resource: the latest attempt for some observation failed as ambiguous
-      with this resource among the candidates.
+      with this resource among the candidates, and no newer clean report
+      from the same source and stable reporting identity has superseded it.
 
   It leaves triage on its own when the fact arrives, from a person, a rule,
   or a collector, because nothing marks it as triaged. Triage never hides
@@ -25,8 +26,10 @@ defmodule Renga.Triage do
   alias Renga.Accounts.Scope
   alias Renga.Catalog.HardwareAssignment
   alias Renga.DCIM.CurrentPlacement
+  alias Renga.Inventory.Observation
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Repo
 
   @facts [:placement, :hardware_type, :owner, :identity]
@@ -184,8 +187,9 @@ defmodule Renga.Triage do
       }
   end
 
-  # The latest attempt per observation, when it failed because several
-  # resources matched. A later successful attempt clears it.
+  # A retry clears its observation. A newer clean report can also clear it,
+  # but only with a shared stable identity from the same source: sources may
+  # report many hosts, and hostname/MAC reuse must not hide another ambiguity.
   defp ambiguous_attempts(%Scope{organization_id: organization_id}) do
     latest =
       from attempt in ObservationReconciliation,
@@ -193,9 +197,39 @@ defmodule Renga.Triage do
         distinct: attempt.observation_id,
         order_by: [asc: attempt.observation_id, desc: attempt.attempt]
 
+    superseding =
+      from success in subquery(latest),
+        join: report in Observation,
+        on: report.id == success.observation_id,
+        join: previous in ResourceIdentifierClaim,
+        on: previous.observation_id == parent_as(:ambiguous).observation_id,
+        join: current in ResourceIdentifierClaim,
+        on:
+          current.observation_id == report.id and current.source_id == previous.source_id and
+            current.kind == previous.kind and
+            current.normalized_value == previous.normalized_value,
+        where: success.status == "succeeded",
+        where: previous.kind in ~w(machine_id dmi_uuid provider_instance_id external_id),
+        where: report.source_id == parent_as(:ambiguous_observation).source_id,
+        where:
+          report.observed_at > parent_as(:ambiguous_observation).observed_at or
+            (report.observed_at == parent_as(:ambiguous_observation).observed_at and
+               report.id > parent_as(:ambiguous_observation).id),
+        where:
+          fragment(
+            "? -> 'candidate_resource_ids' \\? (?)::text",
+            parent_as(:ambiguous).errors,
+            success.matched_resource_id
+          )
+
     from attempt in subquery(latest),
+      as: :ambiguous,
+      join: observation in Observation,
+      as: :ambiguous_observation,
+      on: observation.id == attempt.observation_id,
       where: attempt.status == "failed",
-      where: fragment("? ->> 'identity' = 'ambiguous'", attempt.errors)
+      where: fragment("? ->> 'identity' = 'ambiguous'", attempt.errors),
+      where: not exists(superseding)
   end
 
   defp to_entries(rows, %Scope{organization_id: organization_id}) do

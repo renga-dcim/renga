@@ -226,6 +226,11 @@ defmodule Renga.DCIM do
     managed_transaction(scope, fn -> do_put_current_placement(scope, resource_id, attrs) end)
   end
 
+  @doc "Fills an unplaced resource without overwriting a concurrent placement."
+  def put_current_placement_if_missing(%Scope{} = scope, resource_id, attrs) do
+    managed_transaction(scope, fn -> do_put_current_placement(scope, resource_id, attrs, true) end)
+  end
+
   @doc false
   # Places an unplaced resource for a triage rule, inside the caller's
   # transaction. A resource that already has a current placement, confirmed
@@ -477,7 +482,7 @@ defmodule Renga.DCIM do
     |> Repo.preload(:resource)
   end
 
-  defp do_put_current_placement(scope, resource_id, attrs) do
+  defp do_put_current_placement(scope, resource_id, attrs, only_if_missing? \\ false) do
     resource = lock_resource!(scope.organization_id, resource_id)
 
     placement =
@@ -485,6 +490,8 @@ defmodule Renga.DCIM do
       |> where([placement], placement.organization_id == ^scope.organization_id)
       |> where([placement], placement.resource_id == ^resource.id)
       |> Repo.one()
+
+    if only_if_missing? and placement, do: Repo.rollback(:already_placed)
 
     rack_id = effective_rack_id(placement, attrs)
 

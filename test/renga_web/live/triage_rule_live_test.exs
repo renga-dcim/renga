@@ -144,6 +144,36 @@ defmodule RengaWeb.TriageRuleLiveTest do
     refute has_element?(view, "#rule-#{rule.id}")
   end
 
+  test "turning on a disabled rule previews accumulated resources before applying", context do
+    {:ok, %{rule: rule}} =
+      TriageRules.create_rule(context.admin, %{
+        "kind" => "ownership",
+        "name" => "Web",
+        "enabled" => false,
+        "hostname_pattern" => "web-*",
+        "team_id" => context.team.id
+      })
+
+    later = server!(context.admin, "web-02", "10.20.3.45/24")
+    {:ok, view, _html} = live(context.admin_conn, ~p"/settings/triage-rules")
+
+    view |> element("#rule-#{rule.id}-edit") |> render_click()
+    assert has_element?(view, "#rule-preview-will-set", "Sets the owner on 2 resources")
+    assert has_element?(view, "#rule_enabled[value=false]")
+
+    view |> element("#rule-#{rule.id}-toggle") |> render_click()
+    assert has_element?(view, "#rule-preview-will-set", "Sets the owner on 2 resources")
+    assert has_element?(view, "#rule_enabled[value=true]")
+    assert has_element?(view, "#rule-#{rule.id}[data-enabled=false]")
+    assert Repo.reload!(context.web).owner_team_id == nil
+    assert Repo.reload!(later).owner_team_id == nil
+
+    view |> form("#rule-form") |> render_submit()
+    assert has_element?(view, "#rule-#{rule.id}[data-enabled=true]")
+    assert Repo.reload!(context.web).owner_team_id == context.team.id
+    assert Repo.reload!(later).owner_team_id == context.team.id
+  end
+
   test "members read rules but cannot manage them", context do
     {:ok, %{rule: rule}} =
       TriageRules.create_rule(context.admin, %{"kind" => "top_of_rack", "name" => "ToR"})
