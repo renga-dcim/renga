@@ -26,6 +26,7 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.SourcePrecedence
   alias Renga.Requests
+  alias Renga.Teams
   alias RengaWeb.Format
 
   @lifecycle_options [
@@ -67,6 +68,7 @@ defmodule RengaWeb.ResourceLive.Show do
        can_manage_lifecycle?: Inventory.organization_manager?(scope),
        host_fields: @host_fields,
        can_request?: Requests.can_request?(scope),
+       teams: Teams.list_teams(scope),
        reload_timer: nil
      )
      |> assign_provenance()
@@ -162,6 +164,45 @@ defmodule RengaWeb.ResourceLive.Show do
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "Overrides require the owner or admin role")}
+    end
+  end
+
+  def handle_event("set_owner", %{"owner" => %{"team" => team_id}}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+    team_id = if team_id == "", do: nil, else: team_id
+
+    case Teams.set_owner(scope, resource, team_id) do
+      {:ok, _resource} ->
+        {:noreply, socket |> put_flash(:info, "Owner updated") |> reload_resource()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Setting owners requires the owner or admin role")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That team no longer exists")
+         |> assign(:teams, Teams.list_teams(scope))}
+    end
+  end
+
+  def handle_event("request_owner", %{"request" => params}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    case Requests.request_owner(scope, resource, params) do
+      {:ok, _request} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Owner requested; an owner or admin will review it")
+         |> reload_resource()
+         |> reset_request_forms()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = request_form("owner-request", params, request_errors(changeset))
+        {:noreply, assign(socket, :owner_request_form, form)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only members request changes")}
     end
   end
 
@@ -276,6 +317,15 @@ defmodule RengaWeb.ResourceLive.Show do
             can_request?={@can_request?}
             request={@lifecycle_request}
             request_form={@lifecycle_request_form}
+            current_user_id={@current_scope.user.id}
+          />
+          <.owner
+            resource={@resource}
+            teams={@teams}
+            can_manage?={@can_manage_lifecycle?}
+            can_request?={@can_request?}
+            request={@owner_request}
+            request_form={@owner_request_form}
             current_user_id={@current_scope.user.id}
           />
           <.properties id="resource-properties">
@@ -526,6 +576,105 @@ defmodule RengaWeb.ResourceLive.Show do
     </.side_panel>
     """
   end
+
+  # The owning team: who answers for this resource. Owners and admins set
+  # it; members request it; a resource without one stays in triage.
+  attr :resource, :map, required: true
+  attr :teams, :list, required: true
+  attr :can_manage?, :boolean, required: true
+  attr :can_request?, :boolean, required: true
+  attr :request, :any, required: true
+  attr :request_form, :any, required: true
+  attr :current_user_id, :string, required: true
+
+  defp owner(assigns) do
+    ~H"""
+    <section id="resource-owner" class="space-y-2">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-fg-muted">Owner</h2>
+      <.form
+        :if={@can_manage? and @teams != []}
+        for={%{}}
+        as={:owner}
+        id="resource-owner-form"
+        phx-change="set_owner"
+      >
+        <label for="resource-owner-team" class="sr-only">Owning team</label>
+        <select
+          id="resource-owner-team"
+          name="owner[team]"
+          class="h-control min-h-tap w-full rounded-md border border-edge bg-surface px-2 text-sm text-fg focus:border-accent focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="">No owner</option>
+          <option :for={team <- @teams} value={team.id} selected={team.id == @resource.owner_team_id}>
+            {team.name}
+          </option>
+        </select>
+      </.form>
+      <p :if={!@can_manage? or @teams == []} id="resource-owner-name" class="text-sm text-fg">
+        <%= if @resource.owner_team do %>
+          <span class="font-medium">{@resource.owner_team.name}</span>
+        <% else %>
+          <span class="text-fg-subtle">No owner</span>
+        <% end %>
+      </p>
+      <p
+        :if={@can_manage? and @teams == []}
+        id="resource-owner-no-teams"
+        class="text-xs text-fg-muted"
+      >
+        <.link navigate={~p"/settings/teams"} class="text-link hover:underline">Create a team</.link>
+        to assign an owner.
+      </p>
+      <p :if={@resource.owner_set_at} class="text-xs text-fg-muted">
+        {owner_provenance(@resource)}
+      </p>
+      <.pending_request
+        :if={@request}
+        id="resource-owner-request"
+        request={@request}
+        current_user_id={@current_user_id}
+      />
+      <details
+        :if={@can_request? and is_nil(@request) and @teams != []}
+        id="resource-owner-request-toggle"
+        open={@request_form.errors != []}
+      >
+        <summary class="inline-flex min-h-tap cursor-pointer list-none items-center text-xs text-link hover:underline sm:min-h-0">
+          Request an owner
+        </summary>
+        <.form
+          for={@request_form}
+          id="resource-owner-request-form"
+          phx-submit="request_owner"
+          class="mt-2 space-y-2"
+        >
+          <.input
+            field={@request_form[:value]}
+            type="select"
+            label="Team"
+            prompt="Choose a team"
+            options={Enum.map(@teams, &{&1.name, &1.id})}
+          />
+          <.input field={@request_form[:reason]} type="textarea" label="Why" rows="2" />
+          <div class="flex justify-end">
+            <.button
+              id="resource-owner-request-submit"
+              variant="primary"
+              phx-disable-with="Sending…"
+            >
+              Request owner
+            </.button>
+          </div>
+        </.form>
+      </details>
+    </section>
+    """
+  end
+
+  defp owner_provenance(%{owner_source: "rule", owner_set_at: at}),
+    do: "Set by a triage rule · #{Format.datetime(at)}"
+
+  defp owner_provenance(%{owner_set_at: at}), do: "Set by a person · #{Format.datetime(at)}"
 
   # An open request, shown where the change would be made. Its requester can
   # withdraw it; owners and admins decide it from the Inbox.
@@ -993,6 +1142,7 @@ defmodule RengaWeb.ResourceLive.Show do
 
     assign(socket,
       lifecycle_request: Requests.open_request(scope, resource.id, "lifecycle"),
+      owner_request: Requests.open_request(scope, resource.id, "owner"),
       override_requests:
         Map.new(FieldProvenance.fields(), fn field ->
           {field, Requests.open_request(scope, resource.id, "field_override", field)}
@@ -1003,6 +1153,7 @@ defmodule RengaWeb.ResourceLive.Show do
   defp reset_request_forms(socket) do
     assign(socket,
       lifecycle_request_form: request_form("lifecycle-request", %{}),
+      owner_request_form: request_form("owner-request", %{}),
       override_request_forms:
         Map.new(FieldProvenance.fields(), &{&1, request_form("override-#{&1}-request", %{})})
     )

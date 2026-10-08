@@ -18,7 +18,7 @@ defmodule RengaWeb.InventoryQuery do
   @groups ~w(kind lifecycle freshness)
   @sort_fields ~w(name kind lifecycle last_seen)
 
-  @columns ~w(kind hardware status sources seen)
+  @columns ~w(kind hardware owner status sources seen)
   @default_columns @columns
 
   defstruct search: "",
@@ -26,6 +26,7 @@ defmodule RengaWeb.InventoryQuery do
             lifecycle: nil,
             freshness: nil,
             source_id: nil,
+            owner: nil,
             group: nil,
             sort: {:name, :asc},
             columns: @default_columns,
@@ -53,6 +54,7 @@ defmodule RengaWeb.InventoryQuery do
       freshness:
         member(params["freshness"], @freshness) || if(params["stale"] == "true", do: "stale"),
       source_id: blank_to_nil(params["source"]),
+      owner: parse_owner(params["owner"]),
       group: params["group"] |> member(@groups) |> to_atom(),
       sort: parse_sort(params["sort"]),
       columns: parse_columns(params["cols"]),
@@ -70,6 +72,7 @@ defmodule RengaWeb.InventoryQuery do
       {"lifecycle", query.lifecycle},
       {"freshness", query.freshness},
       {"source", query.source_id},
+      {"owner", query.owner},
       {"group", query.group && Atom.to_string(query.group)},
       {"sort", encode_sort(query.sort)},
       {"cols", encode_columns(query.columns)},
@@ -94,6 +97,7 @@ defmodule RengaWeb.InventoryQuery do
       lifecycle: query.lifecycle,
       freshness: query.freshness,
       source_id: query.source_id,
+      owner: owner_option(query.owner),
       group: query.group,
       sort: query.sort,
       page: query.page
@@ -103,8 +107,23 @@ defmodule RengaWeb.InventoryQuery do
   @doc "Whether any filter narrows the list."
   def filtered?(%__MODULE__{} = query) do
     query.search != "" or query.kinds != [] or
-      Enum.any?([query.lifecycle, query.freshness, query.source_id])
+      Enum.any?([query.lifecycle, query.freshness, query.source_id, query.owner])
   end
+
+  # "none" lists unowned resources; anything else must be a team id.
+  defp parse_owner("none"), do: "none"
+
+  defp parse_owner(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, id} -> id
+      :error -> nil
+    end
+  end
+
+  defp parse_owner(_missing), do: nil
+
+  defp owner_option("none"), do: :none
+  defp owner_option(owner), do: owner
 
   defp parse_sort("-" <> field), do: {sort_field(field), :desc}
   defp parse_sort(field) when is_binary(field), do: {sort_field(field), :asc}

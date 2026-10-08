@@ -168,6 +168,7 @@ defmodule RengaWeb.Router do
       live "/catalog/manufacturers", CatalogLive, :manufacturers
 
       live "/settings/collectors", InventoryOperationsLive, :index
+      live "/settings/teams", TeamLive, :index
     end
 
     post "/organizations/select", OrganizationSessionController, :create

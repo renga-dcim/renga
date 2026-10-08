@@ -144,6 +144,11 @@ defmodule RengaWeb.ActivityLive do
   defp describe(%{kind: "finding_exception_removed", field: field}),
     do: "Removed the exception on #{finding_label(field)}"
 
+  defp describe(%{kind: "owner_changed", new_value: %{"name" => name}}),
+    do: "Owner set to #{name}"
+
+  defp describe(%{kind: "owner_changed"}), do: "Owner removed"
+
   defp describe(%{kind: "request_" <> action} = event) do
     verb =
       case action do
