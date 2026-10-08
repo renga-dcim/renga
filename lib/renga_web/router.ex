@@ -152,7 +152,7 @@ defmodule RengaWeb.Router do
       live "/places/sites/:id", DcimLive, :site
       live "/places/locations/:id", DcimLive, :location
       live "/places/racks", DcimLive, :racks
-      live "/places/racks/:id", DcimLive, :rack
+      live "/places/racks/:id", RackLive, :show
 
       live "/network/topology", TopologyLive, :index
       live "/network/vlans", VlanLive, :index

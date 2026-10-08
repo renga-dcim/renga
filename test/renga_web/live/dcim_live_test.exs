@@ -43,34 +43,14 @@ defmodule RengaWeb.DcimLiveTest do
     assert has_element?(site_view, "#new-location-form")
   end
 
-  test "shows rack elevations, unplaced resources, and findings", %{conn: conn, scope: scope} do
-    {:ok, site} =
-      DCIM.create_site(
-        scope,
-        %{name: "Berlin", lifecycle_state: "active"},
-        %{slug: "berlin", status: "active"}
-      )
+  test "placement findings on racked devices reach the Inbox", %{conn: conn, scope: scope} do
+    {:ok, site} = DCIM.create_site(scope, %{name: "Berlin"}, %{slug: "berlin"})
 
     {:ok, rack} =
-      DCIM.create_rack(
-        scope,
-        %{name: "BER-R01", lifecycle_state: "active"},
-        %{site_id: site.id, height_units: 12, width: "19_inch", status: "active"}
-      )
+      DCIM.create_rack(scope, %{name: "BER-R01"}, %{site_id: site.id, height_units: 12})
 
     {:ok, resource} =
-      Renga.Inventory.create_resource(scope, %{
-        kind: "server",
-        name: "compute-01",
-        lifecycle_state: "active"
-      })
-
-    {:ok, unplaced} =
-      Renga.Inventory.create_resource(scope, %{
-        kind: "server",
-        name: "compute-02",
-        lifecycle_state: "active"
-      })
+      Renga.Inventory.create_resource(scope, %{kind: "server", name: "compute-01"})
 
     {:ok, _placement} =
       DCIM.put_current_placement(scope, resource.id, %{
@@ -87,20 +67,7 @@ defmodule RengaWeb.DcimLiveTest do
       })
 
     {:ok, rack_view, _html} = live(conn, ~p"/places/racks/#{rack.id}")
-    assert has_element?(rack_view, "#rack-elevation")
-    assert has_element?(rack_view, "#rack-unit-4", "compute-01")
-    assert has_element?(rack_view, "#rack-unit-4", "Active · Inferred")
-    assert has_element?(rack_view, "#unplaced-resources")
-    assert has_element?(rack_view, "#rack-placement-form")
-
-    rack_view
-    |> form("#rack-placement-form",
-      placement: %{resource_id: unplaced.id, position: "8", height_units: "1", face: "rear"}
-    )
-    |> render_submit()
-
-    assert has_element?(rack_view, "#rack-unit-8", "compute-02")
-    assert has_element?(rack_view, "#rack-unit-8", "Active · Confirmed")
+    assert has_element?(rack_view, "#rack-elevation", "compute-01")
 
     {:ok, inbox, _html} = live(conn, ~p"/inbox?domain=placement")
     assert has_element?(inbox, "#findings [data-list-row]", "compute-01")

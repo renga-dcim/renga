@@ -301,6 +301,48 @@ defmodule RengaWeb.UI do
     """
   end
 
+  ## Segmented control
+
+  @doc """
+  Renders a small set of mutually exclusive views as patch links, such as
+  a list filter or the face of a rack. The active option carries
+  `aria-current`, and every option keeps a 44px target on touch screens.
+  """
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :class, :any, default: nil
+
+  slot :option, required: true do
+    attr :patch, :string, required: true
+    attr :active, :boolean, required: true
+    attr :id, :string, required: true
+  end
+
+  def segmented(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      role="group"
+      aria-label={@label}
+      class={["inline-flex rounded-md border border-edge bg-surface p-0.5", @class]}
+    >
+      <.link
+        :for={option <- @option}
+        id={option.id}
+        patch={option.patch}
+        aria-current={option.active && "true"}
+        class={[
+          "inline-flex min-h-tap items-center rounded px-2.5 text-xs transition-colors sm:min-h-7",
+          option.active && "bg-sunken font-medium text-fg",
+          !option.active && "text-fg-muted hover:text-fg"
+        ]}
+      >
+        {render_slot(option)}
+      </.link>
+    </div>
+    """
+  end
+
   ## Overlays
 
   @doc """
