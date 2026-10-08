@@ -963,7 +963,7 @@ defmodule RengaWeb.ResourceLive.Show do
           </.link>
           <.link
             id={"interface-#{interface.id}-neighbors"}
-            navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
+            navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#topology-links"}
             class="inline-flex items-center gap-1 text-xs text-link hover:underline"
           >
             <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
