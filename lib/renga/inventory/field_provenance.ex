@@ -73,7 +73,7 @@ defmodule Renga.Inventory.FieldProvenance do
   def source_choice(%Scope{organization_id: organization_id}, %Resource{} = resource, field)
       when field in @fields do
     organization_id
-    |> latest_observations(resource.id)
+    |> latest_observations(resource.id, [field])
     |> candidates(field, "host." <> field, nil)
     |> Enum.find(& &1.winner?)
   end
@@ -93,17 +93,66 @@ defmodule Renga.Inventory.FieldProvenance do
     end)
   end
 
-  # Sparse reports leave omitted fields unchanged. Keep history until we
-  # have selected the latest field-bearing report for each source.
-  defp latest_observations(organization_id, resource_id) do
+  # Select field-bearing IDs before loading payloads: at most one report per
+  # source and field crosses the database boundary, regardless of history.
+  # Presence mirrors host_attrs/1: an explicit attribute (even null) prevents
+  # identifier fallback; only a string or singleton string identifier counts.
+  defp latest_observations(organization_id, resource_id, fields \\ @fields) do
+    latest =
+      from(observation in Observation,
+        join: reconciliation in ObservationReconciliation,
+        on: reconciliation.observation_id == observation.id,
+        inner_lateral_join:
+          reported in fragment(
+            """
+            SELECT field.name
+            FROM unnest(?::text[]) AS field(name)
+            CROSS JOIN LATERAL (
+              SELECT ? #> '{resources,0,attributes}' AS attrs,
+                     ? #> '{resources,0,identifiers}' AS identifiers
+            ) AS host
+            WHERE CASE
+              WHEN jsonb_exists(host.attrs, field.name)
+                THEN host.attrs -> field.name NOT IN ('null'::jsonb, 'false'::jsonb)
+              WHEN field.name IN ('hostname', 'fqdn')
+                THEN CASE jsonb_typeof(host.identifiers -> field.name)
+                  WHEN 'string' THEN true
+                  WHEN 'array' THEN
+                    jsonb_array_length(host.identifiers -> field.name) = 1 AND
+                    jsonb_typeof(host.identifiers -> field.name -> 0) = 'string'
+                  ELSE false
+                END
+              ELSE false
+            END
+            """,
+            ^fields,
+            observation.payload,
+            observation.payload
+          ),
+        on: true,
+        where:
+          observation.organization_id == ^organization_id and
+            reconciliation.organization_id == ^organization_id and
+            reconciliation.matched_resource_id == ^resource_id and
+            reconciliation.status == "succeeded",
+        where:
+          fragment(
+            "CASE WHEN jsonb_typeof(?->'resources') = 'array' THEN jsonb_array_length(?->'resources') = 1 ELSE false END",
+            observation.payload,
+            observation.payload
+          ),
+        distinct: [observation.source_id, reported.name],
+        order_by: [
+          asc: observation.source_id,
+          asc: reported.name,
+          desc: observation.observed_at,
+          desc: observation.id
+        ],
+        select: %{id: observation.id}
+      )
+
     from(observation in Observation,
-      join: reconciliation in ObservationReconciliation,
-      on: reconciliation.observation_id == observation.id,
-      where:
-        observation.organization_id == ^organization_id and
-          reconciliation.organization_id == ^organization_id and
-          reconciliation.matched_resource_id == ^resource_id and
-          reconciliation.status == "succeeded",
+      where: observation.id in subquery(latest),
       order_by: [asc: observation.source_id, desc: observation.observed_at, desc: observation.id],
       preload: [:source]
     )

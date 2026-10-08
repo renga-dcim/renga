@@ -19,6 +19,98 @@ defmodule Renga.Inventory.FieldProvenanceTest do
   end
 
   describe "field_provenance/2" do
+    test "loads only the latest field-bearing payloads even after a long sparse history",
+         context do
+      fields = ~w(hostname fqdn vendor model asset_tag)
+      resource = report(context, context.agent, 1, %{"hostname" => "agent-1"})
+
+      for {field, second} <- Enum.with_index(fields, 2), source <- [context.agent, context.bmc] do
+        report(context, source, second, %{field => "#{source.kind}-#{field}"})
+      end
+
+      for second <- 10..109, source <- [context.agent, context.bmc] do
+        report(context, source, second, %{})
+      end
+
+      ref = make_ref()
+      handler = {__MODULE__, ref}
+      pid = self()
+
+      :ok =
+        :telemetry.attach(
+          handler,
+          [:renga, :repo, :query],
+          fn _, _, metadata, _ ->
+            if self() == pid and metadata.source == "observations" do
+              {:ok, result} = metadata.result
+              send(pid, {ref, result.num_rows})
+            end
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      provenance = Inventory.field_provenance(context.scope, resource)
+      assert_receive {^ref, 10}
+      refute_receive {^ref, _}
+      assert provenance["vendor"].value == "bmc-vendor"
+      assert provenance["hostname"].value == "host_agent-hostname"
+
+      assert Enum.all?(provenance, fn {field, entry} ->
+               assert Enum.sort(Enum.map(entry.candidates, & &1.value)) ==
+                        Enum.sort(["host_agent-#{field}", "bmc-#{field}"])
+             end)
+
+      choice = Renga.Inventory.FieldProvenance.source_choice(context.scope, resource, "vendor")
+      assert choice.value == "bmc-vendor"
+      assert_receive {^ref, 2}
+      refute_receive {^ref, _}
+    end
+
+    test "database presence selection agrees with attribute and identifier extraction", context do
+      resource =
+        report(context, context.agent, 1, %{}, %{
+          "hostname" => [" Rack-A "],
+          "fqdn" => " Rack-A.EXAMPLE "
+        })
+
+      # Null attributes explicitly suppress fallback, and ambiguous identifiers
+      # do not count as field-bearing reports. Neither replaces earlier evidence.
+      report(context, context.agent, 2, %{"hostname" => nil, "fqdn" => nil}, %{
+        "hostname" => "shadowed",
+        "fqdn" => ["shadowed.example"]
+      })
+
+      report(context, context.agent, 3, %{}, %{"hostname" => ["one", "two"], "fqdn" => []})
+      provenance = Inventory.field_provenance(context.scope, resource)
+      assert [%{value: "rack-a", winner?: true}] = provenance["hostname"].candidates
+      assert [%{value: "rack-a.example", winner?: true}] = provenance["fqdn"].candidates
+
+      report(context, context.agent, 4, %{"hostname" => " Attribute "}, %{
+        "hostname" => "ignored",
+        "fqdn" => [" Latest.EXAMPLE "]
+      })
+
+      provenance = Inventory.field_provenance(context.scope, resource)
+      assert [%{value: "attribute", winner?: true}] = provenance["hostname"].candidates
+      assert [%{value: "latest.example", winner?: true}] = provenance["fqdn"].candidates
+    end
+
+    test "a false attribute under an override does not hide earlier valid evidence", context do
+      resource = report(context, context.bmc, 1, %{"vendor" => "Dell"})
+
+      {:ok, _} =
+        Inventory.set_field_override(context.scope, resource, "vendor", %{"value" => "HPE"})
+
+      report(context, context.bmc, 2, %{"vendor" => false})
+
+      provenance = Inventory.field_provenance(context.scope, resource)
+      assert [%{value: "Dell", winner?: false}] = provenance["vendor"].candidates
+      {:ok, host} = Inventory.clear_field_override(context.scope, resource, "vendor")
+      assert host.vendor == "Dell"
+    end
+
     test "sparse reports retain each source's last field-bearing observation", context do
       resource = report(context, context.agent, 1, %{"vendor" => "Agent"})
       report(context, context.bmc, 2, %{"vendor" => "Dell"})
@@ -191,7 +283,7 @@ defmodule Renga.Inventory.FieldProvenanceTest do
   end
 
   # Records and reconciles one report from `source` about the same machine.
-  defp report(context, source, second, attributes) do
+  defp report(context, source, second, attributes, identifiers \\ %{}) do
     observed_at = DateTime.add(~U[2026-08-01 12:00:00.000Z], second, :second)
     key = "#{source.id}-#{second}"
 
@@ -205,7 +297,7 @@ defmodule Renga.Inventory.FieldProvenanceTest do
           "resources" => [
             %{
               "kind" => "server",
-              "identifiers" => %{"machine_id" => "machine-1"},
+              "identifiers" => Map.put(identifiers, "machine_id", "machine-1"),
               "attributes" => attributes
             }
           ]
