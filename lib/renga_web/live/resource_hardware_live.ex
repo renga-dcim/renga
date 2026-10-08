@@ -3,6 +3,8 @@ defmodule RengaWeb.ResourceHardwareLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  import RengaWeb.InventoryComponents
+
   alias Renga.Catalog
   alias Renga.Inventory
 
@@ -81,273 +83,258 @@ defmodule RengaWeb.ResourceHardwareLive do
       sidebar_views={@sidebar_views}
       current_scope={@current_scope}
       active_nav={:inventory}
+      content_class="p-0"
     >
-      <main id="resource-hardware" class="space-y-7">
-        <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <.link
-              navigate={~p"/inventory/#{@resource.id}"}
-              class="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/50 transition hover:text-orange-600"
-            >
-              <.icon name="hero-arrow-left" class="size-3.5" /> Resource
-            </.link>
-            <p class="mt-5 text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
-              Hardware inventory
-            </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight">
-              {@resource.display_name || @resource.name}
-            </h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/55">
-              Catalog expectations, source-neutral components, modules, and inventory-only parts.
-            </p>
-          </div>
-          <.link
-            navigate={~p"/inbox/components"}
-            class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600 lg:self-auto"
-          >
-            <.icon name="hero-exclamation-triangle" class="size-4" /> Component findings
-          </.link>
-        </header>
+      <.resource_frame resource={@resource} tab={:hardware} hardware?={@hardware_assignable?}>
+        <main id="resource-hardware" class="space-y-7">
+          <p class="text-sm text-fg-muted">
+            Catalog expectations, observed components, modules, and inventory-only parts. Open
+            findings are also in the <.link
+              navigate={~p"/inbox/components"}
+              class="text-link hover:underline"
+            >Inbox</.link>.
+          </p>
 
-        <section
-          id="hardware-assignment"
-          class="grid gap-6 rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm lg:grid-cols-[1fr_1.2fr]"
-        >
-          <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
-              Assigned catalog definition
-            </p>
-            <%= if @assignment do %>
-              <h2 class="mt-3 text-xl font-semibold">
-                {@assignment.hardware_type.model}
-              </h2>
-              <p class="mt-2 text-sm text-base-content/55">
-                Revision {@assignment.catalog_type_revision.revision} · {@assignment.origin} assignment
+          <section
+            id="hardware-assignment"
+            class="grid gap-6 rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm lg:grid-cols-[1fr_1.2fr]"
+          >
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
+                Assigned catalog definition
               </p>
-              <.link
-                navigate={~p"/catalog/hardware-types/#{@assignment.hardware_type.id}"}
-                class="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
-              >
-                Inspect pinned definition <.icon name="hero-arrow-right" class="size-4" />
-              </.link>
-            <% else %>
-              <h2 class="mt-3 text-xl font-semibold">Unclassified hardware</h2>
-              <p class="mt-2 text-sm leading-6 text-base-content/55">
-                Assign a finalized hardware type to materialize expected components.
-              </p>
-            <% end %>
-          </div>
-
-          <div :if={@can_manage_hardware?} class="rounded-xl bg-base-200/60 p-4">
-            <.form
-              for={@hardware_form}
-              id="hardware-assignment-form"
-              phx-submit="assign_hardware_type"
-              class="flex flex-col gap-3 sm:flex-row sm:items-end"
-            >
-              <.input
-                field={@hardware_form[:hardware_type_id]}
-                type="select"
-                label="Hardware type"
-                prompt="Select a finalized type"
-                options={@hardware_type_options}
-                class="h-10 min-w-64 rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-              />
-              <button
-                id="hardware-assignment-save"
-                type="submit"
-                phx-disable-with="Assigning…"
-                class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600"
-              >
-                Assign
-              </button>
-            </.form>
-            <button
-              :if={@assignment}
-              id="hardware-assignment-clear"
-              type="button"
-              phx-click="clear_hardware_type"
-              data-confirm="Clear the pinned hardware type and its expected components?"
-              class="mt-3 text-xs font-semibold text-rose-600 transition hover:text-rose-700"
-            >
-              Clear assignment
-            </button>
-          </div>
-          <div
-            :if={@hardware_assignable? and !@can_manage_hardware?}
-            id="hardware-read-only"
-            class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
-          >
-            Read-only access. Organization members, admins, and owners manage catalog assignments.
-          </div>
-          <div
-            :if={!@hardware_assignable?}
-            id="hardware-unsupported"
-            class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
-          >
-            This resource kind does not support hardware catalog assignments.
-          </div>
-        </section>
-
-        <div class="grid gap-6 xl:grid-cols-2">
-          <.inventory_panel
-            id="expected-components"
-            title="Expected components"
-            subtitle="Materialized from the pinned catalog revision and asset exceptions"
-          >
-            <div id="expected-components-list" phx-update="stream" class="space-y-3">
-              <div
-                id="expected-components-empty"
-                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
-              >
-                No component expectations are materialized.
-              </div>
-              <article
-                :for={{dom_id, component} <- @streams.expected_components}
-                id={dom_id}
-                class="flex items-start justify-between gap-4 rounded-xl bg-base-200/55 p-4"
-              >
-                <div>
-                  <p class="font-semibold">{component.label || component.name}</p>
-                  <p class="mt-1 text-xs text-base-content/45">
-                    {component.position || "No position"} · {expectation_status(component)}
-                  </p>
-                </div>
-                <span class="rounded-full bg-base-100 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-base-content/55">
-                  {humanize(component.kind)}
-                </span>
-              </article>
-            </div>
-          </.inventory_panel>
-
-          <.inventory_panel
-            id="actual-components"
-            title="Observed components"
-            subtitle="Canonical CPU, memory, and disk projections with retained evidence"
-          >
-            <div id="actual-components-list" phx-update="stream" class="space-y-3">
-              <div
-                id="actual-components-empty"
-                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
-              >
-                No canonical CPU, memory, or disk evidence is available. Modules and inventory-only parts are tracked separately below.
-              </div>
-              <article
-                :for={{dom_id, component} <- @streams.actual_components}
-                id={dom_id}
-                class="grid gap-3 rounded-xl bg-base-200/55 p-4 sm:grid-cols-[1fr_auto]"
-              >
-                <div>
-                  <p class="font-semibold">
-                    {component.name || component.model || humanize(component.kind)}
-                  </p>
-                  <p class="mt-1 font-mono text-xs text-base-content/45">
-                    {component.slot || component.path || component.serial_number ||
-                      "No stable slot reported"}
-                  </p>
-                </div>
-                <div class="text-left sm:text-right">
-                  <span class={component_status_class(component.status)}>{component.status}</span>
-                  <p class="mt-2 text-xs text-base-content/45">
-                    {length(component.evidence_matches)} evidence links
-                  </p>
-                </div>
-                <ul
-                  :if={component.evidence_matches != []}
-                  class="flex flex-wrap gap-2 sm:col-span-2"
-                >
-                  <li
-                    :for={evidence_match <- component.evidence_matches}
-                    id={"component-evidence-match-#{evidence_match.id}"}
-                    class="rounded-lg bg-base-100 px-2.5 py-1.5 text-xs text-base-content/55"
-                  >
-                    {evidence_match.component_evidence.source.name} · {humanize(
-                      evidence_match.match_strategy
-                    )} · {format_time(evidence_match.component_evidence.observed_at)}
-                  </li>
-                </ul>
-              </article>
-            </div>
-          </.inventory_panel>
-        </div>
-
-        <.inventory_panel
-          id="module-inventory"
-          title="Module bays"
-          subtitle="Desired module types remain separate from currently observed installations"
-        >
-          <div id="module-bays-list" phx-update="stream" class="grid gap-4 lg:grid-cols-2">
-            <div
-              id="module-bays-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block lg:col-span-2"
-            >
-              No module bays are registered for this resource.
-            </div>
-            <article
-              :for={{dom_id, bay_state} <- @streams.module_bays}
-              id={dom_id}
-              class="rounded-xl border border-base-content/10 p-5"
-            >
-              <div class="flex items-start justify-between gap-4">
-                <div>
-                  <h3 class="font-semibold">{bay_state.bay.label || bay_state.bay.name}</h3>
-                  <p class="mt-1 text-xs text-base-content/45">
-                    {bay_state.bay.position || "No position"}
-                  </p>
-                </div>
-                <span class={component_status_class(bay_state.bay.status)}>
-                  {bay_state.bay.status}
-                </span>
-              </div>
-              <dl class="mt-5 grid gap-4 sm:grid-cols-2">
-                <.module_state
-                  label="Desired"
-                  value={module_type_label(bay_state.desired && bay_state.desired.module_type)}
-                />
-                <.module_state
-                  label="Current"
-                  value={current_module_label(bay_state.current)}
-                />
-              </dl>
-              <p class="mt-4 text-xs text-base-content/40">
-                {length(bay_state.events)} installation events retained
-              </p>
-            </article>
-          </div>
-        </.inventory_panel>
-
-        <.inventory_panel
-          id="inventory-items"
-          title="Inventory-only parts"
-          subtitle="Nested assembly records without implicit topology behavior"
-        >
-          <div id="inventory-items-list" phx-update="stream" class="divide-y divide-base-content/10">
-            <div
-              id="inventory-items-empty"
-              class="hidden py-6 text-center text-sm text-base-content/45 only:block"
-            >
-              No inventory-only parts are registered.
-            </div>
-            <article
-              :for={{dom_id, item} <- @streams.inventory_items}
-              id={dom_id}
-              class="grid gap-3 py-4 first:pt-0 last:pb-0 sm:grid-cols-[1fr_1fr_auto]"
-            >
-              <div>
-                <p class="font-semibold">{item.name}</p>
-                <p class="mt-1 text-xs uppercase tracking-wide text-base-content/40">
-                  {humanize(item.kind)}
+              <%= if @assignment do %>
+                <h2 class="mt-3 text-xl font-semibold">
+                  {@assignment.hardware_type.model}
+                </h2>
+                <p class="mt-2 text-sm text-base-content/55">
+                  Revision {@assignment.catalog_type_revision.revision} · {@assignment.origin} assignment
                 </p>
+                <.link
+                  navigate={~p"/catalog/hardware-types/#{@assignment.hardware_type.id}"}
+                  class="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
+                >
+                  Inspect pinned definition <.icon name="hero-arrow-right" class="size-4" />
+                </.link>
+              <% else %>
+                <h2 class="mt-3 text-xl font-semibold">Unclassified hardware</h2>
+                <p class="mt-2 text-sm leading-6 text-base-content/55">
+                  Assign a finalized hardware type to materialize expected components.
+                </p>
+              <% end %>
+            </div>
+
+            <div :if={@can_manage_hardware?} class="rounded-xl bg-base-200/60 p-4">
+              <.form
+                for={@hardware_form}
+                id="hardware-assignment-form"
+                phx-submit="assign_hardware_type"
+                class="flex flex-col gap-3 sm:flex-row sm:items-end"
+              >
+                <.input
+                  field={@hardware_form[:hardware_type_id]}
+                  type="select"
+                  label="Hardware type"
+                  prompt="Select a finalized type"
+                  options={@hardware_type_options}
+                  class="h-10 min-w-64 rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+                />
+                <button
+                  id="hardware-assignment-save"
+                  type="submit"
+                  phx-disable-with="Assigning…"
+                  class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600"
+                >
+                  Assign
+                </button>
+              </.form>
+              <button
+                :if={@assignment}
+                id="hardware-assignment-clear"
+                type="button"
+                phx-click="clear_hardware_type"
+                data-confirm="Clear the pinned hardware type and its expected components?"
+                class="mt-3 text-xs font-semibold text-rose-600 transition hover:text-rose-700"
+              >
+                Clear assignment
+              </button>
+            </div>
+            <div
+              :if={@hardware_assignable? and !@can_manage_hardware?}
+              id="hardware-read-only"
+              class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
+            >
+              Read-only access. Organization members, admins, and owners manage catalog assignments.
+            </div>
+            <div
+              :if={!@hardware_assignable?}
+              id="hardware-unsupported"
+              class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm leading-6 text-base-content/50"
+            >
+              This resource kind does not support hardware catalog assignments.
+            </div>
+          </section>
+
+          <div class="grid gap-6 xl:grid-cols-2">
+            <.inventory_panel
+              id="expected-components"
+              title="Expected components"
+              subtitle="Materialized from the pinned catalog revision and asset exceptions"
+            >
+              <div id="expected-components-list" phx-update="stream" class="space-y-3">
+                <div
+                  id="expected-components-empty"
+                  class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+                >
+                  No component expectations are materialized.
+                </div>
+                <article
+                  :for={{dom_id, component} <- @streams.expected_components}
+                  id={dom_id}
+                  class="flex items-start justify-between gap-4 rounded-xl bg-base-200/55 p-4"
+                >
+                  <div>
+                    <p class="font-semibold">{component.label || component.name}</p>
+                    <p class="mt-1 text-xs text-base-content/45">
+                      {component.position || "No position"} · {expectation_status(component)}
+                    </p>
+                  </div>
+                  <span class="rounded-full bg-base-100 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-base-content/55">
+                    {humanize(component.kind)}
+                  </span>
+                </article>
               </div>
-              <div class="text-xs text-base-content/50">
-                <p>Position: {item.position || "Not recorded"}</p>
-                <p class="mt-1">Parent: {(item.parent && item.parent.name) || "Resource root"}</p>
+            </.inventory_panel>
+
+            <.inventory_panel
+              id="actual-components"
+              title="Observed components"
+              subtitle="Canonical CPU, memory, and disk projections with retained evidence"
+            >
+              <div id="actual-components-list" phx-update="stream" class="space-y-3">
+                <div
+                  id="actual-components-empty"
+                  class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block"
+                >
+                  No canonical CPU, memory, or disk evidence is available. Modules and inventory-only parts are tracked separately below.
+                </div>
+                <article
+                  :for={{dom_id, component} <- @streams.actual_components}
+                  id={dom_id}
+                  class="grid gap-3 rounded-xl bg-base-200/55 p-4 sm:grid-cols-[1fr_auto]"
+                >
+                  <div>
+                    <p class="font-semibold">
+                      {component.name || component.model || humanize(component.kind)}
+                    </p>
+                    <p class="mt-1 font-mono text-xs text-base-content/45">
+                      {component.slot || component.path || component.serial_number ||
+                        "No stable slot reported"}
+                    </p>
+                  </div>
+                  <div class="text-left sm:text-right">
+                    <span class={component_status_class(component.status)}>{component.status}</span>
+                    <p class="mt-2 text-xs text-base-content/45">
+                      {length(component.evidence_matches)} evidence links
+                    </p>
+                  </div>
+                  <ul
+                    :if={component.evidence_matches != []}
+                    class="flex flex-wrap gap-2 sm:col-span-2"
+                  >
+                    <li
+                      :for={evidence_match <- component.evidence_matches}
+                      id={"component-evidence-match-#{evidence_match.id}"}
+                      class="rounded-lg bg-base-100 px-2.5 py-1.5 text-xs text-base-content/55"
+                    >
+                      {evidence_match.component_evidence.source.name} · {humanize(
+                        evidence_match.match_strategy
+                      )} · {format_time(evidence_match.component_evidence.observed_at)}
+                    </li>
+                  </ul>
+                </article>
               </div>
-              <span class={component_status_class(item.status)}>{item.status}</span>
-            </article>
+            </.inventory_panel>
           </div>
-        </.inventory_panel>
-      </main>
+
+          <.inventory_panel
+            id="module-inventory"
+            title="Module bays"
+            subtitle="Desired module types remain separate from currently observed installations"
+          >
+            <div id="module-bays-list" phx-update="stream" class="grid gap-4 lg:grid-cols-2">
+              <div
+                id="module-bays-empty"
+                class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/45 only:block lg:col-span-2"
+              >
+                No module bays are registered for this resource.
+              </div>
+              <article
+                :for={{dom_id, bay_state} <- @streams.module_bays}
+                id={dom_id}
+                class="rounded-xl border border-base-content/10 p-5"
+              >
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 class="font-semibold">{bay_state.bay.label || bay_state.bay.name}</h3>
+                    <p class="mt-1 text-xs text-base-content/45">
+                      {bay_state.bay.position || "No position"}
+                    </p>
+                  </div>
+                  <span class={component_status_class(bay_state.bay.status)}>
+                    {bay_state.bay.status}
+                  </span>
+                </div>
+                <dl class="mt-5 grid gap-4 sm:grid-cols-2">
+                  <.module_state
+                    label="Desired"
+                    value={module_type_label(bay_state.desired && bay_state.desired.module_type)}
+                  />
+                  <.module_state
+                    label="Current"
+                    value={current_module_label(bay_state.current)}
+                  />
+                </dl>
+                <p class="mt-4 text-xs text-base-content/40">
+                  {length(bay_state.events)} installation events retained
+                </p>
+              </article>
+            </div>
+          </.inventory_panel>
+
+          <.inventory_panel
+            id="inventory-items"
+            title="Inventory-only parts"
+            subtitle="Nested assembly records without implicit topology behavior"
+          >
+            <div id="inventory-items-list" phx-update="stream" class="divide-y divide-base-content/10">
+              <div
+                id="inventory-items-empty"
+                class="hidden py-6 text-center text-sm text-base-content/45 only:block"
+              >
+                No inventory-only parts are registered.
+              </div>
+              <article
+                :for={{dom_id, item} <- @streams.inventory_items}
+                id={dom_id}
+                class="grid gap-3 py-4 first:pt-0 last:pb-0 sm:grid-cols-[1fr_1fr_auto]"
+              >
+                <div>
+                  <p class="font-semibold">{item.name}</p>
+                  <p class="mt-1 text-xs uppercase tracking-wide text-base-content/40">
+                    {humanize(item.kind)}
+                  </p>
+                </div>
+                <div class="text-xs text-base-content/50">
+                  <p>Position: {item.position || "Not recorded"}</p>
+                  <p class="mt-1">Parent: {(item.parent && item.parent.name) || "Resource root"}</p>
+                </div>
+                <span class={component_status_class(item.status)}>{item.status}</span>
+              </article>
+            </div>
+          </.inventory_panel>
+        </main>
+      </.resource_frame>
     </Layouts.app>
     """
   end

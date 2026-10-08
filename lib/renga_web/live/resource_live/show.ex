@@ -1,10 +1,23 @@
 defmodule RengaWeb.ResourceLive.Show do
+  @moduledoc """
+  A resource's object page (RFD 8, "Object pages"): one layout for every
+  resource kind, with domains contributing tabs. This LiveView renders the
+  Overview, Network, Sources, and Activity tabs; Hardware is its own page in
+  the same frame (`RengaWeb.ResourceHardwareLive`).
+
+  The page re-reads the resource when the organization's inventory changes,
+  so collector reports and other people's edits appear without a refresh.
+  """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  import RengaWeb.InventoryComponents
+
   alias Renga.Catalog
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
+  alias RengaWeb.Format
 
   @lifecycle_options [
     {"Active — in service", "active"},
@@ -13,9 +26,13 @@ defmodule RengaWeb.ResourceLive.Show do
     {"Unknown — not classified", "unknown"}
   ]
 
+  @reload_after_ms 400
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
-    resource = Inventory.get_operational_resource!(socket.assigns.current_scope, id)
+    scope = socket.assigns.current_scope
+    resource = Inventory.get_operational_resource!(scope, id)
+    if connected?(socket), do: Changes.subscribe(scope)
 
     {:ok,
      assign(socket,
@@ -24,9 +41,13 @@ defmodule RengaWeb.ResourceLive.Show do
        lifecycle_options: @lifecycle_options,
        lifecycle_form: lifecycle_form(resource),
        hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
-       can_manage_lifecycle?: Inventory.organization_manager?(socket.assigns.current_scope)
+       can_manage_lifecycle?: Inventory.organization_manager?(scope),
+       reload_timer: nil
      )}
   end
+
+  @impl true
+  def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event(
@@ -60,6 +81,21 @@ defmodule RengaWeb.ResourceLive.Show do
   end
 
   @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
+    {:noreply,
+     assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
+  end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
+
+  def handle_info(:reload, socket) do
+    {:noreply, socket |> assign(:reload_timer, nil) |> reload_resource()}
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -67,298 +103,349 @@ defmodule RengaWeb.ResourceLive.Show do
       sidebar_views={@sidebar_views}
       current_scope={@current_scope}
       active_nav={:inventory}
+      content_class="p-0"
       commands={commands(assigns)}
       command_context={@resource.display_name || @resource.name}
     >
-      <article id="resource-detail" class="space-y-6">
-        <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <.link
-              navigate={~p"/inventory"}
-              class="inline-flex items-center gap-1.5 text-xs font-medium text-base-content/50 transition hover:text-orange-600"
+      <.resource_frame resource={@resource} tab={tab(@live_action)} hardware?={@hardware_assignable?}>
+        <%= case @live_action do %>
+          <% :show -> %>
+            <.overview resource={@resource} hardware?={@hardware_assignable?} />
+          <% :network -> %>
+            <.network resource={@resource} />
+          <% :sources -> %>
+            <.sources resource={@resource} />
+          <% :activity -> %>
+            <.activity events={@resource.change_events} />
+        <% end %>
+        <:aside>
+          <.lifecycle
+            resource={@resource}
+            form={@lifecycle_form}
+            options={@lifecycle_options}
+            can_manage?={@can_manage_lifecycle?}
+          />
+          <.properties id="resource-properties">
+            <:item label="Kind">{Format.humanize(@resource.kind)}</:item>
+            <:item
+              label="Hostname"
+              blank={blank_host?(@resource, :hostname)}
+              placeholder="Not reported"
             >
-              <.icon name="hero-arrow-left" class="size-3.5" /> Resources
-            </.link>
-            <div class="mt-4 flex items-center gap-3">
-              <span class="grid size-11 place-items-center rounded-xl bg-orange-500/10 text-orange-600">
-                <.icon name="hero-server-stack" class="size-6" />
-              </span>
-              <div>
-                <h1 class="text-3xl font-semibold tracking-tight">
-                  {@resource.display_name || @resource.name}
-                </h1>
-                <p class="mt-1 font-mono text-xs uppercase tracking-wider text-base-content/45">
-                  {@resource.kind} · {@resource.id}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div class="flex max-w-sm flex-col items-start gap-1 sm:items-end">
-            <.link
-              :if={@hardware_assignable?}
-              id="resource-hardware-link"
-              navigate={~p"/inventory/#{@resource.id}/hardware"}
-              class="mb-2 inline-flex h-10 items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
+              {host_value(@resource, :hostname)}
+            </:item>
+            <:item label="FQDN" blank={blank_host?(@resource, :fqdn)} placeholder="Not reported">
+              {host_value(@resource, :fqdn)}
+            </:item>
+            <:item label="Vendor" blank={blank_host?(@resource, :vendor)} placeholder="Not reported">
+              {host_value(@resource, :vendor)}
+            </:item>
+            <:item label="Model" blank={blank_host?(@resource, :model)} placeholder="Not reported">
+              {host_value(@resource, :model)}
+            </:item>
+            <:item
+              label="Asset tag"
+              blank={blank_host?(@resource, :asset_tag)}
+              placeholder="Not reported"
             >
-              <.icon name="hero-cpu-chip" class="size-4" /> Hardware inventory
-            </.link>
-            <.form
-              :if={@can_manage_lifecycle?}
-              for={@lifecycle_form}
-              id="resource-lifecycle-form"
-              phx-submit="update_lifecycle"
-              class="flex items-end gap-2"
+              {host_value(@resource, :asset_tag)}
+            </:item>
+            <:item
+              label="Sources"
+              blank={@resource.source_names == []}
+              placeholder="No source evidence"
             >
-              <.input
-                field={@lifecycle_form[:lifecycle_state]}
-                type="select"
-                label="Inventory lifecycle"
-                aria-describedby="resource-lifecycle-help"
-                options={@lifecycle_options}
-                class="h-10 min-w-36 rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm font-medium capitalize outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-              />
-              <button
-                id="resource-lifecycle-save"
-                type="submit"
-                phx-disable-with="Saving…"
-                class="h-10 self-end rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
-              >
-                Save
-              </button>
-            </.form>
-            <span
-              :if={!@can_manage_lifecycle?}
-              class={lifecycle_badge_class(@resource.lifecycle_state)}
-            >
-              {@resource.lifecycle_state}
-            </span>
-            <p
-              id="resource-lifecycle-help"
-              class="text-left text-xs leading-5 text-base-content/45 sm:text-right"
-            >
-              Classifies this resource for planning and filters. It does not control the device or
-              reflect agent connectivity.
-            </p>
-          </div>
-        </header>
-
-        <section id="resource-conditions" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <.condition_card :for={condition <- @resource.conditions} condition={condition} />
-          <p
-            :if={@resource.conditions == []}
-            class="col-span-full rounded-2xl border border-dashed border-base-content/15 p-6 text-sm text-base-content/45"
-          >
-            No resource conditions have been reported.
-          </p>
-        </section>
-
-        <div class="grid gap-6 xl:grid-cols-3">
-          <div class="space-y-6 xl:col-span-2">
-            <.panel
-              id="canonical-projection"
-              title="Canonical projection"
-              subtitle="Current source-neutral host inventory"
-            >
-              <dl class="grid gap-x-6 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
-                <.datum label="Hostname" value={host_field(@resource, :hostname)} />
-                <.datum label="FQDN" value={host_field(@resource, :fqdn)} />
-                <.datum label="Vendor" value={host_field(@resource, :vendor)} />
-                <.datum label="Model" value={host_field(@resource, :model)} />
-                <.datum label="Asset tag" value={host_field(@resource, :asset_tag)} />
-                <.datum label="Generation" value={to_string(@resource.generation)} />
-              </dl>
-            </.panel>
-
-            <.panel
-              id="resource-interfaces"
-              title="Interfaces and addresses"
-              subtitle="Canonical network inventory"
-            >
-              <div class="divide-y divide-base-content/10">
-                <div :if={@resource.interfaces == []} class="py-5 text-sm text-base-content/45">
-                  No interfaces reported.
-                </div>
-                <div
-                  :for={interface <- @resource.interfaces}
-                  id={"interface-#{interface.id}"}
-                  class="grid gap-4 py-5 first:pt-0 last:pb-0 sm:grid-cols-[1fr_1fr_2fr]"
-                >
-                  <div>
-                    <p class="font-mono text-sm font-semibold">{interface.name}</p>
-                    <p class="mt-1 text-xs capitalize text-base-content/55">
-                      {interface.kind} · {interface.status}
-                    </p>
-                  </div>
-                  <div>
-                    <p class="text-xs uppercase tracking-wider text-base-content/55">MAC</p>
-                    <p class="mt-1 font-mono text-xs">{format_mac(interface.mac_address)}</p>
-                  </div>
-                  <div class="flex flex-wrap gap-2">
-                    <span
-                      :for={address <- interface.addresses}
-                      data-address-kind={address.kind}
-                      class="rounded-lg bg-base-200 px-2.5 py-1.5 font-mono text-xs"
-                    >
-                      {format_inet(address.address)}
-                    </span>
-                    <span :if={interface.addresses == []} class="text-xs text-base-content/50">
-                      No addresses
-                    </span>
-                  </div>
-                  <div class="sm:col-span-3">
-                    <p class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
-                      Layer 2
-                    </p>
-                    <%!-- The four links share one row below the label so the last one does not
-                    wrap alone under the label at the reviewed desktop width. --%>
-                    <div
-                      id={"interface-#{interface.id}-layer2-links"}
-                      class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5"
-                    >
-                      <.link
-                        id={"interface-#{interface.id}-memberships"}
-                        navigate={~p"/network/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
-                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
-                      >
-                        <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
-                      </.link>
-                      <.link
-                        id={"interface-#{interface.id}-relationships"}
-                        navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#logical-relationships"}
-                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
-                      >
-                        <.icon name="hero-share" class="size-3.5" /> Logical relationships
-                      </.link>
-                      <.link
-                        id={"interface-#{interface.id}-neighbors"}
-                        navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
-                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
-                      >
-                        <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
-                      </.link>
-                      <.link
-                        id={"interface-#{interface.id}-cables"}
-                        navigate={~p"/network/cables?#{[interface_id: interface.id]}" <> "#current-cables"}
-                        class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
-                      >
-                        <.icon name="hero-link" class="size-3.5" /> Confirmed cables
-                      </.link>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </.panel>
-
-            <.panel
-              id="identifier-claims"
-              title="Identifier claims"
-              subtitle="Source assertions retained with provenance"
-            >
-              <div class="overflow-x-auto">
-                <table class="min-w-full text-left text-sm">
-                  <thead class="text-xs uppercase tracking-wider text-base-content/40">
-                    <tr>
-                      <th class="pb-3 font-semibold">Kind</th>
-                      <th class="pb-3 font-semibold">Value</th>
-                      <th class="pb-3 font-semibold">Source</th>
-                      <th class="pb-3 text-right font-semibold">Confidence</th>
-                      <th class="pb-3 text-right font-semibold">First seen</th>
-                      <th class="pb-3 text-right font-semibold">Last seen</th>
-                      <th class="pb-3 text-right font-semibold">Evidence</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-base-content/10">
-                    <tr :if={@resource.identifier_claims == []}>
-                      <td colspan="7" class="py-5 text-base-content/45">
-                        No source claims retained.
-                      </td>
-                    </tr>
-                    <tr
-                      :for={claim <- @resource.identifier_claims}
-                      id={"claim-#{claim.id}"}
-                      data-claim-kind={claim.kind}
-                    >
-                      <td class="py-3 capitalize text-base-content/55">{humanize(claim.kind)}</td>
-                      <td class="py-3 font-mono text-xs">{claim.value}</td>
-                      <td class="py-3">{claim.source.name}</td>
-                      <td class="py-3 text-right font-mono text-xs">{claim.confidence}%</td>
-                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
-                        {format_time(claim.first_seen_at)}
-                      </td>
-                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
-                        {format_time(claim.last_seen_at)}
-                      </td>
-                      <td class="py-3 text-right font-mono text-xs text-base-content/50">
-                        {observation_count_label(claim.observation_count)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </.panel>
-          </div>
-
-          <aside class="space-y-6">
-            <.panel id="desired-state" title="Desired state" subtitle="Operator and controller intent">
-              <dl class="space-y-3">
-                <div
-                  :for={{key, value} <- Enum.sort(@resource.spec)}
-                  class="rounded-xl bg-base-200/70 p-3"
-                >
-                  <dt class="text-xs font-medium text-base-content/45">{key}</dt>
-                  <dd class="mt-1 break-words font-mono text-xs">{format_value(value)}</dd>
-                </div>
-                <p :if={@resource.spec == %{}} class="text-sm text-base-content/45">
-                  No desired fields set.
-                </p>
-              </dl>
-            </.panel>
-
-            <.panel
-              id="canonical-identifiers"
-              title="Canonical identifiers"
-              subtitle="Server-owned identity"
-            >
-              <dl class="space-y-3">
-                <div :for={identifier <- @resource.identifiers} id={"identifier-#{identifier.id}"}>
-                  <dt class="text-xs capitalize text-base-content/45">{humanize(identifier.kind)}</dt>
-                  <dd class="mt-1 break-all font-mono text-xs">{identifier.value}</dd>
-                </div>
-                <p :if={@resource.identifiers == []} class="text-sm text-base-content/45">
-                  No canonical identifiers.
-                </p>
-              </dl>
-            </.panel>
-
-            <.panel
-              id="change-events"
-              title="Recent changes"
-              subtitle="Non-authoritative audit history"
-            >
-              <ol class="space-y-4">
-                <li
-                  :for={event <- @resource.change_events}
-                  id={"change-event-#{event.id}"}
-                  class="relative border-l border-base-content/15 pl-4"
-                >
-                  <span class="absolute -left-1 top-1 size-2 rounded-full bg-orange-500" />
-                  <p class="text-sm font-medium capitalize">{humanize(event.kind)}</p>
-                  <p class="mt-1 text-xs text-base-content/45">
-                    {event.field || "Resource"} · {format_time(event.occurred_at)}
-                  </p>
-                  <p :if={event.source} class="mt-1 text-xs text-base-content/45">
-                    via {event.source.name}
-                  </p>
-                </li>
-                <p :if={@resource.change_events == []} class="text-sm text-base-content/45">
-                  No change events.
-                </p>
-              </ol>
-            </.panel>
-          </aside>
-        </div>
-      </article>
+              {Enum.join(@resource.source_names, ", ")}
+            </:item>
+            <:item label="Last seen">{Format.datetime(@resource.last_observed_at)}</:item>
+          </.properties>
+        </:aside>
+      </.resource_frame>
     </Layouts.app>
+    """
+  end
+
+  attr :resource, :map, required: true
+  attr :form, :map, required: true
+  attr :options, :list, required: true
+  attr :can_manage?, :boolean, required: true
+
+  defp lifecycle(assigns) do
+    ~H"""
+    <section id="resource-lifecycle" class="space-y-2">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-fg-muted">Lifecycle</h2>
+      <.form
+        :if={@can_manage?}
+        for={@form}
+        id="resource-lifecycle-form"
+        phx-submit="update_lifecycle"
+        class="flex items-start gap-2"
+      >
+        <div class="min-w-0 flex-1 [&_.field]:!mb-0">
+          <.input
+            field={@form[:lifecycle_state]}
+            type="select"
+            aria-label="Lifecycle"
+            aria-describedby="resource-lifecycle-help"
+            options={@options}
+          />
+        </div>
+        <.button id="resource-lifecycle-save" variant="primary" phx-disable-with="Saving…">
+          Save
+        </.button>
+      </.form>
+      <p :if={!@can_manage?} class="text-sm font-medium capitalize text-fg">
+        {@resource.lifecycle_state}
+      </p>
+      <p id="resource-lifecycle-help" class="text-xs leading-5 text-fg-muted">
+        Classifies this resource for planning and filters. It does not control the device or
+        reflect agent connectivity.
+      </p>
+    </section>
+    """
+  end
+
+  attr :resource, :map, required: true
+  attr :hardware?, :boolean, required: true
+
+  defp overview(assigns) do
+    ~H"""
+    <div class="space-y-6">
+      <.link
+        :if={@resource.drift_count > 0}
+        id="resource-drift"
+        navigate={~p"/inventory/#{@resource}/hardware"}
+        class="flex items-center gap-3 rounded-lg border border-warn-line bg-warn-fill px-4 py-3 text-sm text-warn-text hover:underline"
+      >
+        <span aria-hidden="true" class="font-mono">≠</span>
+        {drift_label(@resource.drift_count)}, see Hardware
+      </.link>
+
+      <section id="resource-conditions" aria-labelledby="resource-conditions-title">
+        <h2 id="resource-conditions-title" class="mb-2 text-sm font-semibold text-fg">Conditions</h2>
+        <ul class="divide-y divide-line rounded-lg border border-edge bg-surface">
+          <li
+            :for={condition <- @resource.conditions}
+            id={"condition-#{condition.id}"}
+            class="flex items-center gap-3 px-4 py-2.5 text-sm"
+          >
+            <span class={["size-2 shrink-0 rounded-full", condition_color(condition.status)]} />
+            <span class="font-medium text-fg">{condition.type}</span>
+            <span class="text-fg-muted">{condition.status}</span>
+            <span :if={condition.reason} class="ml-auto truncate text-xs text-fg-muted">
+              {condition.reason}
+            </span>
+          </li>
+          <li :if={@resource.conditions == []} class="px-4 py-3 text-sm text-fg-muted">
+            No conditions reported yet.
+          </li>
+        </ul>
+      </section>
+
+      <section id="desired-state" aria-labelledby="desired-state-title">
+        <h2 id="desired-state-title" class="mb-2 text-sm font-semibold text-fg">Desired state</h2>
+        <dl
+          :if={@resource.spec != %{}}
+          class="divide-y divide-line rounded-lg border border-edge bg-surface"
+        >
+          <div
+            :for={{key, value} <- Enum.sort(@resource.spec)}
+            class="grid grid-cols-3 items-baseline gap-3 px-4 py-2.5"
+          >
+            <dt class="text-sm text-fg-muted">{key}</dt>
+            <dd class="col-span-2 break-words font-mono text-xs text-fg">{format_value(value)}</dd>
+          </div>
+        </dl>
+        <p :if={@resource.spec == %{}} class="text-sm text-fg-muted">
+          No desired fields set. Values collectors report are shown as they are.
+        </p>
+      </section>
+
+      <section id="recent-activity" aria-labelledby="recent-activity-title">
+        <div class="mb-2 flex items-baseline justify-between">
+          <h2 id="recent-activity-title" class="text-sm font-semibold text-fg">Recent activity</h2>
+          <.link
+            patch={~p"/inventory/#{@resource}/activity"}
+            class="text-xs text-link hover:underline"
+          >
+            All activity
+          </.link>
+        </div>
+        <.event_list events={Enum.take(@resource.change_events, 5)} />
+      </section>
+    </div>
+    """
+  end
+
+  attr :resource, :map, required: true
+
+  defp network(assigns) do
+    ~H"""
+    <section id="resource-interfaces" class="space-y-3">
+      <p :if={@resource.interfaces == []} class="text-sm text-fg-muted">No interfaces reported.</p>
+      <div
+        :for={interface <- @resource.interfaces}
+        id={"interface-#{interface.id}"}
+        class="space-y-3 rounded-lg border border-edge bg-surface p-4"
+      >
+        <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <p class="font-mono text-sm font-semibold text-fg">{interface.name}</p>
+          <p class="text-xs capitalize text-fg-muted">{interface.kind} · {interface.status}</p>
+          <p class="font-mono text-xs text-fg-muted">{format_mac(interface.mac_address)}</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span
+            :for={address <- interface.addresses}
+            data-address-kind={address.kind}
+            class="rounded-md bg-sunken px-2 py-1 font-mono text-xs text-fg"
+          >
+            {format_inet(address.address)}
+          </span>
+          <span :if={interface.addresses == []} class="text-xs text-fg-muted">No addresses</span>
+        </div>
+        <div
+          id={"interface-#{interface.id}-layer2-links"}
+          class="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-line pt-3"
+        >
+          <span class="text-xs font-medium text-fg-muted">Layer 2</span>
+          <.link
+            id={"interface-#{interface.id}-memberships"}
+            navigate={~p"/network/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
+            class="inline-flex items-center gap-1 text-xs text-link hover:underline"
+          >
+            <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
+          </.link>
+          <.link
+            id={"interface-#{interface.id}-relationships"}
+            navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#logical-relationships"}
+            class="inline-flex items-center gap-1 text-xs text-link hover:underline"
+          >
+            <.icon name="hero-share" class="size-3.5" /> Logical relationships
+          </.link>
+          <.link
+            id={"interface-#{interface.id}-neighbors"}
+            navigate={~p"/network/topology?#{[interface_id: interface.id]}" <> "#observed-neighbors"}
+            class="inline-flex items-center gap-1 text-xs text-link hover:underline"
+          >
+            <.icon name="hero-arrows-right-left" class="size-3.5" /> Observed neighbors
+          </.link>
+          <.link
+            id={"interface-#{interface.id}-cables"}
+            navigate={~p"/network/cables?#{[interface_id: interface.id]}" <> "#current-cables"}
+            class="inline-flex items-center gap-1 text-xs text-link hover:underline"
+          >
+            <.icon name="hero-link" class="size-3.5" /> Confirmed cables
+          </.link>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  attr :resource, :map, required: true
+
+  defp sources(assigns) do
+    ~H"""
+    <div class="space-y-6">
+      <section id="canonical-identifiers" aria-labelledby="canonical-identifiers-title">
+        <h2 id="canonical-identifiers-title" class="mb-2 text-sm font-semibold text-fg">
+          Identifiers
+        </h2>
+        <dl class="divide-y divide-line rounded-lg border border-edge bg-surface">
+          <div
+            :for={identifier <- @resource.identifiers}
+            id={"identifier-#{identifier.id}"}
+            class="grid grid-cols-3 items-baseline gap-3 px-4 py-2.5"
+          >
+            <dt class="text-sm capitalize text-fg-muted">{Format.humanize(identifier.kind)}</dt>
+            <dd class="col-span-2 break-all font-mono text-xs text-fg">{identifier.value}</dd>
+          </div>
+          <p :if={@resource.identifiers == []} class="px-4 py-3 text-sm text-fg-muted">
+            No identifiers yet.
+          </p>
+        </dl>
+      </section>
+
+      <section id="identifier-claims" aria-labelledby="identifier-claims-title">
+        <h2 id="identifier-claims-title" class="mb-1 text-sm font-semibold text-fg">
+          What each source reported
+        </h2>
+        <p class="mb-2 text-xs text-fg-muted">
+          Identity claims are kept with their source, so a disagreement can be traced.
+        </p>
+        <.table id="claims" rows={@resource.identifier_claims} row_id={&"claim-#{&1.id}"}>
+          <:col :let={claim} label="Kind" class="capitalize text-fg-muted">
+            <span data-claim-kind={claim.kind}>{Format.humanize(claim.kind)}</span>
+          </:col>
+          <:col :let={claim} label="Value" class="font-mono text-xs">{claim.value}</:col>
+          <:col :let={claim} label="Source">{claim.source.name}</:col>
+          <:col :let={claim} label="Confidence" class="text-right font-mono text-xs">
+            {claim.confidence}%
+          </:col>
+          <:col
+            :let={claim}
+            label="First seen"
+            class="whitespace-nowrap font-mono text-xs text-fg-muted"
+          >
+            {Format.datetime(claim.first_seen_at)}
+          </:col>
+          <:col
+            :let={claim}
+            label="Last seen"
+            class="whitespace-nowrap font-mono text-xs text-fg-muted"
+          >
+            {Format.datetime(claim.last_seen_at)}
+          </:col>
+          <:col
+            :let={claim}
+            label="Evidence"
+            class="whitespace-nowrap text-right text-xs text-fg-muted"
+          >
+            {observation_count_label(claim.observation_count)}
+          </:col>
+          <:empty>No source has claimed this resource yet.</:empty>
+        </.table>
+      </section>
+    </div>
+    """
+  end
+
+  attr :events, :list, required: true
+
+  defp activity(assigns) do
+    ~H"""
+    <section id="change-events">
+      <.event_list events={@events} />
+      <p :if={length(@events) >= 20} class="mt-3 text-xs text-fg-muted">
+        Showing the latest 20 changes. The
+        <.link navigate={~p"/activity"} class="text-link hover:underline">Activity</.link>
+        area has the full history for the organization.
+      </p>
+    </section>
+    """
+  end
+
+  attr :events, :list, required: true
+
+  defp event_list(assigns) do
+    ~H"""
+    <ol class="space-y-3">
+      <li
+        :for={event <- @events}
+        id={"change-event-#{event.id}"}
+        class="relative border-l border-edge pl-4"
+      >
+        <span class="absolute -left-1 top-1.5 size-2 rounded-full bg-fg-subtle" />
+        <p class="text-sm text-fg">
+          <span class="font-medium capitalize">{Format.humanize(event.kind)}</span>
+          <span :if={event.field} class="text-fg-muted">{Format.humanize(event.field)}</span>
+        </p>
+        <p class="mt-0.5 text-xs text-fg-muted">
+          {Format.datetime(event.occurred_at)}<span :if={event.source}> · via {event.source.name}</span>
+        </p>
+      </li>
+      <li :if={@events == []} class="text-sm text-fg-muted">No changes recorded yet.</li>
+    </ol>
     """
   end
 
@@ -384,11 +471,14 @@ defmodule RengaWeb.ResourceLive.Show do
         unavailable:
           if(!assigns.hardware_assignable?,
             do:
-              "Only physical devices have hardware; this is a #{humanize(assigns.resource.kind)}"
+              "Only physical devices have hardware; this is a #{Format.humanize(assigns.resource.kind)}"
           )
       }
     ]
   end
+
+  defp tab(:show), do: :overview
+  defp tab(action), do: action
 
   defp lifecycle_form(resource) do
     to_form(%{"lifecycle_state" => resource.lifecycle_state}, as: :lifecycle)
@@ -406,77 +496,20 @@ defmodule RengaWeb.ResourceLive.Show do
     |> assign(:lifecycle_form, lifecycle_form(resource))
   end
 
-  defp lifecycle_badge_class("active") do
-    "rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"
-  end
+  defp blank_host?(%{host: nil}, _field), do: true
+  defp blank_host?(%{host: host}, field), do: Map.get(host, field) in [nil, ""]
 
-  defp lifecycle_badge_class("inactive") do
-    "rounded-full bg-amber-500/10 px-3 py-1.5 text-xs font-semibold capitalize text-amber-700 dark:text-amber-400"
-  end
+  defp host_value(%{host: nil}, _field), do: nil
+  defp host_value(%{host: host}, field), do: Map.get(host, field)
 
-  defp lifecycle_badge_class("retired") do
-    "rounded-full bg-base-content/[0.07] px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
-  end
+  defp drift_label(1), do: "1 open hardware finding"
+  defp drift_label(count), do: "#{count} open hardware findings"
 
-  defp lifecycle_badge_class(_state) do
-    "rounded-full border border-base-content/15 px-3 py-1.5 text-xs font-semibold capitalize text-base-content/55"
-  end
+  defp condition_color("true"), do: "bg-ok"
+  defp condition_color("false"), do: "bg-warn"
+  defp condition_color(_status), do: "border-[1.5px] border-unknown"
 
-  attr :id, :string, required: true
-  attr :title, :string, required: true
-  attr :subtitle, :string, required: true
-  slot :inner_block, required: true
-
-  defp panel(assigns) do
-    ~H"""
-    <section id={@id} class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm">
-      <h2 class="font-semibold tracking-tight">{@title}</h2>
-      <p class="mt-1 text-xs text-base-content/45">{@subtitle}</p>
-      <div class="mt-6">{render_slot(@inner_block)}</div>
-    </section>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :value, :string, required: true
-
-  defp datum(assigns) do
-    ~H"""
-    <div>
-      <dt class="text-xs uppercase tracking-wider text-base-content/40">{@label}</dt>
-      <dd class="mt-1.5 text-sm font-medium">{@value}</dd>
-    </div>
-    """
-  end
-
-  attr :condition, :map, required: true
-
-  defp condition_card(assigns) do
-    ~H"""
-    <div
-      id={"condition-#{@condition.id}"}
-      class="rounded-2xl border border-base-content/10 bg-base-100 p-4 shadow-sm"
-    >
-      <div class="flex items-center justify-between gap-2">
-        <p class="truncate text-xs font-semibold">{@condition.type}</p>
-        <span class={[
-          "size-2 rounded-full",
-          @condition.status == "true" && "bg-emerald-500",
-          @condition.status == "false" && "bg-rose-500",
-          @condition.status == "unknown" && "bg-base-content/25"
-        ]} />
-      </div>
-      <p class="mt-2 text-xs capitalize text-base-content/50">
-        {@condition.status} · {@condition.reason || "No reason"}
-      </p>
-    </div>
-    """
-  end
-
-  defp host_field(%{host: nil}, _field), do: "Not reported"
-  defp host_field(%{host: host}, field), do: Map.get(host, field) || "Not reported"
-
-  defp format_mac(nil), do: "Not reported"
+  defp format_mac(nil), do: "No MAC"
 
   defp format_mac(%Postgrex.MACADDR{address: address}) do
     address
@@ -493,14 +526,9 @@ defmodule RengaWeb.ResourceLive.Show do
   defp host_prefix(address) when tuple_size(address) == 4, do: 32
   defp host_prefix(address) when tuple_size(address) == 8, do: 128
 
-  defp format_time(nil), do: "Never"
-  defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
-
   defp observation_count_label(1), do: "1 observation"
   defp observation_count_label(count), do: "#{count} observations"
 
   defp format_value(value) when is_binary(value), do: value
   defp format_value(value), do: Renga.JSON.encode!(value)
-
-  defp humanize(value), do: value |> String.replace("_", " ")
 end

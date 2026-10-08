@@ -1003,8 +1003,22 @@ defmodule Renga.Inventory do
       resource
       | interfaces: interfaces,
         source_names: source_names,
-        last_observed_at: last_observed_at
+        last_observed_at: last_observed_at,
+        drift_count: open_component_finding_count(resource)
     }
+  end
+
+  # Drift on a resource is its open component findings (RFD 6). Counted
+  # here rather than through the catalog context so the inventory loader
+  # stays one call for its pages.
+  defp open_component_finding_count(%Resource{id: id, organization_id: organization_id}) do
+    from(finding in "component_findings",
+      where:
+        finding.organization_id == type(^organization_id, :binary_id) and
+          finding.resource_id == type(^id, :binary_id) and finding.status == "open",
+      select: count()
+    )
+    |> Repo.one()
   end
 
   defp latest_datetime(nil, latest), do: latest

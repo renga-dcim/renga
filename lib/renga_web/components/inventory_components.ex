@@ -3,9 +3,7 @@ defmodule RengaWeb.InventoryComponents do
   Inventory pieces shared by the resource list and the resource object page,
   so a resource's status reads the same in a row and in its header.
   """
-  use Phoenix.Component
-
-  import RengaWeb.UI, only: [status_strip: 1]
+  use RengaWeb, :html
 
   alias RengaWeb.Format
 
@@ -59,4 +57,81 @@ defmodule RengaWeb.InventoryComponents do
       _other -> :unknown
     end
   end
+
+  @doc """
+  The frame every resource tab shares (RFD 8, "Object pages"): breadcrumb,
+  title, status strip, and the domain tabs. Tabs within the resource page
+  patch; the Hardware tab, a separate page, navigates.
+
+  The Hardware tab only exists for physical device kinds; the command menu
+  explains its absence on other kinds.
+  """
+  attr :resource, :map, required: true
+  attr :tab, :atom, required: true, values: [:overview, :hardware, :network, :sources, :activity]
+  attr :hardware?, :boolean, required: true
+  slot :inner_block, required: true
+  slot :aside
+
+  def resource_frame(assigns) do
+    resource = assigns.resource
+
+    assigns =
+      assign(assigns,
+        tabs:
+          [
+            {:overview, "Overview", ~p"/inventory/#{resource}", nil},
+            assigns.hardware? &&
+              {:hardware, "Hardware", ~p"/inventory/#{resource}/hardware",
+               nonzero(resource.drift_count)},
+            {:network, "Network", ~p"/inventory/#{resource}/network",
+             nonzero(length(resource.interfaces))},
+            {:sources, "Sources", ~p"/inventory/#{resource}/sources",
+             nonzero(length(resource.source_names))},
+            {:activity, "Activity", ~p"/inventory/#{resource}/activity", nil}
+          ]
+          |> Enum.filter(& &1)
+      )
+
+    ~H"""
+    <.object_page
+      id="resource-detail"
+      title={@resource.display_name || @resource.name}
+      subtitle={subtitle(@resource)}
+    >
+      <:breadcrumb>
+        <.link navigate={~p"/inventory"} class="hover:text-fg">Inventory</.link>
+        <span aria-hidden="true">/</span>
+        <span class="text-fg">{@resource.name}</span>
+      </:breadcrumb>
+      <:icon><.icon name={kind_icon(@resource.kind)} class="size-5" /></:icon>
+      <:status><.resource_status id="resource-status" resource={@resource} size="header" /></:status>
+      <:tab
+        :for={{id, label, path, count} <- @tabs}
+        patch={if(id != :hardware and @tab != :hardware, do: path)}
+        navigate={if(id == :hardware or @tab == :hardware, do: path)}
+        active={id == @tab}
+        count={count}
+      >
+        {label}
+      </:tab>
+      {render_slot(@inner_block)}
+      <:aside :if={@aside != []}>{render_slot(@aside)}</:aside>
+    </.object_page>
+    """
+  end
+
+  defp subtitle(resource) do
+    if resource.display_name && resource.display_name != resource.name,
+      do: "#{resource.name} · #{Format.humanize(resource.kind)}",
+      else: Format.humanize(resource.kind)
+  end
+
+  defp nonzero(0), do: nil
+  defp nonzero(count), do: count
+
+  defp kind_icon(kind) when kind in ~w(server storage), do: "hero-server-stack"
+  defp kind_icon("switch"), do: "hero-arrows-right-left"
+  defp kind_icon("pdu"), do: "hero-bolt"
+  defp kind_icon(kind) when kind in ~w(vm container), do: "hero-square-3-stack-3d"
+  defp kind_icon(_kind), do: "hero-cube"
 end
