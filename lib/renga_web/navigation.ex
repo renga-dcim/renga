@@ -144,7 +144,7 @@ defmodule RengaWeb.Navigation do
   """
   def views do
     [
-      %{label: "Stale inventory", path: ~p"/inventory?stale=true", tone: :warn},
+      %{label: "Stale inventory", path: ~p"/inventory?freshness=stale", tone: :warn},
       %{
         label: "Disconnected agents",
         path: ~p"/settings/collectors?disconnected=true",

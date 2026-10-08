@@ -594,6 +594,28 @@ defmodule Renga.Inventory do
     |> Repo.all()
   end
 
+  # The InventoryCurrent status of a resource, or NULL before its first
+  # report. Shared by the freshness filter and grouping.
+  defmacrop inventory_status(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT conditions.status FROM resource_conditions AS conditions WHERE conditions.resource_id = ? AND conditions.organization_id = ? AND conditions.type = 'InventoryCurrent')",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
+
+  defmacrop last_seen_at(resource, organization_id) do
+    quote do
+      fragment(
+        "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
+        unquote(resource).id,
+        type(^unquote(organization_id), :binary_id)
+      )
+    end
+  end
+
   @doc """
   Lists resources with operational projections and bounded provenance summaries.
 
@@ -626,17 +648,7 @@ defmodule Renga.Inventory do
 
   def list_operational_resources(%Scope{organization_id: organization_id}, options) do
     page = max(Keyword.get(options, :page, 1), 1)
-
-    query =
-      Resource
-      |> where([resource], resource.organization_id == ^organization_id)
-      |> maybe_filter_resource_freshness(organization_id, Keyword.get(options, :freshness))
-      |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
-      |> maybe_filter_resource_kinds(Keyword.get(options, :kinds, []))
-      |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
-      |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
-      |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
-
+    query = operational_resource_query(organization_id, options)
     total = Repo.aggregate(query, :count, :id)
 
     entries =
@@ -681,6 +693,57 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Counts the resources matching the same filters as
+  `list_operational_resources/2`, per value of `group` (`:kind`,
+  `:lifecycle`, or `:freshness`). Group headers use these so a count covers
+  the whole filtered list, not only the current page. Freshness keys are
+  `"current"`, `"stale"`, and `"unknown"`.
+  """
+  def count_operational_resources_by(%Scope{organization_id: organization_id}, options, group)
+      when group in [:kind, :lifecycle, :freshness] do
+    organization_id
+    |> operational_resource_query(options)
+    |> group_by_operational_key(organization_id, group)
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp group_by_operational_key(query, _organization_id, :kind) do
+    query |> group_by([resource], resource.kind) |> select([r], {r.kind, count(r.id)})
+  end
+
+  defp group_by_operational_key(query, _organization_id, :lifecycle) do
+    query
+    |> group_by([resource], resource.lifecycle_state)
+    |> select([r], {r.lifecycle_state, count(r.id)})
+  end
+
+  defp group_by_operational_key(query, organization_id, :freshness) do
+    query
+    |> select([resource], %{
+      state:
+        fragment(
+          "CASE ? WHEN 'true' THEN 'current' WHEN 'false' THEN 'stale' ELSE 'unknown' END",
+          inventory_status(resource, organization_id)
+        )
+    })
+    |> subquery()
+    |> group_by([row], row.state)
+    |> select([row], {row.state, count()})
+  end
+
+  defp operational_resource_query(organization_id, options) do
+    Resource
+    |> where([resource], resource.organization_id == ^organization_id)
+    |> maybe_filter_resource_freshness(organization_id, Keyword.get(options, :freshness))
+    |> maybe_filter_resource_search(organization_id, Keyword.get(options, :search))
+    |> maybe_filter_resource_kinds(Keyword.get(options, :kinds, []))
+    |> maybe_filter_resource_lifecycle(Keyword.get(options, :lifecycle))
+    |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
+    |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
+  end
+
+  @doc """
   Lists the resource kinds present in the organization, for kind filters.
   """
   def list_resource_kinds(%Scope{organization_id: organization_id}) do
@@ -690,28 +753,6 @@ defmodule Renga.Inventory do
     |> order_by([resource], asc: resource.kind)
     |> select([resource], resource.kind)
     |> Repo.all()
-  end
-
-  # The InventoryCurrent status of a resource, or NULL before its first
-  # report. Shared by the freshness filter and grouping.
-  defmacrop inventory_status(resource, organization_id) do
-    quote do
-      fragment(
-        "(SELECT conditions.status FROM resource_conditions AS conditions WHERE conditions.resource_id = ? AND conditions.organization_id = ? AND conditions.type = 'InventoryCurrent')",
-        unquote(resource).id,
-        type(^unquote(organization_id), :binary_id)
-      )
-    end
-  end
-
-  defmacrop last_seen_at(resource, organization_id) do
-    quote do
-      fragment(
-        "(SELECT max(claims.last_seen_at) FROM resource_identifier_claims AS claims WHERE claims.resource_id = ? AND claims.organization_id = ?)",
-        unquote(resource).id,
-        type(^unquote(organization_id), :binary_id)
-      )
-    end
   end
 
   defp maybe_filter_resource_freshness(query, _organization_id, freshness)
@@ -752,14 +793,26 @@ defmodule Renga.Inventory do
     )
   end
 
+  # Lists show the display name when there is one, so ordering follows what
+  # people read rather than the internal name, ignoring case.
+  defmacrop shown_name(resource) do
+    quote do
+      fragment("lower(coalesce(?, ?))", unquote(resource).display_name, unquote(resource).name)
+    end
+  end
+
   defp order_resources_by(query, _organization_id, {:name, direction}),
-    do: order_by(query, [resource], [{^direction, resource.name}])
+    do: order_by(query, [resource], [{^direction, shown_name(resource)}])
 
   defp order_resources_by(query, _organization_id, {:kind, direction}),
-    do: order_by(query, [resource], [{^direction, resource.kind}, asc: resource.name])
+    do: order_by(query, [resource], [{^direction, resource.kind}, asc: shown_name(resource)])
 
   defp order_resources_by(query, _organization_id, {:lifecycle, direction}),
-    do: order_by(query, [resource], [{^direction, resource.lifecycle_state}, asc: resource.name])
+    do:
+      order_by(query, [resource], [
+        {^direction, resource.lifecycle_state},
+        asc: shown_name(resource)
+      ])
 
   # Never-seen resources sort last in either direction.
   defp order_resources_by(query, organization_id, {:last_seen, direction}) do
@@ -767,7 +820,7 @@ defmodule Renga.Inventory do
 
     order_by(query, [resource], [
       {^direction, last_seen_at(resource, organization_id)},
-      asc: resource.name
+      asc: shown_name(resource)
     ])
   end
 
