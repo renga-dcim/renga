@@ -6,89 +6,79 @@
 @source "../js";
 @source "../../lib/renga_web";
 
+/* Accent, theme, status and density tokens (RFD 8). */
+@import "./tokens.css";
+
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
 @plugin "../vendor/heroicons";
 
-/* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
-   curl -sLO https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.js
-   Make sure to look at the daisyUI changelog: https://daisyui.com/docs/changelog/ */
-@plugin "../vendor/daisyui" {
-  themes: false;
-}
+/*
+  Tailwind names for the tokens. `inline` keeps the var() references so
+  accent, theme and density switch at runtime without regenerating CSS.
+*/
+@theme inline {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
-/* daisyUI theme plugin. You can update this file by fetching the latest version with:
-  curl -sLO https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.js
-  We ship with two themes, a light one inspired on Phoenix colors and a dark one inspired
-  on Elixir colors. Build your own at: https://daisyui.com/theme-generator/ */
-@plugin "../vendor/daisyui-theme" {
-  name: "dark";
-  default: false;
-  prefersdark: true;
-  color-scheme: "dark";
-  --color-base-100: oklch(17% 0.006 60);
-  --color-base-200: oklch(14% 0.005 60);
-  --color-base-300: oklch(22% 0.006 60);
-  --color-base-content: oklch(92% 0.004 60);
-  --color-primary: oklch(65% 0.18 48);
-  --color-primary-content: oklch(98% 0.01 70);
-  --color-secondary: oklch(52% 0.01 60);
-  --color-secondary-content: oklch(96% 0.004 60);
-  --color-accent: oklch(65% 0.18 48);
-  --color-accent-content: oklch(98% 0.01 70);
-  --color-neutral: oklch(30% 0.008 60);
-  --color-neutral-content: oklch(94% 0.004 60);
-  --color-info: oklch(58% 0.158 241.966);
-  --color-info-content: oklch(97% 0.013 236.62);
-  --color-success: oklch(60% 0.118 184.704);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
-  --noise: 0;
-}
+  --color-canvas: var(--rg-canvas);
+  --color-surface: var(--rg-surface);
+  --color-sunken: var(--rg-sunken);
+  --color-edge: var(--rg-edge);
+  --color-line: var(--rg-line);
+  --color-fg: var(--rg-fg);
+  --color-fg-muted: var(--rg-fg-muted);
+  --color-fg-subtle: var(--rg-fg-subtle);
+  --color-nav-active: var(--rg-nav-active);
+  --color-accent: var(--rg-accent);
+  --color-accent-fg: var(--rg-accent-fg);
+  --color-accent-hover: var(--rg-accent-hover);
+  --color-accent-tint: var(--rg-accent-tint);
+  --color-link: var(--rg-link);
+  --color-ring: var(--rg-ring);
 
-@plugin "../vendor/daisyui-theme" {
-  name: "light";
-  default: true;
-  prefersdark: false;
-  color-scheme: "light";
-  --color-base-100: oklch(98% 0.002 70);
-  --color-base-200: oklch(96% 0.003 70);
-  --color-base-300: oklch(91% 0.005 70);
-  --color-base-content: oklch(23% 0.008 60);
-  --color-primary: oklch(63% 0.19 48);
-  --color-primary-content: oklch(98% 0.01 70);
-  --color-secondary: oklch(52% 0.01 60);
-  --color-secondary-content: oklch(98% 0.002 70);
-  --color-accent: oklch(63% 0.19 48);
-  --color-accent-content: oklch(98% 0.01 70);
-  --color-neutral: oklch(44% 0.01 60);
-  --color-neutral-content: oklch(98% 0 0);
-  --color-info: oklch(62% 0.214 259.815);
-  --color-info-content: oklch(97% 0.014 254.604);
-  --color-success: oklch(70% 0.14 182.503);
-  --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
-  --color-error: oklch(58% 0.253 17.585);
-  --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
-  --depth: 1;
-  --noise: 0;
+  --color-ok: var(--rg-ok);
+  --color-warn: var(--rg-warn);
+  --color-warn-text: var(--rg-warn-text);
+  --color-warn-fill: var(--rg-warn-fill);
+  --color-warn-line: var(--rg-warn-line);
+  --color-crit: var(--rg-crit);
+  --color-crit-fill: var(--rg-crit-fill);
+  --color-crit-line: var(--rg-crit-line);
+  --color-info: var(--rg-info);
+  --color-info-fill: var(--rg-info-fill);
+  --color-unknown: var(--rg-unknown);
+
+  --spacing-row: var(--rg-row-h);
+  --spacing-control: var(--rg-control-h);
+  --spacing-cell: var(--rg-cell-px);
+  --spacing-tap: var(--rg-tap-min);
+  --spacing-rack-u: var(--rg-rack-u);
+  --text-table: var(--rg-table-text);
+
+  /*
+    Transitional aliases for the former daisyUI color names that existing
+    screens still use (bg-base-100, text-base-content/60, ...). Screens move
+    to the token names as later RFD 8 phases rebuild them; remove these then.
+  */
+  --color-base-100: var(--rg-canvas);
+  --color-base-200: var(--rg-sunken);
+  --color-base-300: var(--rg-edge);
+  --color-base-content: var(--rg-fg);
+  --color-primary: var(--rg-accent);
+  --color-primary-content: var(--rg-accent-fg);
+  --color-secondary: var(--rg-fg-muted);
+  --color-secondary-content: var(--rg-surface);
+  --color-neutral: var(--rg-fg-muted);
+  --color-neutral-content: var(--rg-surface);
+  --color-accent-content: var(--rg-accent-fg);
+  --color-info-content: var(--rg-surface);
+  --color-success: var(--rg-ok);
+  --color-success-content: var(--rg-surface);
+  --color-warning: var(--rg-warn);
+  --color-warning-content: var(--rg-fg);
+  --color-error: var(--rg-crit);
+  --color-error-content: var(--rg-surface);
 }
 
 /* Add variants based on LiveView classes */

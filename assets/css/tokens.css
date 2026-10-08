@@ -1,0 +1,343 @@
+/*
+  Renga design tokens (RFD 8, "Visual design").
+
+  Components consume these only through the Tailwind theme names defined in
+  app.css (bg-surface, text-fg-muted, h-row, ...), never through raw colors, so
+  accent, theme and density can change without touching markup.
+
+  - Accent: data-accent on <html> (copper is the default when absent).
+  - Theme: data-theme="light" | "dark" on <html>; absent follows the system.
+  - Density: data-density="compact" on <html>; absent is comfortable.
+
+  Status colors are deliberately outside the accent blocks: green, ochre and
+  red keep one meaning for every viewer. Warnings use ochre rather than amber
+  so they never read as the Copper accent.
+*/
+
+/* ---- Copper, light (default) ---------------------------------------- */
+:root,
+:root[data-accent="copper"] {
+  color-scheme: light;
+  --rg-canvas: #faf9f7;
+  --rg-surface: #ffffff;
+  --rg-sunken: #f3f1ee;
+  --rg-edge: #e5e2dd;
+  --rg-line: #eeece8;
+  --rg-fg: #1c1a18;
+  --rg-fg-muted: #69645d;
+  --rg-fg-subtle: #8a847c;
+  --rg-nav-active: #e9e6e1;
+  --rg-accent: #b4531c;
+  --rg-accent-fg: #ffffff;
+  --rg-accent-tint: #f8eee7;
+  --rg-link: #a04716;
+}
+
+:root[data-accent="petrol"] {
+  --rg-canvas: #f6f8f8;
+  --rg-surface: #ffffff;
+  --rg-sunken: #edf1f1;
+  --rg-edge: #dde4e4;
+  --rg-line: #e9eeee;
+  --rg-fg: #142022;
+  --rg-fg-muted: #566668;
+  --rg-fg-subtle: #7b8b8d;
+  --rg-nav-active: #e0e8e8;
+  --rg-accent: #0b6e7f;
+  --rg-accent-fg: #ffffff;
+  --rg-accent-tint: #e6f2f4;
+  --rg-link: #0b6e7f;
+}
+
+:root[data-accent="cobalt"] {
+  --rg-canvas: #f7f8fa;
+  --rg-surface: #ffffff;
+  --rg-sunken: #eff1f4;
+  --rg-edge: #e1e4ea;
+  --rg-line: #eceef2;
+  --rg-fg: #16181d;
+  --rg-fg-muted: #5d6470;
+  --rg-fg-subtle: #7f8693;
+  --rg-nav-active: #e3e7ee;
+  --rg-accent: #2f5bea;
+  --rg-accent-fg: #ffffff;
+  --rg-accent-tint: #edf2fe;
+  --rg-link: #2f5bea;
+}
+
+:root[data-accent="iris"] {
+  --rg-canvas: #f8f8fb;
+  --rg-surface: #ffffff;
+  --rg-sunken: #f0f0f6;
+  --rg-edge: #e3e3ec;
+  --rg-line: #ececf3;
+  --rg-fg: #17171f;
+  --rg-fg-muted: #60607a;
+  --rg-fg-subtle: #83839a;
+  --rg-nav-active: #e5e5f0;
+  --rg-accent: #5b5bd6;
+  --rg-accent-fg: #ffffff;
+  --rg-accent-tint: #efeffd;
+  --rg-link: #5b5bd6;
+}
+
+:root[data-accent="mono"] {
+  --rg-canvas: #fafafa;
+  --rg-surface: #ffffff;
+  --rg-sunken: #f2f2f2;
+  --rg-edge: #e2e2e2;
+  --rg-line: #ededed;
+  --rg-fg: #111111;
+  --rg-fg-muted: #5e5e5e;
+  --rg-fg-subtle: #858585;
+  --rg-nav-active: #e6e6e6;
+  --rg-accent: #111111;
+  --rg-accent-fg: #ffffff;
+  --rg-accent-tint: #efefef;
+  --rg-link: #111111;
+}
+
+/* ---- Status, light (independent of accent) -------------------------- */
+:root {
+  --rg-ok: #15803d;
+  --rg-warn: #ca8a04;
+  --rg-warn-text: #7c5800;
+  --rg-warn-fill: #fdf6d8;
+  --rg-warn-line: #ead68f;
+  --rg-crit: #c0362c;
+  --rg-crit-fill: #fdf3f2;
+  --rg-crit-line: #f1d0cc;
+  --rg-info: #2563eb;
+  --rg-info-fill: #edf2fe;
+  --rg-unknown: #8a847c;
+}
+
+/* ---- Dark ------------------------------------------------------------
+   The same declarations apply for an explicit dark choice and for "system"
+   when the OS prefers dark, so each accent's dark block appears twice. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --rg-ok: #3fb27f;
+  --rg-warn: #e8b931;
+  --rg-warn-text: #e8b931;
+  --rg-warn-fill: #2a2410;
+  --rg-warn-line: #574a1c;
+  --rg-crit: #f2665a;
+  --rg-crit-fill: #2a1513;
+  --rg-crit-line: #5a2622;
+  --rg-info: #6b93f5;
+  --rg-info-fill: #18213a;
+  --rg-unknown: #8f8a82;
+}
+
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-accent="copper"] {
+  --rg-canvas: #121110;
+  --rg-surface: #1c1a18;
+  --rg-sunken: #171614;
+  --rg-edge: #2c2926;
+  --rg-line: #211f1c;
+  --rg-fg: #ece8e3;
+  --rg-fg-muted: #a29b92;
+  --rg-fg-subtle: #7d776f;
+  --rg-nav-active: #23211e;
+  --rg-accent: #e07a3f;
+  --rg-accent-fg: #1a0e06;
+  --rg-accent-tint: #2a1e16;
+  --rg-link: #ec935e;
+}
+
+:root[data-theme="dark"][data-accent="petrol"] {
+  --rg-canvas: #0d1314;
+  --rg-surface: #152022;
+  --rg-sunken: #11191a;
+  --rg-edge: #223133;
+  --rg-line: #182426;
+  --rg-fg: #e3ecec;
+  --rg-fg-muted: #8ea1a3;
+  --rg-fg-subtle: #6a7b7d;
+  --rg-nav-active: #1a2729;
+  --rg-accent: #3ba7b8;
+  --rg-accent-fg: #06181b;
+  --rg-accent-tint: #12292d;
+  --rg-link: #5cc0cf;
+}
+
+:root[data-theme="dark"][data-accent="cobalt"] {
+  --rg-canvas: #0f1115;
+  --rg-surface: #181b21;
+  --rg-sunken: #13161b;
+  --rg-edge: #262a33;
+  --rg-line: #1d2128;
+  --rg-fg: #e6e8ec;
+  --rg-fg-muted: #939aa7;
+  --rg-fg-subtle: #6d7380;
+  --rg-nav-active: #1f232b;
+  --rg-accent: #5b82f5;
+  --rg-accent-fg: #0f1115;
+  --rg-accent-tint: #18213a;
+  --rg-link: #7d9cf7;
+}
+
+:root[data-theme="dark"][data-accent="iris"] {
+  --rg-canvas: #101014;
+  --rg-surface: #19191f;
+  --rg-sunken: #14141a;
+  --rg-edge: #28282f;
+  --rg-line: #1e1e25;
+  --rg-fg: #e8e8ee;
+  --rg-fg-muted: #9898aa;
+  --rg-fg-subtle: #707084;
+  --rg-nav-active: #212128;
+  --rg-accent: #7c7bea;
+  --rg-accent-fg: #101014;
+  --rg-accent-tint: #1e1e35;
+  --rg-link: #9c9bf0;
+}
+
+:root[data-theme="dark"][data-accent="mono"] {
+  --rg-canvas: #0b0b0b;
+  --rg-surface: #161616;
+  --rg-sunken: #111111;
+  --rg-edge: #262626;
+  --rg-line: #1b1b1b;
+  --rg-fg: #ededed;
+  --rg-fg-muted: #9a9a9a;
+  --rg-fg-subtle: #717171;
+  --rg-nav-active: #1f1f1f;
+  --rg-accent: #ededed;
+  --rg-accent-fg: #0b0b0b;
+  --rg-accent-tint: #1d1d1d;
+  --rg-link: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --rg-ok: #3fb27f;
+    --rg-warn: #e8b931;
+    --rg-warn-text: #e8b931;
+    --rg-warn-fill: #2a2410;
+    --rg-warn-line: #574a1c;
+    --rg-crit: #f2665a;
+    --rg-crit-fill: #2a1513;
+    --rg-crit-line: #5a2622;
+    --rg-info: #6b93f5;
+    --rg-info-fill: #18213a;
+    --rg-unknown: #8f8a82;
+  }
+
+  :root:not([data-theme="light"]),
+  :root:not([data-theme="light"])[data-accent="copper"] {
+    --rg-canvas: #121110;
+    --rg-surface: #1c1a18;
+    --rg-sunken: #171614;
+    --rg-edge: #2c2926;
+    --rg-line: #211f1c;
+    --rg-fg: #ece8e3;
+    --rg-fg-muted: #a29b92;
+    --rg-fg-subtle: #7d776f;
+    --rg-nav-active: #23211e;
+    --rg-accent: #e07a3f;
+    --rg-accent-fg: #1a0e06;
+    --rg-accent-tint: #2a1e16;
+    --rg-link: #ec935e;
+  }
+
+  :root:not([data-theme="light"])[data-accent="petrol"] {
+    --rg-canvas: #0d1314;
+    --rg-surface: #152022;
+    --rg-sunken: #11191a;
+    --rg-edge: #223133;
+    --rg-line: #182426;
+    --rg-fg: #e3ecec;
+    --rg-fg-muted: #8ea1a3;
+    --rg-fg-subtle: #6a7b7d;
+    --rg-nav-active: #1a2729;
+    --rg-accent: #3ba7b8;
+    --rg-accent-fg: #06181b;
+    --rg-accent-tint: #12292d;
+    --rg-link: #5cc0cf;
+  }
+
+  :root:not([data-theme="light"])[data-accent="cobalt"] {
+    --rg-canvas: #0f1115;
+    --rg-surface: #181b21;
+    --rg-sunken: #13161b;
+    --rg-edge: #262a33;
+    --rg-line: #1d2128;
+    --rg-fg: #e6e8ec;
+    --rg-fg-muted: #939aa7;
+    --rg-fg-subtle: #6d7380;
+    --rg-nav-active: #1f232b;
+    --rg-accent: #5b82f5;
+    --rg-accent-fg: #0f1115;
+    --rg-accent-tint: #18213a;
+    --rg-link: #7d9cf7;
+  }
+
+  :root:not([data-theme="light"])[data-accent="iris"] {
+    --rg-canvas: #101014;
+    --rg-surface: #19191f;
+    --rg-sunken: #14141a;
+    --rg-edge: #28282f;
+    --rg-line: #1e1e25;
+    --rg-fg: #e8e8ee;
+    --rg-fg-muted: #9898aa;
+    --rg-fg-subtle: #707084;
+    --rg-nav-active: #212128;
+    --rg-accent: #7c7bea;
+    --rg-accent-fg: #101014;
+    --rg-accent-tint: #1e1e35;
+    --rg-link: #9c9bf0;
+  }
+
+  :root:not([data-theme="light"])[data-accent="mono"] {
+    --rg-canvas: #0b0b0b;
+    --rg-surface: #161616;
+    --rg-sunken: #111111;
+    --rg-edge: #262626;
+    --rg-line: #1b1b1b;
+    --rg-fg: #ededed;
+    --rg-fg-muted: #9a9a9a;
+    --rg-fg-subtle: #717171;
+    --rg-nav-active: #1f1f1f;
+    --rg-accent: #ededed;
+    --rg-accent-fg: #0b0b0b;
+    --rg-accent-tint: #1d1d1d;
+    --rg-link: #ffffff;
+  }
+}
+
+/* ---- Derived color tokens ------------------------------------------- */
+:root {
+  --rg-accent-hover: color-mix(in oklab, var(--rg-accent) 86%, var(--rg-fg));
+  --rg-ring: color-mix(in oklab, var(--rg-accent) 22%, transparent);
+}
+
+/* ---- Density ---------------------------------------------------------
+   Density only changes these tokens; shared components read them through
+   h-row, h-control, px-cell and text-table so no screen special-cases it.
+   Coarse pointers keep a 44px minimum tap target at either density. */
+:root {
+  --rg-row-h: 36px;
+  --rg-control-h: 32px;
+  --rg-cell-px: 12px;
+  --rg-table-text: 13px;
+  --rg-rack-u: 16px;
+  --rg-tap-min: 0px;
+}
+
+:root[data-density="compact"] {
+  --rg-row-h: 28px;
+  --rg-control-h: 28px;
+  --rg-cell-px: 10px;
+  --rg-table-text: 12px;
+  --rg-rack-u: 12px;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --rg-tap-min: 44px;
+  }
+}

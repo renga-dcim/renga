@@ -180,7 +180,7 @@ defmodule RengaWeb.ResourceLive.Index do
           for={@filter_form}
           id="resource-filters"
           phx-change="filter"
-          class="flex h-[70px] shrink-0 items-center gap-2 overflow-x-auto border-b border-base-content/10 px-4 sm:px-6 [&_.fieldset]:!mb-0"
+          class="flex h-[70px] shrink-0 items-center gap-2 overflow-x-auto border-b border-base-content/10 px-4 sm:px-6 [&_.field]:!mb-0"
         >
           <div class="relative min-w-52 flex-1">
             <.icon
