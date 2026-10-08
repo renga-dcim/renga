@@ -2,16 +2,15 @@ defmodule Renga.FindingsTest do
   use Renga.DataCase, async: true
 
   import Renga.AccountsFixtures
+  import Renga.FindingsFixtures
   import Renga.InventoryFixtures
 
-  alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.DCIM.PlacementFinding
   alias Renga.Findings
   alias Renga.Findings.Finding
   alias Renga.Inventory
   alias Renga.Inventory.Changes
-  alias Renga.Topology.TopologyFinding
 
   setup do
     organization = organization_fixture()
@@ -27,7 +26,7 @@ defmodule Renga.FindingsTest do
   end
 
   describe "list_findings/2" do
-    test "reads every domain as one queue, newest observation first", context do
+    test "reads every domain as one queue, drift first, newest observation first", context do
       component = component_finding(context, "component_drift", minutes_ago: 1)
       match = finding(context, HardwareMatchFinding, "ambiguous_catalog_match", minutes_ago: 3)
       placement = finding(context, PlacementFinding, "unknown_location", minutes_ago: 2)
@@ -37,12 +36,12 @@ defmodule Renga.FindingsTest do
 
       assert Enum.map(findings, &{&1.domain, &1.id}) == [
                {"component", component.id},
+               {"topology", topology.id},
                {"placement", placement.id},
-               {"hardware_match", match.id},
-               {"topology", topology.id}
+               {"hardware_match", match.id}
              ]
 
-      assert %Finding{interface_name: "eth0", group: "drift"} = List.last(findings)
+      assert %Finding{interface_name: "eth0", group: "drift"} = Enum.at(findings, 1)
       assert Enum.all?(findings, &(&1.resource.id == context.resource.id and &1.state == :open))
     end
 
@@ -57,6 +56,25 @@ defmodule Renga.FindingsTest do
       assert {health, 2} = Findings.list_findings(context.scope, group: "health")
       assert Enum.all?(health, &(&1.group == "health"))
       assert Findings.count_by_group(context.scope) == %{"drift" => 1, "health" => 2}
+    end
+
+    test "lists drift before health without a group filter", context do
+      health = component_finding(context, "ambiguous_component_identity", key: "evidence:1")
+      drift = component_finding(context, "component_drift", minutes_ago: 30)
+
+      assert {[first, second], 2} = Findings.list_findings(context.scope)
+      assert {first.id, second.id} == {drift.id, health.id}
+    end
+
+    test "filters by kind and by interface", context do
+      component_finding(context, "component_drift")
+      topology = topology_finding(context, "missing_vlan")
+
+      assert {[%{id: id}], 1} = Findings.list_findings(context.scope, kind: "missing_vlan")
+      assert id == topology.id
+
+      assert {[%{id: ^id}], 1} =
+               Findings.list_findings(context.scope, interface_id: topology.interface_id)
     end
 
     test "never shows another organization's findings", context do
@@ -233,41 +251,13 @@ defmodule Renga.FindingsTest do
     findings
   end
 
-  defp component_finding(context, kind, opts \\ []) do
-    status = Keyword.get(opts, :status, "open")
-    at = DateTime.add(DateTime.utc_now(), -60 * Keyword.get(opts, :minutes_ago, 0))
+  defp component_finding(context, kind, opts \\ []),
+    do: component_finding_fixture(context.resource, kind, opts)
 
-    Repo.insert!(%ComponentFinding{
-      organization_id: context.organization.id,
-      resource_id: context.resource.id,
-      kind: kind,
-      resolution_key: Keyword.get(opts, :key, "assignment:1:template:1"),
-      status: status,
-      message: "Finding #{kind}",
-      last_observed_at: at,
-      resolved_at: if(status == "resolved", do: at)
-    })
-  end
-
-  defp finding(context, schema, kind, opts \\ []) do
-    at = DateTime.add(DateTime.utc_now(), -60 * Keyword.get(opts, :minutes_ago, 0))
-
-    Repo.insert!(
-      struct(schema,
-        organization_id: context.organization.id,
-        resource_id: context.resource.id,
-        kind: kind,
-        status: "open",
-        message: "Finding #{kind}",
-        inserted_at: at,
-        updated_at: at
-      )
-    )
-  end
+  defp finding(context, schema, kind, opts \\ []),
+    do: resource_finding_fixture(schema, context.resource, kind, opts)
 
   defp topology_finding(context, kind, opts \\ []) do
-    at = DateTime.add(DateTime.utc_now(), -60 * Keyword.get(opts, :minutes_ago, 0))
-
     {:ok, interface} =
       Inventory.create_interface(
         member_scope(context.organization, "admin"),
@@ -277,15 +267,7 @@ defmodule Renga.FindingsTest do
         }
       )
 
-    Repo.insert!(%TopologyFinding{
-      organization_id: context.organization.id,
-      interface_id: interface.id,
-      kind: kind,
-      resolution_key: "drift:1",
-      status: "open",
-      message: "Finding #{kind}",
-      last_observed_at: at
-    })
+    topology_finding_fixture(interface, kind, opts)
   end
 
   defp member_scope(organization, role) do

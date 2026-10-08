@@ -87,7 +87,9 @@ defmodule Renga.Findings do
     * `:group` - `"drift"` or `"health"`
     * `:assignee` - a user id, or `:unassigned`
     * `:resource_id` - one resource's findings
+    * `:interface_id` - one interface's (topology) findings
     * `:domain` - one finding domain
+    * `:kind` - one finding kind
     * `:page` - 1-based page of #{@per_page}
 
   Returns `{findings, total}`.
@@ -100,6 +102,7 @@ defmodule Renga.Findings do
 
     findings =
       query
+      |> order_by_group(Keyword.get(opts, :group))
       |> order_for(Keyword.get(opts, :state, "open"))
       |> limit(@per_page)
       |> offset(^((page - 1) * @per_page))
@@ -128,9 +131,13 @@ defmodule Renga.Findings do
 
   @doc "Fetches one finding by domain and id inside the caller's organization."
   def get_finding!(%Scope{} = scope, domain, id),
-    do: fetch_finding(scope, domain, id) || raise(Ecto.NoResultsError, queryable: Finding)
+    do: get_finding(scope, domain, id) || raise(Ecto.NoResultsError, queryable: Workflow)
 
-  defp fetch_finding(scope, domain, id) do
+  @doc """
+  Like `get_finding!/3` but returns nil, including for a malformed domain or
+  id, since both often come from a URL.
+  """
+  def get_finding(%Scope{} = scope, domain, id) do
     with true <- domain in Workflow.domains(),
          {:ok, id} <- Ecto.UUID.cast(id),
          row when not is_nil(row) <-
@@ -229,7 +236,7 @@ defmodule Renga.Findings do
     Repo.transaction(fn ->
       authorize_actor!(scope)
       now = Renga.Time.utc_now_ms()
-      finding = fetch_finding(scope, finding.domain, finding.id) || Repo.rollback(:not_found)
+      finding = get_finding(scope, finding.domain, finding.id) || Repo.rollback(:not_found)
       workflow = lock_workflow!(scope, finding)
 
       with {:ok, changeset} <- build.(finding, workflow, now),
@@ -371,6 +378,8 @@ defmodule Renga.Findings do
     |> filter_assignee(Keyword.get(opts, :assignee))
     |> filter_resource(Keyword.get(opts, :resource_id))
     |> filter_domain(Keyword.get(opts, :domain))
+    |> filter_interface(Keyword.get(opts, :interface_id))
+    |> filter_kind(Keyword.get(opts, :kind))
   end
 
   defp base_query(%Scope{organization_id: organization_id}) do
@@ -538,10 +547,23 @@ defmodule Renga.Findings do
   defp filter_resource(query, resource_id),
     do: where(query, [finding: finding], finding.resource_id == ^resource_id)
 
+  defp filter_interface(query, nil), do: query
+
+  defp filter_interface(query, interface_id),
+    do: where(query, [finding: finding], finding.interface_id == ^interface_id)
+
+  defp filter_kind(query, nil), do: query
+  defp filter_kind(query, kind), do: where(query, [finding: finding], finding.kind == ^kind)
+
   defp filter_domain(query, nil), do: query
 
   defp filter_domain(query, domain),
     do: where(query, [finding: finding], finding.domain == ^domain)
+
+  # Without a group filter the queue lists drift before health, the order
+  # RFD 8 groups the Inbox in, so group headers can be drawn over one page.
+  defp order_by_group(query, nil), do: order_by(query, ^[desc: drift()])
+  defp order_by_group(query, _group), do: query
 
   defp order_for(query, "resolved"),
     do: order_by(query, [finding: finding], desc: finding.resolved_at, desc: finding.id)
