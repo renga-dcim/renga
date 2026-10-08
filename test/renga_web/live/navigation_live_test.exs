@@ -75,10 +75,9 @@ defmodule RengaWeb.NavigationLiveTest do
   end
 
   test "pages rendered by one LiveView land in the right area", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/inbox/placement")
+    {:ok, view, _html} = live(conn, ~p"/inbox")
 
     assert has_element?(view, "#primary-navigation a[aria-current='page']", "Inbox")
-    assert has_element?(view, "#area-tabs a[aria-current='page'][href='/inbox/placement']")
 
     {:ok, view, _html} = live(conn, ~p"/places/racks")
 

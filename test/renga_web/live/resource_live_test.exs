@@ -3,8 +3,10 @@ defmodule RengaWeb.ResourceLiveTest do
 
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
+  import Renga.FindingsFixtures
   import Renga.InventoryFixtures
 
+  alias Renga.Findings
   alias Renga.Inventory
 
   setup %{conn: conn} do
@@ -406,6 +408,30 @@ defmodule RengaWeb.ResourceLiveTest do
              list,
              "#resources-#{resource.id} [data-signal='drift']",
              "2 drift findings"
+           )
+  end
+
+  test "the resource page shows accepted exceptions and links to its findings", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    component_finding_fixture(resource, "component_drift")
+    component_finding_fixture(resource, "missing_expected_component", key: "x")
+    {[finding | _rest], 2} = Findings.list_findings(scope)
+
+    {:ok, _workflow} =
+      Findings.accept_exception(scope, finding, %{"exception_reason" => "Spare pulled for RMA"})
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource}")
+
+    assert has_element?(view, "#resource-exceptions", "Spare pulled for RMA")
+    assert has_element?(view, "#resource-exceptions", "Accepted by #{scope.user.email}")
+
+    assert has_element?(
+             view,
+             "#resource-findings[href='/inbox?resource=#{resource.id}']",
+             "1 open finding"
            )
   end
 

@@ -8,7 +8,7 @@ defmodule RengaWeb.PageController do
   end
 
   defp destination(%Scope{organization_id: organization_id}) when is_binary(organization_id),
-    do: ~p"/inbox/components"
+    do: ~p"/inbox"
 
   defp destination(%Scope{user: %Renga.Accounts.User{}}), do: ~p"/organizations"
   defp destination(_scope), do: ~p"/users/log-in"

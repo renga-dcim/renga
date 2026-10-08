@@ -107,7 +107,7 @@ defmodule RengaWeb.ResourceHardwareLive do
           <p class="text-sm text-fg-muted">
             Catalog expectations, observed components, modules, and inventory-only parts. Open
             findings are also in the <.link
-              navigate={~p"/inbox/components"}
+              navigate={~p"/inbox?#{[resource: @resource.id]}"}
               class="text-link hover:underline"
             >Inbox</.link>.
           </p>

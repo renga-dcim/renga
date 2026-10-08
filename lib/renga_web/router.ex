@@ -70,7 +70,6 @@ defmodule RengaWeb.Router do
   scope "/", RengaWeb do
     pipe_through :browser
 
-    get "/inbox", RedirectController, :show, assigns: %{to: "/inbox/components", status: :found}
     get "/network", RedirectController, :show, assigns: %{to: "/network/topology", status: :found}
 
     get "/catalog", RedirectController, :show,
@@ -86,13 +85,20 @@ defmodule RengaWeb.Router do
       assigns: %{to: "/inventory/:id/hardware"}
 
     get "/inventory/component-findings", RedirectController, :show,
-      assigns: %{to: "/inbox/components"}
+      assigns: %{to: "/inbox?domain=component"}
+
+    # The per-domain findings pages became one Inbox queue.
+    get "/inbox/components", RedirectController, :show, assigns: %{to: "/inbox?domain=component"}
+    get "/inbox/topology", RedirectController, :show, assigns: %{to: "/inbox?domain=topology"}
+    get "/inbox/placement", RedirectController, :show, assigns: %{to: "/inbox?domain=placement"}
 
     get "/inventory/operations", RedirectController, :show, assigns: %{to: "/settings/collectors"}
 
-    get "/network/topology-findings", RedirectController, :show, assigns: %{to: "/inbox/topology"}
+    get "/network/topology-findings", RedirectController, :show,
+      assigns: %{to: "/inbox?domain=topology"}
 
-    get "/dcim/placement-findings", RedirectController, :show, assigns: %{to: "/inbox/placement"}
+    get "/dcim/placement-findings", RedirectController, :show,
+      assigns: %{to: "/inbox?domain=placement"}
 
     get "/dcim/sites", RedirectController, :show, assigns: %{to: "/places"}
     get "/dcim/sites/:id", RedirectController, :show, assigns: %{to: "/places/sites/:id"}
@@ -132,11 +138,8 @@ defmodule RengaWeb.Router do
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/organizations", OrganizationLive.Index, :index
 
-      # The six RFD 8 areas. Inbox shows the findings domains as tabs until
-      # the unified queue replaces them.
-      live "/inbox/components", ComponentFindingLive, :index
-      live "/inbox/topology", TopologyFindingLive, :index
-      live "/inbox/placement", DcimLive, :findings
+      # The six RFD 8 areas.
+      live "/inbox", InboxLive, :index
 
       live "/inventory", ResourceLive.Index, :index
       live "/inventory/:id", ResourceLive.Show, :show

@@ -102,9 +102,8 @@ defmodule RengaWeb.DcimLiveTest do
     assert has_element?(rack_view, "#rack-unit-8", "compute-02")
     assert has_element?(rack_view, "#rack-unit-8", "Active · Confirmed")
 
-    {:ok, findings_view, _html} = live(conn, ~p"/inbox/placement")
-    assert has_element?(findings_view, "#placement-findings")
-    assert has_element?(findings_view, "[id^='finding-']", "compute-01")
+    {:ok, inbox, _html} = live(conn, ~p"/inbox?domain=placement")
+    assert has_element?(inbox, "#findings [data-list-row]", "compute-01")
   end
 
   test "read-only members do not receive mutation forms", %{conn: conn, scope: scope} do

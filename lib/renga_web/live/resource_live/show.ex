@@ -21,6 +21,7 @@ defmodule RengaWeb.ResourceLive.Show do
 
   alias Renga.Catalog
   alias Renga.Inventory
+  alias Renga.Findings
   alias Renga.Inventory.Changes
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.SourcePrecedence
@@ -42,12 +43,18 @@ defmodule RengaWeb.ResourceLive.Show do
   ]
 
   @reload_after_ms 400
+  # Accepted exceptions can expire without an inventory notification.
+  @expiry_refresh_ms 30_000
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     scope = socket.assigns.current_scope
     resource = Inventory.get_operational_resource!(scope, id)
-    if connected?(socket), do: Changes.subscribe(scope)
+
+    if connected?(socket) do
+      Changes.subscribe(scope)
+      Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    end
 
     {:ok,
      assign(socket,
@@ -61,6 +68,7 @@ defmodule RengaWeb.ResourceLive.Show do
        reload_timer: nil
      )
      |> assign_provenance()
+     |> assign_findings()
      |> reset_override_forms()}
   end
 
@@ -168,6 +176,11 @@ defmodule RengaWeb.ResourceLive.Show do
     {:noreply, socket |> assign(:reload_timer, nil) |> reload_resource()}
   end
 
+  def handle_info(:refresh_expiry, socket) do
+    Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    {:noreply, assign_findings(socket)}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -183,7 +196,12 @@ defmodule RengaWeb.ResourceLive.Show do
       <.resource_frame resource={@resource} tab={tab(@live_action)} hardware?={@hardware_assignable?}>
         <%= case @live_action do %>
           <% :show -> %>
-            <.overview resource={@resource} hardware?={@hardware_assignable?} />
+            <.overview
+              resource={@resource}
+              hardware?={@hardware_assignable?}
+              open_finding_count={@open_finding_count}
+              exceptions={@exceptions}
+            />
           <% :network -> %>
             <.network resource={@resource} />
           <% :sources -> %>
@@ -452,10 +470,52 @@ defmodule RengaWeb.ResourceLive.Show do
 
   attr :resource, :map, required: true
   attr :hardware?, :boolean, required: true
+  attr :open_finding_count, :integer, required: true
+  attr :exceptions, :list, required: true
 
   defp overview(assigns) do
     ~H"""
     <div class="space-y-6">
+      <.link
+        :if={@open_finding_count > 0}
+        id="resource-findings"
+        navigate={~p"/inbox?#{[resource: @resource.id]}"}
+        class="flex items-center gap-3 rounded-lg border border-edge bg-surface px-4 py-3 text-sm text-fg hover:bg-sunken"
+      >
+        <.icon name="hero-inbox" class="size-4 text-fg-muted" />
+        {finding_count_label(@open_finding_count)} in the Inbox
+      </.link>
+
+      <section
+        :if={@exceptions != []}
+        id="resource-exceptions"
+        aria-labelledby="resource-exceptions-title"
+      >
+        <h2 id="resource-exceptions-title" class="mb-2 text-sm font-semibold text-fg">
+          Accepted exceptions
+        </h2>
+        <ul class="divide-y divide-line rounded-lg border border-edge bg-surface">
+          <li
+            :for={finding <- @exceptions}
+            id={"exception-#{finding.domain}-#{finding.id}"}
+            class="space-y-0.5 px-4 py-2.5 text-sm"
+          >
+            <.link
+              navigate={~p"/inbox?#{[state: "excepted", finding: "#{finding.domain}:#{finding.id}"]}"}
+              class="font-medium text-fg hover:underline"
+            >
+              {finding.kind |> Format.humanize() |> String.capitalize()}
+            </.link>
+            <p class="text-fg-muted">“{finding.workflow.exception_reason}”</p>
+            <p class="text-xs text-fg-muted">
+              {exception_author(finding.workflow)}
+              <span :if={finding.workflow.exception_expires_at}>
+                · until {Format.datetime(finding.workflow.exception_expires_at)}
+              </span>
+            </p>
+          </li>
+        </ul>
+      </section>
       <.link
         :if={@resource.drift_count > 0}
         id="resource-drift"
@@ -740,6 +800,19 @@ defmodule RengaWeb.ResourceLive.Show do
     |> assign(:resource, resource)
     |> assign(:lifecycle_form, lifecycle_form(resource))
     |> assign_provenance()
+    |> assign_findings()
+  end
+
+  # Accepted exceptions are shown on the resource so everyone who views it
+  # knows what was set aside and why (RFD 8, "Inbox").
+  defp assign_findings(socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+    {_findings, open_count} = Findings.list_findings(scope, resource_id: resource.id)
+
+    assign(socket,
+      open_finding_count: open_count,
+      exceptions: Findings.list_resource_exceptions(scope, resource.id)
+    )
   end
 
   defp assign_provenance(socket) do
@@ -771,6 +844,12 @@ defmodule RengaWeb.ResourceLive.Show do
 
   defp override_author(%{created_by_user: %{email: email}}), do: email
   defp override_author(_override), do: "someone no longer in the organization"
+
+  defp finding_count_label(1), do: "1 open finding"
+  defp finding_count_label(count), do: "#{count} open findings"
+
+  defp exception_author(%{exception_by_user: %{email: email}}), do: "Accepted by #{email}"
+  defp exception_author(_workflow), do: "Accepted"
 
   defp drift_label(1), do: "1 open hardware finding"
   defp drift_label(count), do: "#{count} open hardware findings"
