@@ -150,3 +150,11 @@ jobs:
 
       - name: Run tests
         run: mix test
+
+      - name: Setup Node for hook regression tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Test overlay lifecycle
+        run: node --test assets/js/overlay.test.mjs

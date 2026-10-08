@@ -328,18 +328,18 @@ defmodule RengaWeb.UI do
     ~H"""
     <div
       id={@id}
-      phx-mounted={@show && show_overlay(@id)}
+      phx-hook="Overlay"
       phx-remove={hide_overlay(@id)}
-      data-cancel={JS.exec(@on_cancel, "phx-remove")}
+      data-initial-show={to_string(@show)}
+      data-show={overlay_show(@id)}
+      data-hide={overlay_hide(@id)}
+      data-cancel={@on_cancel}
       class="relative z-50 hidden"
     >
       <div id={"#{@id}-backdrop"} class="fixed inset-0 hidden bg-fg/25" aria-hidden="true" />
       <div class="fixed inset-y-0 right-0 flex w-full max-w-md">
         <.focus_wrap
           id={"#{@id}-container"}
-          phx-window-keydown={JS.exec("data-cancel", to: "##{@id}")}
-          phx-key="escape"
-          phx-click-away={JS.exec("data-cancel", to: "##{@id}")}
           role="dialog"
           aria-modal="true"
           aria-labelledby={"#{@id}-title"}
@@ -401,18 +401,18 @@ defmodule RengaWeb.UI do
     ~H"""
     <div
       id={@id}
-      phx-mounted={@show && show_overlay(@id)}
+      phx-hook="Overlay"
       phx-remove={hide_overlay(@id)}
-      data-cancel={JS.exec(@on_cancel, "phx-remove")}
+      data-initial-show={to_string(@show)}
+      data-show={overlay_show(@id)}
+      data-hide={overlay_hide(@id)}
+      data-cancel={@on_cancel}
       class="relative z-50 hidden"
     >
       <div id={"#{@id}-backdrop"} class="fixed inset-0 hidden bg-fg/25" aria-hidden="true" />
       <div class="fixed inset-0 grid place-items-center p-4">
         <.focus_wrap
           id={"#{@id}-container"}
-          phx-window-keydown={JS.exec("data-cancel", to: "##{@id}")}
-          phx-key="escape"
-          phx-click-away={JS.exec("data-cancel", to: "##{@id}")}
           role="alertdialog"
           aria-modal="true"
           aria-labelledby={"#{@id}-title"}
@@ -424,7 +424,10 @@ defmodule RengaWeb.UI do
             {render_slot(@inner_block)}
           </div>
           <div class="mt-5 flex justify-end gap-2">
-            <.button id={"#{@id}-cancel"} phx-click={JS.exec("data-cancel", to: "##{@id}")}>
+            <.button
+              id={"#{@id}-cancel"}
+              phx-click={JS.dispatch("renga:overlay-cancel", to: "##{@id}")}
+            >
               {@cancel_label || gettext("Cancel")}
             </.button>
             <.button
@@ -447,7 +450,7 @@ defmodule RengaWeb.UI do
     ~H"""
     <button
       type="button"
-      phx-click={JS.exec("data-cancel", to: "##{@id}")}
+      phx-click={JS.dispatch("renga:overlay-cancel", to: "##{@id}")}
       class="grid min-h-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
       aria-label={gettext("Close")}
     >
@@ -465,8 +468,19 @@ defmodule RengaWeb.UI do
   Opens a `side_panel/1` or `confirm_dialog/1` by id.
   """
   def show_overlay(js \\ %JS{}, id) when is_binary(id) do
-    js
-    |> JS.push_focus()
+    JS.dispatch(js, "renga:overlay-open", to: "##{id}")
+  end
+
+  @doc """
+  Closes a `side_panel/1` or `confirm_dialog/1` by id and restores focus.
+  Closing an already closed overlay is a no-op.
+  """
+  def hide_overlay(js \\ %JS{}, id) when is_binary(id) do
+    JS.dispatch(js, "renga:overlay-close", to: "##{id}")
+  end
+
+  defp overlay_show(id) do
+    %JS{}
     |> JS.show(to: "##{id}")
     |> JS.show(
       to: "##{id}-backdrop",
@@ -481,15 +495,11 @@ defmodule RengaWeb.UI do
         {"transition-all ease-out duration-200", "opacity-0 translate-y-2 sm:translate-y-0",
          "opacity-100 translate-y-0"}
     )
-    |> JS.add_class("overflow-hidden", to: "body")
     |> JS.focus_first(to: "##{id}-container")
   end
 
-  @doc """
-  Closes a `side_panel/1` or `confirm_dialog/1` by id and restores focus.
-  """
-  def hide_overlay(js \\ %JS{}, id) when is_binary(id) do
-    js
+  defp overlay_hide(id) do
+    %JS{}
     |> JS.hide(
       to: "##{id}-backdrop",
       time: 150,
@@ -501,7 +511,5 @@ defmodule RengaWeb.UI do
       transition: {"transition-all ease-in duration-150", "opacity-100", "opacity-0"}
     )
     |> JS.hide(to: "##{id}", transition: {"block", "block", "hidden"}, time: 150)
-    |> JS.remove_class("overflow-hidden", to: "body")
-    |> JS.pop_focus()
   end
 end

@@ -54,6 +54,19 @@ defmodule RengaWeb.UITest do
   end
 
   describe "table/1" do
+    test "stream rows retain native links through insert, delete and reset", %{conn: conn} do
+      {:ok, view, _html} = live_isolated(conn, RengaWeb.UIReviewLive)
+      assert has_element?(view, "#items-1 a[href='/users/log-in']", "Compute node")
+      view |> element("#add") |> render_click()
+      assert has_element?(view, "#items-2 a[href='/users/log-in']", "Second node")
+      view |> element("#delete") |> render_click()
+      refute has_element?(view, "#items-1")
+      assert has_element?(view, "#items-2 a")
+      view |> element("#reset") |> render_click()
+      refute has_element?(view, "#items-2")
+      assert has_element?(view, "#items-empty", "No nodes.")
+    end
+
     test "shows the empty state, which CSS hides once rows exist" do
       assigns = %{rows: []}
 
@@ -70,7 +83,7 @@ defmodule RengaWeb.UITest do
       assert attr_of(html, "#items-empty td", "colspan") == ["1"]
     end
 
-    test "marks the selected row and navigates from any cell" do
+    test "marks the selected row and exposes a native link plus secondary cell navigation" do
       assigns = %{rows: [%{id: 1, name: "compute-01"}, %{id: 2, name: "compute-02"}]}
 
       html =
@@ -83,12 +96,17 @@ defmodule RengaWeb.UITest do
           row_selected={&(&1.id == 2)}
         >
           <:col :let={item} label="Name" class="font-medium">{item.name}</:col>
+          <:col :let={item} label="ID">{item.id}</:col>
         </.table>
         """)
 
       assert attr_of(html, "#item-2", "aria-current") == ["true"]
       refute present?(html, "#item-1[aria-current]")
-      assert [click] = attr_of(html, "#item-1 td", "phx-click")
+      assert attr_of(html, "#item-1 td:first-child a", "href") == ["/inventory/resources/1"]
+      assert text(html, "#item-1 td:first-child a") == "compute-01"
+      assert attr_of(html, "#item-2 td:first-child a", "href") == ["/inventory/resources/2"]
+      refute present?(html, "#item-1 td:first-child[phx-click]")
+      assert [click] = attr_of(html, "#item-1 td:nth-child(2)", "phx-click")
       assert click =~ "/inventory/resources/1"
       assert present?(html, "#item-1 td.font-medium")
       assert present?(html, "thead th[scope='col'].font-medium")
@@ -187,8 +205,11 @@ defmodule RengaWeb.UITest do
         <.side_panel id="edit" title="Edit" show>Body</.side_panel>
         """)
 
-      assert [mounted] = attr_of(html, "#edit", "phx-mounted")
-      assert mounted =~ "#edit-container"
+      assert attr_of(html, "#edit", "phx-hook") == ["Overlay"]
+      assert attr_of(html, "#edit", "data-initial-show") == ["true"]
+      assert [shown] = attr_of(html, "#edit", "data-show")
+      assert shown =~ "#edit-container"
+      refute present?(html, "[phx-window-keydown]")
     end
   end
 
@@ -210,24 +231,22 @@ defmodule RengaWeb.UITest do
       assert present?(html, "#revoke-confirm.bg-crit")
       assert [click] = attr_of(html, "#revoke-confirm", "phx-click")
       assert click =~ ~s("revoke")
-      assert click =~ "#revoke-container"
+      assert click =~ "renga:overlay-close"
+      assert attr_of(html, "#revoke", "phx-hook") == ["Overlay"]
+      refute present?(html, "[phx-window-keydown]")
       assert text(html, "#revoke-cancel") == "Cancel"
     end
   end
 
   describe "overlay commands" do
-    test "show and hide target the overlay, its backdrop, and its container" do
+    test "show and hide delegate lifecycle ownership to the overlay hook" do
       shown = show_overlay("panel") |> Safe.to_iodata() |> IO.iodata_to_binary()
       hidden = hide_overlay("panel") |> Safe.to_iodata() |> IO.iodata_to_binary()
 
-      for selector <- ["#panel", "#panel-backdrop", "#panel-container"] do
-        assert shown =~ selector
-        assert hidden =~ selector
-      end
-
-      assert shown =~ "push_focus"
-      assert shown =~ "focus_first"
-      assert hidden =~ "pop_focus"
+      assert shown =~ "#panel"
+      assert hidden =~ "#panel"
+      assert shown =~ "renga:overlay-open"
+      assert hidden =~ "renga:overlay-close"
     end
   end
 end

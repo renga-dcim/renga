@@ -24,6 +24,7 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/renga"
 import topbar from "../vendor/topbar"
+import {Overlay} from "./overlay"
 
 const CommandPalette = {
   mounted() {
@@ -290,7 +291,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CommandPalette, CopyToClipboard, ResizablePanel},
+  hooks: {...colocatedHooks, CommandPalette, CopyToClipboard, ResizablePanel, Overlay},
 })
 
 // Show progress bar on live navigation and form submits

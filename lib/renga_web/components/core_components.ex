@@ -397,6 +397,10 @@ defmodule RengaWeb.CoreComponents do
   with `row_navigate` and mark the open one with `row_selected`. The `:empty`
   slot shows when there are no rows, including for streams.
 
+  With `row_navigate`, the first column becomes a native link; its slot must
+  not contain other interactive controls. For streams, reinsert affected rows
+  (or reset the stream) when changing selection so their markup is refreshed.
+
   ## Examples
 
       <.table id="users" rows={@users}>
@@ -484,15 +488,26 @@ defmodule RengaWeb.CoreComponents do
             ]}
           >
             <td
-              :for={col <- @col}
-              phx-click={row_command(@row_click, @row_navigate, row)}
+              :for={{col, index} <- Enum.with_index(@col)}
+              phx-click={
+                !(index == 0 && @row_navigate) && row_command(@row_click, @row_navigate, row)
+              }
               class={[
                 "px-cell",
                 (@row_click || @row_navigate) && "hover:cursor-pointer",
                 col[:class]
               ]}
             >
-              {render_slot(col, @row_item.(row))}
+              <.link
+                :if={index == 0 && @row_navigate}
+                navigate={@row_navigate.(row)}
+                class="flex min-h-row items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+              >
+                {render_slot(col, @row_item.(row))}
+              </.link>
+              <%= if !(index == 0 && @row_navigate) do %>
+                {render_slot(col, @row_item.(row))}
+              <% end %>
             </td>
             <td :if={@action != []} class="w-0 px-cell font-medium">
               <div class="flex gap-4">
