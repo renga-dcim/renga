@@ -45,7 +45,8 @@ defmodule RengaWeb.Layouts do
       :vlans,
       :topology,
       :cables,
-      :topology_findings
+      :topology_findings,
+      :activity
     ],
     doc: "the active inventory navigation destination"
 

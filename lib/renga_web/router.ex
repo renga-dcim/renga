@@ -80,6 +80,7 @@ defmodule RengaWeb.Router do
       live "/inventory/resources/:id/hardware", ResourceHardwareLive, :show
       live "/inventory/component-findings", ComponentFindingLive, :index
       live "/inventory/operations", InventoryOperationsLive, :index
+      live "/activity", ActivityLive, :index
 
       live "/ipam/vlan-groups", VlanGroupLive, :index
       live "/ipam/vlans", VlanLive, :index
