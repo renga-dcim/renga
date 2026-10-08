@@ -179,10 +179,7 @@ defmodule RengaWeb.ElevationComponents do
   defp ghosts(elevation, face) do
     Enum.filter(elevation.observed, fn ghost ->
       ghost.position && ghost.face in [face, "full"] &&
-        Enum.all?(
-          ghost.position..(ghost.position + ghost.height - 1),
-          &Elevation.free_unit?(elevation, &1, face)
-        )
+        ghost.position in Elevation.free_positions(elevation, ghost.height, face)
     end)
   end
 

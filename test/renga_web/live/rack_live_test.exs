@@ -176,6 +176,61 @@ defmodule RengaWeb.RackLiveTest do
     assert has_element?(view, "div#unit-front-1")
   end
 
+  test "refreshing an open panel replaces stale selections using the new device height",
+       context do
+    %{admin: admin, rack: rack, other_rack: other_rack} = context
+    web = server_fixture(admin, "web-01")
+    replacement = server_fixture(admin, "replacement")
+
+    {:ok, manufacturer} =
+      Renga.Catalog.create_manufacturer(admin, %{name: "Acme"}, %{slug: "acme"})
+
+    {:ok, hardware} =
+      Renga.Catalog.create_hardware_type(admin, %{name: "2U server"}, %{
+        manufacturer_id: manufacturer.id,
+        model: "2U",
+        device_class: "server"
+      })
+
+    {:ok, _} = Renga.Catalog.create_hardware_type_revision(admin, hardware, %{height_units: 2})
+    {:ok, _} = Renga.Catalog.assign_hardware_type(admin, replacement.id, hardware.id)
+    {:ok, _} = DCIM.put_current_placement(admin, replacement.id, %{rack_id: rack.id})
+
+    {:ok, view, _} = live(context.admin_conn, ~p"/places/racks/#{rack}")
+    view |> element("#placeable-#{web.id}-place") |> render_click()
+    {:ok, _} = DCIM.place_in_rack(admin, web.id, other_rack.id, 1, "front")
+    send(view.pid, :reload)
+
+    assert has_element?(view, "#place-resource option[selected][value='#{replacement.id}']")
+    assert has_element?(view, "#place-unit option[value='11']", "U11–12")
+    refute has_element?(view, "#place-unit option[value='12']")
+
+    {:ok, _} = DCIM.place_in_rack(admin, replacement.id, other_rack.id, 4, "front")
+    send(view.pid, :reload)
+    refute has_element?(view, "#place-resource option")
+    refute has_element?(view, "#place-unit")
+    assert has_element?(view, "#place-save[disabled]")
+    assert has_element?(view, "#place-no-room", "No devices are waiting for a place.")
+  end
+
+  test "out-of-bounds observations remain in the aside, never on the grid", context do
+    %{admin: admin, rack: rack, other_rack: other_rack} = context
+    web = server_fixture(admin, "web-01")
+
+    {:ok, _} =
+      place(admin, web, other_rack, position: 3, height_units: 2, face: "front", confirmed: true)
+
+    observe!(admin, web, rack_identifier: "R12", position: 12, height_units: 2, face: "full")
+
+    for starting_unit <- ["bottom", "top"] do
+      {:ok, _} = DCIM.update_rack(admin, rack, %{starting_unit: starting_unit})
+      {:ok, view, _} = live(context.admin_conn, ~p"/places/racks/#{rack}")
+      assert has_element?(view, "#observed-#{web.id}")
+      refute has_element?(view, "#ghost-front-#{web.id}")
+      refute has_element?(view, "#ghost-rear-#{web.id}")
+    end
+  end
+
   defp place(scope, resource, rack, attrs) do
     DCIM.put_current_placement(scope, resource.id, Map.merge(%{rack_id: rack.id}, Map.new(attrs)))
   end

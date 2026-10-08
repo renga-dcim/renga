@@ -133,9 +133,13 @@ defmodule RengaWeb.RackLive do
   defp assign_place(socket, params) do
     elevation = socket.assigns.elevation
     candidates = candidates(elevation)
-    resource_id = params["resource_id"] || first_id(candidates)
+
+    candidate =
+      Enum.find(candidates, &(&1.resource.id == params["resource_id"])) || List.first(candidates)
+
+    resource_id = candidate && candidate.resource.id
     face = if params["face"] in ~w(front rear full), do: params["face"], else: "front"
-    height = candidate_height(candidates, resource_id)
+    height = if candidate, do: candidate.height, else: 1
     positions = if resource_id, do: Elevation.free_positions(elevation, height, face), else: []
     position = fitting_position(params["position"], positions)
 
@@ -159,16 +163,6 @@ defmodule RengaWeb.RackLive do
   defp refresh_place(socket), do: assign_place(socket, socket.assigns.place_form.params)
 
   defp candidates(elevation), do: elevation.in_rack ++ elevation.at_location ++ elevation.unplaced
-
-  defp first_id([%{resource: resource} | _rest]), do: resource.id
-  defp first_id([]), do: nil
-
-  defp candidate_height(candidates, resource_id) do
-    case Enum.find(candidates, &(&1.resource.id == resource_id)) do
-      nil -> 1
-      candidate -> candidate.height
-    end
-  end
 
   defp fitting_position(nil, [first | _rest]), do: first
   defp fitting_position(nil, []), do: nil
@@ -393,7 +387,11 @@ defmodule RengaWeb.RackLive do
             options={Enum.map(@place_positions, &{unit_range(&1, @place_height), &1})}
           />
           <p :if={@place_positions == []} id="place-no-room" class="py-2 text-sm text-fg-muted">
-            No {@place_height}U gap is free on this face.
+            <%= if @place_options == [] do %>
+              No devices are waiting for a place.
+            <% else %>
+              No {@place_height}U gap is free on this face.
+            <% end %>
           </p>
           <div class="mt-4 flex justify-end gap-2">
             <.button type="button" phx-click={hide_overlay("place-panel")}>Cancel</.button>
