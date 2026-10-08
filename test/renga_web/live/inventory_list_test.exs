@@ -300,8 +300,18 @@ defmodule RengaWeb.InventoryListTest do
       new = resource!(scope, %{kind: "server", name: "arrived-01"})
       refute has_element?(view, "#resources-#{new.id}")
 
-      Renga.Inventory.Changes.broadcast({:ok, new}, scope.organization_id)
       assert eventually(fn -> has_element?(view, "#resources-#{new.id}") end)
+    end
+
+    test "domain-owned VLAN and site creation notify the mounted list", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, view, _html} = live(conn, ~p"/inventory")
+      {:ok, vlan} = Renga.Topology.create_vlan(scope, %{}, %{vid: 123, name: "Review VLAN"})
+      {:ok, site} = Renga.DCIM.create_site(scope, %{name: "Review site"}, %{slug: "review-site"})
+      assert eventually(fn -> has_element?(view, "#resources-#{vlan.resource_id}") end)
+      assert has_element?(view, "#resources-#{site.resource_id}")
     end
   end
 
@@ -322,7 +332,11 @@ defmodule RengaWeb.InventoryListTest do
       |> put_session(:current_organization_id, scope.organization_id)
     end
 
-    test "admins save a changed list as a shared, pinned view", %{conn: conn, server: server} do
+    test "admins save a changed list as a shared, pinned view", %{
+      conn: conn,
+      server: server,
+      scope: scope
+    } do
       {:ok, view, _html} = live(conn, ~p"/inventory")
       assert has_element?(view, "#view-all[aria-current='page']")
       refute has_element?(view, "#save-view-button")
@@ -342,17 +356,19 @@ defmodule RengaWeb.InventoryListTest do
       refute has_element?(view, "#save-view-button")
 
       # The view opens the list with its query, for everyone in the organization.
+      saved = Enum.find(Renga.SavedViews.list_views(scope, "inventory"), &(&1.name == "Stale"))
+      path = ~p"/inventory?#{%{"freshness" => "stale", "view" => saved.id}}"
       other = member_conn(%{organization_id: server.organization_id}, "member")
       {:ok, member_view, _html} = live(other, ~p"/inventory")
 
       assert has_element?(
                member_view,
-               "#app-sidebar nav[aria-label='Saved views'] a[href='/inventory?freshness=stale']",
+               "#app-sidebar nav[aria-label='Saved views'] a[href='#{path}']",
                "Stale"
              )
 
       member_view |> element("#view-tabs a", "Stale") |> render_click()
-      assert_patch(member_view, ~p"/inventory?freshness=stale")
+      assert_patch(member_view, path)
       refute has_element?(member_view, "#view-options")
     end
 
@@ -399,6 +415,32 @@ defmodule RengaWeb.InventoryListTest do
       assert has_element?(view, "#flash-info", "Deleted view Servers")
       refute has_element?(view, "#view-tabs", "Servers")
       refute has_element?(view, "#app-sidebar nav[aria-label='Saved views']")
+    end
+
+    test "identical personal and shared queries retain distinct management targets", %{
+      conn: conn,
+      scope: scope
+    } do
+      attrs = %{area: "inventory", params: %{"kind" => "server"}}
+
+      {:ok, shared} =
+        Renga.SavedViews.create_view(
+          scope,
+          Map.merge(attrs, %{name: "Shared servers", shared: true})
+        )
+
+      {:ok, personal} = Renga.SavedViews.create_view(scope, Map.put(attrs, :name, "My servers"))
+      {:ok, view, _} = live(conn, ~p"/inventory")
+      view |> element("#view-tabs a", "My servers") |> render_click()
+      assert has_element?(view, "#view-tabs a[aria-current='page']", "My servers")
+      view |> element("#view-pin") |> render_click()
+      views = Renga.SavedViews.list_views(scope, "inventory")
+      assert Enum.find(views, &(&1.id == personal.id)).pinned
+      refute Enum.find(views, &(&1.id == shared.id)).pinned
+      view |> element("#delete-view-confirm") |> render_click()
+      assert Enum.map(Renga.SavedViews.list_views(scope, "inventory"), & &1.id) == [shared.id]
+      view |> element("#view-tabs a", "Shared servers") |> render_click()
+      assert has_element?(view, "#view-tabs a[aria-current='page']", "Shared servers")
     end
   end
 end

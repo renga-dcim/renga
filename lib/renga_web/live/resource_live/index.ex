@@ -178,7 +178,8 @@ defmodule RengaWeb.ResourceLive.Index do
          |> put_flash(:info, "Saved view #{view.name}")
          |> close_overlay("save-view")
          |> assign(view_form: new_view_form())
-         |> reload_views()}
+         |> reload_views()
+         |> patch(%{query | view_id: view.id})}
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "Only owners and admins can share views")}
@@ -251,16 +252,17 @@ defmodule RengaWeb.ResourceLive.Index do
     |> RengaWeb.SidebarViews.refresh()
   end
 
-  # The view whose query the list is showing, if any. Page and selection do
-  # not count: a view stays active while paging through it.
+  # Identity is separate from filters: personal and organization views may
+  # intentionally have the same query. Modified filters show as unsaved.
   defp active_view(views, query) do
     params = InventoryQuery.view_params(query)
-    Enum.find(views, &(&1.params == params))
+    Enum.find(views, &(&1.id == query.view_id and &1.params == params))
   end
 
   defp new_view_form, do: %SavedView{} |> SavedViews.change_view() |> to_form()
 
-  defp view_path(%SavedView{params: params}), do: params |> InventoryQuery.parse() |> list_path()
+  defp view_path(%SavedView{id: id, params: params}),
+    do: params |> Map.put("view", id) |> InventoryQuery.parse() |> list_path()
 
   defp load_resources(socket) do
     scope = socket.assigns.current_scope

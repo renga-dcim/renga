@@ -18,7 +18,8 @@ defmodule RengaWeb.InventoryQueryTest do
       "sort" => "-last_seen",
       "cols" => "kind,status",
       "page" => "3",
-      "sel" => "a,b"
+      "sel" => "a,b",
+      "view" => "saved-view-id"
     }
 
     query = InventoryQuery.parse(params)
@@ -32,8 +33,9 @@ defmodule RengaWeb.InventoryQueryTest do
     assert InventoryQuery.to_params(query) == params
   end
 
-  test "views keep filters and display but not page or selection" do
-    query = InventoryQuery.parse(%{"freshness" => "stale", "page" => "2", "sel" => "a"})
+  test "views keep filters and display but not page, selection or identity" do
+    query =
+      InventoryQuery.parse(%{"freshness" => "stale", "page" => "2", "sel" => "a", "view" => "id"})
 
     assert InventoryQuery.view_params(query) == %{"freshness" => "stale"}
   end

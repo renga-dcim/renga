@@ -143,7 +143,7 @@ defmodule RengaWeb.Navigation do
   query, and whether it is shared with the organization.
   """
   def view_link(%Renga.SavedViews.SavedView{area: "inventory"} = view) do
-    path = if view.params == %{}, do: ~p"/inventory", else: ~p"/inventory?#{view.params}"
+    path = ~p"/inventory?#{Map.put(view.params, "view", view.id)}"
     %{id: view.id, label: view.name, path: path, shared?: is_nil(view.user_id)}
   end
 

@@ -30,7 +30,8 @@ defmodule RengaWeb.InventoryQuery do
             sort: {:name, :asc},
             columns: @default_columns,
             page: 1,
-            selected: []
+            selected: [],
+            view_id: nil
 
   @type t :: %__MODULE__{}
 
@@ -56,7 +57,8 @@ defmodule RengaWeb.InventoryQuery do
       sort: parse_sort(params["sort"]),
       columns: parse_columns(params["cols"]),
       page: parse_page(params["page"]),
-      selected: params |> Map.get("sel") |> split_list()
+      selected: params |> Map.get("sel") |> split_list(),
+      view_id: blank_to_nil(params["view"])
     }
   end
 
@@ -72,7 +74,8 @@ defmodule RengaWeb.InventoryQuery do
       {"sort", encode_sort(query.sort)},
       {"cols", encode_columns(query.columns)},
       {"page", query.page > 1 && Integer.to_string(query.page)},
-      {"sel", Enum.join(query.selected, ",")}
+      {"sel", Enum.join(query.selected, ",")},
+      {"view", query.view_id}
     ]
     |> Enum.reject(fn {_key, value} -> value in [nil, "", false] end)
     |> Map.new()
@@ -80,7 +83,7 @@ defmodule RengaWeb.InventoryQuery do
 
   @doc "The params that define a view: everything except page and selection."
   def view_params(%__MODULE__{} = query) do
-    query |> to_params() |> Map.drop(["page", "sel"])
+    query |> to_params() |> Map.drop(["page", "sel", "view"])
   end
 
   @doc "Options for `Renga.Inventory.list_operational_resources/2`."
