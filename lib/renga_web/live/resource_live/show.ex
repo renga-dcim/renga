@@ -62,12 +62,18 @@ defmodule RengaWeb.ResourceLive.Show do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:resources}>
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      active_nav={:inventory}
+      commands={commands(assigns)}
+      command_context={@resource.display_name || @resource.name}
+    >
       <article id="resource-detail" class="space-y-6">
         <header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <.link
-              navigate={~p"/inventory/resources"}
+              navigate={~p"/inventory"}
               class="inline-flex items-center gap-1.5 text-xs font-medium text-base-content/50 transition hover:text-orange-600"
             >
               <.icon name="hero-arrow-left" class="size-3.5" /> Resources
@@ -90,7 +96,7 @@ defmodule RengaWeb.ResourceLive.Show do
             <.link
               :if={@hardware_assignable?}
               id="resource-hardware-link"
-              navigate={~p"/inventory/resources/#{@resource.id}/hardware"}
+              navigate={~p"/inventory/#{@resource.id}/hardware"}
               class="mb-2 inline-flex h-10 items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
             >
               <.icon name="hero-cpu-chip" class="size-4" /> Hardware inventory
@@ -210,7 +216,7 @@ defmodule RengaWeb.ResourceLive.Show do
                     >
                       <.link
                         id={"interface-#{interface.id}-memberships"}
-                        navigate={~p"/ipam/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
+                        navigate={~p"/network/vlans?#{[interface_id: interface.id]}" <> "#interface-membership"}
                         class="inline-flex items-center gap-1 text-xs font-medium text-base-content/70 transition hover:text-orange-600"
                       >
                         <.icon name="hero-tag" class="size-3.5" /> VLAN memberships
@@ -353,6 +359,34 @@ defmodule RengaWeb.ResourceLive.Show do
       </article>
     </Layouts.app>
     """
+  end
+
+  # Command menu actions for this resource. Each one that cannot run says why,
+  # using the same checks that gate the page's own controls.
+  defp commands(assigns) do
+    [
+      %{
+        id: "change-lifecycle",
+        label: "Change lifecycle",
+        icon: "hero-arrow-path-rounded-square",
+        run: JS.focus(to: "#resource-lifecycle-form select"),
+        unavailable:
+          if(!assigns.can_manage_lifecycle?,
+            do: "Requires the owner or admin role"
+          )
+      },
+      %{
+        id: "open-hardware",
+        label: "Open hardware",
+        icon: "hero-cpu-chip",
+        run: JS.navigate(~p"/inventory/#{assigns.resource.id}/hardware"),
+        unavailable:
+          if(!assigns.hardware_assignable?,
+            do:
+              "Only physical devices have hardware; this is a #{humanize(assigns.resource.kind)}"
+          )
+      }
+    ]
   end
 
   defp lifecycle_form(resource) do

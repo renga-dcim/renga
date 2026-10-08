@@ -35,7 +35,7 @@ defmodule RengaWeb.ComponentFindingLiveTest do
     open = finding_fixture(scope, resource, "component_drift", "open")
     resolved = finding_fixture(scope, resource, "missing_expected_component", "resolved")
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/component-findings")
+    {:ok, view, _html} = live(conn, ~p"/inbox/components")
 
     assert has_element?(view, "#component-findings")
     assert has_element?(view, "#component-findings-#{open.id}", "Component drift")
@@ -43,7 +43,7 @@ defmodule RengaWeb.ComponentFindingLiveTest do
 
     assert has_element?(
              view,
-             "#component-findings-#{open.id} a[href='/inventory/resources/#{resource.id}/hardware']"
+             "#component-findings-#{open.id} a[href='/inventory/#{resource.id}/hardware']"
            )
 
     view
@@ -71,7 +71,7 @@ defmodule RengaWeb.ComponentFindingLiveTest do
 
     foreign = finding_fixture(other_scope, foreign_resource, "component_drift", "open")
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/component-findings")
+    {:ok, view, _html} = live(conn, ~p"/inbox/components")
 
     assert has_element?(view, "#component-findings-#{local.id}")
     refute has_element?(view, "#component-findings-#{foreign.id}")
@@ -92,7 +92,7 @@ defmodule RengaWeb.ComponentFindingLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(viewer_conn, ~p"/inventory/component-findings")
+    {:ok, view, _html} = live(viewer_conn, ~p"/inbox/components")
     assert has_element?(view, "#component-findings-#{finding.id}")
     refute has_element?(view, "#component-findings-list form")
     refute has_element?(view, "#component-findings-list [phx-click]")
@@ -100,7 +100,7 @@ defmodule RengaWeb.ComponentFindingLiveTest do
 
   test "requires authentication", %{resource: resource} do
     assert {:error, {:redirect, %{to: path}}} =
-             live(build_conn(), ~p"/inventory/resources/#{resource.id}/hardware")
+             live(build_conn(), ~p"/inventory/#{resource.id}/hardware")
 
     assert path =~ "/users/log-in"
   end

@@ -92,7 +92,7 @@ defmodule RengaWeb.UITest do
           id="items"
           rows={@rows}
           row_id={&"item-#{&1.id}"}
-          row_navigate={&"/inventory/resources/#{&1.id}"}
+          row_navigate={&"/inventory/#{&1.id}"}
           row_selected={&(&1.id == 2)}
         >
           <:col :let={item} label="Name" class="font-medium">{item.name}</:col>
@@ -102,12 +102,12 @@ defmodule RengaWeb.UITest do
 
       assert attr_of(html, "#item-2", "aria-current") == ["true"]
       refute present?(html, "#item-1[aria-current]")
-      assert attr_of(html, "#item-1 td:first-child a", "href") == ["/inventory/resources/1"]
+      assert attr_of(html, "#item-1 td:first-child a", "href") == ["/inventory/1"]
       assert text(html, "#item-1 td:first-child a") == "compute-01"
-      assert attr_of(html, "#item-2 td:first-child a", "href") == ["/inventory/resources/2"]
+      assert attr_of(html, "#item-2 td:first-child a", "href") == ["/inventory/2"]
       refute present?(html, "#item-1 td:first-child[phx-click]")
       assert [click] = attr_of(html, "#item-1 td:nth-child(2)", "phx-click")
-      assert click =~ "/inventory/resources/1"
+      assert click =~ "/inventory/1"
       assert present?(html, "#item-1 td.font-medium")
       assert present?(html, "thead th[scope='col'].font-medium")
     end
@@ -122,8 +122,8 @@ defmodule RengaWeb.UITest do
         <.object_page id="resource" title="Primary compute node" subtitle="compute-01 · server">
           <:breadcrumb>Inventory</:breadcrumb>
           <:status><.status_strip size="header" lifecycle="active" /></:status>
-          <:tab patch="/inventory/resources/1" active>Overview</:tab>
-          <:tab patch="/inventory/resources/1/hardware" count={2}>Hardware</:tab>
+          <:tab patch="/inventory/1" active>Overview</:tab>
+          <:tab patch="/inventory/1/hardware" count={2}>Hardware</:tab>
           <p id="overview-body">Overview content</p>
           <:aside>
             <.properties>
@@ -138,8 +138,8 @@ defmodule RengaWeb.UITest do
       assert present?(html, "#resource [role='group'][aria-label='Status']")
 
       assert attr_of(html, "#resource-tabs a", "href") == [
-               "/inventory/resources/1",
-               "/inventory/resources/1/hardware"
+               "/inventory/1",
+               "/inventory/1/hardware"
              ]
 
       assert text(html, "#resource-tabs a[aria-current='page']") == "Overview"

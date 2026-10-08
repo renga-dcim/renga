@@ -32,7 +32,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, first_vlan} = create_vlan(scope, first_group, 10, "Management")
     {:ok, second_vlan} = create_vlan(scope, second_group, 250, "Lab access")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     assert has_element?(view, "#vlan-#{first_vlan.id}", "Management")
     assert has_element?(view, "#vlan-#{second_vlan.id}", "Lab access")
@@ -43,7 +43,7 @@ defmodule RengaWeb.VlanLiveTest do
     |> form("#vlan-filters", filters: %{group_id: first_group.id})
     |> render_change()
 
-    assert_patch(view, ~p"/ipam/vlans?#{[group_id: first_group.id]}")
+    assert_patch(view, ~p"/network/vlans?#{[group_id: first_group.id]}")
 
     assert has_element?(view, "#vlan-#{first_vlan.id}")
     refute has_element?(view, "#vlan-#{second_vlan.id}")
@@ -52,7 +52,7 @@ defmodule RengaWeb.VlanLiveTest do
     |> form("#vlan-filters", filters: %{group_id: "global"})
     |> render_change()
 
-    assert_patch(view, ~p"/ipam/vlans?#{[group_id: "global"]}")
+    assert_patch(view, ~p"/network/vlans?#{[group_id: "global"]}")
 
     refute has_element?(view, "#vlan-#{first_vlan.id}")
     refute has_element?(view, "#vlan-#{second_vlan.id}")
@@ -95,14 +95,14 @@ defmodule RengaWeb.VlanLiveTest do
                true
              )
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans?#{[interface_id: interface.id]}")
 
     assert has_element?(view, "#interface-membership", "eth0")
     assert has_element?(view, "#interface-membership", "membership-server")
 
     assert has_element?(
              view,
-             "#interface-membership a[href='/inventory/resources/#{resource.id}']"
+             "#interface-membership a[href='/inventory/#{resource.id}']"
            )
 
     assert has_element?(view, "#desired-memberships", "10 · Management")
@@ -122,7 +122,7 @@ defmodule RengaWeb.VlanLiveTest do
     assert has_element?(view, "#vlans-clear-interface")
 
     # Without the filter the membership panel is absent.
-    {:ok, plain_view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, plain_view, _html} = live(conn, ~p"/network/vlans")
     refute has_element?(plain_view, "#interface-membership")
   end
 
@@ -159,7 +159,7 @@ defmodule RengaWeb.VlanLiveTest do
                true
              )
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans?#{[interface_id: interface.id]}")
 
     assert has_element?(view, "#interface-membership-observed-mode", "Trunk")
     refute has_element?(view, "#interface-membership-observed-mode", "Unavailable")
@@ -223,7 +223,7 @@ defmodule RengaWeb.VlanLiveTest do
 
     assert is_nil(Topology.get_current_interface_vlan_mode(scope, interface.id))
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans?#{[interface_id: interface.id]}")
 
     # The membership stays visible and the mode reads as unavailable rather than absent
     # from the collector's report.
@@ -252,7 +252,7 @@ defmodule RengaWeb.VlanLiveTest do
 
     {:ok, interface} = Inventory.create_interface(scope, resource.id, %{name: "eth0"})
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans?#{[interface_id: interface.id]}")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans?#{[interface_id: interface.id]}")
 
     assert has_element?(view, "#interface-membership-desired-mode", "Not recorded")
     assert has_element?(view, "#interface-membership-observed-mode", "Not recorded")
@@ -266,7 +266,7 @@ defmodule RengaWeb.VlanLiveTest do
   } do
     {:ok, group} = create_group(scope, "authoring", [{1, 100}])
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     view
     |> form("#vlan-form",
@@ -295,7 +295,7 @@ defmodule RengaWeb.VlanLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, member_view, _html} = live(member_conn, ~p"/ipam/vlans")
+    {:ok, member_view, _html} = live(member_conn, ~p"/network/vlans")
 
     assert has_element?(member_view, "#vlan-#{vlan.id}", "Management")
     refute has_element?(member_view, "#vlan-form")
@@ -304,7 +304,7 @@ defmodule RengaWeb.VlanLiveTest do
   test "rejects a VID outside the selected namespace", %{conn: conn, scope: scope} do
     {:ok, group} = create_group(scope, "bounded", [{1, 100}])
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     view
     |> form("#vlan-form",
@@ -328,7 +328,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, vlan} = create_vlan(scope, group, 10, "Management")
     prefix = create_prefix(scope, "prefix-ui-server", "192.0.2.0/24")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     # Without a link the card shows no prefix chips.
     refute has_element?(view, "#vlan-#{vlan.id}-prefixes")
@@ -378,7 +378,7 @@ defmodule RengaWeb.VlanLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, member_view, _html} = live(member_conn, ~p"/ipam/vlans")
+    {:ok, member_view, _html} = live(member_conn, ~p"/network/vlans")
 
     assert has_element?(member_view, "#vlan-#{vlan.id}-prefixes", "192.0.2.0/24")
     refute has_element?(member_view, "#prefix-vlan-form")
@@ -405,7 +405,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, _relationship} =
       Topology.attach_prefix_vlan(foreign_scope, foreign_prefix.id, foreign_vlan.id)
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     assert has_element?(view, "#vlan-#{vlan.id}-prefixes", "192.0.2.0/24")
     refute has_element?(view, "#vlan-#{foreign_vlan.id}-prefixes")
@@ -415,7 +415,7 @@ defmodule RengaWeb.VlanLiveTest do
   end
 
   test "keeps linking available but explains the missing inventory", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     assert has_element?(view, "#prefix-vlan-form-empty", "No IP prefixes are recorded yet.")
     assert has_element?(view, "#prefix-vlan-form-submit[disabled]")
@@ -429,7 +429,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, vlan} = create_vlan(scope, group, 10, "Management")
     prefix = create_prefix(scope, "stale-endpoint-server", "192.0.2.0/24")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     # The manager renders the form, another manager removes the endpoint, and
     # the stale submission must not crash the view.
@@ -448,7 +448,7 @@ defmodule RengaWeb.VlanLiveTest do
   end
 
   test "treats malformed endpoint ids as missing instead of crashing", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     view
     |> render_submit("attach_prefix_vlan", %{
@@ -477,7 +477,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, second_vlan} = create_vlan(scope, second_group, 10, "Management")
     prefix = create_prefix(scope, "label-server", "192.0.2.0/24")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     # The options must identify the namespace, not just the VID and name.
     assert has_element?(view, "#prefix-vlan-form option", "10 · Management · label-prod")
@@ -495,7 +495,7 @@ defmodule RengaWeb.VlanLiveTest do
   end
 
   test "requires authentication" do
-    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/ipam/vlans")
+    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/network/vlans")
     assert path =~ "/users/log-in"
   end
 
@@ -510,7 +510,7 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, foreign_group} = create_group(foreign_scope, "foreign-vlans", [{1, 10}])
     {:ok, foreign_vlan} = create_vlan(foreign_scope, foreign_group, 5, "Foreign")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     assert has_element?(view, "#vlan-#{vlan.id}")
     refute has_element?(view, "#vlan-#{foreign_vlan.id}")
@@ -520,7 +520,7 @@ defmodule RengaWeb.VlanLiveTest do
 
   test "tracks VLAN form values and resets them after success", %{conn: conn, scope: scope} do
     {:ok, group} = create_group(scope, "form-tracking", [{1, 100}])
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlans")
+    {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
     values = %{
       vlan_group_id: group.id,

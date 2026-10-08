@@ -2673,6 +2673,37 @@ defmodule Renga.InventoryTest do
       assert %DateTime{} = change_event.occurred_at
     end
 
+    test "list_activity/2 pages through events sharing a timestamp without repeats", %{
+      scope: scope,
+      resource: resource
+    } do
+      occurred_at = ~U[2026-08-07 10:00:00.000000Z]
+
+      created =
+        for _ <- 1..3 do
+          {:ok, event} =
+            Inventory.create_change_event(scope, %{
+              resource_id: resource.id,
+              kind: "stale",
+              occurred_at: occurred_at
+            })
+
+          event.id
+        end
+
+      pages =
+        Stream.unfold(nil, fn before ->
+          case Inventory.list_activity(scope, before: before, limit: 2) do
+            [] -> nil
+            page -> {page, List.last(page)}
+          end
+        end)
+        |> Enum.to_list()
+
+      assert Enum.map(pages, &length/1) == [2, 1]
+      assert pages |> List.flatten() |> Enum.map(& &1.id) |> Enum.sort() == Enum.sort(created)
+    end
+
     test "create_change_event/2 accepts string-keyed attributes", %{
       scope: scope,
       resource: resource

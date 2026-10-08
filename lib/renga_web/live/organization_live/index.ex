@@ -49,7 +49,7 @@ defmodule RengaWeb.OrganizationLive.Index do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:organizations}>
       <section
         id="organization-selector"
         class="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.2fr_0.8fr]"

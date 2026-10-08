@@ -1846,6 +1846,38 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Lists the organization's change events, newest first, for the Activity feed.
+
+  Pages are keyset-based so new events arriving between requests never shift
+  or repeat rows: pass the oldest event already shown as `:before` to get the
+  next page. Each event carries its resource and source for display.
+
+  ## Options
+
+    * `:before` - the last `%ChangeEvent{}` of the previous page
+    * `:limit` - page size, 50 by default
+  """
+  def list_activity(%Scope{organization_id: organization_id}, opts \\ []) do
+    ChangeEvent
+    |> where([event], event.organization_id == ^organization_id)
+    |> activity_before(Keyword.get(opts, :before))
+    |> order_by([event], desc: event.occurred_at, desc: event.id)
+    |> limit(^Keyword.get(opts, :limit, 50))
+    |> preload([:resource, :source])
+    |> Repo.all()
+  end
+
+  defp activity_before(query, nil), do: query
+
+  defp activity_before(query, %ChangeEvent{occurred_at: occurred_at, id: id}) do
+    where(
+      query,
+      [event],
+      event.occurred_at < ^occurred_at or (event.occurred_at == ^occurred_at and event.id < ^id)
+    )
+  end
+
+  @doc """
   Records a resource or observation state transition.
 
   Optional linked ids are resolved through the caller scope before insertion so

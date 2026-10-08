@@ -100,7 +100,7 @@ defmodule RengaWeb.ResourceLiveTest do
     conn: conn,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+    {:ok, view, _html} = live(conn, ~p"/inventory")
 
     assert has_element?(view, "#resource-list")
     assert has_element?(view, "#app-sidebar")
@@ -108,7 +108,7 @@ defmodule RengaWeb.ResourceLiveTest do
     assert has_element?(view, "#mobile-navigation-trigger")
     assert has_element?(view, "#command-palette")
 
-    for route <- ["/dcim/hardware-types", "/inventory/component-findings"] do
+    for route <- ["/catalog/hardware-types", "/inbox/components"] do
       assert has_element?(view, "#primary-navigation a[href='#{route}']")
       assert has_element?(view, "#app-mobile-navigation a[href='#{route}']")
       assert has_element?(view, "#command-palette a[href='#{route}']")
@@ -124,7 +124,7 @@ defmodule RengaWeb.ResourceLiveTest do
   end
 
   test "filters the dense workspace without leaving the index", %{conn: conn, resource: resource} do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+    {:ok, view, _html} = live(conn, ~p"/inventory")
 
     view
     |> form("#resource-filters", %{
@@ -159,7 +159,7 @@ defmodule RengaWeb.ResourceLiveTest do
     conn: conn,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+    {:ok, view, _html} = live(conn, ~p"/inventory")
 
     view
     |> element("#resources-#{resource.id} a")
@@ -215,7 +215,7 @@ defmodule RengaWeb.ResourceLiveTest do
     scope: scope,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
 
     view
     |> form("#resource-panel-lifecycle-form", lifecycle: %{lifecycle_state: "inactive"})
@@ -239,7 +239,7 @@ defmodule RengaWeb.ResourceLiveTest do
     scope: scope,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     view
     |> form("#resource-lifecycle-form", lifecycle: %{lifecycle_state: "retired"})
@@ -265,7 +265,7 @@ defmodule RengaWeb.ResourceLiveTest do
     scope: scope,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
 
     assert {:ok, _resource} =
              Inventory.update_resource(scope, resource, %{lifecycle_state: "inactive"})
@@ -289,7 +289,7 @@ defmodule RengaWeb.ResourceLiveTest do
     scope: scope,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     assert {:ok, _resource} =
              Inventory.update_resource(scope, resource, %{lifecycle_state: "inactive"})
@@ -320,7 +320,7 @@ defmodule RengaWeb.ResourceLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, index_view, _html} = live(conn, ~p"/inventory/resources?selected=#{resource.id}")
+    {:ok, index_view, _html} = live(conn, ~p"/inventory?selected=#{resource.id}")
     refute has_element?(index_view, "#resource-panel-lifecycle-form")
 
     assert has_element?(
@@ -329,7 +329,7 @@ defmodule RengaWeb.ResourceLiveTest do
              "does not control the device"
            )
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
     refute has_element?(view, "#resource-lifecycle-form")
     assert has_element?(view, "#resource-lifecycle-help", "does not control the device")
 
@@ -347,7 +347,7 @@ defmodule RengaWeb.ResourceLiveTest do
     resource: resource,
     membership: membership
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     {:ok, _membership} =
       Renga.Accounts.update_organization_membership(membership, %{role: "viewer"})
@@ -371,7 +371,7 @@ defmodule RengaWeb.ResourceLiveTest do
         reason: "ObservationAccepted"
       })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources?stale=true&q=compute")
+    {:ok, view, _html} = live(conn, ~p"/inventory?stale=true&q=compute")
 
     assert has_element?(view, "#resources-#{resource.id}")
     refute has_element?(view, "#resources-#{current_resource.id}")
@@ -394,7 +394,7 @@ defmodule RengaWeb.ResourceLiveTest do
         })
     end
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources")
+    {:ok, view, _html} = live(conn, ~p"/inventory")
 
     assert has_element?(view, "#resources tr[id^='resources-']:nth-child(50)")
     refute has_element?(view, "#resources tr[id^='resources-']:nth-child(51)")
@@ -408,7 +408,7 @@ defmodule RengaWeb.ResourceLiveTest do
     conn: conn,
     resource: resource
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     assert has_element?(
              view,
@@ -445,13 +445,13 @@ defmodule RengaWeb.ResourceLiveTest do
     assert [%{observation_count: 2}] =
              Enum.filter(operational_resource.identifier_claims, &(&1.kind == "serial_number"))
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     assert has_element?(view, "#resource-detail")
 
     assert has_element?(
              view,
-             "#resource-hardware-link[href='/inventory/resources/#{resource.id}/hardware']"
+             "#resource-hardware-link[href='/inventory/#{resource.id}/hardware']"
            )
 
     assert has_element?(view, "#desired-state", "power")
@@ -488,7 +488,7 @@ defmodule RengaWeb.ResourceLiveTest do
         address: %Postgrex.INET{address: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 7}, netmask: nil}
       })
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     assert has_element?(
              view,
@@ -508,11 +508,11 @@ defmodule RengaWeb.ResourceLiveTest do
     resource: resource,
     interface: interface
   } do
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{resource.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}")
 
     assert has_element?(
              view,
-             "#interface-#{interface.id}-memberships[href='/ipam/vlans?interface_id=#{interface.id}#interface-membership']"
+             "#interface-#{interface.id}-memberships[href='/network/vlans?interface_id=#{interface.id}#interface-membership']"
            )
 
     assert has_element?(
@@ -547,7 +547,7 @@ defmodule RengaWeb.ResourceLiveTest do
       Inventory.create_resource(other_scope, %{kind: "server", name: "secret"})
 
     assert_raise Ecto.NoResultsError, fn ->
-      live(conn, ~p"/inventory/resources/#{foreign_resource.id}")
+      live(conn, ~p"/inventory/#{foreign_resource.id}")
     end
   end
 
@@ -557,7 +557,7 @@ defmodule RengaWeb.ResourceLiveTest do
   } do
     {:ok, vm} = Inventory.create_resource(scope, %{kind: "vm", name: "detail-vm"})
 
-    {:ok, view, _html} = live(conn, ~p"/inventory/resources/#{vm.id}")
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{vm.id}")
 
     refute has_element?(view, "#resource-hardware-link")
   end

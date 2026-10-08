@@ -15,10 +15,10 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 == Phase 2: Navigation
 
-* [ ] Generate the sidebar, mobile menu, and command menu from one navigation
+* [X] Generate the sidebar, mobile menu, and command menu from one navigation
   definition with the six top-level areas.
-* [ ] Redirect existing routes to their new locations.
-* [ ] Add contextual command menu actions that explain unavailable actions.
+* [X] Redirect existing routes to their new locations.
+* [X] Add contextual command menu actions that explain unavailable actions.
 
 == Phase 3: Inventory and object pages
 

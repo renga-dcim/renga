@@ -29,7 +29,7 @@ defmodule RengaWeb.ComponentFindingLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:findings}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:component_findings}>
       <main id="component-findings" class="space-y-7">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -100,7 +100,7 @@ defmodule RengaWeb.ComponentFindingLive do
               <div>
                 <p class="text-xs uppercase tracking-wider text-base-content/40">Resource</p>
                 <.link
-                  navigate={~p"/inventory/resources/#{finding.resource_id}/hardware"}
+                  navigate={~p"/inventory/#{finding.resource_id}/hardware"}
                   class="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
                 >
                   {finding.resource.display_name || finding.resource.name}

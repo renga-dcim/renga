@@ -23,16 +23,16 @@ defmodule RengaWeb.CatalogLiveTest do
   end
 
   test "renders useful empty states", %{conn: conn} do
-    {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, manufacturers, _html} = live(conn, "/catalog/manufacturers")
     assert has_element?(manufacturers, "#catalog-browser")
     assert has_element?(manufacturers, "#manufacturers-empty")
     assert has_element?(manufacturers, "#new-manufacturer-form")
 
-    {:ok, hardware_types, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, hardware_types, _html} = live(conn, "/catalog/hardware-types")
     assert has_element?(hardware_types, "#hardware-types-empty")
     assert has_element?(hardware_types, "#new-hardware-type-form")
 
-    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+    {:ok, module_types, _html} = live(conn, "/catalog/module-types")
     assert has_element?(module_types, "#module-types-empty")
     assert has_element?(module_types, "#new-module-type-form")
   end
@@ -41,7 +41,7 @@ defmodule RengaWeb.CatalogLiveTest do
     conn: conn,
     scope: scope
   } do
-    {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, manufacturers, _html} = live(conn, "/catalog/manufacturers")
 
     redirect =
       manufacturers
@@ -54,12 +54,12 @@ defmodule RengaWeb.CatalogLiveTest do
       )
       |> render_submit()
 
-    assert {"/dcim/manufacturers", _flash} = assert_redirect(manufacturers)
+    assert {"/catalog/manufacturers", _flash} = assert_redirect(manufacturers)
     {:ok, manufacturer_view, _html} = follow_redirect(redirect, conn)
     assert has_element?(manufacturer_view, "#manufacturers-list", "Authoring Vendor")
     [manufacturer] = Catalog.list_manufacturers(scope)
 
-    {:ok, hardware_types, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, hardware_types, _html} = live(conn, "/catalog/hardware-types")
 
     hardware_redirect =
       hardware_types
@@ -74,11 +74,11 @@ defmodule RengaWeb.CatalogLiveTest do
       |> render_submit()
 
     {hardware_path, _flash} = assert_redirect(hardware_types)
-    assert hardware_path =~ "/dcim/hardware-types/"
+    assert hardware_path =~ "/catalog/hardware-types/"
     {:ok, hardware_detail, _html} = follow_redirect(hardware_redirect, conn)
     assert has_element?(hardware_detail, "[id^='hardware-type-detail-']", "AUTHOR-SERVER")
 
-    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+    {:ok, module_types, _html} = live(conn, "/catalog/module-types")
 
     module_redirect =
       module_types
@@ -93,7 +93,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> render_submit()
 
     {module_path, _flash} = assert_redirect(module_types)
-    assert module_path =~ "/dcim/module-types/"
+    assert module_path =~ "/catalog/module-types/"
     {:ok, module_detail, _html} = follow_redirect(module_redirect, conn)
     assert has_element?(module_detail, "[id^='module-type-detail-']", "AUTHOR-LINE-CARD")
     assert has_element?(module_detail, "#module-type-module-class", "Line card")
@@ -103,7 +103,7 @@ defmodule RengaWeb.CatalogLiveTest do
     conn: conn,
     scope: scope
   } do
-    {:ok, view, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, view, _html} = live(conn, "/catalog/manufacturers")
 
     view
     |> form("#new-manufacturer-form",
@@ -121,7 +121,7 @@ defmodule RengaWeb.CatalogLiveTest do
     conn: conn,
     scope: scope
   } do
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types")
     {:ok, manufacturer} = manufacturer_fixture(scope, "Fresh Vendor", "fresh-vendor")
 
     render_hook(view, "create_hardware_type", %{
@@ -143,7 +143,7 @@ defmodule RengaWeb.CatalogLiveTest do
     conn: conn,
     scope: scope
   } do
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types")
     foreign_user = user_fixture()
     foreign_organization = organization_fixture()
     organization_membership_fixture(foreign_user, foreign_organization, %{role: "admin"})
@@ -177,7 +177,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(member_conn, "/dcim/manufacturers")
+    {:ok, view, _html} = live(member_conn, "/catalog/manufacturers")
     assert has_element?(view, "#new-manufacturer-form")
 
     view
@@ -186,22 +186,22 @@ defmodule RengaWeb.CatalogLiveTest do
     )
     |> render_submit()
 
-    assert {"/dcim/manufacturers", _flash} = assert_redirect(view)
+    assert {"/catalog/manufacturers", _flash} = assert_redirect(view)
   end
 
   test "lists catalog identity and links to type detail", %{conn: conn, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Acme Systems", "acme-systems")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "RS-42", "server")
 
-    {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, manufacturers, _html} = live(conn, "/catalog/manufacturers")
     assert has_element?(manufacturers, "#manufacturer-#{manufacturer.id}", "Acme Systems")
 
-    {:ok, types, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, types, _html} = live(conn, "/catalog/hardware-types")
     assert has_element?(types, "#hardware-type-#{hardware_type.id}", "Acme Systems RS-42")
 
     assert has_element?(
              types,
-             "#hardware-type-#{hardware_type.id} a[href='/dcim/hardware-types/#{hardware_type.id}']"
+             "#hardware-type-#{hardware_type.id} a[href='/catalog/hardware-types/#{hardware_type.id}']"
            )
   end
 
@@ -246,7 +246,7 @@ defmodule RengaWeb.CatalogLiveTest do
         ]
       )
 
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     assert has_element?(view, "#hardware-type-identity", "Acme Systems")
     assert has_element?(view, "#hardware-type-device-class", "Server")
@@ -291,7 +291,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Revision Vendor", "revision-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "REV-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
     view |> element("#add-component-template") |> render_click()
 
     redirect =
@@ -330,7 +330,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> render_submit()
 
     assert {path, _flash} = assert_redirect(view)
-    assert path == "/dcim/hardware-types/#{hardware_type.id}"
+    assert path == "/catalog/hardware-types/#{hardware_type.id}"
     {:ok, detail, _html} = follow_redirect(redirect, conn)
     assert has_element?(detail, "#revision-1", "PN-REV-1")
     assert has_element?(detail, "#revision-1-templates-interface", "Management")
@@ -358,7 +358,7 @@ defmodule RengaWeb.CatalogLiveTest do
        } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Dynamic Vendor", "dynamic-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DYNAMIC-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     view |> element("#add-component-template") |> render_click()
     view |> element("#add-component-template") |> render_click()
@@ -414,7 +414,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(member_conn, "/dcim/module-types/#{module_type.id}")
+    {:ok, view, _html} = live(member_conn, "/catalog/module-types/#{module_type.id}")
     assert has_element?(view, "#new-revision-form")
 
     view
@@ -435,7 +435,7 @@ defmodule RengaWeb.CatalogLiveTest do
     |> render_submit()
 
     assert {path, _flash} = assert_redirect(view)
-    assert path == "/dcim/module-types/#{module_type.id}"
+    assert path == "/catalog/module-types/#{module_type.id}"
     [revision] = Catalog.get_module_type!(scope, module_type.id).revisions
     assert revision.part_number == "MEMBER-PN"
     assert Enum.map(revision.component_templates, & &1.name) == ["xe-0/0/0"]
@@ -452,7 +452,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> log_in_user(owner)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(owner_conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(owner_conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -472,7 +472,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Invalid Vendor", "invalid-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "INVALID-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -511,7 +511,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Feedback Vendor", "feedback-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "FEEDBACK-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -548,7 +548,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Oversized Vendor", "oversized-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "OVERSIZED-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
     oversized = String.duplicate("p", 256)
 
     view
@@ -569,7 +569,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Precise Vendor", "precise-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "PRECISE-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     render_hook(view, "publish_revision", %{
       "revision" => %{
@@ -600,7 +600,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Exact Vendor", "exact-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "EXACT-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
     number = "0.123456789012345678901"
 
     render_hook(view, "publish_revision", %{
@@ -621,7 +621,7 @@ defmodule RengaWeb.CatalogLiveTest do
     [revision] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
     assert Decimal.equal?(revision.specifications["ratio"], Decimal.new(number))
 
-    {:ok, detail, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, detail, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
     assert has_element?(detail, "#revision-1-specifications", number)
 
     assert has_element?(
@@ -637,7 +637,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Scale Vendor", "scale-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALE-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
     scaled = "1." <> String.duplicate("0", 16_384)
 
     render_hook(view, "publish_revision", %{
@@ -654,7 +654,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Shape Vendor", "shape-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SHAPE-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     render_hook(view, "validate_revision", %{"revision" => []})
 
@@ -687,7 +687,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Scalar Vendor", "scalar-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALAR-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     for field <- ~w(part_number height_units width_mm depth_mm weight_kg airflow specifications) do
       render_hook(view, "publish_revision", %{
@@ -716,7 +716,7 @@ defmodule RengaWeb.CatalogLiveTest do
   test "revision authoring replaces forged internal row identifiers", %{conn: conn, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Identifier Vendor", "identifier-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTIFIER-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     render_hook(view, "validate_revision", %{
       "revision" => %{
@@ -748,7 +748,7 @@ defmodule RengaWeb.CatalogLiveTest do
   end
 
   test "revision publication is rejected outside a catalog type page", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, view, _html} = live(conn, "/catalog/manufacturers")
     render_hook(view, "publish_revision", %{"revision" => %{}})
 
     assert has_element?(view, "#flash-error", "only be published from a type page")
@@ -788,7 +788,7 @@ defmodule RengaWeb.CatalogLiveTest do
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Duplicate Vendor", "duplicate-vendor")
     {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DUPLICATE-1", "server")
-    {:ok, view, _html} = live(conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
 
     render_change(view, "validate_revision", %{
       "revision" => %{
@@ -832,11 +832,11 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, foreign_module_type} =
       module_type_fixture(foreign_scope, foreign_manufacturer, "SECRET-MODULE", "line_card")
 
-    {:ok, manufacturers, _html} = live(conn, "/dcim/manufacturers")
+    {:ok, manufacturers, _html} = live(conn, "/catalog/manufacturers")
     assert has_element?(manufacturers, "#manufacturer-#{local_manufacturer.id}")
     refute has_element?(manufacturers, "#manufacturer-#{foreign_manufacturer.id}")
 
-    {:ok, types, _html} = live(conn, "/dcim/hardware-types")
+    {:ok, types, _html} = live(conn, "/catalog/hardware-types")
     assert has_element?(types, "#hardware-type-#{local_type.id}")
     refute has_element?(types, "#hardware-type-#{foreign_type.id}")
 
@@ -845,16 +845,16 @@ defmodule RengaWeb.CatalogLiveTest do
              "#new-hardware-type-form option[value='#{foreign_manufacturer.id}']"
            )
 
-    {:ok, module_types, _html} = live(conn, "/dcim/module-types")
+    {:ok, module_types, _html} = live(conn, "/catalog/module-types")
     assert has_element?(module_types, "#module-type-#{local_module_type.id}")
     refute has_element?(module_types, "#module-type-#{foreign_module_type.id}")
 
     assert_raise Ecto.NoResultsError, fn ->
-      live(conn, "/dcim/hardware-types/#{foreign_type.id}")
+      live(conn, "/catalog/hardware-types/#{foreign_type.id}")
     end
 
     assert_raise Ecto.NoResultsError, fn ->
-      live(conn, "/dcim/module-types/#{foreign_module_type.id}")
+      live(conn, "/catalog/module-types/#{foreign_module_type.id}")
     end
   end
 
@@ -872,12 +872,12 @@ defmodule RengaWeb.CatalogLiveTest do
       |> log_in_user(viewer)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(viewer_conn, "/dcim/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(viewer_conn, "/catalog/hardware-types/#{hardware_type.id}")
     assert has_element?(view, "#hardware-type-detail-#{hardware_type.id}")
     refute has_element?(view, "#hardware-type-detail-#{hardware_type.id} form")
     refute has_element?(view, "#hardware-type-detail-#{hardware_type.id} [phx-click]")
 
-    {:ok, manufacturer_view, _html} = live(viewer_conn, "/dcim/manufacturers")
+    {:ok, manufacturer_view, _html} = live(viewer_conn, "/catalog/manufacturers")
     refute has_element?(manufacturer_view, "#new-manufacturer-form")
 
     render_hook(manufacturer_view, "create_manufacturer", %{

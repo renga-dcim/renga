@@ -27,7 +27,7 @@ defmodule RengaWeb.VlanGroupLiveTest do
     {:ok, _vlan} = create_vlan(scope, group, 10, "Management")
     {:ok, _vlan} = create_vlan(scope, group, 20, "Storage")
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+    {:ok, view, _html} = live(conn, ~p"/network/vlan-groups")
 
     assert has_element?(view, "#vlan-groups")
     assert has_element?(view, "#vlan-group-#{group.id}", "production")
@@ -41,7 +41,7 @@ defmodule RengaWeb.VlanGroupLiveTest do
 
     assert has_element?(
              view,
-             "#vlan-group-#{group.id} a[href='/ipam/vlans?group_id=#{group.id}']"
+             "#vlan-group-#{group.id} a[href='/network/vlans?group_id=#{group.id}']"
            )
 
     assert has_element?(view, "#vlan-group-form")
@@ -56,7 +56,7 @@ defmodule RengaWeb.VlanGroupLiveTest do
     foreign_scope = Accounts.scope_for_user(foreign_user, foreign_organization.id)
     {:ok, foreign_group} = create_group(foreign_scope, "foreign", [{1, 10}])
 
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+    {:ok, view, _html} = live(conn, ~p"/network/vlan-groups")
 
     assert has_element?(view, "#vlan-group-#{group.id}")
     refute has_element?(view, "#vlan-group-#{foreign_group.id}")
@@ -67,7 +67,7 @@ defmodule RengaWeb.VlanGroupLiveTest do
     organization: organization,
     scope: scope
   } do
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+    {:ok, view, _html} = live(conn, ~p"/network/vlan-groups")
 
     refute has_element?(view, "#vlan-groups-list article")
 
@@ -99,14 +99,14 @@ defmodule RengaWeb.VlanGroupLiveTest do
       |> log_in_user(member)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, member_view, _html} = live(member_conn, ~p"/ipam/vlan-groups")
+    {:ok, member_view, _html} = live(member_conn, ~p"/network/vlan-groups")
 
     assert has_element?(member_view, "#vlan-group-#{group.id}", "Campus")
     refute has_element?(member_view, "#vlan-group-form")
   end
 
   test "rejects an invalid VID range without creating a namespace", %{conn: conn, scope: scope} do
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+    {:ok, view, _html} = live(conn, ~p"/network/vlan-groups")
 
     view
     |> form("#vlan-group-form",
@@ -129,12 +129,12 @@ defmodule RengaWeb.VlanGroupLiveTest do
   test "requires authentication", %{scope: scope} do
     {:ok, _group} = create_group(scope, "private", [{1, 10}])
 
-    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/ipam/vlan-groups")
+    assert {:error, {:redirect, %{to: path}}} = live(build_conn(), ~p"/network/vlan-groups")
     assert path =~ "/users/log-in"
   end
 
   test "tracks namespace form values and resets them after success", %{conn: conn, scope: scope} do
-    {:ok, view, _html} = live(conn, ~p"/ipam/vlan-groups")
+    {:ok, view, _html} = live(conn, ~p"/network/vlan-groups")
 
     values = %{
       name: "Campus",

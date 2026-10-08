@@ -76,12 +76,12 @@ defmodule RengaWeb.ResourceHardwareLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:resources}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active_nav={:inventory}>
       <main id="resource-hardware" class="space-y-7">
         <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <.link
-              navigate={~p"/inventory/resources/#{@resource.id}"}
+              navigate={~p"/inventory/#{@resource.id}"}
               class="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/50 transition hover:text-orange-600"
             >
               <.icon name="hero-arrow-left" class="size-3.5" /> Resource
@@ -97,7 +97,7 @@ defmodule RengaWeb.ResourceHardwareLive do
             </p>
           </div>
           <.link
-            navigate={~p"/inventory/component-findings"}
+            navigate={~p"/inbox/components"}
             class="inline-flex h-10 items-center gap-2 self-start rounded-lg border border-base-content/15 bg-base-100 px-4 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600 lg:self-auto"
           >
             <.icon name="hero-exclamation-triangle" class="size-4" /> Component findings
@@ -120,7 +120,7 @@ defmodule RengaWeb.ResourceHardwareLive do
                 Revision {@assignment.catalog_type_revision.revision} · {@assignment.origin} assignment
               </p>
               <.link
-                navigate={~p"/dcim/hardware-types/#{@assignment.hardware_type.id}"}
+                navigate={~p"/catalog/hardware-types/#{@assignment.hardware_type.id}"}
                 class="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
               >
                 Inspect pinned definition <.icon name="hero-arrow-right" class="size-4" />

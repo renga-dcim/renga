@@ -420,7 +420,7 @@ defmodule RengaWeb.CableLive do
     <span class="inline-flex min-w-0 items-center gap-1.5">
       <span class="truncate font-mono text-sm font-medium">{@interface.name}</span>
       <.link
-        navigate={~p"/inventory/resources/#{@interface.resource_id}"}
+        navigate={~p"/inventory/#{@interface.resource_id}"}
         class="truncate text-xs text-base-content/60 transition hover:text-orange-600"
       >
         {@interface.resource.name}

@@ -36,6 +36,7 @@ config :renga, :test_routes, true
 # trace or screenshot of each failing browser test under tmp/.
 config :phoenix_test,
   otp_app: :renga,
+  endpoint: RengaWeb.Endpoint,
   playwright: [
     browser: :chromium,
     trace: System.get_env("PW_TRACE", "false") in ~w(1 true),

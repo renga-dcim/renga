@@ -34,7 +34,10 @@ const CommandPalette = {
     this.activeIndex = 0
 
     this.open = () => {
-      if (!this.dialog.open) this.dialog.showModal()
+      if (!this.dialog.open) {
+        this.opener = document.activeElement
+        this.dialog.showModal()
+      }
       this.input.value = ""
       this.updateItems()
       requestAnimationFrame(() => this.input.focus())
@@ -42,11 +45,20 @@ const CommandPalette = {
 
     this.onOpen = () => this.open()
     this.onInput = () => this.updateItems()
+    this.onFocus = event => {
+      const item = event.target.closest("[data-command-item]")
+      this.commandFocused = !!item
+      if (!item) return
+      this.activeIndex = this.items.indexOf(item)
+      this.highlightActiveItem()
+    }
     this.onClick = event => {
       if (event.target === this.dialog) this.dialog.close()
 
       const item = event.target.closest("[data-command-item]")
       if (!item) return
+      // Unavailable actions stay open so their reason can be read.
+      if (item.getAttribute("aria-disabled") === "true") return
 
       if (item.dataset.commandAction === "toggle-theme") {
         window.dispatchEvent(new CustomEvent("phx:toggle-theme"))
@@ -67,18 +79,24 @@ const CommandPalette = {
       if (event.key === "Escape") {
         event.preventDefault()
         this.dialog.close()
+        this.opener?.focus()
         return
       }
 
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && this.items.length > 0) {
         event.preventDefault()
         const offset = event.key === "ArrowDown" ? 1 : -1
         this.activeIndex = (this.activeIndex + offset + this.items.length) % this.items.length
         this.highlightActiveItem()
+        const item = this.items[this.activeIndex]
+        const control = item.matches("a, button") ? item : item.querySelector("a, button")
+        control?.focus()
         return
       }
 
-      if (event.key === "Enter" && this.items.length > 0) {
+      // Focused controls retain native activation; only the query needs a
+      // synthetic click on the highlighted result.
+      if (event.key === "Enter" && event.target === this.input && this.items.length > 0) {
         event.preventDefault()
         const item = this.items[this.activeIndex]
         const control = item.matches("a, button") ? item : item.querySelector("a, button")
@@ -90,6 +108,13 @@ const CommandPalette = {
     window.addEventListener("keydown", this.onKeydown)
     this.input.addEventListener("input", this.onInput)
     this.dialog.addEventListener("click", this.onClick)
+    this.dialog.addEventListener("focusin", this.onFocus)
+  },
+
+  // The server re-renders the menu when page actions change; restore the
+  // selection by identity, not position, since commands can come and go.
+  updated() {
+    this.updateItems(true)
   },
 
   destroyed() {
@@ -97,15 +122,16 @@ const CommandPalette = {
     window.removeEventListener("keydown", this.onKeydown)
     this.input.removeEventListener("input", this.onInput)
     this.dialog.removeEventListener("click", this.onClick)
+    this.dialog.removeEventListener("focusin", this.onFocus)
   },
 
-  updateItems() {
+  updateItems(preserveSelection = false) {
     const query = this.input.value.trim().toLowerCase()
     const searchLink = this.searchItem.querySelector("a")
     const searchLabel = this.searchItem.querySelector("a > span")
 
     this.searchItem.hidden = query === ""
-    searchLink.href = `/inventory/resources?q=${encodeURIComponent(query)}`
+    searchLink.href = `/inventory?q=${encodeURIComponent(query)}`
     searchLabel.textContent = `Search resources for “${this.input.value.trim()}”`
 
     this.el.querySelectorAll("[data-command-item]:not(#command-resource-search)").forEach(item => {
@@ -113,8 +139,16 @@ const CommandPalette = {
     })
 
     this.items = Array.from(this.el.querySelectorAll("[data-command-item]:not([hidden])"))
-    this.activeIndex = 0
+    this.activeIndex = preserveSelection
+      ? Math.max(0, this.items.findIndex(item =>
+        (item.id || item.getAttribute("href") || item.dataset.commandAction) === this.activeKey))
+      : 0
     this.highlightActiveItem()
+    if (preserveSelection && this.dialog.open && this.commandFocused) {
+      const item = this.items[this.activeIndex]
+      const control = item?.matches("a, button") ? item : item?.querySelector("a, button")
+      ;(control || this.input).focus()
+    }
   },
 
   highlightActiveItem() {
@@ -123,6 +157,7 @@ const CommandPalette = {
       control?.classList.toggle("bg-base-content/[0.06]", index === this.activeIndex)
     })
     const active = this.items[this.activeIndex]
+    this.activeKey = active && (active.id || active.getAttribute("href") || active.dataset.commandAction)
     active?.scrollIntoView({block: "nearest"})
   },
 }
