@@ -19,12 +19,30 @@ config :renga, Renga.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
-# We don't run a server during test. If one is required,
-# you can enable the server option below.
+# Browser tests (tagged :playwright) need a running server to visit.
 config :renga, RengaWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "Z808bOYBdFc8c0fqxXrsogXZu1vZxHLv4ekokPnp+TOEbyT4FfnAduj3TULGPMQI",
-  server: false
+  server: true
+
+# Lets browser tests share their database transaction with the server.
+config :renga, :sql_sandbox, Ecto.Adapters.SQL.Sandbox
+
+# Mounts test-only fixture pages, such as the shared component review page.
+config :renga, :test_routes, true
+
+# Browser tests run through Playwright with browsers that match
+# assets/package.json (see flake.nix). Set PW_TRACE or PW_SCREENSHOT to keep a
+# trace or screenshot of each failing browser test under tmp/.
+config :phoenix_test,
+  otp_app: :renga,
+  playwright: [
+    browser: :chromium,
+    trace: System.get_env("PW_TRACE", "false") in ~w(1 true),
+    trace_dir: "tmp/traces",
+    screenshot: System.get_env("PW_SCREENSHOT", "false") in ~w(1 true),
+    screenshot_dir: "tmp/screenshots"
+  ]
 
 # In test we don't send emails
 config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test

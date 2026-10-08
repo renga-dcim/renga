@@ -49,6 +49,7 @@ defmodule Renga.MixProject do
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
+      {:phoenix_test_playwright, "~> 0.18", only: :test, runtime: false},
       {:phoenix_live_dashboard, "~> 0.8.3"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
@@ -86,7 +87,11 @@ defmodule Renga.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       "ecto.migration": ["ecto.migrate", "ecto.dump"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.setup": [
+        "tailwind.install --if-missing",
+        "esbuild.install --if-missing",
+        "cmd npm ci --prefix assets --no-audit --no-fund"
+      ],
       "assets.build": ["compile", "tailwind renga", "esbuild renga"],
       "assets.deploy": [
         "tailwind renga --minify",

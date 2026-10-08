@@ -148,13 +148,52 @@ jobs:
       - name: Check unused dependencies
         run: mix deps.unlock --check-unused
 
-      - name: Run tests
-        run: mix test
-
-      - name: Setup Node for hook regression tests
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: assets/package-lock.json
+
+      - name: Install Playwright
+        run: npm ci --prefix assets --no-audit --no-fund
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('assets/package-lock.json') }}
+
+      - name: Install Playwright browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npm exec --prefix assets -- playwright install --with-deps chromium
+
+      - name: Install Playwright system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npm exec --prefix assets -- playwright install-deps chromium
+
+      # Browser tests run with the rest of the suite. When tests fail, rerun
+      # just those with a Playwright trace and screenshot for the upload
+      # below; the job still fails even if the rerun passes.
+      - name: Run tests
+        run: |
+          status=0
+          mix test || status=$?
+          if [ "$status" = 2 ]; then
+            PW_TRACE=true PW_SCREENSHOT=true mix test --failed || true
+          fi
+          exit "$status"
+
+      - name: Upload browser test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            tmp/traces/
+            tmp/screenshots/
+          if-no-files-found: ignore
 
       - name: Test overlay lifecycle
         run: node --test assets/js/overlay.test.mjs

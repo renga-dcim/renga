@@ -51,13 +51,25 @@ defmodule RengaWeb.Router do
     end
   end
 
+  # Fixture pages from test/support that browser tests drive, such as the
+  # shared component review page. Only test builds compile these routes.
+  if Application.compile_env(:renga, :test_routes) do
+    scope "/test", RengaWeb do
+      pipe_through :browser
+
+      live_session :test_fixtures, on_mount: [RengaWeb.SQLSandbox] do
+        live "/ui-review", UIReviewLive
+      end
+    end
+  end
+
   ## Authentication routes
 
   scope "/", RengaWeb do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :require_authenticated_user,
-      on_mount: [{RengaWeb.UserAuth, :require_authenticated}] do
+      on_mount: [RengaWeb.SQLSandbox, {RengaWeb.UserAuth, :require_authenticated}] do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/organizations", OrganizationLive.Index, :index
@@ -96,7 +108,7 @@ defmodule RengaWeb.Router do
     pipe_through [:browser]
 
     live_session :current_user,
-      on_mount: [{RengaWeb.UserAuth, :mount_current_scope}] do
+      on_mount: [RengaWeb.SQLSandbox, {RengaWeb.UserAuth, :mount_current_scope}] do
       live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
       live "/users/log-in/:token", UserLive.Confirmation, :new
