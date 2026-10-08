@@ -21,6 +21,7 @@ defmodule Renga.Findings.Finding do
     :state,
     :status,
     :message,
+    :details,
     :resolution_key,
     :subject_id,
     :resource,

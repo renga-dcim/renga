@@ -28,6 +28,8 @@ defmodule RengaWeb.InboxLive do
   alias RengaWeb.Format
 
   @reload_after_ms 400
+  # Expiry changes queue membership without an inventory broadcast.
+  @expiry_refresh_ms 30_000
 
   @snoozes [
     {"1h", "1 hour", 3_600},
@@ -41,7 +43,11 @@ defmodule RengaWeb.InboxLive do
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
-    if connected?(socket), do: Changes.subscribe(scope)
+
+    if connected?(socket) do
+      Changes.subscribe(scope)
+      Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    end
 
     {:ok,
      assign(socket,
@@ -176,6 +182,11 @@ defmodule RengaWeb.InboxLive do
      |> load_selected()
      |> load_requests()
      |> load_selected_request()}
+  end
+
+  def handle_info(:refresh_expiry, socket) do
+    Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    {:noreply, socket |> load_findings() |> load_selected()}
   end
 
   # Runs a workflow change on the open finding. The context re-reads the
@@ -388,10 +399,10 @@ defmodule RengaWeb.InboxLive do
       group: one_of(params["group"], ["requests" | Findings.groups()]),
       status: one_of(params["status"], Request.statuses()) || "open",
       request: uuid(params["request"]),
-      state: one_of(params["state"], Findings.states()) || "open",
+      state: one_of(params["state"] || params["status"], Findings.states()) || "open",
       assignee: assignee_param(params["assignee"]),
       domain: one_of(params["domain"], Renga.Findings.Workflow.domains()),
-      kind: blank_to_nil(params["kind"]),
+      kind: if(params["kind"] != "all", do: blank_to_nil(params["kind"])),
       resource: uuid(params["resource"]),
       interface: uuid(params["interface_id"]),
       page: page(params["page"]),
@@ -878,6 +889,11 @@ defmodule RengaWeb.InboxLive do
             {Format.datetime(@finding.resolved_at)}
           </:item>
         </.properties>
+
+        <section :if={@finding.details != %{}} id="finding-details" class="space-y-2">
+          <h3 class="text-xs font-medium text-fg-muted">Diagnostic evidence</h3>
+          <pre class="max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-edge bg-sunken p-3 font-mono text-xs text-fg-muted">{Jason.encode!(@finding.details, pretty: true)}</pre>
+        </section>
 
         <div
           :if={@finding.state == :excepted}

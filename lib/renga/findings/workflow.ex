@@ -96,8 +96,14 @@ defmodule Renga.Findings.Workflow do
   def snoozed?(_workflow, _now), do: false
 
   defp validate_future(changeset, field, now) do
-    validate_change(changeset, field, fn ^field, value ->
-      if DateTime.compare(value, now) == :gt, do: [], else: [{field, "must be in the future"}]
-    end)
+    case get_field(changeset, field) do
+      nil ->
+        changeset
+
+      value ->
+        if DateTime.compare(value, now) == :gt,
+          do: changeset,
+          else: add_error(changeset, field, "must be in the future")
+    end
   end
 end

@@ -44,12 +44,18 @@ defmodule RengaWeb.ResourceLive.Show do
   ]
 
   @reload_after_ms 400
+  # Accepted exceptions can expire without an inventory notification.
+  @expiry_refresh_ms 30_000
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     scope = socket.assigns.current_scope
     resource = Inventory.get_operational_resource!(scope, id)
-    if connected?(socket), do: Changes.subscribe(scope)
+
+    if connected?(socket) do
+      Changes.subscribe(scope)
+      Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    end
 
     {:ok,
      assign(socket,
@@ -226,6 +232,11 @@ defmodule RengaWeb.ResourceLive.Show do
 
   def handle_info(:reload, socket) do
     {:noreply, socket |> assign(:reload_timer, nil) |> reload_resource()}
+  end
+
+  def handle_info(:refresh_expiry, socket) do
+    Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    {:noreply, assign_findings(socket)}
   end
 
   @impl true
