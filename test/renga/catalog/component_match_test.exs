@@ -72,4 +72,30 @@ defmodule Renga.Catalog.ComponentMatchTest do
     assert ComponentMatch.same_value?(%{"a" => [1, "X"]}, %{"a" => [1, "x"]})
     refute ComponentMatch.same_value?(%{"a" => 1}, %{"a" => 1, "b" => 2})
   end
+
+  test "explains how reports are matched to a template" do
+    assert [identity, compared, _replacement] =
+             ComponentMatch.explain(%{
+               kind: "memory",
+               name: "DIMM {A,B}{1..16}",
+               position: "{A,B}{1..16}",
+               attributes: %{"part_number" => "M-64G", "size_gb" => 64}
+             })
+
+    assert identity =~ "slot is {A,B}{1..16} and its part number is M-64G"
+    assert compared =~ "size_gb must then match"
+
+    assert ["A reported part fills this slot when its name is CPU 1."] =
+             ComponentMatch.explain(%{kind: "cpu", name: "CPU 1", position: nil, attributes: %{}})
+
+    assert [never] =
+             ComponentMatch.explain(%{
+               kind: "interface",
+               name: "eth0",
+               position: nil,
+               attributes: %{}
+             })
+
+    assert never =~ "never compared"
+  end
 end
