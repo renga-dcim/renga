@@ -59,6 +59,7 @@ defmodule RengaWeb.VrfLiveTest do
   test "an admin creates a VRF and sees the form's errors", context do
     vrf_fixture(context.admin, "blue")
     {:ok, view, _html} = live(context.admin_conn, ~p"/network/vrfs")
+    view |> element("#new-vrf") |> render_click()
 
     view |> form("#vrf-form", vrf: %{name: "BLUE"}) |> render_submit()
     assert has_element?(view, "#vrf-form", "is already a VRF in this organization")
@@ -96,7 +97,7 @@ defmodule RengaWeb.VrfLiveTest do
       IPAM.update_vrf(context.admin, IPAM.get_vrf!(context.admin, vrf.id), %{name: "Elsewhere"})
 
     view |> form("#vrf-form", vrf: %{name: "Mine"}) |> render_submit()
-    assert has_element?(view, "#flash-error", "This VRF changed elsewhere")
+    assert has_element?(view, "#vrf-edit-conflict", "This VRF changed elsewhere")
     assert Repo.get!(Vrf, vrf.id).name == "Elsewhere"
   end
 

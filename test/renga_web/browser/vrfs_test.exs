@@ -77,6 +77,132 @@ defmodule RengaWeb.Browser.VrfsTest do
     )
   end
 
+  test "cancelled drafts cannot leak into another edit or a fresh create", context do
+    other = vrf_fixture(context.scope, "red", %{description: "Red original"})
+
+    session =
+      context.conn
+      |> visit("/network/vrfs")
+      |> assert_has("body .phx-connected")
+      |> PhoenixTest.Playwright.click("#vrf-#{context.blue.id}-edit")
+      |> assert_has("#vrf-panel", text: "Edit blue")
+      |> fill_in("#vrf-form input[name='vrf[description]']", "Description (optional)",
+        with: "Cancelled draft"
+      )
+      |> PhoenixTest.Playwright.click("#vrf-panel button[aria-label=Close]")
+      |> refute_has("#vrf-form")
+      |> evaluate("window.liveSocket.enableLatencySim(400)")
+      |> PhoenixTest.Playwright.click("#vrf-#{other.id}-edit")
+      |> evaluate(
+        "document.querySelector('#vrf-form input')?.focus(); document.querySelector('#vrf-form') === null",
+        &assert(&1 == true)
+      )
+      |> assert_has("#vrf-panel", text: "Edit red")
+      |> evaluate(
+        "document.querySelector('#vrf-form input[name=\"vrf[description]\"]').value",
+        &assert(&1 == "Red original")
+      )
+      |> evaluate("window.liveSocket.disableLatencySim()")
+      |> PhoenixTest.Playwright.click("#vrf-panel button[aria-label=Close]")
+      |> refute_has("#vrf-form")
+      |> PhoenixTest.Playwright.click("#new-vrf")
+      |> assert_has("#vrf-panel", text: "New VRF")
+      |> evaluate(
+        "document.querySelector('#vrf-form input[name=\"vrf[name]\"]').value",
+        &assert(&1 == "")
+      )
+      |> fill_in("#vrf-form input[name='vrf[name]']", "Name", with: "default")
+      |> PhoenixTest.Playwright.click("#save-vrf")
+      |> assert_has("#vrf-form", text: "is reserved")
+      |> PhoenixTest.Playwright.click("#vrf-panel button[aria-label=Close]")
+      |> refute_has("#vrf-form")
+
+    session
+    |> PhoenixTest.Playwright.click("#new-vrf")
+    |> assert_has("#vrf-panel", text: "New VRF")
+    |> refute_has("#vrf-form", text: "is reserved")
+    |> evaluate(
+      "document.querySelector('#vrf-form input[name=\"vrf[name]\"]').value",
+      &assert(&1 == "")
+    )
+  end
+
+  test "stale focused edits preserve drafts and reopen with current values", context do
+    session =
+      context.conn
+      |> visit("/network/vrfs")
+      |> assert_has("body .phx-connected")
+      |> PhoenixTest.Playwright.click("#vrf-#{context.blue.id}-edit")
+      |> assert_has("#vrf-panel", text: "Edit blue")
+      |> fill_in("#vrf-form input[name='vrf[description]']", "Description (optional)",
+        with: "My draft"
+      )
+
+    {:ok, _} = Renga.IPAM.update_vrf(context.scope, context.blue, %{description: "External"})
+
+    session =
+      session
+      |> assert_has("#vrf-#{context.blue.id}", text: "External")
+      |> evaluate(
+        "document.querySelector('#vrf-form input[name=\"vrf[description]\"]').value",
+        &assert(&1 == "My draft")
+      )
+      |> PhoenixTest.Playwright.click("#save-vrf")
+      |> assert_has("#vrf-edit-conflict", text: "This VRF changed elsewhere")
+      |> PhoenixTest.Playwright.click("#vrf-panel button[aria-label=Close]")
+      |> refute_has("#vrf-form")
+      |> PhoenixTest.Playwright.click("#vrf-#{context.blue.id}-edit")
+      |> assert_has("#vrf-panel", text: "Edit blue")
+      |> evaluate(
+        "document.querySelector('#vrf-form input[name=\"vrf[description]\"]').value",
+        &assert(&1 == "External")
+      )
+
+    session
+    |> fill_in("#vrf-form input[name='vrf[description]']", "Description (optional)",
+      with: "Retry"
+    )
+    |> PhoenixTest.Playwright.click("#save-vrf")
+    |> refute_has("#vrf-form")
+
+    assert Renga.IPAM.get_vrf!(context.scope, context.blue.id).description == "Retry"
+  end
+
+  test "a delete dialog removed by a live update releases its scroll lock", context do
+    empty = vrf_fixture(context.scope, "empty")
+
+    session =
+      context.conn
+      |> visit("/network/vrfs")
+      |> assert_has("body .phx-connected")
+      |> PhoenixTest.Playwright.click("#vrf-#{empty.id}-delete")
+      |> assert_has("#delete-vrf-#{empty.id} [role=alertdialog]")
+
+    prefix_fixture(context.scope, "192.0.2.0/24", %{vrf: "empty"})
+
+    session
+    |> refute_has("#delete-vrf-#{empty.id}")
+    |> evaluate(
+      """
+      new Promise(resolve => {
+        const timer = setInterval(() => {
+          if (!document.getElementById('delete-vrf-#{empty.id}')) {
+            clearInterval(timer)
+            resolve(document.body.classList.contains('overflow-hidden'))
+          }
+        }, 20)
+      })
+      """,
+      &assert(&1 == false)
+    )
+    |> PhoenixTest.Playwright.click("#new-vrf")
+    |> assert_has("#vrf-panel [role=dialog]")
+    |> evaluate(
+      "document.querySelector('#vrf-panel').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,
@@ -90,6 +216,10 @@ defmodule RengaWeb.Browser.VrfsTest do
     |> evaluate(visible_js("new-vrf"), &assert(&1 == false))
     |> evaluate(visible_js("vrf-#{context.blue.id}-edit"), &assert(&1 == false))
     |> evaluate(visible_js("vrf-#{context.blue.id}-prefixes"), &assert(&1 == true))
+    |> evaluate(
+      "(el => {const r = el.getBoundingClientRect(); return [r.width, r.height]})(document.getElementById('vrf-#{context.blue.id}-prefixes'))",
+      fn [width, height] -> assert width >= 44 and height >= 44 end
+    )
     |> evaluate(
       "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
       &assert(&1 == true)

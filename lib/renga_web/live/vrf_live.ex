@@ -34,6 +34,7 @@ defmodule RengaWeb.VrfLive do
        page_title: "VRFs",
        can_manage?: Inventory.organization_manager?(scope),
        editing: nil,
+       panel_open?: false,
        reload_timer: nil
      )
      |> assign_form(%Vrf{})
@@ -42,16 +43,20 @@ defmodule RengaWeb.VrfLive do
 
   @impl true
   def handle_event("new", _params, socket) do
-    {:noreply, socket |> assign(:editing, nil) |> assign_form(%Vrf{})}
+    {:noreply, socket |> assign(editing: nil, panel_open?: true) |> assign_form(%Vrf{})}
   end
 
   # Editing starts from the stored VRF, which is also the stale-edit baseline.
   def handle_event("edit", %{"id" => id}, socket) do
     vrf = IPAM.get_vrf!(socket.assigns.current_scope, id)
-    {:noreply, socket |> assign(:editing, vrf) |> assign_form(vrf)}
+    {:noreply, socket |> assign(editing: vrf, panel_open?: true) |> assign_form(vrf)}
   rescue
     Ecto.NoResultsError -> {:noreply, vrf_gone(socket)}
     Ecto.Query.CastError -> {:noreply, vrf_gone(socket)}
+  end
+
+  def handle_event("cancel", _params, socket) do
+    {:noreply, socket |> assign(editing: nil, panel_open?: false) |> assign_form(%Vrf{})}
   end
 
   def handle_event("validate", %{"vrf" => attrs}, socket) do
@@ -59,7 +64,7 @@ defmodule RengaWeb.VrfLive do
       (socket.assigns.editing || %Vrf{})
       |> IPAM.change_vrf(attrs)
       |> Map.put(:action, :validate)
-      |> to_form(id: "vrf-form")
+      |> to_form(id: socket.assigns.form.id)
 
     {:noreply, assign(socket, :form, form)}
   end
@@ -78,21 +83,21 @@ defmodule RengaWeb.VrfLive do
          socket
          |> put_flash(:info, "VRF #{vrf.name} #{if editing, do: "saved", else: "created"}")
          |> close_overlay("vrf-panel")
-         |> assign(:editing, nil)
+         |> assign(editing: nil, panel_open?: false)
          |> assign_form(%Vrf{})
          |> load_tables()}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign(socket, :form, to_form(changeset, id: "vrf-form"))}
+        {:noreply, assign(socket, :form, to_form(changeset, id: socket.assigns.form.id))}
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "Only owners and admins manage VRFs")}
 
       {:error, :stale} ->
         {:noreply,
-         put_flash(
+         assign(
            socket,
-           :error,
+           :edit_error,
            "This VRF changed elsewhere. Close the panel and edit it again to see the current version."
          )}
     end
@@ -139,12 +144,17 @@ defmodule RengaWeb.VrfLive do
     socket
     |> put_flash(:error, "That VRF was deleted")
     |> close_overlay("vrf-panel")
-    |> assign(:editing, nil)
+    |> assign(editing: nil, panel_open?: false)
     |> load_tables()
   end
 
-  defp assign_form(socket, vrf),
-    do: assign(socket, :form, to_form(IPAM.change_vrf(vrf), id: "vrf-form"))
+  # Explicit openings reset input identity; validation/reloads retain it.
+  defp assign_form(socket, vrf) do
+    assign(socket,
+      edit_error: nil,
+      form: to_form(IPAM.change_vrf(vrf), id: "vrf-fields-" <> Ecto.UUID.generate())
+    )
+  end
 
   defp load_tables(socket) do
     scope = socket.assigns.current_scope
@@ -178,7 +188,7 @@ defmodule RengaWeb.VrfLive do
             <.button
               id="new-vrf"
               variant="primary"
-              phx-click={JS.push("new") |> show_overlay("vrf-panel")}
+              phx-click="new"
             >
               New VRF
             </.button>
@@ -241,7 +251,7 @@ defmodule RengaWeb.VrfLive do
             <.link
               id={"#{row_id(row)}-prefixes"}
               navigate={prefixes_path(row)}
-              class="font-mono text-xs tabular-nums text-link hover:underline"
+              class="inline-flex min-h-tap min-w-tap items-center justify-end font-mono text-xs tabular-nums text-link hover:underline"
             >
               {prefix_label(prefix_count(row, @global_count))}
             </.link>
@@ -251,7 +261,7 @@ defmodule RengaWeb.VrfLive do
               <button
                 id={"vrf-#{row.vrf.id}-edit"}
                 type="button"
-                phx-click={JS.push("edit", value: %{id: row.vrf.id}) |> show_overlay("vrf-panel")}
+                phx-click={JS.push("edit", value: %{id: row.vrf.id})}
                 class="min-h-tap cursor-pointer text-sm text-link hover:underline"
               >
                 Edit
@@ -291,8 +301,10 @@ defmodule RengaWeb.VrfLive do
       </.confirm_dialog>
 
       <.side_panel
-        :if={@can_manage?}
+        :if={@can_manage? && @panel_open?}
         id="vrf-panel"
+        show
+        on_cancel={JS.push("cancel")}
         title={if @editing, do: "Edit #{@editing.name}", else: "New VRF"}
         description="Names are unique regardless of case. Renaming a VRF relabels its prefixes."
       >
@@ -303,6 +315,9 @@ defmodule RengaWeb.VrfLive do
           phx-submit="save"
           class="space-y-1"
         >
+          <p :if={@edit_error} id="vrf-edit-conflict" role="alert" class="mb-4 text-sm text-crit">
+            {@edit_error}
+          </p>
           <.input field={@form[:name]} type="text" label="Name" autocomplete="off" />
           <.input
             field={@form[:route_distinguisher]}
