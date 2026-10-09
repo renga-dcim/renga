@@ -89,6 +89,28 @@ defmodule RengaWeb.PrefixDetailLiveTest do
     assert has_element?(view, "#address-#{temporary.id}[data-temporary='true']", "temporary")
   end
 
+  test "classifies reconciled DHCPv6 and hides reconciled temporary evidence by default", %{
+    conn: conn,
+    scope: scope
+  } do
+    lan = prefix_fixture(scope, "2001:db8:1::/80")
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "ipv6"})
+
+    [dhcp, temporary] =
+      report_addresses(scope, source, [
+        %{"address" => "2001:db8:1::15/64", "metadata" => %{"assignment" => "dhcpv6"}},
+        %{"address" => "2001:db8:1::99/64", "metadata" => %{"temporary" => true}}
+      ])
+      |> Enum.sort_by(& &1.address.address)
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+    assert has_element?(view, "#address-#{dhcp.id}")
+    assert has_element?(view, "#prefix-addresses [data-method='dhcp']", "DHCPv6")
+    refute has_element?(view, "#address-#{temporary.id}")
+    view |> element("#prefix-toggle-temporary") |> render_click()
+    assert has_element?(view, "#address-#{temporary.id}[data-temporary='true']")
+  end
+
   test "names counterparts on the same VLAN or marks the prefix single-stack", %{
     conn: conn,
     scope: scope

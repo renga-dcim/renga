@@ -113,17 +113,18 @@ defmodule Renga.IPAM.PrefixTree do
   # blocks, and every long child inside one block counts that block once.
   defp allocated_blocks(children, level, bits) do
     children
-    |> Enum.flat_map(fn child ->
+    |> Enum.map(fn child ->
       cidr = child.prefix.prefix
       child_length = Cidr.length(cidr)
       first = Cidr.network_at(cidr, min(child_length, level)) >>> (bits - level)
 
-      if child_length >= level,
-        do: [first],
-        else: Enum.to_list(first..(first + (1 <<< (level - child_length)) - 1))
+      {first, first + (1 <<< max(level - child_length, 0)) - 1}
     end)
-    |> MapSet.new()
-    |> MapSet.size()
+    |> Enum.sort()
+    |> Enum.reduce({0, -1}, fn {first, last}, {count, covered_to} ->
+      {count + max(last - max(first - 1, covered_to), 0), max(covered_to, last)}
+    end)
+    |> elem(0)
   end
 
   @doc """

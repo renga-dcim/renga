@@ -106,6 +106,73 @@ defmodule Renga.IPAMTest do
     assert {view.address_map.used, view.address_map.usable} == {1, 14}
   end
 
+  test "list utilization matches distinct usable hosts in detail, regardless of inventory masks",
+       %{scope: scope} do
+    {_host, ports} = device_fixture(scope, "server", "duplicates", ~w(eth0 eth1))
+    for port <- Map.values(ports), do: address_fixture(scope, port, "192.0.2.1/24")
+    address_fixture(scope, ports["eth0"], "192.0.2.0/24")
+    address_fixture(scope, ports["eth0"], "192.0.2.3/24")
+
+    for {cidr, used, usable, percent} <- [
+          {"192.0.2.0/30", 1, 2, 50},
+          {"192.0.2.0/31", 2, 2, 100},
+          {"192.0.2.1/32", 1, 1, 100}
+        ] do
+      prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
+      %{ipv4: [row]} = IPAM.list_prefix_rows(scope, cidr)
+      view = IPAM.prefix_view(scope, prefix)
+      assert %{used: ^used, usable: ^usable, percent: ^percent} = row.usage
+      assert %{used: ^used, usable: ^usable, percent: ^percent} = view.address_map
+    end
+  end
+
+  test "address tables count interface records consistently in list and detail", %{scope: scope} do
+    {_host, ports} = device_fixture(scope, "server", "table-duplicates", ~w(eth0 eth1))
+
+    for {cidr, address} <- [{"2001:db8::/64", "2001:db8::1/48"}, {"192.0.0.0/21", "192.0.2.1/16"}] do
+      prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
+      for port <- Map.values(ports), do: address_fixture(scope, port, address)
+      rows = IPAM.list_prefix_rows(scope, cidr)
+      [row] = rows.ipv4 ++ rows.ipv6
+      assert row.usage == %{kind: :count, count: 2}
+      assert length(IPAM.prefix_view(scope, prefix).addresses) == 2
+    end
+  end
+
+  test "uses current ingestion evidence and excludes withdrawn addresses without deleting history",
+       %{scope: scope} do
+    v4 = prefix_fixture(scope, "192.0.2.0/28")
+    v6 = prefix_fixture(scope, "2001:db8:1::/80")
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "ipam"})
+
+    payload = [
+      "192.0.2.5/24",
+      %{"address" => "2001:db8:1::15/64", "metadata" => %{"assignment" => "dhcpv6"}},
+      %{"address" => "2001:db8:1::99/64", "metadata" => %{"temporary" => true}}
+    ]
+
+    report_addresses(scope, source, payload)
+    assert %{address_map: %{used: 1}} = IPAM.prefix_view(scope, v4)
+
+    assert %{
+             addresses: [%{method: :dhcp, temporary?: false}, %{method: :slaac, temporary?: true}]
+           } = IPAM.prefix_view(scope, v6)
+
+    report_addresses(scope, source, [
+      %{"address" => "2001:db8:1::15/64", "metadata" => %{"assignment" => "static"}}
+    ])
+
+    assert %{addresses: [%{method: :static}]} = IPAM.prefix_view(scope, v6)
+    assert %{address_map: %{used: 0}} = IPAM.prefix_view(scope, v4)
+    retained = report_addresses(scope, source, [])
+    assert length(retained) == 3
+    assert Enum.all?(retained, &(&1.metadata["present"] == false))
+    assert %{addresses: []} = IPAM.prefix_view(scope, v6)
+
+    assert %{ipv4: [%{usage: %{used: 0}}], ipv6: [%{usage: %{count: 0}}]} =
+             IPAM.list_prefix_rows(scope, nil)
+  end
+
   test "never shows another organization's prefixes or addresses", %{scope: scope} do
     lan = prefix_fixture(scope, "192.0.2.0/28")
 

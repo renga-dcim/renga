@@ -16,6 +16,7 @@ defmodule Renga.IPAM do
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Address
+  alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Prefix
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.Cidr
@@ -133,7 +134,7 @@ defmodule Renga.IPAM do
           kind: :percent,
           used: address_count,
           usable: usable,
-          percent: if(usable > 0, do: round(min(address_count, usable) / usable * 100), else: 0)
+          percent: if(usable > 0, do: round(address_count / usable * 100), else: 0)
         }
 
       :address_table ->
@@ -174,7 +175,27 @@ defmodule Renga.IPAM do
   defp addresses_in(organization_id, cidr) do
     Address
     |> where([address], address.organization_id == ^organization_id)
-    |> where([address], fragment("? <<= ?", address.address, type(^cidr, Renga.Types.Cidr)))
+    |> where(
+      [address],
+      fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+    )
+    |> where(
+      [address],
+      fragment("host(?)::inet <<= ?", address.address, type(^cidr, Renga.Types.Cidr))
+    )
+    # Use the winning presence observation, never another source's historical hints.
+    |> join(:left, [address], evidence in AddressEvidence,
+      on:
+        evidence.organization_id == address.organization_id and evidence.address_id == address.id and
+          fragment(
+            "?::text = ?->'presence_owner'->>'observation_id'",
+            evidence.observation_id,
+            address.metadata
+          )
+    )
+    |> select_merge([address, evidence], %{
+      metadata: fragment("COALESCE(?, '{}'::jsonb) || ?", evidence.metadata, address.metadata)
+    })
     |> order_by([address], asc: address.address)
     |> preload(interface: :resource)
     |> Repo.all()
@@ -189,10 +210,26 @@ defmodule Renga.IPAM do
     |> join(:inner, [prefix], address in Address,
       on:
         address.organization_id == ^organization_id and
-          fragment("? <<= ?", address.address, prefix.prefix)
+          fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata) and
+          fragment("host(?)::inet <<= ?", address.address, prefix.prefix)
     )
     |> group_by([prefix], prefix.id)
-    |> select([prefix, address], {prefix.id, count(address.id)})
+    |> select(
+      [prefix, address],
+      {prefix.id,
+       fragment(
+         "CASE WHEN family(?) = 4 AND masklen(?) >= 22 THEN COUNT(DISTINCT host(?)) FILTER (WHERE NOT (masklen(?) <= 30 AND (host(?)::inet = host(network(?))::inet OR host(?)::inet = host(broadcast(?))::inet))) ELSE COUNT(?) END",
+         prefix.prefix,
+         prefix.prefix,
+         address.address,
+         prefix.prefix,
+         address.address,
+         prefix.prefix,
+         address.address,
+         prefix.prefix,
+         address.id
+       )}
+    )
     |> Repo.all()
     |> Map.new()
   end

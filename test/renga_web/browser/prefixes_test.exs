@@ -37,7 +37,25 @@ defmodule RengaWeb.Browser.PrefixesTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, site: site, hall: hall}
+    %{conn: conn, site: site, hall: hall, scope: scope}
+  end
+
+  test "an IPv6 host prefix renders a valid address", context do
+    prefix = prefix_fixture(context.scope, "2001:db8::1/128")
+    {_host, ports} = device_fixture(context.scope, "server", "host-prefix", ~w(eth0))
+    address = address_fixture(context.scope, ports["eth0"], "2001:db8::1/64")
+
+    context.conn
+    |> visit("/network/prefixes/#{prefix.id}")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#address-#{address.id}")
+    |> evaluate(
+      "document.querySelector('#address-#{address.id} .font-mono').textContent.trim()",
+      fn text ->
+        assert {:ok, parsed} = :inet.parse_address(String.to_charlist(text))
+        assert parsed == address.address.address
+      end
+    )
   end
 
   test "a space map cell opens the child it stands for", context do

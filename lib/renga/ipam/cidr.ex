@@ -87,7 +87,9 @@ defmodule Renga.IPAM.Cidr do
 
     # A compressed identifier brings its own "::", so the shared part only
     # keeps its trailing colon when the identifier starts with a group.
-    separator = if head != [] and not String.starts_with?(tail, "::"), do: ":", else: ""
+    separator =
+      if head != [] and tail != "" and not String.starts_with?(tail, "::"), do: ":", else: ""
+
     {Enum.join(head, ":") <> separator, tail}
   end
 

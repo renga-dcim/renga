@@ -35,6 +35,10 @@ defmodule Renga.IPAM.PrefixTreeTest do
 
       {:ok, eui} = Renga.Types.Inet.cast("2001:db8:a:10:21b:21ff:fe3c:4d5e")
       assert Cidr.split_ipv6(eui, 64) == {"2001:db8:a:10:", "21b:21ff:fe3c:4d5e"}
+
+      {head, tail} = Cidr.split_ipv6(inet, 128)
+      assert {:ok, parsed} = :inet.parse_address(String.to_charlist(head <> tail))
+      assert parsed == inet.address
     end
   end
 
@@ -112,6 +116,30 @@ defmodule Renga.IPAM.PrefixTreeTest do
       assert {map.level, map.cell_length, length(map.cells)} == {48, 40, 256}
       assert {map.allocated, map.total} == {1, 65_536}
       assert hd(map.cells).state == :partial
+    end
+
+    test "counts huge allocations without enumerating planning blocks or counting overlaps twice" do
+      [node] =
+        PrefixTree.build([
+          prefix("2001:db8::/32"),
+          prefix("2001:db8::/33"),
+          prefix("2001:db8:8000::/64")
+        ])[{nil, :ipv6}]
+
+      map = PrefixTree.space_map(node)
+      assert {map.allocated, map.total, length(map.cells)} == {2_147_483_649, 4_294_967_296, 256}
+
+      [node] =
+        PrefixTree.build([
+          prefix("2001:db8::/48"),
+          prefix("2001:db8:0:1::/80"),
+          prefix("2001:db8:0:1:1::/80"),
+          prefix("2001:db8:0:2::/64"),
+          prefix("2001:db8:0:3::/64"),
+          prefix("2001:db8:0:4::/64")
+        ])[{nil, :ipv6}]
+
+      assert PrefixTree.space_map(node).allocated == 4
     end
 
     test "maps every address of a small IPv4 leaf" do
