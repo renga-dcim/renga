@@ -380,7 +380,7 @@ defmodule RengaWeb.Layouts do
               class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-sunken focus:bg-sunken"
             >
               <.icon name="hero-magnifying-glass" class="size-4 text-fg-subtle" />
-              <span>Search resources</span>
+              <span data-search-label>Search resources</span>
               <span class="ml-auto font-mono text-[10px] text-fg-subtle">Enter</span>
             </a>
           </div>
@@ -488,7 +488,10 @@ defmodule RengaWeb.Layouts do
 
   defp command_group(assigns) do
     ~H"""
-    <p class="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+    <p
+      data-command-group
+      class="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle"
+    >
       {@label}
     </p>
     """
