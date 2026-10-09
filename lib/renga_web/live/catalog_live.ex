@@ -1,11 +1,14 @@
 defmodule RengaWeb.CatalogLive do
   use RengaWeb, :live_view
 
+  import RengaWeb.CatalogComponents, only: [used_by: 1]
+
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Catalog
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.Drafts
+  alias Renga.Catalog.Moves
   alias Renga.Catalog.TypeRevision
 
   @device_class_options Enum.map(
@@ -81,8 +84,11 @@ defmodule RengaWeb.CatalogLive do
           |> assign(
             page_title: hardware_type.model,
             hardware_type: hardware_type,
-            draft: Drafts.get_draft(scope, hardware_type)
+            draft: Drafts.get_draft(scope, hardware_type),
+            used_by_selected: MapSet.new(),
+            can_set_auto_move?: Catalog.can_change_expectations?(scope)
           )
+          |> assign_used_by()
           |> reset_revision_form()
 
         :module_types ->
@@ -116,6 +122,80 @@ defmodule RengaWeb.CatalogLive do
 
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "You are not allowed to author the catalog")}
+    end
+  end
+
+  # Resources move between revisions only when someone moves them, one by
+  # one from their Hardware tab or together here (RFD 8).
+  def handle_event("toggle_used_by", %{"id" => id}, socket) do
+    selected = socket.assigns.used_by_selected
+
+    selected =
+      if MapSet.member?(selected, id),
+        do: MapSet.delete(selected, id),
+        else: MapSet.put(selected, id)
+
+    {:noreply, assign(socket, :used_by_selected, selected)}
+  end
+
+  def handle_event("select_fitting", _params, socket) do
+    %{used_by: entries, latest_revision: latest} = socket.assigns
+
+    fitting =
+      for entry <- entries,
+          latest && entry.revision < latest.revision,
+          Moves.fits_entry?(entry),
+          into: MapSet.new(),
+          do: entry.resource.id
+
+    {:noreply, assign(socket, :used_by_selected, fitting)}
+  end
+
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, assign(socket, :used_by_selected, MapSet.new())}
+  end
+
+  def handle_event("move_selected", _params, socket) do
+    %{current_scope: scope, latest_revision: latest, used_by: entries} = socket.assigns
+
+    ids =
+      for entry <- entries,
+          latest && entry.revision < latest.revision,
+          MapSet.member?(socket.assigns.used_by_selected, entry.resource.id),
+          do: entry.resource.id
+
+    case ids != [] && Moves.move(scope, ids, latest.id) do
+      {:ok, %{moved: moved}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Moved #{moved} to revision #{latest.revision}")
+         |> assign(:used_by_selected, MapSet.new())
+         |> assign_used_by()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "You are not allowed to move resources")}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Those resources could not be moved; review them and try again")
+         |> assign_used_by()}
+
+      false ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_auto_move", _params, socket) do
+    %{current_scope: scope, hardware_type: hardware_type} = socket.assigns
+
+    case Catalog.set_auto_move(scope, hardware_type, not hardware_type.auto_move) do
+      {:ok, updated} ->
+        {:noreply,
+         assign(socket, :hardware_type, %{hardware_type | auto_move: updated.auto_move})}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Automatic moves need the owner or admin role")}
     end
   end
 
@@ -287,7 +367,16 @@ defmodule RengaWeb.CatalogLive do
               template_errors={@template_errors}
               airflow_options={@airflow_options}
               component_kind_options={@component_kind_options}
-            />
+            >
+              <.used_by
+                entries={@used_by}
+                latest={@latest_revision}
+                selected={@used_by_selected}
+                auto_move={@hardware_type.auto_move}
+                can_move?={@can_author_catalog?}
+                can_set_auto_move?={@can_set_auto_move?}
+              />
+            </.catalog_type_detail>
           <% :module_types -> %>
             <.catalog_type_form
               :if={@can_author_catalog?}
@@ -554,6 +643,7 @@ defmodule RengaWeb.CatalogLive do
   attr :can_author_catalog, :boolean, required: true
   attr :authoring, :atom, default: :form, values: [:form, :draft]
   attr :draft, :any, default: nil
+  slot :inner_block, doc: "type-specific sections shown before the revisions"
   attr :revision_form, :map, required: true
   attr :template_errors, :map, required: true
   attr :airflow_options, :list, required: true
@@ -621,6 +711,8 @@ defmodule RengaWeb.CatalogLive do
         airflow_options={@airflow_options}
         component_kind_options={@component_kind_options}
       />
+
+      {render_slot(@inner_block)}
 
       <section id={"#{@prefix}-revisions"} class="space-y-5">
         <div>
@@ -1481,6 +1573,16 @@ defmodule RengaWeb.CatalogLive do
       errors when map_size(errors) == 0 -> "Catalog entry could not be created"
       errors -> errors |> Map.values() |> List.flatten() |> List.first()
     end
+  end
+
+  defp assign_used_by(socket) do
+    %{current_scope: scope, hardware_type: hardware_type} = socket.assigns
+    latest = Moves.latest_revision(scope, hardware_type.id)
+
+    assign(socket,
+      latest_revision: latest,
+      used_by: if(latest, do: Moves.preview(scope, hardware_type.id, latest), else: [])
+    )
   end
 
   defp catalog_nav(action) when action in [:hardware_types, :hardware_type], do: :hardware_types

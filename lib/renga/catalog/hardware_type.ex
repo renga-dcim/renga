@@ -13,6 +13,9 @@ defmodule Renga.Catalog.HardwareType do
     field :device_class, :string
     field :description, :string
     field :metadata, :map, default: %{}
+    # Moves resources to the latest revision once they fit it; set with
+    # Renga.Catalog.set_auto_move/3, never through the changeset.
+    field :auto_move, :boolean, default: false
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :resource, Renga.Inventory.Resource
     belongs_to :manufacturer, Renga.Catalog.Manufacturer

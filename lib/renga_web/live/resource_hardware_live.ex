@@ -31,6 +31,7 @@ defmodule RengaWeb.ResourceHardwareLive do
   alias Renga.Catalog
   alias Renga.Catalog.ComponentMatch
   alias Renga.Catalog.ExpectedComponent
+  alias Renga.Catalog.Moves
   alias Renga.Findings
   alias Renga.Inventory
   alias Renga.Inventory.Changes
@@ -133,6 +134,28 @@ defmodule RengaWeb.ResourceHardwareLive do
       end
     else
       {:noreply, put_flash(socket, :error, assignment_error(:unsupported_resource_kind))}
+    end
+  end
+
+  def handle_event("move_revision", _params, socket) do
+    %{current_scope: scope, resource: resource, move: move} = socket.assigns
+
+    if move && socket.assigns.can_author? do
+      case Catalog.move_hardware_revision(scope, resource.id, move.revision.id) do
+        {:ok, %{dropped: dropped}} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, moved_message(move.revision, dropped))
+           |> reload()}
+
+        {:error, _reason} ->
+          {:noreply,
+           socket
+           |> put_flash(:error, "The resource could not be moved; review it and try again")
+           |> reload()}
+      end
+    else
+      {:noreply, socket}
     end
   end
 
@@ -427,8 +450,23 @@ defmodule RengaWeb.ResourceHardwareLive do
             form={@hardware_form}
             options={@hardware_type_options}
           />
+          <.move_offer :if={@move} move={@move} can_move?={@can_author?} />
         </:aside>
       </.resource_frame>
+
+      <.confirm_dialog
+        :if={@move && @can_author?}
+        id="move-dialog"
+        title={"Move to revision #{@move.revision.revision}?"}
+        confirm_label="Move"
+        variant="primary"
+        on_confirm="move_revision"
+      >
+        {move_summary(@move.entry)}
+        <span :if={@move.entry.dropped > 0}>
+          {@move.entry.dropped} local {if @move.entry.dropped == 1, do: "change", else: "changes"} no longer apply and will be dropped.
+        </span>
+      </.confirm_dialog>
 
       <.slot_panel
         :if={@selected}
@@ -790,6 +828,29 @@ defmodule RengaWeb.ResourceHardwareLive do
     """
   end
 
+  attr :move, :map, required: true
+  attr :can_move?, :boolean, required: true
+
+  # A newer revision never moves the resource by itself (RFD 8); this offers
+  # the move with what it would change.
+  defp move_offer(assigns) do
+    ~H"""
+    <section id="move-offer" class="space-y-2 rounded-lg border border-edge bg-surface p-3">
+      <p class="text-sm font-medium text-fg">Revision {@move.revision.revision} is available</p>
+      <p id="move-offer-summary" class="text-xs text-fg-muted">{move_summary(@move.entry)}</p>
+      <.button
+        :if={@can_move?}
+        id="move-revision"
+        size="sm"
+        disabled={@move.entry.conflicts != []}
+        phx-click={show_overlay("move-dialog")}
+      >
+        Move to revision {@move.revision.revision}
+      </.button>
+    </section>
+    """
+  end
+
   attr :row, :map, required: true
   attr :resource, :any, required: true
   attr :intents, :list, required: true
@@ -1113,7 +1174,8 @@ defmodule RengaWeb.ResourceHardwareLive do
       hardware_assignable?: hardware_assignable?,
       can_manage_hardware?: hardware_assignable? and socket.assigns.can_author?,
       hardware_type_options: hardware_type_options(hardware_types),
-      hardware_form: hardware_form(assignment)
+      hardware_form: hardware_form(assignment),
+      move: move_offer_for(scope, assignment)
     )
     |> stream(:module_bays, module_bays,
       reset: true,
@@ -1123,6 +1185,21 @@ defmodule RengaWeb.ResourceHardwareLive do
       reset: true,
       dom_id: &"inventory-item-#{&1.id}"
     )
+  end
+
+  defp move_offer_for(_scope, nil), do: nil
+
+  defp move_offer_for(scope, assignment) do
+    with %{} = latest <- Moves.latest_revision(scope, assignment.hardware_type_id),
+         true <- latest.revision > assignment.catalog_type_revision.revision,
+         [entry] <-
+           Moves.preview(scope, assignment.hardware_type_id, latest,
+             resource_ids: [assignment.resource_id]
+           ) do
+      %{revision: latest, entry: entry}
+    else
+      _current -> nil
+    end
   end
 
   # The selected slot and answer come from the URL; both are re-resolved
@@ -1449,6 +1526,33 @@ defmodule RengaWeb.ResourceHardwareLive do
 
   defp intent_description(intent, _row, false) when intent in [:expect, :restore],
     do: "Changes this resource only. An owner or admin reviews the request."
+
+  defp move_summary(%{conflicts: [_conflict | _rest]}),
+    do: "Local component names conflict with this revision. Resolve them before moving."
+
+  defp move_summary(%{observed?: false}),
+    do: "No collector has reported this resource's parts, so what a move changes is unknown."
+
+  defp move_summary(%{close: 0, open: 0}), do: "Moving changes no slot's state."
+
+  defp move_summary(entry) do
+    [
+      entry.close > 0 && "closes #{entry.close} #{plural(entry.close, "difference")}",
+      entry.open > 0 && "opens #{entry.open} #{plural(entry.open, "difference")}"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" and ")
+    |> then(&("Moving " <> &1 <> "."))
+  end
+
+  defp moved_message(revision, []), do: "Moved to revision #{revision.revision}"
+
+  defp moved_message(revision, dropped),
+    do:
+      "Moved to revision #{revision.revision}; #{length(dropped)} local #{plural(length(dropped), "change")} no longer applied"
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
 
   defp end_of_day(value) do
     case Date.from_iso8601(value || "") do
