@@ -1,5 +1,5 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: discussion
+:state: published
 :discussion: https://github.com/renga-dcim/renga/pull/110
 :labels: ipam, inventory, network, software
 

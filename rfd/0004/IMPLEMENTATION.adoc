@@ -4,11 +4,11 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 1: Harden prefixes
 
-* [ ] Require the owner/admin policy for prefix envelopes and typed prefix
+* [x] Require the owner/admin policy for prefix envelopes and typed prefix
   writes, re-checked in the database inside the transaction.
 * [ ] Add prefix create, edit, and delete in the Network area, defaulting to the
   global table.
-* [ ] Add the `container` status and enforce exact CIDR uniqueness per
+* [x] Add the `container` status and enforce exact CIDR uniqueness per
   legacy exact-string routing table; replace this constraint in Phase 2.
 * [ ] Build hierarchy with strict containment so a prefix is never its own
   parent.
