@@ -453,18 +453,27 @@ defmodule RengaWeb.ResourceHardwareLive do
   attr :counts, :map, required: true
 
   defp summary(assigns) do
-    assigns = assign(assigns, :total, assigns.counts |> Map.values() |> Enum.sum())
+    counts = assigns.counts
+
+    parts =
+      [
+        {counts.match, "match", "text-fg"},
+        {counts.missing, "missing", "text-crit"},
+        {counts.not_expected, "not expected", "text-fg"},
+        {counts.local_change, "changed on this resource", "text-warn-text"}
+      ]
+      |> Enum.filter(fn {count, label, _class} -> count > 0 or label == "match" end)
+      |> Enum.with_index()
+
+    assigns = assign(assigns, total: counts |> Map.values() |> Enum.sum(), parts: parts)
 
     ~H"""
     <span class="font-mono tabular-nums text-fg">{@total}</span>
-    slots: <span class="font-mono tabular-nums text-fg">{@counts.match}</span>
-    match<span :if={@counts.missing > 0}>, <span class="font-mono tabular-nums text-crit">{@counts.missing}</span>
-      missing</span><span :if={
-      @counts.not_expected > 0
-    }>
-      , <span class="font-mono tabular-nums text-fg">{@counts.not_expected}</span> not expected
-    </span><span :if={@counts.local_change > 0}>, <span class="font-mono tabular-nums text-warn-text">{@counts.local_change}</span>
-      changed on this resource</span>.
+    slots:
+    <span :for={{{count, label, class}, index} <- @parts}>{if index > 0, do: ", "}<span class={[
+        "font-mono tabular-nums",
+        class
+      ]}>{count}</span> {label}</span>.
     """
   end
 
