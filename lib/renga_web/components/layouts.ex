@@ -199,9 +199,10 @@ defmodule RengaWeb.Layouts do
           <.brand class="h-auto" />
           <div class="ml-auto flex items-center gap-1">
             <button
+              id="command-palette-trigger-mobile"
               type="button"
               phx-click={JS.dispatch("renga:open-command-palette")}
-              class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
+              class="grid min-h-tap min-w-tap place-items-center rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
               aria-label="Open command menu"
             >
               <.icon name="hero-magnifying-glass" class="size-4" />
@@ -380,7 +381,7 @@ defmodule RengaWeb.Layouts do
               class="flex h-11 items-center gap-3 rounded-md px-2.5 text-xs outline-none transition hover:bg-sunken focus:bg-sunken"
             >
               <.icon name="hero-magnifying-glass" class="size-4 text-fg-subtle" />
-              <span>Search resources</span>
+              <span data-search-label>Search resources</span>
               <span class="ml-auto font-mono text-[10px] text-fg-subtle">Enter</span>
             </a>
           </div>
@@ -429,7 +430,7 @@ defmodule RengaWeb.Layouts do
             data-command-item
             data-search="switch theme light dark"
             data-command-action="toggle-theme"
-            class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
+            class="flex h-10 min-h-tap w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
           >
             <.icon name="hero-moon" class="size-4 text-fg-subtle" />
             <span>Switch theme</span>
@@ -457,7 +458,7 @@ defmodule RengaWeb.Layouts do
       data-search={String.downcase("#{@command.label} #{@command.unavailable}")}
       aria-disabled="true"
       aria-describedby={"command-#{@command.id}-reason"}
-      class="flex min-h-10 w-full cursor-not-allowed items-center gap-3 rounded-md px-2.5 py-2 text-left text-xs outline-none focus:bg-sunken"
+      class="flex min-h-[max(2.5rem,var(--rg-tap-min))] w-full cursor-not-allowed items-center gap-3 rounded-md px-2.5 py-2 text-left text-xs outline-none focus:bg-sunken"
     >
       <.icon name={@command.icon} class="size-4 shrink-0 text-fg-subtle" />
       <span class="text-fg-muted">{@command.label}</span>
@@ -476,7 +477,7 @@ defmodule RengaWeb.Layouts do
       data-command-item
       data-search={String.downcase(@command.label)}
       phx-click={@command.run}
-      class="flex h-10 w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg outline-none transition hover:bg-sunken focus:bg-sunken"
+      class="flex h-10 min-h-tap w-full items-center gap-3 rounded-md px-2.5 text-left text-xs text-fg outline-none transition hover:bg-sunken focus:bg-sunken"
     >
       <.icon name={@command.icon} class="size-4 shrink-0 text-fg-subtle" />
       <span>{@command.label}</span>
@@ -488,7 +489,10 @@ defmodule RengaWeb.Layouts do
 
   defp command_group(assigns) do
     ~H"""
-    <p class="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+    <p
+      data-command-group
+      class="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle"
+    >
       {@label}
     </p>
     """
@@ -508,7 +512,7 @@ defmodule RengaWeb.Layouts do
       data-search={
         [@label, @context | @keywords] |> Enum.filter(& &1) |> Enum.join(" ") |> String.downcase()
       }
-      class="flex h-10 items-center gap-3 rounded-md px-2.5 text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
+      class="flex h-10 min-h-tap items-center gap-3 rounded-md px-2.5 text-xs text-fg-muted outline-none transition hover:bg-sunken focus:bg-sunken focus:text-fg"
     >
       <.icon name={@icon} class="size-4 text-fg-subtle" />
       <span class="text-fg">{@label}</span>
@@ -602,7 +606,7 @@ defmodule RengaWeb.Layouts do
     <button
       type="button"
       id={@id}
-      class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
+      class="grid min-h-tap min-w-tap place-items-center rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
       phx-click={
         if(@current_scope && @current_scope.user,
           do: "cycle_theme",

@@ -2,8 +2,9 @@ defmodule RengaWeb.Browser.HardwareTest do
   @moduledoc """
   A resource's Hardware tab in a real browser: a collapsed run of matching
   slots opens in place, a missing slot's panel records that the part is out
-  until a date, and at phone width the comparison stays within the screen
-  with 44px slot targets.
+  until a date, and at phone width (RFD 8, "Phone and tablet") the
+  comparison stays within the screen with 44px targets while a part is
+  recorded as out temporarily or replaced.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -12,6 +13,8 @@ defmodule RengaWeb.Browser.HardwareTest do
   import Renga.InventoryFixtures
 
   @moduletag :playwright
+
+  @phone [has_touch: true, is_mobile: true, viewport: %{width: 390, height: 844}]
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -77,26 +80,77 @@ defmodule RengaWeb.Browser.HardwareTest do
     |> assert_has("##{context.b3}", text: "Out until")
   end
 
-  @tag browser_context_opts: [
-         has_touch: true,
-         is_mobile: true,
-         viewport: %{width: 390, height: 844}
-       ]
-  test "fits a phone screen with tappable slots", context do
+  @tag browser_context_opts: @phone
+  test "fits a phone screen with tappable slots and records a part out", context do
     context.conn
     |> visit("/inventory/#{context.server.id}/hardware")
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(heights_js(), fn heights ->
       assert heights != []
       assert Enum.all?(heights, &(round(&1) >= 44))
     end)
     |> click("##{context.b3}")
     |> assert_has("#slot-intents")
-    |> evaluate(
-      "document.getElementById('slot-panel-container').getBoundingClientRect().width <= window.innerWidth",
-      &assert(&1 == true)
+    |> evaluate(panel_fits_js(), &assert(&1 == true))
+    |> evaluate(tap_heights_js("#slot-intents a"), &assert_tappable/1)
+    |> click("#slot-intent-gap")
+    |> assert_has("#gap-form")
+    |> evaluate(panel_fits_js(), &assert(&1 == true))
+    |> evaluate(tap_heights_js("#gap-form input, #gap-save"), &assert_tappable/1)
+    |> fill_in("#gap-form input[name='gap[reason]']", "Why is it out?",
+      with: "Failed DIMM, RMA open"
     )
+    |> click_button("#gap-save", "Accept until then")
+    |> assert_has("#flash-info", text: "out until")
+    |> assert_has("##{context.b3}", text: "Out until")
+  end
+
+  @tag browser_context_opts: @phone
+  test "records an installed replacement at phone width", context do
+    context.conn
+    |> visit("/inventory/#{context.server.id}/hardware")
+    |> assert_has("body .phx-connected")
+    |> click("##{context.b3}")
+    |> click("#slot-intent-replacement")
+    |> assert_has("#replacement-form")
+    |> evaluate(panel_fits_js(), &assert(&1 == true))
+    |> evaluate(tap_heights_js("#replacement-form input, #replacement-save"), &assert_tappable/1)
+    |> fill_in("#replacement-form input[name='replacement[part_number]']", "Part number",
+      with: "M393A4K40EB3"
+    )
+    |> fill_in("#replacement-form input[name='replacement[serial_number]']", "Serial number",
+      with: "S-90210"
+    )
+    |> click_button("#replacement-save", "Record replacement")
+    |> refute_has("#replacement-form")
+    |> assert_has("##{context.b3}", text: "Replacement pending")
+  end
+
+  defp assert_tappable(heights) do
+    assert heights != []
+    assert Enum.all?(heights, &(round(&1) >= 44)), "tap targets under 44px: #{inspect(heights)}"
+  end
+
+  defp panel_fits_js do
+    """
+    (() => {
+      const box = document.getElementById('slot-panel-container').getBoundingClientRect();
+      return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+    })()
+    """
+  end
+
+  defp tap_heights_js(selector) do
+    """
+    [...document.querySelectorAll(#{Renga.JSON.encode!(selector)})]
+      .filter(el => el.offsetParent !== null && el.type !== 'hidden')
+      .map(el => el.getBoundingClientRect().height)
+    """
   end
 
   defp visible_js(id), do: "document.getElementById('#{id}').checkVisibility()"

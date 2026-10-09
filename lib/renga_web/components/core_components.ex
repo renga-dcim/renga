@@ -489,7 +489,10 @@ defmodule RengaWeb.CoreComponents do
       )
 
     ~H"""
-    <div class={["overflow-x-auto", @class]}>
+    <%!-- relative keeps absolutely positioned cell content, such as
+          screen-reader labels, inside the scroll box; otherwise a wide
+          table widens the whole page on a phone. --%>
+    <div class={["relative overflow-x-auto", @class]}>
       <table class="w-full text-left text-table text-fg">
         <thead class="sticky top-0 z-10 bg-canvas text-xs text-fg-muted">
           <tr class="h-row border-b border-edge">

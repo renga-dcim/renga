@@ -202,16 +202,20 @@ defmodule RengaWeb.UI do
           <nav
             :if={@tab != []}
             id={"#{@id}-tabs"}
+            phx-hook="TabStrip"
             aria-label={gettext("Sections")}
-            class="flex flex-wrap gap-5 border-b border-edge"
+            class="flex gap-5 overflow-x-auto shadow-[inset_0_-1px_0_var(--rg-edge)] [scrollbar-width:none]"
           >
+            <%!-- One row that scrolls sideways on a phone rather than wrapping.
+                  The rule under the tabs is an inset shadow because the
+                  scroll box would clip a border pulled under it. --%>
             <.link
               :for={tab <- @tab}
               navigate={tab[:navigate]}
               patch={tab[:patch]}
               aria-current={tab[:active] && "page"}
               class={[
-                "-mb-px inline-flex items-center gap-1.5 border-b-2 pb-2.5 text-sm transition-colors",
+                "inline-flex min-h-tap shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 pb-2.5 text-sm transition-colors",
                 tab[:active] && "border-fg font-medium text-fg",
                 !tab[:active] && "border-transparent text-fg-muted hover:text-fg"
               ]}

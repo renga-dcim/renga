@@ -28,6 +28,7 @@ import {Overlay} from "./overlay"
 import {ListKeys} from "./list_keys"
 import {RackDrag} from "./rack_drag"
 import {CenterScroll} from "./center_scroll"
+import {TabStrip} from "./tab_strip"
 
 const CommandPalette = {
   mounted() {
@@ -135,7 +136,7 @@ const CommandPalette = {
   updateItems(preserveSelection = false) {
     const query = this.input.value.trim().toLowerCase()
     const searchLink = this.searchItem.querySelector("a")
-    const searchLabel = this.searchItem.querySelector("a > span")
+    const searchLabel = this.searchItem.querySelector("[data-search-label]")
 
     this.searchItem.hidden = query === ""
     searchLink.href = `/inventory?q=${encodeURIComponent(query)}`
@@ -143,6 +144,18 @@ const CommandPalette = {
 
     this.el.querySelectorAll("[data-command-item]:not(#command-resource-search)").forEach(item => {
       item.hidden = query !== "" && !item.dataset.search.includes(query)
+    })
+
+    // A heading whose items are all filtered out would sit over nothing.
+    this.el.querySelectorAll("[data-command-group]").forEach(group => {
+      if (group.closest("[data-command-item]")) return
+      let sibling = group.nextElementSibling
+      let visible = false
+      while (sibling && !sibling.matches("[data-command-group]")) {
+        if (sibling.matches("[data-command-item]") && !sibling.hidden) visible = true
+        sibling = sibling.nextElementSibling
+      }
+      group.hidden = !visible
     })
 
     this.items = Array.from(this.el.querySelectorAll("[data-command-item]:not([hidden])"))
@@ -211,7 +224,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CenterScroll, CommandPalette, CopyToClipboard, Overlay, ListKeys, RackDrag},
+  hooks: {...colocatedHooks, CenterScroll, CommandPalette, CopyToClipboard, Overlay, ListKeys, RackDrag, TabStrip},
 })
 
 // Show progress bar on live navigation and form submits

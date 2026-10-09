@@ -145,7 +145,7 @@ defmodule RengaWeb.Browser.TopologyTest do
   end
 
   defp fits_width_js do
-    "document.documentElement.scrollWidth <= window.innerWidth"
+    "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
   end
 
   defp open_heights_js do

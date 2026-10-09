@@ -63,7 +63,10 @@ defmodule RengaWeb.Browser.PortsTest do
     context.conn
     |> visit("/inventory/#{context.leaf.id}/ports")
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(open_heights_js(), fn heights ->
       assert length(heights) == 48
       assert Enum.all?(heights, &(round(&1) >= 44))
@@ -71,7 +74,10 @@ defmodule RengaWeb.Browser.PortsTest do
     |> click_link("#port-#{context.swp40}-drift", "VLAN drift")
     |> assert_has("#port-#{context.swp40}-membership [data-flag='unexpected']")
     # The expanded row widens the table; it scrolls, the page does not.
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
   end
 
   defp in_view_js(selector) do

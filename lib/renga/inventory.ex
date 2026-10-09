@@ -630,7 +630,8 @@ defmodule Renga.Inventory do
 
   ## Options
 
-    * `:search` - matches names, kind, and host identity fields
+    * `:search` - matches names, kind, host identity fields, and serial
+      number and asset tag identifiers
     * `:kinds` - resource kinds to include; empty means all
     * `:lifecycle` - one lifecycle state
     * `:freshness` - `"current"`, `"stale"`, or `"unknown"` (no inventory
@@ -858,11 +859,22 @@ defmodule Renga.Inventory do
       )
       |> select([host], host.resource_id)
 
+    # Floor staff find a device by the serial number or asset tag printed on
+    # it (RFD 8, "Phone and tablet"); those live as identifiers, not host
+    # fields, once a collector or person has reported them.
+    matching_identifier_ids =
+      ResourceIdentifier
+      |> where([identifier], identifier.organization_id == ^organization_id)
+      |> where([identifier], identifier.kind in ~w(serial_number asset_tag))
+      |> where([identifier], ilike(identifier.value, ^pattern))
+      |> select([identifier], identifier.resource_id)
+
     where(
       query,
       [resource],
       ilike(resource.name, ^pattern) or ilike(resource.display_name, ^pattern) or
-        ilike(resource.kind, ^pattern) or resource.id in subquery(matching_host_ids)
+        ilike(resource.kind, ^pattern) or resource.id in subquery(matching_host_ids) or
+        resource.id in subquery(matching_identifier_ids)
     )
   end
 

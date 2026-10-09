@@ -121,7 +121,10 @@ defmodule RengaWeb.Browser.AppearanceTest do
     conn
     |> visit("/settings/appearance")
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(
       "[...document.querySelectorAll('#appearance label')].map(l => l.getBoundingClientRect().height)",
       fn heights ->

@@ -560,6 +560,42 @@ defmodule Renga.InventoryTest do
                """)
     end
 
+    test "operational search finds a device by its serial number or asset tag", %{
+      scope: scope,
+      other_scope: other_scope
+    } do
+      resource = fn scope, name, identifiers ->
+        {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: name})
+
+        for {kind, value} <- identifiers,
+            do:
+              {:ok, _} =
+                Inventory.create_resource_identifier(scope, resource.id, %{
+                  kind: kind,
+                  value: value
+                })
+
+        resource
+      end
+
+      by_serial = resource.(scope, "r12-u07", [{"serial_number", "7X42KQ9"}])
+      by_tag = resource.(scope, "r12-u09", [{"asset_tag", "AT-004512"}])
+      _by_mac = resource.(scope, "r12-u11", [{"mac_address", "00:00:5e:00:53:af"}])
+      _foreign = resource.(other_scope, "elsewhere", [{"serial_number", "7X42KQ9"}])
+
+      search = fn term ->
+        scope
+        |> Inventory.list_operational_resources(search: term)
+        |> Map.fetch!(:entries)
+        |> Enum.map(& &1.id)
+      end
+
+      assert search.("7x42") == [by_serial.id]
+      assert search.("AT-0045") == [by_tag.id]
+      # Only identifiers printed on the device are searched.
+      assert search.("00:00:5e") == []
+    end
+
     test "operational list filters by kind and freshness, groups, and sorts", %{scope: scope} do
       resource = fn kind, name, lifecycle ->
         {:ok, resource} =
