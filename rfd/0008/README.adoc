@@ -1,5 +1,5 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: published
+:state: committed
 :discussion: https://github.com/renga-dcim/renga/pull/72
 :labels: product, design, ui, ux
 

@@ -846,7 +846,7 @@ defmodule Renga.Inventory do
        do: query
 
   defp maybe_filter_resource_search(query, organization_id, search) do
-    pattern = "%#{String.trim(search)}%"
+    pattern = "%" <> escape_like(String.trim(search)) <> "%"
 
     matching_host_ids =
       Host
@@ -877,6 +877,10 @@ defmodule Renga.Inventory do
         resource.id in subquery(matching_identifier_ids)
     )
   end
+
+  # Search text is literal: a typed `%` or `_` must not act as a LIKE
+  # wildcard, so `r12_u07` finds that name rather than every r12?u07.
+  defp escape_like(text), do: String.replace(text, ~r/[\\%_]/, "\\\\\\0")
 
   defp maybe_filter_resource_lifecycle(query, lifecycle) when lifecycle in [nil, ""], do: query
 

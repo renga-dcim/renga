@@ -7,6 +7,8 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
 
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   @migration_version 20_261_002_120_000
   @migration_path "priv/repo/migrations/20261002120000_create_prefix_vlan_relationships.exs"
 
@@ -37,15 +39,8 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
       )
       |> Renga.Repo.start_link()
 
-    path = Ecto.Migrator.migrations_path(Renga.Repo)
-
     # Migrating from zero pins the whole chain, including the association.
-    migrated =
-      Ecto.Migrator.run(Renga.Repo, path, :up,
-        all: true,
-        dynamic_repo: scratch_repo,
-        log: false
-      )
+    migrated = Renga.ScratchMigrations.run(scratch_repo, :up, all: true)
 
     assert @migration_version in migrated
 
@@ -86,11 +81,18 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
     assert {:error, %Postgrex.Error{postgres: %{code: :undefined_table}}} =
              query_scratch(scratch_repo, "SELECT * FROM prefix_vlan_relationships")
 
-    assert :ok =
-             Ecto.Migrator.up(Renga.Repo, @migration_version, migration_module,
-               dynamic_repo: scratch_repo,
-               log: false
-             )
+    # Re-applying a migration older than the latest one is exactly what Ecto
+    # warns about, so the expected warning is captured rather than printed.
+    {result, log} =
+      with_log(fn ->
+        Ecto.Migrator.up(Renga.Repo, @migration_version, migration_module,
+          dynamic_repo: scratch_repo,
+          log: false
+        )
+      end)
+
+    assert result == :ok
+    assert log =~ "You are running migration #{@migration_version}"
 
     # Re-applying restores an empty association table.
     assert {:ok, %Postgrex.Result{num_rows: 0}} =
