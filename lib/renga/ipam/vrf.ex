@@ -36,8 +36,8 @@ defmodule Renga.IPAM.Vrf do
   def changeset(vrf, attrs) do
     vrf
     |> cast(attrs, [:name, :route_distinguisher, :status, :description])
-    |> update_change(:name, &String.trim/1)
-    |> update_change(:route_distinguisher, &String.trim/1)
+    |> update_change(:name, &trim/1)
+    |> update_change(:route_distinguisher, &trim/1)
     |> validate_required([:organization_id, :resource_id, :name, :status])
     |> validate_length(:name, max: 100)
     |> validate_name()
@@ -55,6 +55,9 @@ defmodule Renga.IPAM.Vrf do
   end
 
   def statuses, do: @statuses
+
+  defp trim(nil), do: nil
+  defp trim(value), do: String.trim(value)
 
   # Legacy `default` tables became the global table, which has no row, so a
   # VRF cannot take that name back.

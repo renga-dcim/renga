@@ -49,7 +49,14 @@ defmodule RengaWeb.PrefixLive do
   @impl true
   def handle_params(params, _uri, socket) do
     tables = IPAM.list_routing_tables(socket.assigns.current_scope)
-    vrf = find_table(tables, params["vrf"])
+    current = socket.assigns.query && socket.assigns.query.vrf
+
+    # Family/selection links carry the last rendered name. Follow its identity
+    # even if a rename (or reuse of the old name) raced the debounced reload.
+    vrf =
+      if current && find_table([current], params["vrf"]),
+        do: Enum.find(tables, &(&1 && &1.id == current.id)),
+        else: find_table(tables, params["vrf"])
 
     query = %{
       family: family(params["family"]),
@@ -57,23 +64,23 @@ defmodule RengaWeb.PrefixLive do
       selected: params["selected"]
     }
 
-    {:noreply,
-     socket
-     |> assign(tables: tables, query: query)
-     |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf_id: vrf && vrf.id}))
-     |> load_rows()}
+    socket =
+      socket
+      |> assign(tables: tables, query: query)
+      |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf_id: vrf && vrf.id}))
+      |> load_rows()
+
+    if current && table_param(vrf) != params["vrf"],
+      do: {:noreply, push_patch(socket, to: prefixes_path(query, []))},
+      else: {:noreply, socket}
   end
 
   @impl true
   def handle_event("routing_table", %{"table" => %{"vrf" => name}}, socket) do
-    {:noreply,
-     push_patch(socket,
-       to:
-         prefixes_path(socket.assigns.query,
-           vrf: find_table(socket.assigns.tables, name),
-           selected: nil
-         )
-     )}
+    tables = IPAM.list_routing_tables(socket.assigns.current_scope)
+    query = %{socket.assigns.query | vrf: find_table(tables, name), selected: nil}
+
+    {:noreply, socket |> assign(:query, query) |> push_patch(to: prefixes_path(query, []))}
   end
 
   def handle_event("validate_prefix", %{"prefix" => params}, socket) do

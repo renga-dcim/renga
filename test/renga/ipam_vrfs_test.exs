@@ -130,6 +130,28 @@ defmodule Renga.IPAMVrfsTest do
     assert id == vrf.id
   end
 
+  test "clearing optional fields is audited and clearing the name is invalid", context do
+    for empty <- ["", nil] do
+      vrf =
+        vrf_fixture(context.admin, "clear-#{System.unique_integer([:positive])}", %{
+          route_distinguisher: "65000:1"
+        })
+
+      assert {:ok, cleared} = IPAM.update_vrf(context.admin, vrf, %{route_distinguisher: empty})
+      assert cleared.route_distinguisher == nil
+
+      assert Enum.any?(Inventory.list_activity(context.admin), fn event ->
+               event.resource_id == vrf.resource_id and event.field == "route_distinguisher" and
+                 event.old_value == %{"value" => "65000:1"} and
+                 event.new_value == %{"value" => nil}
+             end)
+
+      assert {:error, changeset} = IPAM.update_vrf(context.admin, cleared, %{name: empty})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+      assert IPAM.get_vrf!(context.admin, vrf.id).name == vrf.name
+    end
+  end
+
   test "a VRF holding prefixes cannot be deleted; an empty one can", context do
     vrf = vrf_fixture(context.admin, "blue")
     prefix = prefix_fixture(context.admin, "10.0.0.0/24", %{vrf: "blue"})
@@ -161,7 +183,7 @@ defmodule Renga.IPAMVrfsTest do
     assert {:error, changeset} =
              IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24", vrf_id: foreign.id})
 
-    assert %{vrf: ["does not exist"]} = errors_on(changeset)
+    assert %{vrf_id: ["does not exist"]} = errors_on(changeset)
 
     assert_raise Ecto.NoResultsError, fn -> IPAM.get_vrf!(context.admin, foreign.id) end
     assert IPAM.get_vrf_by_name(context.admin, "BLUE").id == blue.id
@@ -171,7 +193,7 @@ defmodule Renga.IPAMVrfsTest do
     assert {:error, changeset} =
              IPAM.update_prefix(context.admin, prefix, %{vrf_id: foreign.id})
 
-    assert %{vrf: ["does not exist"]} = errors_on(changeset)
+    assert %{vrf_id: ["does not exist"]} = errors_on(changeset)
     assert Repo.get!(Prefix, prefix.id).vrf_id == blue.id
     assert IPAM.list_prefix_rows(other, blue.id) == %{ipv4: [], ipv6: []}
   end

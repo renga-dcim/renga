@@ -128,6 +128,26 @@ defmodule RengaWeb.PrefixLiveTest do
     assert has_element?(view, "#prefix-table option[selected][value='Tenant']")
   end
 
+  test "family navigation follows identity before a rename reload, even if the name is reused", %{
+    conn: conn,
+    scope: scope
+  } do
+    prefix = prefix_fixture(scope, "2001:db8::/64", %{vrf: "blue"})
+    {:ok, view, _} = live(conn, ~p"/network/prefixes?vrf=blue")
+    {:ok, _} = Renga.IPAM.update_vrf(scope, prefix.vrf, %{name: "Tenant"})
+    other = prefix_fixture(scope, "2001:db8:1::/64", %{vrf: "blue"})
+
+    view |> element("#prefix-family-ipv6") |> render_click()
+    assert_patch(view, ~p"/network/prefixes?family=ipv6&vrf=Tenant")
+    send(view.pid, :reload)
+    assert has_element?(view, "#prefix-row-#{prefix.id}")
+    refute has_element?(view, "#prefix-row-#{other.id}")
+
+    view |> form("#prefix-table", table: %{vrf: "blue"}) |> render_change()
+    assert has_element?(view, "#prefix-row-#{other.id}")
+    refute has_element?(view, "#prefix-row-#{prefix.id}")
+  end
+
   test "keeps another organization's prefixes invisible", %{conn: conn} do
     other = user_fixture()
     other_organization = organization_fixture()

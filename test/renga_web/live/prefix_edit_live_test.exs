@@ -53,6 +53,24 @@ defmodule RengaWeb.PrefixEditLiveTest do
       assert Repo.aggregate(Prefix, :count) == 1
     end
 
+    test "a deleted routing-table selection is visible on create and edit", context do
+      vrf = vrf_fixture(context.admin, "vanishing")
+      prefix = prefix_fixture(context.admin, "192.0.2.0/24")
+      {:ok, create_view, _} = live(context.admin_conn, ~p"/network/prefixes")
+      {:ok, edit_view, _} = live(context.admin_conn, ~p"/network/prefixes/#{prefix}")
+      {:ok, _} = Renga.IPAM.delete_vrf(context.admin, vrf)
+
+      render_hook(create_view, "create_prefix", %{
+        "prefix" => %{"prefix" => "198.51.100.0/24", "vrf_id" => vrf.id}
+      })
+
+      assert has_element?(create_view, "#prefix-form", "does not exist")
+      render_hook(edit_view, "update_prefix", %{"prefix" => %{"vrf_id" => vrf.id}})
+      assert has_element?(edit_view, "#prefix-edit-form", "does not exist")
+      assert Repo.aggregate(Prefix, :count) == 1
+      assert Repo.get!(Prefix, prefix.id).vrf_id == nil
+    end
+
     test "members see no create control and cannot create one", context do
       {:ok, view, _html} = live(context.member_conn, ~p"/network/prefixes")
 

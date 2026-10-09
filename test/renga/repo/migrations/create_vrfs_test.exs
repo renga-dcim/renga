@@ -149,12 +149,17 @@ defmodule Renga.Repo.Migrations.CreateVrfsTest do
     organization = insert_organization(repo)
     global = insert_prefix(repo, organization, "10.0.0.0/24", nil)
     blue = insert_prefix(repo, organization, "10.0.0.0/24", "blue")
+    red = insert_prefix(repo, organization, "10.0.1.0/24", " Red ")
+    default_org = insert_organization(repo)
+    default = insert_prefix(repo, default_org, "10.0.0.0/24", "default")
 
     Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
     Renga.ScratchMigrations.run(repo, :down, to: @migration_version)
 
     assert [[nil]] = rows(repo, "SELECT vrf FROM prefixes WHERE id = '#{global}'")
     assert [["blue"]] = rows(repo, "SELECT vrf FROM prefixes WHERE id = '#{blue}'")
+    assert [["Red"]] = rows(repo, "SELECT vrf FROM prefixes WHERE id = '#{red}'")
+    assert [[nil]] = rows(repo, "SELECT vrf FROM prefixes WHERE id = '#{default}'")
     assert [[nil]] = rows(repo, "SELECT to_regclass('vrfs')::text")
     assert [[0]] = rows(repo, "SELECT count(*) FROM resources WHERE kind = 'vrf'")
   end

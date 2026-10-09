@@ -17,6 +17,10 @@ defmodule Renga.Repo.Migrations.CreateVrfs do
   creation revision, and one typed VRF row; prefixes point at it through a
   tenant-safe foreign key, and their envelopes are relabelled to match. Uniqueness becomes one CIDR per organization and
   VRF, with the global table counted as one namespace.
+
+  Rollback restores the schema and normalized namespace names, not original
+  spellings: padded names stay trimmed and blank/default become null. Prefix
+  relabel revisions remain; VRF envelopes and their revisions are removed.
   """
   use Ecto.Migration
 
