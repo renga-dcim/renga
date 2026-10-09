@@ -27,7 +27,6 @@ defmodule RengaWeb.TopologyLive do
   alias RengaWeb.Format
 
   @reload_after_ms 400
-  @table_limit 200
 
   @impl true
   def mount(_params, _session, socket) do
@@ -97,12 +96,15 @@ defmodule RengaWeb.TopologyLive do
   end
 
   @impl true
-  def handle_info({:inventory_changed, _organization_id}, socket) do
-    if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
-
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
     {:noreply,
      assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
   end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
 
   def handle_info(:reload, socket) do
     {:noreply, socket |> assign(:reload_timer, nil) |> refresh()}
@@ -146,7 +148,6 @@ defmodule RengaWeb.TopologyLive do
     opts = if filters.interface_id, do: [interface_id: filters.interface_id], else: []
 
     links = scope |> Topology.list_links() |> Links.filter(Map.to_list(filters))
-    shown = Enum.take(links, @table_limit)
     relationships = relationships(scope, opts, filters.resource_id)
     unresolved = unresolved(scope, opts, filters.resource_id)
 
@@ -155,11 +156,10 @@ defmodule RengaWeb.TopologyLive do
       link_count: length(links),
       counts: Links.counts(links),
       map: LinkMap.build(links, focus: filters.resource_id),
-      table_hidden: length(links) - length(shown),
       relationship_count: length(relationships),
       unresolved_count: length(unresolved)
     )
-    |> stream(:links, shown, dom_id: &link_dom_id/1, reset: true)
+    |> stream(:links, links, dom_id: &link_dom_id/1, reset: true)
     |> stream(:relationships, relationships, dom_id: &"relationship-#{&1.id}", reset: true)
     |> stream(:unresolved_evidence, unresolved,
       dom_id: &"neighbor-evidence-#{&1.id}",
@@ -315,9 +315,6 @@ defmodule RengaWeb.TopologyLive do
               </:col>
               <:empty>No links match.</:empty>
             </.table>
-            <p :if={@table_hidden > 0} id="links-hidden" class="text-xs text-fg-muted">
-              Showing the {@link_count - @table_hidden} links that most need attention. Focus a device to see the rest.
-            </p>
           </section>
 
           <aside class="space-y-6">

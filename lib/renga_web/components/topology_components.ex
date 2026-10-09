@@ -260,9 +260,24 @@ defmodule RengaWeb.TopologyComponents do
 
     by_id = Map.new(nodes, &{&1.id, &1})
 
+    # Same-row curves rise with their span. Reserve enough canvas for their
+    # control points (and markers), including anchors spread within each node.
+    headroom =
+      map.edges
+      |> Enum.map(fn edge ->
+        a = Map.fetch!(by_id, edge.a)
+        b = Map.fetch!(by_id, edge.b)
+        if a.y == b.y, do: max(0, @pad + 28 + div(abs(a.x - b.x) + @node_w, 12) - a.y), else: 0
+      end)
+      |> Enum.max(fn -> 0 end)
+
+    nodes = Enum.map(nodes, &%{&1 | y: &1.y + headroom})
+    tiers = Enum.map(tiers, &%{&1 | label_y: &1.label_y + headroom})
+    by_id = Map.new(nodes, &{&1.id, &1})
+
     %{
       width: width,
-      height: bottom - @tier_gap + @pad,
+      height: bottom - @tier_gap + @pad + headroom,
       pad: @pad,
       tiers: Enum.reverse(tiers),
       nodes: nodes,

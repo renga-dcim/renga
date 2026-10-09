@@ -219,9 +219,34 @@ defmodule RengaWeb.TopologyLiveTest do
     assert has_element?(view, "#link-#{net.unrecorded} [data-link-state='unrecorded']")
     cable_fixture(scope, net.host_ports["eth1"], net.leaf_ports["swp2"])
 
+    traffic =
+      Task.async(fn ->
+        for _ <- 1..15 do
+          send(view.pid, {:inventory_changed, scope.organization_id})
+          Process.sleep(100)
+        end
+      end)
+
     assert eventually(fn ->
              has_element?(view, "#link-#{net.unrecorded} [data-link-state='agreeing']")
            end)
+
+    Task.await(traffic)
+  end
+
+  test "all focused links remain selectable beyond the map and former table limits", %{
+    conn: conn,
+    scope: scope
+  } do
+    names = Enum.map(1..201, &"swp#{&1}")
+    {a, a_ports} = device_fixture(scope, "switch", "a", names)
+    {_b, b_ports} = device_fixture(scope, "switch", "b", names)
+    for name <- names, do: cable_fixture(scope, a_ports[name], b_ports[name])
+    last = scope |> Topology.list_links() |> List.last()
+    {:ok, view, _} = live(conn, ~p"/network/topology?#{[resource: a.id]}")
+    assert has_element?(view, "#link-#{last.key}-open")
+    view |> element("#link-#{last.key}-open") |> render_click()
+    assert has_element?(view, "#link-cable[data-present=true]")
   end
 
   test "keeps another organization's topology invisible", %{conn: conn, scope: scope} do

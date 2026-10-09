@@ -42,6 +42,7 @@ defmodule RengaWeb.Browser.TopologyTest do
 
     %{
       conn: conn,
+      scope: scope,
       spine: spine,
       leaf: leaf,
       host: host,
@@ -68,6 +69,39 @@ defmodule RengaWeb.Browser.TopologyTest do
     |> click_button("#record-cable-confirm-confirm", "Record cable")
     |> assert_has("#link-panel-state[data-link-state='agreeing']")
     |> assert_has("#{edge}[data-edge-state='planned']")
+  end
+
+  test "long same-tier bundles fit inside the map canvas", context do
+    devices =
+      Map.new(~w(a b c d e f g h), fn name ->
+        {name, device_fixture(context.scope, "switch", name, ~w(swp1 swp2))}
+      end)
+
+    for {a, b} <- [{"a", "h"}, {"b", "c"}, {"d", "e"}, {"f", "g"}] do
+      {_, a_ports} = devices[a]
+      {_, b_ports} = devices[b]
+      cable_fixture(context.scope, a_ports["swp1"], b_ports["swp1"])
+    end
+
+    {a, a_ports} = devices["a"]
+    {h, h_ports} = devices["h"]
+    cable_fixture(context.scope, a_ports["swp2"], h_ports["swp2"])
+    edge = "topology-map-edge-#{edge_id(a, h)}"
+
+    context.conn
+    |> visit("/network/topology")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const edge = document.getElementById('#{edge}');
+        const box = edge.getBBox(), canvas = edge.ownerSVGElement.viewBox.baseVal;
+        return {count: edge.querySelector('text').textContent.trim(),
+          inside: box.y >= 0 && box.x >= 0 && box.y + box.height <= canvas.height && box.x + box.width <= canvas.width};
+      })()
+      """,
+      fn result -> assert result == %{"count" => "2", "inside" => true} end
+    )
   end
 
   @tag browser_context_opts: [
