@@ -53,6 +53,28 @@ defmodule Renga.Catalog.TypeRevision do
     |> unique_constraint([:organization_id, :module_type_id, :revision],
       name: :catalog_type_revisions_module_revision_index
     )
+    |> unique_constraint(:hardware_type_id,
+      name: :catalog_type_revisions_one_hardware_draft_index,
+      message: "already has a draft"
+    )
+    |> unique_constraint(:module_type_id,
+      name: :catalog_type_revisions_one_module_draft_index,
+      message: "already has a draft"
+    )
+  end
+
+  @doc """
+  Changes a draft revision. Drafts change freely until they are
+  published; the database refuses changes to a published revision.
+  """
+  def draft_changeset(%__MODULE__{finalized_at: nil} = revision, attrs) do
+    revision
+    |> input_changeset(attrs)
+    |> check_constraint(:revision, name: :catalog_type_revisions_valid_dimensions)
+    |> check_constraint(:base,
+      name: :catalog_type_revisions_immutable,
+      message: "this revision is published"
+    )
   end
 
   def input_changeset(revision, attrs) do

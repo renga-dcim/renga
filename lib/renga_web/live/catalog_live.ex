@@ -5,6 +5,7 @@ defmodule RengaWeb.CatalogLive do
 
   alias Renga.Catalog
   alias Renga.Catalog.ComponentTemplate
+  alias Renga.Catalog.Drafts
   alias Renga.Catalog.TypeRevision
 
   @device_class_options Enum.map(
@@ -77,7 +78,11 @@ defmodule RengaWeb.CatalogLive do
           hardware_type = Catalog.get_hardware_type!(scope, params["id"])
 
           socket
-          |> assign(page_title: hardware_type.model, hardware_type: hardware_type)
+          |> assign(
+            page_title: hardware_type.model,
+            hardware_type: hardware_type,
+            draft: Drafts.get_draft(scope, hardware_type)
+          )
           |> reset_revision_form()
 
         :module_types ->
@@ -100,6 +105,20 @@ defmodule RengaWeb.CatalogLive do
   end
 
   @impl true
+  # Hardware types are edited as drafts (RFD 8, "Editing hardware
+  # components"); the one-shot revision form remains for module types.
+  def handle_event("start_draft", _params, socket) do
+    %{current_scope: scope, hardware_type: hardware_type} = socket.assigns
+
+    case Drafts.start_draft(scope, hardware_type) do
+      {:ok, _draft} ->
+        {:noreply, push_navigate(socket, to: ~p"/catalog/hardware-types/#{hardware_type}/draft")}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "You are not allowed to author the catalog")}
+    end
+  end
+
   def handle_event("create_manufacturer", %{"manufacturer" => params}, socket) do
     scope = socket.assigns.current_scope
 
@@ -262,6 +281,8 @@ defmodule RengaWeb.CatalogLive do
               class_id="hardware-type-device-class"
               class_value={@hardware_type.device_class}
               can_author_catalog={@can_author_catalog?}
+              authoring={:draft}
+              draft={@draft}
               revision_form={@revision_form}
               template_errors={@template_errors}
               airflow_options={@airflow_options}
@@ -531,6 +552,8 @@ defmodule RengaWeb.CatalogLive do
   attr :class_id, :string, required: true
   attr :class_value, :string, required: true
   attr :can_author_catalog, :boolean, required: true
+  attr :authoring, :atom, default: :form, values: [:form, :draft]
+  attr :draft, :any, default: nil
   attr :revision_form, :map, required: true
   attr :template_errors, :map, required: true
   attr :airflow_options, :list, required: true
@@ -562,8 +585,37 @@ defmodule RengaWeb.CatalogLive do
         </div>
       </section>
 
+      <section
+        :if={@can_author_catalog and @authoring == :draft}
+        id="draft-entry"
+        class="flex flex-wrap items-center gap-4 rounded-lg border border-edge bg-surface p-4"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-medium text-fg">
+            {if @draft,
+              do: "Draft revision #{@draft.revision} in progress",
+              else: "Edit this hardware type"}
+          </p>
+          <p class="text-xs text-fg-muted">
+            Changes save to a draft as you make them. Publishing adds a revision; resources stay
+            on theirs until they are moved.
+          </p>
+        </div>
+        <.button
+          :if={@draft}
+          id="draft-continue"
+          variant="primary"
+          navigate={~p"/catalog/hardware-types/#{@catalog_type}/draft"}
+        >
+          Continue editing
+        </.button>
+        <.button :if={!@draft} id="draft-start" variant="primary" phx-click="start_draft">
+          Edit
+        </.button>
+      </section>
+
       <.revision_authoring_form
-        :if={@can_author_catalog}
+        :if={@can_author_catalog and @authoring == :form}
         form={@revision_form}
         template_errors={@template_errors}
         airflow_options={@airflow_options}

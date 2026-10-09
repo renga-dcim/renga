@@ -83,6 +83,50 @@ defmodule Renga.Catalog.ComponentMatch do
     |> Map.put(:confirmed_fields, Map.keys(confirmed))
   end
 
+  @compared_kinds ~w(cpu memory disk)
+  @identity_fields ~w(part_number)
+
+  @doc """
+  Explains, in sentences, how collector reports are matched to a template
+  or a group of templates with these rules, for the catalog editor. Takes
+  anything with `kind`, `name`, `position`, and `attributes`; a group
+  passes its patterns as name and position.
+  """
+  def explain(%{kind: kind}) when kind not in @compared_kinds do
+    ["Collectors don't report this kind of component, so it is expected but never compared."]
+  end
+
+  def explain(%{name: name, position: position, attributes: attributes}) do
+    attributes = attributes || %{}
+    part_number = identity_text(attributes["part_number"])
+
+    identity =
+      case {position, part_number} do
+        {nil, nil} -> "its name is #{name}"
+        {nil, part_number} -> "its part number is #{part_number}"
+        {position, nil} -> "its slot is #{position}"
+        {position, part_number} -> "its slot is #{position} and its part number is #{part_number}"
+      end
+
+    compared = attributes |> Map.keys() |> Enum.reject(&(&1 in @identity_fields)) |> Enum.sort()
+
+    [
+      "A reported part fills this slot when #{identity}.",
+      if(compared != [],
+        do:
+          "Its #{Enum.join(compared, ", ")} must then match; a different value is drift, and a value the collector does not report is not."
+      ),
+      if(part_number,
+        do:
+          "A part with another number in the same slot shows as a different part until it is recorded as a replacement."
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp identity_text(value) when is_nil(value) or is_binary(value), do: value
+  defp identity_text(value), do: Renga.JSON.encode!(value)
+
   @doc "An observed component's value for a field an expectation names."
   def spec(actual, field) do
     reported = (Map.get(actual, :metadata) || %{})["reported_identity"] || %{}

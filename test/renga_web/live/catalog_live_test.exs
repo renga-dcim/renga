@@ -285,13 +285,13 @@ defmodule RengaWeb.CatalogLiveTest do
            )
   end
 
-  test "publishes a typed hardware revision with component templates", %{
+  test "publishes a typed module revision with component templates", %{
     conn: conn,
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Revision Vendor", "revision-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "REV-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "REV-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
     view |> element("#add-component-template") |> render_click()
 
     redirect =
@@ -330,12 +330,12 @@ defmodule RengaWeb.CatalogLiveTest do
       |> render_submit()
 
     assert {path, _flash} = assert_redirect(view)
-    assert path == "/catalog/hardware-types/#{hardware_type.id}"
+    assert path == "/catalog/module-types/#{module_type.id}"
     {:ok, detail, _html} = follow_redirect(redirect, conn)
     assert has_element?(detail, "#revision-1", "PN-REV-1")
     assert has_element?(detail, "#revision-1-templates-interface", "Management")
 
-    [revision] = Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+    [revision] = Catalog.get_module_type!(scope, module_type.id).revisions
     assert revision.part_number == "PN-REV-1"
     assert revision.height_units == 2
     assert Decimal.equal?(revision.width_mm, Decimal.new("482.60"))
@@ -357,8 +357,8 @@ defmodule RengaWeb.CatalogLiveTest do
          scope: scope
        } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Dynamic Vendor", "dynamic-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DYNAMIC-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "DYNAMIC-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     view |> element("#add-component-template") |> render_click()
     view |> element("#add-component-template") |> render_click()
@@ -443,7 +443,7 @@ defmodule RengaWeb.CatalogLiveTest do
 
   test "organization owners publish revisions", %{organization: organization, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Owner Vendor", "owner-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "OWNER-1", "server")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "OWNER-1", "line_card")
     owner = user_fixture()
     organization_membership_fixture(owner, organization, %{role: "owner"})
 
@@ -452,7 +452,7 @@ defmodule RengaWeb.CatalogLiveTest do
       |> log_in_user(owner)
       |> put_session(:current_organization_id, organization.id)
 
-    {:ok, view, _html} = live(owner_conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, view, _html} = live(owner_conn, "/catalog/module-types/#{module_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -463,7 +463,7 @@ defmodule RengaWeb.CatalogLiveTest do
     assert {_path, _flash} = assert_redirect(view)
 
     assert [%{part_number: "OWNER-PN"}] =
-             Catalog.get_hardware_type!(scope, hardware_type.id).revisions
+             Catalog.get_module_type!(scope, module_type.id).revisions
   end
 
   test "invalid revision JSON preserves input and does not partially publish", %{
@@ -471,8 +471,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Invalid Vendor", "invalid-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "INVALID-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "INVALID-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -487,7 +487,7 @@ defmodule RengaWeb.CatalogLiveTest do
              "#new-revision-form input[name='revision[part_number]'][value='KEEP-ME']"
            )
 
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
 
     view
     |> form("#new-revision-form",
@@ -502,7 +502,7 @@ defmodule RengaWeb.CatalogLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#flash-error", "Component attributes must be a JSON object")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision validation reports field and component errors while typing", %{
@@ -510,8 +510,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Feedback Vendor", "feedback-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "FEEDBACK-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "FEEDBACK-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     view
     |> form("#new-revision-form",
@@ -547,8 +547,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Oversized Vendor", "oversized-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "OVERSIZED-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "OVERSIZED-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
     oversized = String.duplicate("p", 256)
 
     view
@@ -560,7 +560,7 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision_part_number[aria-invalid='true']")
     assert has_element?(view, "#revision_width_mm[aria-invalid='true']")
     assert has_element?(view, "#new-revision-form input[value='#{oversized}']")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision validation rejects precision loss and unrepresentable JSONB", %{
@@ -568,8 +568,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Precise Vendor", "precise-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "PRECISE-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "PRECISE-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     render_hook(view, "publish_revision", %{
       "revision" => %{
@@ -591,7 +591,7 @@ defmodule RengaWeb.CatalogLiveTest do
     assert has_element?(view, "#revision_weight_kg[aria-invalid='true']")
     assert has_element?(view, "#revision_specifications[aria-invalid='true']")
     assert has_element?(view, "#component-template-fields [role='alert']")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision authoring preserves and displays exact fractional JSON numbers", %{
@@ -636,8 +636,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Scale Vendor", "scale-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALE-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "SCALE-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
     scaled = "1." <> String.duplicate("0", 16_384)
 
     render_hook(view, "publish_revision", %{
@@ -645,7 +645,7 @@ defmodule RengaWeb.CatalogLiveTest do
     })
 
     assert has_element?(view, "#revision_specifications[aria-invalid='true']")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision events reject malformed parameter shapes without crashing", %{
@@ -653,8 +653,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Shape Vendor", "shape-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SHAPE-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "SHAPE-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     render_hook(view, "validate_revision", %{"revision" => []})
 
@@ -678,7 +678,7 @@ defmodule RengaWeb.CatalogLiveTest do
 
     render_hook(view, "remove_component_template", %{})
     assert has_element?(view, "#flash-error", "could not be removed")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision events reject nested values in scalar fields without crashing", %{
@@ -686,8 +686,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Scalar Vendor", "scalar-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "SCALAR-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "SCALAR-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     for field <- ~w(part_number height_units width_mm depth_mm weight_kg airflow specifications) do
       render_hook(view, "publish_revision", %{
@@ -710,13 +710,13 @@ defmodule RengaWeb.CatalogLiveTest do
     end
 
     assert has_element?(view, "#new-revision-form")
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "revision authoring replaces forged internal row identifiers", %{conn: conn, scope: scope} do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Identifier Vendor", "identifier-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "IDENTIFIER-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "IDENTIFIER-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     render_hook(view, "validate_revision", %{
       "revision" => %{
@@ -787,8 +787,8 @@ defmodule RengaWeb.CatalogLiveTest do
     scope: scope
   } do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Duplicate Vendor", "duplicate-vendor")
-    {:ok, hardware_type} = hardware_type_fixture(scope, manufacturer, "DUPLICATE-1", "server")
-    {:ok, view, _html} = live(conn, "/catalog/hardware-types/#{hardware_type.id}")
+    {:ok, module_type} = module_type_fixture(scope, manufacturer, "DUPLICATE-1", "line_card")
+    {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
 
     render_change(view, "validate_revision", %{
       "revision" => %{
@@ -805,7 +805,7 @@ defmodule RengaWeb.CatalogLiveTest do
              "Name has already been taken"
            )
 
-    assert Catalog.get_hardware_type!(scope, hardware_type.id).revisions == []
+    assert Catalog.get_module_type!(scope, module_type.id).revisions == []
   end
 
   test "tenant catalog lists exclude foreign records and foreign detail raises", %{
