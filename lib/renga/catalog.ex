@@ -17,6 +17,7 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.ComponentFinding
+  alias Renga.Catalog.ComponentMatch
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
   alias Renga.Catalog.ExpectedComponent
@@ -980,7 +981,9 @@ defmodule Renga.Catalog do
           |> Enum.filter(&(&1.kind in @canonical_component_kinds and not &1.suppressed))
 
         actuals = list_actual_components(scope, resource.id)
-        expected_candidates = Enum.map(expectations, &{&1, expected_candidates(&1, actuals)})
+
+        expected_candidates =
+          Enum.map(expectations, &{&1, ComponentMatch.candidates(&1, actuals)})
 
         observed_actual_ids =
           if component_snapshot_current? do
@@ -1086,43 +1089,8 @@ defmodule Renga.Catalog do
     end)
   end
 
-  defp expected_candidates(expected, actuals) do
-    Enum.filter(actuals, fn actual ->
-      actual.kind == expected.kind and expected_identity_matches?(expected, actual)
-    end)
-  end
-
-  defp expected_identity_matches?(expected, actual) do
-    expected_part_number = expected.attributes["part_number"]
-    position = actual.slot || actual.path
-
-    checks =
-      [
-        expected.position && same_component_value?(expected.position, position),
-        expected_part_number && same_component_value?(expected_part_number, actual.part_number)
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    case checks do
-      [] -> same_component_value?(expected.name, actual.name)
-      checks -> Enum.all?(checks)
-    end
-  end
-
   defp drift_findings(expected, actual, observed_at) do
-    differences =
-      expected.attributes
-      |> Enum.reject(fn {field, expected_value} ->
-        actual_value = actual_component_spec(actual, field)
-        is_nil(actual_value) or same_component_value?(expected_value, actual_value)
-      end)
-      |> Map.new(fn {field, expected_value} ->
-        {field,
-         %{
-           "expected" => expected_value,
-           "actual" => actual_component_spec(actual, field)
-         }}
-      end)
+    differences = ComponentMatch.differences(expected, actual)
 
     if differences == %{} do
       []
@@ -1140,18 +1108,6 @@ defmodule Renga.Catalog do
           last_observed_at: observed_at
         }
       ]
-    end
-  end
-
-  defp actual_component_spec(actual, field) do
-    case field do
-      "name" -> actual.name
-      "model" -> actual.model
-      "slot" -> actual.slot
-      "path" -> actual.path
-      "serial_number" -> actual.serial_number
-      "part_number" -> actual.part_number
-      field -> actual.attributes[field]
     end
   end
 
@@ -1219,44 +1175,6 @@ defmodule Renga.Catalog do
       last_observed_at: observed_at
     }
   end
-
-  defp same_component_value?(left, right) when is_binary(left) and is_binary(right) do
-    String.downcase(String.trim(left)) == String.downcase(String.trim(right))
-  end
-
-  defp same_component_value?(%Decimal{} = left, right) when is_integer(right),
-    do: Decimal.equal?(left, Decimal.new(right))
-
-  defp same_component_value?(%Decimal{} = left, right) when is_float(right),
-    do: Decimal.equal?(left, Decimal.from_float(right))
-
-  defp same_component_value?(left, %Decimal{} = right) when is_integer(left) or is_float(left),
-    do: same_component_value?(right, left)
-
-  defp same_component_value?(%Decimal{} = left, %Decimal{} = right),
-    do: Decimal.equal?(left, right)
-
-  defp same_component_value?(left, right)
-       when is_map(left) and not is_struct(left) and is_map(right) and not is_struct(right) do
-    map_size(left) == map_size(right) and
-      Enum.all?(left, fn {key, left_value} ->
-        case Map.fetch(right, key) do
-          {:ok, right_value} -> same_component_value?(left_value, right_value)
-          :error -> false
-        end
-      end)
-  end
-
-  defp same_component_value?(left, right) when is_list(left) and is_list(right) do
-    length(left) == length(right) and
-      left
-      |> Enum.zip(right)
-      |> Enum.all?(fn {left_value, right_value} ->
-        same_component_value?(left_value, right_value)
-      end)
-  end
-
-  defp same_component_value?(left, right), do: left == right
 
   defp put_component_finding(scope, resource, attrs) do
     query =
