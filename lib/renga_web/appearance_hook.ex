@@ -18,7 +18,15 @@ defmodule RengaWeb.AppearanceHook do
   @next_theme %{"system" => "light", "light" => "dark", "dark" => "system"}
 
   def on_mount(:default, _params, _session, socket) do
-    {:cont, attach_hook(socket, :appearance, :handle_event, &handle_event/3)}
+    socket = attach_hook(socket, :appearance, :handle_event, &handle_event/3)
+
+    socket =
+      if Phoenix.LiveView.connected?(socket) and
+           match?(%{user: %{}}, socket.assigns[:current_scope]),
+         do: push_appearance(socket),
+         else: socket
+
+    {:cont, socket}
   end
 
   defp handle_event("cycle_theme", _params, socket) do

@@ -98,6 +98,21 @@ defmodule RengaWeb.AppearanceLiveTest do
     assert Accounts.get_organization!(context.organization.id).default_accent == "cobalt"
   end
 
+  test "shared theme control updates the form and survives another preference edit", context do
+    {:ok, view, _html} = live(context.conn, ~p"/settings/appearance")
+    view |> element("#theme-toggle") |> render_click()
+    assert has_element?(view, "#theme-light[checked]")
+    refute has_element?(view, "#theme-system[checked]")
+    view |> form("#appearance-form", appearance: %{density: "compact"}) |> render_change()
+    assert %{theme: "light", density: "compact"} = Accounts.get_user!(context.member.id)
+  end
+
+  test "authenticated reauthentication page supports the shared theme control", context do
+    {:ok, view, _html} = live(context.conn, ~p"/users/log-in")
+    view |> element("#theme-toggle") |> render_click()
+    assert Accounts.get_user!(context.member.id).theme == "light"
+  end
+
   defp log_in(conn, user, organization) do
     conn
     |> log_in_user(user)

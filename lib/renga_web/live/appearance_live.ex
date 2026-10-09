@@ -97,15 +97,11 @@ defmodule RengaWeb.AppearanceLive do
 
   defp assign_appearance(socket) do
     %{current_scope: scope} = socket.assigns
-    user = scope.user
 
     organization_accent =
       (scope.organization && scope.organization.default_accent) || Appearance.default_accent()
 
     assign(socket,
-      theme: user.theme,
-      accent: user.accent || "",
-      density: user.density,
       organization_accent: organization_accent,
       owner?: not is_nil(scope.organization) and "owner" in (scope.roles || [])
     )
@@ -137,14 +133,14 @@ defmodule RengaWeb.AppearanceLive do
             <div class="grid grid-cols-3 gap-2">
               <label
                 :for={{value, label, icon} <- @themes}
-                class={choice_class(@theme == value)}
+                class={choice_class(@current_scope.user.theme == value)}
               >
                 <input
                   type="radio"
                   name="appearance[theme]"
                   id={"theme-#{value}"}
                   value={value}
-                  checked={@theme == value}
+                  checked={@current_scope.user.theme == value}
                   class="sr-only"
                 />
                 <.icon name={icon} class="size-5" />
@@ -159,13 +155,13 @@ defmodule RengaWeb.AppearanceLive do
               Status colors stay the same whatever the accent, so a warning never looks like a link.
             </p>
             <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              <label class={choice_class(@accent == "", :row)}>
+              <label class={choice_class(is_nil(@current_scope.user.accent), :row)}>
                 <input
                   type="radio"
                   name="appearance[accent]"
                   id="accent-default"
                   value=""
-                  checked={@accent == ""}
+                  checked={is_nil(@current_scope.user.accent)}
                   class="sr-only"
                 />
                 <.swatch color={@swatches[@organization_accent]} />
@@ -176,13 +172,16 @@ defmodule RengaWeb.AppearanceLive do
                   </span>
                 </span>
               </label>
-              <label :for={accent <- @accents} class={choice_class(@accent == accent, :row)}>
+              <label
+                :for={accent <- @accents}
+                class={choice_class(@current_scope.user.accent == accent, :row)}
+              >
                 <input
                   type="radio"
                   name="appearance[accent]"
                   id={"accent-#{accent}"}
                   value={accent}
-                  checked={@accent == accent}
+                  checked={@current_scope.user.accent == accent}
                   class="sr-only"
                 />
                 <.swatch color={@swatches[accent]} />
@@ -199,14 +198,14 @@ defmodule RengaWeb.AppearanceLive do
             <div class="grid gap-2 sm:grid-cols-2">
               <label
                 :for={{value, label, hint} <- @densities}
-                class={choice_class(@density == value, :row)}
+                class={choice_class(@current_scope.user.density == value, :row)}
               >
                 <input
                   type="radio"
                   name="appearance[density]"
                   id={"density-#{value}"}
                   value={value}
-                  checked={@density == value}
+                  checked={@current_scope.user.density == value}
                   class="sr-only"
                 />
                 <span class={[

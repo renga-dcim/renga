@@ -87,6 +87,31 @@ defmodule RengaWeb.Browser.AppearanceTest do
     assert Renga.Accounts.get_user!(user.id).theme == "light"
   end
 
+  test "live navigation applies freshly stored preferences without replacing the document", %{
+    conn: conn,
+    user: user
+  } do
+    session = conn |> visit("/settings/collectors") |> assert_has("body .phx-connected")
+    session |> evaluate("window.appearanceNavigationMarker = true")
+
+    {:ok, _} =
+      Renga.Accounts.update_user_appearance(user, %{
+        theme: "dark",
+        accent: "iris",
+        density: "compact"
+      })
+
+    session
+    |> click_link("a[href='/settings/appearance']:visible", "Appearance")
+    |> assert_has("#theme-dark[checked]")
+    |> evaluate(@root, &assert(&1 == ["dark", "iris", "compact"]))
+    |> evaluate("window.appearanceNavigationMarker", &assert(&1 == true))
+    |> evaluate(
+      "window.dispatchEvent(new StorageEvent('storage', {key: 'phx:theme', newValue: 'light'}))"
+    )
+    |> evaluate(@root, &assert(&1 == ["dark", "iris", "compact"]))
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,

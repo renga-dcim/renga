@@ -187,7 +187,11 @@ defmodule RengaWeb.Router do
     pipe_through [:browser]
 
     live_session :current_user,
-      on_mount: [RengaWeb.SQLSandbox, {RengaWeb.UserAuth, :mount_current_scope}] do
+      on_mount: [
+        RengaWeb.SQLSandbox,
+        {RengaWeb.UserAuth, :mount_current_scope},
+        RengaWeb.AppearanceHook
+      ] do
       live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
       live "/users/log-in/:token", UserLive.Confirmation, :new
