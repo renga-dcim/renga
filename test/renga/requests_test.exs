@@ -2,8 +2,10 @@ defmodule Renga.RequestsTest do
   use Renga.DataCase, async: true
 
   import Renga.AccountsFixtures
+  import Renga.CatalogFixtures
   import Renga.InventoryFixtures
 
+  alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Requests
@@ -221,6 +223,128 @@ defmodule Renga.RequestsTest do
       assert Requests.get_request(stranger, request.id) == nil
       assert {[], 0} = Requests.list_requests(stranger)
       assert {:error, :not_found} = Requests.approve(stranger, request)
+    end
+  end
+
+  describe "expectation requests" do
+    test "a member asks one resource to expect another part; approval applies it", context do
+      {server, expected} =
+        assigned_server_fixture(context.admin, "expect-01", [
+          %{
+            kind: "memory",
+            name: "DIMM A1",
+            position: "A1",
+            attributes: %{"part_number" => "M-32G"}
+          }
+        ])
+
+      dimm = expected["DIMM A1"]
+
+      {:ok, _} =
+        Catalog.confirm_replacement(
+          context.member,
+          server.id,
+          %{"component_template_id" => dimm.component_template_id},
+          %{part_number: "M-48G"}
+        )
+
+      change = %{
+        "action" => "alter",
+        "component_template_id" => dimm.component_template_id,
+        "name" => "DIMM A1",
+        "changes" => %{"attributes" => %{"part_number" => "M-64G"}}
+      }
+
+      assert {:ok, request} =
+               Requests.request_expectation(context.member, server, change, %{
+                 "reason" => "Upgraded to 64 GB modules"
+               })
+
+      assert request.kind == "expectation"
+      assert request.field == "template:" <> dimm.component_template_id
+      assert request.before_value == %{"value" => "Part number M-32G in DIMM A1"}
+      assert request.after_value["value"] == "Expect Part number M-64G in DIMM A1"
+
+      # The same slot cannot carry two open requests.
+      assert {:error, changeset} =
+               Requests.request_expectation(context.member, server, change, %{"reason" => "again"})
+
+      assert "already has an open request" in errors_on(changeset).organization_id
+
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+      assert Requests.get_request(context.admin, request.id).status == "approved"
+      assert Catalog.list_confirmed_components(context.admin, server.id) == []
+
+      assert [%{attributes: %{"part_number" => "M-64G"}}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      assert Catalog.describe_expectation(context.admin, server.id, request.field) ==
+               "Part number M-64G in DIMM A1"
+    end
+
+    test "names a part a resource should newly expect and rejects malformed changes", context do
+      {server, _expected} = assigned_server_fixture(context.admin, "expect-02", [])
+
+      assert {:ok, request} =
+               Requests.request_expectation(
+                 context.member,
+                 server,
+                 %{"action" => "add", "kind" => "disk", "name" => "Bay 9", "changes" => %{}},
+                 %{"reason" => "Extra disk for logs"}
+               )
+
+      assert request.field == "component:disk:bay 9"
+      assert request.after_value["value"] == "Expect Bay 9"
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+
+      assert [%{kind: "disk", name: "Bay 9"}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      assert {:error, :invalid_expectation} =
+               Requests.request_expectation(context.member, server, %{"action" => "alter"}, %{
+                 "reason" => "x"
+               })
+    end
+
+    test "asks to undo a local change, returning the slot to the catalog", context do
+      {server, expected} =
+        assigned_server_fixture(context.admin, "expect-03", [
+          %{kind: "disk", name: "Bay 1", position: "1", attributes: %{"model" => "SSD-1"}}
+        ])
+
+      template_id = expected["Bay 1"].component_template_id
+
+      {:ok, exception} =
+        Catalog.put_expected_component_exception(context.admin, server.id, %{
+          "action" => "suppress",
+          "component_template_id" => template_id
+        })
+
+      change = %{
+        "action" => "restore",
+        "exception_id" => exception.id,
+        "component_template_id" => template_id,
+        "name" => "Bay 1"
+      }
+
+      assert {:ok, request} =
+               Requests.request_expectation(context.member, server, change, %{
+                 "reason" => "The bay is populated again"
+               })
+
+      assert request.field == "template:" <> template_id
+      assert request.before_value == %{"value" => "Not expected: Bay 1"}
+      assert request.after_value["value"] == "Expect Bay 1 as the catalog defines it"
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+
+      assert [%{suppressed: false, exception_id: nil}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      # Undoing a change that is already gone fails instead of approving nothing.
+      assert {:ok, again} =
+               Requests.request_expectation(context.member, server, change, %{"reason" => "x"})
+
+      assert {:error, :not_found} = Requests.approve(context.admin, [again])
     end
   end
 

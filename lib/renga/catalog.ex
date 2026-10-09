@@ -17,11 +17,14 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.ComponentFinding
+  alias Renga.Catalog.ComponentMatch
+  alias Renga.Catalog.ConfirmedComponent
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.ExpectedComponentException
   alias Renga.Catalog.HardwareAssignment
+  alias Renga.Catalog.HardwareComparison
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.InventoryItem
@@ -41,6 +44,9 @@ defmodule Renga.Catalog do
 
   @physical_device_kinds ~w(server switch pdu storage)
   @catalog_author_roles ~w(owner admin member)
+  # Changing what one resource expects overrides the catalog for it, so it
+  # is an owner or admin decision; members request it instead.
+  @expectation_roles ~w(owner admin)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -54,6 +60,12 @@ defmodule Renga.Catalog do
   def catalog_author?(%Scope{user: user, roles: roles}) do
     not is_nil(user) and Enum.any?(roles, &(&1 in @catalog_author_roles))
   end
+
+  @doc "UI hint: owners and admins change what a resource expects; members request it."
+  def can_change_expectations?(%Scope{user: %{}, roles: roles}),
+    do: Enum.any?(roles || [], &(&1 in @expectation_roles))
+
+  def can_change_expectations?(_scope), do: false
 
   def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
@@ -319,6 +331,19 @@ defmodule Renga.Catalog do
       {:ok, :ok} -> :ok
       error -> error
     end
+  end
+
+  @doc """
+  Compares a resource's expected and observed components slot by slot for
+  its Hardware tab. See `Renga.Catalog.HardwareComparison`.
+  """
+  def hardware_comparison(%Scope{} = scope, resource_id) do
+    HardwareComparison.build(
+      list_expected_components(scope, resource_id),
+      list_actual_components(scope, resource_id),
+      confirmations_by_expectation(scope, resource_id),
+      Renga.Findings.component_exceptions(scope, resource_id)
+    )
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
@@ -666,11 +691,15 @@ defmodule Renga.Catalog do
   @doc """
   Adds or replaces a confirmed per-asset exception and rematerializes expectations.
 
+  This changes what one resource expects without changing the catalog, so
+  only owners and admins may (RFD 8, "Editing hardware components");
+  members propose it with `Renga.Requests.request_expectation/5`.
+
   Suppress and alter exceptions must target a template in the assignment's pinned
   revision. Add exceptions describe a local component without changing a template.
   """
   def put_expected_component_exception(%Scope{} = scope, resource_id, attrs) do
-    managed_transaction(scope, fn ->
+    expectation_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
       if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
@@ -695,13 +724,148 @@ defmodule Renga.Catalog do
         |> ExpectedComponentException.changeset(attrs)
         |> upsert()
 
+      # A later explicit expectation decision supersedes the recorded replacement.
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(
+        [confirmation],
+        confirmation.component_template_id in ^List.wrap(template_id) or
+          confirmation.exception_id == ^exception.id
+      )
+      |> Repo.delete_all()
+
       materialize_expected_components(scope, assignment)
       exception
     end)
   end
 
-  def delete_expected_component_exception(%Scope{} = scope, resource_id, exception_id) do
+  @doc """
+  Records that a replacement part was installed in one expected slot (RFD 8,
+  "Editing hardware components"). Any catalog author may.
+
+  `expectation` names the slot: `%{"component_template_id" => id}` for a
+  catalog template or `%{"exception_id" => id}` for a part added on this
+  resource. The part becomes what the slot expects; the finding about the
+  slot closes only when a collector reports it. Confirming the slot again
+  replaces the earlier confirmation.
+  """
+  def confirm_replacement(%Scope{} = scope, resource_id, expectation, attrs) do
     managed_transaction(scope, fn ->
+      resource = lock_physical_resource!(scope, resource_id)
+      assignment = locked_assignment(scope.organization_id, resource.id)
+      if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
+
+      key = confirmation_key!(scope, assignment, expectation)
+
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(^Map.to_list(key))
+      |> Repo.one()
+      |> case do
+        nil ->
+          struct(
+            %ConfirmedComponent{
+              organization_id: scope.organization_id,
+              hardware_assignment_id: assignment.id
+            },
+            key
+          )
+
+        # A new confirmation replaces the old one whole: a part number from
+        # the earlier part must not survive beside the new part's serial.
+        existing ->
+          Ecto.Changeset.change(existing,
+            part_number: nil,
+            serial_number: nil,
+            model: nil,
+            note: nil
+          )
+      end
+      |> Ecto.Changeset.change(
+        confirmed_by_user_id: scope.user.id,
+        confirmed_at: Renga.Time.utc_now_ms()
+      )
+      |> ConfirmedComponent.changeset(attrs)
+      |> upsert()
+    end)
+  end
+
+  @doc "Lists the replacements confirmed on a resource's current assignment."
+  def list_confirmed_components(%Scope{organization_id: organization_id}, resource_id) do
+    ConfirmedComponent
+    |> join(:inner, [confirmation], assignment in HardwareAssignment,
+      on: assignment.id == confirmation.hardware_assignment_id
+    )
+    |> where(
+      [confirmation, assignment],
+      confirmation.organization_id == ^organization_id and assignment.resource_id == ^resource_id
+    )
+    |> preload(:confirmed_by_user)
+    |> Repo.all()
+  end
+
+  # The slot must be one the assignment currently expects, so a stale page
+  # cannot confirm a part for a template from another revision.
+  defp confirmation_key!(scope, assignment, expectation) do
+    {field, id} =
+      case expectation do
+        %{"component_template_id" => id} when is_binary(id) -> {:component_template_id, id}
+        %{"exception_id" => id} when is_binary(id) -> {:exception_id, id}
+        _invalid -> Repo.rollback(:invalid_expectation)
+      end
+
+    if match?({:ok, _uuid}, Ecto.UUID.cast(id)) do
+      ExpectedComponent
+      |> where(
+        [component],
+        component.organization_id == ^scope.organization_id and
+          component.hardware_assignment_id == ^assignment.id
+      )
+      |> where([component], field(component, ^field) == ^id)
+      |> Repo.exists?()
+      |> if(do: %{field => id}, else: Repo.rollback(:invalid_expectation))
+    else
+      Repo.rollback(:invalid_expectation)
+    end
+  end
+
+  @doc """
+  Describes what a resource currently expects in one slot, for requests:
+  `"template:<id>"` or `"component:<kind>:<name>"`. Nil when it expects
+  nothing there.
+  """
+  def describe_expectation(%Scope{} = scope, resource_id, slot) do
+    expected =
+      scope
+      |> list_expected_components(resource_id)
+      |> Enum.find(&expectation_slot?(&1, slot))
+
+    case expected do
+      nil -> nil
+      %{suppressed: true} = expected -> "Not expected: #{expected.name}"
+      expected -> describe_expected(expected)
+    end
+  end
+
+  defp expectation_slot?(%{component_template_id: id}, "template:" <> id), do: true
+
+  defp expectation_slot?(%{component_template_id: nil} = expected, "component:" <> rest),
+    do: rest == "#{expected.kind}:#{String.downcase(expected.name)}"
+
+  defp expectation_slot?(_expected, _slot), do: false
+
+  defp describe_expected(expected) do
+    details =
+      expected.attributes
+      |> Map.take(~w(part_number model))
+      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Enum.map_join(", ", fn {key, value} -> "#{Phoenix.Naming.humanize(key)} #{value}" end)
+
+    if details == "", do: expected.name, else: "#{details} in #{expected.name}"
+  end
+
+  def delete_expected_component_exception(%Scope{} = scope, resource_id, exception_id) do
+    expectation_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
       if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
@@ -713,13 +877,22 @@ defmodule Renga.Catalog do
           exception.id == ^exception_id and exception.organization_id == ^scope.organization_id and
             exception.hardware_assignment_id == ^assignment.id
         )
-        |> Repo.one!()
+        |> Repo.one() || Repo.rollback(:not_found)
 
       ExpectedComponent
       |> where(
         [component],
         component.organization_id == ^scope.organization_id and
           component.exception_id == ^exception.id
+      )
+      |> Repo.delete_all()
+
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(
+        [confirmation],
+        confirmation.component_template_id in ^List.wrap(exception.component_template_id) or
+          confirmation.exception_id == ^exception.id
       )
       |> Repo.delete_all()
 
@@ -974,13 +1147,19 @@ defmodule Renga.Catalog do
         {[], MapSet.new()}
 
       _assignment ->
+        confirmations = confirmations_by_expectation(scope, resource.id)
+
         expectations =
           scope
           |> list_expected_components(resource.id)
           |> Enum.filter(&(&1.kind in @canonical_component_kinds and not &1.suppressed))
+          |> Enum.map(&ComponentMatch.with_confirmation(&1, confirmation_for(&1, confirmations)))
 
-        actuals = list_actual_components(scope, resource.id)
-        expected_candidates = Enum.map(expectations, &{&1, expected_candidates(&1, actuals)})
+        actuals =
+          list_actual_components(scope, resource.id) |> Enum.reject(&(&1.status == "missing"))
+
+        expected_candidates =
+          Enum.map(expectations, &{&1, ComponentMatch.candidates(&1, actuals)})
 
         observed_actual_ids =
           if component_snapshot_current? do
@@ -1031,6 +1210,28 @@ defmodule Renga.Catalog do
         {expectation_findings ++ unexpected_findings ++ missing_findings,
          observed_expectation_keys}
     end
+  end
+
+  @doc """
+  The confirmation that explains an expectation, if any, from
+  `confirmations_by_expectation/2`.
+  """
+  def confirmation_for(expected, confirmations) do
+    Map.get(confirmations, {:template, expected.component_template_id}) ||
+      Map.get(confirmations, {:exception, expected.exception_id})
+  end
+
+  @doc false
+  def confirmations_by_expectation(scope, resource_id) do
+    scope
+    |> list_confirmed_components(resource_id)
+    |> Map.new(fn
+      %{component_template_id: nil, exception_id: id} = confirmation ->
+        {{:exception, id}, confirmation}
+
+      %{component_template_id: id} = confirmation ->
+        {{:template, id}, confirmation}
+    end)
   end
 
   defp missing_expected_findings(_expected_candidates, _observed_actual_ids, _observation, false),
@@ -1086,43 +1287,8 @@ defmodule Renga.Catalog do
     end)
   end
 
-  defp expected_candidates(expected, actuals) do
-    Enum.filter(actuals, fn actual ->
-      actual.kind == expected.kind and expected_identity_matches?(expected, actual)
-    end)
-  end
-
-  defp expected_identity_matches?(expected, actual) do
-    expected_part_number = expected.attributes["part_number"]
-    position = actual.slot || actual.path
-
-    checks =
-      [
-        expected.position && same_component_value?(expected.position, position),
-        expected_part_number && same_component_value?(expected_part_number, actual.part_number)
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    case checks do
-      [] -> same_component_value?(expected.name, actual.name)
-      checks -> Enum.all?(checks)
-    end
-  end
-
   defp drift_findings(expected, actual, observed_at) do
-    differences =
-      expected.attributes
-      |> Enum.reject(fn {field, expected_value} ->
-        actual_value = actual_component_spec(actual, field)
-        is_nil(actual_value) or same_component_value?(expected_value, actual_value)
-      end)
-      |> Map.new(fn {field, expected_value} ->
-        {field,
-         %{
-           "expected" => expected_value,
-           "actual" => actual_component_spec(actual, field)
-         }}
-      end)
+    differences = ComponentMatch.differences(expected, actual)
 
     if differences == %{} do
       []
@@ -1140,18 +1306,6 @@ defmodule Renga.Catalog do
           last_observed_at: observed_at
         }
       ]
-    end
-  end
-
-  defp actual_component_spec(actual, field) do
-    case field do
-      "name" -> actual.name
-      "model" -> actual.model
-      "slot" -> actual.slot
-      "path" -> actual.path
-      "serial_number" -> actual.serial_number
-      "part_number" -> actual.part_number
-      field -> actual.attributes[field]
     end
   end
 
@@ -1219,44 +1373,6 @@ defmodule Renga.Catalog do
       last_observed_at: observed_at
     }
   end
-
-  defp same_component_value?(left, right) when is_binary(left) and is_binary(right) do
-    String.downcase(String.trim(left)) == String.downcase(String.trim(right))
-  end
-
-  defp same_component_value?(%Decimal{} = left, right) when is_integer(right),
-    do: Decimal.equal?(left, Decimal.new(right))
-
-  defp same_component_value?(%Decimal{} = left, right) when is_float(right),
-    do: Decimal.equal?(left, Decimal.from_float(right))
-
-  defp same_component_value?(left, %Decimal{} = right) when is_integer(left) or is_float(left),
-    do: same_component_value?(right, left)
-
-  defp same_component_value?(%Decimal{} = left, %Decimal{} = right),
-    do: Decimal.equal?(left, right)
-
-  defp same_component_value?(left, right)
-       when is_map(left) and not is_struct(left) and is_map(right) and not is_struct(right) do
-    map_size(left) == map_size(right) and
-      Enum.all?(left, fn {key, left_value} ->
-        case Map.fetch(right, key) do
-          {:ok, right_value} -> same_component_value?(left_value, right_value)
-          :error -> false
-        end
-      end)
-  end
-
-  defp same_component_value?(left, right) when is_list(left) and is_list(right) do
-    length(left) == length(right) and
-      left
-      |> Enum.zip(right)
-      |> Enum.all?(fn {left_value, right_value} ->
-        same_component_value?(left_value, right_value)
-      end)
-  end
-
-  defp same_component_value?(left, right), do: left == right
 
   defp put_component_finding(scope, resource, attrs) do
     query =
@@ -2228,6 +2344,19 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
+  defp expectation_transaction(%Scope{} = scope, mutation) do
+    Repo.transaction(fn ->
+      authorize_catalog_author!(scope, @expectation_roles)
+
+      case mutation.() do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+        result -> result
+      end
+    end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
+  end
+
   defp reconciliation_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       authorize_reconciler!(scope)
@@ -2241,8 +2370,11 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
+  defp authorize_catalog_author!(scope, roles \\ @catalog_author_roles)
+
   defp authorize_catalog_author!(
-         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope
+         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope,
+         roles
        )
        when not is_nil(membership_id) do
     lock_active_organization!(scope.organization_id)
@@ -2252,7 +2384,7 @@ defmodule Renga.Catalog do
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.organization_id == ^scope.organization_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^@catalog_author_roles)
+    |> where([membership], membership.role in ^roles)
     |> select([membership], membership.id)
     |> lock("FOR UPDATE")
     |> Repo.one()
@@ -2262,7 +2394,7 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_catalog_author!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_catalog_author!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
 
   defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
     if "catalog_reconciler" in roles do

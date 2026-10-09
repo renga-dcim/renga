@@ -303,6 +303,68 @@ defmodule Renga.FindingsTest do
     findings
   end
 
+  describe "accept_component_gap/4" do
+    test "sets a missing slot aside until a date before any finding opens", context do
+      key = "assignment:a:template:dimm-a1"
+      until = DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
+
+      assert {:ok, workflow} =
+               Findings.accept_component_gap(context.scope, context.resource.id, key, %{
+                 "exception_reason" => "DIMM out for RMA",
+                 "exception_expires_at" => until
+               })
+
+      assert workflow.kind == "missing_expected_component"
+
+      assert %{{"missing_expected_component", ^key} => _} =
+               Findings.component_exceptions(context.scope, context.resource.id)
+
+      # When the collector later reports the slot missing, the finding opens
+      # already set aside, so it stays out of the open queue.
+      finding = component_finding(context, "missing_expected_component", key: key)
+      {[listed], 1} = Findings.list_findings(context.scope, state: "excepted")
+      assert listed.id == finding.id
+      assert {[], 0} = Findings.list_findings(context.scope, state: "open")
+    end
+
+    test "requires a future date and a reason", context do
+      key = "assignment:a:template:dimm-a2"
+
+      assert {:error, changeset} =
+               Findings.accept_component_gap(context.scope, context.resource.id, key, %{
+                 "exception_reason" => "out"
+               })
+
+      assert %{exception_expires_at: ["choose when it will be back"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Findings.accept_component_gap(context.scope, context.resource.id, key, %{
+                 "exception_expires_at" => DateTime.add(Renga.Time.utc_now_ms(), -1, :day)
+               })
+
+      assert %{exception_reason: [_], exception_expires_at: ["must be in the future"]} =
+               errors_on(changeset)
+    end
+
+    test "is open to members but not viewers or other organizations", context do
+      viewer = member_scope(context.organization, "viewer")
+
+      args = %{
+        "exception_reason" => "out",
+        "exception_expires_at" => DateTime.add(Renga.Time.utc_now_ms(), 1, :day)
+      }
+
+      assert {:error, :forbidden} =
+               Findings.accept_component_gap(viewer, context.resource.id, "k", args)
+
+      other = member_scope(organization_fixture(), "member")
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Findings.accept_component_gap(other, context.resource.id, "k", args)
+      end
+    end
+  end
+
   defp component_finding(context, kind, opts \\ []),
     do: component_finding_fixture(context.resource, kind, opts)
 

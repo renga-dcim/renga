@@ -1274,6 +1274,279 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert resolved_at == corrected.observed_at
   end
 
+  test "hardware comparison retains absence through partial and stale snapshots until positive evidence" do
+    context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
+    parts = [%{"kind" => "memory", "id" => "a1", "slot" => "A1", "part_number" => "M"}]
+
+    report = fn id, components, complete ->
+      observation(context, id, %{"machine_id" => "presence"}, %{}, [], components, %{
+        "components" => complete
+      })
+    end
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, report.("1", parts, true).id)
+
+    type =
+      hardware_type_fixture(context.scope, "PRESENCE", [
+        %{kind: "memory", name: "A1", position: "A1", attributes: %{"part_number" => "M"}}
+      ])
+
+    {:ok, _} = Catalog.assign_hardware_type(context.scope, resource.id, type.id)
+    assert Catalog.hardware_comparison(context.scope, resource.id).counts.match == 1
+
+    for {id, components, complete} <- [{"3", [], true}, {"4", [], false}, {"2", parts, true}] do
+      {:ok, _, false} =
+        Inventory.reconcile_observation(context.scope, report.(id, components, complete).id)
+
+      comparison = Catalog.hardware_comparison(context.scope, resource.id)
+      assert comparison.counts.missing == 1
+      assert comparison.counts.match == 0
+
+      assert [%{kind: "missing_expected_component"}] =
+               Catalog.list_component_findings(context.scope, resource.id)
+    end
+
+    {:ok, _, false} =
+      Inventory.reconcile_observation(context.scope, report.("5", parts, false).id)
+
+    assert Catalog.hardware_comparison(context.scope, resource.id).counts.match == 1
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "stale equal-time evidence cannot create or restore presence after a complete omission" do
+    for known? <- [true, false] do
+      context = context()
+
+      {:ok, source} =
+        Inventory.update_source(context.scope, context.source, %{
+          metadata: %{"component_snapshot_policy" => "complete"}
+        })
+
+      context = %{context | source: source}
+      parts = [%{"kind" => "memory", "id" => "a1", "slot" => "A1", "part_number" => "M"}]
+
+      initial =
+        observation(
+          context,
+          "1",
+          %{"machine_id" => "stale-presence"},
+          %{},
+          [],
+          if(known?, do: parts, else: []),
+          %{"components" => true}
+        )
+
+      {:ok, resource, true} = Inventory.reconcile_observation(context.scope, initial.id)
+
+      type =
+        hardware_type_fixture(context.scope, "STALE-PRESENCE", [
+          %{kind: "memory", name: "A1", position: "A1", attributes: %{"part_number" => "M"}}
+        ])
+
+      {:ok, _} = Catalog.assign_hardware_type(context.scope, resource.id, type.id)
+      at = ~U[2026-08-01 12:00:03.000Z]
+
+      stale =
+        observation_at(context, "2", at, %{"machine_id" => "stale-presence"}, %{}, [], parts, %{
+          "components" => true
+        })
+
+      omitted =
+        observation_at(context, "3", at, %{"machine_id" => "stale-presence"}, %{}, [], [], %{
+          "components" => true
+        })
+
+      {:ok, _, false} = Inventory.reconcile_observation(context.scope, omitted.id)
+      {:ok, _, false} = Inventory.reconcile_observation(context.scope, stale.id)
+      assert Catalog.hardware_comparison(context.scope, resource.id).counts.missing == 1
+
+      assert [%{kind: "missing_expected_component"}] =
+               Catalog.list_component_findings(context.scope, resource.id)
+
+      fresh = observation(context, "4", %{"machine_id" => "stale-presence"}, %{}, [], parts)
+      {:ok, _, false} = Inventory.reconcile_observation(context.scope, fresh.id)
+      assert Catalog.hardware_comparison(context.scope, resource.id).counts.match == 1
+      assert Catalog.list_component_findings(context.scope, resource.id) == []
+    end
+  end
+
+  test "confirmed serial and model require positive evidence, including after a matching report" do
+    for field <- ~w(serial_number model) do
+      context = context()
+
+      report = fn id, value ->
+        part = %{"kind" => "memory", "id" => "a1", "slot" => "A1", "part_number" => "M"}
+        part = if value, do: Map.put(part, field, value), else: part
+        observation(context, id, %{"machine_id" => "confirmed"}, %{}, [], [part])
+      end
+
+      {:ok, resource, true} =
+        Inventory.reconcile_observation(context.scope, report.("1", "OLD").id)
+
+      type =
+        hardware_type_fixture(context.scope, "CONFIRM-#{field}", [
+          %{kind: "memory", name: "A1", position: "A1", attributes: %{"part_number" => "M"}}
+        ])
+
+      {:ok, _} = Catalog.assign_hardware_type(context.scope, resource.id, type.id)
+      [expected] = Catalog.list_expected_components(context.scope, resource.id)
+
+      assert {:ok, confirmation} =
+               Catalog.confirm_replacement(
+                 context.scope,
+                 resource.id,
+                 %{"component_template_id" => expected.component_template_id},
+                 %{field => "NEW", "note" => String.duplicate("n", 500)}
+               )
+
+      assert String.length(confirmation.note) == 500
+
+      assert {:error, %Ecto.Changeset{}} =
+               Catalog.confirm_replacement(
+                 context.scope,
+                 resource.id,
+                 %{"component_template_id" => expected.component_template_id},
+                 %{field => "NEW", "note" => String.duplicate("n", 501)}
+               )
+
+      for {id, value, pending?} <- [
+            {"2", "OLD", true},
+            {"3", nil, true},
+            {"4", "NEW", false},
+            {"5", nil, true}
+          ] do
+        {:ok, _, false} = Inventory.reconcile_observation(context.scope, report.(id, value).id)
+        [section] = Catalog.hardware_comparison(context.scope, resource.id).sections
+        [row] = section.rows
+        assert :replacement_pending in row.reasons == pending?
+
+        assert Enum.any?(
+                 Catalog.list_component_findings(context.scope, resource.id),
+                 &(&1.kind == "component_drift")
+               ) == pending?
+      end
+
+      assert {:ok, exception} =
+               Catalog.put_expected_component_exception(context.scope, resource.id, %{
+                 action: "alter",
+                 component_template_id: expected.component_template_id,
+                 changes: %{"attributes" => %{field => "OLD"}}
+               })
+
+      assert Catalog.list_confirmed_components(context.scope, resource.id) == []
+
+      {:ok, _} =
+        Catalog.confirm_replacement(
+          context.scope,
+          resource.id,
+          %{"component_template_id" => expected.component_template_id},
+          %{field => "NEW"}
+        )
+
+      {:ok, _} =
+        Catalog.delete_expected_component_exception(context.scope, resource.id, exception.id)
+
+      assert Catalog.list_confirmed_components(context.scope, resource.id) == []
+    end
+  end
+
+  test "a confirmed replacement closes drift only once a collector reports it" do
+    context = context()
+
+    report = fn key, part_number, serial ->
+      observation(context, key, %{"machine_id" => "machine-1"}, %{}, [], [
+        %{
+          "kind" => "memory",
+          "id" => "dimm-a1",
+          "slot" => "A1",
+          "part_number" => part_number,
+          "serial_number" => serial
+        }
+      ])
+    end
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, report.("1", "M-32G", "SN-1").id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "CONFIRMED-REPLACEMENT", [
+        %{
+          kind: "memory",
+          name: "DIMM A1",
+          position: "A1",
+          attributes: %{"part_number" => "M-32G"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    [%{component_template_id: template_id}] =
+      Catalog.list_expected_components(context.scope, resource.id)
+
+    template = %{id: template_id}
+
+    # The replacement part goes in and an operator confirms it, but the
+    # collector still reports the old part: the slot now expects the new one.
+    assert {:ok, confirmation} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"part_number" => "M-32G-B", "serial_number" => "SN-2", "note" => "RMA 42"}
+             )
+
+    assert confirmation.confirmed_by_user_id == context.scope.user.id
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("2", "M-32G", "SN-1").id)
+
+    assert [%{kind: "unexpected_actual_component"}] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    # Once the collector reports the confirmed part, nothing is left open.
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("3", "M-32G-B", "SN-2").id)
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert {:error, :invalid_expectation} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => Ecto.UUID.generate()},
+               %{"part_number" => "X"}
+             )
+
+    assert {:error, %Ecto.Changeset{}} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"note" => "no part"}
+             )
+
+    # Confirming the slot again replaces the earlier confirmation whole.
+    assert {:ok, replaced} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"serial_number" => "SN-3"}
+             )
+
+    assert replaced.id == confirmation.id
+    assert {replaced.part_number, replaced.serial_number, replaced.note} == {nil, "SN-3", nil}
+  end
+
   test "omitted observed specifications do not create component drift" do
     context = context()
 

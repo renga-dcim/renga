@@ -18,6 +18,7 @@ defmodule RengaWeb.ResourceLive.Show do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   import RengaWeb.InventoryComponents
+  import RengaWeb.RequestComponents, only: [pending_request: 1]
 
   alias Renga.Catalog
   alias Renga.Inventory
@@ -678,46 +679,6 @@ defmodule RengaWeb.ResourceLive.Show do
     do: "Set by a triage rule · #{Format.datetime(at)}"
 
   defp owner_provenance(%{owner_set_at: at}), do: "Set by a person · #{Format.datetime(at)}"
-
-  # An open request, shown where the change would be made. Its requester can
-  # withdraw it; owners and admins decide it from the Inbox.
-  attr :id, :string, required: true
-  attr :request, :map, required: true
-  attr :current_user_id, :string, required: true
-
-  defp pending_request(assigns) do
-    ~H"""
-    <div id={@id} class="space-y-1 rounded-md border border-edge bg-sunken px-3 py-2 text-sm">
-      <p class="text-fg">
-        <span class="font-medium">Requested:</span>
-        <span class="font-mono">{@request.after_value["value"]}</span>
-      </p>
-      <p class="text-xs text-fg-muted">
-        {request_author(@request)} · waiting for an owner or admin
-      </p>
-      <div class="flex gap-3 text-xs">
-        <.link
-          navigate={~p"/inbox?#{[group: "requests", request: @request.id]}"}
-          class="text-link hover:underline"
-        >
-          View request
-        </.link>
-        <button
-          :if={@request.requested_by_user_id == @current_user_id}
-          id={"#{@id}-withdraw"}
-          type="button"
-          phx-click={JS.push("withdraw_request", value: %{id: @request.id})}
-          class="cursor-pointer text-fg-muted hover:text-fg hover:underline"
-        >
-          Withdraw
-        </button>
-      </div>
-    </div>
-    """
-  end
-
-  defp request_author(%{requested_by_user: %{email: email}}), do: "By #{email}"
-  defp request_author(_request), do: "By a former member"
 
   attr :resource, :map, required: true
   attr :form, :map, required: true

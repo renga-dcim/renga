@@ -24,6 +24,8 @@ defmodule Renga.Catalog.ExpectedComponent do
     field :required, :boolean, default: true
     field :suppressed, :boolean, default: false
     field :attributes, :map, default: %{}
+    # Operator-confirmed identity requires positive evidence, unlike optional catalog specs.
+    field :confirmed_fields, {:array, :string}, virtual: true, default: []
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :hardware_assignment, Renga.Catalog.HardwareAssignment
     belongs_to :catalog_type_revision, Renga.Catalog.TypeRevision
