@@ -7,35 +7,25 @@ defmodule RengaWeb.UserLive.Login do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="mx-auto max-w-sm space-y-4">
-        <div class="text-center">
-          <.header>
-            <p>Log in</p>
-            <:subtitle>
-              <%= if @current_scope do %>
-                You need to reauthenticate to perform sensitive actions on your account.
-              <% else %>
-                Don't have an account? <.link
-                  navigate={~p"/users/register"}
-                  class="font-semibold text-link hover:underline"
-                  phx-no-format
-                >Sign up</.link> for an account now.
-              <% end %>
-            </:subtitle>
-          </.header>
-        </div>
+      <.auth_card id="login" title="Log in">
+        <:subtitle :if={@current_scope}>
+          You need to reauthenticate to perform sensitive actions on your account.
+        </:subtitle>
+        <:subtitle :if={!@current_scope}>
+          We'll email you a link, or you can use your password.
+        </:subtitle>
 
         <div
           :if={local_mail_adapter?()}
-          class="flex gap-3 rounded-lg border border-edge bg-surface p-3 text-sm text-fg"
+          class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
         >
-          <.icon name="hero-information-circle" class="size-5 shrink-0 text-info" />
-          <div>
-            <p>You are running the local mail adapter.</p>
-            <p>
-              To see sent emails, visit <.link href="/dev/mailbox" class="underline">the mailbox page</.link>.
-            </p>
-          </div>
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
+          <p>
+            Emails go to the local mailbox in development: <.link
+              href="/dev/mailbox"
+              class="text-link underline"
+            >open the mailbox</.link>.
+          </p>
         </div>
 
         <.form
@@ -60,9 +50,7 @@ defmodule RengaWeb.UserLive.Login do
           </.button>
         </.form>
 
-        <div class="flex items-center gap-3 text-xs text-fg-muted">
-          <span class="h-px flex-1 bg-edge" /> or <span class="h-px flex-1 bg-edge" />
-        </div>
+        <.divider label="or use your password" />
 
         <.form
           :let={f}
@@ -88,19 +76,29 @@ defmodule RengaWeb.UserLive.Login do
             autocomplete="current-password"
             spellcheck="false"
           />
-          <.button
-            variant="primary"
-            class="w-full"
-            name={@form[:remember_me].name}
-            value="true"
-          >
-            Log in and stay logged in <span aria-hidden="true">→</span>
-          </.button>
-          <.button class="mt-2 w-full">
-            Log in only this time
-          </.button>
+          <div class="space-y-2">
+            <.button
+              variant="primary"
+              class="w-full"
+              name={@form[:remember_me].name}
+              value="true"
+            >
+              Log in and stay logged in <span aria-hidden="true">→</span>
+            </.button>
+            <.button class="w-full">Log in only this time</.button>
+          </div>
         </.form>
-      </div>
+
+        <:footer :if={!@current_scope}>
+          Don't have an account?
+          <.link
+            navigate={~p"/users/register"}
+            class="font-medium text-link hover:underline"
+          >
+            Sign up
+          </.link>
+        </:footer>
+      </.auth_card>
     </Layouts.app>
     """
   end
