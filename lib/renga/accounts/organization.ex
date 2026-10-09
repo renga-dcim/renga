@@ -31,6 +31,7 @@ defmodule Renga.Accounts.Organization do
     field :slug, :string
     field :status, :string, default: "active"
     field :settings, :map, default: %{}
+    field :default_accent, :string, default: "copper"
 
     has_many :memberships, OrganizationMembership
     has_many :addresses, Address
@@ -56,5 +57,14 @@ defmodule Renga.Accounts.Organization do
     )
     |> validate_inclusion(:status, @statuses)
     |> unique_constraint(:slug)
+  end
+
+  @doc "Changes the accent members see until they choose their own."
+  def default_accent_changeset(organization, attrs) do
+    organization
+    |> cast(attrs, [:default_accent])
+    |> validate_required([:default_accent])
+    |> validate_inclusion(:default_accent, Renga.Accounts.Appearance.accents())
+    |> check_constraint(:default_accent, name: :organizations_valid_default_accent)
   end
 end

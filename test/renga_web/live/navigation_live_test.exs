@@ -96,6 +96,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/settings/teams",
              "/settings/triage-rules",
              "/organizations",
+             "/settings/appearance",
              "/users/settings"
            ]
   end

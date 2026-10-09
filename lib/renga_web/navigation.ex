@@ -134,6 +134,9 @@ defmodule RengaWeb.Navigation do
         section(:organizations, "Organizations", ~p"/organizations", "hero-building-office",
           keywords: ~w(switch workspace)
         ),
+        section(:appearance, "Appearance", ~p"/settings/appearance", "hero-swatch",
+          keywords: ~w(theme dark light accent density compact color)
+        ),
         section(:account, "Account", ~p"/users/settings", "hero-user-circle",
           keywords: ~w(email password profile)
         )

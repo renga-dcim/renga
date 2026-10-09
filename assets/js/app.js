@@ -63,8 +63,12 @@ const CommandPalette = {
       // Unavailable actions stay open so their reason can be read.
       if (item.getAttribute("aria-disabled") === "true") return
 
+      // The sidebar's theme button saves the choice to the account
+      // (RengaWeb.AppearanceHook), so the command presses it.
       if (item.dataset.commandAction === "toggle-theme") {
-        window.dispatchEvent(new CustomEvent("phx:toggle-theme"))
+        const toggle = document.getElementById("theme-toggle")
+        if (toggle) toggle.click()
+        else window.dispatchEvent(new CustomEvent("phx:toggle-theme"))
       }
 
       this.dialog.close()
@@ -219,6 +223,21 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 // (see RengaWeb.UI.close_overlay/2), keeping it open on validation errors.
 window.addEventListener("phx:close-overlay", ({detail}) => {
   document.getElementById(detail.id)?.dispatchEvent(new Event("renga:overlay-close"))
+})
+
+// Applies appearance changes made during a session (RFD 8, "Visual design"):
+// the root layout renders the saved theme, accent and density onto <html>,
+// and RengaWeb.AppearanceHook pushes them again when they change.
+window.addEventListener("phx:appearance", ({detail}) => {
+  const root = document.documentElement
+  root.dataset.accent = detail.accent
+  root.dataset.density = detail.density
+  root.dataset.themePref = detail.theme
+  if (detail.theme === "system") {
+    root.removeAttribute("data-theme")
+  } else {
+    root.dataset.theme = detail.theme
+  }
 })
 
 // connect if there are any LiveViews on the page

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" {Layouts.appearance_attributes(assigns[:current_scope])}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -13,6 +13,7 @@
     <script>
       (() => {
         const setTheme = (theme) => {
+          if (document.documentElement.dataset.themePref) return;
           if (theme === "system") {
             localStorage.removeItem("phx:theme");
             document.documentElement.removeAttribute("data-theme");
@@ -21,7 +22,11 @@
             document.documentElement.setAttribute("data-theme", theme);
           }
         };
-        if (!document.documentElement.hasAttribute("data-theme")) {
+        // A signed-in person's saved theme comes from the server; the browser
+        // only remembers a theme for signed-out pages.
+        if (document.documentElement.dataset.themePref) {
+          localStorage.removeItem("phx:theme");
+        } else if (!document.documentElement.hasAttribute("data-theme")) {
           setTheme(localStorage.getItem("phx:theme") || "system");
         }
         window.addEventListener("storage", (e) => e.key === "phx:theme" && setTheme(e.newValue || "system"));
