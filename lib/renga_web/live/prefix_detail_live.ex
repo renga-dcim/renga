@@ -19,6 +19,7 @@ defmodule RengaWeb.PrefixDetailLive do
 
   import RengaWeb.PrefixComponents
 
+  alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
   alias Renga.IPAM.AddressAssignment
@@ -34,13 +35,36 @@ defmodule RengaWeb.PrefixDetailLive do
 
     {:ok,
      socket
-     |> assign(prefix: prefix, page_title: Cidr.format(prefix.prefix), reload_timer: nil)
+     |> assign(
+       prefix: prefix,
+       page_title: Cidr.format(prefix.prefix),
+       can_manage?: Inventory.organization_manager?(scope),
+       reload_timer: nil
+     )
      |> load_view()}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     {:noreply, assign(socket, :show_temporary?, params["temporary"] == "show")}
+  end
+
+  @impl true
+  def handle_event("adopt", %{"id" => address_id}, socket) do
+    socket.assigns.current_scope
+    |> IPAM.adopt_address(address_id)
+    |> address_result(socket, "Address adopted into managed state")
+  rescue
+    # The address vanished, or the id was tampered with; show what is there now.
+    Ecto.NoResultsError -> {:noreply, load_view(socket)}
+  end
+
+  def handle_event("release", %{"id" => managed_id}, socket) do
+    socket.assigns.current_scope
+    |> IPAM.release_address(managed_id)
+    |> address_result(socket, "Address released to observed only")
+  rescue
+    Ecto.NoResultsError -> {:noreply, load_view(socket)}
   end
 
   @impl true
@@ -55,9 +79,27 @@ defmodule RengaWeb.PrefixDetailLive do
     {:noreply, socket |> assign(:reload_timer, nil) |> load_view()}
   end
 
+  defp address_result({:ok, _managed}, socket, message),
+    do: {:noreply, socket |> put_flash(:info, message) |> load_view()}
+
+  defp address_result({:error, :forbidden}, socket, _message),
+    do: {:noreply, put_flash(socket, :error, "Only owners and admins manage addresses")}
+
+  defp address_result({:error, %Ecto.Changeset{}}, socket, _message),
+    do: {:noreply, socket |> put_flash(:error, "That address is already managed") |> load_view()}
+
   defp load_view(socket) do
-    view = IPAM.prefix_view(socket.assigns.current_scope, socket.assigns.prefix)
-    assign(socket, view: view, family: Cidr.family(socket.assigns.prefix.prefix))
+    scope = socket.assigns.current_scope
+    view = IPAM.prefix_view(scope, socket.assigns.prefix)
+
+    assign(socket,
+      view: view,
+      family: Cidr.family(socket.assigns.prefix.prefix),
+      coverage:
+        view.vlans
+        |> Enum.map(&{&1, IPAM.vlan_dual_stack(scope, &1.id)})
+        |> Enum.reject(fn {_vlan, coverage} -> is_nil(coverage) end)
+    )
   end
 
   @impl true
@@ -96,13 +138,19 @@ defmodule RengaWeb.PrefixDetailLive do
           <% :container -> %>
             <.space_map prefix={@prefix} space={@view.space} children={@view.node.children} />
           <% :address_map -> %>
-            <.address_map prefix={@prefix} map={@view.address_map} />
+            <.address_map
+              prefix={@prefix}
+              map={@view.address_map}
+              entries={@view.addresses}
+              can_manage?={@can_manage?}
+            />
           <% :address_table -> %>
             <.address_table
               prefix={@prefix}
               family={@family}
               addresses={@view.addresses}
               show_temporary?={@show_temporary?}
+              can_manage?={@can_manage?}
             />
         <% end %>
 
@@ -154,6 +202,18 @@ defmodule RengaWeb.PrefixDetailLive do
                 </.link>
               </li>
             </ul>
+            <p
+              :for={{vlan, coverage} <- @coverage}
+              id={"prefix-dual-stack-#{vlan.id}"}
+              class="text-xs text-fg-muted"
+            >
+              Dual stack on VLAN {vlan.vid}:
+              <span class="font-mono text-fg">{length(coverage.both)} of {coverage.total}</span>
+              devices have both families.
+              <.link navigate={~p"/network/vlans/#{vlan.id}"} class="text-link hover:underline">
+                See which
+              </.link>
+            </p>
             <p
               :if={@view.vlans != [] and @view.counterparts == []}
               id="prefix-single-stack"
@@ -241,6 +301,8 @@ defmodule RengaWeb.PrefixDetailLive do
 
   attr :prefix, :any, required: true
   attr :map, :map, required: true
+  attr :entries, :list, required: true
+  attr :can_manage?, :boolean, required: true
 
   defp address_map(assigns) do
     ~H"""
@@ -267,25 +329,18 @@ defmodule RengaWeb.PrefixDetailLive do
         />
       </div>
       <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted">
-        <li :for={state <- [:used, :free, :network]} class="flex items-center gap-1.5">
+        <li :for={state <- [:used, :managed, :free, :network]} class="flex items-center gap-1.5">
           <span class={["size-3 rounded-[2px]", address_class(state)]} />
           {address_legend(state)}
         </li>
       </ul>
 
-      <.table
-        id="prefix-used-addresses"
-        rows={Enum.filter(@map.cells, &(&1.state == :used))}
-        class="rounded-lg border border-edge bg-surface"
-      >
-        <:col :let={cell} label="Address">
-          <span class="font-mono text-sm">{Cidr.format(cell.address)}</span>
-        </:col>
-        <:col :let={cell} label="Interface">
-          <.address_owner address={cell.record} />
-        </:col>
-        <:empty>No addresses are observed in this prefix yet.</:empty>
-      </.table>
+      <.address_rows
+        prefix={@prefix}
+        family={:ipv4}
+        entries={@entries}
+        can_manage?={@can_manage?}
+      />
     </section>
     """
   end
@@ -294,6 +349,7 @@ defmodule RengaWeb.PrefixDetailLive do
   attr :family, :atom, required: true
   attr :addresses, :list, required: true
   attr :show_temporary?, :boolean, required: true
+  attr :can_manage?, :boolean, required: true
 
   defp address_table(assigns) do
     {temporary, permanent} = Enum.split_with(assigns.addresses, & &1.temporary?)
@@ -301,6 +357,7 @@ defmodule RengaWeb.PrefixDetailLive do
     assigns =
       assign(assigns,
         temporary_count: length(temporary),
+        observed_count: Enum.count(assigns.addresses, & &1.address),
         shown: if(assigns.show_temporary?, do: assigns.addresses, else: permanent)
       )
 
@@ -310,8 +367,8 @@ defmodule RengaWeb.PrefixDetailLive do
         <div>
           <h2 class="text-sm font-semibold text-fg">Addresses</h2>
           <p id="prefix-address-count" class="text-sm text-fg-muted">
-            <span class="font-mono text-fg">{delimit(length(@addresses))}</span>
-            {if length(@addresses) == 1, do: "address", else: "addresses"} observed<span :if={
+            <span class="font-mono text-fg">{delimit(@observed_count)}</span>
+            {if @observed_count == 1, do: "address", else: "addresses"} observed<span :if={
               @temporary_count > 0 and !@show_temporary?
             }>, {@temporary_count} temporary hidden</span>.
           </p>
@@ -331,49 +388,121 @@ defmodule RengaWeb.PrefixDetailLive do
         </.link>
       </div>
 
-      <.table id="prefix-addresses" rows={@shown} class="rounded-lg border border-edge bg-surface">
-        <:col :let={entry} label="Address">
-          <span
-            id={"address-#{entry.address.id}"}
-            data-temporary={to_string(entry.temporary?)}
-            class="flex items-center gap-2"
-          >
-            <.address address={entry.address.address} prefix_length={Cidr.length(@prefix.prefix)} />
-            <span
-              :if={entry.temporary?}
-              class="rounded border border-edge px-1 text-[10px] text-fg-muted"
-            >
-              temporary
-            </span>
-          </span>
-        </:col>
-        <:col :let={entry} label="Assigned" class="text-xs text-fg-muted">
-          <span data-method={entry.method}>{AddressAssignment.label(entry.method, @family)}</span>
-        </:col>
-        <:col :let={entry} label="Interface">
-          <.address_owner address={entry.address} />
-        </:col>
-        <:empty>No addresses are observed in this prefix yet.</:empty>
-      </.table>
+      <.address_rows
+        prefix={@prefix}
+        family={@family}
+        entries={@shown}
+        can_manage?={@can_manage?}
+      />
     </section>
     """
   end
 
-  attr :address, :any, required: true
+  attr :prefix, :any, required: true
+  attr :family, :atom, required: true
+  attr :entries, :list, required: true
+  attr :can_manage?, :boolean, required: true
 
-  defp address_owner(assigns) do
+  # Observed addresses are normal: their status says so plainly, and an
+  # owner or admin adopts one when it needs managed state. A managed address
+  # nobody reports any more stays listed rather than disappearing.
+  defp address_rows(assigns) do
     ~H"""
-    <span class="flex min-w-0 items-baseline gap-1.5 py-1.5">
-      <span class="font-mono text-sm text-fg">{@address.interface.name}</span>
-      <.link
-        navigate={~p"/inventory/#{@address.resource_id}"}
-        class="truncate text-xs text-fg-muted hover:text-fg hover:underline"
-      >
-        {@address.interface.resource.name}
-      </.link>
-    </span>
+    <.table id="prefix-addresses" rows={@entries} class="rounded-lg border border-edge bg-surface">
+      <:col :let={entry} label="Address">
+        <span
+          id={entry_id(entry)}
+          data-temporary={to_string(entry.temporary?)}
+          class="flex items-center gap-2 py-1.5"
+        >
+          <.address address={entry.inet} prefix_length={Cidr.length(@prefix.prefix)} />
+          <span
+            :if={entry.temporary?}
+            class="rounded border border-edge px-1 text-[10px] text-fg-muted"
+          >
+            temporary
+          </span>
+        </span>
+      </:col>
+      <:col :let={entry} label="Assigned" class="hidden text-xs text-fg-muted sm:table-cell">
+        <span :if={entry.method} data-method={entry.method}>
+          {AddressAssignment.label(entry.method, @family)}
+        </span>
+      </:col>
+      <:col :let={entry} label="Interface">
+        <.address_owner entry={entry} />
+      </:col>
+      <:col :let={entry} label="Status" class="text-xs">
+        <span data-status={entry_status(entry)} class={status_class(entry_status(entry))}>
+          {status_label(entry_status(entry))}
+        </span>
+      </:col>
+      <:col :let={entry} :if={@can_manage?} label="" class="w-0 text-right">
+        <.button
+          :if={entry.address && !entry.managed}
+          id={"#{entry_id(entry)}-adopt"}
+          size="sm"
+          variant="ghost"
+          phx-click="adopt"
+          phx-value-id={entry.address.id}
+        >
+          Adopt
+        </.button>
+        <.button
+          :if={entry.managed}
+          id={"#{entry_id(entry)}-release"}
+          size="sm"
+          variant="ghost"
+          phx-click="release"
+          phx-value-id={entry.managed.id}
+        >
+          Release
+        </.button>
+      </:col>
+      <:empty>No addresses are observed or managed in this prefix yet.</:empty>
+    </.table>
     """
   end
+
+  attr :entry, :map, required: true
+
+  defp address_owner(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :interface,
+        (assigns.entry.address && assigns.entry.address.interface) ||
+          (assigns.entry.managed && assigns.entry.managed.interface)
+      )
+
+    ~H"""
+    <span :if={@interface} class="flex min-w-0 items-baseline gap-1.5 py-1.5">
+      <span class="font-mono text-sm text-fg">{@interface.name}</span>
+      <.link
+        navigate={~p"/inventory/#{@interface.resource_id}"}
+        class="truncate text-xs text-fg-muted hover:text-fg hover:underline"
+      >
+        {@interface.resource.name}
+      </.link>
+    </span>
+    <span :if={!@interface} class="text-fg-subtle">—</span>
+    """
+  end
+
+  defp entry_id(%{address: %{id: id}}), do: "address-#{id}"
+  defp entry_id(%{managed: %{id: id}}), do: "managed-#{id}"
+
+  defp entry_status(%{address: nil}), do: :managed_unseen
+  defp entry_status(%{managed: nil}), do: :observed
+  defp entry_status(_entry), do: :managed
+
+  defp status_label(:observed), do: "Observed"
+  defp status_label(:managed), do: "Managed"
+  defp status_label(:managed_unseen), do: "Managed, not seen"
+
+  defp status_class(:observed), do: "text-fg-muted"
+  defp status_class(:managed), do: "font-medium text-fg"
+  defp status_class(:managed_unseen), do: "font-medium text-warn-text"
 
   defp columns(count) when count <= 16, do: count
   defp columns(count) when count <= 64, do: 16
@@ -393,6 +522,9 @@ defmodule RengaWeb.PrefixDetailLive do
   defp address_title(%{state: :used, address: address, record: record}),
     do: "#{Cidr.format(address)} · #{record.interface.resource.name} #{record.interface.name}"
 
+  defp address_title(%{state: :managed, address: address}),
+    do: "#{Cidr.format(address)}: managed, not seen"
+
   defp address_title(%{state: :network, address: address}),
     do: "#{Cidr.format(address)}: network"
 
@@ -403,10 +535,12 @@ defmodule RengaWeb.PrefixDetailLive do
 
   defp address_class(:used), do: "bg-accent"
   defp address_class(:free), do: "bg-sunken ring-1 ring-edge ring-inset"
+  defp address_class(:managed), do: "bg-surface ring-2 ring-warn ring-inset"
   defp address_class(_reserved), do: "bg-fg-subtle/40"
 
   defp address_legend(:used), do: "Used"
   defp address_legend(:free), do: "Free"
+  defp address_legend(:managed), do: "Managed, not seen"
   defp address_legend(:network), do: "Network and broadcast"
 
   defp other_family(:ipv4), do: :ipv6

@@ -13,6 +13,7 @@ defmodule RengaWeb.VlanDetailLive do
 
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.IPAM
   alias Renga.Topology
   alias Renga.Topology.VlanUsage
   alias RengaWeb.VlanComponents
@@ -154,6 +155,7 @@ defmodule RengaWeb.VlanDetailLive do
       |> Enum.reject(&MapSet.member?(linked_ids, &1.id))
 
     assign(socket,
+      dual_stack: IPAM.vlan_dual_stack(scope, socket.assigns.vlan.id),
       prefixes: linked,
       prefix_options:
         [{"Choose a prefix", ""}] ++
@@ -261,6 +263,30 @@ defmodule RengaWeb.VlanDetailLive do
             </.table>
           </section>
 
+          <section :if={@dual_stack} id="vlan-dual-stack" class="space-y-3">
+            <div>
+              <h2 class="text-sm font-semibold text-fg">Dual stack</h2>
+              <p id="vlan-dual-stack-summary" class="text-xs text-fg-muted">
+                <span class="font-mono text-fg">
+                  {length(@dual_stack.both)} of {@dual_stack.total}
+                </span>
+                devices with an address on this VLAN have both IPv4 and IPv6.
+              </p>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <.coverage_list
+                id="vlan-missing-ipv6"
+                title="Missing IPv6"
+                devices={@dual_stack.missing_ipv6}
+              />
+              <.coverage_list
+                id="vlan-missing-ipv4"
+                title="Missing IPv4"
+                devices={@dual_stack.missing_ipv4}
+              />
+            </div>
+          </section>
+
           <section id="vlan-prefixes" class="space-y-3">
             <div>
               <h2 class="text-sm font-semibold text-fg">IP prefixes</h2>
@@ -356,6 +382,31 @@ defmodule RengaWeb.VlanDetailLive do
         </:aside>
       </.object_page>
     </Layouts.app>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :devices, :list, required: true
+
+  defp coverage_list(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-1.5 rounded-md border border-edge bg-surface p-3">
+      <h3 class="text-xs font-medium text-fg-muted">
+        {@title} <span class="font-mono tabular-nums">{length(@devices)}</span>
+      </h3>
+      <p :if={@devices == []} class="text-xs text-fg-subtle">None.</p>
+      <ul :if={@devices != []} class="flex flex-wrap gap-1.5">
+        <li :for={device <- @devices}>
+          <.link
+            navigate={~p"/inventory/#{device.id}"}
+            class="rounded border border-warn-line bg-warn-fill px-1.5 text-xs text-warn-text hover:underline"
+          >
+            {device.name}
+          </.link>
+        </li>
+      </ul>
+    </div>
     """
   end
 
