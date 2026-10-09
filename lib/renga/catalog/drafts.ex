@@ -16,12 +16,9 @@ defmodule Renga.Catalog.Drafts do
 
   alias Renga.Accounts.Scope
   alias Renga.Catalog
-  alias Renga.Catalog.ActualComponent
   alias Renga.Catalog.ComponentTemplate
-  alias Renga.Catalog.ExpectedComponent
-  alias Renga.Catalog.HardwareAssignment
-  alias Renga.Catalog.HardwareComparison
   alias Renga.Catalog.HardwareType
+  alias Renga.Catalog.Moves
   alias Renga.Catalog.TemplatePattern
   alias Renga.Catalog.TypeRevision
   alias Renga.Repo
@@ -302,94 +299,21 @@ defmodule Renga.Catalog.Drafts do
 
   @doc """
   How the resources using the type compare with the draft, next to how
-  they compare with the revision they are pinned to. Each entry has the
-  resource, its pinned revision number, and slot counts for `:current`
-  and `:draft`: `HardwareComparison` counts, with optional slots left
-  empty counted as `:empty` rather than missing. `observed?`
-  is false for resources no collector has reported components for, whose
-  slots would all read as missing.
+  they compare with the revision they are pinned to, with their local
+  changes carried over as a move would carry them
+  (`Renga.Catalog.Moves.preview/4`). Each entry has the resource, its
+  pinned revision number, `:current` and `:draft` slot counts, and
+  `observed?`, false for resources no collector has reported components
+  for, whose slots would all read as missing.
   """
-  def impact(%Scope{organization_id: organization_id}, %TypeRevision{} = draft) do
-    assignments =
-      HardwareAssignment
-      |> where([assignment], assignment.organization_id == ^organization_id)
-      |> where([assignment], assignment.hardware_type_id == ^draft.hardware_type_id)
-      |> preload([:resource, :catalog_type_revision])
-      |> Repo.all()
-
-    assignment_ids = Enum.map(assignments, & &1.id)
-    resource_ids = Enum.map(assignments, & &1.resource_id)
-
-    current =
-      ExpectedComponent
-      |> where([expected], expected.organization_id == ^organization_id)
-      |> where([expected], expected.hardware_assignment_id in ^assignment_ids)
-      |> Repo.all()
-      |> Enum.group_by(& &1.hardware_assignment_id)
-
-    actuals =
-      ActualComponent
-      |> where([actual], actual.organization_id == ^organization_id)
-      |> where([actual], actual.owner_resource_id in ^resource_ids)
-      |> Repo.all()
-      |> Enum.group_by(& &1.owner_resource_id)
-
-    assignments
-    |> Enum.map(fn assignment ->
-      observed = Map.get(actuals, assignment.resource_id, [])
-      drafted = Enum.map(draft.component_templates, &draft_expectation(&1, assignment))
-
-      %{
-        resource: assignment.resource,
-        revision: assignment.catalog_type_revision.revision,
-        observed?: observed != [],
-        current: counts(Map.get(current, assignment.id, []), observed),
-        draft: counts(drafted, observed)
-      }
-    end)
-    |> Enum.sort_by(&String.downcase(&1.resource.name))
+  def impact(%Scope{} = scope, %TypeRevision{} = draft) do
+    scope
+    |> Moves.preview_templates(draft.hardware_type_id, draft.component_templates, [])
+    |> Enum.map(&Map.put(&1, :draft, &1.target))
   end
 
   @doc "Whether an impact entry would have no differences on the draft."
-  def fits?(%{observed?: observed?, draft: draft}),
-    do: observed? and draft.missing + draft.not_expected + draft.local_change == 0
-
-  # An optional slot left empty is not a difference: no finding opens for it.
-  defp counts(expected, observed) do
-    rows =
-      for section <- HardwareComparison.build(expected, observed).sections,
-          row <- section.rows,
-          do: row
-
-    Enum.reduce(
-      rows,
-      %{match: 0, missing: 0, not_expected: 0, local_change: 0, empty: 0},
-      fn
-        %{state: :missing, expected: %{required: false}}, counts ->
-          Map.update!(counts, :empty, &(&1 + 1))
-
-        %{state: state}, counts ->
-          Map.update!(counts, state, &(&1 + 1))
-      end
-    )
-  end
-
-  # What a resource would expect from a draft template, before any of its
-  # own exceptions, which belong to the revision it is pinned to.
-  defp draft_expectation(template, assignment) do
-    %ExpectedComponent{
-      kind: template.kind,
-      name: template.name,
-      label: template.label,
-      position: template.position,
-      required: template.required,
-      suppressed: false,
-      attributes: template.attributes,
-      component_template_id: template.id,
-      exception_id: nil,
-      hardware_assignment_id: assignment.id
-    }
-  end
+  def fits?(entry), do: Moves.fits_entry?(entry)
 
   defp template_key(template), do: {template.kind, String.downcase(template.name)}
 

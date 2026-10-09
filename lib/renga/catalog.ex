@@ -298,6 +298,7 @@ defmodule Renga.Catalog do
       resource = scoped_lock!(Resource, scope.organization_id, resource.id)
       component_snapshot_complete? = Keyword.get(opts, :component_snapshot_complete?, false)
       component_snapshot_current? = Keyword.get(opts, :component_snapshot_current?, false)
+      if component_snapshot_current?, do: maybe_auto_move(scope, resource)
 
       {expected_findings, observed_expectation_keys} =
         expected_actual_findings(
@@ -736,6 +737,201 @@ defmodule Renga.Catalog do
 
       materialize_expected_components(scope, assignment)
       exception
+    end)
+  end
+
+  @doc """
+  Moves a resource to another published revision of its hardware type.
+  Publishing never moves resources (RFD 8, "Editing hardware
+  components"); a move is made here, for one resource, or in bulk through
+  `Renga.Catalog.Moves`. Any catalog author may.
+
+  What the resource expects locally comes along: an exception or a
+  confirmed replacement on a template follows the template with the same
+  kind and name in the new revision, parts only this resource expects stay,
+  and accepted gaps follow their slot. Changes whose template the new
+  revision no longer has are dropped and returned as `:dropped`.
+
+  Findings about the old revision resolve; the next collector report opens
+  whatever still differs.
+  """
+  def move_hardware_revision(%Scope{} = scope, resource_id, revision_id) do
+    managed_transaction(scope, fn ->
+      resource = lock_physical_resource!(scope, resource_id)
+      move_assignment(scope, resource, revision_id)
+    end)
+  end
+
+  @doc false
+  # Runs inside a transaction that already authorized the caller.
+  def move_assignment(scope, resource, revision_id) do
+    assignment =
+      locked_assignment(scope.organization_id, resource.id) ||
+        Repo.rollback(:hardware_type_not_assigned)
+
+    revision =
+      TypeRevision
+      |> where([revision], revision.organization_id == ^scope.organization_id)
+      |> where([revision], revision.hardware_type_id == ^assignment.hardware_type_id)
+      |> where([revision], revision.id == ^revision_id and not is_nil(revision.finalized_at))
+      |> Repo.one() || Repo.rollback(:revision_not_found)
+
+    if revision.id == assignment.catalog_type_revision_id,
+      do: %{assignment: assignment, dropped: []},
+      else: carry_assignment(scope, assignment, revision)
+  end
+
+  defp carry_assignment(scope, assignment, revision) do
+    template_map = template_map(assignment.catalog_type_revision_id, revision.id)
+    exceptions = assignment_rows(ExpectedComponentException, assignment)
+    confirmations = assignment_rows(ConfirmedComponent, assignment)
+
+    # The composite keys tie these rows to the old revision; they are
+    # removed so the assignment can change revision, then carried over.
+    for schema <- [ExpectedComponent, ConfirmedComponent, ExpectedComponentException] do
+      schema
+      |> where([row], row.organization_id == ^scope.organization_id)
+      |> where([row], row.hardware_assignment_id == ^assignment.id)
+      |> Repo.delete_all()
+    end
+
+    resolve_assignment_findings(scope, assignment)
+
+    assignment =
+      assignment
+      |> HardwareAssignment.changeset(%{catalog_type_revision_id: revision.id})
+      |> update_or_rollback()
+
+    {exception_map, dropped} =
+      Enum.reduce(exceptions, {%{}, []}, fn exception, {carried, dropped} ->
+        case carry_exception(scope, assignment, exception, template_map) do
+          nil -> {carried, [exception | dropped]}
+          carried_exception -> {Map.put(carried, exception.id, carried_exception.id), dropped}
+        end
+      end)
+
+    Enum.each(confirmations, &carry_confirmation(&1, assignment, template_map, exception_map))
+    materialize_expected_components(scope, assignment)
+
+    Renga.Findings.rekey_component_workflows(
+      scope.organization_id,
+      assignment.resource_id,
+      moved_resolution_keys(assignment.id, template_map, exception_map)
+    )
+
+    %{assignment: assignment, dropped: Enum.reverse(dropped)}
+  end
+
+  # Templates of one revision matched to the next by kind and name.
+  defp template_map(from_revision_id, to_revision_id) do
+    templates =
+      ComponentTemplate
+      |> where(
+        [template],
+        template.catalog_type_revision_id in ^[from_revision_id, to_revision_id]
+      )
+      |> Repo.all()
+      |> Enum.group_by(& &1.catalog_type_revision_id)
+
+    targets =
+      Map.new(Map.get(templates, to_revision_id, []), &{template_identity(&1), &1.id})
+
+    templates
+    |> Map.get(from_revision_id, [])
+    |> Enum.flat_map(fn template ->
+      case Map.fetch(targets, template_identity(template)) do
+        {:ok, target_id} -> [{template.id, target_id}]
+        :error -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  @doc false
+  def template_identity(template), do: {template.kind, String.downcase(template.name)}
+
+  defp assignment_rows(schema, assignment) do
+    schema
+    |> where([row], row.organization_id == ^assignment.organization_id)
+    |> where([row], row.hardware_assignment_id == ^assignment.id)
+    |> Repo.all()
+  end
+
+  defp carry_exception(scope, assignment, exception, template_map) do
+    template_id =
+      exception.component_template_id && Map.get(template_map, exception.component_template_id)
+
+    actor_id = exception.confirmed_by_user_id || (scope.user && scope.user.id)
+
+    if (exception.action != "add" and is_nil(template_id)) or is_nil(actor_id) do
+      nil
+    else
+      %ExpectedComponentException{
+        organization_id: scope.organization_id,
+        hardware_assignment_id: assignment.id,
+        catalog_type_revision_id: assignment.catalog_type_revision_id,
+        confirmed_by_user_id: actor_id
+      }
+      |> ExpectedComponentException.changeset(%{
+        action: exception.action,
+        kind: exception.kind,
+        name: exception.name,
+        changes: exception.changes,
+        component_template_id: template_id
+      })
+      |> insert_or_rollback()
+    end
+  end
+
+  defp carry_confirmation(confirmation, assignment, template_map, exception_map) do
+    target =
+      if confirmation.component_template_id,
+        do: [component_template_id: Map.get(template_map, confirmation.component_template_id)],
+        else: [exception_id: Map.get(exception_map, confirmation.exception_id)]
+
+    unless target |> Keyword.values() |> hd() |> is_nil() do
+      struct(
+        ConfirmedComponent,
+        Map.merge(
+          Map.take(confirmation, [
+            :organization_id,
+            :part_number,
+            :serial_number,
+            :model,
+            :note,
+            :confirmed_by_user_id,
+            :confirmed_at
+          ]),
+          Map.new([{:hardware_assignment_id, assignment.id} | target])
+        )
+      )
+      |> Repo.insert!()
+    end
+  end
+
+  defp moved_resolution_keys(assignment_id, template_map, exception_map) do
+    prefix = "assignment:#{assignment_id}:"
+
+    Enum.map(template_map, fn {old, new} ->
+      {prefix <> "template:" <> old, prefix <> "template:" <> new}
+    end) ++
+      Enum.map(exception_map, fn {old, new} ->
+        {prefix <> "exception:" <> old, prefix <> "exception:" <> new}
+      end)
+  end
+
+  @doc """
+  Turns automatic moves on or off for a hardware type: once a resource fits
+  the latest revision exactly, the next collector report moves it there, so
+  such a move only closes findings. Owners and admins decide this.
+  """
+  def set_auto_move(%Scope{} = scope, %HardwareType{} = hardware_type, enabled)
+      when is_boolean(enabled) do
+    expectation_transaction(scope, fn ->
+      scope.organization_id
+      |> then(&scoped_lock!(HardwareType, &1, hardware_type.id))
+      |> Ecto.Changeset.change(auto_move: enabled)
+      |> update_or_rollback()
     end)
   end
 
@@ -1210,6 +1406,29 @@ defmodule Renga.Catalog do
         {expectation_findings ++ unexpected_findings ++ missing_findings,
          observed_expectation_keys}
     end
+  end
+
+  # A type set to move resources on its own moves one to its latest
+  # revision once the resource fits it exactly, so the move only closes
+  # findings; the findings computed next are against the new revision.
+  defp maybe_auto_move(scope, resource) do
+    with %HardwareAssignment{hardware_type: %{auto_move: true} = type} = assignment <-
+           get_hardware_assignment(scope, resource.id),
+         %TypeRevision{} = latest <- latest_published_revision(scope.organization_id, type.id),
+         true <- latest.id != assignment.catalog_type_revision_id,
+         true <- Renga.Catalog.Moves.fits?(scope, assignment, latest) do
+      move_assignment(scope, resource, latest.id)
+    end
+  end
+
+  defp latest_published_revision(organization_id, hardware_type_id) do
+    TypeRevision
+    |> where([revision], revision.organization_id == ^organization_id)
+    |> where([revision], revision.hardware_type_id == ^hardware_type_id)
+    |> where([revision], not is_nil(revision.finalized_at))
+    |> order_by([revision], desc: revision.revision)
+    |> limit(1)
+    |> Repo.one()
   end
 
   @doc """
@@ -1996,6 +2215,22 @@ defmodule Renga.Catalog do
   defp replace_changed_assignment(_scope, assignment, _revision), do: assignment
 
   defp delete_hardware_assignment(scope, assignment) do
+    resolve_assignment_findings(scope, assignment)
+
+    ExpectedComponent
+    |> where(
+      [component],
+      component.organization_id == ^scope.organization_id and
+        component.hardware_assignment_id == ^assignment.id
+    )
+    |> Repo.delete_all()
+
+    Repo.delete!(assignment)
+  end
+
+  # Findings about what an assignment expects end with it, or with the
+  # revision it pinned; the next report opens whatever still differs.
+  defp resolve_assignment_findings(scope, assignment) do
     resolved_at = Renga.Time.utc_now_ms()
 
     ComponentFinding
@@ -2008,16 +2243,6 @@ defmodule Renga.Catalog do
     |> Repo.update_all(
       set: [status: "resolved", resolved_at: resolved_at, updated_at: resolved_at]
     )
-
-    ExpectedComponent
-    |> where(
-      [component],
-      component.organization_id == ^scope.organization_id and
-        component.hardware_assignment_id == ^assignment.id
-    )
-    |> Repo.delete_all()
-
-    Repo.delete!(assignment)
   end
 
   defp locked_assignment(organization_id, resource_id) do
@@ -2194,16 +2419,24 @@ defmodule Renga.Catalog do
     exceptions
     |> Enum.filter(&(&1.action == "add"))
     |> Enum.each(fn exception ->
-      attrs =
-        exception.changes
-        |> Map.take(~w(label position description required attributes))
-        |> Map.merge(%{"kind" => exception.kind, "name" => exception.name})
-
-      insert_expected_component(attrs, scope, assignment, nil, exception)
+      exception
+      |> added_expectation_attrs()
+      |> insert_expected_component(scope, assignment, nil, exception)
     end)
   end
 
-  defp template_expectation_attrs(template, exception) do
+  @doc false
+  # What a resource expects from a part only it expects.
+  def added_expectation_attrs(exception) do
+    exception.changes
+    |> Map.take(~w(label position description required attributes))
+    |> Map.merge(%{"kind" => exception.kind, "name" => exception.name})
+  end
+
+  @doc false
+  # What a resource expects from a template given its exception, if any;
+  # shared with Renga.Catalog.Moves to preview a move before making it.
+  def template_expectation_attrs(template, exception) do
     attrs = %{
       "kind" => template.kind,
       "name" => template.name,

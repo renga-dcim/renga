@@ -1458,6 +1458,67 @@ defmodule Renga.Inventory.ReconcilerTest do
     end
   end
 
+  test "a type set to move automatically moves a resource once it fits the latest revision" do
+    context = context()
+
+    report = fn key ->
+      observation(context, key, %{"machine_id" => "machine-1"}, %{}, [], [
+        %{"kind" => "memory", "id" => "dimm-a1", "slot" => "A1", "part_number" => "M-32G"}
+      ])
+    end
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, report.("1").id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "AUTO-MOVE", [
+        %{
+          kind: "memory",
+          name: "DIMM A1",
+          position: "A1",
+          attributes: %{"part_number" => "M-16G"}
+        }
+      ])
+
+    {:ok, _assignment} =
+      Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    # Revision 2 expects what the resource has.
+    {:ok, draft} = Catalog.Drafts.start_draft(context.scope, hardware_type)
+
+    {:ok, draft} =
+      Catalog.Drafts.put_template_group(
+        context.scope,
+        draft,
+        Enum.map(draft.component_templates, & &1.id),
+        %{
+          "kind" => "memory",
+          "name_pattern" => "DIMM A1",
+          "attributes" => %{"part_number" => "M-32G"}
+        }
+      )
+
+    {:ok, _revision} = Catalog.Drafts.publish_draft(context.scope, draft)
+
+    # Off by default: the resource stays where it is, with its drift.
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("2").id)
+
+    assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
+             1
+
+    assert Catalog.list_component_findings(context.scope, resource.id) != []
+
+    {:ok, _type} = Catalog.set_auto_move(context.scope, hardware_type, true)
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("3").id)
+
+    assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
+             2
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
   test "a confirmed replacement closes drift only once a collector reports it" do
     context = context()
 

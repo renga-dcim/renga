@@ -260,6 +260,20 @@ defmodule Renga.Findings do
     |> Changes.broadcast(organization_id)
   end
 
+  @doc false
+  # A hardware revision move renames the slots a resource's findings are
+  # keyed by; their workflows (assignee, snooze, accepted gap) follow.
+  # Runs inside the catalog's move transaction, which authorized the move.
+  def rekey_component_workflows(organization_id, resource_id, key_map) do
+    Enum.each(key_map, fn {old_key, new_key} ->
+      Workflow
+      |> where([workflow], workflow.organization_id == ^organization_id)
+      |> where([workflow], workflow.domain == "component" and workflow.subject_id == ^resource_id)
+      |> where([workflow], workflow.resolution_key == ^old_key)
+      |> Repo.update_all(set: [resolution_key: new_key])
+    end)
+  end
+
   @doc """
   The component workflows of one resource that currently set a finding
   aside as an exception, keyed by `{kind, resolution_key}`. The Hardware tab
