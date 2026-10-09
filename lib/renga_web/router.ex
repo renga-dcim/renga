@@ -132,7 +132,8 @@ defmodule RengaWeb.Router do
       on_mount: [
         RengaWeb.SQLSandbox,
         {RengaWeb.UserAuth, :require_authenticated},
-        RengaWeb.SidebarViews
+        RengaWeb.SidebarViews,
+        RengaWeb.AppearanceHook
       ] do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
@@ -175,6 +176,7 @@ defmodule RengaWeb.Router do
       live "/settings/collectors", InventoryOperationsLive, :index
       live "/settings/teams", TeamLive, :index
       live "/settings/triage-rules", TriageRuleLive, :index
+      live "/settings/appearance", AppearanceLive, :index
     end
 
     post "/organizations/select", OrganizationSessionController, :create
