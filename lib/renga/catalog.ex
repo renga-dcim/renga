@@ -24,6 +24,7 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.ExpectedComponentException
   alias Renga.Catalog.HardwareAssignment
+  alias Renga.Catalog.HardwareComparison
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.Catalog.HardwareType
   alias Renga.Catalog.InventoryItem
@@ -330,6 +331,19 @@ defmodule Renga.Catalog do
       {:ok, :ok} -> :ok
       error -> error
     end
+  end
+
+  @doc """
+  Compares a resource's expected and observed components slot by slot for
+  its Hardware tab. See `Renga.Catalog.HardwareComparison`.
+  """
+  def hardware_comparison(%Scope{} = scope, resource_id) do
+    HardwareComparison.build(
+      list_expected_components(scope, resource_id),
+      list_actual_components(scope, resource_id),
+      confirmations_by_expectation(scope, resource_id),
+      Renga.Findings.component_exceptions(scope, resource_id)
+    )
   end
 
   def get_hardware_assignment(%Scope{organization_id: organization_id}, resource_id) do
