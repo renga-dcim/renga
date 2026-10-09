@@ -596,6 +596,23 @@ defmodule Renga.InventoryTest do
       assert search.("00:00:5e") == []
     end
 
+    test "operational search treats LIKE wildcards as literal text", %{scope: scope} do
+      for name <- ["rack_12", "rack-12", "rackA12", "load 100%", "load 1000"] do
+        {:ok, _} = Inventory.create_resource(scope, %{kind: "server", name: name})
+      end
+
+      search = fn term ->
+        scope
+        |> Inventory.list_operational_resources(search: term)
+        |> Map.fetch!(:entries)
+        |> Enum.map(& &1.name)
+      end
+
+      assert search.("rack_12") == ["rack_12"]
+      assert search.("100%") == ["load 100%"]
+      assert search.("%") == ["load 100%"]
+    end
+
     test "operational list filters by kind and freshness, groups, and sorts", %{scope: scope} do
       resource = fn kind, name, lifecycle ->
         {:ok, resource} =
