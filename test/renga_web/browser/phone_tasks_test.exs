@@ -118,7 +118,7 @@ defmodule RengaWeb.Browser.PhoneTasksTest do
     |> evaluate(menu_fits_js(), &assert(&1 == true))
     |> evaluate(
       heights_js(
-        "#command-palette [data-command-item]:not([hidden]) :is(a, button), #command-palette button[data-command-item]"
+        "#command-palette [data-command-item]:not([hidden]) :is(a, button), #command-palette :is(a, button)[data-command-item]:not([hidden])"
       ),
       &assert_tappable/1
     )
@@ -152,6 +152,7 @@ defmodule RengaWeb.Browser.PhoneTasksTest do
       session ->
         session
         |> fill_in("#resource-search-input", "Search inventory", with: term)
+        |> assert_path("/inventory", query_params: %{q: term})
         |> assert_has("#resources a", text: "r12-u07-db-primary")
         |> refute_has("#resources a", text: "r12-u09-web")
         |> evaluate(fits_js(), &assert(&1 == true))
