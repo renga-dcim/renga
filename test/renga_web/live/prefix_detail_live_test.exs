@@ -67,12 +67,22 @@ defmodule RengaWeb.PrefixDetailLiveTest do
   } do
     lan = prefix_fixture(scope, "2001:db8:b::/64")
     {_host, ports} = device_fixture(scope, "server", "anycast-pair", ~w(eth0 eth1))
-    first = address_fixture(scope, ports["eth0"], "2001:db8:b::5")
-    second = address_fixture(scope, ports["eth1"], "2001:db8:b::5")
+    first = address_fixture(scope, ports["eth0"], "2001:db8:b::5/64", %{"temporary" => true})
+    second = address_fixture(scope, ports["eth1"], "2001:db8:b::5/80", %{"temporary" => true})
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
 
+    assert has_element?(
+             view,
+             "#prefix-address-count",
+             "1 address observed, 2 temporary records hidden"
+           )
+
+    refute has_element?(view, "#address-#{first.id}")
+    refute has_element?(view, "#address-#{second.id}")
+    view |> element("#prefix-toggle-temporary") |> render_click()
     assert has_element?(view, "#prefix-address-count", "1 address observed")
+    refute has_element?(view, "#prefix-address-count span", "temporary records hidden")
     assert has_element?(view, "#address-#{first.id}")
     assert has_element?(view, "#address-#{second.id}")
   end
@@ -91,7 +101,12 @@ defmodule RengaWeb.PrefixDetailLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
 
-    assert has_element?(view, "#prefix-address-count", "3 addresses observed, 1 temporary hidden")
+    assert has_element?(
+             view,
+             "#prefix-address-count",
+             "3 addresses observed, 1 temporary records hidden"
+           )
+
     assert has_element?(view, "#address-#{static.id}", "::15")
     assert has_element?(view, "#address-#{static.id} .text-fg-subtle", "2001:db8:a:10")
     assert has_element?(view, "#address-#{slaac.id} .text-fg-subtle", "2001:db8:a:10:")

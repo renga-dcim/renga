@@ -376,7 +376,7 @@ defmodule RengaWeb.PrefixDetailLive do
             <span class="font-mono text-fg">{delimit(@observed_count)}</span>
             {if @observed_count == 1, do: "address", else: "addresses"} observed<span :if={
               @temporary_count > 0 and !@show_temporary?
-            }>, {@temporary_count} temporary hidden</span>.
+            }>, {@temporary_count} temporary records hidden</span>.
           </p>
         </div>
         <.link
