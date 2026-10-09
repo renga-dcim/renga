@@ -94,6 +94,9 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
 
     conn
     |> visit("/settings/collectors")
+    # The collector rows are in the static render; the create button is not
+    # wired until the socket connects.
+    |> assert_has("body .phx-connected")
     |> assert_has("#collector-#{agent.source_id}", text: "67e55044…e0c8")
     |> assert_has("#collector-#{agent.source_id}", text: "2026-10-09 12:34 UTC")
     |> evaluate(
