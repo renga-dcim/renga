@@ -9,8 +9,9 @@ defmodule Renga.Catalog.Moves do
   A preview compares each resource with the target revision as it would be
   after the move, with its local changes carried over the way
   `Renga.Catalog.move_hardware_revision/3` carries them, and counts the
-  differences it would open and close. A difference is a slot, by kind and
-  label, that is not a match; optional slots left empty are not.
+  differences it would open and close. A difference is observed drift,
+  ambiguity, an unexpected part, or a required absence; satisfied local
+  overrides and suppressed expectations are not differences.
   """
   import Ecto.Query
 
@@ -45,8 +46,9 @@ defmodule Renga.Catalog.Moves do
   Each entry has the `:resource`, its pinned `:revision` number,
   `:observed?` (whether a collector reported components for it), slot
   `:current` and `:target` counts, the differences the move would `:open`
-  and `:close`, and how many local changes it would drop (`:dropped`)
-  because the target has no template for them.
+  and `:close`, and how many local change records it would drop (`:dropped`)
+  because the target has no template for them. `:conflicts` lists duplicate
+  `{kind, name}` expectations that must be resolved before a move.
   """
   def preview(%Scope{} = scope, hardware_type_id, %TypeRevision{} = revision, opts \\ []) do
     templates =
@@ -94,12 +96,12 @@ defmodule Renga.Catalog.Moves do
       |> Repo.all()
 
     entry = entry(assignment, templates, load(organization_id, [assignment]))
-    entry.observed? and differences(entry.target) == 0
+    fits_entry?(entry)
   end
 
   @doc "Whether a preview entry would have no differences after the move."
-  def fits_entry?(%{observed?: observed?, target: target}),
-    do: observed? and differences(target) == 0
+  def fits_entry?(%{observed?: observed?, target: target, conflicts: conflicts}),
+    do: observed? and conflicts == [] and differences(target) == 0
 
   @doc "The number of slots that differ in a set of counts."
   def differences(counts), do: counts.missing + counts.not_expected + counts.local_change
@@ -173,6 +175,15 @@ defmodule Renga.Catalog.Moves do
     confirmations = Map.get(data.confirmations, assignment.id, [])
 
     template_map = template_map(data.pinned_templates, templates)
+    target_expected = target_expectations(assignment, templates, exceptions, template_map)
+
+    dropped_exceptions =
+      Enum.filter(exceptions, fn exception ->
+        exception.component_template_id &&
+          not Map.has_key?(template_map, exception.component_template_id)
+      end)
+
+    dropped_exception_ids = MapSet.new(dropped_exceptions, & &1.id)
 
     current_rows =
       rows(
@@ -183,7 +194,7 @@ defmodule Renga.Catalog.Moves do
 
     target_rows =
       rows(
-        target_expectations(assignment, templates, exceptions, template_map),
+        target_expected,
         actuals,
         confirmation_index(confirmations, &Map.get(template_map, &1))
       )
@@ -200,11 +211,19 @@ defmodule Renga.Catalog.Moves do
       target: counts(target_rows),
       open: MapSet.size(MapSet.difference(target, current)),
       close: MapSet.size(MapSet.difference(current, target)),
+      conflicts:
+        target_expected
+        |> Enum.frequencies_by(&{&1.kind, &1.name})
+        |> Enum.filter(fn {_identity, count} -> count > 1 end)
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.sort(),
       dropped:
-        Enum.count(exceptions, fn exception ->
-          exception.component_template_id &&
-            not Map.has_key?(template_map, exception.component_template_id)
-        end)
+        length(dropped_exceptions) +
+          Enum.count(confirmations, fn record ->
+            if record.component_template_id,
+              do: not Map.has_key?(template_map, record.component_template_id),
+              else: MapSet.member?(dropped_exception_ids, record.exception_id)
+          end)
     }
   end
 
@@ -303,6 +322,10 @@ defmodule Renga.Catalog.Moves do
 
   defp difference?(%{state: :match}), do: false
   defp difference?(%{state: :missing, expected: %{required: false}}), do: false
+
+  defp difference?(%{state: :local_change, reasons: reasons}),
+    do: Enum.any?(reasons, &(&1 in [:drift, :ambiguous, :replacement_pending]))
+
   defp difference?(_row), do: true
 
   # An optional slot left empty is counted apart: no finding opens for it.
@@ -313,6 +336,10 @@ defmodule Renga.Catalog.Moves do
       fn
         %{state: :missing, expected: %{required: false}}, counts ->
           Map.update!(counts, :empty, &(&1 + 1))
+
+        %{state: :local_change} = row, counts ->
+          state = if difference?(row), do: :local_change, else: :match
+          Map.update!(counts, state, &(&1 + 1))
 
         %{state: state}, counts ->
           Map.update!(counts, state, &(&1 + 1))

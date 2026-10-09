@@ -1508,14 +1508,133 @@ defmodule Renga.Inventory.ReconcilerTest do
 
     assert Catalog.list_component_findings(context.scope, resource.id) != []
 
+    [expected] = Catalog.list_expected_components(context.scope, resource.id)
+
+    {:ok, _exception} =
+      Catalog.put_expected_component_exception(context.scope, resource.id, %{
+        action: "alter",
+        component_template_id: expected.component_template_id,
+        changes: %{"attributes" => %{"part_number" => "M-32G"}}
+      })
+
     {:ok, _type} = Catalog.set_auto_move(context.scope, hardware_type, true)
 
     assert {:ok, ^resource, false} =
-             Inventory.reconcile_observation(context.scope, report.("3").id)
+             Inventory.reconcile_observation(%{context.scope | user: nil}, report.("3").id)
 
     assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
              2
 
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "automatic moves cannot use historical presence after an authoritative omission" do
+    context = context()
+
+    {:ok, source} =
+      Inventory.update_source(context.scope, context.source, %{
+        metadata: %{"component_snapshot_policy" => "complete"}
+      })
+
+    context = %{context | source: source}
+    parts = [%{"kind" => "memory", "id" => "a1", "slot" => "A1"}]
+
+    report = fn id, components ->
+      observation(context, id, %{"machine_id" => "auto-presence"}, %{}, [], components, %{
+        "components" => true
+      })
+    end
+
+    {:ok, resource, true} = Inventory.reconcile_observation(context.scope, report.("1", parts).id)
+
+    type =
+      hardware_type_fixture(context.scope, "AUTO-PRESENCE", [
+        %{kind: "memory", name: "A1", position: "A1", required: false}
+      ])
+
+    {:ok, _} = Catalog.assign_hardware_type(context.scope, resource.id, type.id)
+    {:ok, draft} = Catalog.Drafts.start_draft(context.scope, type)
+
+    {:ok, draft} =
+      Catalog.Drafts.put_template_group(
+        context.scope,
+        draft,
+        Enum.map(draft.component_templates, & &1.id),
+        %{
+          "kind" => "memory",
+          "name_pattern" => "A1",
+          "required" => true
+        }
+      )
+
+    {:ok, _} = Catalog.Drafts.publish_draft(context.scope, draft)
+    {:ok, _} = Catalog.set_auto_move(context.scope, type, true)
+
+    {:ok, _, false} =
+      Inventory.reconcile_observation(%{context.scope | user: nil}, report.("2", []).id)
+
+    assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
+             1
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    {:ok, _, false} =
+      Inventory.reconcile_observation(%{context.scope | user: nil}, report.("3", parts).id)
+
+    assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
+             2
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+  end
+
+  test "automatic moves with conflicting local names leave the assignment pinned while inventory advances" do
+    context = context()
+
+    report = fn id ->
+      observation(context, id, %{"machine_id" => "auto-conflict"}, %{}, [], [
+        %{"kind" => "memory", "id" => "a1", "slot" => "A1"}
+      ])
+    end
+
+    {:ok, resource, true} = Inventory.reconcile_observation(context.scope, report.("1").id)
+
+    type =
+      hardware_type_fixture(context.scope, "AUTO-CONFLICT", [
+        %{kind: "memory", name: "A1", position: "A1"}
+      ])
+
+    {:ok, _} = Catalog.assign_hardware_type(context.scope, resource.id, type.id)
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(context.scope, resource.id, %{
+        action: "add",
+        kind: "interface",
+        name: "eth1",
+        changes: %{}
+      })
+
+    before = Catalog.list_expected_components(context.scope, resource.id)
+    {:ok, draft} = Catalog.Drafts.start_draft(context.scope, type)
+
+    {:ok, draft} =
+      Catalog.Drafts.put_template_group(context.scope, draft, [], %{
+        "kind" => "interface",
+        "name_pattern" => "eth1"
+      })
+
+    {:ok, _} = Catalog.Drafts.publish_draft(context.scope, draft)
+    {:ok, _} = Catalog.set_auto_move(context.scope, type, true)
+    latest = report.("2")
+
+    assert {:ok, _, false} =
+             Inventory.reconcile_observation(%{context.scope | user: nil}, latest.id)
+
+    assert Catalog.get_hardware_assignment(context.scope, resource.id).catalog_type_revision.revision ==
+             1
+
+    assert Catalog.list_expected_components(context.scope, resource.id) == before
+    [actual] = Catalog.list_actual_components(context.scope, resource.id)
+    assert actual.last_observed_at == latest.observed_at
     assert Catalog.list_component_findings(context.scope, resource.id) == []
   end
 

@@ -117,6 +117,7 @@ defmodule RengaWeb.CatalogComponents do
             type="checkbox"
             id={"used-by-#{entry.resource.id}-select"}
             checked={MapSet.member?(@selected, entry.resource.id)}
+            disabled={entry.conflicts != []}
             phx-click={JS.push("toggle_used_by", value: %{id: entry.resource.id})}
             aria-label={"Select #{entry.resource.name}"}
             class="size-4 shrink-0 cursor-pointer rounded border-edge accent-accent"
@@ -157,6 +158,9 @@ defmodule RengaWeb.CatalogComponents do
       not behind?(entry, latest) ->
         "On the latest revision"
 
+      entry.conflicts != [] ->
+        "Local names conflict with this revision"
+
       not entry.observed? ->
         "Not reported by a collector yet"
 
@@ -164,15 +168,19 @@ defmodule RengaWeb.CatalogComponents do
         "Fits revision #{latest.revision}"
 
       true ->
-        [
-          entry.close > 0 && "closes #{entry.close}",
-          entry.open > 0 && "opens #{entry.open}",
-          (entry.close == 0 and entry.open == 0) && "no change"
-        ]
-        |> Enum.filter(& &1)
-        |> Enum.join(", ")
-        |> String.capitalize()
+        difference_status(entry)
     end
+  end
+
+  defp difference_status(entry) do
+    [
+      entry.close > 0 && "closes #{entry.close}",
+      entry.open > 0 && "opens #{entry.open}",
+      (entry.close == 0 and entry.open == 0) && "no change"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(", ")
+    |> String.capitalize()
   end
 
   defp bulk_summary(entries) do

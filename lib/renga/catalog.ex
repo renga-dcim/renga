@@ -741,7 +741,7 @@ defmodule Renga.Catalog do
   end
 
   @doc """
-  Moves a resource to another published revision of its hardware type.
+  Moves a resource to a newer published revision of its hardware type.
   Publishing never moves resources (RFD 8, "Editing hardware
   components"); a move is made here, for one resource, or in bulk through
   `Renga.Catalog.Moves`. Any catalog author may.
@@ -775,6 +775,19 @@ defmodule Renga.Catalog do
       |> where([revision], revision.hardware_type_id == ^assignment.hardware_type_id)
       |> where([revision], revision.id == ^revision_id and not is_nil(revision.finalized_at))
       |> Repo.one() || Repo.rollback(:revision_not_found)
+
+    current = Repo.get!(TypeRevision, assignment.catalog_type_revision_id)
+    # Workflow keys retain history on old revisions; moves never revisit those keys.
+    if revision.revision < current.revision, do: Repo.rollback(:older_revision)
+
+    if revision.id != assignment.catalog_type_revision_id do
+      [preview] =
+        Renga.Catalog.Moves.preview(scope, assignment.hardware_type_id, revision,
+          resource_ids: [resource.id]
+        )
+
+      if preview.conflicts != [], do: Repo.rollback(:expectation_conflict)
+    end
 
     if revision.id == assignment.catalog_type_revision_id,
       do: %{assignment: assignment, dropped: []},
@@ -810,7 +823,11 @@ defmodule Renga.Catalog do
         end
       end)
 
-    Enum.each(confirmations, &carry_confirmation(&1, assignment, template_map, exception_map))
+    dropped_confirmations =
+      Enum.filter(confirmations, fn confirmation ->
+        is_nil(carry_confirmation(confirmation, assignment, template_map, exception_map))
+      end)
+
     materialize_expected_components(scope, assignment)
 
     Renga.Findings.rekey_component_workflows(
@@ -819,7 +836,7 @@ defmodule Renga.Catalog do
       moved_resolution_keys(assignment.id, template_map, exception_map)
     )
 
-    %{assignment: assignment, dropped: Enum.reverse(dropped)}
+    %{assignment: assignment, dropped: Enum.reverse(dropped) ++ dropped_confirmations}
   end
 
   # Templates of one revision matched to the next by kind and name.

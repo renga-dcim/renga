@@ -131,6 +131,73 @@ defmodule RengaWeb.CatalogMovesLiveTest do
     assert revision(context, context.fits) == 1
   end
 
+  test "moving warns when a confirmed replacement's template is removed", context do
+    [expected] = Catalog.list_expected_components(context.member, context.fits.id)
+
+    {:ok, _} =
+      Catalog.confirm_replacement(
+        context.member,
+        context.fits.id,
+        %{"component_template_id" => expected.component_template_id},
+        %{"part_number" => "M-64G"}
+      )
+
+    {:ok, draft} = Drafts.start_draft(context.member, context.hardware_type)
+
+    {:ok, draft} =
+      Drafts.delete_templates(context.member, draft, Enum.map(draft.component_templates, & &1.id))
+
+    {:ok, _} = Drafts.publish_draft(context.member, draft)
+    {:ok, view, _html} = live(context.conn, ~p"/inventory/#{context.fits}/hardware")
+
+    assert has_element?(
+             view,
+             "#move-dialog",
+             "1 local change no longer apply and will be dropped"
+           )
+
+    {:ok, view, _html} = live(context.conn, ~p"/catalog/hardware-types/#{context.hardware_type}")
+    view |> element("#used-by-#{context.fits.id}-select") |> render_click()
+
+    assert has_element?(
+             view,
+             "#bulk-move-preview",
+             "1 local change no longer apply and will be dropped"
+           )
+  end
+
+  test "conflicting local names are visible and cannot be selected as fitting", context do
+    admin = scope_for(context.organization, "admin")
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(admin, context.fits.id, %{
+        action: "add",
+        kind: "interface",
+        name: "eth1",
+        changes: %{}
+      })
+
+    {:ok, draft} = Drafts.start_draft(context.member, context.hardware_type)
+
+    {:ok, draft} =
+      Drafts.put_template_group(context.member, draft, [], %{
+        "kind" => "interface",
+        "name_pattern" => "eth1"
+      })
+
+    {:ok, _} = Drafts.publish_draft(context.member, draft)
+    {:ok, view, _html} = live(context.conn, ~p"/inventory/#{context.fits}/hardware")
+    assert has_element?(view, "#move-offer-summary", "names conflict")
+    assert has_element?(view, "#move-revision[disabled]")
+    render_click(view, "move_revision", %{})
+    assert revision(context, context.fits) == 1
+    {:ok, view, _html} = live(context.conn, ~p"/catalog/hardware-types/#{context.hardware_type}")
+    assert has_element?(view, "#used-by-#{context.fits.id}-select[disabled]")
+    assert has_element?(view, "#used-by-#{context.fits.id}[data-fits=false]", "names conflict")
+    render_click(view, "select_fitting", %{})
+    refute has_element?(view, "#used-by-#{context.fits.id}-select[checked]")
+  end
+
   defp revision(context, resource),
     do:
       Catalog.get_hardware_assignment(context.member, resource.id).catalog_type_revision.revision

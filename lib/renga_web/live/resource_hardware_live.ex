@@ -842,6 +842,7 @@ defmodule RengaWeb.ResourceHardwareLive do
         :if={@can_move?}
         id="move-revision"
         size="sm"
+        disabled={@move.entry.conflicts != []}
         phx-click={show_overlay("move-dialog")}
       >
         Move to revision {@move.revision.revision}
@@ -1525,6 +1526,9 @@ defmodule RengaWeb.ResourceHardwareLive do
 
   defp intent_description(intent, _row, false) when intent in [:expect, :restore],
     do: "Changes this resource only. An owner or admin reviews the request."
+
+  defp move_summary(%{conflicts: [_conflict | _rest]}),
+    do: "Local component names conflict with this revision. Resolve them before moving."
 
   defp move_summary(%{observed?: false}),
     do: "No collector has reported this resource's parts, so what a move changes is unknown."

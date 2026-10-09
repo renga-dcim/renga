@@ -155,4 +155,143 @@ defmodule Renga.Catalog.MovesTest do
     assert {:ok, %{auto_move: true}} =
              Catalog.set_auto_move(context.admin, context.hardware_type, true)
   end
+
+  test "fit ignores satisfied local changes but not real drift", context do
+    %{admin: scope, server: server, expected: expected} = context
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(scope, server.id, %{
+        action: "alter",
+        component_template_id: expected["DIMM A1"].component_template_id,
+        changes: %{"attributes" => %{"part_number" => "LOCAL"}}
+      })
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(scope, server.id, %{
+        action: "suppress",
+        component_template_id: expected["Bay 1"].component_template_id
+      })
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(scope, server.id, %{
+        action: "add",
+        kind: "disk",
+        name: "Bay 9",
+        changes: %{"position" => "Bay 9"}
+      })
+
+    actual_component_fixture(scope, server, "memory", "A1", part_number: "LOCAL")
+    actual_component_fixture(scope, server, "memory", "A2", part_number: "M-64G")
+    actual_component_fixture(scope, server, "disk", "Bay 9")
+    [entry] = Moves.preview(scope, context.hardware_type.id, context.revision2)
+    assert Moves.fits_entry?(entry)
+    assert entry.target.local_change == 0
+    assignment = Catalog.get_hardware_assignment(scope, server.id)
+    assert Moves.fits?(%{scope | user: nil}, assignment, context.revision2)
+    {:ok, _} = Catalog.move_hardware_revision(scope, server.id, context.revision2.id)
+    [entry] = Moves.preview(scope, context.hardware_type.id, context.revision2)
+    assert entry.current == entry.target
+    assert Moves.fits_entry?(entry)
+  end
+
+  test "preview and result count dropped confirmations as records", context do
+    %{admin: scope, server: server, expected: expected} = context
+
+    {:ok, exception} =
+      Catalog.put_expected_component_exception(scope, server.id, %{
+        action: "alter",
+        component_template_id: expected["Bay 2"].component_template_id,
+        changes: %{"attributes" => %{"model" => "Local"}}
+      })
+
+    {:ok, confirmation} =
+      Catalog.confirm_replacement(
+        scope,
+        server.id,
+        %{"exception_id" => exception.id},
+        %{"model" => "Confirmed"}
+      )
+
+    [entry] = Moves.preview(scope, context.hardware_type.id, context.revision2)
+    assert entry.dropped == 2
+
+    {:ok, %{dropped: dropped}} =
+      Catalog.move_hardware_revision(scope, server.id, context.revision2.id)
+
+    assert length(dropped) == 2
+    assert Enum.any?(dropped, &(&1.id == confirmation.id))
+    assert Catalog.list_confirmed_components(scope, server.id) == []
+  end
+
+  test "backwards moves are rejected without changing expectations or workflows", context do
+    scope = context.admin
+    old_revision = Catalog.get_hardware_assignment(scope, context.server.id).catalog_type_revision
+    {:ok, _} = Catalog.move_hardware_revision(scope, context.server.id, context.revision2.id)
+    before = Catalog.list_expected_components(scope, context.server.id)
+
+    assert {:error, :older_revision} =
+             Catalog.move_hardware_revision(scope, context.server.id, old_revision.id)
+
+    assert {:error, :older_revision} = Moves.move(scope, [context.server.id], old_revision.id)
+    assert Catalog.list_expected_components(scope, context.server.id) == before
+  end
+
+  test "bulk move rolls back a valid first resource when the second has another type", context do
+    scope = context.admin
+    {other, _} = assigned_server_fixture(scope, "other-type", [])
+    before = Catalog.list_expected_components(scope, context.server.id)
+
+    assert {:error, :revision_not_found} =
+             Moves.move(scope, [context.server.id, other.id], context.revision2.id)
+
+    assert Catalog.get_hardware_assignment(scope, context.server.id).catalog_type_revision.revision ==
+             1
+
+    assert Catalog.list_expected_components(scope, context.server.id) == before
+    {:ok, draft} = Drafts.start_draft(scope, context.hardware_type)
+
+    assert {:error, :revision_not_found} =
+             Catalog.move_hardware_revision(scope, context.server.id, draft.id)
+  end
+
+  test "local names colliding with target templates block preview and single or bulk moves",
+       context do
+    scope = context.admin
+    {:ok, other} = Renga.Inventory.create_resource(scope, %{kind: "server", name: "valid-first"})
+    {:ok, _} = Catalog.assign_hardware_type(scope, other.id, context.hardware_type.id)
+
+    {:ok, _} =
+      Catalog.put_expected_component_exception(scope, context.server.id, %{
+        action: "add",
+        kind: "interface",
+        name: "eth1",
+        changes: %{}
+      })
+
+    {:ok, draft} = Drafts.start_draft(scope, context.hardware_type)
+
+    {:ok, draft} =
+      Drafts.put_template_group(scope, draft, [], %{
+        "kind" => "interface",
+        "name_pattern" => "eth1"
+      })
+
+    {:ok, target} = Drafts.publish_draft(scope, draft)
+
+    [entry] =
+      Moves.preview(scope, context.hardware_type.id, target, resource_ids: [context.server.id])
+
+    assert entry.conflicts == [{"interface", "eth1"}]
+    refute Moves.fits_entry?(entry)
+    before = Catalog.list_expected_components(scope, context.server.id)
+
+    assert {:error, :expectation_conflict} =
+             Catalog.move_hardware_revision(scope, context.server.id, target.id)
+
+    assert {:error, :expectation_conflict} =
+             Moves.move(scope, [other.id, context.server.id], target.id)
+
+    assert Catalog.get_hardware_assignment(scope, other.id).catalog_type_revision.revision == 2
+    assert Catalog.list_expected_components(scope, context.server.id) == before
+  end
 end
