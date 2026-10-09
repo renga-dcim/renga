@@ -100,7 +100,7 @@ defmodule RengaWeb.CoreComponents do
       <.button phx-click="go" variant="primary">Send!</.button>
       <.button navigate={~p"/"}>Home</.button>
   """
-  attr :rest, :global, include: ~w(href navigate patch method download name value disabled)
+  attr :rest, :global, include: ~w(href navigate patch method download name value disabled form)
   attr :class, :any, default: nil, doc: "extra classes added to the variant's classes"
   attr :variant, :string, default: "secondary", values: ~w(primary secondary ghost danger)
   attr :size, :string, default: "md", values: ~w(sm md)

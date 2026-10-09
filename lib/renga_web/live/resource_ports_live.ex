@@ -506,12 +506,13 @@ defmodule RengaWeb.ResourcePortsLive do
 
   defp vlan_chip(assigns) do
     ~H"""
-    <span
+    <.link
+      navigate={~p"/network/vlans/#{@vlan.id}"}
       data-vlan={@vlan.vid}
       data-flag={@flag && String.downcase(@flag)}
       title={if(@flag, do: "#{@flag}: #{@vlan.name}", else: @vlan.name)}
       class={[
-        "inline-flex items-center gap-1 rounded border px-1.5 font-mono text-[11px]",
+        "inline-flex items-center gap-1 rounded border px-1.5 font-mono text-[11px] hover:underline",
         if(@flag,
           do: "border-warn-line bg-warn-fill text-warn-text",
           else: "border-edge bg-sunken text-fg"
@@ -519,7 +520,7 @@ defmodule RengaWeb.ResourcePortsLive do
       ]}
     >
       {@vlan.vid}<span :if={@flag} class="font-sans">{String.downcase(@flag)}</span>
-    </span>
+    </.link>
     """
   end
 

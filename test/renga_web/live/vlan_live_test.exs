@@ -4,13 +4,11 @@ defmodule RengaWeb.VlanLiveTest do
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Renga.TopologyFixtures
 
   alias Renga.Accounts
   alias Renga.Inventory
-  alias Renga.Inventory.Prefix
-  alias Renga.Repo
   alias Renga.Topology
-  alias Renga.Topology.Vlan
 
   setup %{conn: conn} do
     user = user_fixture()
@@ -56,6 +54,29 @@ defmodule RengaWeb.VlanLiveTest do
 
     refute has_element?(view, "#vlan-#{first_vlan.id}")
     refute has_element?(view, "#vlan-#{second_vlan.id}")
+  end
+
+  test "live updates preserve group and interface filters and unfinished input", %{
+    conn: conn,
+    scope: scope
+  } do
+    group = vlan_group_fixture(scope, "live")
+    {_device, ports} = device_fixture(scope, "switch", "leaf", ~w(swp1))
+    port = ports["swp1"]
+    {:ok, view, _} = live(conn, ~p"/network/vlans?#{[group_id: group.id, interface_id: port.id]}")
+    view |> form("#vlan-form", vlan: %{name: "unfinished"}) |> render_change()
+    vlan = vlan_fixture(scope, group, 20, "new VLAN")
+    desire_vlans(scope, port, "access", vlan)
+
+    for _ <- 1..7 do
+      send(view.pid, {:inventory_changed, scope.organization_id})
+      Process.sleep(100)
+    end
+
+    assert has_element?(view, "#vlan-#{vlan.id}")
+    assert has_element?(view, "#vlan-form input[value=unfinished]")
+    assert has_element?(view, "#vlan-group-#{group.id} a[aria-current=true]")
+    assert has_element?(view, "#desired-memberships", "new VLAN")
   end
 
   test "shows desired and observed interface membership separately", %{
@@ -319,49 +340,11 @@ defmodule RengaWeb.VlanLiveTest do
     )
     |> render_submit()
 
-    assert has_element?(view, "#flash-error", "outside the selected namespace range")
+    assert has_element?(view, "#flash-error", "outside the selected group's ranges")
     assert Topology.list_vlans(scope, group.id) == []
   end
 
-  test "managers link and unlink IP prefixes through the VLAN list", %{conn: conn, scope: scope} do
-    {:ok, group} = create_group(scope, "prefix-ui", [{1, 100}])
-    {:ok, vlan} = create_vlan(scope, group, 10, "Management")
-    prefix = create_prefix(scope, "prefix-ui-server", "192.0.2.0/24")
-
-    {:ok, view, _html} = live(conn, ~p"/network/vlans")
-
-    # Without a link the card shows no prefix chips.
-    refute has_element?(view, "#vlan-#{vlan.id}-prefixes")
-
-    view
-    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: vlan.id})
-    |> render_submit()
-
-    assert has_element?(view, "#flash-info", "Linked IP prefix 192.0.2.0/24")
-    assert has_element?(view, "#vlan-#{vlan.id}-prefixes", "192.0.2.0/24")
-
-    assert [%Prefix{}] = Topology.list_vlan_prefixes(scope, vlan.id)
-
-    # Submitting the same link again reports it without creating a second row.
-    view
-    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: vlan.id})
-    |> render_submit()
-
-    assert has_element?(view, "#flash-error", "has already been taken")
-    assert [%Prefix{}] = Topology.list_vlan_prefixes(scope, vlan.id)
-
-    view
-    |> element("#vlan-#{vlan.id}-prefix-#{prefix.id}-detach")
-    |> render_click()
-
-    assert has_element?(view, "#flash-info", "Unlinked the IP prefix")
-    refute has_element?(view, "#vlan-#{vlan.id}-prefixes")
-    assert Topology.list_vlan_prefixes(scope, vlan.id) == []
-    assert [%Vlan{}] = Topology.list_vlans(scope, group.id)
-    assert [%Prefix{}] = Inventory.list_prefixes(scope)
-  end
-
-  test "members see linked prefixes read-only", %{
+  test "lists linked prefixes read-only and opens a VLAN's detail", %{
     organization: organization,
     scope: scope
   } do
@@ -381,8 +364,12 @@ defmodule RengaWeb.VlanLiveTest do
     {:ok, member_view, _html} = live(member_conn, ~p"/network/vlans")
 
     assert has_element?(member_view, "#vlan-#{vlan.id}-prefixes", "192.0.2.0/24")
-    refute has_element?(member_view, "#prefix-vlan-form")
-    refute has_element?(member_view, "#vlan-#{vlan.id}-prefix-#{prefix.id}-detach")
+    refute has_element?(member_view, "#vlan-#{vlan.id}-prefixes button")
+
+    assert {:error, {:live_redirect, %{to: path}}} =
+             member_view |> element("#vlan-#{vlan.id} a") |> render_click()
+
+    assert path == "/network/vlans/#{vlan.id}"
   end
 
   test "keeps another organization's prefixes and links invisible", %{
@@ -410,88 +397,45 @@ defmodule RengaWeb.VlanLiveTest do
     assert has_element?(view, "#vlan-#{vlan.id}-prefixes", "192.0.2.0/24")
     refute has_element?(view, "#vlan-#{foreign_vlan.id}-prefixes")
     refute has_element?(view, "[data-prefix-cidr='198.51.100.0/24']")
-    assert has_element?(view, "#prefix-vlan-form option[value='#{prefix.id}']")
-    refute has_element?(view, "#prefix-vlan-form option[value='#{foreign_prefix.id}']")
   end
 
-  test "keeps linking available but explains the missing inventory", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/network/vlans")
-
-    assert has_element?(view, "#prefix-vlan-form-empty", "No IP prefixes are recorded yet.")
-    assert has_element?(view, "#prefix-vlan-form-submit[disabled]")
-  end
-
-  test "recovers when the chosen endpoint is deleted after the form loads", %{
-    conn: conn,
-    scope: scope
-  } do
-    {:ok, group} = create_group(scope, "stale-endpoint", [{1, 100}])
-    {:ok, vlan} = create_vlan(scope, group, 10, "Management")
-    prefix = create_prefix(scope, "stale-endpoint-server", "192.0.2.0/24")
+  test "shows each group's ID-range usage and filters by it", %{conn: conn, scope: scope} do
+    {:ok, group} = create_group(scope, "usage", [{1, 99}, {200, 299}])
+    {:ok, other} = create_group(scope, "usage-other", [{1, 100}])
+    {:ok, low} = create_vlan(scope, group, 10, "Low")
+    {:ok, _high} = create_vlan(scope, group, 250, "High")
+    {:ok, elsewhere} = create_vlan(scope, other, 10, "Elsewhere")
 
     {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
-    # The manager renders the form, another manager removes the endpoint, and
-    # the stale submission must not crash the view.
-    Repo.delete!(prefix)
+    assert has_element?(view, "#vlan-group-#{group.id}", "2 of 199 IDs")
+    assert has_element?(view, "#vlan-group-#{group.id}", "1–99, 200–299")
+    assert has_element?(view, "#vlan-group-#{group.id}-strip [data-range='1-99'][data-used='1']")
 
-    view
-    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: vlan.id})
-    |> render_submit()
+    assert has_element?(
+             view,
+             "#vlan-group-#{group.id}-strip [data-range='200-299'][data-used='1']"
+           )
 
-    assert has_element?(view, "#flash-error", "no longer available")
-    assert Topology.list_vlan_prefixes(scope, vlan.id) == []
+    view |> element("#vlan-group-#{group.id} a") |> render_click()
+    assert_patch(view, ~p"/network/vlans?#{[group_id: group.id]}")
 
-    # The view stays usable: a fresh link with the remaining endpoint works.
-    assert has_element?(view, "#prefix-vlan-form")
-    assert has_element?(view, "#vlan-#{vlan.id}")
+    assert has_element?(view, "#vlan-#{low.id}")
+    refute has_element?(view, "#vlan-#{elsewhere.id}")
   end
 
-  test "treats malformed endpoint ids as missing instead of crashing", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/network/vlans")
-
-    view
-    |> render_submit("attach_prefix_vlan", %{
-      "prefix_vlan" => %{"prefix_id" => "not-a-uuid", "vlan_id" => "also-not-a-uuid"}
-    })
-
-    assert has_element?(view, "#flash-error", "no longer available")
-
-    # A tampered detach chip event is equally harmless.
-    view
-    |> render_click("detach_prefix_vlan", %{
-      "prefix-id" => "not-a-uuid",
-      "vlan-id" => "also-not-a-uuid"
-    })
-
-    assert has_element?(view, "#flash-error", "no longer available")
-  end
-
-  test "distinguishes VLANs that share a VID and name across namespaces", %{
-    conn: conn,
-    scope: scope
-  } do
-    {:ok, first_group} = create_group(scope, "label-prod", [{1, 100}])
-    {:ok, second_group} = create_group(scope, "label-lab", [{1, 100}])
-    {:ok, first_vlan} = create_vlan(scope, first_group, 10, "Management")
-    {:ok, second_vlan} = create_vlan(scope, second_group, 10, "Management")
-    prefix = create_prefix(scope, "label-server", "192.0.2.0/24")
+  test "counts planned and observed members per VLAN", %{conn: conn, scope: scope} do
+    group = vlan_group_fixture(scope, "counts")
+    users = vlan_fixture(scope, group, 10, "users")
+    {leaf, ports} = device_fixture(scope, "switch", "counts-leaf", ~w(swp1 swp2))
+    desire_vlans(scope, ports["swp1"], "access", users)
+    desire_vlans(scope, ports["swp2"], "access", users)
+    report_vlans(scope, leaf, group, %{"swp1" => {"access", [{10, "untagged"}]}})
 
     {:ok, view, _html} = live(conn, ~p"/network/vlans")
 
-    # The options must identify the namespace, not just the VID and name.
-    assert has_element?(view, "#prefix-vlan-form option", "10 · Management · label-prod")
-    assert has_element?(view, "#prefix-vlan-form option", "10 · Management · label-lab")
-
-    view
-    |> form("#prefix-vlan-form", prefix_vlan: %{prefix_id: prefix.id, vlan_id: first_vlan.id})
-    |> render_submit()
-
-    assert has_element?(view, "#vlan-#{first_vlan.id}-prefixes", "192.0.2.0/24")
-    refute has_element?(view, "#vlan-#{second_vlan.id}-prefixes")
-    assert [%Prefix{} = relationship_prefix] = Topology.list_vlan_prefixes(scope, first_vlan.id)
-    assert relationship_prefix.id == prefix.id
-    assert Topology.list_vlan_prefixes(scope, second_vlan.id) == []
+    assert has_element?(view, "#vlan-#{users.id}-planned", "2")
+    assert has_element?(view, "#vlan-#{users.id}-observed", "1")
   end
 
   test "requires authentication" do
@@ -540,7 +484,7 @@ defmodule RengaWeb.VlanLiveTest do
     |> form("#vlan-form", vlan: %{values | vid: "250"})
     |> render_submit()
 
-    assert has_element?(view, "#flash-error", "outside the selected namespace range")
+    assert has_element?(view, "#flash-error", "outside the selected group's ranges")
     assert has_element?(view, "#vlan-form input[name='vlan[name]'][value='Management']")
 
     # A successful submission resets the form to its defaults.

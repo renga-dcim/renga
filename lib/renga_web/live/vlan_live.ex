@@ -1,16 +1,31 @@
 defmodule RengaWeb.VlanLive do
+  @moduledoc """
+  The VLAN list (RFD 8, "VLANs"): VLAN groups with an ID-range usage strip,
+  then VLANs with their planned and observed member counts and linked
+  prefixes. A VLAN opens its detail page, where membership is compared per
+  interface and prefixes are linked.
+
+  `?group_id=` filters by group (`global` for VLANs outside every group).
+  `?interface_id=` shows one interface's desired and observed membership,
+  which is where resource pages link to.
+  """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
   alias Renga.Topology
+  alias Renga.Topology.VlanUsage
+  alias RengaWeb.VlanComponents
 
   @status_options [{"Active", "active"}, {"Reserved", "reserved"}, {"Deprecated", "deprecated"}]
+  @reload_after_ms 400
 
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
+    if connected?(socket), do: Changes.subscribe(scope)
 
     {:ok,
      socket
@@ -18,8 +33,8 @@ defmodule RengaWeb.VlanLive do
        page_title: "VLANs",
        can_manage?: Inventory.organization_manager?(scope),
        status_options: @status_options,
-       vlan_form: vlan_form(),
-       prefix_vlan_form: prefix_vlan_form()
+       reload_timer: nil,
+       vlan_form: vlan_form()
      )}
   end
 
@@ -39,8 +54,7 @@ defmodule RengaWeb.VlanLive do
        filter_form: to_form(%{"group_id" => group_filter}, as: :filters)
      )
      |> load_vlans(group_filter)
-     |> load_membership(interface)
-     |> load_prefix_links()}
+     |> load_membership(interface)}
   end
 
   @impl true
@@ -70,59 +84,24 @@ defmodule RengaWeb.VlanLive do
     end
   end
 
-  def handle_event("validate_prefix_vlan", %{"prefix_vlan" => params}, socket) do
-    {:noreply, assign(socket, :prefix_vlan_form, to_form(params, as: :prefix_vlan))}
-  end
-
-  def handle_event("attach_prefix_vlan", %{"prefix_vlan" => params}, socket) do
-    scope = socket.assigns.current_scope
-    prefix_id = blank_to_nil(params["prefix_id"])
-    vlan_id = blank_to_nil(params["vlan_id"])
-
-    cond do
-      is_nil(prefix_id) ->
-        {:noreply, put_flash(socket, :error, "Choose the IP prefix to link")}
-
-      is_nil(vlan_id) ->
-        {:noreply, put_flash(socket, :error, "Choose the VLAN to link")}
-
-      # Malformed IDs cannot match any endpoint; treat them like missing ones
-      # instead of crashing the LiveView on a query-cast error.
-      not valid_uuid?(prefix_id) or not valid_uuid?(vlan_id) ->
-        {:noreply,
-         socket
-         |> put_flash(:error, prefix_vlan_unavailable_message())
-         |> load_vlans(socket.assigns.group_filter)
-         |> load_prefix_links()}
-
-      true ->
-        {:noreply, attach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
-    end
-  end
-
-  def handle_event(
-        "detach_prefix_vlan",
-        %{"prefix-id" => prefix_id, "vlan-id" => vlan_id},
-        socket
+  @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
       ) do
-    # Malformed IDs cannot match any endpoint; treat them like missing ones
-    # instead of crashing the LiveView on a query-cast error.
-    if not valid_uuid?(prefix_id) or not valid_uuid?(vlan_id) do
-      {:noreply,
-       socket
-       |> put_flash(:error, prefix_vlan_unavailable_message())
-       |> load_vlans(socket.assigns.group_filter)
-       |> load_prefix_links()}
-    else
-      scope = socket.assigns.current_scope
-      {:noreply, detach_prefix_vlan(socket, scope, prefix_id, vlan_id)}
-    end
+    {:noreply,
+     assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
   end
 
-  defp valid_uuid?(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
 
-  defp prefix_vlan_unavailable_message,
-    do: "The chosen IP prefix or VLAN is no longer available"
+  def handle_info(:reload, socket) do
+    {:noreply,
+     socket
+     |> assign(:reload_timer, nil)
+     |> load_vlans(socket.assigns.group_filter)
+     |> load_membership(socket.assigns.interface)}
+  end
 
   @impl true
   def render(assigns) do
@@ -133,356 +112,324 @@ defmodule RengaWeb.VlanLive do
       current_scope={@current_scope}
       active_nav={:vlans}
     >
-      <main id="vlans" class="space-y-7">
-        <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
+      <section id="vlans" class="mx-auto max-w-6xl space-y-6 px-6 py-6">
+        <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
-              Layer 2 inventory
-            </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight">VLANs</h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/55">
-              Organization VLAN identity grouped by namespace. Desired membership and
-              observed membership stay separate from the VLAN itself.
+            <h1 class="text-xl font-semibold tracking-tight text-fg">VLANs</h1>
+            <p class="mt-1 max-w-2xl text-sm text-fg-muted">
+              VLAN groups bound which IDs a VLAN may use. Planned membership is what operators
+              intend; observed membership is what collectors report.
             </p>
           </div>
+          <.button
+            :if={@can_manage?}
+            id="new-vlan"
+            variant="primary"
+            phx-click={show_overlay("vlan-panel")}
+          >
+            New VLAN
+          </.button>
         </header>
 
-        <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <.form for={@filter_form} id="vlan-filters" phx-change="filter" class="w-full max-w-xs">
-            <.input
-              field={@filter_form[:group_id]}
-              type="select"
-              label="Namespace"
-              options={@group_filter_options}
-              class={input_class()}
-            />
-          </.form>
-          <.link
-            :if={@interface}
-            id="vlans-clear-interface"
-            navigate={~p"/network/vlans"}
-            class="inline-flex items-center gap-1.5 text-sm font-medium text-base-content/55 transition hover:text-orange-600"
-          >
-            <.icon name="hero-x-mark" class="size-3.5" /> Clear interface filter
-          </.link>
-        </div>
-
-        <section class="grid gap-3 sm:grid-cols-3">
-          <.summary_card label="Visible VLANs" value={@vlan_count} icon="hero-tag" />
-          <.summary_card label="Namespaces" value={@group_count} icon="hero-rectangle-group" />
-          <.summary_card
-            :if={@interface}
-            label="Observed memberships"
-            value={@current_membership_count}
-            icon="hero-signal"
-          />
-          <.summary_card
-            :if={!@interface}
-            label="Scope"
-            value={scope_filter_label(@group_filter, @groups)}
-            icon="hero-globe-alt"
-          />
-        </section>
-
-        <.form
-          :if={@can_manage?}
-          for={@prefix_vlan_form}
-          id="prefix-vlan-form"
-          phx-submit="attach_prefix_vlan"
-          phx-change="validate_prefix_vlan"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="font-semibold tracking-tight">Link IP prefix</h2>
-              <p class="mt-1 text-xs text-base-content/55">
-                A prefix may serve several VLANs and a VLAN may carry several prefixes;
-                unlinking never deletes either record.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
-              Owner/Admin
-            </span>
-          </div>
-
-          <div class="mt-5 grid gap-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-            <.input
-              field={@prefix_vlan_form[:prefix_id]}
-              type="select"
-              label="IP prefix"
-              options={@prefix_link_options}
-              class={input_class()}
-            />
-            <.input
-              field={@prefix_vlan_form[:vlan_id]}
-              type="select"
-              label="VLAN"
-              options={@vlan_select_options}
-              class={input_class()}
-            />
-            <button
-              id="prefix-vlan-form-submit"
-              type="submit"
-              disabled={length(@prefix_link_options) <= 1 or length(@vlan_select_options) <= 1}
-              class="h-10 rounded-lg bg-orange-600 px-5 text-sm font-semibold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Link prefix
-            </button>
-          </div>
-
-          <p
-            :if={length(@prefix_link_options) <= 1 or length(@vlan_select_options) <= 1}
-            id="prefix-vlan-form-empty"
-            class="mt-3 text-xs text-base-content/50"
-          >
-            <span :if={length(@prefix_link_options) <= 1}>No IP prefixes are recorded yet.</span>
-            <span :if={length(@vlan_select_options) <= 1}>No VLANs are recorded yet.</span>
-          </p>
-        </.form>
-
-        <section
+        <.interface_membership
           :if={@interface}
-          id="interface-membership"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
-        >
-          <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 class="font-semibold tracking-tight">Interface membership</h2>
-              <p class="mt-1 text-sm text-base-content/55">
-                <span class="font-mono">{@interface.name}</span> · {@resource.name}
-              </p>
-            </div>
-            <.link
-              id="interface-membership-resource"
-              navigate={~p"/inventory/#{@resource.id}"}
-              class="inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
-            >
-              Resource detail <.icon name="hero-arrow-right" class="size-3.5" />
-            </.link>
-          </div>
+          interface={@interface}
+          resource={@resource}
+          desired_mode={@desired_mode}
+          current_mode={@current_mode}
+          desired_membership_count={@desired_membership_count}
+          current_membership_count={@current_membership_count}
+          streams={@streams}
+        />
 
-          <dl class="mt-5 grid gap-3 sm:grid-cols-2">
-            <.mode_datum
-              id="interface-membership-desired-mode"
-              label="Desired mode"
-              mode={@desired_mode}
-              memberships={@desired_membership_count}
-              missing_value="Not recorded"
-              membership_missing_value="Not recorded"
-              without_mode_note="Desired membership is recorded; no desired mode was set."
-            />
-            <.mode_datum
-              id="interface-membership-observed-mode"
-              label="Observed mode"
-              mode={@current_mode}
-              memberships={@current_membership_count}
-              missing_value="Not recorded"
-              membership_missing_value="Unavailable"
-              without_mode_note="Membership was observed; no reconciled port mode is available."
-            />
-          </dl>
-
-          <div class="mt-6 grid gap-6 lg:grid-cols-2">
-            <div>
-              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
-                Desired membership
-              </h3>
-              <ul id="desired-memberships" phx-update="stream" class="mt-3 space-y-2">
-                <li
-                  id="desired-memberships-empty"
-                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/55 only:block"
-                >
-                  No desired VLAN membership recorded.
-                </li>
-                <li
-                  :for={{dom_id, assignment} <- @streams.desired_memberships}
-                  id={dom_id}
-                  data-tagging-mode={assignment.tagging_mode}
-                  class="flex items-center justify-between gap-3 rounded-xl bg-base-200/60 px-4 py-3"
-                >
-                  <span class="font-mono text-sm">
-                    {assignment.vlan.vid} · {assignment.vlan.name}
+        <section :if={@groups != []} id="vlan-groups-usage" class="space-y-2">
+          <h2 class="text-xs font-medium text-fg-muted">
+            VLAN groups <span class="font-mono tabular-nums">{length(@groups)}</span>
+          </h2>
+          <ul class="divide-y divide-edge rounded-lg border border-edge bg-surface">
+            <li :for={{group, usage} <- @group_usage} id={"vlan-group-#{group.id}"}>
+              <.link
+                patch={vlans_path(@group_filter, @interface_id, group_id: group.id)}
+                aria-current={@group_filter == group.id && "true"}
+                class={[
+                  "grid min-h-tap items-center gap-x-4 gap-y-1.5 px-3 py-2.5 transition-colors sm:grid-cols-[12rem_minmax(0,1fr)_9rem]",
+                  if(@group_filter == group.id, do: "bg-accent-tint", else: "hover:bg-sunken")
+                ]}
+              >
+                <span class="min-w-0">
+                  <span class="block truncate text-sm font-medium text-fg">
+                    {group.resource.name}
                   </span>
-                  <span class="text-xs font-semibold capitalize text-base-content/60">
-                    {assignment.tagging_mode}
+                  <span class="block font-mono text-[11px] text-fg-muted">
+                    {VlanComponents.ranges_label(group)}
                   </span>
-                </li>
-              </ul>
-            </div>
-
-            <div>
-              <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
-                Observed membership
-              </h3>
-              <ul id="current-memberships" phx-update="stream" class="mt-3 space-y-2">
-                <li
-                  id="current-memberships-empty"
-                  class="hidden rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/55 only:block"
-                >
-                  No reconciled membership from source evidence.
-                </li>
-                <li
-                  :for={{dom_id, membership} <- @streams.current_memberships}
-                  id={dom_id}
-                  data-tagging-mode={membership.tagging_mode}
-                  class="flex items-center justify-between gap-3 rounded-xl bg-base-200/60 px-4 py-3"
-                >
-                  <span class="font-mono text-sm">
-                    {membership.vlan.vid} · {membership.vlan.name}
-                  </span>
-                  <span class="text-xs font-semibold capitalize text-base-content/60">
-                    {membership.tagging_mode}
-                  </span>
-                </li>
-              </ul>
-            </div>
-          </div>
+                </span>
+                <VlanComponents.usage_strip id={"vlan-group-#{group.id}-strip"} usage={usage} />
+                <span class="font-mono text-xs tabular-nums text-fg-muted sm:text-right">
+                  {usage.used} of {usage.capacity} IDs
+                </span>
+              </.link>
+            </li>
+          </ul>
         </section>
 
+        <section id="vlans-table" class="space-y-2">
+          <div class="flex flex-wrap items-end justify-between gap-3">
+            <h2 class="text-xs font-medium text-fg-muted">
+              {filter_label(@group_filter, @groups)}
+              <span class="font-mono tabular-nums">{@vlan_count}</span>
+            </h2>
+            <div class="flex items-end gap-3">
+              <.link
+                :if={@interface}
+                id="vlans-clear-interface"
+                navigate={~p"/network/vlans"}
+                class="text-xs text-fg-muted hover:text-fg"
+              >
+                Clear interface filter
+              </.link>
+              <.form for={@filter_form} id="vlan-filters" phx-change="filter" class="w-56">
+                <.input
+                  field={@filter_form[:group_id]}
+                  type="select"
+                  label="Group"
+                  options={@group_filter_options}
+                />
+              </.form>
+            </div>
+          </div>
+
+          <.table
+            id="vlans-list"
+            rows={@streams.vlans}
+            row_navigate={fn {_id, vlan} -> ~p"/network/vlans/#{vlan.id}" end}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={{_id, vlan}} label="VID" class="w-0">
+              <span class="font-mono font-medium tabular-nums" data-vlan-vid={vlan.vid}>
+                {vlan.vid}
+              </span>
+            </:col>
+            <:col :let={{_id, vlan}} label="Name">
+              <span class="block font-medium text-fg">{vlan.name}</span>
+              <span :if={vlan.role} class="block text-xs text-fg-muted">{vlan.role}</span>
+            </:col>
+            <:col :let={{_id, vlan}} label="Group" class="hidden text-fg-muted sm:table-cell">
+              {vlan_group_name(vlan)}
+            </:col>
+            <:col :let={{_id, vlan}} label="Status" class="hidden text-fg-muted md:table-cell">
+              {String.capitalize(vlan.status)}
+            </:col>
+            <:col :let={{_id, vlan}} label="Planned" class="text-right font-mono tabular-nums">
+              <span id={"vlan-#{vlan.id}-planned"}>
+                {member_count(@member_counts, vlan, :planned)}
+              </span>
+            </:col>
+            <:col :let={{_id, vlan}} label="Observed" class="text-right font-mono tabular-nums">
+              <span id={"vlan-#{vlan.id}-observed"}>
+                {member_count(@member_counts, vlan, :observed)}
+              </span>
+            </:col>
+            <:col :let={{_id, vlan}} label="Prefixes" class="hidden lg:table-cell">
+              <ul
+                :if={Map.has_key?(@prefixes_by_vlan, vlan.id)}
+                id={"vlan-#{vlan.id}-prefixes"}
+                class="flex flex-wrap gap-1"
+              >
+                <li
+                  :for={prefix <- Map.get(@prefixes_by_vlan, vlan.id)}
+                  id={"vlan-#{vlan.id}-prefix-#{prefix.id}"}
+                  data-prefix-cidr={VlanComponents.prefix_cidr(prefix)}
+                  title={prefix.resource.name}
+                  class="rounded border border-edge bg-sunken px-1.5 font-mono text-[11px] text-fg"
+                >
+                  {VlanComponents.prefix_cidr(prefix)}
+                </li>
+              </ul>
+            </:col>
+            <:empty>No VLANs in this view. Create one or choose another group.</:empty>
+          </.table>
+        </section>
+      </section>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="vlan-panel"
+        title="New VLAN"
+        description="A VLAN outside every group is allowed; a group only bounds its ID."
+      >
         <.form
-          :if={@can_manage?}
           for={@vlan_form}
           id="vlan-form"
           phx-submit="create_vlan"
           phx-change="validate_vlan"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
+          class="space-y-1"
         >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="font-semibold tracking-tight">New VLAN</h2>
-              <p class="mt-1 text-xs text-base-content/55">
-                A VLAN outside every namespace is allowed; namespace membership only bounds its VID.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
-              Owner/Admin
-            </span>
-          </div>
-          <div class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <.input
-              field={@vlan_form[:vlan_group_id]}
-              type="select"
-              label="Namespace"
-              options={@vlan_group_options}
-              class={input_class()}
-            />
-            <.input
-              field={@vlan_form[:vid]}
-              type="number"
-              label="VID"
-              min="1"
-              max="4094"
-              class={input_class()}
-            />
-            <.input field={@vlan_form[:name]} type="text" label="Name" class={input_class()} />
-            <.input
-              field={@vlan_form[:status]}
-              type="select"
-              label="Status"
-              options={@status_options}
-              class={input_class()}
-            />
-            <.input
-              field={@vlan_form[:role]}
-              type="text"
-              label="Role (optional)"
-              placeholder="management"
-              class={input_class()}
-            />
-            <.input
-              field={@vlan_form[:description]}
-              type="text"
-              label="Description (optional)"
-              class={input_class()}
-            />
-          </div>
-          <div class="mt-5 flex justify-end">
-            <button
-              id="create-vlan"
-              type="submit"
-              phx-disable-with="Creating…"
-              class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
-            >
-              Create VLAN
-            </button>
-          </div>
+          <.input
+            field={@vlan_form[:vlan_group_id]}
+            type="select"
+            label="Group"
+            options={@vlan_group_options}
+          />
+          <.input field={@vlan_form[:vid]} type="number" label="VID" min="1" max="4094" />
+          <.input field={@vlan_form[:name]} type="text" label="Name" />
+          <.input
+            field={@vlan_form[:status]}
+            type="select"
+            label="Status"
+            options={@status_options}
+          />
+          <.input
+            field={@vlan_form[:role]}
+            type="text"
+            label="Role (optional)"
+            placeholder="management"
+          />
+          <.input field={@vlan_form[:description]} type="text" label="Description (optional)" />
         </.form>
-
-        <section id="vlans-list" phx-update="stream" class="grid gap-3">
-          <div
-            id="vlans-empty"
-            class="hidden rounded-2xl border border-dashed border-base-content/15 bg-base-100 px-6 py-16 text-center only:block"
+        <:footer>
+          <.button
+            id="create-vlan"
+            variant="primary"
+            form="vlan-form"
+            phx-disable-with="Creating…"
           >
-            <.icon name="hero-tag" class="mx-auto size-9 text-base-content/25" />
-            <h2 class="mt-4 font-semibold">No VLANs in this view</h2>
-            <p class="mt-1 text-sm text-base-content/50">
-              Create a VLAN or change the namespace filter.
-            </p>
-          </div>
-
-          <article
-            :for={{dom_id, vlan} <- @streams.vlans}
-            id={dom_id}
-            data-vlan-vid={vlan.vid}
-            class="flex flex-col gap-3 rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm transition hover:border-orange-500/25"
-          >
-            <div class="flex items-center justify-between gap-4">
-              <div class="flex min-w-0 items-center gap-4">
-                <span class="grid size-12 shrink-0 place-items-center rounded-xl bg-orange-500/10 font-mono text-sm font-semibold text-orange-700 dark:text-orange-400">
-                  {vlan.vid}
-                </span>
-                <div class="min-w-0">
-                  <h2 class="truncate font-semibold tracking-tight">{vlan.name}</h2>
-                  <p class="mt-1 text-xs text-base-content/55">
-                    {vlan_namespace(vlan, @groups)}
-                    <span :if={vlan.role}>{"· #{vlan.role}"}</span>
-                  </p>
-                  <p :if={vlan.description} class="mt-1 truncate text-xs text-base-content/55">
-                    {vlan.description}
-                  </p>
-                </div>
-              </div>
-              <span class={status_class(vlan.status)}>{vlan.status}</span>
-            </div>
-
-            <div
-              :if={Map.has_key?(@prefixes_by_vlan, vlan.id)}
-              id={"vlan-#{vlan.id}-prefixes"}
-              class="flex flex-wrap items-center gap-2 border-t border-base-content/10 pt-3"
-            >
-              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/45">
-                IP prefixes
-              </span>
-              <ul class="flex flex-wrap items-center gap-2">
-                <li
-                  :for={prefix <- Map.get(@prefixes_by_vlan, vlan.id)}
-                  id={"vlan-#{vlan.id}-prefix-#{prefix.id}"}
-                  title={prefix.resource.name}
-                  data-prefix-cidr={prefix_cidr(prefix)}
-                  class="inline-flex items-center gap-1.5 rounded-lg bg-orange-500/[0.08] px-2.5 py-1 text-xs font-mono text-orange-700 dark:text-orange-400"
-                >
-                  {prefix_cidr(prefix)}
-                  <button
-                    :if={@can_manage?}
-                    id={"vlan-#{vlan.id}-prefix-#{prefix.id}-detach"}
-                    type="button"
-                    phx-click="detach_prefix_vlan"
-                    phx-value-prefix-id={prefix.id}
-                    phx-value-vlan-id={vlan.id}
-                    class="text-orange-600/60 transition hover:text-orange-800"
-                    aria-label={"Unlink IP prefix #{prefix_cidr(prefix)} from VLAN #{vlan.vid}"}
-                  >
-                    <.icon name="hero-x-mark" class="size-3" />
-                  </button>
-                </li>
-              </ul>
-            </div>
-          </article>
-        </section>
-      </main>
+            Create VLAN
+          </.button>
+        </:footer>
+      </.side_panel>
     </Layouts.app>
     """
   end
+
+  attr :interface, :any, required: true
+  attr :resource, :any, required: true
+  attr :desired_mode, :any, required: true
+  attr :current_mode, :any, required: true
+  attr :desired_membership_count, :integer, required: true
+  attr :current_membership_count, :integer, required: true
+  attr :streams, :any, required: true
+
+  defp interface_membership(assigns) do
+    ~H"""
+    <section id="interface-membership" class="space-y-4 rounded-lg border border-edge bg-surface p-4">
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-fg">Interface membership</h2>
+          <p class="text-sm text-fg-muted">
+            <span class="font-mono text-fg">{@interface.name}</span> · {@resource.name}
+          </p>
+        </div>
+        <.link
+          id="interface-membership-resource"
+          navigate={~p"/inventory/#{@resource.id}"}
+          class="inline-flex items-center gap-1 text-sm text-link hover:underline"
+        >
+          Resource detail <.icon name="hero-arrow-right-mini" class="size-4" />
+        </.link>
+      </div>
+
+      <dl class="grid gap-3 sm:grid-cols-2">
+        <.mode_datum
+          id="interface-membership-desired-mode"
+          label="Desired mode"
+          mode={@desired_mode}
+          memberships={@desired_membership_count}
+          missing_value="Not recorded"
+          membership_missing_value="Not recorded"
+          without_mode_note="Desired membership is recorded; no desired mode was set."
+        />
+        <.mode_datum
+          id="interface-membership-observed-mode"
+          label="Observed mode"
+          mode={@current_mode}
+          memberships={@current_membership_count}
+          missing_value="Not recorded"
+          membership_missing_value="Unavailable"
+          without_mode_note="Membership was observed; no reconciled port mode is available."
+        />
+      </dl>
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        <.membership_list
+          id="desired-memberships"
+          title="Desired membership"
+          rows={@streams.desired_memberships}
+          empty="No desired VLAN membership recorded."
+        />
+        <.membership_list
+          id="current-memberships"
+          title="Observed membership"
+          rows={@streams.current_memberships}
+          empty="No reconciled membership from source evidence."
+        />
+      </div>
+    </section>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :rows, :any, required: true
+  attr :empty, :string, required: true
+
+  defp membership_list(assigns) do
+    ~H"""
+    <div class="space-y-2">
+      <h3 class="text-xs font-medium text-fg-muted">{@title}</h3>
+      <ul id={@id} phx-update="stream" class="divide-y divide-edge rounded-md border border-edge">
+        <li id={"#{@id}-empty"} class="hidden px-3 py-3 text-sm text-fg-muted only:block">
+          {@empty}
+        </li>
+        <li
+          :for={{dom_id, membership} <- @rows}
+          id={dom_id}
+          data-tagging-mode={membership.tagging_mode}
+          class="flex items-center justify-between gap-3 px-3 py-2"
+        >
+          <.link
+            navigate={~p"/network/vlans/#{membership.vlan.id}"}
+            class="font-mono text-sm text-fg hover:underline"
+          >
+            {membership.vlan.vid} · {membership.vlan.name}
+          </.link>
+          <span class="text-xs text-fg-muted">{String.capitalize(membership.tagging_mode)}</span>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :mode, :any, required: true
+  attr :memberships, :integer, default: 0
+  attr :missing_value, :string, required: true
+  attr :membership_missing_value, :string, required: true
+  attr :without_mode_note, :string, required: true
+
+  defp mode_datum(assigns) do
+    ~H"""
+    <div id={@id} class="rounded-md bg-sunken px-3 py-2">
+      <dt class="text-xs text-fg-muted">{@label}</dt>
+      <dd class="mt-0.5 text-sm font-medium text-fg">
+        {mode_value(@mode, @memberships, @missing_value, @membership_missing_value)}
+        <p :if={is_nil(@mode) and @memberships > 0} class="mt-0.5 text-xs font-normal text-fg-muted">
+          {@without_mode_note}
+        </p>
+      </dd>
+    </div>
+    """
+  end
+
+  # The current mode is a reconciled projection. When it is absent we call the value
+  # unavailable rather than claiming the collector reported nothing, because reported mode
+  # evidence is also suppressed when it conflicts with the observed membership.
+  defp mode_value(%{mode: mode}, _memberships, _missing, _membership_missing),
+    do: mode |> to_string() |> String.capitalize()
+
+  defp mode_value(nil, 0, missing, _membership_missing), do: missing
+  defp mode_value(nil, _memberships, _missing, membership_missing), do: membership_missing
 
   # Extracted from handle_event/3 so the handler keeps only input validation;
   # this maps Topology.create_vlan/3 outcomes to flashes.
@@ -503,6 +450,7 @@ defmodule RengaWeb.VlanLive do
         socket
         |> put_flash(:info, "VLAN #{vlan.vid} created")
         |> assign(:vlan_form, vlan_form())
+        |> close_overlay("vlan-panel")
         |> load_vlans(socket.assigns.group_filter)
 
       {:error, :forbidden} ->
@@ -514,108 +462,45 @@ defmodule RengaWeb.VlanLive do
       {:error, reason} ->
         put_flash(socket, :error, mutation_error(reason))
     end
-  end
-
-  defp attach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
-    # scoped_get! inside the transaction raises Ecto.NoResultsError for a stale
-    # or foreign endpoint; surface it as a recoverable message instead of
-    # crashing the LiveView. The context keeps its raising contract for callers.
-    case Topology.attach_prefix_vlan(scope, prefix_id, vlan_id) do
-      {:ok, relationship} ->
-        socket
-        |> put_flash(:info, "Linked IP prefix #{prefix_cidr(relationship.prefix)}")
-        |> assign(:prefix_vlan_form, prefix_vlan_form())
-        |> load_vlans(socket.assigns.group_filter)
-        |> load_prefix_links()
-
-      {:error, :forbidden} ->
-        put_flash(socket, :error, "You are not allowed to manage VLANs")
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        put_flash(socket, :error, first_error(changeset))
-
-      {:error, reason} ->
-        put_flash(socket, :error, mutation_error(reason))
-    end
-  rescue
-    Ecto.NoResultsError ->
-      socket
-      |> put_flash(:error, prefix_vlan_unavailable_message())
-      |> load_vlans(socket.assigns.group_filter)
-      |> load_prefix_links()
-  end
-
-  defp detach_prefix_vlan(socket, scope, prefix_id, vlan_id) do
-    case Topology.detach_prefix_vlan(scope, prefix_id, vlan_id) do
-      {:ok, _relationship} ->
-        socket
-        |> put_flash(:info, "Unlinked the IP prefix")
-        |> load_vlans(socket.assigns.group_filter)
-        |> load_prefix_links()
-
-      # A concurrent unlink already removed the link; refresh the visible chips.
-      {:error, :not_found} ->
-        socket
-        |> load_vlans(socket.assigns.group_filter)
-        |> load_prefix_links()
-
-      {:error, :forbidden} ->
-        put_flash(socket, :error, "You are not allowed to manage VLANs")
-    end
-  rescue
-    # A cascading endpoint deletion removed the link and its row; the caller
-    # may still hold the stale chip. Refresh like the :not_found case.
-    Ecto.NoResultsError ->
-      socket
-      |> load_vlans(socket.assigns.group_filter)
-      |> load_prefix_links()
   end
 
   defp load_vlans(socket, group_filter) do
     scope = socket.assigns.current_scope
     groups = Topology.list_vlan_groups(scope)
-    vlans = Topology.list_vlans(scope, group_scope(group_filter))
+    all_vlans = Topology.list_vlans(scope)
+    vlans = filter_vlans(all_vlans, group_filter)
+    vids_by_group = Enum.group_by(all_vlans, & &1.vlan_group_id, & &1.vid)
 
     socket
-    |> assign(:groups, groups)
-    |> assign(:group_count, length(groups))
-    |> assign(:vlan_count, length(vlans))
     |> assign(
-      :group_filter_options,
-      [{"All VLANs", "all"}, {"No group (global)", "global"}] ++
-        Enum.map(groups, &{&1.resource.name, &1.id})
-    )
-    |> assign(
-      :vlan_group_options,
-      [{"No group (global)", ""}] ++ Enum.map(groups, &{&1.resource.name, &1.id})
-    )
-    |> assign(
-      :vlan_select_options,
-      [{"Choose a VLAN", ""}] ++ Enum.map(vlans, &{vlan_label(&1), &1.id})
+      groups: groups,
+      group_usage:
+        Enum.map(groups, &{&1, VlanUsage.strip(&1, Map.get(vids_by_group, &1.id, []))}),
+      vlan_count: length(vlans),
+      member_counts: Topology.vlan_member_counts(scope),
+      prefixes_by_vlan: prefixes_by_vlan(scope),
+      group_filter_options:
+        [{"All VLANs", "all"}, {"No group (global)", "global"}] ++
+          Enum.map(groups, &{&1.resource.name, &1.id}),
+      vlan_group_options:
+        [{"No group (global)", ""}] ++ Enum.map(groups, &{&1.resource.name, &1.id})
     )
     |> stream(:vlans, vlans, dom_id: &"vlan-#{&1.id}", reset: true)
   end
 
+  defp filter_vlans(vlans, "all"), do: vlans
+  defp filter_vlans(vlans, "global"), do: Enum.filter(vlans, &is_nil(&1.vlan_group_id))
+  defp filter_vlans(vlans, group_id), do: Enum.filter(vlans, &(&1.vlan_group_id == group_id))
+
   # One organization-scoped relationship query keeps the prefix chips in step with
-  # the VLAN stream without a per-card lookup.
-  defp load_prefix_links(socket) do
-    scope = socket.assigns.current_scope
-    prefixes = Inventory.list_prefixes(scope)
-    relationships = Topology.list_prefix_vlan_relationships(scope)
-
-    prefixes_by_vlan =
-      relationships
-      |> Enum.group_by(& &1.vlan_id, & &1.prefix)
-      |> Map.new(fn {vlan_id, vlan_prefixes} ->
-        {vlan_id, Enum.sort_by(vlan_prefixes, &{&1.prefix.address, &1.prefix.netmask})}
-      end)
-
-    socket
-    |> assign(:prefixes_by_vlan, prefixes_by_vlan)
-    |> assign(
-      :prefix_link_options,
-      [{"Choose a prefix", ""}] ++ Enum.map(prefixes, &{prefix_label(&1), &1.id})
-    )
+  # the VLAN stream without a per-row lookup.
+  defp prefixes_by_vlan(scope) do
+    scope
+    |> Topology.list_prefix_vlan_relationships()
+    |> Enum.group_by(& &1.vlan_id, & &1.prefix)
+    |> Map.new(fn {vlan_id, prefixes} ->
+      {vlan_id, Enum.sort_by(prefixes, &{&1.prefix.address, &1.prefix.netmask})}
+    end)
   end
 
   defp load_membership(socket, nil) do
@@ -645,35 +530,36 @@ defmodule RengaWeb.VlanLive do
     |> stream(:current_memberships, current, dom_id: &"current-membership-#{&1.id}", reset: true)
   end
 
-  defp group_scope("all"), do: :all
-  defp group_scope("global"), do: nil
-  defp group_scope(group_id), do: group_id
+  defp member_count(counts, vlan, side), do: get_in(counts, [vlan.id, side]) || 0
 
   defp normalize_group_filter(value) when value in [nil, ""], do: "all"
   defp normalize_group_filter(value), do: value
 
-  defp vlans_path(socket, overrides) do
+  defp vlans_path(%Phoenix.LiveView.Socket{assigns: assigns}, overrides),
+    do: vlans_path(assigns.group_filter, assigns.interface_id, overrides)
+
+  defp vlans_path(group_filter, interface_id, overrides) do
     params =
-      %{"group_id" => socket.assigns.group_filter, "interface_id" => socket.assigns.interface_id}
+      %{"group_id" => group_filter, "interface_id" => interface_id}
       |> Map.merge(Map.new(overrides, fn {key, value} -> {to_string(key), value} end))
-      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Enum.reject(fn {key, value} ->
+        value in [nil, ""] or {key, value} == {"group_id", "all"}
+      end)
       |> Map.new()
 
     ~p"/network/vlans?#{params}"
   end
 
-  defp vlan_namespace(%{vlan_group: nil}, _groups), do: "No group (global)"
+  defp vlan_group_name(%{vlan_group: nil}), do: "No group"
+  defp vlan_group_name(%{vlan_group: group}), do: group.resource.name
 
-  defp vlan_namespace(%{vlan_group: group}, _groups),
-    do: group.resource.name
+  defp filter_label("all", _groups), do: "All VLANs"
+  defp filter_label("global", _groups), do: "VLANs outside every group"
 
-  defp scope_filter_label("all", _groups), do: "All"
-  defp scope_filter_label("global", _groups), do: "Global"
-
-  defp scope_filter_label(group_id, groups) do
+  defp filter_label(group_id, groups) do
     case Enum.find(groups, &(&1.id == group_id)) do
-      nil -> "Namespace"
-      group -> group.resource.name
+      nil -> "VLANs"
+      group -> "VLANs in #{group.resource.name}"
     end
   end
 
@@ -700,90 +586,10 @@ defmodule RengaWeb.VlanLive do
     )
   end
 
-  defp prefix_vlan_form do
-    to_form(%{"prefix_id" => "", "vlan_id" => ""}, as: :prefix_vlan)
-  end
-
-  defp prefix_cidr(prefix) do
-    address = prefix.prefix.address |> :inet.ntoa() |> List.to_string()
-    "#{address}/#{prefix.prefix.netmask}"
-  end
-
-  defp prefix_label(prefix), do: "#{prefix_cidr(prefix)} · #{prefix.resource.name}"
-
-  # Include the namespace so identical VID/name pairs in different groups stay
-  # distinguishable when the manager picks a link target.
-  defp vlan_label(%{vlan_group: %{resource: %{name: group}}} = vlan),
-    do: "#{vlan.vid} · #{vlan.name} · #{group}"
-
-  defp vlan_label(vlan), do: "#{vlan.vid} · #{vlan.name} · no group"
-
-  attr :id, :string, required: true
-  attr :label, :string, required: true
-  attr :mode, :any, required: true
-  attr :memberships, :integer, default: 0
-  attr :missing_value, :string, required: true
-  attr :membership_missing_value, :string, required: true
-  attr :without_mode_note, :string, required: true
-
-  defp mode_datum(assigns) do
-    ~H"""
-    <div id={@id} class="rounded-xl bg-base-200/60 px-4 py-3">
-      <dt class="text-xs font-semibold uppercase tracking-wider text-base-content/55">{@label}</dt>
-      <dd class="mt-1 text-sm font-medium">
-        {mode_value(@mode, @memberships, @missing_value, @membership_missing_value)}
-        <p
-          :if={is_nil(@mode) and @memberships > 0}
-          class="mt-1 text-xs font-normal text-base-content/60"
-        >
-          {@without_mode_note}
-        </p>
-      </dd>
-    </div>
-    """
-  end
-
-  # The current mode is a reconciled projection. When it is absent we call the value
-  # unavailable rather than claiming the collector reported nothing, because reported mode
-  # evidence is also suppressed when it conflicts with the observed membership.
-  defp mode_value(%{mode: mode}, _memberships, _missing, _membership_missing),
-    do: mode |> to_string() |> String.capitalize()
-
-  defp mode_value(nil, 0, missing, _membership_missing), do: missing
-  defp mode_value(nil, _memberships, _missing, membership_missing), do: membership_missing
-
-  defp status_class("active") do
-    "shrink-0 self-start rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"
-  end
-
-  defp status_class(_status) do
-    "shrink-0 self-start rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold capitalize text-base-content/55"
-  end
-
-  attr :label, :string, required: true
-  attr :value, :any, required: true
-  attr :icon, :string, required: true
-
-  defp summary_card(assigns) do
-    ~H"""
-    <div class="rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm">
-      <div class="flex items-center gap-2 text-base-content/45">
-        <.icon name={@icon} class="size-4" />
-        <p class="text-xs font-semibold uppercase tracking-wider">{@label}</p>
-      </div>
-      <p class="mt-3 truncate text-2xl font-semibold tracking-tight">{@value}</p>
-    </div>
-    """
-  end
-
-  defp input_class do
-    "h-10 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm font-medium outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
-  end
-
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: String.trim(value)
 
-  defp mutation_error(:vlan_out_of_range), do: "The VID is outside the selected namespace range"
+  defp mutation_error(:vlan_out_of_range), do: "The VID is outside the selected group's ranges"
   defp mutation_error(_reason), do: "The VLAN could not be created"
 
   defp first_error(changeset) do
