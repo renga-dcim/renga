@@ -70,6 +70,23 @@ defmodule RengaWeb.ActivityLiveTest do
     refute has_element?(view, "#activity-load-older")
   end
 
+  test "names a new prefix by its CIDR rather than its generated name", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, prefix} = Renga.IPAM.create_prefix(scope, %{prefix: "10.0.0.0/24"})
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    assert has_element?(
+             view,
+             "#activity-events a[href='/inventory/#{prefix.resource_id}']",
+             "10.0.0.0/24"
+           )
+
+    assert has_element?(view, "#activity-events", "Created prefix 10.0.0.0/24")
+  end
+
   test "attributes each change to the person or source behind it", %{
     conn: conn,
     scope: scope,

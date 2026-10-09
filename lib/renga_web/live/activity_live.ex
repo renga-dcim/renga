@@ -96,7 +96,7 @@ defmodule RengaWeb.ActivityLive do
               navigate={~p"/inventory/#{event.resource}"}
               class="text-link hover:underline"
             >
-              {event.resource.name}
+              {event.resource.display_name || event.resource.name}
             </.link>
             <span :if={is_nil(event.resource)} class="text-fg-subtle">—</span>
           </:col>
