@@ -10,16 +10,23 @@ defmodule Renga.IPAM do
 
   Addresses carry no routing table, so a prefix's addresses are those inside
   it in any table.
+
+  Observed addresses are normal and never findings. An owner or admin adopts
+  one into managed state when it needs state of its own; a managed address
+  that is no longer observed stays listed as managed, not seen.
   """
 
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Inventory
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
+  alias Renga.Inventory.Changes
   alias Renga.Inventory.Prefix
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.Cidr
+  alias Renga.IPAM.ManagedAddress
   alias Renga.IPAM.PrefixTree
   alias Renga.Repo
   alias Renga.Topology
@@ -153,24 +160,150 @@ defmodule Renga.IPAM do
   defp mode_data(_organization_id, :container, node), do: %{space: PrefixTree.space_map(node)}
 
   defp mode_data(organization_id, :address_map, node) do
-    addresses = addresses_in(organization_id, node.prefix.prefix)
-    %{addresses: addresses, address_map: PrefixTree.address_map(node, addresses)}
+    observed = addresses_in(organization_id, node.prefix.prefix)
+    entries = address_entries(organization_id, node.prefix.prefix, observed)
+    %{addresses: entries, address_map: PrefixTree.address_map(node, observed, entries)}
   end
 
   defp mode_data(organization_id, :address_table, node) do
-    addresses =
-      organization_id
-      |> addresses_in(node.prefix.prefix)
-      |> Enum.map(fn address ->
+    observed = addresses_in(organization_id, node.prefix.prefix)
+    %{addresses: address_entries(organization_id, node.prefix.prefix, observed)}
+  end
+
+  # One entry per address: observed ones (managed or not) and managed ones
+  # no collector reports any more, in address order.
+  defp address_entries(organization_id, cidr, observed) do
+    managed = Map.new(managed_in(organization_id, cidr), &{Cidr.to_integer(&1.address), &1})
+    seen = MapSet.new(observed, &Cidr.to_integer(&1.address))
+
+    observed_entries =
+      Enum.map(observed, fn address ->
         %{
+          inet: address.address,
           address: address,
+          managed: Map.get(managed, Cidr.to_integer(address.address)),
           method: AddressAssignment.method(address),
           temporary?: AddressAssignment.temporary?(address)
         }
       end)
 
-    %{addresses: addresses}
+    unseen =
+      managed
+      |> Enum.reject(fn {value, _managed} -> MapSet.member?(seen, value) end)
+      |> Enum.map(fn {_value, managed} ->
+        %{inet: managed.address, address: nil, managed: managed, method: nil, temporary?: false}
+      end)
+
+    Enum.sort_by(observed_entries ++ unseen, &Cidr.to_integer(&1.inet))
   end
+
+  defp managed_in(organization_id, cidr) do
+    ManagedAddress
+    |> where([managed], managed.organization_id == ^organization_id)
+    |> where([managed], fragment("? <<= ?", managed.address, type(^cidr, Renga.Types.Cidr)))
+    |> preload(interface: :resource)
+    |> Repo.all()
+  end
+
+  @doc """
+  Adopts an observed address into managed state, remembering the interface
+  it was seen on. Owners and admins only.
+  """
+  def adopt_address(%Scope{organization_id: organization_id} = scope, address_id, attrs \\ %{}) do
+    if Inventory.organization_manager?(scope) do
+      address =
+        Address
+        |> where(
+          [address],
+          address.organization_id == ^organization_id and address.id == ^address_id
+        )
+        |> where(
+          [address],
+          fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+        )
+        |> Repo.one!()
+
+      %ManagedAddress{
+        organization_id: organization_id,
+        address: %{address.address | netmask: Cidr.bits(Cidr.family(address.address))},
+        interface_id: address.interface_id,
+        adopted_by_id: scope.user.id
+      }
+      |> ManagedAddress.changeset(attrs)
+      |> Repo.insert()
+      |> Changes.broadcast(organization_id)
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  @doc "Releases a managed address back to observed-only. Owners and admins only."
+  def release_address(%Scope{organization_id: organization_id} = scope, managed_id) do
+    if Inventory.organization_manager?(scope) do
+      ManagedAddress
+      |> where(
+        [managed],
+        managed.organization_id == ^organization_id and managed.id == ^managed_id
+      )
+      |> Repo.one!()
+      |> Repo.delete()
+      |> Changes.broadcast(organization_id)
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  @doc """
+  Dual-stack coverage for a VLAN: which devices have addresses in its IPv4
+  prefixes, its IPv6 prefixes, or both.
+
+  `nil` when the VLAN does not carry both families, because coverage only
+  means something once both are planned.
+  """
+  def vlan_dual_stack(%Scope{organization_id: organization_id} = scope, vlan_id) do
+    prefixes = Topology.list_vlan_prefixes(scope, vlan_id)
+    {ipv4, ipv6} = Enum.split_with(prefixes, &(Cidr.family(&1.prefix) == :ipv4))
+
+    if ipv4 != [] and ipv6 != [] do
+      v4 = devices_in(organization_id, ipv4)
+      v6 = devices_in(organization_id, ipv6)
+      both = v4 |> Map.take(Map.keys(v6)) |> Map.values()
+
+      %{
+        both: sort_devices(both),
+        missing_ipv6: v4 |> Map.drop(Map.keys(v6)) |> Map.values() |> sort_devices(),
+        missing_ipv4: v6 |> Map.drop(Map.keys(v4)) |> Map.values() |> sort_devices(),
+        total: v4 |> Map.merge(v6) |> map_size()
+      }
+    end
+  end
+
+  # Devices with an address inside any of `prefixes`, keyed by id.
+  defp devices_in(organization_id, prefixes) do
+    cidrs = Enum.map(prefixes, & &1.prefix)
+
+    Address
+    |> where([address], address.organization_id == ^organization_id)
+    |> where(
+      [address],
+      fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+    )
+    |> where(
+      [address],
+      fragment(
+        "host(?)::inet <<= ANY(?)",
+        address.address,
+        type(^cidrs, {:array, Renga.Types.Cidr})
+      )
+    )
+    |> join(:inner, [address], resource in assoc(address, :resource))
+    |> select([_address, resource], resource)
+    |> distinct(true)
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp sort_devices(devices), do: Enum.sort_by(devices, & &1.name)
 
   defp addresses_in(organization_id, cidr) do
     Address

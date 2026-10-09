@@ -58,7 +58,7 @@ defmodule RengaWeb.PrefixDetailLiveTest do
     assert has_element?(view, "#address-cell-0[data-state='network']")
     assert has_element?(view, "#address-cell-5[data-state='used'][title*='web-01']")
     assert has_element?(view, "#address-cell-15[data-state='broadcast']")
-    assert has_element?(view, "#prefix-used-addresses", "192.0.2.5")
+    assert has_element?(view, "#prefix-addresses", "192.0.2.5")
   end
 
   test "lists an IPv6 leaf's addresses with assignment, hiding temporary ones", %{
@@ -132,6 +132,94 @@ defmodule RengaWeb.PrefixDetailLiveTest do
 
     {:ok, voice_view, _html} = live(conn, ~p"/network/prefixes/#{voice_v4}")
     assert has_element?(voice_view, "#prefix-single-stack", "no IPv6 prefix")
+  end
+
+  test "owners adopt observed addresses and keep them listed after they go", %{
+    conn: conn,
+    scope: scope
+  } do
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "lifecycle"})
+
+    for {cidr, text} <- [
+          {"192.0.2.0/28", "192.0.2.5/24"},
+          {"2001:db8:1::/80", "2001:db8:1::5/64"}
+        ] do
+      lan = prefix_fixture(scope, cidr)
+      addresses = report_addresses(scope, source, [text])
+      address = Enum.find(addresses, &(&1.metadata["present"] == true))
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#prefix-addresses [data-status='observed']", "Observed")
+      view |> element("#address-#{address.id}-adopt") |> render_click()
+      assert has_element?(view, "#prefix-addresses [data-status='managed']", "Managed")
+      [managed] = Renga.Repo.all(Renga.IPAM.ManagedAddress)
+
+      report_addresses(scope, source, [])
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#managed-#{managed.id}")
+      assert has_element?(view, "#prefix-addresses [data-status='managed_unseen']", "not seen")
+
+      if address.kind == "ipv4",
+        do: assert(has_element?(view, "#address-cell-5[data-state='managed']"))
+
+      report_addresses(scope, source, [text])
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#address-#{address.id}")
+      assert has_element?(view, "#prefix-addresses [data-status='managed']")
+
+      if address.kind == "ipv4",
+        do: assert(has_element?(view, "#address-cell-5[data-state='used']"))
+
+      view |> element("#address-#{address.id}-release") |> render_click()
+      assert has_element?(view, "#prefix-addresses [data-status='observed']")
+    end
+  end
+
+  test "members see address status without adopting", %{scope: scope, eth0: eth0} do
+    lan = prefix_fixture(scope, "192.0.2.0/28")
+    address = address_fixture(scope, eth0, "192.0.2.5")
+
+    member = user_fixture()
+
+    organization_membership_fixture(
+      member,
+      Renga.Repo.get!(Renga.Accounts.Organization, scope.organization_id),
+      %{role: "member"}
+    )
+
+    member_conn =
+      build_conn()
+      |> log_in_user(member)
+      |> put_session(:current_organization_id, scope.organization_id)
+
+    {:ok, view, _html} = live(member_conn, ~p"/network/prefixes/#{lan}")
+    assert has_element?(view, "#prefix-addresses [data-status='observed']")
+    refute has_element?(view, "#address-#{address.id}-adopt")
+    assert render_click(view, "adopt", %{"id" => address.id}) =~ "Only owners and admins"
+  end
+
+  test "shows dual-stack coverage for the VLAN the prefix serves", %{
+    conn: conn,
+    scope: scope,
+    eth0: eth0
+  } do
+    group = vlan_group_fixture(scope, "coverage")
+    users = vlan_fixture(scope, group, 10, "users")
+    v4 = prefix_fixture(scope, "10.0.10.0/24")
+    v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v4.id, users.id)
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v6.id, users.id)
+    {_other, other_ports} = device_fixture(scope, "server", "web-02", ~w(eth0))
+    address_fixture(scope, eth0, "10.0.10.5")
+    address_fixture(scope, eth0, "2001:db8:a:10::5")
+    address_fixture(scope, other_ports["eth0"], "10.0.10.6")
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{v4}")
+    assert has_element?(view, "#prefix-dual-stack-#{users.id}", "1 of 2")
+
+    {:ok, vlan_view, _html} = live(conn, ~p"/network/vlans/#{users}")
+    assert has_element?(vlan_view, "#vlan-dual-stack-summary", "1 of 2")
+    assert has_element?(vlan_view, "#vlan-missing-ipv6", "web-02")
+    assert has_element?(vlan_view, "#vlan-missing-ipv4", "None.")
   end
 
   test "keeps another organization's prefix out of reach", %{conn: conn} do
