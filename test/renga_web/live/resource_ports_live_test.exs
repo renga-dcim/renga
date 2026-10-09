@@ -144,6 +144,23 @@ defmodule RengaWeb.ResourcePortsLiveTest do
     refute has_element?(view, "#front-panel")
   end
 
+  test "refreshes ports while organization notifications keep arriving", %{
+    conn: conn,
+    scope: scope
+  } do
+    {leaf, _ports} = device_fixture(scope, "switch", "busy-leaf", [])
+    {:ok, view, _} = live(conn, ~p"/inventory/#{leaf}/ports")
+    {:ok, port} = Renga.Inventory.create_interface(scope, leaf.id, %{name: "swp1", status: "up"})
+
+    for _ <- 1..7 do
+      send(view.pid, {:inventory_changed, scope.organization_id})
+      Process.sleep(100)
+    end
+
+    assert has_element?(view, "#panel-port-#{port.id}[data-status=up]")
+    refute has_element?(view, "#ports-empty")
+  end
+
   test "keeps another organization's switch out of reach", %{conn: conn} do
     other = user_fixture()
     other_organization = organization_fixture()
