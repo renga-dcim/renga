@@ -75,6 +75,13 @@ defmodule RengaWeb.PrefixEditLiveTest do
       |> render_submit()
 
       assert has_element?(view, "#flash-info", "Prefix updated")
+
+      assert has_element?(
+               view,
+               "#prefix-record[href='/inventory/#{prefix.resource_id}']",
+               "Open in Inventory"
+             )
+
       assert has_element?(view, "#prefix-detail", "Reserved")
       assert %{status: "reserved", description: "Lab"} = Repo.get!(Prefix, prefix.id)
     end

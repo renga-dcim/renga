@@ -264,10 +264,11 @@ defmodule RengaWeb.PrefixDetailLive do
             </:item>
             <:item label="Record">
               <.link
+                id="prefix-record"
                 navigate={~p"/inventory/#{@prefix.resource_id}"}
                 class="text-link hover:underline"
               >
-                {@prefix.resource.name}
+                Open in Inventory
               </.link>
             </:item>
           </.properties>
