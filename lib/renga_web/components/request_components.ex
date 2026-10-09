@@ -9,6 +9,8 @@ defmodule RengaWeb.RequestComponents do
   alias RengaWeb.Format
 
   @doc "What the request changes, as a short phrase: \"Lifecycle → retired\"."
+  def change_summary(%{kind: "expectation"} = request), do: request.after_value["value"]
+
   def change_summary(request) do
     "#{change_label(request)} → #{request.after_value["value"]}"
   end
@@ -16,6 +18,7 @@ defmodule RengaWeb.RequestComponents do
   @doc "The changed property: \"Lifecycle\" or \"Vendor override\"."
   def change_label(%{kind: "lifecycle"}), do: "Lifecycle"
   def change_label(%{kind: "owner"}), do: "Owner"
+  def change_label(%{kind: "expectation"}), do: "Expected hardware"
 
   def change_label(%{kind: "field_override", field: field}),
     do: "#{field_label(field)} override"
@@ -249,6 +252,10 @@ defmodule RengaWeb.RequestComponents do
   defp effect(%{kind: "owner"}),
     do:
       "Approving makes this team the resource's owner, which takes it out of triage for ownership."
+
+  defp effect(%{kind: "expectation"}),
+    do:
+      "Approving changes what this resource expects. The catalog and other resources are unchanged."
 
   defp effect(%{kind: "field_override"}),
     do: "Approving sets an override, which wins over every source until it is removed."

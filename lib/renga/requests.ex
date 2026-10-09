@@ -19,6 +19,7 @@ defmodule Renga.Requests do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Inventory.FieldProvenance
@@ -74,6 +75,56 @@ defmodule Renga.Requests do
     end
   end
 
+  @doc """
+  Proposes that one resource expect different hardware (RFD 8, "Editing
+  hardware components").
+
+  `change` is what `Renga.Catalog.put_expected_component_exception/3` takes:
+  `"action"` (`"alter"`, `"suppress"`, or `"add"`), the template it changes
+  or the kind and name it adds, `"changes"`, and the slot's `"name"` for
+  display. The request's field names the slot, so each slot has at most one
+  open request; its value is a sentence describing the change. `attrs`
+  carries the reason.
+  """
+  def request_expectation(%Scope{} = scope, %Resource{} = resource, change, attrs) do
+    case expectation_field(change) do
+      nil ->
+        {:error, :invalid_expectation}
+
+      field ->
+        attrs = Map.put(attrs, "value", describe_expectation(change))
+        create(scope, resource, "expectation", field, attrs, %{"change" => change})
+    end
+  end
+
+  # One open request per slot: a template the resource expects, or a part
+  # it would newly expect, named by kind and name.
+  defp expectation_field(%{"action" => action, "component_template_id" => id})
+       when action in ~w(alter suppress) and is_binary(id),
+       do: "template:" <> id
+
+  defp expectation_field(%{"action" => "add", "kind" => kind, "name" => name})
+       when is_binary(kind) and is_binary(name) and name != "",
+       do: "component:#{kind}:#{String.downcase(String.trim(name))}"
+
+  defp expectation_field(_change), do: nil
+
+  defp describe_expectation(%{"action" => "suppress"} = change),
+    do: "Stop expecting #{change["name"]}"
+
+  defp describe_expectation(%{"action" => action} = change) when action in ~w(alter add) do
+    details =
+      (change["changes"] || %{})
+      |> Map.get("attributes", %{})
+      |> Map.take(~w(part_number model))
+      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Enum.map_join(", ", fn {key, value} -> "#{Phoenix.Naming.humanize(key)} #{value}" end)
+
+    if details == "",
+      do: "Expect #{change["name"]}",
+      else: "Expect #{details} in #{change["name"]}"
+  end
+
   @doc "A blank changeset for a request form."
   def change_request(attrs \\ %{}), do: Ecto.Changeset.cast(%Request{}, attrs, [:reason])
 
@@ -126,6 +177,9 @@ defmodule Renga.Requests do
 
   defp current_value(_scope, resource, "lifecycle", _field), do: resource.lifecycle_state
 
+  defp current_value(scope, resource, "expectation", field),
+    do: Catalog.describe_expectation(scope, resource.id, field)
+
   defp current_value(_scope, resource, "owner", _field) do
     resource = Repo.preload(resource, :owner_team)
     resource.owner_team && resource.owner_team.name
@@ -139,6 +193,7 @@ defmodule Renga.Requests do
   end
 
   defp validate_value(changeset, "owner"), do: changeset
+  defp validate_value(changeset, "expectation"), do: changeset
 
   defp validate_value(changeset, "lifecycle") do
     Ecto.Changeset.validate_change(changeset, :after_value, fn :after_value,
@@ -334,6 +389,14 @@ defmodule Renga.Requests do
     Teams.set_owner(scope, resource, request.after_value["team_id"])
   end
 
+  defp apply_change(scope, %Request{kind: "expectation"} = request) do
+    Catalog.put_expected_component_exception(
+      scope,
+      request.resource_id,
+      expectation_attrs(request.after_value["change"])
+    )
+  end
+
   defp apply_change(scope, %Request{kind: "field_override"} = request) do
     resource = Inventory.get_resource!(scope, request.resource_id)
 
@@ -342,6 +405,13 @@ defmodule Renga.Requests do
       "reason" => request.reason
     })
   end
+
+  # An exception names its slot by kind and name only when it adds a part;
+  # alterations and suppressions name the template they change.
+  defp expectation_attrs(%{"action" => "add"} = change),
+    do: Map.take(change, ~w(action kind name changes))
+
+  defp expectation_attrs(change), do: Map.take(change, ~w(action component_template_id changes))
 
   defp decide(request, status, scope, note, now) do
     request
@@ -380,6 +450,7 @@ defmodule Renga.Requests do
 
   defp event_field(%Request{kind: "lifecycle"}), do: "lifecycle_state"
   defp event_field(%Request{kind: "owner"}), do: "owner_team"
+  defp event_field(%Request{kind: "expectation", field: field}), do: "expectation." <> field
   defp event_field(%Request{field: field}), do: "host." <> field
 
   defp authorize!(

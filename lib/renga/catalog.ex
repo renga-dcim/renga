@@ -43,6 +43,9 @@ defmodule Renga.Catalog do
 
   @physical_device_kinds ~w(server switch pdu storage)
   @catalog_author_roles ~w(owner admin member)
+  # Changing what one resource expects overrides the catalog for it, so it
+  # is an owner or admin decision; members request it instead.
+  @expectation_roles ~w(owner admin)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -56,6 +59,12 @@ defmodule Renga.Catalog do
   def catalog_author?(%Scope{user: user, roles: roles}) do
     not is_nil(user) and Enum.any?(roles, &(&1 in @catalog_author_roles))
   end
+
+  @doc "UI hint: owners and admins change what a resource expects; members request it."
+  def can_change_expectations?(%Scope{user: %{}, roles: roles}),
+    do: Enum.any?(roles || [], &(&1 in @expectation_roles))
+
+  def can_change_expectations?(_scope), do: false
 
   def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
@@ -668,11 +677,15 @@ defmodule Renga.Catalog do
   @doc """
   Adds or replaces a confirmed per-asset exception and rematerializes expectations.
 
+  This changes what one resource expects without changing the catalog, so
+  only owners and admins may (RFD 8, "Editing hardware components");
+  members propose it with `Renga.Requests.request_expectation/5`.
+
   Suppress and alter exceptions must target a template in the assignment's pinned
   revision. Add exceptions describe a local component without changing a template.
   """
   def put_expected_component_exception(%Scope{} = scope, resource_id, attrs) do
-    managed_transaction(scope, fn ->
+    expectation_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
       if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
@@ -792,8 +805,43 @@ defmodule Renga.Catalog do
     end
   end
 
+  @doc """
+  Describes what a resource currently expects in one slot, for requests:
+  `"template:<id>"` or `"component:<kind>:<name>"`. Nil when it expects
+  nothing there.
+  """
+  def describe_expectation(%Scope{} = scope, resource_id, slot) do
+    expected =
+      scope
+      |> list_expected_components(resource_id)
+      |> Enum.find(&expectation_slot?(&1, slot))
+
+    case expected do
+      nil -> nil
+      %{suppressed: true} = expected -> "Not expected: #{expected.name}"
+      expected -> describe_expected(expected)
+    end
+  end
+
+  defp expectation_slot?(%{component_template_id: id}, "template:" <> id), do: true
+
+  defp expectation_slot?(%{component_template_id: nil} = expected, "component:" <> rest),
+    do: rest == "#{expected.kind}:#{String.downcase(expected.name)}"
+
+  defp expectation_slot?(_expected, _slot), do: false
+
+  defp describe_expected(expected) do
+    details =
+      expected.attributes
+      |> Map.take(~w(part_number model))
+      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Enum.map_join(", ", fn {key, value} -> "#{Phoenix.Naming.humanize(key)} #{value}" end)
+
+    if details == "", do: expected.name, else: "#{details} in #{expected.name}"
+  end
+
   def delete_expected_component_exception(%Scope{} = scope, resource_id, exception_id) do
-    managed_transaction(scope, fn ->
+    expectation_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
       if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
@@ -2262,6 +2310,19 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
+  defp expectation_transaction(%Scope{} = scope, mutation) do
+    Repo.transaction(fn ->
+      authorize_catalog_author!(scope, @expectation_roles)
+
+      case mutation.() do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+        result -> result
+      end
+    end)
+    |> Renga.Inventory.Changes.broadcast(scope.organization_id)
+  end
+
   defp reconciliation_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       authorize_reconciler!(scope)
@@ -2275,8 +2336,11 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
+  defp authorize_catalog_author!(scope, roles \\ @catalog_author_roles)
+
   defp authorize_catalog_author!(
-         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope
+         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope,
+         roles
        )
        when not is_nil(membership_id) do
     lock_active_organization!(scope.organization_id)
@@ -2286,7 +2350,7 @@ defmodule Renga.Catalog do
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.organization_id == ^scope.organization_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^@catalog_author_roles)
+    |> where([membership], membership.role in ^roles)
     |> select([membership], membership.id)
     |> lock("FOR UPDATE")
     |> Repo.one()
@@ -2296,7 +2360,7 @@ defmodule Renga.Catalog do
     end
   end
 
-  defp authorize_catalog_author!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_catalog_author!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
 
   defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
     if "catalog_reconciler" in roles do

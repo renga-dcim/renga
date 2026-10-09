@@ -1209,14 +1209,17 @@ defmodule Renga.CatalogTest do
     organization_membership_fixture(member, organization, %{role: "member"})
     member_scope = Accounts.scope_for_user(member, organization.id)
 
-    assert {:ok, exception} =
+    # Changing what one resource expects is an owner or admin decision;
+    # members request it instead (RFD 8).
+    assert {:error, :forbidden} =
              Catalog.put_expected_component_exception(member_scope, resource.id, %{
                action: "add",
                kind: "interface",
                name: "member-added"
              })
 
-    assert exception.confirmed_by_user_id == member.id
+    refute Catalog.can_change_expectations?(member_scope)
+    assert Catalog.can_change_expectations?(scope)
   end
 
   test "database rejects exceptions whose template is from another revision", %{scope: scope} do

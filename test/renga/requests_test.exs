@@ -2,8 +2,10 @@ defmodule Renga.RequestsTest do
   use Renga.DataCase, async: true
 
   import Renga.AccountsFixtures
+  import Renga.CatalogFixtures
   import Renga.InventoryFixtures
 
+  alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Requests
@@ -221,6 +223,78 @@ defmodule Renga.RequestsTest do
       assert Requests.get_request(stranger, request.id) == nil
       assert {[], 0} = Requests.list_requests(stranger)
       assert {:error, :not_found} = Requests.approve(stranger, request)
+    end
+  end
+
+  describe "expectation requests" do
+    test "a member asks one resource to expect another part; approval applies it", context do
+      {server, expected} =
+        assigned_server_fixture(context.admin, "expect-01", [
+          %{
+            kind: "memory",
+            name: "DIMM A1",
+            position: "A1",
+            attributes: %{"part_number" => "M-32G"}
+          }
+        ])
+
+      dimm = expected["DIMM A1"]
+
+      change = %{
+        "action" => "alter",
+        "component_template_id" => dimm.component_template_id,
+        "name" => "DIMM A1",
+        "changes" => %{"attributes" => %{"part_number" => "M-64G"}}
+      }
+
+      assert {:ok, request} =
+               Requests.request_expectation(context.member, server, change, %{
+                 "reason" => "Upgraded to 64 GB modules"
+               })
+
+      assert request.kind == "expectation"
+      assert request.field == "template:" <> dimm.component_template_id
+      assert request.before_value == %{"value" => "Part number M-32G in DIMM A1"}
+      assert request.after_value["value"] == "Expect Part number M-64G in DIMM A1"
+
+      # The same slot cannot carry two open requests.
+      assert {:error, changeset} =
+               Requests.request_expectation(context.member, server, change, %{"reason" => "again"})
+
+      assert "already has an open request" in errors_on(changeset).organization_id
+
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+      assert Requests.get_request(context.admin, request.id).status == "approved"
+
+      assert [%{attributes: %{"part_number" => "M-64G"}}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      assert Catalog.describe_expectation(context.admin, server.id, request.field) ==
+               "Part number M-64G in DIMM A1"
+    end
+
+    test "names a part a resource should newly expect and rejects malformed changes", context do
+      {server, _expected} = assigned_server_fixture(context.admin, "expect-02", [])
+
+      assert {:ok, request} =
+               Requests.request_expectation(
+                 context.member,
+                 server,
+                 %{"action" => "add", "kind" => "disk", "name" => "Bay 9", "changes" => %{}},
+                 %{"reason" => "Extra disk for logs"}
+               )
+
+      assert request.field == "component:disk:bay 9"
+      assert request.after_value["value"] == "Expect Bay 9"
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+
+      assert [%{kind: "disk", name: "Bay 9"}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      assert {:error, :invalid_expectation} =
+               Requests.request_expectation(context.member, server, %{"action" => "alter"}, %{
+                 "reason" => "x"
+               })
     end
   end
 
