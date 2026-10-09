@@ -401,7 +401,8 @@ defmodule Renga.IPAM do
     |> Repo.all()
   end
 
-  # One grouped containment join counts every prefix's addresses at once.
+  # One grouped containment join counts every prefix's distinct hosts at once,
+  # so a host reported by several interfaces is used once.
   defp address_counts(_organization_id, []), do: %{}
 
   defp address_counts(organization_id, prefix_ids) do
@@ -418,7 +419,7 @@ defmodule Renga.IPAM do
       [prefix, address],
       {prefix.id,
        fragment(
-         "CASE WHEN family(?) = 4 AND masklen(?) >= 22 THEN COUNT(DISTINCT host(?)) FILTER (WHERE NOT (masklen(?) <= 30 AND (host(?)::inet = host(network(?))::inet OR host(?)::inet = host(broadcast(?))::inet))) ELSE COUNT(?) END",
+         "CASE WHEN family(?) = 4 AND masklen(?) >= 22 THEN COUNT(DISTINCT host(?)) FILTER (WHERE NOT (masklen(?) <= 30 AND (host(?)::inet = host(network(?))::inet OR host(?)::inet = host(broadcast(?))::inet))) ELSE COUNT(DISTINCT host(?)) END",
          prefix.prefix,
          prefix.prefix,
          address.address,
@@ -427,7 +428,7 @@ defmodule Renga.IPAM do
          prefix.prefix,
          address.address,
          prefix.prefix,
-         address.id
+         address.address
        )}
     )
     |> Repo.all()

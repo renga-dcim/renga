@@ -61,6 +61,22 @@ defmodule RengaWeb.PrefixDetailLiveTest do
     assert has_element?(view, "#prefix-addresses", "192.0.2.5")
   end
 
+  test "counts a host once while listing every interface that reports it", %{
+    conn: conn,
+    scope: scope
+  } do
+    lan = prefix_fixture(scope, "2001:db8:b::/64")
+    {_host, ports} = device_fixture(scope, "server", "anycast-pair", ~w(eth0 eth1))
+    first = address_fixture(scope, ports["eth0"], "2001:db8:b::5")
+    second = address_fixture(scope, ports["eth1"], "2001:db8:b::5")
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+
+    assert has_element?(view, "#prefix-address-count", "1 address observed")
+    assert has_element?(view, "#address-#{first.id}")
+    assert has_element?(view, "#address-#{second.id}")
+  end
+
   test "lists an IPv6 leaf's addresses with assignment, hiding temporary ones", %{
     conn: conn,
     scope: scope,

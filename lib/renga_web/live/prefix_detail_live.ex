@@ -357,7 +357,13 @@ defmodule RengaWeb.PrefixDetailLive do
     assigns =
       assign(assigns,
         temporary_count: length(temporary),
-        observed_count: Enum.count(assigns.addresses, & &1.address),
+        # Rows are per interface, but utilization counts a host once however
+        # many interfaces report it (RFD 4, "Utilization").
+        observed_count:
+          assigns.addresses
+          |> Enum.filter(& &1.address)
+          |> Enum.uniq_by(&Cidr.to_integer(&1.inet))
+          |> length(),
         shown: if(assigns.show_temporary?, do: assigns.addresses, else: permanent)
       )
 
