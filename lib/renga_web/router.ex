@@ -167,6 +167,7 @@ defmodule RengaWeb.Router do
 
       live "/catalog/hardware-types", CatalogLive, :hardware_types
       live "/catalog/hardware-types/:id", CatalogLive, :hardware_type
+      live "/catalog/hardware-types/:id/draft", CatalogDraftLive, :edit
       live "/catalog/module-types", CatalogLive, :module_types
       live "/catalog/module-types/:id", CatalogLive, :module_type
       live "/catalog/manufacturers", CatalogLive, :manufacturers
