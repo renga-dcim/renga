@@ -26,7 +26,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [x] Replace interim prefix uniqueness with null-safe global/VRF constraints.
 * [ ] Make utilization namespace-local with unions of child-prefix space.
 * [x] Switch the prefix views' routing-table selector to VRF records.
-* [ ] Add `/network/vrfs`.
+* [x] Add `/network/vrfs`.
 
 == Phase 3: Managed addresses
 

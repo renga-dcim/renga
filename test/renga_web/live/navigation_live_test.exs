@@ -62,6 +62,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/network/vlans",
              "/network/vlan-groups",
              "/network/prefixes",
+             "/network/vrfs",
              "/network/cables"
            ]
 
