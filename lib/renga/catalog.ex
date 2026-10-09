@@ -1467,6 +1467,11 @@ defmodule Renga.Catalog do
       type = scoped_lock!(schema, scope.organization_id, type_id)
       owner_field = owner_field(schema)
 
+      # A type being edited as a draft publishes through the draft, so
+      # revisions keep the order they were published in.
+      if draft_open?(scope.organization_id, owner_field, type.id),
+        do: Repo.rollback(:draft_open)
+
       revision =
         %TypeRevision{organization_id: scope.organization_id}
         |> Ecto.Changeset.change(%{
@@ -1502,6 +1507,14 @@ defmodule Renga.Catalog do
 
   defp create_type_revision(scope, _schema, _type_id, _attrs, _templates),
     do: managed_transaction(scope, fn -> Repo.rollback(:invalid_templates) end)
+
+  defp draft_open?(organization_id, owner_field, type_id) do
+    TypeRevision
+    |> where([revision], revision.organization_id == ^organization_id)
+    |> where([revision], field(revision, ^owner_field) == ^type_id)
+    |> where([revision], is_nil(revision.finalized_at))
+    |> Repo.exists?()
+  end
 
   defp create_projection(scope, module, kind, resource_attrs, attrs) do
     resource_attrs = put_attr(resource_attrs, :kind, kind)
@@ -1590,6 +1603,7 @@ defmodule Renga.Catalog do
   defp preload_type(type) do
     revisions =
       from revision in TypeRevision,
+        where: not is_nil(revision.finalized_at),
         order_by: [desc: revision.revision],
         preload: [
           component_templates: ^from(template in ComponentTemplate, order_by: template.name)
@@ -2330,6 +2344,11 @@ defmodule Renga.Catalog do
     |> where([record], record.organization_id == ^organization_id and record.id == ^id)
     |> Repo.one!()
   end
+
+  @doc false
+  # Lets Renga.Catalog.Drafts run its writes under the same catalog author
+  # check and change broadcast as the rest of the catalog.
+  def author_transaction(%Scope{} = scope, mutation), do: managed_transaction(scope, mutation)
 
   defp managed_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->

@@ -64,14 +64,6 @@ defmodule Renga.Catalog.TemplatePattern do
     {:ok, positions}
   end
 
-  defp default_position(name, chosen) do
-    case Regex.run(~r/[A-Za-z]?\d+$/, name) do
-      [slot] -> slot
-      nil when chosen == "" -> nil
-      nil -> chosen
-    end
-  end
-
   defp positions(parts, position_pattern) do
     names = combinations(parts)
 
@@ -81,6 +73,14 @@ defmodule Renga.Catalog.TemplatePattern do
         else:
           {:error,
            "the position pattern gives #{length(positions)} positions for #{length(names)} names"}
+    end
+  end
+
+  defp default_position(name, chosen) do
+    case Regex.run(~r/[A-Za-z]?\d+$/, name) do
+      [slot] -> slot
+      nil when chosen == "" -> nil
+      nil -> chosen
     end
   end
 

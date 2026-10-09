@@ -40,6 +40,21 @@ defmodule Renga.Catalog.ComponentTemplate do
     |> unique_constraint(:name, name: :component_templates_identity_index)
   end
 
+  @doc """
+  Adds or changes a template of a draft revision. The database refuses
+  the change once the revision is published.
+  """
+  def draft_changeset(template, attrs) do
+    template
+    |> input_changeset(attrs)
+    |> validate_required([:organization_id, :catalog_type_revision_id])
+    |> check_constraint(:catalog_type_revision,
+      name: :component_templates_revision_finalized,
+      message: "is published"
+    )
+    |> unique_constraint(:name, name: :component_templates_identity_index)
+  end
+
   def input_changeset(template, attrs) do
     template
     |> cast(attrs, [:kind, :name, :label, :position, :description, :required, :attributes])
