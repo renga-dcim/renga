@@ -61,7 +61,7 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 * [x] Add the expected-versus-observed Hardware tab with intent-based edits and
   role-based permissions.
-* [ ] Add catalog draft revisions with grouped templates and impact preview.
+* [x] Add catalog draft revisions with grouped templates and impact preview.
 * [ ] Add per-resource and bulk revision moves with preview and optional
   automatic moves.
 
