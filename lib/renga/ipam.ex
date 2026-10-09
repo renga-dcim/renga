@@ -7,6 +7,9 @@ defmodule Renga.IPAM do
   resource envelope and typed projection are created together, under one
   database-checked authorization, with a change event for Activity.
 
+  VRFs (RFD 4, Phase 2) are the routing tables, with envelopes of their own;
+  a prefix without one is in the global table, which has no record.
+
   Prefixes and addresses are stored by `Renga.Inventory`; VLAN links by
   `Renga.Topology`. This context arranges them per routing table and
   address family and chooses how each prefix is shown. Pairing an IPv4 and
@@ -34,13 +37,14 @@ defmodule Renga.IPAM do
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.ManagedAddress
   alias Renga.IPAM.PrefixTree
+  alias Renga.IPAM.Vrf
   alias Renga.Repo
   alias Renga.Topology
 
   # Prefix fields an edit records in Activity, with the name each event uses.
   @prefix_event_fields [
     prefix: "prefix",
-    vrf: "routing_table",
+    vrf_id: "routing_table",
     status: "status",
     description: "description"
   ]
@@ -48,9 +52,10 @@ defmodule Renga.IPAM do
   @doc """
   Creates a prefix and its resource envelope. Owners and admins only.
 
-  `attrs` are the typed prefix fields (`prefix`, `vrf`, `status`,
-  `description`). The envelope gets a stable generated name, so editing the
-  CIDR later never renames it, and shows the CIDR as its display name.
+  `attrs` are the typed prefix fields (`prefix`, `vrf_id`, `status`,
+  `description`); a nil `vrf_id` is the global table. The envelope gets a
+  stable generated name, so editing the CIDR later never renames it, and
+  shows the CIDR, and the VRF when there is one, as its display name.
   Returns `{:error, :forbidden}` for anyone else, or the changeset when the
   CIDR is invalid or already exists in its routing table.
   """
@@ -64,11 +69,8 @@ defmodule Renga.IPAM do
         Repo.rollback(%{validation | action: :insert})
       end
 
-      label =
-        prefix_label(
-          Ecto.Changeset.get_field(validation, :prefix),
-          Ecto.Changeset.get_field(validation, :vrf)
-        )
+      vrf = scoped_vrf(organization_id, Ecto.Changeset.get_field(validation, :vrf_id))
+      label = prefix_label(Ecto.Changeset.get_field(validation, :prefix), vrf)
 
       resource =
         case ResourceStore.insert(organization_id, %{
@@ -98,7 +100,7 @@ defmodule Renga.IPAM do
           new_value: %{"value" => label}
         })
 
-      %{prefix | resource: resource}
+      %{prefix | resource: resource, vrf: vrf}
     end)
     |> Changes.broadcast(organization_id)
   end
@@ -137,7 +139,7 @@ defmodule Renga.IPAM do
         |> Prefix.changeset(attrs)
         |> Repo.update()
         |> case do
-          {:ok, updated} -> updated
+          {:ok, updated} -> Repo.preload(updated, :vrf, force: true)
           {:error, changeset} -> Repo.rollback(changeset)
         end
 
@@ -196,8 +198,8 @@ defmodule Renga.IPAM do
           kind: "updated",
           field: name,
           resource_id: resource_id,
-          old_value: %{"value" => event_value(field, Map.fetch!(current, field))},
-          new_value: %{"value" => event_value(field, Map.fetch!(updated, field))}
+          old_value: event_value(field, current),
+          new_value: event_value(field, updated)
         })
     end
   end
@@ -207,26 +209,194 @@ defmodule Renga.IPAM do
     |> where([prefix], prefix.organization_id == ^organization_id and prefix.id == ^id)
     |> lock("FOR UPDATE")
     |> Repo.one!()
+    |> Repo.preload([:resource, :vrf])
+  end
+
+  # A routing-table event names the VRF and keeps its id, so a renamed VRF
+  # or one literally called "Global" stays distinguishable from global (nil).
+  defp event_value(:vrf_id, %Prefix{vrf: nil}), do: %{"value" => nil}
+  defp event_value(:vrf_id, %Prefix{vrf: vrf}), do: %{"value" => vrf.name, "vrf_id" => vrf.id}
+  defp event_value(:prefix, %Prefix{prefix: cidr}), do: %{"value" => Cidr.format(cidr)}
+  defp event_value(field, %Prefix{} = prefix), do: %{"value" => Map.fetch!(prefix, field)}
+
+  defp prefix_label(cidr, nil), do: Cidr.format(cidr)
+  defp prefix_label(cidr, %Vrf{name: name}), do: "#{Cidr.format(cidr)} (#{name})"
+
+  defp scoped_vrf(_organization_id, nil), do: nil
+
+  # A share lock holds off a concurrent rename until the new prefix's label,
+  # which names the VRF, is written.
+  defp scoped_vrf(organization_id, vrf_id) do
+    Vrf
+    |> where([vrf], vrf.organization_id == ^organization_id and vrf.id == ^vrf_id)
+    |> lock("FOR SHARE")
+    |> Repo.one()
+  end
+
+  @doc "The routing tables: `nil` for global, then every VRF by name."
+  def list_routing_tables(%Scope{} = scope), do: [nil | list_vrfs(scope)]
+
+  @doc "The organization's VRFs, by name."
+  def list_vrfs(%Scope{organization_id: organization_id}) do
+    Vrf
+    |> where([vrf], vrf.organization_id == ^organization_id)
+    |> order_by([vrf], asc: fragment("lower(?)", vrf.name))
+    |> Repo.all()
+  end
+
+  @doc "Gets a VRF in the caller's organization."
+  def get_vrf!(%Scope{organization_id: organization_id}, id) do
+    Vrf
+    |> where([vrf], vrf.organization_id == ^organization_id and vrf.id == ^id)
+    |> preload(:resource)
+    |> Repo.one!()
+  end
+
+  @doc "Finds a VRF by name, ignoring case, or nil."
+  def get_vrf_by_name(%Scope{organization_id: organization_id}, name) when is_binary(name) do
+    Vrf
+    |> where([vrf], vrf.organization_id == ^organization_id)
+    |> where([vrf], fragment("lower(?)", vrf.name) == ^String.downcase(String.trim(name)))
+    |> Repo.one()
+  end
+
+  @doc "A changeset for the VRF forms; the envelope is not required yet."
+  def change_vrf(%Vrf{} = vrf, attrs \\ %{}) do
+    changeset = Vrf.changeset(vrf, attrs)
+    errors = Keyword.delete(changeset.errors, :resource_id)
+    %{changeset | errors: errors, valid?: errors == []}
+  end
+
+  @doc """
+  Creates a VRF and its resource envelope. Owners and admins only. The
+  envelope's display name is the VRF's name, and Activity records it.
+  """
+  def create_vrf(%Scope{organization_id: organization_id} = scope, attrs) do
+    Inventory.organization_management_transaction(scope, fn ->
+      validation = change_vrf(%Vrf{organization_id: organization_id}, attrs)
+      unless validation.valid?, do: Repo.rollback(%{validation | action: :insert})
+
+      name = Ecto.Changeset.get_field(validation, :name)
+
+      resource =
+        case ResourceStore.insert(organization_id, %{
+               kind: "vrf",
+               name: "vrf-" <> Ecto.UUID.generate(),
+               display_name: name,
+               lifecycle_state: "active"
+             }) do
+          {:ok, resource} -> resource
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      vrf =
+        %Vrf{organization_id: organization_id, resource_id: resource.id}
+        |> Vrf.changeset(attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, vrf} -> vrf
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "created",
+          field: "vrf",
+          resource_id: resource.id,
+          new_value: %{"value" => name}
+        })
+
+      %{vrf | resource: resource}
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @vrf_event_fields [:name, :route_distinguisher, :status, :description]
+
+  @doc """
+  Changes a VRF. Owners and admins only. A rename relabels the VRF's
+  envelope and every prefix in it, and each changed field is recorded.
+  """
+  def update_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id}, attrs) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_vrf!(organization_id, id)
+
+      updated =
+        current
+        |> Vrf.changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} -> updated
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      resource = rename_envelope(current.resource, updated.name)
+      if updated.name != current.name, do: relabel_prefixes(updated)
+
+      for field <- @vrf_event_fields,
+          Map.fetch!(current, field) != Map.fetch!(updated, field) do
+        {:ok, _event} =
+          Inventory.create_change_event(scope, %{
+            kind: "updated",
+            field: Atom.to_string(field),
+            resource_id: resource.id,
+            old_value: %{"value" => Map.fetch!(current, field)},
+            new_value: %{"value" => Map.fetch!(updated, field)}
+          })
+      end
+
+      %{updated | resource: resource}
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Deletes a VRF that holds no prefixes. Owners and admins only. A VRF with
+  prefixes returns `{:error, :in_use}`: its prefixes must move or go first,
+  since nothing should silently fall back into the global table.
+  """
+  def delete_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id}) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_vrf!(organization_id, id)
+
+      in_use? =
+        Prefix
+        |> where([prefix], prefix.organization_id == ^organization_id)
+        |> where([prefix], prefix.vrf_id == ^current.id)
+        |> Repo.exists?()
+
+      if in_use?, do: Repo.rollback(:in_use)
+
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "deleted",
+          field: "vrf",
+          resource_id: current.resource_id,
+          old_value: %{"value" => current.name}
+        })
+
+      Repo.delete!(current.resource)
+      current
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp lock_vrf!(organization_id, id) do
+    Vrf
+    |> where([vrf], vrf.organization_id == ^organization_id and vrf.id == ^id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
     |> Repo.preload(:resource)
   end
 
-  defp event_value(:prefix, cidr), do: Cidr.format(cidr)
-  defp event_value(_field, value), do: value
-
-  defp prefix_label(cidr, nil), do: Cidr.format(cidr)
-  defp prefix_label(cidr, vrf), do: "#{Cidr.format(cidr)} (#{vrf})"
-
-  @doc "The routing tables in use: `nil` for global, then each VRF by name."
-  def list_routing_tables(%Scope{organization_id: organization_id}) do
-    vrfs =
-      Prefix
-      |> where([prefix], prefix.organization_id == ^organization_id and not is_nil(prefix.vrf))
-      |> distinct(true)
-      |> select([prefix], prefix.vrf)
-      |> order_by([prefix], asc: prefix.vrf)
-      |> Repo.all()
-
-    [nil | vrfs]
+  # Prefix envelopes show their table in the display name.
+  defp relabel_prefixes(%Vrf{} = vrf) do
+    Prefix
+    |> where([prefix], prefix.organization_id == ^vrf.organization_id)
+    |> where([prefix], prefix.vrf_id == ^vrf.id)
+    |> preload(:resource)
+    |> Repo.all()
+    |> Enum.each(&rename_envelope(&1.resource, prefix_label(&1.prefix, vrf)))
   end
 
   @doc """
@@ -237,11 +407,11 @@ defmodule Renga.IPAM do
   through those VLANs, and `single_stack?` when it is linked to a VLAN that
   carries no prefix of the other family.
   """
-  def list_prefix_rows(%Scope{organization_id: organization_id} = scope, vrf) do
+  def list_prefix_rows(%Scope{organization_id: organization_id} = scope, vrf_id) do
     prefixes =
       Prefix
       |> where([prefix], prefix.organization_id == ^organization_id)
-      |> where_vrf(vrf)
+      |> where_vrf(vrf_id)
       |> preload(:resource)
       |> Repo.all()
 
@@ -252,7 +422,7 @@ defmodule Renga.IPAM do
     Map.new([:ipv4, :ipv6], fn family ->
       rows =
         trees
-        |> Map.get({vrf, family}, [])
+        |> Map.get({vrf_id, family}, [])
         |> PrefixTree.flatten()
         |> Enum.map(fn {node, depth} ->
           node
@@ -269,7 +439,7 @@ defmodule Renga.IPAM do
   def get_prefix!(%Scope{organization_id: organization_id}, id) do
     Prefix
     |> where([prefix], prefix.organization_id == ^organization_id and prefix.id == ^id)
-    |> preload(:resource)
+    |> preload([:resource, :vrf])
     |> Repo.one!()
   end
 
@@ -285,7 +455,7 @@ defmodule Renga.IPAM do
     related =
       Prefix
       |> where([other], other.organization_id == ^organization_id)
-      |> where_vrf(prefix.vrf)
+      |> where_vrf(prefix.vrf_id)
       |> where(
         [other],
         fragment("? << ?", other.prefix, type(^prefix.prefix, Renga.Types.Cidr)) or
@@ -581,6 +751,6 @@ defmodule Renga.IPAM do
     end)
   end
 
-  defp where_vrf(query, nil), do: where(query, [prefix], is_nil(prefix.vrf))
-  defp where_vrf(query, vrf), do: where(query, [prefix], prefix.vrf == ^vrf)
+  defp where_vrf(query, nil), do: where(query, [prefix], is_nil(prefix.vrf_id))
+  defp where_vrf(query, vrf_id), do: where(query, [prefix], prefix.vrf_id == ^vrf_id)
 end

@@ -156,7 +156,7 @@ defmodule RengaWeb.Browser.PrefixesTest do
     session
     |> PhoenixTest.Playwright.click("#reload-prefix-edit")
     |> evaluate(
-      "new Promise(r => setTimeout(() => r(document.querySelector('#prefix-edit-form select').value), 300))",
+      "new Promise(r => setTimeout(() => r(document.querySelector('#prefix-edit-form select[name=\"prefix[status]\"]').value), 300))",
       &assert(&1 == "reserved")
     )
     |> fill_in("#prefix-edit-form input[name='prefix[description]']", "Description (optional)",

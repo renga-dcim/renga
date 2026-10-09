@@ -153,7 +153,12 @@ defmodule RengaWeb.PrefixDetailLive do
     socket = assign(socket, :reload_timer, nil)
     prefix = IPAM.get_prefix!(socket.assigns.current_scope, socket.assigns.prefix.id)
 
-    socket = assign(socket, prefix: prefix, page_title: Cidr.format(prefix.prefix))
+    socket =
+      assign(socket,
+        prefix: prefix,
+        page_title: Cidr.format(prefix.prefix),
+        tables: IPAM.list_routing_tables(socket.assigns.current_scope)
+      )
 
     {:noreply, load_view(socket)}
   rescue
@@ -705,7 +710,9 @@ defmodule RengaWeb.PrefixDetailLive do
   defp other_family(:ipv6), do: :ipv4
 
   defp prefixes_path(family, vrf) do
-    params = Enum.reject([family: family, vrf: vrf], fn {_key, value} -> is_nil(value) end)
+    params =
+      Enum.reject([family: family, vrf: vrf && vrf.name], fn {_key, value} -> is_nil(value) end)
+
     ~p"/network/prefixes?#{params}"
   end
 end

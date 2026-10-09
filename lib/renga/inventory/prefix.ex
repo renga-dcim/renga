@@ -5,9 +5,9 @@ defmodule Renga.Inventory.Prefix do
   Prefix containment and overlap remain database operations rather than string
   parsing, while the associated resource envelope carries desired state.
 
-  A routing table holds one prefix per CIDR. Until VRF records replace the
-  free-text `vrf` (RFD 4, Phase 2), the table is the exact stored string and
-  nil is the global table.
+  A routing table holds one prefix per CIDR. The table is a VRF, or the
+  global table when `vrf_id` is nil (RFD 4, "VRFs"); the composite foreign
+  key keeps a prefix from naming another organization's VRF.
   """
 
   use Ecto.Schema
@@ -25,24 +25,25 @@ defmodule Renga.Inventory.Prefix do
 
   schema "prefixes" do
     field :prefix, Cidr
-    field :vrf, :string
     field :status, :string, default: "active"
     field :description, :string
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
     belongs_to :resource, Resource
+    belongs_to :vrf, Renga.IPAM.Vrf
 
     timestamps()
   end
 
   def changeset(prefix, attrs) do
     prefix
-    |> cast(attrs, [:prefix, :vrf, :status, :description, :metadata])
+    |> cast(attrs, [:prefix, :vrf_id, :status, :description, :metadata])
     |> validate_required([:organization_id, :resource_id, :prefix, :status])
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource, name: :prefixes_organization_resource_fkey)
+    |> foreign_key_constraint(:vrf_id, name: :prefixes_tenant_vrf_fkey)
     |> unique_constraint([:organization_id, :resource_id])
     |> unique_constraint(:prefix,
       name: :prefixes_organization_vrf_prefix_index,

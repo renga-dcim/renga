@@ -7,6 +7,7 @@ defmodule Renga.IPAMTest do
 
   alias Renga.Accounts
   alias Renga.IPAM
+  alias Renga.IPAM.Vrf
   alias Renga.Topology
 
   setup do
@@ -27,7 +28,7 @@ defmodule Renga.IPAMTest do
     address_fixture(scope, ports["eth0"], "10.0.10.6")
     address_fixture(scope, ports["eth0"], "2001:db8:a:10::15")
 
-    assert IPAM.list_routing_tables(scope) == [nil, "blue"]
+    assert [nil, %Vrf{name: "blue"} = blue_vrf] = IPAM.list_routing_tables(scope)
 
     %{ipv4: ipv4, ipv6: ipv6} = IPAM.list_prefix_rows(scope, nil)
 
@@ -38,8 +39,8 @@ defmodule Renga.IPAMTest do
     assert [%{usage: %{kind: :count, count: 1}}] = ipv6
     assert hd(ipv6).node.prefix.id == users_v6.id
 
-    assert %{ipv4: [blue], ipv6: []} = IPAM.list_prefix_rows(scope, "blue")
-    assert blue.node.prefix.vrf == "blue"
+    assert %{ipv4: [blue], ipv6: []} = IPAM.list_prefix_rows(scope, blue_vrf.id)
+    assert blue.node.prefix.vrf_id == blue_vrf.id
   end
 
   test "pairs prefixes through the VLAN they serve and marks single-stack ones", %{scope: scope} do
@@ -119,7 +120,7 @@ defmodule Renga.IPAMTest do
           {"192.0.2.1/32", 1, 1, 100}
         ] do
       prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
-      %{ipv4: [row]} = IPAM.list_prefix_rows(scope, cidr)
+      %{ipv4: [row]} = IPAM.list_prefix_rows(scope, prefix.vrf_id)
       view = IPAM.prefix_view(scope, prefix)
       assert %{used: ^used, usable: ^usable, percent: ^percent} = row.usage
       assert %{used: ^used, usable: ^usable, percent: ^percent} = view.address_map
@@ -133,7 +134,7 @@ defmodule Renga.IPAMTest do
       prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
       for port <- Map.values(ports), do: address_fixture(scope, port, address)
       address_fixture(scope, ports["eth0"], String.replace(address, ~r/1\//, "2/"))
-      rows = IPAM.list_prefix_rows(scope, cidr)
+      rows = IPAM.list_prefix_rows(scope, prefix.vrf_id)
       [row] = rows.ipv4 ++ rows.ipv6
       assert row.usage == %{kind: :count, count: 2}
       # Detail still lists each interface's record.
