@@ -10,9 +10,9 @@ Implements link:README.adoc[RFD 4: IP address management].
   global table.
 * [x] Add the `container` status and enforce exact CIDR uniqueness per
   legacy exact-string routing table; replace this constraint in Phase 2.
-* [ ] Build hierarchy with strict containment so a prefix is never its own
+* [x] Build hierarchy with strict containment so a prefix is never its own
   parent.
-* [ ] Count utilization from distinct host values everywhere, without row counts
+* [x] Count utilization from distinct host values everywhere, without row counts
   or enumerating address space.
 
 == Phase 2: VRFs
