@@ -109,15 +109,12 @@ defmodule RengaWeb.TeamLive do
       current_scope={@current_scope}
       active_nav={:teams}
     >
-      <section id="teams" class="mx-auto max-w-4xl space-y-4">
-        <header class="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 class="text-xl font-semibold tracking-tight text-fg">Teams</h1>
-            <p class="mt-1 text-sm text-fg-muted">
-              The groups that answer for resources. A resource without an owning team stays in
-              triage until it has one.
-            </p>
-          </div>
+      <.settings_page
+        id="teams"
+        title="Teams"
+        description="The groups that answer for resources. A resource without an owning team stays in triage until it has one."
+      >
+        <:actions>
           <.button
             :if={@can_manage?}
             id="new-team"
@@ -126,7 +123,7 @@ defmodule RengaWeb.TeamLive do
           >
             New team
           </.button>
-        </header>
+        </:actions>
 
         <.table
           id="team-list"
@@ -174,7 +171,7 @@ defmodule RengaWeb.TeamLive do
         <p :if={!@can_manage?} id="teams-read-only" class="text-sm text-fg-muted">
           Owners and admins manage teams.
         </p>
-      </section>
+      </.settings_page>
 
       <.confirm_dialog
         :for={team <- @teams}

@@ -14,62 +14,77 @@ defmodule RengaWeb.UserLive.Settings do
       current_scope={@current_scope}
       active_nav={:account}
     >
-      <div class="text-center">
-        <.header>
-          Account Settings
-          <:subtitle>Manage your account email address and password settings</:subtitle>
-        </.header>
-      </div>
-
-      <.form for={@email_form} id="email_form" phx-submit="update_email" phx-change="validate_email">
-        <.input
-          field={@email_form[:email]}
-          type="email"
-          label="Email"
-          autocomplete="username"
-          spellcheck="false"
-          required
-        />
-        <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
-      </.form>
-
-      <hr class="my-8 border-edge" />
-
-      <.form
-        for={@password_form}
-        id="password_form"
-        action={~p"/users/update-password"}
-        method="post"
-        phx-change="validate_password"
-        phx-submit="update_password"
-        phx-trigger-action={@trigger_submit}
+      <.settings_page
+        id="account"
+        title="Account"
+        description="The email you sign in with and an optional password."
+        class="max-w-3xl"
       >
-        <input
-          name={@password_form[:email].name}
-          type="hidden"
-          id="hidden_user_email"
-          spellcheck="false"
-          value={@current_email}
-        />
-        <.input
-          field={@password_form[:password]}
-          type="password"
-          label="New password"
-          autocomplete="new-password"
-          spellcheck="false"
-          required
-        />
-        <.input
-          field={@password_form[:password_confirmation]}
-          type="password"
-          label="Confirm new password"
-          autocomplete="new-password"
-          spellcheck="false"
-        />
-        <.button variant="primary" phx-disable-with="Saving...">
-          Save Password
-        </.button>
-      </.form>
+        <.settings_section
+          id="account-email"
+          title="Email"
+          description="We send a link to the new address to confirm it before it changes."
+        >
+          <.form
+            for={@email_form}
+            id="email_form"
+            phx-submit="update_email"
+            phx-change="validate_email"
+          >
+            <.input
+              field={@email_form[:email]}
+              type="email"
+              label="Email"
+              autocomplete="username"
+              spellcheck="false"
+              required
+            />
+            <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
+          </.form>
+        </.settings_section>
+
+        <.settings_section
+          id="account-password"
+          title="Password"
+          description="Signing in with an emailed link always works; a password is optional."
+        >
+          <.form
+            for={@password_form}
+            id="password_form"
+            action={~p"/users/update-password"}
+            method="post"
+            phx-change="validate_password"
+            phx-submit="update_password"
+            phx-trigger-action={@trigger_submit}
+          >
+            <input
+              name={@password_form[:email].name}
+              type="hidden"
+              id="hidden_user_email"
+              spellcheck="false"
+              value={@current_email}
+            />
+            <.input
+              field={@password_form[:password]}
+              type="password"
+              label="New password"
+              autocomplete="new-password"
+              spellcheck="false"
+              required
+            />
+            <.input
+              field={@password_form[:password_confirmation]}
+              type="password"
+              label="Confirm new password"
+              autocomplete="new-password"
+              spellcheck="false"
+            />
+            <.button variant="primary" phx-disable-with="Saving...">
+              Save Password
+            </.button>
+          </.form>
+        </.settings_section>
+      </.settings_page>
     </Layouts.app>
     """
   end

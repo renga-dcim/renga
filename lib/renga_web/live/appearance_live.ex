@@ -116,16 +116,15 @@ defmodule RengaWeb.AppearanceLive do
       current_scope={@current_scope}
       active_nav={:appearance}
     >
-      <div id="appearance" class="mx-auto max-w-2xl space-y-8 px-4 py-6 sm:px-6 lg:px-8">
-        <header class="space-y-1">
-          <h1 class="text-xl font-semibold tracking-tight text-fg">Appearance</h1>
-          <p class="text-sm text-fg-muted">
-            Saved to your account, so it follows you to every device.
-            <span id="appearance-saved" aria-live="polite" class="text-fg">
-              {if @saved?, do: "Saved."}
-            </span>
-          </p>
-        </header>
+      <.settings_page
+        id="appearance"
+        title="Appearance"
+        description="Saved to your account, so it follows you to every device."
+        class="max-w-2xl"
+      >
+        <p id="appearance-saved" aria-live="polite" class="-mt-4 text-sm text-fg">
+          {if @saved?, do: "Saved."}
+        </p>
 
         <.form for={%{}} as={:appearance} id="appearance-form" phx-change="save" class="space-y-8">
           <fieldset class="space-y-2">
@@ -262,7 +261,7 @@ defmodule RengaWeb.AppearanceLive do
             </label>
           </.form>
         </section>
-      </div>
+      </.settings_page>
     </Layouts.app>
     """
   end

@@ -55,42 +55,50 @@ defmodule RengaWeb.OrganizationLive.Index do
       current_scope={@current_scope}
       active_nav={:organizations}
     >
-      <section
+      <.settings_page
         id="organization-selector"
-        class="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.2fr_0.8fr]"
+        title="Organizations"
+        description="Inventory is kept separate per organization. Open one you belong to, or create one to get started."
+        class="max-w-3xl"
       >
-        <div class="rounded-3xl border border-base-content/10 bg-base-100 p-6 shadow-sm sm:p-8">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">Workspace</p>
-          <h1 class="mt-2 text-3xl font-semibold tracking-tight">Choose an organization</h1>
-          <p class="mt-2 max-w-xl text-sm leading-6 text-base-content/55">
-            Inventory is isolated by organization. Select a workspace you belong to, or create one to get started.
-          </p>
-
-          <div id="organizations" phx-update="stream" class="mt-8 grid gap-3">
-            <div
+        <.settings_section
+          id="your-organizations"
+          title="Your organizations"
+          description="Opening one makes it the organization you work in."
+        >
+          <ul
+            id="organizations"
+            phx-update="stream"
+            class="divide-y divide-line rounded-lg border border-edge bg-surface"
+          >
+            <li
               :if={@memberships_empty?}
               id="organizations-empty"
-              class="rounded-2xl border border-dashed border-base-content/15 p-8 text-center"
+              class="px-4 py-8 text-center text-sm text-fg-muted"
             >
-              <.icon name="hero-building-office-2" class="mx-auto size-8 text-base-content/25" />
-              <p class="mt-3 font-medium">No organizations yet</p>
-              <p class="mt-1 text-xs text-base-content/45">
-                Create your first workspace using the form.
-              </p>
-            </div>
-
-            <article
+              No organizations yet. Create the first one below.
+            </li>
+            <li
               :for={{id, membership} <- @streams.memberships}
               id={id}
-              class="flex flex-col gap-4 rounded-2xl border border-base-content/10 p-5 transition hover:border-orange-500/30 hover:bg-orange-500/[0.025] sm:flex-row sm:items-center"
+              class="flex flex-wrap items-center gap-3 px-3 py-2.5"
             >
-              <span class="grid size-11 shrink-0 place-items-center rounded-xl bg-orange-500/10 text-orange-600">
-                <.icon name="hero-building-office-2" class="size-5" />
+              <span class="grid size-8 shrink-0 place-items-center rounded-md border border-edge bg-sunken text-fg-muted">
+                <.icon name="hero-building-office-2" class="size-4" />
               </span>
               <div class="min-w-0 flex-1">
-                <h2 class="truncate font-semibold">{membership.organization.name}</h2>
-                <p class="mt-1 text-xs capitalize text-base-content/45">
-                  {membership.role} · {membership.organization.slug}
+                <p class="flex items-center gap-2 truncate text-sm font-medium text-fg">
+                  {membership.organization.name}
+                  <span
+                    :if={@current_scope.organization_id == membership.organization_id}
+                    class="rounded bg-accent-tint px-1.5 py-0.5 text-[11px] font-medium text-accent"
+                  >
+                    Current
+                  </span>
+                </p>
+                <p class="truncate text-xs text-fg-muted">
+                  <span class="capitalize">{membership.role}</span>
+                  · <span class="font-mono">{membership.organization.slug}</span>
                 </p>
               </div>
               <.form
@@ -100,31 +108,24 @@ defmodule RengaWeb.OrganizationLive.Index do
                 method="post"
               >
                 <input type="hidden" name="organization[id]" value={membership.organization_id} />
-                <button class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-base-content px-4 py-2.5 text-sm font-semibold text-base-100 transition hover:opacity-85 sm:w-auto">
-                  Open inventory <.icon name="hero-arrow-right" class="size-4" />
-                </button>
+                <.button size="sm">
+                  Open <.icon name="hero-arrow-right-mini" class="size-4" />
+                </.button>
               </.form>
-            </article>
-          </div>
-        </div>
+            </li>
+          </ul>
+        </.settings_section>
 
-        <aside class="rounded-3xl border border-base-content/10 bg-base-100 p-6 shadow-sm sm:p-8">
-          <div class="flex items-center gap-3">
-            <span class="grid size-10 place-items-center rounded-xl bg-emerald-500/10 text-emerald-600">
-              <.icon name="hero-plus" class="size-5" />
-            </span>
-            <div>
-              <h2 class="font-semibold">New organization</h2>
-              <p class="text-xs text-base-content/45">You will become its owner.</p>
-            </div>
-          </div>
-
+        <.settings_section
+          id="new-organization"
+          title="New organization"
+          description="You become its owner and can invite others."
+        >
           <.form
             for={@organization_form}
             id="organization-form"
             phx-change="validate"
             phx-submit="create"
-            class="mt-7 space-y-4"
           >
             <.input
               field={@organization_form[:name]}
@@ -141,16 +142,12 @@ defmodule RengaWeb.OrganizationLive.Index do
               pattern="[a-z0-9][a-z0-9-]*"
               required
             />
-            <button
-              id="create-organization"
-              class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 py-3 text-sm font-semibold text-white shadow-sm shadow-orange-500/20 transition hover:bg-orange-600 phx-submit-loading:opacity-60"
-              phx-disable-with="Creating…"
-            >
+            <.button id="create-organization" variant="primary" phx-disable-with="Creating…">
               Create organization
-            </button>
+            </.button>
           </.form>
-        </aside>
-      </section>
+        </.settings_section>
+      </.settings_page>
     </Layouts.app>
     """
   end
