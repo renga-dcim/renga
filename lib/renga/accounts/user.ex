@@ -20,6 +20,9 @@ defmodule Renga.Accounts.User do
     field :password, :string, virtual: true, redact: true
     field :hashed_password, :string, redact: true
     field :confirmed_at, :utc_datetime_usec
+    field :theme, :string, default: "system"
+    field :accent, :string
+    field :density, :string, default: "comfortable"
     field :authenticated_at, :utc_datetime_usec, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
@@ -145,5 +148,21 @@ defmodule Renga.Accounts.User do
   def valid_password?(_, _) do
     Argon2.no_user_verify()
     false
+  end
+
+  @doc """
+  A changeset for the person's appearance preferences. A blank accent
+  follows the organization's default.
+  """
+  def appearance_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:theme, :accent, :density], empty_values: [""])
+    |> validate_required([:theme, :density])
+    |> validate_inclusion(:theme, Renga.Accounts.Appearance.themes())
+    |> validate_inclusion(:accent, Renga.Accounts.Appearance.accents())
+    |> validate_inclusion(:density, Renga.Accounts.Appearance.densities())
+    |> check_constraint(:theme, name: :users_valid_theme)
+    |> check_constraint(:accent, name: :users_valid_accent)
+    |> check_constraint(:density, name: :users_valid_density)
   end
 end

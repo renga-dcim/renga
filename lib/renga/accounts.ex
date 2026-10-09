@@ -83,6 +83,39 @@ defmodule Renga.Accounts do
   end
 
   @doc """
+  Changes the accent an organization's members see until they choose
+  their own (RFD 8, "Visual design"). Only an active owner may.
+  """
+  def set_default_accent(
+        %Scope{user: %User{id: user_id}, organization_id: organization_id},
+        accent
+      )
+      when is_binary(organization_id) do
+    Repo.transaction(fn ->
+      owner? =
+        OrganizationMembership
+        |> where([membership], membership.organization_id == ^organization_id)
+        |> where([membership], membership.user_id == ^user_id and membership.role == "owner")
+        |> where([membership], membership.status == "active")
+        |> lock("FOR UPDATE")
+        |> Repo.exists?()
+
+      unless owner?, do: Repo.rollback(:forbidden)
+
+      Organization
+      |> Repo.get!(organization_id)
+      |> Organization.default_accent_changeset(%{default_accent: accent})
+      |> Repo.update()
+      |> case do
+        {:ok, organization} -> organization
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  def set_default_accent(_scope, _accent), do: {:error, :forbidden}
+
+  @doc """
   Builds an organization changeset for forms and validations.
   """
   def change_organization(%Organization{} = organization, attrs \\ %{}) do
@@ -377,6 +410,20 @@ defmodule Renga.Accounts do
     user
     |> User.password_changeset(attrs)
     |> update_user_and_delete_all_tokens()
+  end
+
+  @doc "A changeset for the person's appearance preferences, for forms."
+  def change_user_appearance(%User{} = user, attrs \\ %{}),
+    do: User.appearance_changeset(user, attrs)
+
+  @doc """
+  Saves the person's theme, accent, and density. They follow the person
+  across devices; a blank accent follows the organization's default.
+  """
+  def update_user_appearance(%User{} = user, attrs) do
+    user
+    |> User.appearance_changeset(attrs)
+    |> Repo.update()
   end
 
   ## Session
