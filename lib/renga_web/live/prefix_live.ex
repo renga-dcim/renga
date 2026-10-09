@@ -209,6 +209,18 @@ defmodule RengaWeb.PrefixLive do
           </div>
         </header>
 
+        <p
+          :if={@query.vrf}
+          id="prefix-vrf-addresses-note"
+          class="flex items-start gap-2 rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-fg-muted"
+        >
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+          <span>
+            Collectors do not report routing tables yet, so observed addresses count in the
+            global table. Prefixes in {@query.vrf.name} show the space their children use.
+          </span>
+        </p>
+
         <div class={[
           "grid gap-6",
           @query.family == :both && "lg:grid-cols-2"

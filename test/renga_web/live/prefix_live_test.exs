@@ -107,6 +107,22 @@ defmodule RengaWeb.PrefixLiveTest do
     refute has_element?(view, "#prefix-row-#{p.users_v4.id}")
   end
 
+  test "explains that observed addresses count in the global table", %{conn: conn, scope: scope} do
+    p = plan(scope)
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes")
+    refute has_element?(view, "#prefix-vrf-addresses-note")
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes?vrf=blue")
+    assert has_element?(view, "#prefix-vrf-addresses-note", "global table")
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{p.blue}")
+    assert has_element?(view, "#prefix-addresses-global-note", "not counted in blue")
+
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{p.users_v4}")
+    refute has_element?(view, "#prefix-addresses-global-note")
+  end
+
   test "ignores an unknown routing table", %{conn: conn, scope: scope} do
     p = plan(scope)
     {:ok, view, _html} = live(conn, ~p"/network/prefixes?vrf=nope")

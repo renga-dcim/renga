@@ -16,8 +16,11 @@ defmodule Renga.IPAM do
   an IPv6 prefix derives from the optional prefix-to-VLAN relationship, so
   it needs no model of its own.
 
-  Addresses carry no routing table, so a prefix's addresses are those inside
-  it in any table.
+  Utilization is namespace-local (RFD 4, "Utilization"). Collectors do not
+  report routing domains yet, so every observed address, and every managed
+  address adopted from one, is in the global table: it counts toward global
+  prefixes only, and a VRF's prefixes have no addresses until sources can
+  place them there.
 
   Observed addresses are normal and never findings. An owner or admin adopts
   one into managed state when it needs state of its own; a managed address
@@ -435,7 +438,7 @@ defmodule Renga.IPAM do
       |> Repo.all()
 
     trees = PrefixTree.build(prefixes)
-    counts = address_counts(organization_id, Enum.map(prefixes, & &1.id))
+    counts = address_counts(organization_id, for(%{vrf_id: nil, id: id} <- prefixes, do: id))
     pairing = pairing(scope)
 
     Map.new([:ipv4, :ipv6], fn family ->
@@ -496,6 +499,7 @@ defmodule Renga.IPAM do
       counterparts: pairing.counterparts
     }
     |> Map.merge(mode_data(organization_id, mode, node))
+    |> Map.put(:addresses_observable?, is_nil(prefix.vrf_id))
   end
 
   @doc """
@@ -534,20 +538,20 @@ defmodule Renga.IPAM do
   defp mode_data(_organization_id, :container, node), do: %{space: PrefixTree.space_map(node)}
 
   defp mode_data(organization_id, :address_map, node) do
-    observed = addresses_in(organization_id, node.prefix.prefix)
-    entries = address_entries(organization_id, node.prefix.prefix, observed)
+    observed = addresses_in(organization_id, node.prefix)
+    entries = address_entries(organization_id, node.prefix, observed)
     %{addresses: entries, address_map: PrefixTree.address_map(node, observed, entries)}
   end
 
   defp mode_data(organization_id, :address_table, node) do
-    observed = addresses_in(organization_id, node.prefix.prefix)
-    %{addresses: address_entries(organization_id, node.prefix.prefix, observed)}
+    observed = addresses_in(organization_id, node.prefix)
+    %{addresses: address_entries(organization_id, node.prefix, observed)}
   end
 
   # One entry per address: observed ones (managed or not) and managed ones
   # no collector reports any more, in address order.
-  defp address_entries(organization_id, cidr, observed) do
-    managed = Map.new(managed_in(organization_id, cidr), &{Cidr.to_integer(&1.address), &1})
+  defp address_entries(organization_id, prefix, observed) do
+    managed = Map.new(managed_in(organization_id, prefix), &{Cidr.to_integer(&1.address), &1})
     seen = MapSet.new(observed, &Cidr.to_integer(&1.address))
 
     observed_entries =
@@ -571,7 +575,10 @@ defmodule Renga.IPAM do
     Enum.sort_by(observed_entries ++ unseen, &Cidr.to_integer(&1.inet))
   end
 
-  defp managed_in(organization_id, cidr) do
+  # Managed addresses are adopted from observed ones, so they are global too.
+  defp managed_in(_organization_id, %Prefix{vrf_id: vrf_id}) when not is_nil(vrf_id), do: []
+
+  defp managed_in(organization_id, %Prefix{prefix: cidr}) do
     ManagedAddress
     |> where([managed], managed.organization_id == ^organization_id)
     |> where([managed], fragment("? <<= ?", managed.address, type(^cidr, Renga.Types.Cidr)))
@@ -631,11 +638,16 @@ defmodule Renga.IPAM do
   Dual-stack coverage for a VLAN: which devices have addresses in its IPv4
   prefixes, its IPv6 prefixes, or both.
 
-  `nil` when the VLAN does not carry both families, because coverage only
-  means something once both are planned.
+  `nil` when the VLAN does not carry both families in the global table,
+  because coverage only means something once both are planned where
+  addresses are observed; VRF prefixes have none yet (see the moduledoc).
   """
   def vlan_dual_stack(%Scope{organization_id: organization_id} = scope, vlan_id) do
-    prefixes = Topology.list_vlan_prefixes(scope, vlan_id)
+    prefixes =
+      scope
+      |> Topology.list_vlan_prefixes(vlan_id)
+      |> Enum.filter(&is_nil(&1.vrf_id))
+
     {ipv4, ipv6} = Enum.split_with(prefixes, &(Cidr.family(&1.prefix) == :ipv4))
 
     if ipv4 != [] and ipv6 != [] do
@@ -679,7 +691,10 @@ defmodule Renga.IPAM do
 
   defp sort_devices(devices), do: Enum.sort_by(devices, & &1.name)
 
-  defp addresses_in(organization_id, cidr) do
+  # Observed addresses are global until collectors report routing domains.
+  defp addresses_in(_organization_id, %Prefix{vrf_id: vrf_id}) when not is_nil(vrf_id), do: []
+
+  defp addresses_in(organization_id, %Prefix{prefix: cidr}) do
     Address
     |> where([address], address.organization_id == ^organization_id)
     |> where(

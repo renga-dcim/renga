@@ -243,14 +243,33 @@ defmodule RengaWeb.PrefixDetailLiveTest do
     address_fixture(scope, eth0, "10.0.10.5")
     address_fixture(scope, eth0, "2001:db8:a:10::5")
     address_fixture(scope, other_ports["eth0"], "10.0.10.6")
+    tenant_v6 = prefix_fixture(scope, "2001:db8:b::/64", %{vrf: "blue"})
+    {:ok, _} = Topology.attach_prefix_vlan(scope, tenant_v6.id, users.id)
+    address_fixture(scope, other_ports["eth0"], "2001:db8:b::6")
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{v4}")
     assert has_element?(view, "#prefix-dual-stack-#{users.id}", "1 of 2")
+    assert has_element?(view, "#prefix-dual-stack-#{users.id}", "Global-table prefixes")
+    {:ok, tenant_view, _} = live(conn, ~p"/network/prefixes/#{tenant_v6}")
+
+    assert has_element?(
+             tenant_view,
+             "#prefix-dual-stack-#{users.id}",
+             "VRF prefixes are excluded"
+           )
 
     {:ok, vlan_view, _html} = live(conn, ~p"/network/vlans/#{users}")
     assert has_element?(vlan_view, "#vlan-dual-stack-summary", "1 of 2")
+    assert has_element?(vlan_view, "#vlan-dual-stack-summary", "Global-table prefixes")
     assert has_element?(vlan_view, "#vlan-missing-ipv6", "web-02")
     assert has_element?(vlan_view, "#vlan-missing-ipv4", "None.")
+    assert has_element?(vlan_view, "#vlan-missing-ipv6", "in Global prefixes")
+
+    {:ok, _} = Renga.IPAM.delete_prefix(scope, v6)
+    {:ok, global_view, _} = live(conn, ~p"/network/prefixes/#{v4}")
+    refute has_element?(global_view, "#prefix-dual-stack-#{users.id}")
+    {:ok, vlan_view, _} = live(conn, ~p"/network/vlans/#{users}")
+    refute has_element?(vlan_view, "#vlan-dual-stack")
   end
 
   test "keeps another organization's prefix out of reach", %{conn: conn} do
