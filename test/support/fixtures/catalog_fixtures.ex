@@ -57,4 +57,24 @@ defmodule Renga.CatalogFixtures do
 
     {resource, expected}
   end
+
+  @doc """
+  Records an observed component on `resource` as reconciliation would,
+  such as `actual_component_fixture(scope, server, "memory", "A1",
+  part_number: "M-32G")`.
+  """
+  def actual_component_fixture(scope, resource, kind, slot, attrs \\ []) do
+    now = DateTime.utc_now()
+
+    %Renga.Catalog.ActualComponent{
+      organization_id: scope.organization_id,
+      owner_resource_id: resource.id
+    }
+    |> Renga.Catalog.ActualComponent.changeset(
+      %{kind: kind, name: "#{kind} #{slot}", slot: slot}
+      |> Map.merge(Map.new(attrs))
+      |> Map.merge(%{first_observed_at: now, last_observed_at: now})
+    )
+    |> Renga.Repo.insert!()
+  end
 end

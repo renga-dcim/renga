@@ -50,7 +50,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
 
     assert has_element?(view, "#resource-hardware")
     assert has_element?(view, "#hardware-assignment-form")
-    assert has_element?(view, "#expected-components-list", "No component expectations")
+    assert has_element?(view, "#hardware-comparison-empty")
 
     view
     |> form("#hardware-assignment-form", hardware: %{hardware_type_id: hardware_type.id})
@@ -60,8 +60,8 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     assert assignment.hardware_type_id == hardware_type.id
     assert assignment.catalog_type_revision.revision == 1
     assert has_element?(view, "#hardware-assignment", "UI-SERVER")
-    assert has_element?(view, "#expected-components-list", "CPU 1")
-    assert has_element?(view, "#expected-components-list", "Management")
+    assert has_element?(view, "#hardware-cpu", "CPU1")
+    assert has_element?(view, "#other-expected", "Management")
     assert has_element?(view, "#hardware-assignment-clear")
   end
 
@@ -100,7 +100,7 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
       })
 
     {:ok, _, _} = Inventory.reconcile_observation(scope, observation.id)
-    assert eventually(fn -> has_element?(view, "#actual-components-list", "Live CPU") end)
+    assert eventually(fn -> has_element?(view, "#hardware-cpu", "Live CPU") end)
     assert has_element?(view, "#resource-status", "Retired")
   end
 
@@ -143,8 +143,9 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
     expected = Enum.find(Catalog.list_expected_components(scope, resource.id), & &1.suppressed)
     {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
-    assert has_element?(view, "#expected-component-#{expected.id}", "suppressed for this asset")
-    refute has_element?(view, "#expected-component-#{expected.id}", "required")
+    row = "#slot-template-#{expected.component_template_id}"
+    assert has_element?(view, row, "Not expected here")
+    refute has_element?(view, row, "Missing")
   end
 
   test "unsupported resources expose no hardware assignment controls", %{
@@ -267,13 +268,13 @@ defmodule RengaWeb.ResourceHardwareLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/inventory/#{resource.id}/hardware")
 
-    assert has_element?(view, "#actual-component-#{actual.id}", "Processor 1")
+    assert has_element?(view, "#slot-actual-#{actual.id}", "Processor 1")
 
-    assert has_element?(
-             view,
-             "#component-evidence-match-#{match.id}",
-             "evidence-agent · discovered · 2026-08-21 09:30 UTC"
-           )
+    {:ok, view, _html} =
+      live(conn, ~p"/inventory/#{resource.id}/hardware?component=actual:#{actual.id}")
+
+    assert has_element?(view, "#component-evidence-match-#{match.id}", "evidence-agent")
+    assert has_element?(view, "#component-evidence-match-#{match.id}", "discovered")
   end
 
   test "viewer can read hardware but cannot forge assignment mutations", %{
