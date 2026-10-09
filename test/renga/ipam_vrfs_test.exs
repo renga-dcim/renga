@@ -152,6 +152,29 @@ defmodule Renga.IPAMVrfsTest do
     end
   end
 
+  test "stale VRF edits cannot overwrite current intent or write events", context do
+    vrf = vrf_fixture(context.admin, "blue")
+    {:ok, updated} = IPAM.update_vrf(context.admin, vrf, %{description: "Tenant"})
+    events = Inventory.list_activity(context.admin)
+
+    assert {:error, :stale} = IPAM.update_vrf(context.admin, vrf, %{name: "red"})
+    assert %{name: "blue", description: "Tenant"} = Repo.get!(Vrf, vrf.id)
+    assert Inventory.list_activity(context.admin) == events
+
+    assert {:ok, %{name: "red"}} = IPAM.update_vrf(context.admin, updated, %{name: "red"})
+  end
+
+  test "counts prefixes per routing table", context do
+    blue = vrf_fixture(context.admin, "blue")
+    vrf_fixture(context.admin, "empty")
+    prefix_fixture(context.admin, "10.0.0.0/24", %{vrf: "blue"})
+    prefix_fixture(context.admin, "10.0.1.0/24", %{vrf: "blue"})
+    prefix_fixture(context.admin, "10.0.0.0/24")
+    prefix_fixture(scope_for(organization_fixture(), "admin"), "10.0.0.0/24")
+
+    assert IPAM.prefix_counts(context.admin) == %{nil => 1, blue.id => 2}
+  end
+
   test "a VRF holding prefixes cannot be deleted; an empty one can", context do
     vrf = vrf_fixture(context.admin, "blue")
     prefix = prefix_fixture(context.admin, "10.0.0.0/24", %{vrf: "blue"})

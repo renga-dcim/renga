@@ -316,10 +316,16 @@ defmodule Renga.IPAM do
   @doc """
   Changes a VRF. Owners and admins only. A rename relabels the VRF's
   envelope and every prefix in it, and each changed field is recorded.
+
+  `baseline` is the VRF as the editor last read it; if any recorded field
+  has changed since, the edit returns `{:error, :stale}` and writes nothing.
   """
-  def update_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id}, attrs) do
+  def update_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id} = baseline, attrs) do
     Inventory.organization_management_transaction(scope, fn ->
       current = lock_vrf!(organization_id, id)
+
+      if Map.take(current, @vrf_event_fields) != Map.take(baseline, @vrf_event_fields),
+        do: Repo.rollback(:stale)
 
       updated =
         current
@@ -348,6 +354,19 @@ defmodule Renga.IPAM do
       %{updated | resource: resource}
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Prefix counts per routing table, keyed by `vrf_id` with `nil` for the
+  global table. Tables without prefixes are absent.
+  """
+  def prefix_counts(%Scope{organization_id: organization_id}) do
+    Prefix
+    |> where([prefix], prefix.organization_id == ^organization_id)
+    |> group_by([prefix], prefix.vrf_id)
+    |> select([prefix], {prefix.vrf_id, count(prefix.id)})
+    |> Repo.all()
+    |> Map.new()
   end
 
   @doc """
