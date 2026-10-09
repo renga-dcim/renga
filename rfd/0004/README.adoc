@@ -117,8 +117,9 @@ or host address may exist independently in different VRFs and in the global
 table. There is no synthetic "default" VRF row.
 
 A VRF initially has a name, optional route distinguisher, description, status,
-and metadata. Names and non-null route distinguishers are unique within an
-organization. Import targets and route targets are deferred until a collector or
+and metadata. Names, compared case-insensitively, and non-null route
+distinguishers are unique within an organization, and `default` is reserved for
+the global table. Import targets and route targets are deferred until a collector or
 operator workflow needs them.
 
 The existing free-text prefix VRF migration starts with a namespace preflight.
@@ -127,8 +128,8 @@ are proposed to become null and therefore global. Every other distinct normalize
 value proposes one organization-scoped VRF envelope and its foreign key.
 The preflight reports every many-to-one mapping of legacy tables, including
 blank/`default` aliases. Different spellings are not assumed to be aliases:
-operators must explicitly approve a merge or rename the legacy tables before
-the migration applies it. For example, `Blue` containing `10.0.0.0/24` and
+an operator approves a merge by renaming the legacy tables to one spelling
+(blank for global) in the prefix edit form and running the migration again. For example, `Blue` containing `10.0.0.0/24` and
 `blue` containing `10.0.0.0/25` must be reported even though no exact CIDR
 collides. Resulting exact-CIDR conflicts must be remediated before any changes
 are applied; unapproved merges fail with a remediation report. The

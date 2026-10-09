@@ -17,16 +17,16 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 2: VRFs
 
-* [ ] Add optional organization-scoped VRF resource envelopes and typed
+* [x] Add optional organization-scoped VRF resource envelopes and typed
   projections; null `vrf_id` remains the global routing table.
-* [ ] Replace `Prefix.vrf` text with a nullable tenant-safe VRF association,
+* [x] Replace `Prefix.vrf` text with a nullable tenant-safe VRF association,
   preflighting every many-to-one mapping including blank/`default` to global,
-  requiring operator approval or renaming, and rejecting resulting exact-CIDR
+  requiring operator approval by renaming, and rejecting resulting exact-CIDR
   conflicts. Test case variants with contained but non-identical CIDRs.
-* [ ] Replace interim prefix uniqueness with null-safe global/VRF constraints,
-  and make utilization namespace-local with unions of child-prefix space.
-* [ ] Add `/network/vrfs` and switch the prefix views' routing-table selector to
-  VRF records.
+* [x] Replace interim prefix uniqueness with null-safe global/VRF constraints.
+* [ ] Make utilization namespace-local with unions of child-prefix space.
+* [x] Switch the prefix views' routing-table selector to VRF records.
+* [ ] Add `/network/vrfs`.
 
 == Phase 3: Managed addresses
 
