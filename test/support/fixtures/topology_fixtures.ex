@@ -181,4 +181,56 @@ defmodule Renga.TopologyFixtures do
 
     evidence
   end
+
+  @doc "Creates a prefix (and its resource envelope) in an optional VRF."
+  def prefix_fixture(scope, cidr, attrs \\ %{}) do
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "prefix",
+        name: "#{cidr}#{if attrs[:vrf], do: "@#{attrs[:vrf]}"}",
+        lifecycle_state: "active"
+      })
+
+    {:ok, prefix} = Inventory.create_prefix(scope, resource.id, Map.put(attrs, :prefix, cidr))
+    Renga.Repo.preload(prefix, :resource)
+  end
+
+  @doc "Reconciles an authoritative address snapshot through the collector ingestion path."
+  def report_addresses(scope, source, addresses) do
+    suffix = System.unique_integer([:positive, :monotonic])
+    observed_at = DateTime.add(~U[2026-08-01 12:00:00Z], suffix, :second)
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "addresses-#{suffix}",
+        observed_at: observed_at,
+        payload: %{
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "ipam-collector"},
+              "interfaces" => [%{"name" => "eth0", "addresses" => addresses}]
+            }
+          ]
+        }
+      })
+
+    {:ok, resource, _created?} = Inventory.reconcile_observation(scope, observation.id)
+    [interface] = Inventory.list_interfaces(scope, resource.id)
+    Inventory.list_addresses(scope, interface.id)
+  end
+
+  @doc "Records an observed address on an interface."
+  def address_fixture(scope, interface, text, metadata \\ %{}) do
+    kind = if String.contains?(text, ":"), do: "ipv6", else: "ipv4"
+
+    {:ok, address} =
+      Inventory.create_address(scope, interface.id, %{
+        kind: kind,
+        address: text,
+        metadata: metadata
+      })
+
+    address
+  end
 end
