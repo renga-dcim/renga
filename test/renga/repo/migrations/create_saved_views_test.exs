@@ -47,13 +47,7 @@ defmodule Renga.Repo.Migrations.CreateSavedViewsTest do
   end
 
   test "pins a Stale inventory view for every existing organization", %{scratch_repo: repo} do
-    path = Ecto.Migrator.migrations_path(Renga.Repo)
-
-    Ecto.Migrator.run(Renga.Repo, path, :up,
-      to: @previous_version,
-      dynamic_repo: repo,
-      log: false
-    )
+    Renga.ScratchMigrations.run(repo, :up, to: @previous_version)
 
     for name <- ["Acme", "Beta"] do
       {:ok, _} =
@@ -64,11 +58,7 @@ defmodule Renga.Repo.Migrations.CreateSavedViewsTest do
     end
 
     assert [@migration_version | _] =
-             Ecto.Migrator.run(Renga.Repo, path, :up,
-               to: @migration_version,
-               dynamic_repo: repo,
-               log: false
-             )
+             Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
 
     assert {:ok, %{rows: rows}} =
              query(repo, """

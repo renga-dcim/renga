@@ -623,7 +623,7 @@ defmodule Renga.InventoryTest do
 
       stale = resource.("server", "b-stale", "active")
       current = resource.("server", "a-current", "inactive")
-      unreported = resource.("switch", "c-unreported", "active")
+      _unreported = resource.("switch", "c-unreported", "active")
 
       for {target, status} <- [{stale, "false"}, {current, "true"}] do
         {:ok, _condition} =
