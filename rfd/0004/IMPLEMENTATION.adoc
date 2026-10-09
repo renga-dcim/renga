@@ -9,7 +9,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Add prefix create, edit, and delete in the Network area, defaulting to the
   global table.
 * [ ] Add the `container` status and enforce exact CIDR uniqueness per
-  global-or-VRF namespace with null-safe constraints.
+  legacy exact-string routing table; replace this constraint in Phase 2.
 * [ ] Build hierarchy with strict containment so a prefix is never its own
   parent.
 * [ ] Count utilization from distinct host values everywhere, without row counts
@@ -20,8 +20,11 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Add optional organization-scoped VRF resource envelopes and typed
   projections; null `vrf_id` remains the global routing table.
 * [ ] Replace `Prefix.vrf` text with a nullable tenant-safe VRF association,
-  mapping blank and `default` values to global, preserving every other legacy
-  routing domain, and failing with a report on ambiguous values.
+  preflighting every many-to-one mapping including blank/`default` to global,
+  requiring operator approval or renaming, and rejecting resulting exact-CIDR
+  conflicts. Test case variants with contained but non-identical CIDRs.
+* [ ] Replace interim prefix uniqueness with null-safe global/VRF constraints,
+  and make utilization namespace-local with unions of child-prefix space.
 * [ ] Add `/network/vrfs` and switch the prefix views' routing-table selector to
   VRF records.
 
@@ -36,6 +39,9 @@ Implements link:README.adoc[RFD 4: IP address management].
   ordinary single-assignment validation, and explicit shared-address roles.
 * [ ] Move Adopt and release onto the new model in one transaction each, writing
   change events, and migrate existing managed addresses with their interfaces.
+* [ ] Test adopt, release, and re-adopt of the same canonical identity, including
+  surviving observed-only occupancy, ended assignments, retired-role behavior,
+  and separate removal of one shared assignment.
 * [ ] Add `/network/addresses` with managed-address search, reservations, and
   assignments.
 
@@ -44,6 +50,8 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Change observed-address identity to interface plus host value while
   preserving every reported address and mask in observation evidence, merging
   existing same-host rows.
+* [ ] Update evidence uniqueness and ingestion idempotency before reparenting;
+  test same-observation `/24` and `/32` reports, replay, and presence history.
 
 == Phase 5: Address findings
 
@@ -71,7 +79,11 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Add an optional per-family organization addressing plan that drives the
   child-space map's planning levels.
 * [ ] Add a serialized next-free prefix and host allocator for owners and
-  admins, with concurrency tests proving it never returns the same space twice.
+  admins, sharing organization-first locking with all managed writes affecting
+  availability and excluding known occupied and non-assignable space.
+* [ ] Prove allocation safety under allocator-versus-allocator,
+  allocator-versus-manual-write, and prefix-resize races, with availability
+  checks and durable allocation in the same transaction.
 
 == Throughout
 

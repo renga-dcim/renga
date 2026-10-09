@@ -95,9 +95,11 @@ Managed intent and observed evidence remain separate:
 
 VRFs, prefixes, and managed IP addresses use resource envelopes because they
 are independently addressable inventory objects that need desired state,
-lifecycle, revisions, and change history, and because the envelope is what puts
-their changes in the Activity feed. Add `ip_address` to the accepted resource
-kinds and add `prefix`, `vrf`, and `ip_address` to the owner/admin-managed
+lifecycle, revisions, and change history. Activity requires explicitly written
+change events; envelopes provide their stable subjects but do not emit them
+automatically. Typed-field and assignment-only mutations also write events.
+Add `ip_address` to the accepted resource kinds and add `prefix`, `vrf`, and
+`ip_address` to the owner/admin-managed
 kinds. An IP-address envelope receives a server-generated stable name rather
 than using address text, because the same host address may validly exist in
 several VRFs. Typed projections retain their constrained, queryable fields.
@@ -119,13 +121,18 @@ and metadata. Names and non-null route distinguishers are unique within an
 organization. Import targets and route targets are deferred until a collector or
 operator workflow needs them.
 
-The existing free-text prefix VRF is migrated without dropping distinctions.
+The existing free-text prefix VRF migration starts with a namespace preflight.
 Values are trimmed and compared case-insensitively. Blank values and `default`
-become null and therefore global. Every other distinct normalized value creates
-one organization-scoped VRF envelope and is replaced by its foreign key.
-Ambiguous values, such as two spellings that normalize alike but are attached to
-the same CIDR, fail the migration with a remediation report rather than being
-silently merged. The routing-table switch in the prefix views then lists VRF
+are proposed to become null and therefore global. Every other distinct normalized
+value proposes one organization-scoped VRF envelope and its foreign key.
+The preflight reports every many-to-one mapping of legacy tables, including
+blank/`default` aliases. Different spellings are not assumed to be aliases:
+operators must explicitly approve a merge or rename the legacy tables before
+the migration applies it. For example, `Blue` containing `10.0.0.0/24` and
+`blue` containing `10.0.0.0/25` must be reported even though no exact CIDR
+collides. Resulting exact-CIDR conflicts must be remediated before any changes
+are applied; unapproved merges fail with a remediation report. The
+routing-table switch in the prefix views then lists VRF
 records instead of distinct strings.
 
 == Prefixes
@@ -188,13 +195,22 @@ duplicate address-to-interface pair. Assignment transactions lock the address
 row; ordinary roles reject a second assignment, and changing a shared role to
 an ordinary role is rejected while multiple assignments exist.
 
-Adopt remains the quickest way to create a managed address. It runs in one
+Adopt remains the quickest way to establish a managed address. It runs in one
 transaction that re-checks the owner/admin membership in the database, creates
-the envelope and an `allocated` address in the observed address's namespace with
-the observed mask, sets the management mode from the observed assignment method
+or reactivates the envelope and an `allocated` address in the observed address's
+namespace with the observed mask, sets the management mode from the assignment method
 where it is known, and assigns it to the interface it was seen on. Release
 becomes lifecycle retirement of the envelope rather than a hard delete, so the
 history stays in Activity.
+
+Release ends all current assignments and retires the whole managed address,
+including a shared address; removing just one assignment is a separate audited
+operation. Retired addresses are not current managed intent: they do not count
+as managed utilization, produce stale-managed findings, or suppress findings
+through their former roles. Surviving observations remain observed-only and
+still occupy space. Re-adoption, reservation, and allocation lock and reactivate
+the existing canonical record for that namespace and host instead of inserting
+a second record, retaining its audit history and establishing new current intent.
 
 The migration from `ManagedAddress` gives each existing row an envelope, the
 global namespace, `allocated` state, an ordinary role, and an assignment for its
@@ -214,6 +230,12 @@ canonical row, and every original address and mask remains in
 creating a second host assignment on the same interface. The migration merges
 existing same-host rows on one interface, keeping the most recently observed
 mask on the canonical row and every evidence row.
+
+Before reparenting evidence, change its uniqueness and ingestion idempotency
+contract to preserve distinct reported masks within the same observation and
+canonical address. Migration and replay tests include `/24` and `/32` reports
+for the same interface and host in one observation, retaining both evidence
+rows and presence history without duplicating them on replay.
 
 An observation with no routing-domain claim belongs to the global table. This
 matches the product's no-isolation default and may intentionally produce a
@@ -289,11 +311,20 @@ current guess from the most common child length, and it offers "next free" at
 each level: the first unallocated child prefix of the planned length, or the
 first unallocated host in a leaf prefix.
 
-The allocator serializes competing attempts with a lock on the parent prefix
-and re-checks availability inside the transaction, and its tests prove it
-cannot return the same prefix or host twice under concurrency before it is
-exposed. It is available to owners and admins in the browser; a public
-allocation API remains excluded.
+The initial allocator and all managed writes affecting allocation availability
+share the organization's serialization lock, acquired in the existing topology
+order: organization, membership, then domain rows. This includes manual prefix
+creation, resizing and namespace moves, reservations, address assignments,
+release, and allocation. Availability is re-checked and the allocation durably
+recorded in the same transaction; locking only the selected parent is not enough
+when overlapping parents or manual writes can compete.
+
+Free space excludes reservations, current managed hosts, active observed-only
+hosts, child-prefix space, and family-specific non-assignable addresses. The
+guarantee concerns known inventory, not unseen devices that later claim space.
+Tests cover allocator-versus-allocator, allocator-versus-manual-write, and
+prefix-resize races before exposure. It is available to owners and admins in
+the browser; a public allocation API remains excluded.
 
 == User interaction
 
