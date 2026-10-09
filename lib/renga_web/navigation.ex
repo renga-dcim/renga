@@ -76,6 +76,9 @@ defmodule RengaWeb.Navigation do
           section(:prefixes, "Prefixes", ~p"/network/prefixes", "hero-globe-alt",
             keywords: ~w(ipam subnets addresses ipv4 ipv6 vrf)
           ),
+          section(:addresses, "Addresses", ~p"/network/addresses", "hero-map-pin",
+            keywords: ~w(ipam ip reservations assignments dns)
+          ),
           section(:vrfs, "VRFs", ~p"/network/vrfs", "hero-square-3-stack-3d",
             keywords: ~w(ipam routing tables namespaces)
           ),

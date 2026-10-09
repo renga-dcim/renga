@@ -163,6 +163,7 @@ defmodule RengaWeb.Router do
       live "/network/prefixes", PrefixLive, :index
       live "/network/prefixes/:id", PrefixDetailLive, :show
       live "/network/vrfs", VrfLive, :index
+      live "/network/addresses", AddressLive, :index
       live "/network/cables", CableLive, :index
 
       live "/activity", ActivityLive, :index
