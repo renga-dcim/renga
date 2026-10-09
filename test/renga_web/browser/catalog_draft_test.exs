@@ -64,18 +64,24 @@ defmodule RengaWeb.Browser.CatalogDraftTest do
     context.conn
     |> visit(context.path)
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> click_button("#add-spec-row", "Add specification")
     |> assert_has("#specs-row-0-remove")
     |> evaluate(
       "document.getElementById('specs-row-0-remove').getBoundingClientRect().height",
       &assert(round(&1) >= 44)
     )
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> click_link("#draft-review", "Review and publish")
     |> assert_has("#review-changes")
     |> evaluate(
-      "document.getElementById('review-panel-container').getBoundingClientRect().width <= window.innerWidth",
+      "document.getElementById('review-panel-container').getBoundingClientRect().width <= document.documentElement.clientWidth",
       &assert(&1 == true)
     )
   end

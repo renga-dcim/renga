@@ -163,8 +163,8 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
     """
     (() => {
       const box = document.querySelector('#rule-panel [role=dialog]').getBoundingClientRect();
-      return box.left >= 0 && box.right <= window.innerWidth + 0.5 &&
-        document.documentElement.scrollWidth <= window.innerWidth;
+      return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
     """
   end

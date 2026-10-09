@@ -91,7 +91,10 @@ defmodule RengaWeb.Browser.CatalogMovesTest do
     |> visit(context.path)
     |> assert_has("body .phx-connected")
     |> assert_has("#used-by")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(
       "[...document.querySelectorAll('#bulk-move button, #auto-move-toggle')].map(b => b.getBoundingClientRect().height)",
       fn heights -> assert Enum.all?(heights, &(round(&1) >= 44)) end

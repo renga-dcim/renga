@@ -85,7 +85,10 @@ defmodule RengaWeb.Browser.HardwareTest do
     context.conn
     |> visit("/inventory/#{context.server.id}/hardware")
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(heights_js(), fn heights ->
       assert heights != []
       assert Enum.all?(heights, &(round(&1) >= 44))
@@ -136,8 +139,8 @@ defmodule RengaWeb.Browser.HardwareTest do
     """
     (() => {
       const box = document.getElementById('slot-panel-container').getBoundingClientRect();
-      return box.left >= 0 && box.right <= window.innerWidth + 0.5 &&
-        document.documentElement.scrollWidth <= window.innerWidth;
+      return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
     """
   end

@@ -69,13 +69,16 @@ defmodule RengaWeb.Browser.VlansTest do
     context.conn
     |> visit("/network/vlans/#{context.users.id}")
     |> assert_has("body .phx-connected")
-    |> evaluate("document.documentElement.scrollWidth <= window.innerWidth", &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> evaluate(
       """
       (() => {
         const state = document.querySelector('#member-#{context.swp2} td:first-child span.block')
         const box = state.getBoundingClientRect()
-        return state.textContent.trim() + '|' + (box.width > 0 && box.right <= window.innerWidth)
+        return state.textContent.trim() + '|' + (box.width > 0 && box.right <= document.documentElement.clientWidth)
       })()
       """,
       &assert(&1 == "Planned, not observed|true")

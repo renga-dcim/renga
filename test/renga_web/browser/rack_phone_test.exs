@@ -83,7 +83,7 @@ defmodule RengaWeb.Browser.RackPhoneTest do
   end
 
   defp fits_width_js do
-    "document.documentElement.scrollWidth <= window.innerWidth"
+    "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
   end
 
   defp tap_heights_js do
