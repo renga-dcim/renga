@@ -8,6 +8,11 @@ defmodule RengaWeb.ChangeDescription do
   # Field names come from the reconciler (for example "lifecycle_state"); they
   # read as words so a change reads as a sentence.
   @doc "The change as a sentence, starting with a capital letter."
+  def describe(%{kind: "created", field: field, new_value: %{"value" => value}})
+      when is_binary(field),
+      do: "Created #{String.replace(field, "_", " ")} #{value}"
+
+  def describe(%{kind: "created"}), do: "Created"
   def describe(%{kind: "discovered"}), do: "Discovered"
   def describe(%{kind: "stale"}), do: "Marked stale"
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)

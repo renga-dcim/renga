@@ -2583,7 +2583,7 @@ defmodule Renga.TopologyTest do
 
     assert first_relationship.prefix_id == first_prefix.id
     assert first_relationship.vlan_id == first_vlan.id
-    assert first_relationship.prefix.resource.name == "prefix-links-a"
+    assert first_relationship.prefix.resource.display_name == "192.0.2.0/24"
 
     assert {:ok, _relationship} =
              Topology.attach_prefix_vlan(scope, second_prefix.id, first_vlan.id)
@@ -2595,9 +2595,9 @@ defmodule Renga.TopologyTest do
 
     assert first_vlan_prefixes = Topology.list_vlan_prefixes(scope, first_vlan.id)
 
-    assert Enum.map(first_vlan_prefixes, & &1.resource.name) |> Enum.sort() == [
-             "prefix-links-a",
-             "prefix-links-b"
+    assert Enum.map(first_vlan_prefixes, & &1.resource.display_name) |> Enum.sort() == [
+             "192.0.2.0/24",
+             "198.51.100.0/24"
            ]
 
     assert [%Prefix{prefix: %Postgrex.INET{address: {198, 51, 100, 0}, netmask: 24}}] =
@@ -5899,15 +5899,8 @@ defmodule Renga.TopologyTest do
     )
   end
 
-  defp prefix_fixture(scope, resource_name, cidr) do
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{
-        kind: "prefix",
-        name: resource_name,
-        lifecycle_state: "active"
-      })
-
-    {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: cidr})
+  defp prefix_fixture(scope, _resource_name, cidr) do
+    {:ok, prefix} = Renga.IPAM.create_prefix(scope, %{prefix: cidr})
     prefix
   end
 

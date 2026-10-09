@@ -500,14 +500,7 @@ defmodule Renga.TopologyConcurrencyTest do
 
   test "competing duplicate prefix/VLAN attaches keep one link" do
     with_topology(fn scope, suffix ->
-      {:ok, resource} =
-        Inventory.create_resource(scope, %{
-          kind: "prefix",
-          name: "prefix-attach-race-#{suffix}",
-          lifecycle_state: "active"
-        })
-
-      {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.0/24"})
+      {:ok, prefix} = Renga.IPAM.create_prefix(scope, %{prefix: "192.0.2.0/24"})
 
       {:ok, group} =
         Topology.create_vlan_group(

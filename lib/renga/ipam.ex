@@ -1,6 +1,11 @@
 defmodule Renga.IPAM do
   @moduledoc """
-  Read models for the prefix views (RFD 8, "Prefixes").
+  IP address management (RFD 4) and the read models for the prefix views
+  (RFD 8, "Prefixes").
+
+  Prefix writes belong to owners and admins and run here so that a prefix's
+  resource envelope and typed projection are created together, under one
+  database-checked authorization, with a change event for Activity.
 
   Prefixes and addresses are stored by `Renga.Inventory`; VLAN links by
   `Renga.Topology`. This context arranges them per routing table and
@@ -24,12 +29,74 @@ defmodule Renga.IPAM do
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Changes
   alias Renga.Inventory.Prefix
+  alias Renga.Inventory.ResourceStore
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.ManagedAddress
   alias Renga.IPAM.PrefixTree
   alias Renga.Repo
   alias Renga.Topology
+
+  @doc """
+  Creates a prefix and its resource envelope. Owners and admins only.
+
+  `attrs` are the typed prefix fields (`prefix`, `vrf`, `status`,
+  `description`). The envelope gets a stable generated name, so editing the
+  CIDR later never renames it, and shows the CIDR as its display name.
+  Returns `{:error, :forbidden}` for anyone else, or the changeset when the
+  CIDR is invalid or already exists in its routing table.
+  """
+  def create_prefix(%Scope{organization_id: organization_id} = scope, attrs) do
+    Inventory.organization_management_transaction(scope, fn ->
+      validation = Prefix.changeset(%Prefix{organization_id: organization_id}, attrs)
+
+      # The resource does not exist yet, so its absence is the one error
+      # expected here; anything else is the caller's input.
+      if Keyword.delete(validation.errors, :resource_id) != [] do
+        Repo.rollback(%{validation | action: :insert})
+      end
+
+      label =
+        prefix_label(
+          Ecto.Changeset.get_field(validation, :prefix),
+          Ecto.Changeset.get_field(validation, :vrf)
+        )
+
+      resource =
+        case ResourceStore.insert(organization_id, %{
+               kind: "prefix",
+               name: "prefix-" <> Ecto.UUID.generate(),
+               display_name: label,
+               lifecycle_state: "active"
+             }) do
+          {:ok, resource} -> resource
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      prefix =
+        %Prefix{organization_id: organization_id, resource_id: resource.id}
+        |> Prefix.changeset(attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, prefix} -> prefix
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "created",
+          field: "prefix",
+          resource_id: resource.id,
+          new_value: %{"value" => label}
+        })
+
+      %{prefix | resource: resource}
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp prefix_label(cidr, nil), do: Cidr.format(cidr)
+  defp prefix_label(cidr, vrf), do: "#{Cidr.format(cidr)} (#{vrf})"
 
   @doc "The routing tables in use: `nil` for global, then each VRF by name."
   def list_routing_tables(%Scope{organization_id: organization_id}) do
