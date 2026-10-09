@@ -197,6 +197,71 @@ defmodule Renga.IPAMTest do
     assert {:ok, _released} = IPAM.release_address(scope, managed.id)
   end
 
+  test "managed identity ignores interface masks and persists after interface or resource deletion",
+       %{scope: scope} do
+    for {text, host, mask} <- [
+          {"192.0.2.5/24", "192.0.2.5/32", 32},
+          {"2001:db8::5/64", "2001:db8::5/128", 128}
+        ] do
+      {resource, ports} = device_fixture(scope, "server", "identity-#{mask}", ~w(eth0 eth1))
+      first = address_fixture(scope, ports["eth0"], text)
+      second = address_fixture(scope, ports["eth1"], host)
+      assert {:ok, managed} = IPAM.adopt_address(scope, first.id)
+      assert managed.address.netmask == mask
+      assert Renga.Repo.reload!(first).address.netmask != mask
+      assert {:error, %Ecto.Changeset{}} = IPAM.adopt_address(scope, second.id)
+      invalid = %{managed | id: nil, address: first.address}
+
+      changeset =
+        invalid
+        |> Ecto.Changeset.change()
+        |> Ecto.Changeset.check_constraint(:address, name: :managed_addresses_host_address)
+
+      assert {:error, %Ecto.Changeset{}} = Renga.Repo.insert(changeset, mode: :savepoint)
+      if mask == 32, do: Renga.Repo.delete!(ports["eth0"]), else: Renga.Repo.delete!(resource)
+      assert %{interface_id: nil, organization_id: organization_id} = Renga.Repo.reload!(managed)
+      assert organization_id == scope.organization_id
+      assert {:ok, _} = IPAM.release_address(scope, managed.id)
+    end
+  end
+
+  test "cannot adopt or release another tenant's address", %{scope: scope} do
+    other = user_fixture()
+    organization = organization_fixture()
+    organization_membership_fixture(other, organization, %{role: "admin"})
+    other_scope = Accounts.scope_for_user(other, organization.id)
+    {_host, ports} = device_fixture(other_scope, "server", "foreign-adoption", ~w(eth0))
+    address = address_fixture(other_scope, ports["eth0"], "192.0.2.5/24")
+    assert_raise Ecto.NoResultsError, fn -> IPAM.adopt_address(scope, address.id) end
+    assert {:ok, managed} = IPAM.adopt_address(other_scope, address.id)
+    assert_raise Ecto.NoResultsError, fn -> IPAM.release_address(scope, managed.id) end
+    assert Renga.Repo.reload!(managed)
+  end
+
+  test "coverage tracks authoritative withdrawal and reappearance using host containment", %{
+    scope: scope
+  } do
+    group = vlan_group_fixture(scope, "withdrawal")
+    vlan = vlan_fixture(scope, group, 10, "users")
+
+    for cidr <- ["192.0.2.0/28", "2001:db8:1::/80"] do
+      prefix = prefix_fixture(scope, cidr)
+      {:ok, _} = Topology.attach_prefix_vlan(scope, prefix.id, vlan.id)
+    end
+
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "coverage"})
+    addresses = report_addresses(scope, source, ["192.0.2.5/24", "2001:db8:1::5/64"])
+    v6 = Enum.find(addresses, &(&1.kind == "ipv6"))
+    assert %{total: 1, both: [_]} = IPAM.vlan_dual_stack(scope, vlan.id)
+    report_addresses(scope, source, ["192.0.2.5/24"])
+    assert %{both: [], missing_ipv6: [_], total: 1} = IPAM.vlan_dual_stack(scope, vlan.id)
+    assert_raise Ecto.NoResultsError, fn -> IPAM.adopt_address(scope, v6.id) end
+    report_addresses(scope, source, [])
+    assert %{total: 0} = IPAM.vlan_dual_stack(scope, vlan.id)
+    report_addresses(scope, source, ["192.0.2.5/24", "2001:db8:1::5/64"])
+    assert %{total: 1, both: [_]} = IPAM.vlan_dual_stack(scope, vlan.id)
+  end
+
   test "measures dual-stack coverage only for VLANs carrying both families", %{scope: scope} do
     group = vlan_group_fixture(scope, "dual")
     users = vlan_fixture(scope, group, 10, "users")

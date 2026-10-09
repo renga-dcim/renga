@@ -217,11 +217,15 @@ defmodule Renga.IPAM do
           [address],
           address.organization_id == ^organization_id and address.id == ^address_id
         )
+        |> where(
+          [address],
+          fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+        )
         |> Repo.one!()
 
       %ManagedAddress{
         organization_id: organization_id,
-        address: address.address,
+        address: %{address.address | netmask: Cidr.bits(Cidr.family(address.address))},
         interface_id: address.interface_id,
         adopted_by_id: scope.user.id
       }
@@ -282,8 +286,12 @@ defmodule Renga.IPAM do
     |> where([address], address.organization_id == ^organization_id)
     |> where(
       [address],
+      fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+    )
+    |> where(
+      [address],
       fragment(
-        "? <<= ANY(?)",
+        "host(?)::inet <<= ANY(?)",
         address.address,
         type(^cidrs, {:array, Renga.Types.Cidr})
       )

@@ -136,33 +136,42 @@ defmodule RengaWeb.PrefixDetailLiveTest do
 
   test "owners adopt observed addresses and keep them listed after they go", %{
     conn: conn,
-    scope: scope,
-    eth0: eth0
+    scope: scope
   } do
-    lan = prefix_fixture(scope, "192.0.2.0/28")
-    address = address_fixture(scope, eth0, "192.0.2.5")
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "lifecycle"})
 
-    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+    for {cidr, text} <- [
+          {"192.0.2.0/28", "192.0.2.5/24"},
+          {"2001:db8:1::/80", "2001:db8:1::5/64"}
+        ] do
+      lan = prefix_fixture(scope, cidr)
+      addresses = report_addresses(scope, source, [text])
+      address = Enum.find(addresses, &(&1.metadata["present"] == true))
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#prefix-addresses [data-status='observed']", "Observed")
+      view |> element("#address-#{address.id}-adopt") |> render_click()
+      assert has_element?(view, "#prefix-addresses [data-status='managed']", "Managed")
+      [managed] = Renga.Repo.all(Renga.IPAM.ManagedAddress)
 
-    # Observed-only is normal: a plain status, never a finding.
-    assert has_element?(view, "#prefix-addresses [data-status='observed']", "Observed")
+      report_addresses(scope, source, [])
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#managed-#{managed.id}")
+      assert has_element?(view, "#prefix-addresses [data-status='managed_unseen']", "not seen")
 
-    view |> element("#address-#{address.id}-adopt") |> render_click()
-    assert has_element?(view, "#flash-info", "adopted")
-    assert has_element?(view, "#prefix-addresses [data-status='managed']", "Managed")
+      if address.kind == "ipv4",
+        do: assert(has_element?(view, "#address-cell-5[data-state='managed']"))
 
-    # Once no collector reports it, the managed address stays listed.
-    Renga.Repo.delete!(address)
-    [managed] = Renga.Repo.all(Renga.IPAM.ManagedAddress)
+      report_addresses(scope, source, [text])
+      {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
+      assert has_element?(view, "#address-#{address.id}")
+      assert has_element?(view, "#prefix-addresses [data-status='managed']")
 
-    {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
-    assert has_element?(view, "#managed-#{managed.id}", "192.0.2.5")
-    assert has_element?(view, "#prefix-addresses [data-status='managed_unseen']", "not seen")
-    assert has_element?(view, "#address-cell-5[data-state='managed']")
+      if address.kind == "ipv4",
+        do: assert(has_element?(view, "#address-cell-5[data-state='used']"))
 
-    view |> element("#managed-#{managed.id}-release") |> render_click()
-    assert has_element?(view, "#flash-info", "released")
-    refute has_element?(view, "#managed-#{managed.id}")
+      view |> element("#address-#{address.id}-release") |> render_click()
+      assert has_element?(view, "#prefix-addresses [data-status='observed']")
+    end
   end
 
   test "members see address status without adopting", %{scope: scope, eth0: eth0} do

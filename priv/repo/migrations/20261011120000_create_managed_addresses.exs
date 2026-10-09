@@ -37,6 +37,11 @@ defmodule Renga.Repo.Migrations.CreateManagedAddresses do
              name: :managed_addresses_organization_address_index
            )
 
+    # Managed identity is a host, independent of the collector's interface mask.
+    create constraint(:managed_addresses, :managed_addresses_host_address,
+             check: "masklen(address) = CASE family(address) WHEN 4 THEN 32 ELSE 128 END"
+           )
+
     create index(:managed_addresses, [:interface_id])
   end
 end
