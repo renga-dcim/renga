@@ -12,6 +12,9 @@ defmodule RengaWeb.PrefixDetailLive do
   IPv6 addresses dim the shared prefix so interface identifiers stand out,
   show how each address was assigned, and hide temporary privacy addresses
   unless `?temporary=show`.
+
+  Owners and admins edit and delete the prefix (RFD 4, Phase 1); like the
+  rest of the Network area, those controls are hidden on a phone.
   """
   use RengaWeb, :live_view
 
@@ -36,11 +39,11 @@ defmodule RengaWeb.PrefixDetailLive do
     {:ok,
      socket
      |> assign(
-       prefix: prefix,
-       page_title: Cidr.format(prefix.prefix),
        can_manage?: Inventory.organization_manager?(scope),
+       tables: IPAM.list_routing_tables(scope),
        reload_timer: nil
      )
+     |> assign_prefix(prefix)
      |> load_view()}
   end
 
@@ -67,6 +70,55 @@ defmodule RengaWeb.PrefixDetailLive do
     Ecto.NoResultsError -> {:noreply, load_view(socket)}
   end
 
+  def handle_event("validate_prefix", %{"prefix" => params}, socket) do
+    changeset =
+      socket.assigns.prefix
+      |> IPAM.change_prefix(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, :prefix_form, to_form(changeset, id: "prefix-edit-form"))}
+  end
+
+  def handle_event("update_prefix", %{"prefix" => params}, socket) do
+    %{current_scope: scope, prefix: prefix} = socket.assigns
+
+    case IPAM.update_prefix(scope, prefix, params) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Prefix updated")
+         |> close_overlay("prefix-edit-panel")
+         |> assign(:tables, IPAM.list_routing_tables(scope))
+         |> assign_prefix(updated)
+         |> load_view()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage prefixes")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :prefix_form, to_form(changeset, id: "prefix-edit-form"))}
+    end
+  rescue
+    Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
+  end
+
+  def handle_event("delete_prefix", _params, socket) do
+    %{current_scope: scope, prefix: prefix} = socket.assigns
+
+    case IPAM.delete_prefix(scope, prefix) do
+      {:ok, _deleted} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Prefix #{Cidr.format(prefix.prefix)} deleted")
+         |> push_navigate(to: prefixes_path(socket.assigns.family, prefix.vrf))}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage prefixes")}
+    end
+  rescue
+    Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
     if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -75,8 +127,35 @@ defmodule RengaWeb.PrefixDetailLive do
      assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
   end
 
+  # Someone may have edited or deleted the prefix meanwhile, so re-read it.
+  # Most changes are collector reports elsewhere; the edit form is only
+  # rebuilt when the prefix itself changed, so typing is not interrupted.
   def handle_info(:reload, socket) do
-    {:noreply, socket |> assign(:reload_timer, nil) |> load_view()}
+    socket = assign(socket, :reload_timer, nil)
+    prefix = IPAM.get_prefix!(socket.assigns.current_scope, socket.assigns.prefix.id)
+
+    socket =
+      if prefix.updated_at == socket.assigns.prefix.updated_at,
+        do: socket,
+        else: assign_prefix(socket, prefix)
+
+    {:noreply, load_view(socket)}
+  rescue
+    Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
+  end
+
+  defp assign_prefix(socket, prefix) do
+    assign(socket,
+      prefix: prefix,
+      page_title: Cidr.format(prefix.prefix),
+      prefix_form: to_form(IPAM.change_prefix(prefix), id: "prefix-edit-form")
+    )
+  end
+
+  defp prefix_gone(socket) do
+    socket
+    |> put_flash(:error, "That prefix was deleted")
+    |> push_navigate(to: prefixes_path(nil, socket.assigns.prefix.vrf))
   end
 
   defp address_result({:ok, _managed}, socket, message),
@@ -127,6 +206,21 @@ defmodule RengaWeb.PrefixDetailLive do
             </.link>
           <% end %>
         </:breadcrumb>
+        <:actions :if={@can_manage?}>
+          <div class="hidden gap-1.5 sm:flex">
+            <.button id="edit-prefix" size="sm" phx-click={show_overlay("prefix-edit-panel")}>
+              Edit
+            </.button>
+            <.button
+              id="delete-prefix"
+              size="sm"
+              variant="danger"
+              phx-click={show_overlay("delete-prefix-dialog")}
+            >
+              Delete
+            </.button>
+          </div>
+        </:actions>
         <:icon><.icon name="hero-globe-alt" class="size-5" /></:icon>
         <:status>
           <span class="inline-flex items-center gap-1.5 rounded-md border border-edge px-2 py-0.5 text-xs text-fg">
@@ -224,6 +318,39 @@ defmodule RengaWeb.PrefixDetailLive do
           </section>
         </:aside>
       </.object_page>
+
+      <.side_panel :if={@can_manage?} id="prefix-edit-panel" title="Edit prefix">
+        <.form
+          for={@prefix_form}
+          id="prefix-edit-form"
+          phx-change="validate_prefix"
+          phx-submit="update_prefix"
+          class="space-y-1"
+        >
+          <.prefix_fields form={@prefix_form} tables={@tables} />
+        </.form>
+        <:footer>
+          <.button
+            id="save-prefix"
+            variant="primary"
+            form="prefix-edit-form"
+            phx-disable-with="Saving…"
+          >
+            Save prefix
+          </.button>
+        </:footer>
+      </.side_panel>
+
+      <.confirm_dialog
+        :if={@can_manage?}
+        id="delete-prefix-dialog"
+        title={"Delete #{Cidr.format(@prefix.prefix)}?"}
+        confirm_label="Delete prefix"
+        on_confirm="delete_prefix"
+      >
+        Its VLAN links go with it. Addresses inside it stay, under the next containing
+        prefix or none, and Activity keeps its history.
+      </.confirm_dialog>
     </Layouts.app>
     """
   end

@@ -104,6 +104,16 @@ defmodule Renga.IPAM do
   end
 
   @doc """
+  A changeset for the prefix create and edit forms. The envelope does not
+  exist while a new prefix is being typed, so its absence is not an error.
+  """
+  def change_prefix(%Prefix{} = prefix, attrs \\ %{}) do
+    changeset = Prefix.changeset(prefix, attrs)
+    errors = Keyword.delete(changeset.errors, :resource_id)
+    %{changeset | errors: errors, valid?: errors == []}
+  end
+
+  @doc """
   Changes a prefix's CIDR, routing table, status, or description. Owners and
   admins only. Each changed field writes an `updated` change event, and a
   new CIDR or table renames the envelope's display name.

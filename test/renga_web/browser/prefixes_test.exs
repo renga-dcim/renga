@@ -1,8 +1,9 @@
 defmodule RengaWeb.Browser.PrefixesTest do
   @moduledoc """
   The prefix views in a real browser: a container's space map opens the
-  child a cell stands for, and at phone width long IPv6 prefixes keep their
-  usage beside or below them rather than drawn over them.
+  child a cell stands for, a prefix is created from the side panel, and at
+  phone width long IPv6 prefixes keep their usage beside or below them,
+  with the edit controls hidden because prefixes are not edited on a phone.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -67,6 +68,38 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("#prefix-detail h1", text: "2001:db8:a:100::/56")
   end
 
+  test "an admin creates a prefix from the side panel", context do
+    context.conn
+    |> visit("/network/prefixes?family=ipv4")
+    |> assert_has("body .phx-connected")
+    |> PhoenixTest.Playwright.click("#new-prefix")
+    |> assert_has("#prefix-panel [role=dialog]", text: "New prefix")
+    |> fill_in("#prefix-form input[name='prefix[prefix]']", "CIDR", with: "10.0.20.0/24")
+    |> fill_in("#prefix-form input[name='prefix[description]']", "Description (optional)",
+      with: "Voice"
+    )
+    |> PhoenixTest.Playwright.click("#create-prefix")
+    |> assert_has("#flash-info", text: "Prefix 10.0.20.0/24 created")
+    |> assert_has("#prefix-tree-ipv4", text: "10.0.20.0/24")
+    |> refute_has("#prefix-panel [role=dialog]")
+  end
+
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "prefixes are readable but not editable on a phone", context do
+    context.conn
+    |> visit("/network/prefixes")
+    |> assert_has("body .phx-connected")
+    |> evaluate(visible_js("new-prefix"), &assert(&1 == false))
+    |> visit("/network/prefixes/#{context.hall.id}")
+    |> assert_has("body .phx-connected")
+    |> evaluate(visible_js("edit-prefix"), &assert(&1 == false))
+    |> evaluate(visible_js("delete-prefix"), &assert(&1 == false))
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,
@@ -94,4 +127,6 @@ defmodule RengaWeb.Browser.PrefixesTest do
       end
     )
   end
+
+  defp visible_js(id), do: "document.getElementById('#{id}').checkVisibility()"
 end

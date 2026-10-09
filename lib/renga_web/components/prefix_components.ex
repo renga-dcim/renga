@@ -7,6 +7,9 @@ defmodule RengaWeb.PrefixComponents do
   """
   use Phoenix.Component
 
+  import RengaWeb.CoreComponents, only: [input: 1]
+
+  alias Renga.Inventory.Prefix
   alias Renga.IPAM.Cidr
 
   @doc """
@@ -94,6 +97,51 @@ defmodule RengaWeb.PrefixComponents do
     <span :if={@exponent <= 32} class="font-mono">{delimit(@count)}</span>
     """
   end
+
+  @doc """
+  The fields of the prefix create and edit forms. The routing table is free
+  text until VRF records exist (RFD 4, Phase 2); suggesting the tables
+  already in use keeps a typo from quietly starting a new one.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :tables, :list, required: true, doc: "routing tables in use, nil for global"
+
+  def prefix_fields(assigns) do
+    assigns =
+      assign(assigns,
+        datalist_id: "#{assigns.form.id}-tables",
+        statuses: Enum.map(Prefix.statuses(), &{String.capitalize(&1), &1})
+      )
+
+    ~H"""
+    <.input
+      field={@form[:prefix]}
+      value={cidr_text(@form[:prefix].value)}
+      type="text"
+      label="CIDR"
+      placeholder="10.0.0.0/24 or 2001:db8::/48"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <.input
+      field={@form[:vrf]}
+      type="text"
+      label="Routing table"
+      placeholder="Global"
+      list={@datalist_id}
+      autocomplete="off"
+    />
+    <datalist id={@datalist_id}>
+      <option :for={table <- @tables} :if={table} value={table} />
+    </datalist>
+    <.input field={@form[:status]} type="select" label="Status" options={@statuses} />
+    <.input field={@form[:description]} type="text" label="Description (optional)" />
+    """
+  end
+
+  # A stored prefix is a Postgrex.INET; a typed one is still text.
+  defp cidr_text(%Postgrex.INET{} = cidr), do: Cidr.format(cidr)
+  defp cidr_text(text), do: text
 
   @doc "`IPv4` or `IPv6`."
   def family_label(:ipv4), do: "IPv4"
