@@ -22,7 +22,7 @@ defmodule Renga.IPAMTest do
   end
 
   test "lists each family's tree for one routing table with usage", %{scope: scope} do
-    site = prefix_fixture(scope, "10.0.0.0/16")
+    site = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
     users_v4 = prefix_fixture(scope, "10.0.10.0/24")
     users_v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
     prefix_fixture(scope, "10.0.0.0/16", %{vrf: "blue"})
@@ -459,10 +459,10 @@ defmodule Renga.IPAMTest do
   test "utilization is namespace-local, with observed addresses in the global table", %{
     scope: scope
   } do
-    global_site = prefix_fixture(scope, "10.0.0.0/16")
+    global_site = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
     global_users = prefix_fixture(scope, "10.0.10.0/24")
     prefix_fixture(scope, "10.0.40.0/24")
-    blue_site = prefix_fixture(scope, "10.0.0.0/16", %{vrf: "blue"})
+    blue_site = prefix_fixture(scope, "10.0.0.0/16", %{vrf: "blue", status: "container"})
     blue_users = prefix_fixture(scope, "10.0.10.0/24", %{vrf: "blue"})
     prefix_fixture(scope, "10.0.20.0/23", %{vrf: "blue"})
     prefix_fixture(scope, "10.0.30.0/25", %{vrf: "blue"})
@@ -518,6 +518,61 @@ defmodule Renga.IPAMTest do
     global_v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
     {:ok, _} = Topology.attach_prefix_vlan(scope, global_v6.id, users.id)
     assert %{total: 1, both: [_]} = IPAM.vlan_dual_stack(scope, users.id)
+  end
+
+  test "usage follows status: containers by child space, others by occupied hosts", %{
+    scope: scope
+  } do
+    empty = prefix_fixture(scope, "10.8.0.0/16", %{status: "container"})
+    v6_empty = prefix_fixture(scope, "2001:db8:f::/48", %{status: "container"})
+    active_parent = prefix_fixture(scope, "10.9.0.0/16")
+    prefix_fixture(scope, "10.9.1.0/24")
+    {_host, ports} = device_fixture(scope, "server", "status-usage", ~w(eth0))
+    address_fixture(scope, ports["eth0"], "10.9.1.5")
+    address_fixture(scope, ports["eth0"], "10.9.200.5")
+
+    %{ipv4: ipv4, ipv6: ipv6} = IPAM.list_prefix_rows(scope, nil)
+    usage = fn rows, prefix -> Enum.find(rows, &(&1.node.prefix.id == prefix.id)).usage end
+
+    # An empty container has nothing allocated, one octet deeper.
+    assert usage.(ipv4, empty) == %{kind: :children, allocated: 0, total: 256, level: 24}
+    assert usage.(ipv6, v6_empty) == %{kind: :children, allocated: 0, total: 256, level: 56}
+
+    # An active parent counts its hosts, inside children or not, though it is
+    # still shown as child space.
+    assert usage.(ipv4, active_parent) == %{kind: :count, count: 2}
+    assert IPAM.prefix_view(scope, active_parent).mode == :container
+  end
+
+  test "managed addresses occupy space alongside observed hosts, each host once", %{
+    scope: scope
+  } do
+    lan = prefix_fixture(scope, "192.0.2.0/28")
+    blue_lan = prefix_fixture(scope, "192.0.2.0/28", %{vrf: "blue"})
+    {_host, ports} = device_fixture(scope, "server", "occupancy", ~w(eth0 eth1))
+    observed = address_fixture(scope, ports["eth0"], "192.0.2.5/28")
+    address_fixture(scope, ports["eth1"], "192.0.2.5/28")
+    {:ok, _} = IPAM.adopt_address(scope, observed.id)
+    {:ok, _} = IPAM.create_ip_address(scope, %{address: "192.0.2.9/28"})
+    {:ok, retired} = IPAM.create_ip_address(scope, %{address: "192.0.2.10/28"})
+    {:ok, _} = IPAM.release_address(scope, retired.id)
+    {:ok, _} = IPAM.create_ip_address(scope, %{address: "192.0.2.0/28"})
+
+    {:ok, _} =
+      IPAM.create_ip_address(scope, %{address: "192.0.2.3/28", vrf_id: blue_lan.vrf_id})
+
+    usage = fn rows, prefix -> Enum.find(rows.ipv4, &(&1.node.prefix.id == prefix.id)).usage end
+
+    # .5 is observed twice and managed, .9 is reserved: two hosts. The
+    # released .10 is history and the network address .0 is not assignable.
+    assert %{used: 2, usable: 14} = usage.(IPAM.list_prefix_rows(scope, nil), lan)
+    assert %{used: 2, managed_unseen: 1} = IPAM.prefix_view(scope, lan).address_map
+
+    # In the VRF only its own managed address counts.
+    assert %{used: 1} = usage.(IPAM.list_prefix_rows(scope, blue_lan.vrf_id), blue_lan)
+
+    blue_view = IPAM.prefix_view(scope, IPAM.get_prefix!(scope, blue_lan.id))
+    assert %{used: 1, managed_unseen: 1} = blue_view.address_map
   end
 
   test "never shows another organization's prefixes or addresses", %{scope: scope} do

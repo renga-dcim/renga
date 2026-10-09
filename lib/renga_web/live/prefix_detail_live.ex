@@ -481,7 +481,7 @@ defmodule RengaWeb.PrefixDetailLive do
         <h2 class="text-sm font-semibold text-fg">Addresses</h2>
         <p id="prefix-utilization" class="text-sm text-fg-muted">
           <span class="font-mono text-fg">{@map.percent}%</span>
-          of hosts used: {@map.used} of {@map.usable}.
+          of hosts used: {@map.used} of {@map.usable}<span :if={@map.managed_unseen > 0}>, {@map.managed_unseen} of them managed but not seen</span>.
         </p>
       </div>
 

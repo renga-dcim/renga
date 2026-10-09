@@ -17,10 +17,10 @@ defmodule Renga.IPAM do
   it needs no model of its own.
 
   Utilization is namespace-local (RFD 4, "Utilization"). Collectors do not
-  report routing domains yet, so every observed address, and every managed
-  address adopted from one, is in the global table: it counts toward global
-  prefixes only, and a VRF's prefixes have no addresses until sources can
-  place them there.
+  report routing domains yet, so every observed address is in the global
+  table and counts toward global prefixes only. Managed addresses carry
+  their own routing table and count there, so a VRF's prefixes are occupied
+  by the addresses managed in that VRF.
 
   Observed addresses are normal and never findings. An owner or admin adopts
   one into a managed `ip_address` (RFD 4, Phase 3) when it needs state of
@@ -441,7 +441,7 @@ defmodule Renga.IPAM do
       |> Repo.all()
 
     trees = PrefixTree.build(prefixes)
-    counts = address_counts(organization_id, for(%{vrf_id: nil, id: id} <- prefixes, do: id))
+    counts = address_counts(organization_id, Enum.map(prefixes, & &1.id))
     pairing = pairing(scope)
 
     Map.new([:ipv4, :ipv6], fn family ->
@@ -506,17 +506,26 @@ defmodule Renga.IPAM do
   end
 
   @doc """
-  What "used" means for a prefix: children allocated for a container,
-  host utilization for a small IPv4 leaf, an address count otherwise.
-  """
-  def usage(node, address_count) do
-    case PrefixTree.mode(node) do
-      :container ->
-        map = PrefixTree.space_map(node)
-        %{kind: :children, allocated: map.allocated, total: map.total, level: map.level}
+  What "used" means for a prefix, by its status (RFD 4, "Prefixes"): a
+  `container` is measured by the space its child prefixes cover, even
+  before it has any; every other prefix by its occupied hosts, as host
+  utilization for a small IPv4 prefix and an address count otherwise.
 
+  How a prefix is *shown* still follows its children (`PrefixTree.mode/1`),
+  so an active prefix with children keeps its child-space map while its
+  usage counts hosts.
+  """
+  def usage(%{prefix: %{status: "container"}} = node, _address_count) do
+    space = PrefixTree.child_space(node)
+    %{kind: :children, allocated: space.allocated, total: space.total, level: space.level}
+  end
+
+  def usage(node, address_count) do
+    cidr = node.prefix.prefix
+
+    case PrefixTree.host_mode(cidr) do
       :address_map ->
-        usable = node.prefix.prefix |> Cidr.size() |> usable_hosts(node.prefix.prefix)
+        usable = cidr |> Cidr.size() |> usable_hosts(cidr)
 
         %{
           kind: :percent,
@@ -1177,38 +1186,51 @@ defmodule Renga.IPAM do
     |> Repo.all()
   end
 
-  # One grouped containment join counts every prefix's distinct hosts at once,
-  # so a host reported by several interfaces is used once.
+  # One query counts every prefix's occupied hosts at once: the union of
+  # observed hosts (global until collectors report routing domains) and
+  # current managed addresses in the prefix's own routing table. A host that
+  # is both, or that several interfaces report, is used once. A small IPv4
+  # prefix's network and broadcast addresses are not assignable, so they
+  # never count.
   defp address_counts(_organization_id, []), do: %{}
 
   defp address_counts(organization_id, prefix_ids) do
-    Prefix
-    |> where([prefix], prefix.id in ^prefix_ids)
-    |> join(:inner, [prefix], address in Address,
-      on:
-        address.organization_id == ^organization_id and
-          fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata) and
-          fragment("host(?)::inet <<= ?", address.address, prefix.prefix)
-    )
-    |> group_by([prefix], prefix.id)
-    |> select(
-      [prefix, address],
-      {prefix.id,
-       fragment(
-         "CASE WHEN family(?) = 4 AND masklen(?) >= 22 THEN COUNT(DISTINCT host(?)) FILTER (WHERE NOT (masklen(?) <= 30 AND (host(?)::inet = host(network(?))::inet OR host(?)::inet = host(broadcast(?))::inet))) ELSE COUNT(DISTINCT host(?)) END",
-         prefix.prefix,
-         prefix.prefix,
-         address.address,
-         prefix.prefix,
-         address.address,
-         prefix.prefix,
-         address.address,
-         prefix.prefix,
-         address.address
-       )}
-    )
-    |> Repo.all()
-    |> Map.new()
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT prefixes.id,
+               count(DISTINCT occupied.host) FILTER (
+                 WHERE NOT (family(prefixes.prefix) = 4
+                            AND masklen(prefixes.prefix) BETWEEN 22 AND 30
+                            AND (occupied.host = host(network(prefixes.prefix))::inet
+                                 OR occupied.host = host(broadcast(prefixes.prefix))::inet))
+               )
+        FROM prefixes
+        JOIN LATERAL (
+          SELECT host(addresses.address)::inet AS host
+          FROM addresses
+          WHERE prefixes.vrf_id IS NULL
+            AND addresses.organization_id = prefixes.organization_id
+            AND (addresses.metadata->'present') IS DISTINCT FROM 'false'::jsonb
+            AND host(addresses.address)::inet <<= prefixes.prefix
+          UNION ALL
+          SELECT host(ip_addresses.address)::inet
+          FROM ip_addresses
+          JOIN resources
+            ON resources.id = ip_addresses.resource_id
+           AND resources.organization_id = ip_addresses.organization_id
+           AND resources.lifecycle_state = 'active'
+          WHERE ip_addresses.organization_id = prefixes.organization_id
+            AND ip_addresses.vrf_id IS NOT DISTINCT FROM prefixes.vrf_id
+            AND host(ip_addresses.address)::inet <<= prefixes.prefix
+        ) AS occupied ON true
+        WHERE prefixes.organization_id = $1 AND prefixes.id = ANY($2)
+        GROUP BY prefixes.id
+        """,
+        [Ecto.UUID.dump!(organization_id), Enum.map(prefix_ids, &Ecto.UUID.dump!/1)]
+      )
+
+    Map.new(rows, fn [id, count] -> {Ecto.UUID.load!(id), count} end)
   end
 
   # For each VLAN-linked prefix: its VLANs and the prefixes of the other

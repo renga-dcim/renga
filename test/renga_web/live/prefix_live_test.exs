@@ -31,10 +31,10 @@ defmodule RengaWeb.PrefixLiveTest do
     users = vlan_fixture(scope, group, 10, "users")
     voice = vlan_fixture(scope, group, 20, "voice")
 
-    site_v4 = prefix_fixture(scope, "10.0.0.0/16")
+    site_v4 = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
     users_v4 = prefix_fixture(scope, "10.0.10.0/24")
     voice_v4 = prefix_fixture(scope, "10.0.20.0/24")
-    site_v6 = prefix_fixture(scope, "2001:db8:a::/48")
+    site_v6 = prefix_fixture(scope, "2001:db8:a::/48", %{status: "container"})
     users_v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
     blue = prefix_fixture(scope, "172.16.0.0/24", %{vrf: "blue"})
 
