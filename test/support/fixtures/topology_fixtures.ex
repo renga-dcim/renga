@@ -7,15 +7,20 @@ defmodule Renga.TopologyFixtures do
   alias Renga.Inventory
   alias Renga.Topology
 
-  @doc "Creates a resource of `kind` with one interface per name."
+  @doc """
+  Creates a resource of `kind` with one interface per name. An entry may be
+  `{name, attrs}` to set interface fields such as status or speed.
+  """
   def device_fixture(scope, kind, name, interface_names) do
     {:ok, resource} =
       Inventory.create_resource(scope, %{kind: kind, name: name, lifecycle_state: "active"})
 
     interfaces =
-      Map.new(interface_names, fn interface_name ->
+      Map.new(interface_names, fn entry ->
+        {interface_name, attrs} = if is_tuple(entry), do: entry, else: {entry, %{}}
+
         {:ok, interface} =
-          Inventory.create_interface(scope, resource.id, %{name: interface_name})
+          Inventory.create_interface(scope, resource.id, Map.put(attrs, :name, interface_name))
 
         {interface_name, interface}
       end)
@@ -93,5 +98,87 @@ defmodule Renga.TopologyFixtures do
       )
 
     plan
+  end
+
+  @doc "Creates an active global VLAN group covering `ranges` of VIDs."
+  def vlan_group_fixture(scope, slug, ranges \\ [{1, 4094}]) do
+    {:ok, group} =
+      Topology.create_vlan_group(
+        scope,
+        %{name: String.capitalize(slug), lifecycle_state: "active"},
+        %{slug: slug, scope_kind: "global", status: "active"},
+        Enum.map(ranges, fn {start_vid, end_vid} -> %{start_vid: start_vid, end_vid: end_vid} end)
+      )
+
+    group
+  end
+
+  @doc "Creates an active VLAN in `group`."
+  def vlan_fixture(scope, group, vid, name) do
+    {:ok, vlan} =
+      Topology.create_vlan(
+        scope,
+        %{name: "#{group.id}/#{vid}"},
+        %{vlan_group_id: group.id, vid: vid, name: name, status: "active"}
+      )
+
+    vlan
+  end
+
+  @doc """
+  Sets an interface's desired VLAN mode and membership.
+
+  `untagged` is a VLAN or `nil`; `tagged` is a list of VLANs.
+  """
+  def desire_vlans(scope, interface, mode, untagged, tagged \\ []) do
+    {:ok, _mode} = Topology.put_desired_interface_vlan_mode(scope, interface.id, %{mode: mode})
+
+    for {vlan, tagging} <-
+          Enum.map(List.wrap(untagged), &{&1, "untagged"}) ++
+            Enum.map(tagged, &{&1, "tagged"}) do
+      {:ok, _assignment} =
+        Topology.put_desired_interface_vlan_assignment(scope, interface.id, vlan.id, %{
+          tagging_mode: tagging
+        })
+    end
+
+    :ok
+  end
+
+  @doc """
+  Reports one resource's observed VLANs as a current snapshot from a source
+  mapped to `group`.
+
+  `interfaces` maps an interface name to `{mode, [{vid, tagging_mode}]}`.
+  """
+  def report_vlans(scope, resource, group, interfaces) do
+    suffix = System.unique_integer([:positive])
+
+    {:ok, source} =
+      Inventory.create_source(scope, %{kind: "manual", name: "vlans-#{resource.name}-#{suffix}"})
+
+    {:ok, _mapping} = Topology.put_source_vlan_group_mapping(scope, source.id, group.id)
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "vlans-#{resource.name}-#{suffix}",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{}
+      })
+
+    reported =
+      Enum.map(interfaces, fn {name, {mode, vlans}} ->
+        %{
+          "name" => name,
+          "vlan_mode" => mode,
+          "vlans" =>
+            Enum.map(vlans, fn {vid, tagging} -> %{"vid" => vid, "tagging_mode" => tagging} end)
+        }
+      end)
+
+    {:ok, evidence} =
+      Topology.reconcile_interface_vlans(scope, source, observation, resource.id, reported, true)
+
+    evidence
   end
 end
