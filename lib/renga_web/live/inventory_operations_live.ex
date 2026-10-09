@@ -106,45 +106,42 @@ defmodule RengaWeb.InventoryOperationsLive do
       current_scope={@current_scope}
       active_nav={:collectors}
     >
-      <main id="collector-operations" class="space-y-10">
-        <header class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
-              Collection plane
-            </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight">Collectors</h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/55">
-              Installations appear automatically after authenticating with an organization intake key.
-            </p>
-          </div>
-          <button
+      <.settings_page
+        id="collector-operations"
+        title="Collectors"
+        description="Installations appear here once they authenticate with an organization intake key."
+        class="max-w-5xl"
+      >
+        <:actions>
+          <.button
             :if={Inventory.collector_manager?(@current_scope)}
             id="new-intake-key-button"
-            type="button"
+            variant="primary"
             phx-click="new_intake_key"
-            class="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-orange-500/20 transition hover:-translate-y-0.5 hover:bg-orange-600"
           >
-            <.icon name="hero-key" class="size-4" /> Create intake key
-          </button>
-        </header>
+            <.icon name="hero-key-mini" class="size-4" /> Create intake key
+          </.button>
+        </:actions>
 
-        <section id="intake-key-management" class="space-y-4" aria-labelledby="intake-keys-heading">
+        <section id="intake-key-management" class="space-y-3" aria-labelledby="intake-keys-heading">
           <div>
-            <h2 id="intake-keys-heading" class="text-lg font-semibold">Organization intake keys</h2>
-            <p class="mt-1 text-sm text-base-content/50">
-              Multiple active keys allow a fleet-wide rotation without downtime.
+            <h2 id="intake-keys-heading" class="text-sm font-medium text-fg">
+              Organization intake keys
+            </h2>
+            <p class="mt-1 text-xs text-fg-muted">
+              Several active keys let a whole fleet rotate without downtime.
             </p>
           </div>
 
           <div
             :if={@show_new_key?}
             id="new-intake-key-panel"
-            class="overflow-hidden rounded-2xl border border-orange-500/20 bg-base-100 shadow-lg shadow-orange-500/5"
+            class="rounded-lg border border-edge bg-surface"
           >
-            <div class="flex items-start justify-between gap-4 border-b border-base-content/10 px-6 py-5">
+            <div class="flex items-start justify-between gap-4 border-b border-edge px-4 py-3">
               <div>
-                <h3 class="font-semibold">Create an intake API key</h3>
-                <p class="mt-1 text-sm text-base-content/50">
+                <h3 class="text-sm font-medium text-fg">Create an intake API key</h3>
+                <p class="mt-0.5 text-xs text-fg-muted">
                   One key can be deployed to every collector in this organization.
                 </p>
               </div>
@@ -153,19 +150,19 @@ defmodule RengaWeb.InventoryOperationsLive do
                 type="button"
                 phx-click="cancel_intake_key"
                 aria-label="Close intake key setup"
-                class="rounded-lg p-2 text-base-content/40 transition hover:bg-base-200 hover:text-base-content"
+                class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
               >
-                <.icon name="hero-x-mark" class="size-5" />
+                <.icon name="hero-x-mark" class="size-4" />
               </button>
             </div>
 
-            <div :if={is_nil(@issued_token)} class="p-6">
+            <div :if={is_nil(@issued_token)} class="p-4">
               <.form
                 for={@key_form}
                 id="new-intake-key-form"
                 phx-change="validate_intake_key"
                 phx-submit="create_intake_key"
-                class="max-w-xl space-y-5"
+                class="max-w-md"
               >
                 <.input
                   field={@key_form[:name]}
@@ -174,32 +171,26 @@ defmodule RengaWeb.InventoryOperationsLive do
                   placeholder="Production fleet"
                   autocomplete="off"
                 />
-                <button
-                  id="create-intake-key-button"
-                  type="submit"
-                  class="rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-600"
-                >
+                <.button id="create-intake-key-button" type="submit" variant="primary">
                   Create key
-                </button>
+                </.button>
               </.form>
             </div>
 
-            <div :if={@issued_token} id="intake-key-credentials" class="space-y-5 p-6">
-              <div class="flex gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-                <.icon name="hero-check-circle" class="mt-0.5 size-5 shrink-0 text-emerald-600" />
+            <div :if={@issued_token} id="intake-key-credentials" class="space-y-4 p-4">
+              <div class="flex gap-2.5 rounded-md bg-sunken px-3 py-2">
+                <.icon name="hero-check-circle-mini" class="mt-0.5 size-4 shrink-0 text-ok" />
                 <div>
-                  <p class="text-sm font-semibold">Intake key created</p>
-                  <p class="mt-1 text-xs leading-5 text-base-content/55">
-                    Save this key now. Renga stores only its hash and cannot show it again.
+                  <p class="text-sm font-medium text-fg">Intake key created</p>
+                  <p class="text-xs text-fg-muted">
+                    Save it now. Renga stores only its hash and cannot show it again.
                   </p>
                 </div>
               </div>
-              <div class="flex items-center gap-3 rounded-xl bg-base-200/70 p-4">
+              <div class="flex items-center gap-3 rounded-md border border-edge px-3 py-2">
                 <div class="min-w-0 flex-1">
-                  <p class="text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                    Intake API key
-                  </p>
-                  <p id="issued-intake-key" class="mt-2 break-all font-mono text-xs">
+                  <p class="text-xs text-fg-muted">Intake API key</p>
+                  <p id="issued-intake-key" class="mt-1 break-all font-mono text-xs text-fg">
                     {@issued_token}
                   </p>
                 </div>
@@ -210,11 +201,11 @@ defmodule RengaWeb.InventoryOperationsLive do
                   data-copy-target="#issued-intake-key"
                   data-copy-status="#copy-intake-key-status"
                   aria-label="Copy intake API key"
-                  class="shrink-0 rounded-lg border border-base-content/10 bg-base-100 p-2 text-base-content/55 shadow-sm transition hover:border-base-content/20 hover:text-base-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
+                  class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md border border-edge bg-surface text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
                   <span data-copy-icon><.icon name="hero-clipboard" class="size-4" /></span>
                   <span data-copied-icon class="hidden">
-                    <.icon name="hero-check" class="size-4 text-emerald-600" />
+                    <.icon name="hero-check" class="size-4 text-ok" />
                   </span>
                 </button>
                 <span
@@ -225,77 +216,73 @@ defmodule RengaWeb.InventoryOperationsLive do
                   aria-atomic="true"
                 />
               </div>
-              <div class="rounded-xl border border-base-content/10 bg-slate-950 p-4 text-slate-100">
-                <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  agent.toml
-                </p>
-                <code class="block break-all font-mono text-xs leading-6">
+              <div class="rounded-md bg-sunken px-3 py-2">
+                <p class="mb-1.5 font-mono text-xs text-fg-muted">agent.toml</p>
+                <code class="block break-all font-mono text-xs leading-6 text-fg">
                   <span class="block">renga_url = "{RengaWeb.Endpoint.url()}"</span>
                   <span class="block">intake_api_key = "{@issued_token}"</span>
                 </code>
               </div>
-              <button
-                id="finish-intake-key-setup"
-                type="button"
-                phx-click="cancel_intake_key"
-                class="rounded-xl border border-base-content/15 px-4 py-2.5 text-sm font-semibold transition hover:bg-base-200"
-              >
+              <.button id="finish-intake-key-setup" phx-click="cancel_intake_key">
                 I saved this key
-              </button>
+              </.button>
             </div>
           </div>
 
-          <div class="overflow-hidden rounded-2xl border border-base-content/10 bg-base-100 shadow-sm">
-            <div id="intake-api-keys" phx-update="stream" class="divide-y divide-base-content/10">
-              <div
-                id="intake-api-keys-empty"
-                class="hidden only:block px-5 py-10 text-center text-sm text-base-content/45"
-              >
-                No intake keys yet.
+          <div
+            id="intake-api-keys"
+            phx-update="stream"
+            class="divide-y divide-line rounded-lg border border-edge bg-surface"
+          >
+            <p
+              id="intake-api-keys-empty"
+              class="hidden px-4 py-8 text-center text-sm text-fg-muted only:block"
+            >
+              No intake keys yet.
+            </p>
+            <div
+              :for={{id, key} <- @streams.intake_api_keys}
+              id={id}
+              class="flex flex-wrap items-center gap-3 px-3 py-2.5"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-fg">{key.name}</p>
+                <p class="text-xs text-fg-muted">Created {format_time(key.inserted_at)}</p>
               </div>
-              <div
-                :for={{id, key} <- @streams.intake_api_keys}
-                id={id}
-                class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+              <span class={[
+                "inline-flex items-center gap-1.5 text-xs font-medium",
+                if(key.status == "active", do: "text-ok", else: "text-fg-muted")
+              ]}>
+                <span class={[
+                  "size-1.5 rounded-full",
+                  if(key.status == "active", do: "bg-ok", else: "bg-unknown")
+                ]} />
+                {String.capitalize(key.status)}
+              </span>
+              <.button
+                :if={key.status == "active" && Inventory.collector_manager?(@current_scope)}
+                id={"revoke-intake-key-#{key.id}"}
+                size="sm"
+                variant="ghost"
+                class="text-crit"
+                phx-click="revoke_intake_key"
+                phx-value-id={key.id}
+                data-confirm="Revoke this shared key? Every collector still using it will be rejected."
               >
-                <div>
-                  <p class="font-semibold">{key.name}</p>
-                  <p class="mt-1 text-xs text-base-content/45">
-                    Created {format_time(key.inserted_at)}
-                  </p>
-                </div>
-                <div class="flex items-center gap-3">
-                  <span class={[
-                    "rounded-full px-2.5 py-1 text-xs font-medium",
-                    key.status == "active" &&
-                      "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-                    key.status == "revoked" && "bg-base-content/10 text-base-content/55"
-                  ]}>
-                    {String.capitalize(key.status)}
-                  </span>
-                  <button
-                    :if={key.status == "active" && Inventory.collector_manager?(@current_scope)}
-                    id={"revoke-intake-key-#{key.id}"}
-                    type="button"
-                    phx-click="revoke_intake_key"
-                    phx-value-id={key.id}
-                    data-confirm="Revoke this shared key? Every collector still using it will be rejected."
-                    class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-500/10 dark:text-rose-400"
-                  >
-                    Revoke
-                  </button>
-                </div>
-              </div>
+                Revoke
+              </.button>
             </div>
           </div>
         </section>
 
-        <section id="collector-list" class="space-y-4" aria-labelledby="collectors-heading">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <section id="collector-list" class="space-y-3" aria-labelledby="collectors-heading">
+          <div class="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h2 id="collectors-heading" class="text-lg font-semibold">Discovered installations</h2>
-              <p class="mt-1 text-sm text-base-content/50">
-                Runtime health and inventory provenance remain specific to each installation.
+              <h2 id="collectors-heading" class="text-sm font-medium text-fg">
+                Discovered installations
+              </h2>
+              <p class="mt-1 text-xs text-fg-muted">
+                Health and inventory provenance stay specific to each installation.
               </p>
             </div>
             <.form for={@filter_form} id="collector-filters" phx-change="filter">
@@ -303,70 +290,68 @@ defmodule RengaWeb.InventoryOperationsLive do
             </.form>
           </div>
 
-          <div class="overflow-hidden rounded-2xl border border-base-content/10 bg-base-100 shadow-sm">
-            <div class="overflow-x-auto">
-              <table class="min-w-full divide-y divide-base-content/10 text-left text-sm">
-                <thead class="bg-base-200/70 text-xs uppercase tracking-wider text-base-content/45">
-                  <tr>
-                    <th class="px-5 py-3.5 font-semibold">Collector</th>
-                    <th class="px-5 py-3.5 font-semibold">Connection</th>
-                    <th class="px-5 py-3.5 font-semibold">Resource provenance</th>
-                    <th class="px-5 py-3.5 font-semibold">Installation</th>
-                    <th class="px-5 py-3.5 font-semibold">Last inventory</th>
-                  </tr>
-                </thead>
-                <tbody id="collectors" phx-update="stream" class="divide-y divide-base-content/10">
-                  <tr id="collectors-empty" class="hidden only:table-row">
-                    <td colspan="5" class="px-5 py-12 text-center text-sm text-base-content/45">
-                      No discovered collectors match this view.
-                    </td>
-                  </tr>
-                  <tr
-                    :for={{id, source} <- @streams.sources}
-                    id={id}
-                    class="transition hover:bg-orange-500/[0.035]"
-                  >
-                    <td class="px-5 py-4">
-                      <p class="font-semibold">{source.name}</p>
-                      <p class="mt-1 font-mono text-xs text-base-content/40">
-                        {collector_version(source)}
-                      </p>
-                    </td>
-                    <td class="px-5 py-4">
-                      <.collector_state_pill source={source} />
-                      <p class="mt-1.5 font-mono text-[11px] text-base-content/40">
-                        {collector_lease_expiry(source)}
-                      </p>
-                    </td>
-                    <td class="px-5 py-4">
-                      <.link
-                        :if={Map.get(@resource_by_source, source.id)}
-                        navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
-                        class="font-medium transition hover:text-orange-600"
-                      >
-                        {Map.fetch!(@resource_by_source, source.id).display_name ||
-                          Map.fetch!(@resource_by_source, source.id).name}
-                      </.link>
-                      <span
-                        :if={is_nil(Map.get(@resource_by_source, source.id))}
-                        class="text-xs text-base-content/35"
-                      >
-                        No resource reported
-                      </span>
-                    </td>
-                    <td class="px-5 py-4 font-mono text-xs text-base-content/55">
-                      {short_installation_id(collector_agent(source).installation_id)}
-                    </td>
-                    <td class="px-5 py-4 font-mono text-xs text-base-content/55">
-                      {format_time(Map.get(@last_inventory_by_source, source.id))}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+          <div class="overflow-x-auto rounded-lg border border-edge bg-surface">
+            <table class="w-full text-left text-table text-fg">
+              <thead class="text-xs text-fg-muted">
+                <tr class="h-row border-b border-edge">
+                  <th scope="col" class="px-cell font-medium">Collector</th>
+                  <th scope="col" class="px-cell font-medium">Connection</th>
+                  <th scope="col" class="px-cell font-medium">Resource</th>
+                  <th scope="col" class="px-cell font-medium">Installation</th>
+                  <th scope="col" class="px-cell font-medium">
+                    Last inventory
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="collectors" phx-update="stream">
+                <tr id="collectors-empty" class="hidden only:table-row">
+                  <td colspan="5" class="px-cell py-8 text-center text-sm text-fg-muted">
+                    No discovered collectors match this view.
+                  </td>
+                </tr>
+                <tr
+                  :for={{id, source} <- @streams.sources}
+                  id={id}
+                  class="border-b border-line transition-colors last:border-0 hover:bg-sunken/60"
+                >
+                  <td class="px-cell py-2">
+                    <p class="font-medium">{source.name}</p>
+                    <p class="font-mono text-xs text-fg-muted">{collector_version(source)}</p>
+                  </td>
+                  <td class="px-cell py-2">
+                    <.collector_state_pill source={source} />
+                    <p class="font-mono text-[11px] text-fg-muted">
+                      {collector_lease_expiry(source)}
+                    </p>
+                  </td>
+                  <td class="px-cell py-2">
+                    <.link
+                      :if={Map.get(@resource_by_source, source.id)}
+                      navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
+                      class="text-link hover:underline"
+                    >
+                      {Map.fetch!(@resource_by_source, source.id).display_name ||
+                        Map.fetch!(@resource_by_source, source.id).name}
+                    </.link>
+                    <span
+                      :if={is_nil(Map.get(@resource_by_source, source.id))}
+                      class="text-xs text-fg-subtle"
+                    >
+                      No resource reported
+                    </span>
+                  </td>
+                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
+                    {short_installation_id(collector_agent(source).installation_id)}
+                  </td>
+                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
+                    {format_time(Map.get(@last_inventory_by_source, source.id))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
-      </main>
+      </.settings_page>
     </Layouts.app>
     """
   end
@@ -379,14 +364,13 @@ defmodule RengaWeb.InventoryOperationsLive do
 
     ~H"""
     <span class={[
-      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
-      @state == :connected && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-      @state == :disconnected && "bg-rose-500/10 text-rose-700 dark:text-rose-400"
+      "inline-flex items-center gap-1.5 text-xs font-medium",
+      if(@state == :connected, do: "text-ok", else: "text-crit")
     ]}>
+      <%!-- A dot when connected and a square when not, so the state reads without color. --%>
       <span class={[
-        "size-1.5 rounded-full",
-        @state == :connected && "bg-emerald-500",
-        @state == :disconnected && "bg-rose-500"
+        "size-1.5",
+        if(@state == :connected, do: "rounded-full bg-ok", else: "rounded-[1px] bg-crit")
       ]} />
       {if(@state == :connected, do: "Connected", else: "Disconnected")}
     </span>

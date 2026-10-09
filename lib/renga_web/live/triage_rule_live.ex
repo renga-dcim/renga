@@ -277,16 +277,12 @@ defmodule RengaWeb.TriageRuleLive do
       current_scope={@current_scope}
       active_nav={:triage_rules}
     >
-      <section id="triage-rules" class="mx-auto max-w-4xl space-y-6">
-        <header class="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 class="text-xl font-semibold tracking-tight text-fg">Triage rules</h1>
-            <p class="mt-1 max-w-2xl text-sm text-fg-muted">
-              Rules answer what triage would ask, from signals collectors send. They only fill a
-              missing fact, so they never change what a person set, and they apply again as new
-              resources report.
-            </p>
-          </div>
+      <.settings_page
+        id="triage-rules"
+        title="Triage rules"
+        description="Rules answer what triage would ask, from signals collectors send. They only fill a missing fact, so they never change what a person set, and they apply again as new resources report."
+      >
+        <:actions>
           <.button
             :if={@can_manage?}
             id="new-rule"
@@ -295,7 +291,7 @@ defmodule RengaWeb.TriageRuleLive do
           >
             New rule
           </.button>
-        </header>
+        </:actions>
 
         <section
           :for={{kind, label, explanation} <- @kinds}
@@ -376,7 +372,7 @@ defmodule RengaWeb.TriageRuleLive do
         <p :if={!@can_manage?} id="triage-rules-read-only" class="text-sm text-fg-muted">
           Owners and admins manage triage rules.
         </p>
-      </section>
+      </.settings_page>
 
       <%= for {_kind, rules} <- @rules, rule <- rules, @can_manage? do %>
         <.confirm_dialog

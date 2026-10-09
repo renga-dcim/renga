@@ -8,19 +8,10 @@ defmodule RengaWeb.UserLive.Registration do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="mx-auto max-w-sm">
-        <div class="text-center">
-          <.header>
-            Register for an account
-            <:subtitle>
-              Already registered?
-              <.link navigate={~p"/users/log-in"} class="font-semibold text-link hover:underline">
-                Log in
-              </.link>
-              to your account now.
-            </:subtitle>
-          </.header>
-        </div>
+      <.auth_card id="register" title="Register for an account">
+        <:subtitle>
+          Enter your email and we'll send a link to confirm it. No password needed to start.
+        </:subtitle>
 
         <.form for={@form} id="registration_form" phx-submit="save" phx-change="validate">
           <.input
@@ -37,7 +28,17 @@ defmodule RengaWeb.UserLive.Registration do
             Create an account
           </.button>
         </.form>
-      </div>
+
+        <:footer>
+          Already registered?
+          <.link
+            navigate={~p"/users/log-in"}
+            class="font-medium text-link hover:underline"
+          >
+            Log in
+          </.link>
+        </:footer>
+      </.auth_card>
     </Layouts.app>
     """
   end

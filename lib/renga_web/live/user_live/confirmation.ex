@@ -7,10 +7,10 @@ defmodule RengaWeb.UserLive.Confirmation do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="mx-auto max-w-sm">
-        <div class="text-center">
-          <.header>Welcome {@user.email}</.header>
-        </div>
+      <.auth_card id="confirmation" title="Welcome">
+        <:subtitle>
+          <span class="font-medium text-fg">{@user.email}</span>
+        </:subtitle>
 
         <.form
           :if={!@user.confirmed_at}
@@ -66,13 +66,10 @@ defmodule RengaWeb.UserLive.Confirmation do
           <% end %>
         </.form>
 
-        <p
-          :if={!@user.confirmed_at}
-          class="mt-8 rounded-lg border border-edge p-3 text-sm text-fg-muted"
-        >
-          Tip: If you prefer passwords, you can enable them in the user settings.
-        </p>
-      </div>
+        <:footer :if={!@user.confirmed_at}>
+          Prefer a password? You can set one in your account settings.
+        </:footer>
+      </.auth_card>
     </Layouts.app>
     """
   end
