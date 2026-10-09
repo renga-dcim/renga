@@ -33,6 +33,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.InterfaceNeighborMatch
   alias Renga.Topology.InterfaceVlanEvidence
   alias Renga.Topology.InterfaceVlanModeEvidence
+  alias Renga.Topology.Links
   alias Renga.Topology.NeighborReconciler
   alias Renga.Topology.PrefixVlanRelationship
   alias Renga.Topology.SourceVlanGroupMapping
@@ -951,6 +952,44 @@ defmodule Renga.Topology do
     reconciliation_transaction(scope, fn ->
       {:ok, CableReconciler.propose_from_evidence(scope.organization_id, evidence_id, attrs)}
     end)
+  end
+
+  @doc """
+  Lists every link in the organization with its plan, evidence, and cable
+  record side by side. See `Renga.Topology.Links` for link states.
+  """
+  def list_links(%Scope{} = scope) do
+    Links.build(
+      list_cable_plans(scope),
+      list_cables(scope),
+      list_organization_interface_adjacencies(scope)
+    )
+  end
+
+  @doc """
+  Gets one link by its key, or `nil` when no layer mentions the pair.
+
+  Only the layers touching the link's two endpoints are loaded: they are all
+  that can make the link disagree.
+  """
+  def get_link(%Scope{} = scope, key) do
+    case Links.parse_key(key) do
+      {:ok, {interface_a_id, interface_b_id}} ->
+        load = fn list ->
+          Enum.uniq_by(
+            list.(scope, interface_id: interface_a_id) ++
+              list.(scope, interface_id: interface_b_id),
+            & &1.id
+          )
+        end
+
+        load.(&list_cable_plans/2)
+        |> Links.build(load.(&list_cables/2), load.(&list_organization_interface_adjacencies/2))
+        |> Enum.find(&(&1.key == Links.key(interface_a_id, interface_b_id)))
+
+      :error ->
+        nil
+    end
   end
 
   def list_cables(%Scope{organization_id: organization_id}, opts \\ []) do

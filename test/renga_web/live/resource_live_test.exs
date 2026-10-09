@@ -325,7 +325,7 @@ defmodule RengaWeb.ResourceLiveTest do
 
     assert has_element?(
              view,
-             "#interface-#{interface.id}-neighbors[href='/network/topology?interface_id=#{interface.id}#observed-neighbors']"
+             "#interface-#{interface.id}-neighbors[href='/network/topology?interface_id=#{interface.id}#topology-links']"
            )
 
     assert has_element?(

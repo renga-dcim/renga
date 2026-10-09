@@ -27,6 +27,7 @@ import topbar from "../vendor/topbar"
 import {Overlay} from "./overlay"
 import {ListKeys} from "./list_keys"
 import {RackDrag} from "./rack_drag"
+import {CenterScroll} from "./center_scroll"
 
 const CommandPalette = {
   mounted() {
@@ -206,7 +207,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CommandPalette, CopyToClipboard, Overlay, ListKeys, RackDrag},
+  hooks: {...colocatedHooks, CenterScroll, CommandPalette, CopyToClipboard, Overlay, ListKeys, RackDrag},
 })
 
 // Show progress bar on live navigation and form submits
