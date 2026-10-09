@@ -184,10 +184,15 @@ defmodule Renga.IPAM.PrefixTree do
 
   # Sorted by network then length, a prefix's descendants follow it
   # contiguously, so each prefix takes the run it contains as its subtree.
+  # Containment is strict: a prefix is never its own parent, so an exact
+  # duplicate (which a routing table now refuses) would sit beside its twin.
   defp nest_sorted([]), do: []
 
   defp nest_sorted([first | rest]) do
-    {inside, outside} = Enum.split_while(rest, &Cidr.contains?(first.prefix, &1.prefix))
+    {inside, outside} = Enum.split_while(rest, &strictly_contains?(first.prefix, &1.prefix))
     [%{prefix: first, children: nest_sorted(inside)} | nest_sorted(outside)]
   end
+
+  defp strictly_contains?(outer, inner),
+    do: Cidr.length(outer) < Cidr.length(inner) and Cidr.contains?(outer, inner)
 end

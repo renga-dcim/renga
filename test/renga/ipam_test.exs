@@ -126,16 +126,18 @@ defmodule Renga.IPAMTest do
     end
   end
 
-  test "address tables count interface records consistently in list and detail", %{scope: scope} do
+  test "address tables count a host once however many interfaces report it", %{scope: scope} do
     {_host, ports} = device_fixture(scope, "server", "table-duplicates", ~w(eth0 eth1))
 
     for {cidr, address} <- [{"2001:db8::/64", "2001:db8::1/48"}, {"192.0.0.0/21", "192.0.2.1/16"}] do
       prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
       for port <- Map.values(ports), do: address_fixture(scope, port, address)
+      address_fixture(scope, ports["eth0"], String.replace(address, ~r/1\//, "2/"))
       rows = IPAM.list_prefix_rows(scope, cidr)
       [row] = rows.ipv4 ++ rows.ipv6
       assert row.usage == %{kind: :count, count: 2}
-      assert length(IPAM.prefix_view(scope, prefix).addresses) == 2
+      # Detail still lists each interface's record.
+      assert length(IPAM.prefix_view(scope, prefix).addresses) == 3
     end
   end
 
