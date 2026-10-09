@@ -2296,11 +2296,10 @@ defmodule Renga.InventoryTest do
 
   describe "prefixes" do
     test "stores managed IPAM networks using PostgreSQL cidr" do
-      %{scope: scope} = scoped_organizations()
-      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "iad-public"})
+      scope = scoped_organizations().scope |> member_scope("admin")
 
       assert {:ok, %Prefix{} = prefix} =
-               Inventory.create_prefix(scope, resource.id, %{
+               Renga.IPAM.create_prefix(scope, %{
                  prefix: "192.0.2.0/24",
                  vrf: "default",
                  description: "Public service network"
@@ -2310,19 +2309,15 @@ defmodule Renga.InventoryTest do
     end
 
     test "rejects CIDR values with host bits set" do
-      %{scope: scope} = scoped_organizations()
-      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "invalid"})
-
-      assert {:error, changeset} =
-               Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.10/24"})
+      scope = scoped_organizations().scope |> member_scope("admin")
+      assert {:error, changeset} = Renga.IPAM.create_prefix(scope, %{prefix: "192.0.2.10/24"})
 
       assert %{prefix: ["is invalid"]} = errors_on(changeset)
     end
 
     test "uses PostgreSQL native network types and CIDR operators" do
-      %{scope: scope} = scoped_organizations()
-      {:ok, resource} = Inventory.create_resource(scope, %{kind: "prefix", name: "iad-public"})
-      {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: "192.0.2.0/24"})
+      scope = scoped_organizations().scope |> member_scope("admin")
+      {:ok, prefix} = Renga.IPAM.create_prefix(scope, %{prefix: "192.0.2.0/24"})
 
       assert %{rows: [["macaddr", "inet", "cidr"]]} =
                Repo.query!("""

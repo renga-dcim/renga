@@ -51,7 +51,7 @@ defmodule Renga.Inventory do
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -277,7 +277,16 @@ defmodule Renga.Inventory do
     Source.changeset(source, attrs)
   end
 
-  defp organization_management_transaction(%Scope{} = scope, mutation) do
+  @doc """
+  Runs `mutation` for an owner or admin of the scope's active organization,
+  re-checking the membership in the database inside the transaction rather
+  than trusting the roles loaded into the scope. Locks the organization and
+  then the membership, the order every managed-inventory context follows.
+
+  `mutation` may return `{:ok, result}`, `{:error, reason}` (rolled back),
+  or a bare result.
+  """
+  def organization_management_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       ensure_organization_active_or_rollback(scope.organization_id)
       authorize_current_organization_manager_or_rollback(scope)
@@ -374,6 +383,15 @@ defmodule Renga.Inventory do
     %Resource{organization_id: organization_id}
     |> Resource.changeset(attrs)
     |> Ecto.Changeset.add_error(:kind, "must be created through the topology context")
+    |> Repo.rollback()
+  end
+
+  # A prefix envelope without its typed projection would be an invisible,
+  # unconstrained CIDR; Renga.IPAM creates both in one transaction.
+  defp reject_context_managed_resource_creation!(organization_id, "prefix", attrs) do
+    %Resource{organization_id: organization_id}
+    |> Resource.changeset(attrs)
+    |> Ecto.Changeset.add_error(:kind, "must be created through the IPAM context")
     |> Repo.rollback()
   end
 
@@ -1703,17 +1721,6 @@ defmodule Renga.Inventory do
     |> order_by([prefix], asc: prefix.prefix, asc: prefix.resource_id)
     |> preload(:resource)
     |> Repo.all()
-  end
-
-  @doc """
-  Creates a typed canonical IPAM prefix for a resource envelope.
-  """
-  def create_prefix(%Scope{organization_id: organization_id} = scope, resource_id, attrs) do
-    resource = get_resource!(scope, resource_id)
-
-    %Prefix{organization_id: organization_id, resource_id: resource.id}
-    |> Prefix.changeset(attrs)
-    |> Repo.insert()
   end
 
   @doc """

@@ -191,15 +191,8 @@ defmodule RengaWeb.VlanDetailLiveTest do
     assert path =~ "/users/log-in"
   end
 
-  defp create_prefix(scope, resource_name, cidr) do
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{
-        kind: "prefix",
-        name: resource_name,
-        lifecycle_state: "active"
-      })
-
-    {:ok, prefix} = Inventory.create_prefix(scope, resource.id, %{prefix: cidr})
+  defp create_prefix(scope, _resource_name, cidr) do
+    {:ok, prefix} = Renga.IPAM.create_prefix(scope, %{prefix: cidr})
     prefix
   end
 end

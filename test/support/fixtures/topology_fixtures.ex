@@ -184,15 +184,8 @@ defmodule Renga.TopologyFixtures do
 
   @doc "Creates a prefix (and its resource envelope) in an optional VRF."
   def prefix_fixture(scope, cidr, attrs \\ %{}) do
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{
-        kind: "prefix",
-        name: "#{cidr}#{if attrs[:vrf], do: "@#{attrs[:vrf]}"}",
-        lifecycle_state: "active"
-      })
-
-    {:ok, prefix} = Inventory.create_prefix(scope, resource.id, Map.put(attrs, :prefix, cidr))
-    Renga.Repo.preload(prefix, :resource)
+    {:ok, prefix} = Renga.IPAM.create_prefix(scope, Map.put(attrs, :prefix, cidr))
+    prefix
   end
 
   @doc "Reconciles an authoritative address snapshot through the collector ingestion path."
