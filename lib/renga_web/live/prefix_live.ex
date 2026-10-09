@@ -13,6 +13,10 @@ defmodule RengaWeb.PrefixLive do
 
   A routing table's trees are bounded by what an organization plans, and
   the two trees must be laid out together, so rows are plain assigns.
+
+  Owners and admins create prefixes from a side panel (RFD 4, Phase 1).
+  As RFD 8 sets for the Network area, the control is hidden on a phone,
+  where prefixes are readable but not editable.
   """
   use RengaWeb, :live_view
 
@@ -20,7 +24,9 @@ defmodule RengaWeb.PrefixLive do
 
   import RengaWeb.PrefixComponents
 
+  alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.Prefix
   alias Renga.IPAM
   alias Renga.IPAM.Cidr
 
@@ -28,8 +34,16 @@ defmodule RengaWeb.PrefixLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Changes.subscribe(socket.assigns.current_scope)
-    {:ok, assign(socket, page_title: "Prefixes", reload_timer: nil, query: nil)}
+    scope = socket.assigns.current_scope
+    if connected?(socket), do: Changes.subscribe(scope)
+
+    {:ok,
+     assign(socket,
+       page_title: "Prefixes",
+       reload_timer: nil,
+       query: nil,
+       can_manage?: Inventory.organization_manager?(scope)
+     )}
   end
 
   @impl true
@@ -46,6 +60,7 @@ defmodule RengaWeb.PrefixLive do
     {:noreply,
      socket
      |> assign(tables: tables, query: query)
+     |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf: vrf}))
      |> load_rows()}
   end
 
@@ -61,6 +76,32 @@ defmodule RengaWeb.PrefixLive do
      )}
   end
 
+  def handle_event("validate_prefix", %{"prefix" => params}, socket) do
+    changeset =
+      %Prefix{}
+      |> IPAM.change_prefix(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign_prefix_form(socket, changeset)}
+  end
+
+  def handle_event("create_prefix", %{"prefix" => params}, socket) do
+    case IPAM.create_prefix(socket.assigns.current_scope, params) do
+      {:ok, prefix} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Prefix #{Cidr.format(prefix.prefix)} created")
+         |> close_overlay("prefix-panel")
+         |> push_patch(to: created_path(socket.assigns.query, prefix))}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage prefixes")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign_prefix_form(socket, changeset)}
+    end
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
     if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -72,6 +113,21 @@ defmodule RengaWeb.PrefixLive do
   def handle_info(:reload, socket) do
     {:noreply, socket |> assign(:reload_timer, nil) |> load_rows()}
   end
+
+  # Show the new prefix: its routing table, and its family unless both are
+  # already shown.
+  defp created_path(query, prefix) do
+    family = Cidr.family(prefix.prefix)
+
+    prefixes_path(query,
+      vrf: prefix.vrf,
+      family: if(query.family in [:both, family], do: query.family, else: family),
+      selected: nil
+    )
+  end
+
+  defp assign_prefix_form(socket, changeset),
+    do: assign(socket, :prefix_form, to_form(changeset, id: "prefix-form"))
 
   defp load_rows(socket) do
     %{query: query, current_scope: scope} = socket.assigns
@@ -109,6 +165,11 @@ defmodule RengaWeb.PrefixLive do
             </p>
           </div>
           <div class="flex flex-wrap items-end gap-3">
+            <div :if={@can_manage?} class="hidden sm:block">
+              <.button id="new-prefix" variant="primary" phx-click={show_overlay("prefix-panel")}>
+                New prefix
+              </.button>
+            </div>
             <.segmented id="prefix-family" label="Address family">
               <:option
                 :for={{value, label} <- [ipv4: "IPv4", ipv6: "IPv6", both: "Both"]}
@@ -143,6 +204,33 @@ defmodule RengaWeb.PrefixLive do
           />
         </div>
       </section>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="prefix-panel"
+        title="New prefix"
+        description="A prefix contained by another becomes its child. Each routing table holds a CIDR once."
+      >
+        <.form
+          for={@prefix_form}
+          id="prefix-form"
+          phx-change="validate_prefix"
+          phx-submit="create_prefix"
+          class="space-y-1"
+        >
+          <.prefix_fields form={@prefix_form} tables={@tables} />
+        </.form>
+        <:footer>
+          <.button
+            id="create-prefix"
+            variant="primary"
+            form="prefix-form"
+            phx-disable-with="Creating…"
+          >
+            Create prefix
+          </.button>
+        </:footer>
+      </.side_panel>
     </Layouts.app>
     """
   end

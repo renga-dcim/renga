@@ -37,6 +37,14 @@ defmodule Renga.IPAM do
   alias Renga.Repo
   alias Renga.Topology
 
+  # Prefix fields an edit records in Activity, with the name each event uses.
+  @prefix_event_fields [
+    prefix: "prefix",
+    vrf: "routing_table",
+    status: "status",
+    description: "description"
+  ]
+
   @doc """
   Creates a prefix and its resource envelope. Owners and admins only.
 
@@ -94,6 +102,116 @@ defmodule Renga.IPAM do
     end)
     |> Changes.broadcast(organization_id)
   end
+
+  @doc """
+  A changeset for the prefix create and edit forms. The envelope does not
+  exist while a new prefix is being typed, so its absence is not an error.
+  """
+  def change_prefix(%Prefix{} = prefix, attrs \\ %{}) do
+    changeset = Prefix.changeset(prefix, attrs)
+    errors = Keyword.delete(changeset.errors, :resource_id)
+    %{changeset | errors: errors, valid?: errors == []}
+  end
+
+  @doc """
+  Changes a prefix's CIDR, routing table, status, or description. Owners and
+  admins only. Each changed field writes an `updated` change event, and a
+  new CIDR or table renames the envelope's display name.
+  """
+  def update_prefix(
+        %Scope{organization_id: organization_id} = scope,
+        %Prefix{id: id} = baseline,
+        attrs
+      ) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_prefix!(organization_id, id)
+
+      # A row lock serializes writes but cannot detect an outdated editing form.
+      fields = Keyword.keys(@prefix_event_fields)
+
+      if Map.take(current, fields) != Map.take(baseline, fields),
+        do: Repo.rollback(:stale)
+
+      updated =
+        current
+        |> Prefix.changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} -> updated
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      resource = rename_envelope(current.resource, prefix_label(updated.prefix, updated.vrf))
+      record_prefix_changes(scope, resource.id, current, updated)
+
+      %{updated | resource: resource}
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Deletes a prefix with its envelope and VLAN links. Owners and admins only.
+
+  Nothing else is deleted: addresses inside it, observed or managed, simply
+  fall under the next containing prefix or none. A `deleted` change event
+  naming the CIDR is written first; once the envelope is gone the event
+  keeps the history with no resource to link to.
+  """
+  def delete_prefix(%Scope{organization_id: organization_id} = scope, %Prefix{id: id}) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_prefix!(organization_id, id)
+
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "deleted",
+          field: "prefix",
+          resource_id: current.resource_id,
+          old_value: %{"value" => current.resource.display_name}
+        })
+
+      # The typed prefix and its VLAN links go with the envelope by cascade.
+      Repo.delete!(current.resource)
+      current
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  # The envelope's display name follows the CIDR and table; its stable
+  # generated name never changes.
+  defp rename_envelope(%{display_name: label} = resource, label), do: resource
+
+  defp rename_envelope(resource, label) do
+    case ResourceStore.update(resource, %{display_name: label}) do
+      {:ok, resource} -> resource
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  # One `updated` change event per changed field, with readable values.
+  defp record_prefix_changes(scope, resource_id, current, updated) do
+    for {field, name} <- @prefix_event_fields,
+        Map.fetch!(current, field) != Map.fetch!(updated, field) do
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "updated",
+          field: name,
+          resource_id: resource_id,
+          old_value: %{"value" => event_value(field, Map.fetch!(current, field))},
+          new_value: %{"value" => event_value(field, Map.fetch!(updated, field))}
+        })
+    end
+  end
+
+  defp lock_prefix!(organization_id, id) do
+    Prefix
+    |> where([prefix], prefix.organization_id == ^organization_id and prefix.id == ^id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
+    |> Repo.preload(:resource)
+  end
+
+  defp event_value(:prefix, cidr), do: Cidr.format(cidr)
+  defp event_value(_field, value), do: value
 
   defp prefix_label(cidr, nil), do: Cidr.format(cidr)
   defp prefix_label(cidr, vrf), do: "#{Cidr.format(cidr)} (#{vrf})"

@@ -8,12 +8,14 @@ defmodule Renga.IPAMPrefixWritesTest do
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Renga.TopologyFixtures
 
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.Prefix
   alias Renga.Inventory.Resource
   alias Renga.IPAM
+  alias Renga.Topology
 
   setup do
     organization = organization_fixture()
@@ -106,6 +108,109 @@ defmodule Renga.IPAMPrefixWritesTest do
 
     assert {:error, :forbidden} =
              Inventory.update_resource(member, prefix.resource, %{lifecycle_state: "retired"})
+  end
+
+  test "an edit records each changed field and follows a new CIDR in the name", context do
+    {:ok, prefix} = IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24"})
+    {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "10.0.1.0/24"})
+
+    assert {:ok, updated} =
+             IPAM.update_prefix(context.admin, prefix, %{
+               prefix: "10.0.2.0/24",
+               vrf: "blue",
+               status: "reserved",
+               description: "Lab"
+             })
+
+    assert updated.resource.display_name == "10.0.2.0/24 (blue)"
+    assert updated.resource.name == prefix.resource.name
+
+    events =
+      context.admin
+      |> Inventory.list_activity()
+      |> Enum.filter(&(&1.resource_id == prefix.resource_id and &1.kind == "updated"))
+      |> Map.new(&{&1.field, {&1.old_value["value"], &1.new_value["value"]}})
+
+    assert events == %{
+             "prefix" => {"10.0.0.0/24", "10.0.2.0/24"},
+             "routing_table" => {nil, "blue"},
+             "status" => {"active", "reserved"},
+             "description" => {nil, "Lab"}
+           }
+
+    # Editing into a CIDR the table already holds is refused like creating it.
+    assert {:error, changeset} =
+             IPAM.update_prefix(context.admin, updated, %{prefix: "10.0.1.0/24", vrf: nil})
+
+    assert %{prefix: ["already exists in this routing table"]} = errors_on(changeset)
+
+    member = scope_for(context.organization, "member")
+    assert {:error, :forbidden} = IPAM.update_prefix(member, updated, %{status: "deprecated"})
+    assert Repo.get!(Prefix, prefix.id).status == "reserved"
+  end
+
+  test "stale edits cannot overwrite current intent or write events", context do
+    prefix = prefix_fixture(context.admin, "192.0.2.0/24")
+    {:ok, updated} = IPAM.update_prefix(context.admin, prefix, %{status: "reserved"})
+    events = Inventory.list_activity(context.admin)
+
+    assert {:error, :stale} =
+             IPAM.update_prefix(context.admin, prefix, %{status: "active", description: "Draft"})
+
+    assert Repo.get!(Prefix, prefix.id).status == "reserved"
+    assert Repo.get!(Prefix, prefix.id).description == nil
+    assert Inventory.list_activity(context.admin) == events
+    assert {:ok, _} = IPAM.update_prefix(context.admin, updated, %{description: "Retry"})
+  end
+
+  test "global and a literal Global table have distinct audited identities", context do
+    prefix = prefix_fixture(context.admin, "192.0.2.0/24")
+    {:ok, named} = IPAM.update_prefix(context.admin, prefix, %{vrf: "Global"})
+    {:ok, _} = IPAM.update_prefix(context.admin, named, %{vrf: nil})
+
+    events =
+      context.admin
+      |> Inventory.list_activity()
+      |> Enum.filter(&(&1.resource_id == prefix.resource_id and &1.field == "routing_table"))
+
+    assert length(events) == 2
+    assert Enum.all?(events, &(&1.actor_user_id == context.admin.user.id))
+
+    assert MapSet.new(Enum.map(events, &{&1.old_value["value"], &1.new_value["value"]})) ==
+             MapSet.new([{nil, "Global"}, {"Global", nil}])
+  end
+
+  test "deleting a prefix keeps its addresses and its history", context do
+    {:ok, prefix} = IPAM.create_prefix(context.admin, %{prefix: "192.0.2.0/24"})
+
+    {_host, ports} =
+      device_fixture(context.admin, "server", "keep", ~w(eth0))
+
+    address = address_fixture(context.admin, ports["eth0"], "192.0.2.5")
+    group = vlan_group_fixture(context.admin, "delete")
+    vlan = vlan_fixture(context.admin, group, 10, "users")
+    {:ok, _} = Topology.attach_prefix_vlan(context.admin, prefix.id, vlan.id)
+
+    member = scope_for(context.organization, "member")
+    assert {:error, :forbidden} = IPAM.delete_prefix(member, prefix)
+
+    assert {:ok, _} = IPAM.delete_prefix(context.admin, prefix)
+
+    refute Repo.get(Prefix, prefix.id)
+    refute Repo.get(Resource, prefix.resource_id)
+    assert Topology.list_vlan_prefixes(context.admin, vlan.id) == []
+    assert Repo.get!(Inventory.Address, address.id)
+
+    assert %{resource_id: nil} =
+             event =
+             context.admin
+             |> Inventory.list_activity()
+             |> Enum.find(&(&1.kind == "deleted"))
+
+    assert RengaWeb.ChangeDescription.describe(event) == "Deleted prefix 192.0.2.0/24"
+
+    # The CIDR is free to plan again.
+    assert {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "192.0.2.0/24"})
   end
 
   defp scope_for(organization, role) do
