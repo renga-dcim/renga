@@ -84,6 +84,91 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> refute_has("#prefix-panel [role=dialog]")
   end
 
+  test "edit validation, save, and delete cancellation and confirmation", context do
+    prefix = prefix_fixture(context.scope, "192.0.2.0/24")
+    prefix_fixture(context.scope, "192.0.3.0/24")
+
+    session =
+      context.conn
+      |> visit("/network/prefixes/#{prefix.id}")
+      |> assert_has("body .phx-connected")
+      |> PhoenixTest.Playwright.click("#edit-prefix")
+      |> fill_in("#prefix-edit-form input[name='prefix[prefix]']", "CIDR", with: "192.0.3.0/24")
+      |> PhoenixTest.Playwright.click("#save-prefix")
+      |> assert_has("#prefix-edit-panel [role=dialog]",
+        text: "already exists in this routing table"
+      )
+      |> fill_in("#prefix-edit-form input[name='prefix[prefix]']", "CIDR", with: "192.0.4.0/24")
+      |> PhoenixTest.Playwright.click("#save-prefix")
+      |> assert_has("#prefix-detail h1", text: "192.0.4.0/24")
+      |> refute_has("#prefix-edit-panel [role=dialog]")
+      |> PhoenixTest.Playwright.click("#delete-prefix")
+      |> assert_has("#delete-prefix-dialog [role=alertdialog]", text: "Delete 192.0.4.0/24?")
+      |> PhoenixTest.Playwright.click("#delete-prefix-dialog-cancel")
+      |> refute_has("#delete-prefix-dialog [role=alertdialog]")
+
+    assert Renga.IPAM.get_prefix!(context.scope, prefix.id)
+
+    session
+    |> PhoenixTest.Playwright.click("#delete-prefix")
+    |> PhoenixTest.Playwright.click("#delete-prefix-dialog-confirm")
+    |> assert_path("/network/prefixes", query_params: %{family: "ipv4"})
+
+    refute Renga.Repo.get(Renga.Inventory.Prefix, prefix.id)
+  end
+
+  test "focused drafts survive broadcasts but cannot overwrite an external edit", context do
+    prefix = prefix_fixture(context.scope, "192.0.2.0/24")
+
+    session =
+      context.conn
+      |> visit("/network/prefixes/#{prefix.id}")
+      |> assert_has("body .phx-connected")
+      |> PhoenixTest.Playwright.click("#edit-prefix")
+      |> fill_in("#prefix-edit-form input[name='prefix[description]']", "Description (optional)",
+        with: "My draft"
+      )
+      |> evaluate(
+        "document.querySelector('#prefix-edit-form input[name=\"prefix[description]\"]').focus()"
+      )
+
+    prefix_fixture(context.scope, "192.0.3.0/24")
+
+    session
+    |> evaluate(
+      "new Promise(r => setTimeout(() => r(document.querySelector('#prefix-edit-form input[name=\"prefix[description]\"]').value), 600))",
+      &assert(&1 == "My draft")
+    )
+
+    {:ok, _} = Renga.IPAM.update_prefix(context.scope, prefix, %{status: "reserved"})
+
+    session =
+      session
+      |> assert_has("#prefix-detail", text: "Reserved")
+      |> evaluate("document.activeElement.name", &assert(&1 == "prefix[description]"))
+      |> PhoenixTest.Playwright.click("#save-prefix")
+      |> assert_has("#flash-error", text: "This prefix changed elsewhere")
+      |> assert_has("#prefix-edit-panel [role=dialog]")
+
+    assert %{status: "reserved", description: nil} =
+             Renga.IPAM.get_prefix!(context.scope, prefix.id)
+
+    session
+    |> PhoenixTest.Playwright.click("#reload-prefix-edit")
+    |> evaluate(
+      "new Promise(r => setTimeout(() => r(document.querySelector('#prefix-edit-form select').value), 300))",
+      &assert(&1 == "reserved")
+    )
+    |> fill_in("#prefix-edit-form input[name='prefix[description]']", "Description (optional)",
+      with: "Retry"
+    )
+    |> PhoenixTest.Playwright.click("#save-prefix")
+    |> refute_has("#prefix-edit-panel [role=dialog]")
+
+    assert %{status: "reserved", description: "Retry"} =
+             Renga.IPAM.get_prefix!(context.scope, prefix.id)
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,

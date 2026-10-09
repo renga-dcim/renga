@@ -118,9 +118,19 @@ defmodule Renga.IPAM do
   admins only. Each changed field writes an `updated` change event, and a
   new CIDR or table renames the envelope's display name.
   """
-  def update_prefix(%Scope{organization_id: organization_id} = scope, %Prefix{id: id}, attrs) do
+  def update_prefix(
+        %Scope{organization_id: organization_id} = scope,
+        %Prefix{id: id} = baseline,
+        attrs
+      ) do
     Inventory.organization_management_transaction(scope, fn ->
       current = lock_prefix!(organization_id, id)
+
+      # A row lock serializes writes but cannot detect an outdated editing form.
+      fields = Keyword.keys(@prefix_event_fields)
+
+      if Map.take(current, fields) != Map.take(baseline, fields),
+        do: Repo.rollback(:stale)
 
       updated =
         current
@@ -180,15 +190,14 @@ defmodule Renga.IPAM do
   # One `updated` change event per changed field, with readable values.
   defp record_prefix_changes(scope, resource_id, current, updated) do
     for {field, name} <- @prefix_event_fields,
-        (old = event_value(field, Map.fetch!(current, field))) !=
-          (new = event_value(field, Map.fetch!(updated, field))) do
+        Map.fetch!(current, field) != Map.fetch!(updated, field) do
       {:ok, _event} =
         Inventory.create_change_event(scope, %{
           kind: "updated",
           field: name,
           resource_id: resource_id,
-          old_value: %{"value" => old},
-          new_value: %{"value" => new}
+          old_value: %{"value" => event_value(field, Map.fetch!(current, field))},
+          new_value: %{"value" => event_value(field, Map.fetch!(updated, field))}
         })
     end
   end
@@ -202,7 +211,6 @@ defmodule Renga.IPAM do
   end
 
   defp event_value(:prefix, cidr), do: Cidr.format(cidr)
-  defp event_value(:vrf, nil), do: "Global"
   defp event_value(_field, value), do: value
 
   defp prefix_label(cidr, nil), do: Cidr.format(cidr)

@@ -133,7 +133,7 @@ defmodule Renga.IPAMPrefixWritesTest do
 
     assert events == %{
              "prefix" => {"10.0.0.0/24", "10.0.2.0/24"},
-             "routing_table" => {"Global", "blue"},
+             "routing_table" => {nil, "blue"},
              "status" => {"active", "reserved"},
              "description" => {nil, "Lab"}
            }
@@ -147,6 +147,37 @@ defmodule Renga.IPAMPrefixWritesTest do
     member = scope_for(context.organization, "member")
     assert {:error, :forbidden} = IPAM.update_prefix(member, updated, %{status: "deprecated"})
     assert Repo.get!(Prefix, prefix.id).status == "reserved"
+  end
+
+  test "stale edits cannot overwrite current intent or write events", context do
+    prefix = prefix_fixture(context.admin, "192.0.2.0/24")
+    {:ok, updated} = IPAM.update_prefix(context.admin, prefix, %{status: "reserved"})
+    events = Inventory.list_activity(context.admin)
+
+    assert {:error, :stale} =
+             IPAM.update_prefix(context.admin, prefix, %{status: "active", description: "Draft"})
+
+    assert Repo.get!(Prefix, prefix.id).status == "reserved"
+    assert Repo.get!(Prefix, prefix.id).description == nil
+    assert Inventory.list_activity(context.admin) == events
+    assert {:ok, _} = IPAM.update_prefix(context.admin, updated, %{description: "Retry"})
+  end
+
+  test "global and a literal Global table have distinct audited identities", context do
+    prefix = prefix_fixture(context.admin, "192.0.2.0/24")
+    {:ok, named} = IPAM.update_prefix(context.admin, prefix, %{vrf: "Global"})
+    {:ok, _} = IPAM.update_prefix(context.admin, named, %{vrf: nil})
+
+    events =
+      context.admin
+      |> Inventory.list_activity()
+      |> Enum.filter(&(&1.resource_id == prefix.resource_id and &1.field == "routing_table"))
+
+    assert length(events) == 2
+    assert Enum.all?(events, &(&1.actor_user_id == context.admin.user.id))
+
+    assert MapSet.new(Enum.map(events, &{&1.old_value["value"], &1.new_value["value"]})) ==
+             MapSet.new([{nil, "Global"}, {"Global", nil}])
   end
 
   test "deleting a prefix keeps its addresses and its history", context do

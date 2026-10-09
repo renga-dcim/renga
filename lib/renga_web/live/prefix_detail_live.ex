@@ -72,7 +72,7 @@ defmodule RengaWeb.PrefixDetailLive do
 
   def handle_event("validate_prefix", %{"prefix" => params}, socket) do
     changeset =
-      socket.assigns.prefix
+      socket.assigns.edit_prefix
       |> IPAM.change_prefix(params)
       |> Map.put(:action, :validate)
 
@@ -80,7 +80,7 @@ defmodule RengaWeb.PrefixDetailLive do
   end
 
   def handle_event("update_prefix", %{"prefix" => params}, socket) do
-    %{current_scope: scope, prefix: prefix} = socket.assigns
+    %{current_scope: scope, edit_prefix: prefix} = socket.assigns
 
     case IPAM.update_prefix(scope, prefix, params) do
       {:ok, updated} ->
@@ -95,9 +95,28 @@ defmodule RengaWeb.PrefixDetailLive do
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "Only owners and admins manage prefixes")}
 
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> assign(
+           :prefix_form,
+           to_form(IPAM.change_prefix(prefix, params), id: "prefix-edit-form")
+         )
+         |> put_flash(
+           :error,
+           "This prefix changed elsewhere. Reload the edit form before retrying."
+         )}
+
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :prefix_form, to_form(changeset, id: "prefix-edit-form"))}
     end
+  rescue
+    Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
+  end
+
+  def handle_event("reload_prefix_edit", _params, socket) do
+    prefix = IPAM.get_prefix!(socket.assigns.current_scope, socket.assigns.prefix.id)
+    {:noreply, assign_prefix(socket, prefix)}
   rescue
     Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
   end
@@ -128,16 +147,13 @@ defmodule RengaWeb.PrefixDetailLive do
   end
 
   # Someone may have edited or deleted the prefix meanwhile, so re-read it.
-  # Most changes are collector reports elsewhere; the edit form is only
-  # rebuilt when the prefix itself changed, so typing is not interrupted.
+  # Refresh displayed data without advancing the edit baseline or wiping drafts.
+  # Only an explicit reload or successful save establishes a new edit baseline.
   def handle_info(:reload, socket) do
     socket = assign(socket, :reload_timer, nil)
     prefix = IPAM.get_prefix!(socket.assigns.current_scope, socket.assigns.prefix.id)
 
-    socket =
-      if prefix.updated_at == socket.assigns.prefix.updated_at,
-        do: socket,
-        else: assign_prefix(socket, prefix)
+    socket = assign(socket, prefix: prefix, page_title: Cidr.format(prefix.prefix))
 
     {:noreply, load_view(socket)}
   rescue
@@ -147,6 +163,8 @@ defmodule RengaWeb.PrefixDetailLive do
   defp assign_prefix(socket, prefix) do
     assign(socket,
       prefix: prefix,
+      edit_prefix: prefix,
+      edit_fields_id: "prefix-edit-fields-" <> Ecto.UUID.generate(),
       page_title: Cidr.format(prefix.prefix),
       prefix_form: to_form(IPAM.change_prefix(prefix), id: "prefix-edit-form")
     )
@@ -328,7 +346,13 @@ defmodule RengaWeb.PrefixDetailLive do
           phx-submit="update_prefix"
           class="space-y-1"
         >
-          <.prefix_fields form={@prefix_form} tables={@tables} />
+          <%!-- Replace inputs on explicit reload; LiveView otherwise preserves used values. --%>
+          <div id={@edit_fields_id}>
+            <.prefix_fields form={@prefix_form} tables={@tables} />
+          </div>
+          <.button id="reload-prefix-edit" type="button" phx-click="reload_prefix_edit">
+            Reload edit form (discard draft)
+          </.button>
         </.form>
         <:footer>
           <.button
