@@ -7,7 +7,11 @@ defmodule Renga.IPAMTest do
 
   alias Renga.Accounts
   alias Renga.IPAM
+  alias Renga.IPAM.Cidr
+  alias Renga.IPAM.IpAddress
+  alias Renga.IPAM.IpAddressAssignment
   alias Renga.IPAM.Vrf
+  alias Renga.Repo
   alias Renga.Topology
 
   setup do
@@ -180,19 +184,30 @@ defmodule Renga.IPAMTest do
   end
 
   test "adopts and releases addresses, owners and admins only", %{scope: scope} do
-    {_host, ports} = device_fixture(scope, "server", "adopt-host", ~w(eth0))
-    address = address_fixture(scope, ports["eth0"], "192.0.2.5")
+    {host, ports} = device_fixture(scope, "server", "adopt-host", ~w(eth0))
+    address = address_fixture(scope, ports["eth0"], "192.0.2.5/24", %{"protocol" => "static"})
 
-    assert {:ok, managed} = IPAM.adopt_address(scope, address.id)
-    assert managed.interface_id == ports["eth0"].id
+    assert {:ok, %IpAddress{} = managed} = IPAM.adopt_address(scope, address.id)
     assert managed.adopted_by_id == scope.user.id
-    assert {:error, %Ecto.Changeset{}} = IPAM.adopt_address(scope, address.id)
+    assert %{allocation_state: "allocated", role: "ordinary", vrf_id: nil} = managed
+    assert managed.management_mode == "static"
+    # The intended mask is the observed one.
+    assert Cidr.format(managed.address) == "192.0.2.5/24"
+    assert [%{interface_id: interface_id}] = managed.assignments
+    assert interface_id == ports["eth0"].id
+
+    resource = Repo.get!(Renga.Inventory.Resource, managed.resource_id)
+    assert %{kind: "ip_address", display_name: "192.0.2.5", lifecycle_state: "active"} = resource
+    assert "ip-address-" <> _uuid = resource.name
+
+    assert {:error, %Ecto.Changeset{} = changeset} = IPAM.adopt_address(scope, address.id)
+    assert %{address: ["is already managed in this routing table"]} = errors_on(changeset)
 
     member = user_fixture()
 
     organization_membership_fixture(
       member,
-      Renga.Repo.get!(Renga.Accounts.Organization, scope.organization_id),
+      Repo.get!(Renga.Accounts.Organization, scope.organization_id),
       %{role: "member"}
     )
 
@@ -200,35 +215,112 @@ defmodule Renga.IPAMTest do
     assert {:error, :forbidden} = IPAM.release_address(member_scope, managed.id)
     assert {:error, :forbidden} = IPAM.adopt_address(member_scope, address.id)
 
-    assert {:ok, _released} = IPAM.release_address(scope, managed.id)
+    # Release retires the same record and ends its assignments.
+    assert {:ok, released} = IPAM.release_address(scope, managed.id)
+    assert released.resource.lifecycle_state == "retired"
+    assert Repo.all(IpAddressAssignment) == []
+    assert Repo.get!(IpAddress, managed.id)
+    assert {:ok, _} = IPAM.release_address(scope, managed.id)
+
+    # Re-adoption reactivates it rather than inserting a second record.
+    assert {:ok, readopted} = IPAM.adopt_address(scope, address.id)
+    assert readopted.id == managed.id
+    assert Repo.get!(Renga.Inventory.Resource, managed.resource_id).lifecycle_state == "active"
+    assert [_assignment] = readopted.assignments
+
+    descriptions =
+      scope
+      |> Renga.Inventory.list_activity()
+      |> Enum.filter(&(&1.resource_id == managed.resource_id))
+      |> Enum.map(&RengaWeb.ChangeDescription.describe/1)
+      |> Enum.frequencies()
+
+    # Events written in one transaction share a timestamp, so compare counts.
+    assert descriptions == %{
+             "Created IP address 192.0.2.5" => 1,
+             "Assigned to eth0 on #{host.name}" => 2,
+             "Unassigned from eth0 on #{host.name}" => 1,
+             "Updated lifecycle state" => 2
+           }
   end
 
-  test "managed identity ignores interface masks and persists after interface or resource deletion",
+  test "managed identity is the host in its routing table; assignments go with interfaces",
        %{scope: scope} do
     for {text, host, mask} <- [
-          {"192.0.2.5/24", "192.0.2.5/32", 32},
-          {"2001:db8::5/64", "2001:db8::5/128", 128}
+          {"192.0.2.5/24", "192.0.2.5/32", 24},
+          {"2001:db8::5/64", "2001:db8::5/128", 64}
         ] do
       {resource, ports} = device_fixture(scope, "server", "identity-#{mask}", ~w(eth0 eth1))
       first = address_fixture(scope, ports["eth0"], text)
       second = address_fixture(scope, ports["eth1"], host)
       assert {:ok, managed} = IPAM.adopt_address(scope, first.id)
       assert managed.address.netmask == mask
-      assert Renga.Repo.reload!(first).address.netmask != mask
+
+      # The same host on another interface, with another mask, is the same
+      # managed address.
       assert {:error, %Ecto.Changeset{}} = IPAM.adopt_address(scope, second.id)
-      invalid = %{managed | id: nil, address: first.address}
 
-      changeset =
-        invalid
-        |> Ecto.Changeset.change()
-        |> Ecto.Changeset.check_constraint(:address, name: :managed_addresses_host_address)
+      {:ok, envelope} =
+        Renga.Inventory.ResourceStore.insert(scope.organization_id, %{
+          kind: "ip_address",
+          name: "duplicate-#{mask}",
+          lifecycle_state: "active"
+        })
 
-      assert {:error, %Ecto.Changeset{}} = Renga.Repo.insert(changeset, mode: :savepoint)
-      if mask == 32, do: Renga.Repo.delete!(ports["eth0"]), else: Renga.Repo.delete!(resource)
-      assert %{interface_id: nil, organization_id: organization_id} = Renga.Repo.reload!(managed)
-      assert organization_id == scope.organization_id
+      duplicate =
+        %IpAddress{
+          organization_id: scope.organization_id,
+          resource_id: envelope.id,
+          address: second.address
+        }
+        |> IpAddress.changeset(%{})
+
+      assert {:error, changeset} = Repo.insert(duplicate, mode: :savepoint)
+      assert %{address: ["is already managed in this routing table"]} = errors_on(changeset)
+
+      if mask == 24, do: Repo.delete!(ports["eth0"]), else: Repo.delete!(resource)
+      assert Repo.reload!(managed).organization_id == scope.organization_id
+      assert Repo.all(from a in IpAddressAssignment, where: a.ip_address_id == ^managed.id) == []
       assert {:ok, _} = IPAM.release_address(scope, managed.id)
     end
+  end
+
+  test "a released address is history, and re-adoption records what changed", %{scope: scope} do
+    lan = prefix_fixture(scope, "192.0.2.0/28")
+    {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "history"})
+    [observed] = report_addresses(scope, source, ["192.0.2.5/24"])
+    {:ok, managed} = IPAM.adopt_address(scope, observed.id)
+
+    # Withdrawn, the managed address is still listed as current intent...
+    report_addresses(scope, source, [])
+    assert [%{address: nil, managed: %{id: id}}] = IPAM.prefix_view(scope, lan).addresses
+    assert id == managed.id
+
+    # ...until it is released, when only history remains.
+    {:ok, _} = IPAM.release_address(scope, managed.id)
+    assert IPAM.prefix_view(scope, lan).addresses == []
+
+    # Seen again with another mask and adopted, the same record follows it.
+    [_withdrawn, again] = report_addresses(scope, source, ["192.0.2.5/28"])
+    assert {:ok, readopted} = IPAM.adopt_address(scope, again.id, %{description: "Web"})
+    assert readopted.id == managed.id
+    assert Cidr.format(readopted.address) == "192.0.2.5/28"
+
+    changes =
+      scope
+      |> Renga.Inventory.list_activity()
+      |> Enum.filter(&(&1.resource_id == managed.resource_id and &1.kind == "updated"))
+      |> Map.new(&{&1.field, {&1.old_value["value"], &1.new_value["value"]}})
+
+    assert changes["address"] == {"192.0.2.5/24", "192.0.2.5/28"}
+    assert changes["description"] == {nil, "Web"}
+  end
+
+  test "IP-address envelopes are created only through the IPAM context", %{scope: scope} do
+    assert {:error, changeset} =
+             Renga.Inventory.create_resource(scope, %{kind: "ip_address", name: "loose"})
+
+    assert %{kind: ["must be created through the IPAM context"]} = errors_on(changeset)
   end
 
   test "cannot adopt or release another tenant's address", %{scope: scope} do

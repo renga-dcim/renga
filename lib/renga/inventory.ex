@@ -51,7 +51,7 @@ defmodule Renga.Inventory do
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf ip_address)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -386,11 +386,11 @@ defmodule Renga.Inventory do
     |> Repo.rollback()
   end
 
-  # A prefix or VRF envelope without its typed projection would be an
-  # invisible, unconstrained CIDR or namespace; Renga.IPAM creates both in
-  # one transaction.
+  # An IPAM envelope without its typed projection would be an invisible,
+  # unconstrained CIDR, namespace, or address; Renga.IPAM creates both in one
+  # transaction.
   defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
-       when kind in ~w(prefix vrf) do
+       when kind in ~w(prefix vrf ip_address) do
     %Resource{organization_id: organization_id}
     |> Resource.changeset(attrs)
     |> Ecto.Changeset.add_error(:kind, "must be created through the IPAM context")
