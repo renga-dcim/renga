@@ -153,6 +153,10 @@ prefix is never its own parent.
 Statuses are `container`, `active`, `reserved`, and `deprecated`; `container`
 is added to the shipped three. Container utilization is based on the union of
 child-prefix space; other prefix statuses use occupied host values and ranges.
+The shipped views currently choose child-space presentation whenever children
+exist, independently of status, and a host view for empty containers. Phase 2
+preserves that behavior; status-specific empty-container utilization remains
+deferred work rather than part of its completion claim.
 Prefix roles are bounded or user-managed functional categories introduced only
 for immediate workflows, rather than an unvalidated metadata convention. Site,
 VLAN, tenant, and aggregate relationships may be added independently without

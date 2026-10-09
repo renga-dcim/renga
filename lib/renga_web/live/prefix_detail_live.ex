@@ -254,7 +254,7 @@ defmodule RengaWeb.PrefixDetailLive do
         <p
           :if={@view.mode != :container and not @view.addresses_observable?}
           id="prefix-addresses-global-note"
-          class="flex items-start gap-2 rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-fg-muted"
+          class="mb-4 flex items-start gap-2 rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-fg-muted"
         >
           <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
           <span>
@@ -339,7 +339,8 @@ defmodule RengaWeb.PrefixDetailLive do
             >
               Dual stack on VLAN {vlan.vid}:
               <span class="font-mono text-fg">{length(coverage.both)} of {coverage.total}</span>
-              devices have both families.
+              devices within this VLAN's Global-table prefixes have both families.
+              VRF prefixes are excluded until collectors report routing domains.
               <.link navigate={~p"/network/vlans/#{vlan.id}"} class="text-link hover:underline">
                 See which
               </.link>
