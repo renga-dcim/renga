@@ -10,13 +10,13 @@ defmodule RengaWeb.ChangeDescription do
   @doc "The change as a sentence, starting with a capital letter."
   def describe(%{kind: "created", field: field, new_value: %{"value" => value}})
       when is_binary(field),
-      do: "Created #{String.replace(field, "_", " ")} #{value}"
+      do: "Created #{noun(field)} #{value}"
 
   def describe(%{kind: "created"}), do: "Created"
 
   def describe(%{kind: "deleted", field: field, old_value: %{"value" => value}})
       when is_binary(field),
-      do: "Deleted #{String.replace(field, "_", " ")} #{value}"
+      do: "Deleted #{noun(field)} #{value}"
 
   def describe(%{kind: "deleted"}), do: "Deleted"
   def describe(%{kind: "discovered"}), do: "Discovered"
@@ -72,6 +72,10 @@ defmodule RengaWeb.ChangeDescription do
   end
 
   def describe(%{kind: kind}), do: String.capitalize(String.replace(kind, "_", " "))
+
+  # What a created or deleted record is; acronyms keep their capitals.
+  defp noun("vrf"), do: "VRF"
+  defp noun(field), do: String.replace(field, "_", " ")
 
   defp request_change(%{field: field, new_value: %{"value" => value}}) do
     property =

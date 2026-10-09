@@ -33,7 +33,9 @@ defmodule Renga.IPAMPrefixWritesTest do
     assert prefix.resource.display_name == "10.0.0.0/24"
     assert "prefix-" <> _uuid = prefix.resource.name
 
-    assert {:ok, blue} = IPAM.create_prefix(owner, %{prefix: "10.0.0.0/24", vrf: "blue"})
+    vrf = vrf_fixture(owner, "blue")
+    assert {:ok, blue} = IPAM.create_prefix(owner, %{prefix: "10.0.0.0/24", vrf_id: vrf.id})
+    assert blue.vrf.id == vrf.id
     assert blue.resource.display_name == "10.0.0.0/24 (blue)"
 
     assert [event] =
@@ -68,11 +70,12 @@ defmodule Renga.IPAMPrefixWritesTest do
     assert %{prefix: ["already exists in this routing table"]} = errors_on(changeset)
 
     # Containment is hierarchy, and another table is another namespace.
+    blue = vrf_fixture(context.admin, "blue")
     assert {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/25"})
-    assert {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24", vrf: "blue"})
+    assert {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24", vrf_id: blue.id})
 
     assert {:error, changeset} =
-             IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24", vrf: "blue"})
+             IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24", vrf_id: blue.id})
 
     assert %{prefix: ["already exists in this routing table"]} = errors_on(changeset)
 
@@ -113,11 +116,12 @@ defmodule Renga.IPAMPrefixWritesTest do
   test "an edit records each changed field and follows a new CIDR in the name", context do
     {:ok, prefix} = IPAM.create_prefix(context.admin, %{prefix: "10.0.0.0/24"})
     {:ok, _} = IPAM.create_prefix(context.admin, %{prefix: "10.0.1.0/24"})
+    blue = vrf_fixture(context.admin, "blue")
 
     assert {:ok, updated} =
              IPAM.update_prefix(context.admin, prefix, %{
                prefix: "10.0.2.0/24",
-               vrf: "blue",
+               vrf_id: blue.id,
                status: "reserved",
                description: "Lab"
              })
@@ -140,7 +144,7 @@ defmodule Renga.IPAMPrefixWritesTest do
 
     # Editing into a CIDR the table already holds is refused like creating it.
     assert {:error, changeset} =
-             IPAM.update_prefix(context.admin, updated, %{prefix: "10.0.1.0/24", vrf: nil})
+             IPAM.update_prefix(context.admin, updated, %{prefix: "10.0.1.0/24", vrf_id: nil})
 
     assert %{prefix: ["already exists in this routing table"]} = errors_on(changeset)
 
@@ -165,8 +169,9 @@ defmodule Renga.IPAMPrefixWritesTest do
 
   test "global and a literal Global table have distinct audited identities", context do
     prefix = prefix_fixture(context.admin, "192.0.2.0/24")
-    {:ok, named} = IPAM.update_prefix(context.admin, prefix, %{vrf: "Global"})
-    {:ok, _} = IPAM.update_prefix(context.admin, named, %{vrf: nil})
+    global = vrf_fixture(context.admin, "Global")
+    {:ok, named} = IPAM.update_prefix(context.admin, prefix, %{vrf_id: global.id})
+    {:ok, _} = IPAM.update_prefix(context.admin, named, %{vrf_id: nil})
 
     events =
       context.admin
@@ -176,8 +181,11 @@ defmodule Renga.IPAMPrefixWritesTest do
     assert length(events) == 2
     assert Enum.all?(events, &(&1.actor_user_id == context.admin.user.id))
 
-    assert MapSet.new(Enum.map(events, &{&1.old_value["value"], &1.new_value["value"]})) ==
-             MapSet.new([{nil, "Global"}, {"Global", nil}])
+    assert MapSet.new(Enum.map(events, &{&1.old_value, &1.new_value})) ==
+             MapSet.new([
+               {%{"value" => nil}, %{"value" => "Global", "vrf_id" => global.id}},
+               {%{"value" => "Global", "vrf_id" => global.id}, %{"value" => nil}}
+             ])
   end
 
   test "deleting a prefix keeps its addresses and its history", context do

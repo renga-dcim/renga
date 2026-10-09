@@ -10,7 +10,7 @@ defmodule Renga.IPAM.PrefixTreeTest do
     inet
   end
 
-  defp prefix(text, vrf \\ nil), do: %{id: text, prefix: cidr(text), vrf: vrf}
+  defp prefix(text, vrf_id \\ nil), do: %{id: text, prefix: cidr(text), vrf_id: vrf_id}
 
   defp address(text, metadata \\ %{}) do
     {:ok, inet} = Renga.Types.Inet.cast(text)
@@ -77,7 +77,7 @@ defmodule Renga.IPAM.PrefixTreeTest do
              ]
 
       assert [%{prefix: %{id: "2001:db8::/32"}}] = trees[{nil, :ipv6}]
-      assert [%{prefix: %{vrf: "blue"}}] = trees[{"blue", :ipv4}]
+      assert [%{prefix: %{vrf_id: "blue"}}] = trees[{"blue", :ipv4}]
     end
   end
 

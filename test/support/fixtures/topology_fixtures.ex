@@ -184,8 +184,26 @@ defmodule Renga.TopologyFixtures do
 
   @doc "Creates a prefix (and its resource envelope) in an optional VRF."
   def prefix_fixture(scope, cidr, attrs \\ %{}) do
+    attrs =
+      case Map.pop(attrs, :vrf) do
+        {nil, attrs} -> attrs
+        {name, attrs} -> Map.put(attrs, :vrf_id, vrf_fixture(scope, name).id)
+      end
+
     {:ok, prefix} = Renga.IPAM.create_prefix(scope, Map.put(attrs, :prefix, cidr))
     prefix
+  end
+
+  @doc "Finds the VRF with this name, ignoring case, or creates it."
+  def vrf_fixture(scope, name, attrs \\ %{}) do
+    case Renga.IPAM.get_vrf_by_name(scope, name) do
+      nil ->
+        {:ok, vrf} = Renga.IPAM.create_vrf(scope, Map.put(attrs, :name, name))
+        vrf
+
+      vrf ->
+        vrf
+    end
   end
 
   @doc "Reconciles an authoritative address snapshot through the collector ingestion path."

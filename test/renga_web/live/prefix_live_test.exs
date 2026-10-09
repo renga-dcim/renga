@@ -113,16 +113,37 @@ defmodule RengaWeb.PrefixLiveTest do
     assert has_element?(view, "#prefix-row-#{p.users_v4.id}")
   end
 
+  test "names a VRF regardless of case and follows its rename", %{conn: conn, scope: scope} do
+    p = plan(scope)
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes?vrf=BLUE")
+
+    assert has_element?(view, "#prefix-row-#{p.blue.id}")
+    assert has_element?(view, "#prefix-table option[selected][value='blue']")
+
+    {:ok, _} = Renga.IPAM.update_vrf(scope, p.blue.vrf, %{name: "Tenant"})
+    send(view.pid, :reload)
+
+    assert_patch(view, ~p"/network/prefixes?vrf=Tenant")
+    assert has_element?(view, "#prefix-row-#{p.blue.id}")
+    assert has_element?(view, "#prefix-table option[selected][value='Tenant']")
+  end
+
   test "keeps another organization's prefixes invisible", %{conn: conn} do
     other = user_fixture()
     other_organization = organization_fixture()
     organization_membership_fixture(other, other_organization, %{role: "admin"})
     other_scope = Accounts.scope_for_user(other, other_organization.id)
     foreign = prefix_fixture(other_scope, "198.51.100.0/24")
+    foreign_green = prefix_fixture(other_scope, "198.51.100.0/24", %{vrf: "green"})
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes")
     refute has_element?(view, "#prefix-row-#{foreign.id}")
     assert has_element?(view, "#prefix-tree-ipv4-empty")
+
+    # Their VRFs are neither listed nor reachable by name.
+    {:ok, view, _html} = live(conn, ~p"/network/prefixes?vrf=green")
+    refute has_element?(view, "#prefix-table option[value='green']")
+    refute has_element?(view, "#prefix-row-#{foreign_green.id}")
   end
 
   test "requires authentication" do

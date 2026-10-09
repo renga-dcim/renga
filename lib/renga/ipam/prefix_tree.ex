@@ -24,13 +24,13 @@ defmodule Renga.IPAM.PrefixTree do
   @max_cells 256
 
   @doc """
-  Builds the trees for `prefixes`, keyed by `{vrf, family}`.
+  Builds the trees for `prefixes`, keyed by `{vrf_id, family}`.
 
   Nodes are `%{prefix: prefix, children: [node]}`, ordered by network.
   """
   def build(prefixes) do
     prefixes
-    |> Enum.group_by(&{&1.vrf, Cidr.family(&1.prefix)})
+    |> Enum.group_by(&{&1.vrf_id, Cidr.family(&1.prefix)})
     |> Map.new(fn {key, group} -> {key, nest(group)} end)
   end
 

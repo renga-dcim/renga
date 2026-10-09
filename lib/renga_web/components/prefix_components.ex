@@ -11,6 +11,7 @@ defmodule RengaWeb.PrefixComponents do
 
   alias Renga.Inventory.Prefix
   alias Renga.IPAM.Cidr
+  alias Renga.IPAM.Vrf
 
   @doc """
   Renders a prefix's usage: children allocated for a container ("5 of 256
@@ -99,17 +100,17 @@ defmodule RengaWeb.PrefixComponents do
   end
 
   @doc """
-  The fields of the prefix create and edit forms. The routing table is free
-  text until VRF records exist (RFD 4, Phase 2); suggesting the tables
-  already in use keeps a typo from quietly starting a new one.
+  The fields of the prefix create and edit forms. The routing table is
+  picked from the organization's VRFs (RFD 4, Phase 2), so a typo can no
+  longer quietly start a new table; VRFs are created on their own.
   """
   attr :form, Phoenix.HTML.Form, required: true
-  attr :tables, :list, required: true, doc: "routing tables in use, nil for global"
+  attr :tables, :list, required: true, doc: "the routing tables, nil for global, then VRFs"
 
   def prefix_fields(assigns) do
     assigns =
       assign(assigns,
-        datalist_id: "#{assigns.form.id}-tables",
+        table_options: Enum.map(assigns.tables, &table_option/1),
         statuses: Enum.map(Prefix.statuses(), &{String.capitalize(&1), &1})
       )
 
@@ -123,21 +124,14 @@ defmodule RengaWeb.PrefixComponents do
       autocomplete="off"
       spellcheck="false"
     />
-    <.input
-      field={@form[:vrf]}
-      type="text"
-      label="Routing table"
-      placeholder="Global"
-      list={@datalist_id}
-      autocomplete="off"
-    />
-    <datalist id={@datalist_id}>
-      <option :for={table <- @tables} :if={table} value={table} />
-    </datalist>
+    <.input field={@form[:vrf_id]} type="select" label="Routing table" options={@table_options} />
     <.input field={@form[:status]} type="select" label="Status" options={@statuses} />
     <.input field={@form[:description]} type="text" label="Description (optional)" />
     """
   end
+
+  defp table_option(nil), do: {"Global", ""}
+  defp table_option(vrf), do: {vrf.name, vrf.id}
 
   # A stored prefix is a Postgrex.INET; a typed one is still text.
   defp cidr_text(%Postgrex.INET{} = cidr), do: Cidr.format(cidr)
@@ -149,7 +143,7 @@ defmodule RengaWeb.PrefixComponents do
 
   @doc "A routing table's name: `Global` or the VRF."
   def table_label(nil), do: "Global"
-  def table_label(vrf), do: vrf
+  def table_label(%Vrf{name: name}), do: name
 
   @doc "Groups digits in thousands: 65536 -> 65,536."
   def delimit(number) when is_integer(number) do

@@ -49,7 +49,7 @@ defmodule RengaWeb.PrefixLive do
   @impl true
   def handle_params(params, _uri, socket) do
     tables = IPAM.list_routing_tables(socket.assigns.current_scope)
-    vrf = if params["vrf"] in tables, do: params["vrf"], else: nil
+    vrf = find_table(tables, params["vrf"])
 
     query = %{
       family: family(params["family"]),
@@ -60,17 +60,17 @@ defmodule RengaWeb.PrefixLive do
     {:noreply,
      socket
      |> assign(tables: tables, query: query)
-     |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf: vrf}))
+     |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf_id: vrf && vrf.id}))
      |> load_rows()}
   end
 
   @impl true
-  def handle_event("routing_table", %{"table" => %{"vrf" => vrf}}, socket) do
+  def handle_event("routing_table", %{"table" => %{"vrf" => name}}, socket) do
     {:noreply,
      push_patch(socket,
        to:
          prefixes_path(socket.assigns.query,
-           vrf: if(vrf == "", do: nil, else: vrf),
+           vrf: find_table(socket.assigns.tables, name),
            selected: nil
          )
      )}
@@ -110,8 +110,19 @@ defmodule RengaWeb.PrefixLive do
      assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
   end
 
+  # VRFs may have been added, renamed, or removed elsewhere. The table in
+  # view is followed by id, so a rename keeps it and moves the URL along.
   def handle_info(:reload, socket) do
-    {:noreply, socket |> assign(:reload_timer, nil) |> load_rows()}
+    %{query: query, current_scope: scope} = socket.assigns
+    tables = IPAM.list_routing_tables(scope)
+    vrf = query.vrf && Enum.find(tables, &(&1 && &1.id == query.vrf.id))
+    socket = assign(socket, reload_timer: nil, tables: tables)
+
+    if table_param(vrf) == table_param(query.vrf) do
+      {:noreply, socket |> assign(:query, %{query | vrf: vrf}) |> load_rows()}
+    else
+      {:noreply, push_patch(socket, to: prefixes_path(query, vrf: vrf, selected: nil))}
+    end
   end
 
   # Show the new prefix: its routing table, and its family unless both are
@@ -131,7 +142,7 @@ defmodule RengaWeb.PrefixLive do
 
   defp load_rows(socket) do
     %{query: query, current_scope: scope} = socket.assigns
-    rows = IPAM.list_prefix_rows(scope, query.vrf)
+    rows = IPAM.list_prefix_rows(scope, query.vrf && query.vrf.id)
 
     highlighted =
       case Enum.find(rows.ipv4 ++ rows.ipv6, &(&1.node.prefix.id == query.selected)) do
@@ -142,7 +153,7 @@ defmodule RengaWeb.PrefixLive do
     assign(socket,
       rows: rows,
       highlighted: highlighted,
-      table_form: to_form(%{"vrf" => query.vrf || ""}, as: :table)
+      table_form: to_form(%{"vrf" => table_param(query.vrf) || ""}, as: :table)
     )
   end
 
@@ -185,7 +196,7 @@ defmodule RengaWeb.PrefixLive do
                 field={@table_form[:vrf]}
                 type="select"
                 label="Routing table"
-                options={Enum.map(@tables, &{table_label(&1), &1 || ""})}
+                options={Enum.map(@tables, &{table_label(&1), table_param(&1) || ""})}
               />
             </.form>
           </div>
@@ -331,13 +342,29 @@ defmodule RengaWeb.PrefixLive do
   defp family("ipv6"), do: :ipv6
   defp family(_value), do: :both
 
+  # `?vrf=` names a VRF, matched regardless of case; anything else, including
+  # a VRF that no longer exists, is the global table.
+  defp find_table(_tables, name) when name in [nil, ""], do: nil
+
+  defp find_table(tables, name) do
+    key = String.downcase(name)
+    Enum.find(tables, &(&1 && String.downcase(&1.name) == key))
+  end
+
+  defp table_param(nil), do: nil
+  defp table_param(vrf), do: vrf.name
+
   # Patch paths keep the view's switches; `nil` drops a parameter and the
   # defaults (both families, global table) stay out of the URL.
   defp prefixes_path(query, overrides) do
     query = Map.merge(query, Map.new(overrides))
 
     params =
-      [family: query.family != :both && query.family, vrf: query.vrf, selected: query.selected]
+      [
+        family: query.family != :both && query.family,
+        vrf: table_param(query.vrf),
+        selected: query.selected
+      ]
       |> Enum.reject(fn {_key, value} -> value in [nil, false] end)
 
     ~p"/network/prefixes?#{params}"

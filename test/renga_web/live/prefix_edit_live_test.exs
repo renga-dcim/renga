@@ -24,18 +24,18 @@ defmodule RengaWeb.PrefixEditLiveTest do
 
   describe "creating" do
     test "an admin creates a prefix and lands on its table and family", context do
-      prefix_fixture(context.admin, "10.0.0.0/16", %{vrf: "blue"})
+      blue = vrf_fixture(context.admin, "blue")
       {:ok, view, _html} = live(context.admin_conn, ~p"/network/prefixes?family=ipv4")
 
       assert has_element?(view, "#new-prefix")
 
       view
       |> form("#prefix-form",
-        prefix: %{prefix: "2001:db8:b::/48", vrf: "blue", status: "container"}
+        prefix: %{prefix: "2001:db8:b::/48", vrf_id: blue.id, status: "container"}
       )
       |> render_submit()
 
-      created = Repo.get_by!(Prefix, vrf: "blue", status: "container")
+      created = Repo.get_by!(Prefix, vrf_id: blue.id, status: "container")
       assert_patch(view, ~p"/network/prefixes?family=ipv6&vrf=blue")
       assert has_element?(view, "#flash-info", "Prefix 2001:db8:b::/48 created")
       assert has_element?(view, "#prefix-row-#{created.id}")
@@ -84,6 +84,23 @@ defmodule RengaWeb.PrefixEditLiveTest do
 
       assert has_element?(view, "#prefix-detail", "Reserved")
       assert %{status: "reserved", description: "Lab"} = Repo.get!(Prefix, prefix.id)
+    end
+
+    test "an admin moves a prefix into a VRF picked from the list", context do
+      blue = vrf_fixture(context.admin, "blue")
+      prefix = prefix_fixture(context.admin, "10.0.0.0/24")
+      {:ok, view, _html} = live(context.admin_conn, ~p"/network/prefixes/#{prefix}")
+
+      assert has_element?(view, "#prefix-edit-form option[value='#{blue.id}']", "blue")
+
+      view |> form("#prefix-edit-form", prefix: %{vrf_id: blue.id}) |> render_submit()
+
+      assert Repo.get!(Prefix, prefix.id).vrf_id == blue.id
+      assert has_element?(view, "#prefix-detail a[href='/network/prefixes?family=ipv4&vrf=blue']")
+
+      # Back to the global table.
+      view |> form("#prefix-edit-form", prefix: %{vrf_id: ""}) |> render_submit()
+      assert Repo.get!(Prefix, prefix.id).vrf_id == nil
     end
 
     test "an edit into a CIDR the table holds stays open with the error", context do
