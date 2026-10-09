@@ -142,7 +142,7 @@ defmodule RengaWeb.Layouts do
                 {@current_scope.user.email}
               </span>
             </.link>
-            <.theme_toggle />
+            <.theme_toggle id="theme-toggle" current_scope={@current_scope} />
             <.link
               href={~p"/users/log-out"}
               method="delete"
@@ -206,7 +206,7 @@ defmodule RengaWeb.Layouts do
             >
               <.icon name="hero-magnifying-glass" class="size-4" />
             </button>
-            <.theme_toggle />
+            <.theme_toggle id="theme-toggle-mobile" current_scope={@current_scope} />
           </div>
         </header>
         <div class={["min-h-0 flex-1", @content_class]}>
@@ -236,7 +236,7 @@ defmodule RengaWeb.Layouts do
             <span>Renga</span>
           </.link>
           <div class="ml-auto flex items-center gap-1">
-            <.theme_toggle />
+            <.theme_toggle id="theme-toggle-header" current_scope={@current_scope} />
             <.link
               :if={@current_scope && @current_scope.user}
               href={~p"/users/log-out"}
@@ -588,25 +588,53 @@ defmodule RengaWeb.Layouts do
   end
 
   @doc """
-  Provides dark vs light theme toggle based on themes defined in app.css.
+  Cycles the theme: match the system, light, then dark.
 
-  See <head> in root.html.heex which applies the theme before page load.
+  A signed-in person's choice is saved (`RengaWeb.AppearanceHook`) so it
+  follows them across devices; signed out, it is kept in this browser.
+  The icon shows the current theme.
   """
+  attr :id, :string, required: true
+  attr :current_scope, :any, default: nil
+
   def theme_toggle(assigns) do
     ~H"""
     <button
       type="button"
+      id={@id}
       class="rounded-md p-2 text-fg-subtle transition hover:bg-surface hover:text-fg"
-      phx-click={JS.dispatch("phx:toggle-theme")}
-      aria-label="Toggle color theme"
+      phx-click={
+        if(@current_scope && @current_scope.user,
+          do: "cycle_theme",
+          else: JS.dispatch("phx:toggle-theme")
+        )
+      }
+      aria-label="Change color theme"
+      title="Change color theme"
     >
-      <.icon name="hero-moon" class="hidden size-4 [[data-theme=light]_&]:block" />
-      <.icon name="hero-sun" class="hidden size-4 [[data-theme=dark]_&]:block" />
+      <.icon name="hero-sun" class="hidden size-4 [[data-theme=light]_&]:block" />
+      <.icon name="hero-moon" class="hidden size-4 [[data-theme=dark]_&]:block" />
       <.icon
         name="hero-computer-desktop"
         class="size-4 [[data-theme=light]_&]:hidden [[data-theme=dark]_&]:hidden"
       />
     </button>
     """
+  end
+
+  @doc """
+  The `<html>` attributes for a scope's appearance. The theme is only set
+  when chosen; matching the system leaves it to `prefers-color-scheme`.
+  `data-theme-pref` tells the page script the server owns the choice.
+  """
+  def appearance_attributes(scope) do
+    appearance = Renga.Accounts.Appearance.for_scope(scope)
+
+    [
+      {"data-accent", appearance.accent},
+      {"data-density", appearance.density},
+      {"data-theme", if(appearance.theme != "system", do: appearance.theme)},
+      {"data-theme-pref", if(scope && scope.user, do: appearance.theme)}
+    ]
   end
 end
