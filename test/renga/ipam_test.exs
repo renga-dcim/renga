@@ -173,6 +173,58 @@ defmodule Renga.IPAMTest do
              IPAM.list_prefix_rows(scope, nil)
   end
 
+  test "adopts and releases addresses, owners and admins only", %{scope: scope} do
+    {_host, ports} = device_fixture(scope, "server", "adopt-host", ~w(eth0))
+    address = address_fixture(scope, ports["eth0"], "192.0.2.5")
+
+    assert {:ok, managed} = IPAM.adopt_address(scope, address.id)
+    assert managed.interface_id == ports["eth0"].id
+    assert managed.adopted_by_id == scope.user.id
+    assert {:error, %Ecto.Changeset{}} = IPAM.adopt_address(scope, address.id)
+
+    member = user_fixture()
+
+    organization_membership_fixture(
+      member,
+      Renga.Repo.get!(Renga.Accounts.Organization, scope.organization_id),
+      %{role: "member"}
+    )
+
+    member_scope = Accounts.scope_for_user(member, scope.organization_id)
+    assert {:error, :forbidden} = IPAM.release_address(member_scope, managed.id)
+    assert {:error, :forbidden} = IPAM.adopt_address(member_scope, address.id)
+
+    assert {:ok, _released} = IPAM.release_address(scope, managed.id)
+  end
+
+  test "measures dual-stack coverage only for VLANs carrying both families", %{scope: scope} do
+    group = vlan_group_fixture(scope, "dual")
+    users = vlan_fixture(scope, group, 10, "users")
+    voice = vlan_fixture(scope, group, 20, "voice")
+    v4 = prefix_fixture(scope, "10.0.10.0/24")
+    v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
+    voice_v4 = prefix_fixture(scope, "10.0.20.0/24")
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v4.id, users.id)
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v6.id, users.id)
+    {:ok, _} = Topology.attach_prefix_vlan(scope, voice_v4.id, voice.id)
+
+    {both, both_ports} = device_fixture(scope, "server", "both", ~w(eth0))
+    {v4_only, v4_ports} = device_fixture(scope, "server", "v4-only", ~w(eth0))
+    {v6_only, v6_ports} = device_fixture(scope, "server", "v6-only", ~w(eth0))
+    address_fixture(scope, both_ports["eth0"], "10.0.10.5")
+    address_fixture(scope, both_ports["eth0"], "2001:db8:a:10::5")
+    address_fixture(scope, v4_ports["eth0"], "10.0.10.6")
+    address_fixture(scope, v6_ports["eth0"], "2001:db8:a:10::7")
+
+    coverage = IPAM.vlan_dual_stack(scope, users.id)
+
+    assert Enum.map(coverage.both, & &1.id) == [both.id]
+    assert Enum.map(coverage.missing_ipv6, & &1.id) == [v4_only.id]
+    assert Enum.map(coverage.missing_ipv4, & &1.id) == [v6_only.id]
+    assert coverage.total == 3
+    assert IPAM.vlan_dual_stack(scope, voice.id) == nil
+  end
+
   test "never shows another organization's prefixes or addresses", %{scope: scope} do
     lan = prefix_fixture(scope, "192.0.2.0/28")
 

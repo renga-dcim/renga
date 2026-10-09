@@ -129,16 +129,18 @@ defmodule Renga.IPAM.PrefixTree do
 
   @doc """
   The per-address map of a small IPv4 leaf: one cell per address, marked
-  `:network`, `:broadcast`, `:used`, or `:free`, with the hosts usable and
-  used for the utilization percentage.
+  `:network`, `:broadcast`, `:used`, `:managed` (managed but not observed),
+  or `:free`, with the hosts usable and used for the utilization
+  percentage. `entries` are the address entries the cells link to.
 
   /31 and /32 prefixes have no network or broadcast address (RFC 3021).
   """
-  def address_map(%{prefix: %{prefix: cidr}}, addresses) do
+  def address_map(%{prefix: %{prefix: cidr}}, addresses, entries \\ []) do
     length = Cidr.length(cidr)
     size = Cidr.size(cidr)
     base = Cidr.network_at(cidr, length)
     used = Map.new(addresses, &{Cidr.to_integer(&1.address), &1})
+    by_value = Map.new(entries, &{Cidr.to_integer(&1.inet), &1})
     reserved? = length <= 30
 
     cells =
@@ -146,12 +148,15 @@ defmodule Renga.IPAM.PrefixTree do
         value = base + offset
 
         state = address_state(offset, size, reserved?, Map.has_key?(used, value))
+        entry = Map.get(by_value, value)
+        state = if state == :free and entry, do: :managed, else: state
 
         %{
           address: Cidr.from_integer(value, :ipv4, 32),
           offset: offset,
           state: state,
-          record: Map.get(used, value)
+          record: Map.get(used, value),
+          entry: entry
         }
       end
 
