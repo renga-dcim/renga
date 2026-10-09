@@ -47,7 +47,7 @@ defmodule Renga.Repo.Migrations.CreateConfirmedComponents do
       add :part_number, :string
       add :serial_number, :string
       add :model, :string
-      add :note, :string
+      add :note, :text
       add :confirmed_by_user_id, references(:users, on_delete: :nilify_all, type: :binary_id)
       add :confirmed_at, :utc_datetime_usec, null: false
 

@@ -56,7 +56,9 @@ defmodule Renga.Catalog.HardwareComparison do
   """
   def build(expected, actuals, confirmations \\ %{}, gaps \\ %{}) do
     {compared, other} = Enum.split_with(expected, &(&1.kind in @compared_kinds))
-    actuals = Enum.filter(actuals, &(&1.kind in @compared_kinds))
+
+    actuals =
+      Enum.filter(actuals, &(&1.kind in @compared_kinds and Map.get(&1, :status) != "missing"))
 
     paired =
       Enum.map(compared, fn expected ->
@@ -129,6 +131,11 @@ defmodule Renga.Catalog.HardwareComparison do
           ambiguous_state(candidates)
       end
 
+    reasons =
+      if replacement_pending?(confirmation, actual, effective, differences),
+        do: Enum.uniq([:replacement_pending | reasons]),
+        else: reasons
+
     %{
       key: key,
       kind: expected.kind,
@@ -143,6 +150,12 @@ defmodule Renga.Catalog.HardwareComparison do
       gap: Map.get(gaps, {"missing_expected_component", resolution_key}),
       resolution_key: resolution_key
     }
+  end
+
+  defp replacement_pending?(nil, _actual, _effective, _differences), do: false
+
+  defp replacement_pending?(_confirmation, actual, effective, differences) do
+    is_nil(actual) or Enum.any?(effective.confirmed_fields, &Map.has_key?(differences, &1))
   end
 
   # One observed part fills the slot and no other slot claims it.

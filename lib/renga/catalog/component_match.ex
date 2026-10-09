@@ -18,7 +18,11 @@ defmodule Renga.Catalog.ComponentMatch do
   identity that matches.
   """
   def candidates(expected, actuals) do
-    Enum.filter(actuals, &(&1.kind == expected.kind and identity_matches?(expected, &1)))
+    Enum.filter(
+      actuals,
+      &(Map.get(&1, :status) != "missing" and &1.kind == expected.kind and
+          identity_matches?(expected, &1))
+    )
   end
 
   @doc "Whether an observed component has the identity an expectation describes."
@@ -48,7 +52,9 @@ defmodule Renga.Catalog.ComponentMatch do
     expected.attributes
     |> Enum.reject(fn {field, expected_value} ->
       actual_value = spec(actual, field)
-      is_nil(actual_value) or same_value?(expected_value, actual_value)
+
+      (is_nil(actual_value) and field not in Map.get(expected, :confirmed_fields, [])) or
+        same_value?(expected_value, actual_value)
     end)
     |> Map.new(fn {field, expected_value} ->
       {field, %{"expected" => expected_value, "actual" => spec(actual, field)}}
@@ -72,19 +78,23 @@ defmodule Renga.Catalog.ComponentMatch do
       |> Enum.reject(fn {_field, value} -> value in [nil, ""] end)
       |> Map.new()
 
-    %{expected | attributes: Map.merge(expected.attributes || %{}, confirmed)}
+    expected
+    |> Map.put(:attributes, Map.merge(expected.attributes || %{}, confirmed))
+    |> Map.put(:confirmed_fields, Map.keys(confirmed))
   end
 
   @doc "An observed component's value for a field an expectation names."
   def spec(actual, field) do
-    case field do
-      "name" -> actual.name
-      "model" -> actual.model
-      "slot" -> actual.slot
-      "path" -> actual.path
-      "serial_number" -> actual.serial_number
-      "part_number" -> actual.part_number
-      field -> actual.attributes[field]
+    reported = (Map.get(actual, :metadata) || %{})["reported_identity"] || %{}
+
+    case Map.fetch(reported, field) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        if field in ~w(name model slot path serial_number part_number),
+          do: Map.fetch!(actual, String.to_existing_atom(field)),
+          else: actual.attributes[field]
     end
   end
 

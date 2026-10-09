@@ -724,6 +724,16 @@ defmodule Renga.Catalog do
         |> ExpectedComponentException.changeset(attrs)
         |> upsert()
 
+      # A later explicit expectation decision supersedes the recorded replacement.
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(
+        [confirmation],
+        confirmation.component_template_id in ^List.wrap(template_id) or
+          confirmation.exception_id == ^exception.id
+      )
+      |> Repo.delete_all()
+
       materialize_expected_components(scope, assignment)
       exception
     end)
@@ -874,6 +884,15 @@ defmodule Renga.Catalog do
         [component],
         component.organization_id == ^scope.organization_id and
           component.exception_id == ^exception.id
+      )
+      |> Repo.delete_all()
+
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(
+        [confirmation],
+        confirmation.component_template_id in ^List.wrap(exception.component_template_id) or
+          confirmation.exception_id == ^exception.id
       )
       |> Repo.delete_all()
 
@@ -1136,7 +1155,8 @@ defmodule Renga.Catalog do
           |> Enum.filter(&(&1.kind in @canonical_component_kinds and not &1.suppressed))
           |> Enum.map(&ComponentMatch.with_confirmation(&1, confirmation_for(&1, confirmations)))
 
-        actuals = list_actual_components(scope, resource.id)
+        actuals =
+          list_actual_components(scope, resource.id) |> Enum.reject(&(&1.status == "missing"))
 
         expected_candidates =
           Enum.map(expectations, &{&1, ComponentMatch.candidates(&1, actuals)})

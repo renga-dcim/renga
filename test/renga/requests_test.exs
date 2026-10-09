@@ -240,6 +240,14 @@ defmodule Renga.RequestsTest do
 
       dimm = expected["DIMM A1"]
 
+      {:ok, _} =
+        Catalog.confirm_replacement(
+          context.member,
+          server.id,
+          %{"component_template_id" => dimm.component_template_id},
+          %{part_number: "M-48G"}
+        )
+
       change = %{
         "action" => "alter",
         "component_template_id" => dimm.component_template_id,
@@ -265,6 +273,7 @@ defmodule Renga.RequestsTest do
 
       assert {:ok, 1} = Requests.approve(context.admin, [request])
       assert Requests.get_request(context.admin, request.id).status == "approved"
+      assert Catalog.list_confirmed_components(context.admin, server.id) == []
 
       assert [%{attributes: %{"part_number" => "M-64G"}}] =
                Catalog.list_expected_components(context.admin, server.id)

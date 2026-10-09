@@ -1393,7 +1393,7 @@ defmodule RengaWeb.ResourceHardwareLive do
     [
       row.gap &&
         {"hero-clock-mini",
-         "Out until #{date(row.gap.exception_expires_at)}: “#{row.gap.exception_reason}”"},
+         "#{if row.gap.exception_expires_at, do: "Out until #{date(row.gap.exception_expires_at)}", else: "Accepted indefinitely"}: “#{row.gap.exception_reason}”"},
       row.confirmation &&
         {"hero-arrow-path-mini", replacement_note(row)},
       :override in row.reasons &&

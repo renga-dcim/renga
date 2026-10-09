@@ -116,7 +116,11 @@ defmodule RengaWeb.ResourceHardwareEditLiveTest do
 
     assert has_element?(view, "##{a5}", "Replacement pending")
 
-    actual_component_fixture(context.admin, context.server, "memory", "A5", part_number: "M-64G")
+    actual_component_fixture(context.admin, context.server, "memory", "A5",
+      part_number: "M-64G",
+      serial_number: "S-9"
+    )
+
     send(view.pid, :reload)
 
     assert has_element?(view, "##{a5}[data-state=match]")
@@ -203,9 +207,53 @@ defmodule RengaWeb.ResourceHardwareEditLiveTest do
 
     render_hook(view, "accept_gap", %{"gap" => %{"until" => "2099-01-01", "reason" => "x"}})
     render_hook(view, "change_expectation", %{"expect" => %{"action" => "suppress"}})
+    render_hook(view, "confirm_replacement", %{"replacement" => %{"part_number" => "X"}})
+    render_hook(view, "restore_expectation", %{})
 
     assert Renga.Findings.component_exceptions(context.admin, context.server.id) == %{}
+    assert Catalog.list_confirmed_components(context.admin, context.server.id) == []
     assert {[], 0} = Requests.list_requests(context.admin, resource_id: context.server.id)
+  end
+
+  test "an indefinitely accepted missing slot renders its panel", context do
+    dimm = context.expected["DIMM A5"]
+
+    Renga.FindingsFixtures.component_finding_fixture(context.server, "missing_expected_component",
+      key: "assignment:#{dimm.hardware_assignment_id}:template:#{dimm.component_template_id}"
+    )
+
+    {[finding], 1} = Renga.Findings.list_findings(context.admin, resource_id: context.server.id)
+
+    {:ok, _} =
+      Renga.Findings.accept_exception(context.admin, finding, %{
+        exception_reason: "Intentionally empty"
+      })
+
+    {:ok, view, _html} =
+      live(context.conn, hardware_path(context.server, slot(context.expected, "DIMM A5")))
+
+    assert has_element?(view, "#slot-panel", "Accepted indefinitely")
+  end
+
+  test "members record replacements but revoked membership cannot mutate", context do
+    member = scope_for(context.organization, "member")
+    conn = log_in(build_conn(), member, context.organization)
+
+    {:ok, view, _html} =
+      live(conn, hardware_path(context.server, slot(context.expected, "DIMM A5"), "replacement"))
+
+    view |> form("#replacement-form", replacement: %{part_number: "M-64G"}) |> render_submit()
+    assert [_] = Catalog.list_confirmed_components(context.admin, context.server.id)
+    membership = Renga.Repo.get!(Renga.Accounts.OrganizationMembership, member.membership_id)
+    {:ok, _} = Renga.Accounts.update_organization_membership(membership, %{status: "disabled"})
+
+    assert {:error, :forbidden} =
+             Catalog.confirm_replacement(
+               member,
+               context.server.id,
+               %{"component_template_id" => context.expected["DIMM A5"].component_template_id},
+               %{part_number: "X"}
+             )
   end
 
   defp scope_for(organization, role) do

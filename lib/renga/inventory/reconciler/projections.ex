@@ -128,6 +128,36 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
+  defp persist_component_evidence(scope, source, observation, resource, attrs) do
+    Repo.get_by(ComponentEvidence,
+      organization_id: scope.organization_id,
+      observation_id: observation.id,
+      kind: attrs["kind"],
+      source_local_id: attrs["source_local_id"]
+    ) ||
+      case Inventory.create_component_evidence(
+             scope,
+             source.id,
+             observation.id,
+             resource.id,
+             attrs
+           ) do
+        {:ok, evidence} -> evidence
+      end
+  end
+
+  defp reported_component_attrs(payload) do
+    case Map.get(payload, "components") do
+      components when is_list(components) ->
+        components
+        |> Enum.filter(&supported_component?/1)
+        |> Enum.map(&component_evidence_attrs/1)
+
+      _absent_or_invalid ->
+        []
+    end
+  end
+
   defp reconcile_component_evidence(
          scope,
          source,
@@ -139,16 +169,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     complete_snapshot? =
       complete_component_snapshot?(source, observation, payload, current_snapshot?)
 
-    components =
-      case Map.get(payload, "components") do
-        components when is_list(components) -> components
-        _absent_or_invalid -> []
-      end
-
-    component_attrs =
-      components
-      |> Enum.filter(&supported_component?/1)
-      |> Enum.map(&component_evidence_attrs/1)
+    component_attrs = reported_component_attrs(payload)
 
     module_identity_frequencies =
       component_attrs
@@ -180,30 +201,60 @@ defmodule Renga.Inventory.Reconciler.Projections do
       position_key = position_identity_key(attrs)
       allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
 
-      existing =
-        Repo.get_by(ComponentEvidence,
-          organization_id: scope.organization_id,
-          observation_id: observation.id,
-          kind: attrs["kind"],
-          source_local_id: attrs["source_local_id"]
-        )
-
-      evidence =
-        existing ||
-          case Inventory.create_component_evidence(
-                 scope,
-                 source.id,
-                 observation.id,
-                 resource.id,
-                 attrs
-               ) do
-            {:ok, evidence} -> evidence
-          end
+      evidence = persist_component_evidence(scope, source, observation, resource, attrs)
 
       if evidence.kind in @canonical_component_kinds do
-        reconcile_actual_component(scope, evidence, allow_position_match?)
+        reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?)
       end
     end)
+
+    if complete_snapshot? do
+      observed_ids =
+        ActualComponentEvidenceMatch
+        |> join(:inner, [match], evidence in ComponentEvidence,
+          on: evidence.id == match.component_evidence_id
+        )
+        |> where(
+          [match, evidence],
+          match.owner_resource_id == ^resource.id and evidence.observation_id == ^observation.id
+        )
+        |> select([match], match.actual_component_id)
+        |> Repo.all()
+
+      ActualComponent
+      |> where(
+        [component],
+        component.organization_id == ^scope.organization_id and
+          component.owner_resource_id == ^resource.id
+      )
+      |> where(
+        [component],
+        component.id not in ^observed_ids and
+          component.last_observed_at <= ^observation.observed_at
+      )
+      |> where(
+        [component],
+        fragment(
+          "COALESCE((?->>'presence_observed_at')::timestamptz, ?) <= ?",
+          component.metadata,
+          component.last_observed_at,
+          ^observation.observed_at
+        )
+      )
+      # Keep immutable positive evidence, but prevent an older report restoring presence.
+      |> update([component],
+        set: [
+          status: "missing",
+          metadata:
+            fragment(
+              "? || jsonb_build_object('presence_observed_at', ?::text)",
+              component.metadata,
+              ^DateTime.to_iso8601(observation.observed_at)
+            )
+        ]
+      )
+      |> Repo.update_all([])
+    end
 
     reconciler_scope = catalog_reconciler_scope(scope)
 
@@ -239,7 +290,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp components_declared_complete?(_payload), do: false
 
-  defp reconcile_actual_component(scope, evidence, allow_position_match?) do
+  defp reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?) do
     case Repo.get_by(ActualComponentEvidenceMatch,
            organization_id: scope.organization_id,
            component_evidence_id: evidence.id
@@ -248,10 +299,10 @@ defmodule Renga.Inventory.Reconciler.Projections do
         case match_actual_component(scope.organization_id, evidence, allow_position_match?) do
           {:ok, component, strategy} ->
             put_actual_component_evidence_match(scope, component, evidence, strategy)
-            update_actual_component(component, evidence)
+            update_actual_component(component, evidence, current_snapshot?)
 
           :none ->
-            component = create_actual_component(scope, evidence)
+            component = create_actual_component(scope, evidence, current_snapshot?)
             put_actual_component_evidence_match(scope, component, evidence, "discovered")
 
           :ambiguous ->
@@ -364,17 +415,24 @@ defmodule Renga.Inventory.Reconciler.Projections do
     )
   end
 
-  defp create_actual_component(scope, evidence) do
+  defp create_actual_component(scope, evidence, current_snapshot?) do
     %ActualComponent{
       organization_id: scope.organization_id,
       owner_resource_id: evidence.resource_id
     }
     |> ActualComponent.changeset(actual_component_attrs(evidence, nil))
+    |> Ecto.Changeset.put_change(:status, if(current_snapshot?, do: "present", else: "missing"))
     |> Repo.insert!()
   end
 
-  defp update_actual_component(component, evidence) do
-    if DateTime.before?(evidence.observed_at, component.last_observed_at) do
+  defp update_actual_component(component, evidence, current_snapshot?) do
+    presence_at =
+      case DateTime.from_iso8601(component.metadata["presence_observed_at"] || "") do
+        {:ok, datetime, _offset} -> datetime
+        _none -> component.last_observed_at
+      end
+
+    if not current_snapshot? or DateTime.before?(evidence.observed_at, presence_at) do
       if DateTime.before?(evidence.observed_at, component.first_observed_at) do
         component
         |> ActualComponent.changeset(%{first_observed_at: evidence.observed_at})
@@ -403,7 +461,13 @@ defmodule Renga.Inventory.Reconciler.Projections do
       metadata:
         Map.merge(actual_component_field(component, :metadata) || %{}, %{
           "last_source_id" => evidence.source_id,
-          "last_observation_id" => evidence.observation_id
+          "last_observation_id" => evidence.observation_id,
+          "presence_observed_at" => DateTime.to_iso8601(evidence.observed_at),
+          "reported_identity" =>
+            Map.new(
+              ~w(part_number serial_number model),
+              &{&1, Map.get(evidence, String.to_existing_atom(&1))}
+            )
         }),
       first_observed_at:
         actual_component_field(component, :first_observed_at) || evidence.observed_at,
