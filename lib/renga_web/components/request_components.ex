@@ -26,6 +26,49 @@ defmodule RengaWeb.RequestComponents do
   defp field_label("fqdn"), do: "FQDN"
   defp field_label(field), do: field |> Format.humanize() |> String.capitalize()
 
+  @doc """
+  An open request, shown where the change would be made. Its requester can
+  withdraw it, which sends `withdraw_request` with the request id; owners
+  and admins decide it from the Inbox.
+  """
+  attr :id, :string, required: true
+  attr :request, :map, required: true
+  attr :current_user_id, :string, required: true
+
+  def pending_request(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-1 rounded-md border border-edge bg-sunken px-3 py-2 text-sm">
+      <p class="text-fg">
+        <span class="font-medium">Requested:</span>
+        <span class="font-mono">{@request.after_value["value"]}</span>
+      </p>
+      <p class="text-xs text-fg-muted">
+        {request_author(@request)} · waiting for an owner or admin
+      </p>
+      <div class="flex gap-3 text-xs">
+        <.link
+          navigate={~p"/inbox?#{[group: "requests", request: @request.id]}"}
+          class="text-link hover:underline"
+        >
+          View request
+        </.link>
+        <button
+          :if={@request.requested_by_user_id == @current_user_id}
+          id={"#{@id}-withdraw"}
+          type="button"
+          phx-click={JS.push("withdraw_request", value: %{id: @request.id})}
+          class="cursor-pointer text-fg-muted hover:text-fg hover:underline"
+        >
+          Withdraw
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  defp request_author(%{requested_by_user: %{email: email}}), do: "By #{email}"
+  defp request_author(_request), do: "By a former member"
+
   attr :id, :string, required: true
   attr :requests, :any, required: true
   attr :row_path, :any, required: true
