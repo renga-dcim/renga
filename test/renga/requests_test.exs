@@ -296,6 +296,47 @@ defmodule Renga.RequestsTest do
                  "reason" => "x"
                })
     end
+
+    test "asks to undo a local change, returning the slot to the catalog", context do
+      {server, expected} =
+        assigned_server_fixture(context.admin, "expect-03", [
+          %{kind: "disk", name: "Bay 1", position: "1", attributes: %{"model" => "SSD-1"}}
+        ])
+
+      template_id = expected["Bay 1"].component_template_id
+
+      {:ok, exception} =
+        Catalog.put_expected_component_exception(context.admin, server.id, %{
+          "action" => "suppress",
+          "component_template_id" => template_id
+        })
+
+      change = %{
+        "action" => "restore",
+        "exception_id" => exception.id,
+        "component_template_id" => template_id,
+        "name" => "Bay 1"
+      }
+
+      assert {:ok, request} =
+               Requests.request_expectation(context.member, server, change, %{
+                 "reason" => "The bay is populated again"
+               })
+
+      assert request.field == "template:" <> template_id
+      assert request.before_value == %{"value" => "Not expected: Bay 1"}
+      assert request.after_value["value"] == "Expect Bay 1 as the catalog defines it"
+      assert {:ok, 1} = Requests.approve(context.admin, [request])
+
+      assert [%{suppressed: false, exception_id: nil}] =
+               Catalog.list_expected_components(context.admin, server.id)
+
+      # Undoing a change that is already gone fails instead of approving nothing.
+      assert {:ok, again} =
+               Requests.request_expectation(context.member, server, change, %{"reason" => "x"})
+
+      assert {:error, :not_found} = Requests.approve(context.admin, [again])
+    end
   end
 
   defp member_scope(organization, role) do

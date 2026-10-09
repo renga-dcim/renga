@@ -867,7 +867,7 @@ defmodule Renga.Catalog do
           exception.id == ^exception_id and exception.organization_id == ^scope.organization_id and
             exception.hardware_assignment_id == ^assignment.id
         )
-        |> Repo.one!()
+        |> Repo.one() || Repo.rollback(:not_found)
 
       ExpectedComponent
       |> where(

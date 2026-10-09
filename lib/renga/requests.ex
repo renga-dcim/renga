@@ -82,7 +82,9 @@ defmodule Renga.Requests do
   `change` is what `Renga.Catalog.put_expected_component_exception/3` takes:
   `"action"` (`"alter"`, `"suppress"`, or `"add"`), the template it changes
   or the kind and name it adds, `"changes"`, and the slot's `"name"` for
-  display. The request's field names the slot, so each slot has at most one
+  display. A `"restore"` change undoes an earlier one: it names the
+  `"exception_id"` to remove along with the slot's template, or kind and
+  name for a part only this resource expects. The request's field names the slot, so each slot has at most one
   open request; its value is a sentence describing the change. `attrs`
   carries the reason.
   """
@@ -97,19 +99,41 @@ defmodule Renga.Requests do
     end
   end
 
-  # One open request per slot: a template the resource expects, or a part
-  # it would newly expect, named by kind and name.
-  defp expectation_field(%{"action" => action, "component_template_id" => id})
-       when action in ~w(alter suppress) and is_binary(id),
-       do: "template:" <> id
+  @doc """
+  The request field that names the slot an expectation change is about: a
+  template the resource expects, or a part only it expects, named by kind
+  and name. Each slot has at most one open request. Nil when the change
+  names no slot.
+  """
+  def expectation_field(%{"action" => action, "component_template_id" => id})
+      when action in ~w(alter suppress) and is_binary(id),
+      do: "template:" <> id
 
-  defp expectation_field(%{"action" => "add", "kind" => kind, "name" => name})
-       when is_binary(kind) and is_binary(name) and name != "",
-       do: "component:#{kind}:#{String.downcase(String.trim(name))}"
+  def expectation_field(%{"action" => "add", "kind" => kind, "name" => name})
+      when is_binary(kind) and is_binary(name) and name != "",
+      do: "component:#{kind}:#{String.downcase(String.trim(name))}"
 
-  defp expectation_field(_change), do: nil
+  def expectation_field(%{"action" => "restore", "exception_id" => id} = change)
+      when is_binary(id) do
+    case change do
+      %{"component_template_id" => template_id} when is_binary(template_id) ->
+        expectation_field(%{change | "action" => "alter"})
+
+      change ->
+        expectation_field(%{change | "action" => "add"})
+    end
+  end
+
+  def expectation_field(_change), do: nil
 
   defp describe_expectation(%{"action" => "suppress"} = change),
+    do: "Stop expecting #{change["name"]}"
+
+  defp describe_expectation(%{"action" => "restore", "component_template_id" => id} = change)
+       when is_binary(id),
+       do: "Expect #{change["name"]} as the catalog defines it"
+
+  defp describe_expectation(%{"action" => "restore"} = change),
     do: "Stop expecting #{change["name"]}"
 
   defp describe_expectation(%{"action" => action} = change) when action in ~w(alter add) do
@@ -285,6 +309,17 @@ defmodule Renga.Requests do
     |> Repo.one()
   end
 
+  @doc "Open requests of one kind on a resource, keyed by field."
+  def open_requests(%Scope{organization_id: organization_id}, resource_id, kind) do
+    Request
+    |> where([request], request.organization_id == ^organization_id)
+    |> where([request], request.resource_id == ^resource_id and request.status == "open")
+    |> where([request], request.kind == ^kind)
+    |> preload(:requested_by_user)
+    |> Repo.all()
+    |> Map.new(&{&1.field, &1})
+  end
+
   @doc """
   Other open requests for the same change (kind, field, and proposed value)
   on other resources, so they can be approved together.
@@ -387,6 +422,18 @@ defmodule Renga.Requests do
   defp apply_change(scope, %Request{kind: "owner"} = request) do
     resource = Inventory.get_resource!(scope, request.resource_id)
     Teams.set_owner(scope, resource, request.after_value["team_id"])
+  end
+
+  defp apply_change(
+         scope,
+         %Request{kind: "expectation", after_value: %{"change" => %{"action" => "restore"}}} =
+           request
+       ) do
+    Catalog.delete_expected_component_exception(
+      scope,
+      request.resource_id,
+      request.after_value["change"]["exception_id"]
+    )
   end
 
   defp apply_change(scope, %Request{kind: "expectation"} = request) do
