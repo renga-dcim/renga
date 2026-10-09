@@ -211,6 +211,74 @@ defmodule Renga.Findings do
     end)
   end
 
+  @doc """
+  Accepts a missing expected component as out until a date (RFD 8, "Editing
+  hardware components": "it is out temporarily").
+
+  The gap is recorded on the workflow the missing-component finding will
+  have, keyed by its `resolution_key`, so it applies whether or not a
+  collector has already reported the slot missing: a finding that opens
+  later arrives already excepted, and returns to the queue when the date
+  passes. Unlike `accept_exception/3`, the date is required.
+  """
+  def accept_component_gap(
+        %Scope{organization_id: organization_id} = scope,
+        resource_id,
+        resolution_key,
+        attrs
+      ) do
+    Repo.transaction(fn ->
+      authorize_actor!(scope)
+      now = Renga.Time.utc_now_ms()
+      resource = Inventory.get_resource!(scope, resource_id)
+
+      finding = %Finding{
+        domain: "component",
+        id: nil,
+        kind: "missing_expected_component",
+        subject_id: resource.id,
+        resolution_key: resolution_key,
+        resource: resource
+      }
+
+      workflow = lock_workflow!(scope, finding)
+
+      changeset =
+        workflow
+        |> Workflow.exception_changeset(attrs, scope.user.id, now)
+        |> Ecto.Changeset.validate_required([:exception_expires_at],
+          message: "choose when it will be back"
+        )
+
+      with {:ok, updated} <- Repo.update(changeset),
+           {:ok, _event} <- record(scope, finding, "finding_exception", workflow, updated, now) do
+        updated
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  The component workflows of one resource that currently set a finding
+  aside as an exception, keyed by `{kind, resolution_key}`. The Hardware tab
+  uses them to show a slot that is out until a date.
+  """
+  def component_exceptions(%Scope{organization_id: organization_id}, resource_id) do
+    now = Renga.Time.utc_now_ms()
+
+    Workflow
+    |> where(
+      [workflow],
+      workflow.organization_id == ^organization_id and workflow.domain == "component" and
+        workflow.subject_id == ^resource_id and not is_nil(workflow.exception_at)
+    )
+    |> Repo.all()
+    |> Enum.filter(&Workflow.excepted?(&1, now))
+    |> Map.new(&{{&1.kind, &1.resolution_key}, &1})
+  end
+
   @doc "Removes an accepted exception; the finding returns to the queue if still open."
   def remove_exception(%Scope{} = scope, %Finding{} = finding) do
     change_workflow(scope, finding, "finding_exception_removed", fn _finding, workflow, _now ->
