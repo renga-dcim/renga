@@ -150,7 +150,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 type="button"
                 phx-click="cancel_intake_key"
                 aria-label="Close intake key setup"
-                class="grid min-h-tap size-8 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
+                class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
               >
                 <.icon name="hero-x-mark" class="size-4" />
               </button>
@@ -201,7 +201,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                   data-copy-target="#issued-intake-key"
                   data-copy-status="#copy-intake-key-status"
                   aria-label="Copy intake API key"
-                  class="grid min-h-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md border border-edge bg-surface text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md border border-edge bg-surface text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
                   <span data-copy-icon><.icon name="hero-clipboard" class="size-4" /></span>
                   <span data-copied-icon class="hidden">
@@ -297,8 +297,8 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <th scope="col" class="px-cell font-medium">Collector</th>
                   <th scope="col" class="px-cell font-medium">Connection</th>
                   <th scope="col" class="px-cell font-medium">Resource</th>
-                  <th scope="col" class="hidden px-cell font-medium sm:table-cell">Installation</th>
-                  <th scope="col" class="hidden px-cell font-medium md:table-cell">
+                  <th scope="col" class="px-cell font-medium">Installation</th>
+                  <th scope="col" class="px-cell font-medium">
                     Last inventory
                   </th>
                 </tr>
@@ -340,10 +340,10 @@ defmodule RengaWeb.InventoryOperationsLive do
                       No resource reported
                     </span>
                   </td>
-                  <td class="hidden px-cell py-2 font-mono text-xs text-fg-muted sm:table-cell">
+                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
                     {short_installation_id(collector_agent(source).installation_id)}
                   </td>
-                  <td class="hidden px-cell py-2 font-mono text-xs text-fg-muted md:table-cell">
+                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
                     {format_time(Map.get(@last_inventory_by_source, source.id))}
                   </td>
                 </tr>
