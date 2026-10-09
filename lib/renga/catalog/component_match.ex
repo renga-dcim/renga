@@ -98,7 +98,7 @@ defmodule Renga.Catalog.ComponentMatch do
 
   def explain(%{name: name, position: position, attributes: attributes}) do
     attributes = attributes || %{}
-    part_number = attributes["part_number"]
+    part_number = identity_text(attributes["part_number"])
 
     identity =
       case {position, part_number} do
@@ -123,6 +123,9 @@ defmodule Renga.Catalog.ComponentMatch do
     ]
     |> Enum.reject(&is_nil/1)
   end
+
+  defp identity_text(value) when is_nil(value) or is_binary(value), do: value
+  defp identity_text(value), do: Renga.JSON.encode!(value)
 
   @doc "An observed component's value for a field an expectation names."
   def spec(actual, field) do

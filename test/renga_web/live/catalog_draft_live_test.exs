@@ -204,6 +204,84 @@ defmodule RengaWeb.CatalogDraftLiveTest do
     assert %{part_number: nil} = Drafts.get_draft(context.scope, context.hardware_type)
   end
 
+  test "unrelated edits preserve JSON values and a no-op group preserves metadata and absent slots",
+       context do
+    {:ok, draft} = Drafts.start_draft(context.scope, context.hardware_type)
+
+    values = %{
+      "code" => "00123",
+      "word" => "true",
+      "nested" => [nil, %{"n" => 2}],
+      "null" => nil,
+      "space" => " x ",
+      "" => 1,
+      " size_gb " => 64,
+      "size_gb" => 32,
+      "part_number" => %{"code" => "P1"}
+    }
+
+    {:ok, draft} = Drafts.update_draft(context.scope, draft, %{"specifications" => values})
+
+    {:ok, draft} =
+      Drafts.put_template_group(context.scope, draft, [], %{
+        "kind" => "cpu",
+        "name_pattern" => "\"CPU {A,B}\"",
+        "position_pattern" => "",
+        "label" => "Main processor",
+        "description" => "Keep this description",
+        "attributes" => values
+      })
+
+    {:ok, view, _html} = live(context.conn, draft_path(context))
+    view |> element("#add-spec-row") |> render_click()
+    view |> form("#specs-form") |> render_change()
+    assert Drafts.get_draft(context.scope, context.hardware_type).specifications == values
+
+    cpu = Enum.find(draft.component_templates, &(&1.kind == "cpu"))
+    {:ok, view, _html} = live(context.conn, draft_path(context) <> "?group=#{cpu.id}")
+    view |> form("#group-form") |> render_submit()
+
+    saved =
+      Enum.find(
+        Drafts.get_draft(context.scope, context.hardware_type).component_templates,
+        &(&1.kind == "cpu")
+      )
+
+    assert saved.position == nil
+    assert saved.name == "CPU {A,B}"
+    assert saved.label == "Main processor"
+    assert saved.description == "Keep this description"
+    assert saved.attributes == values
+  end
+
+  test "duplicate keys cannot overwrite values silently", context do
+    {:ok, _draft} = Drafts.start_draft(context.scope, context.hardware_type)
+    {:ok, view, _html} = live(context.conn, draft_path(context))
+
+    render_change(view, "save_specs", %{
+      "specs" => %{
+        "0" => %{"key" => "size", "value" => "1"},
+        "1" => %{"key" => "size", "value" => "2"}
+      }
+    })
+
+    assert Drafts.get_draft(context.scope, context.hardware_type).specifications == %{}
+  end
+
+  test "publication rejects changes made after review and presents them for another review",
+       context do
+    {:ok, draft} = Drafts.start_draft(context.scope, context.hardware_type)
+    {:ok, view, _html} = live(context.conn, draft_path(context) <> "?review=1")
+
+    {:ok, _draft} =
+      Drafts.update_draft(context.scope, draft, %{"part_number" => "Changed elsewhere"})
+
+    view |> element("#review-publish") |> render_click()
+    assert has_element?(view, "#review-changes", "Changed elsewhere")
+    assert Drafts.get_draft(context.scope, context.hardware_type)
+    assert {:error, {:live_redirect, _}} = view |> element("#review-publish") |> render_click()
+  end
+
   defp draft_path(context), do: ~p"/catalog/hardware-types/#{context.hardware_type}/draft"
 
   defp scope_for(organization, role) do

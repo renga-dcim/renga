@@ -80,9 +80,10 @@ defmodule RengaWeb.CatalogDraftLive do
     end)
   end
 
-  def handle_event("publish", _params, socket) do
+  def handle_event("publish", _params, %{assigns: %{reviewed: reviewed}} = socket)
+      when is_binary(reviewed) do
     with_draft(socket, fn draft ->
-      case Drafts.publish_draft(socket.assigns.current_scope, draft) do
+      case Drafts.publish_draft(socket.assigns.current_scope, draft, socket.assigns.reviewed) do
         {:ok, revision} ->
           {:noreply,
            socket
@@ -92,11 +93,25 @@ defmodule RengaWeb.CatalogDraftLive do
            )
            |> push_navigate(to: type_path(socket))}
 
+        {:error, :draft_changed} ->
+          draft = Drafts.get_draft(socket.assigns.current_scope, socket.assigns.hardware_type)
+
+          {:noreply,
+           socket
+           |> load_draft(draft)
+           |> assign_review()
+           |> put_flash(
+             :error,
+             "The draft changed elsewhere. Review the updated changes before publishing."
+           )}
+
         {:error, reason} ->
           closed(socket, reason)
       end
     end)
   end
+
+  def handle_event("publish", _params, socket), do: {:noreply, socket}
 
   ## Revision fields and specifications, saved as they change
 
@@ -158,38 +173,45 @@ defmodule RengaWeb.CatalogDraftLive do
   end
 
   def handle_event("save_group", %{"group" => params}, socket) do
-    with_draft(socket, fn draft ->
-      attrs = %{
-        "kind" => params["kind"],
-        "name_pattern" => params["name_pattern"],
-        "position_pattern" => params["position_pattern"],
-        "required" => params["required"] == "true",
-        "label" => blank_to_nil(params["label"]),
-        "attributes" => rows_to_map(rows_from_params(params["attributes"] || %{}))
-      }
+    rows = rows_from_params(params["attributes"] || %{})
 
-      replacing = Enum.map(selected_templates(socket), & &1.id)
+    with_draft(
+      socket,
+      fn draft ->
+        attrs = %{
+          "kind" => params["kind"],
+          "name_pattern" => params["name_pattern"],
+          "position_pattern" => position_pattern(params),
+          "required" => params["required"] == "true",
+          "label" => blank_to_nil(params["label"]),
+          "description" => blank_to_nil(params["description"]),
+          "attributes" => rows_to_map(rows)
+        }
 
-      case Drafts.put_template_group(socket.assigns.current_scope, draft, replacing, attrs) do
-        {:ok, draft} ->
-          {:noreply,
-           socket
-           |> saved(draft)
-           |> load_draft(draft)
-           |> push_patch(to: draft_path(socket))}
+        replacing = Enum.map(selected_templates(socket), & &1.id)
 
-        {:error, message} when is_binary(message) ->
-          errors = [name_pattern: {message, []}]
-          {:noreply, assign_group_form(socket, params, errors)}
+        case Drafts.put_template_group(socket.assigns.current_scope, draft, replacing, attrs) do
+          {:ok, draft} ->
+            {:noreply,
+             socket
+             |> saved(draft)
+             |> load_draft(draft)
+             |> push_patch(to: draft_path(socket))}
 
-        {:error, %Ecto.Changeset{} = changeset} ->
-          errors = [name_pattern: {changeset_message(changeset), []}]
-          {:noreply, assign_group_form(socket, params, errors)}
+          {:error, message} when is_binary(message) ->
+            errors = [name_pattern: {message, []}]
+            {:noreply, assign_group_form(socket, params, errors)}
 
-        {:error, reason} ->
-          closed(socket, reason)
-      end
-    end)
+          {:error, %Ecto.Changeset{} = changeset} ->
+            errors = [name_pattern: {changeset_message(changeset), []}]
+            {:noreply, assign_group_form(socket, params, errors)}
+
+          {:error, reason} ->
+            closed(socket, reason)
+        end
+      end,
+      rows
+    )
   end
 
   def handle_event("delete_group", _params, socket) do
@@ -211,23 +233,36 @@ defmodule RengaWeb.CatalogDraftLive do
   end
 
   defp save_specs(socket, rows) do
-    with_draft(socket, fn draft ->
-      case Drafts.update_draft(socket.assigns.current_scope, draft, %{
-             "specifications" => rows_to_map(rows)
-           }) do
-        {:ok, draft} -> {:noreply, saved(socket, draft)}
-        {:error, %Ecto.Changeset{}} -> {:noreply, put_flash(socket, :error, "Check the values")}
-        {:error, reason} -> closed(socket, reason)
-      end
-    end)
+    with_draft(
+      socket,
+      fn draft ->
+        case Drafts.update_draft(socket.assigns.current_scope, draft, %{
+               "specifications" => rows_to_map(rows)
+             }) do
+          {:ok, draft} -> {:noreply, saved(socket, draft)}
+          {:error, %Ecto.Changeset{}} -> {:noreply, put_flash(socket, :error, "Check the values")}
+          {:error, reason} -> closed(socket, reason)
+        end
+      end,
+      rows
+    )
   end
 
   # Writes need an open draft and an author; anything else is a stale or
   # forged event and changes nothing.
-  defp with_draft(socket, fun) do
-    if socket.assigns.can_author? and socket.assigns.draft,
-      do: fun.(socket.assigns.draft),
-      else: {:noreply, socket}
+  defp with_draft(socket, fun, rows \\ []) do
+    keys = rows |> Enum.reject(&blank_row?/1) |> Enum.map(& &1["key"])
+
+    cond do
+      !socket.assigns.can_author? or is_nil(socket.assigns.draft) ->
+        {:noreply, socket}
+
+      length(keys) != length(Enum.uniq(keys)) ->
+        {:noreply, put_flash(socket, :error, "Each key must be unique")}
+
+      true ->
+        fun.(socket.assigns.draft)
+    end
   end
 
   defp closed(socket, :forbidden),
@@ -418,11 +453,15 @@ defmodule RengaWeb.CatalogDraftLive do
     ~H"""
     <div id={"#{@id}-rows"} class="space-y-1.5">
       <p :if={@rows == []} class="text-sm text-fg-subtle">None yet.</p>
+      <p :if={@rows != []} class="text-xs text-fg-muted">
+        Values accept JSON. Quote strings to keep their type (for example, "00123").
+      </p>
       <div
         :for={{row, index} <- Enum.with_index(@rows)}
         id={"#{@id}-row-#{index}"}
         class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2"
       >
+        <input type="hidden" name={"#{@name}[#{index}][existing]"} value={row["existing"] || "false"} />
         <input
           type="text"
           name={"#{@name}[#{index}][key]"}
@@ -562,6 +601,9 @@ defmodule RengaWeb.CatalogDraftLive do
           class="w-full rounded-md border border-edge bg-surface px-2.5 py-2 font-mono text-sm text-fg"
         />
         <.input field={@form[:required]} type="checkbox" label="Required" />
+        <.input field={@form[:no_positions]} type="checkbox" label="No slots" />
+        <.input field={@form[:label]} label="Label" />
+        <.input field={@form[:description]} type="textarea" label="Description" />
 
         <fieldset class="mt-4 space-y-2">
           <legend class="text-xs font-medium text-fg-muted">Attributes</legend>
@@ -777,8 +819,10 @@ defmodule RengaWeb.CatalogDraftLive do
           "kind" => group.kind,
           "name_pattern" => group.name_pattern,
           "position_pattern" => explicit_position_pattern(group),
+          "no_positions" => to_string(group.position_pattern == ""),
           "required" => to_string(group.required),
           "label" => group.label || "",
+          "description" => group.description || "",
           "attributes" => group.attributes |> map_to_rows() |> rows_to_params()
         })
 
@@ -787,7 +831,10 @@ defmodule RengaWeb.CatalogDraftLive do
           "kind" => "memory",
           "name_pattern" => "",
           "position_pattern" => "",
+          "no_positions" => "false",
           "required" => "true",
+          "label" => "",
+          "description" => "",
           "attributes" => %{}
         })
     end
@@ -795,7 +842,7 @@ defmodule RengaWeb.CatalogDraftLive do
 
   defp assign_group_form(socket, params, errors \\ []) do
     rows = rows_from_params(params["attributes"] || %{})
-    preview = TemplatePattern.expand_slots(params["name_pattern"], params["position_pattern"])
+    preview = TemplatePattern.expand_slots(params["name_pattern"], position_pattern(params))
 
     explanation =
       ComponentMatch.explain(%{
@@ -855,10 +902,19 @@ defmodule RengaWeb.CatalogDraftLive do
   defp assign_review(%{assigns: %{review?: true, draft: draft}} = socket)
        when not is_nil(draft) do
     scope = socket.assigns.current_scope
-    assign(socket, changes: Drafts.change_list(scope, draft), impact: Drafts.impact(scope, draft))
+
+    assign(socket,
+      changes: Drafts.change_list(scope, draft),
+      impact: Drafts.impact(scope, draft),
+      reviewed: Drafts.fingerprint(draft)
+    )
   end
 
-  defp assign_review(socket), do: assign(socket, changes: nil, impact: [])
+  defp assign_review(socket), do: assign(socket, changes: nil, impact: [], reviewed: nil)
+
+  defp position_pattern(params) do
+    if params["no_positions"] == "true", do: "", else: blank_to_nil(params["position_pattern"])
+  end
 
   ## Key/value rows
 
@@ -866,7 +922,11 @@ defmodule RengaWeb.CatalogDraftLive do
     params
     |> Enum.sort_by(fn {index, _row} -> to_index(index) end)
     |> Enum.map(fn {_index, row} ->
-      %{"key" => row["key"] || "", "value" => row["value"] || ""}
+      %{
+        "key" => row["key"] || "",
+        "value" => row["value"] || "",
+        "existing" => row["existing"] || "false"
+      }
     end)
   end
 
@@ -882,14 +942,18 @@ defmodule RengaWeb.CatalogDraftLive do
 
   defp rows_to_map(rows) do
     rows
-    |> Enum.reject(&(String.trim(&1["key"]) == ""))
-    |> Map.new(&{String.trim(&1["key"]), parse_value(&1["value"])})
+    |> Enum.reject(&blank_row?/1)
+    |> Map.new(&{&1["key"], parse_value(&1["value"])})
   end
+
+  defp blank_row?(row), do: row["key"] == "" and row["existing"] != "true"
 
   defp map_to_rows(map) do
     map
     |> Enum.sort_by(fn {key, _value} -> key end)
-    |> Enum.map(fn {key, value} -> %{"key" => key, "value" => format_value(value) || ""} end)
+    |> Enum.map(fn {key, value} ->
+      %{"key" => key, "value" => Renga.JSON.encode!(value), "existing" => "true"}
+    end)
   end
 
   # Values keep their JSON type so they compare by value with collector
@@ -897,11 +961,9 @@ defmodule RengaWeb.CatalogDraftLive do
   defp parse_value(value) do
     value = String.trim(value || "")
 
-    cond do
-      value in ~w(true false) -> value == "true"
-      Regex.match?(~r/^-?\d+$/, value) -> String.to_integer(value)
-      Regex.match?(~r/^-?\d+\.\d+$/, value) -> Decimal.new(value)
-      true -> value
+    case Renga.JSON.decode(value) do
+      {:ok, decoded} -> decoded
+      {:error, _error} -> value
     end
   end
 

@@ -206,9 +206,12 @@ defmodule Renga.Catalog.Drafts do
   Publishes a draft as the type's newest revision. No resource moves; each
   stays pinned to its revision until it is moved.
   """
-  def publish_draft(%Scope{} = scope, %TypeRevision{} = draft) do
+  def publish_draft(%Scope{} = scope, %TypeRevision{} = draft, reviewed \\ nil) do
     Catalog.author_transaction(scope, fn ->
       draft = lock_draft!(scope, draft)
+
+      if reviewed && fingerprint(preload_templates(draft)) != reviewed,
+        do: Repo.rollback(:draft_changed)
 
       {1, _rows} =
         TypeRevision
@@ -217,6 +220,16 @@ defmodule Renga.Catalog.Drafts do
 
       TypeRevision |> Repo.get!(draft.id) |> preload_templates()
     end)
+  end
+
+  @doc "A content token checked under the write lock when publishing a reviewed draft."
+  def fingerprint(draft) do
+    templates =
+      draft.component_templates
+      |> Enum.map(&Map.take(&1, [:kind, :name | @template_fields]))
+      |> Enum.sort()
+
+    :crypto.hash(:sha256, :erlang.term_to_binary({Map.take(draft, @revision_fields), templates}))
   end
 
   @doc """

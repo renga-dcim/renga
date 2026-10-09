@@ -38,8 +38,8 @@ defmodule Renga.Catalog.TemplatePattern do
   Expands a name pattern and an optional position pattern into
   `{name, position}` pairs. Without a position pattern each position is
   the slot token ending the name (`A1` for `DIMM A1`), else the text its
-  brace groups produced, else nil. A position pattern must give as many positions
-  as there are names.
+  brace groups produced, else nil. An empty position pattern explicitly
+  means no positions. A nonempty pattern must give as many positions as names.
   """
   def expand_slots(name_pattern, position_pattern \\ nil) do
     with {:ok, parts} <- parse(String.trim(name_pattern || "")),
@@ -52,7 +52,9 @@ defmodule Renga.Catalog.TemplatePattern do
   # The default position is the slot token that ends each name (A1 in
   # DIMM A1), which is what compress/1 rebuilds; a name without one has no
   # position unless the pattern's brace groups give one.
-  defp positions(parts, blank) when blank in [nil, ""] do
+  defp positions(parts, ""), do: {:ok, Enum.map(combinations(parts), fn _name -> nil end)}
+
+  defp positions(parts, nil) do
     choices = parts |> Enum.filter(&match?({:choices, _}, &1)) |> combinations()
 
     positions =
@@ -104,6 +106,14 @@ defmodule Renga.Catalog.TemplatePattern do
   end
 
   defp parse(""), do: {:error, "enter a name or pattern"}
+
+  # A JSON string represents a literal name/position containing pattern syntax.
+  defp parse(<<?", _rest::binary>> = pattern) do
+    case Renga.JSON.decode(pattern) do
+      {:ok, literal} when is_binary(literal) -> {:ok, [{:text, literal}]}
+      _invalid -> {:error, "enter a valid quoted literal or a name pattern"}
+    end
+  end
 
   defp parse(pattern) do
     ~r/\{([^{}]*)\}|[^{}]+|[{}]/
@@ -175,7 +185,11 @@ defmodule Renga.Catalog.TemplatePattern do
 
     singles =
       Enum.map(single, fn {template, nil} ->
-        group([template], template.name, template.position)
+        group(
+          [template],
+          literal_pattern(template.name),
+          literal_pattern(template.position || "")
+        )
       end)
 
     groups =
@@ -196,17 +210,19 @@ defmodule Renga.Catalog.TemplatePattern do
       {parts.number, template}
     end)
     |> Enum.group_by(
-      fn {_letter, numbered} -> numbered |> Enum.map(&elem(&1, 0)) |> Enum.sort() end,
+      fn {letter, numbered} ->
+        {letter == "", numbered |> Enum.map(&elem(&1, 0)) |> Enum.sort()}
+      end,
       fn {letter, numbered} -> {letter, numbered} end
     )
-    |> Enum.map(fn {numbers, lettered} ->
+    |> Enum.map(fn {{_unlettered?, numbers}, lettered} ->
       letters = lettered |> Enum.map(&elem(&1, 0)) |> Enum.sort()
       slot = choices_pattern(letters) <> numbers_pattern(numbers, width)
 
       templates =
         Enum.flat_map(lettered, fn {_letter, numbered} -> Enum.map(numbered, &elem(&1, 1)) end)
 
-      position_pattern = if position_prefix == :none, do: nil, else: position_prefix <> slot
+      position_pattern = if position_prefix == :none, do: "", else: position_prefix <> slot
 
       group(templates, prefix <> slot, position_pattern)
     end)
@@ -217,6 +233,7 @@ defmodule Renga.Catalog.TemplatePattern do
   # absent, so the group can rebuild it.
   defp slot_parts(%{name: name, position: position}) do
     with false <- String.contains?(name, ["{", "}"]),
+         false <- String.starts_with?(name, "\"") or String.trim(name) != name,
          [_name, prefix, letter, digits] <- Regex.run(~r/^(.*?)([A-Za-z]?)(\d+)$/, name),
          {:ok, position_prefix} <- position_prefix(position, letter <> digits) do
       %{
@@ -238,18 +255,26 @@ defmodule Renga.Catalog.TemplatePattern do
   defp position_prefix(nil, _slot), do: {:ok, :none}
 
   defp position_prefix(position, slot) do
-    if String.ends_with?(position, slot) and not String.contains?(position, ["{", "}"]),
-      do: {:ok, String.replace_suffix(position, slot, "")},
-      else: :error
+    if String.ends_with?(position, slot) and not String.contains?(position, ["{", "}"]) and
+         not String.starts_with?(position, "\"") and String.trim(position) == position,
+       do: {:ok, String.replace_suffix(position, slot, "")},
+       else: :error
   end
 
   defp choices_pattern([letter]), do: letter
   defp choices_pattern(letters), do: "{" <> Enum.join(letters, ",") <> "}"
 
+  defp literal_pattern(text) do
+    if String.contains?(text, ["{", "}"]) or String.starts_with?(text, "\"") or
+         String.trim(text) != text,
+       do: Renga.JSON.encode!(text),
+       else: text
+  end
+
   defp numbers_pattern([number], width), do: pad(number, width)
 
   defp numbers_pattern(numbers, width) do
-    if Enum.to_list(List.first(numbers)..List.last(numbers)) == numbers,
+    if List.last(numbers) - List.first(numbers) + 1 == length(numbers),
       do: "{#{pad(List.first(numbers), width)}..#{pad(List.last(numbers), width)}}",
       else: "{" <> Enum.map_join(numbers, ",", &pad(&1, width)) <> "}"
   end

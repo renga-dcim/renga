@@ -79,4 +79,33 @@ defmodule Renga.Catalog.TemplatePatternTest do
 
     assert Enum.map(groups, & &1.name_pattern) == ["DIMM A{1..4}", "DIMM B{1,2,4}"]
   end
+
+  test "roundtrips sparse large slot numbers without inventing absent positions" do
+    templates = [template("CPU 1", nil), template("CPU 1000000000", nil)]
+    [group] = TemplatePattern.compress(templates)
+    assert group.name_pattern == "CPU {1,1000000000}"
+
+    assert TemplatePattern.expand_slots(group.name_pattern, group.position_pattern) ==
+             {:ok, [{"CPU 1", nil}, {"CPU 1000000000", nil}]}
+  end
+
+  test "roundtrips mixed unlettered banks and literal pattern syntax" do
+    templates = [
+      template("Bay 1", "1"),
+      template("Bay A1", "A1"),
+      template("DIMM {A,B}", "Slot {1,2}"),
+      template("Quoted 1", ~s("Slot"1)),
+      template("Quoted 2", ~s("Slot"2))
+    ]
+
+    rebuilt =
+      templates
+      |> TemplatePattern.compress()
+      |> Enum.flat_map(fn group ->
+        {:ok, slots} = TemplatePattern.expand_slots(group.name_pattern, group.position_pattern)
+        slots
+      end)
+
+    assert Enum.sort(rebuilt) == Enum.sort(Enum.map(templates, &{&1.name, &1.position}))
+  end
 end
