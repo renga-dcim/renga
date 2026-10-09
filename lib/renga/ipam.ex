@@ -35,6 +35,7 @@ defmodule Renga.IPAM do
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.Interface
   alias Renga.Inventory.Prefix
   alias Renga.Inventory.ResourceStore
   alias Renga.IPAM.AddressAssignment
@@ -614,10 +615,14 @@ defmodule Renga.IPAM do
       interface = Repo.preload(observed, interface: :resource).interface
       attrs = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
 
+      # Adoption establishes new current intent, so a released shared role
+      # does not come back with the address.
       intent = %{
         address: observed.address,
+        vrf_id: nil,
         allocation_state: "allocated",
         management_mode: management_mode(observed),
+        role: "ordinary",
         adopted_by_id: scope.user.id
       }
 
@@ -659,6 +664,205 @@ defmodule Renga.IPAM do
       end
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  @shared_roles ~w(vip anycast vrrp hsrp glbp carp)
+  @editable_ip_address_fields [
+    :allocation_state,
+    :management_mode,
+    :role,
+    :dns_name,
+    :description
+  ]
+
+  @doc """
+  Whether a role lets one address be assigned to several interfaces: a VIP,
+  anycast, or first-hop redundancy address. Every other role is one
+  interface at most.
+  """
+  def shared_role?(role), do: role in @shared_roles
+
+  @doc "A changeset for the address forms; the envelope is not required yet."
+  def change_ip_address(%IpAddress{} = ip_address, attrs \\ %{}) do
+    changeset = IpAddress.changeset(ip_address, attrs)
+    errors = Keyword.delete(changeset.errors, :resource_id)
+    %{changeset | errors: errors, valid?: errors == []}
+  end
+
+  @doc """
+  Reserves (by default) or allocates a managed address by hand, in the global
+  table or a VRF, with no observation needed. Owners and admins only.
+
+  A released address with the same host in that routing table is
+  reactivated with this new intent rather than created again. Returns the
+  changeset when the host is already managed there or the input is invalid.
+  """
+  def create_ip_address(%Scope{organization_id: organization_id} = scope, attrs) do
+    Inventory.organization_management_transaction(scope, fn ->
+      validation =
+        change_ip_address(
+          %IpAddress{organization_id: organization_id, allocation_state: "reserved"},
+          attrs
+        )
+
+      unless validation.valid?, do: Repo.rollback(%{validation | action: :insert})
+
+      intent =
+        Map.new([:address, :vrf_id, :allocation_state, :management_mode, :role], fn field ->
+          {field, Ecto.Changeset.get_field(validation, field)}
+        end)
+
+      notes = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
+
+      ip_address =
+        case lock_managed_host(organization_id, intent.vrf_id, intent.address) do
+          nil ->
+            insert_ip_address(scope, intent, notes)
+
+          %IpAddress{resource: %{lifecycle_state: "retired"}} = retired ->
+            reactivate(scope, retired, intent, notes)
+
+          current ->
+            Repo.rollback(already_managed(current))
+        end
+
+      Repo.preload(ip_address, [:vrf, assignments: [interface: :resource]], force: true)
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Changes a managed address's allocation state, management mode, role, DNS
+  name, or description. Owners and admins only; each change is recorded.
+
+  The address and routing table are its identity and do not change here.
+  `baseline` is the address as the editor last read it, so an edit made
+  meanwhile returns `{:error, :stale}`. A released address returns
+  `{:error, :retired}`. An address shared by several interfaces keeps a
+  shared role until all but one assignment is removed.
+  """
+  def update_ip_address(
+        %Scope{organization_id: organization_id} = scope,
+        %IpAddress{id: id} = baseline,
+        attrs
+      ) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_ip_address!(organization_id, id)
+      if current.resource.lifecycle_state == "retired", do: Repo.rollback(:retired)
+
+      if Map.take(current, @editable_ip_address_fields) !=
+           Map.take(baseline, @editable_ip_address_fields),
+         do: Repo.rollback(:stale)
+
+      updated =
+        current
+        |> IpAddress.changeset(Map.take(attrs, editable_keys()))
+        |> keep_shared_role(length(current.assignments))
+        |> Repo.update()
+        |> case do
+          {:ok, updated} -> updated
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+
+      record_ip_address_changes(scope, current.resource_id, current, updated)
+      %{updated | resource: current.resource, vrf: current.vrf, assignments: current.assignments}
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp editable_keys,
+    do: @editable_ip_address_fields ++ Enum.map(@editable_ip_address_fields, &Atom.to_string/1)
+
+  # Several interfaces share this address, so only a shared role fits it.
+  defp keep_shared_role(changeset, assignments) when assignments > 1 do
+    if shared_role?(Ecto.Changeset.get_field(changeset, :role)),
+      do: changeset,
+      else:
+        Ecto.Changeset.add_error(
+          changeset,
+          :role,
+          "is shared by #{assignments} interfaces; remove all but one assignment first"
+        )
+  end
+
+  defp keep_shared_role(changeset, _assignments), do: changeset
+
+  @doc """
+  Assigns a managed address to an interface in the same organization.
+  Owners and admins only.
+
+  The address row is locked, so concurrent assignments are decided one at a
+  time: an address with an ordinary role takes one interface, and only a
+  shared role (`shared_role?/1`) takes more. A released address returns
+  `{:error, :retired}`; a refused assignment returns its changeset.
+  """
+  def assign_address(
+        %Scope{organization_id: organization_id} = scope,
+        ip_address_id,
+        interface_id
+      ) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_ip_address!(organization_id, ip_address_id)
+      if current.resource.lifecycle_state == "retired", do: Repo.rollback(:retired)
+
+      interface =
+        Interface
+        |> where([interface], interface.organization_id == ^organization_id)
+        |> where([interface], interface.id == ^interface_id)
+        |> preload(:resource)
+        |> Repo.one!()
+
+      cond do
+        Enum.any?(current.assignments, &(&1.interface_id == interface.id)) ->
+          Repo.rollback(assignment_error("already has this address"))
+
+        current.assignments != [] and not shared_role?(current.role) ->
+          Repo.rollback(
+            assignment_error(
+              "is not available: the address is already assigned, and only a VIP, " <>
+                "anycast, or first-hop redundancy role is shared"
+            )
+          )
+
+        true ->
+          assign!(scope, current, interface)
+      end
+
+      Repo.preload(current, [assignments: [interface: :resource]], force: true)
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Removes one assignment, leaving the managed address and any other
+  assignments in place. Owners and admins only, recorded in Activity.
+  """
+  def unassign_address(%Scope{organization_id: organization_id} = scope, assignment_id) do
+    Inventory.organization_management_transaction(scope, fn ->
+      %{ip_address_id: ip_address_id} =
+        IpAddressAssignment
+        |> where([a], a.organization_id == ^organization_id and a.id == ^assignment_id)
+        |> Repo.one!()
+
+      # Lock the address first, as assignment does, then act on the row as
+      # it stands now.
+      current = lock_ip_address!(organization_id, ip_address_id)
+
+      case Enum.find(current.assignments, &(&1.id == assignment_id)) do
+        nil -> Repo.rollback(:not_found)
+        assignment -> unassign!(scope, current, assignment)
+      end
+
+      Repo.preload(current, [assignments: [interface: :resource]], force: true)
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp assignment_error(message) do
+    %IpAddressAssignment{}
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.add_error(:interface_id, message)
+    |> Map.put(:action, :insert)
   end
 
   defp observed_address!(organization_id, address_id) do
@@ -718,7 +922,7 @@ defmodule Renga.IPAM do
 
   defp insert_ip_address(scope, intent, attrs) do
     %Scope{organization_id: organization_id} = scope
-    label = ip_address_label(intent.address, nil)
+    label = ip_address_label(intent.address, scoped_vrf(organization_id, intent.vrf_id))
 
     resource =
       case ResourceStore.insert(organization_id, %{
@@ -756,6 +960,7 @@ defmodule Renga.IPAM do
     :address,
     :allocation_state,
     :management_mode,
+    :role,
     :dns_name,
     :description
   ]
@@ -775,19 +980,23 @@ defmodule Renga.IPAM do
         {:error, changeset} -> Repo.rollback(changeset)
       end
 
+    record_ip_address_changes(scope, resource.id, retired, updated)
+    %{updated | resource: resource}
+  end
+
+  # One `updated` change event per changed intent field.
+  defp record_ip_address_changes(scope, resource_id, before, after_update) do
     for field <- @ip_address_event_fields,
-        Map.fetch!(retired, field) != Map.fetch!(updated, field) do
+        Map.fetch!(before, field) != Map.fetch!(after_update, field) do
       {:ok, _event} =
         Inventory.create_change_event(scope, %{
           kind: "updated",
           field: Atom.to_string(field),
-          resource_id: resource.id,
-          old_value: ip_address_event_value(field, retired),
-          new_value: ip_address_event_value(field, updated)
+          resource_id: resource_id,
+          old_value: ip_address_event_value(field, before),
+          new_value: ip_address_event_value(field, after_update)
         })
     end
-
-    %{updated | resource: resource}
   end
 
   defp already_managed(%IpAddress{} = current) do
