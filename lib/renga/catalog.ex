@@ -18,6 +18,7 @@ defmodule Renga.Catalog do
   alias Renga.Catalog.ComponentTemplate
   alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.ComponentMatch
+  alias Renga.Catalog.ConfirmedComponent
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
   alias Renga.Catalog.ExpectedComponent
@@ -701,6 +702,96 @@ defmodule Renga.Catalog do
     end)
   end
 
+  @doc """
+  Records that a replacement part was installed in one expected slot (RFD 8,
+  "Editing hardware components"). Any catalog author may.
+
+  `expectation` names the slot: `%{"component_template_id" => id}` for a
+  catalog template or `%{"exception_id" => id}` for a part added on this
+  resource. The part becomes what the slot expects; the finding about the
+  slot closes only when a collector reports it. Confirming the slot again
+  replaces the earlier confirmation.
+  """
+  def confirm_replacement(%Scope{} = scope, resource_id, expectation, attrs) do
+    managed_transaction(scope, fn ->
+      resource = lock_physical_resource!(scope, resource_id)
+      assignment = locked_assignment(scope.organization_id, resource.id)
+      if is_nil(assignment), do: Repo.rollback(:hardware_type_not_assigned)
+
+      key = confirmation_key!(scope, assignment, expectation)
+
+      ConfirmedComponent
+      |> where([confirmation], confirmation.hardware_assignment_id == ^assignment.id)
+      |> where(^Map.to_list(key))
+      |> Repo.one()
+      |> case do
+        nil ->
+          struct(
+            %ConfirmedComponent{
+              organization_id: scope.organization_id,
+              hardware_assignment_id: assignment.id
+            },
+            key
+          )
+
+        # A new confirmation replaces the old one whole: a part number from
+        # the earlier part must not survive beside the new part's serial.
+        existing ->
+          Ecto.Changeset.change(existing,
+            part_number: nil,
+            serial_number: nil,
+            model: nil,
+            note: nil
+          )
+      end
+      |> Ecto.Changeset.change(
+        confirmed_by_user_id: scope.user.id,
+        confirmed_at: Renga.Time.utc_now_ms()
+      )
+      |> ConfirmedComponent.changeset(attrs)
+      |> upsert()
+    end)
+  end
+
+  @doc "Lists the replacements confirmed on a resource's current assignment."
+  def list_confirmed_components(%Scope{organization_id: organization_id}, resource_id) do
+    ConfirmedComponent
+    |> join(:inner, [confirmation], assignment in HardwareAssignment,
+      on: assignment.id == confirmation.hardware_assignment_id
+    )
+    |> where(
+      [confirmation, assignment],
+      confirmation.organization_id == ^organization_id and assignment.resource_id == ^resource_id
+    )
+    |> preload(:confirmed_by_user)
+    |> Repo.all()
+  end
+
+  # The slot must be one the assignment currently expects, so a stale page
+  # cannot confirm a part for a template from another revision.
+  defp confirmation_key!(scope, assignment, expectation) do
+    {field, id} =
+      case expectation do
+        %{"component_template_id" => id} when is_binary(id) -> {:component_template_id, id}
+        %{"exception_id" => id} when is_binary(id) -> {:exception_id, id}
+        _invalid -> Repo.rollback(:invalid_expectation)
+      end
+
+    if match?({:ok, _uuid}, Ecto.UUID.cast(id)) do
+      ExpectedComponent
+      |> where(
+        [component],
+        component.organization_id == ^scope.organization_id and
+          component.hardware_assignment_id == ^assignment.id
+      )
+      |> where([component], field(component, ^field) == ^id)
+      |> Repo.exists?()
+      |> if(do: %{field => id}, else: Repo.rollback(:invalid_expectation))
+    else
+      Repo.rollback(:invalid_expectation)
+    end
+  end
+
   def delete_expected_component_exception(%Scope{} = scope, resource_id, exception_id) do
     managed_transaction(scope, fn ->
       resource = lock_physical_resource!(scope, resource_id)
@@ -975,10 +1066,13 @@ defmodule Renga.Catalog do
         {[], MapSet.new()}
 
       _assignment ->
+        confirmations = confirmations_by_expectation(scope, resource.id)
+
         expectations =
           scope
           |> list_expected_components(resource.id)
           |> Enum.filter(&(&1.kind in @canonical_component_kinds and not &1.suppressed))
+          |> Enum.map(&ComponentMatch.with_confirmation(&1, confirmation_for(&1, confirmations)))
 
         actuals = list_actual_components(scope, resource.id)
 
@@ -1034,6 +1128,28 @@ defmodule Renga.Catalog do
         {expectation_findings ++ unexpected_findings ++ missing_findings,
          observed_expectation_keys}
     end
+  end
+
+  @doc """
+  The confirmation that explains an expectation, if any, from
+  `confirmations_by_expectation/2`.
+  """
+  def confirmation_for(expected, confirmations) do
+    Map.get(confirmations, {:template, expected.component_template_id}) ||
+      Map.get(confirmations, {:exception, expected.exception_id})
+  end
+
+  @doc false
+  def confirmations_by_expectation(scope, resource_id) do
+    scope
+    |> list_confirmed_components(resource_id)
+    |> Map.new(fn
+      %{component_template_id: nil, exception_id: id} = confirmation ->
+        {{:exception, id}, confirmation}
+
+      %{component_template_id: id} = confirmation ->
+        {{:template, id}, confirmation}
+    end)
   end
 
   defp missing_expected_findings(_expected_candidates, _observed_actual_ids, _observation, false),

@@ -1274,6 +1274,95 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert resolved_at == corrected.observed_at
   end
 
+  test "a confirmed replacement closes drift only once a collector reports it" do
+    context = context()
+
+    report = fn key, part_number, serial ->
+      observation(context, key, %{"machine_id" => "machine-1"}, %{}, [], [
+        %{
+          "kind" => "memory",
+          "id" => "dimm-a1",
+          "slot" => "A1",
+          "part_number" => part_number,
+          "serial_number" => serial
+        }
+      ])
+    end
+
+    assert {:ok, resource, true} =
+             Inventory.reconcile_observation(context.scope, report.("1", "M-32G", "SN-1").id)
+
+    hardware_type =
+      hardware_type_fixture(context.scope, "CONFIRMED-REPLACEMENT", [
+        %{
+          kind: "memory",
+          name: "DIMM A1",
+          position: "A1",
+          attributes: %{"part_number" => "M-32G"}
+        }
+      ])
+
+    assert {:ok, _assignment} =
+             Catalog.assign_hardware_type(context.scope, resource.id, hardware_type.id)
+
+    [%{component_template_id: template_id}] =
+      Catalog.list_expected_components(context.scope, resource.id)
+
+    template = %{id: template_id}
+
+    # The replacement part goes in and an operator confirms it, but the
+    # collector still reports the old part: the slot now expects the new one.
+    assert {:ok, confirmation} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"part_number" => "M-32G-B", "serial_number" => "SN-2", "note" => "RMA 42"}
+             )
+
+    assert confirmation.confirmed_by_user_id == context.scope.user.id
+
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("2", "M-32G", "SN-1").id)
+
+    assert [%{kind: "unexpected_actual_component"}] =
+             Catalog.list_component_findings(context.scope, resource.id)
+
+    # Once the collector reports the confirmed part, nothing is left open.
+    assert {:ok, ^resource, false} =
+             Inventory.reconcile_observation(context.scope, report.("3", "M-32G-B", "SN-2").id)
+
+    assert Catalog.list_component_findings(context.scope, resource.id) == []
+
+    assert {:error, :invalid_expectation} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => Ecto.UUID.generate()},
+               %{"part_number" => "X"}
+             )
+
+    assert {:error, %Ecto.Changeset{}} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"note" => "no part"}
+             )
+
+    # Confirming the slot again replaces the earlier confirmation whole.
+    assert {:ok, replaced} =
+             Catalog.confirm_replacement(
+               context.scope,
+               resource.id,
+               %{"component_template_id" => template.id},
+               %{"serial_number" => "SN-3"}
+             )
+
+    assert replaced.id == confirmation.id
+    assert {replaced.part_number, replaced.serial_number, replaced.note} == {nil, "SN-3", nil}
+  end
+
   test "omitted observed specifications do not create component drift" do
     context = context()
 
