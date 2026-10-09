@@ -675,6 +675,123 @@ defmodule Renga.IPAM do
     |> Changes.broadcast(organization_id)
   end
 
+  @address_list_limit 200
+
+  @doc """
+  Managed addresses for the address list, in address order, at most
+  #{@address_list_limit}.
+
+  `filters` (string keys, as the page sends them):
+
+    * `"q"` - an address or CIDR matches the hosts inside it; any other text
+      matches the address, DNS name, description, or an assigned interface
+      or device name;
+    * `"vrf"` - a VRF id, `"global"`, or absent for every routing table;
+    * `"released"` - `"true"` to include released addresses, which are
+      otherwise history and left out.
+  """
+  def list_ip_addresses(%Scope{organization_id: organization_id}, filters \\ %{}) do
+    IpAddress
+    |> where([ip], ip.organization_id == ^organization_id)
+    |> join(:inner, [ip], resource in assoc(ip, :resource))
+    |> filter_released(filters["released"])
+    |> filter_table(filters["vrf"])
+    |> filter_search(String.trim(filters["q"] || ""))
+    |> order_by([ip],
+      asc: fragment("family(?)", ip.address),
+      asc: fragment("host(?)::inet", ip.address)
+    )
+    |> limit(@address_list_limit)
+    |> preload([ip, resource], resource: resource)
+    |> preload([:vrf, assignments: [interface: :resource]])
+    |> Repo.all()
+  end
+
+  @doc "The most addresses `list_ip_addresses/2` returns."
+  def address_list_limit, do: @address_list_limit
+
+  defp filter_released(query, "true"), do: query
+
+  defp filter_released(query, _),
+    do: where(query, [_ip, resource], resource.lifecycle_state == "active")
+
+  defp filter_table(query, "global"), do: where(query, [ip], is_nil(ip.vrf_id))
+
+  defp filter_table(query, vrf_id) when is_binary(vrf_id) and vrf_id != "" do
+    case Ecto.UUID.cast(vrf_id) do
+      {:ok, id} -> where(query, [ip], ip.vrf_id == ^id)
+      :error -> where(query, [_ip], false)
+    end
+  end
+
+  defp filter_table(query, _all), do: query
+
+  defp filter_search(query, ""), do: query
+
+  defp filter_search(query, text) do
+    case Renga.Types.Inet.cast(text) do
+      {:ok, inet} ->
+        where(
+          query,
+          [ip],
+          fragment("host(?)::inet <<= network(?)", ip.address, type(^inet, Renga.Types.Inet))
+        )
+
+      :error ->
+        pattern = "%" <> escape_like(text) <> "%"
+
+        assigned =
+          from assignment in IpAddressAssignment,
+            join: interface in assoc(assignment, :interface),
+            join: resource in assoc(interface, :resource),
+            where: ilike(interface.name, ^pattern) or ilike(resource.name, ^pattern),
+            select: assignment.ip_address_id
+
+        where(
+          query,
+          [ip],
+          ilike(fragment("host(?)", ip.address), ^pattern) or ilike(ip.dns_name, ^pattern) or
+            ilike(ip.description, ^pattern) or ip.id in subquery(assigned)
+        )
+    end
+  end
+
+  defp escape_like(text), do: String.replace(text, ~r/[\\%_]/, "\\\\\\0")
+
+  @doc "Gets a managed address in the caller's organization, released or not."
+  def get_ip_address!(%Scope{organization_id: organization_id}, id) do
+    IpAddress
+    |> where([ip], ip.organization_id == ^organization_id and ip.id == ^id)
+    |> preload([:resource, :vrf, assignments: [interface: :resource]])
+    |> Repo.one!()
+  end
+
+  @doc """
+  Interfaces an address could be assigned to, matching `text` against the
+  interface or device name, at most `limit`, by device then interface.
+  """
+  def assignable_interfaces(%Scope{organization_id: organization_id}, text, limit \\ 8) do
+    case String.trim(text || "") do
+      "" ->
+        []
+
+      text ->
+        pattern = "%" <> escape_like(text) <> "%"
+
+        Interface
+        |> where([interface], interface.organization_id == ^organization_id)
+        |> join(:inner, [interface], resource in assoc(interface, :resource))
+        |> where(
+          [interface, resource],
+          ilike(interface.name, ^pattern) or ilike(resource.name, ^pattern)
+        )
+        |> order_by([interface, resource], asc: resource.name, asc: interface.name)
+        |> limit(^limit)
+        |> preload([_interface, resource], resource: resource)
+        |> Repo.all()
+    end
+  end
+
   @shared_roles ~w(vip anycast vrrp hsrp glbp carp)
   @editable_ip_address_fields [
     :allocation_state,
@@ -731,8 +848,8 @@ defmodule Renga.IPAM do
           %IpAddress{resource: %{lifecycle_state: "retired"}} = retired ->
             reactivate(scope, retired, intent, notes)
 
-          current ->
-            Repo.rollback(already_managed(current))
+          _current ->
+            Repo.rollback(already_managed(validation))
         end
 
       Repo.preload(ip_address, [:vrf, assignments: [interface: :resource]], force: true)
@@ -1008,9 +1125,13 @@ defmodule Renga.IPAM do
     end
   end
 
-  defp already_managed(%IpAddress{} = current) do
-    current
-    |> Ecto.Changeset.change()
+  # Built from the submitted changeset when there is one, so a form shows
+  # the error on the field the operator typed.
+  defp already_managed(%IpAddress{} = current),
+    do: current |> Ecto.Changeset.change() |> already_managed()
+
+  defp already_managed(%Ecto.Changeset{} = changeset) do
+    changeset
     |> Ecto.Changeset.add_error(:address, "is already managed in this routing table")
     |> Map.put(:action, :insert)
   end
