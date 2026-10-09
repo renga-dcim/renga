@@ -251,6 +251,18 @@ defmodule RengaWeb.PrefixDetailLive do
           </span>
         </:status>
 
+        <p
+          :if={@view.mode != :container and not @view.addresses_observable?}
+          id="prefix-addresses-global-note"
+          class="flex items-start gap-2 rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-fg-muted"
+        >
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+          <span>
+            Collectors do not report routing tables yet, so addresses they observe are in the
+            global table and are not counted in {table_label(@prefix.vrf)}.
+          </span>
+        </p>
+
         <%= case @view.mode do %>
           <% :container -> %>
             <.space_map prefix={@prefix} space={@view.space} children={@view.node.children} />

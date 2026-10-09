@@ -119,11 +119,13 @@ defmodule Renga.IPAMTest do
           {"192.0.2.0/31", 2, 2, 100},
           {"192.0.2.1/32", 1, 1, 100}
         ] do
-      prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
-      %{ipv4: [row]} = IPAM.list_prefix_rows(scope, prefix.vrf_id)
+      # One prefix at a time, so the overlapping CIDRs never nest.
+      prefix = prefix_fixture(scope, cidr)
+      %{ipv4: [row]} = IPAM.list_prefix_rows(scope, nil)
       view = IPAM.prefix_view(scope, prefix)
       assert %{used: ^used, usable: ^usable, percent: ^percent} = row.usage
       assert %{used: ^used, usable: ^usable, percent: ^percent} = view.address_map
+      {:ok, _} = IPAM.delete_prefix(scope, prefix)
     end
   end
 
@@ -131,14 +133,15 @@ defmodule Renga.IPAMTest do
     {_host, ports} = device_fixture(scope, "server", "table-duplicates", ~w(eth0 eth1))
 
     for {cidr, address} <- [{"2001:db8::/64", "2001:db8::1/48"}, {"192.0.0.0/21", "192.0.2.1/16"}] do
-      prefix = prefix_fixture(scope, cidr, %{vrf: cidr})
+      prefix = prefix_fixture(scope, cidr)
       for port <- Map.values(ports), do: address_fixture(scope, port, address)
       address_fixture(scope, ports["eth0"], String.replace(address, ~r/1\//, "2/"))
-      rows = IPAM.list_prefix_rows(scope, prefix.vrf_id)
+      rows = IPAM.list_prefix_rows(scope, nil)
       [row] = rows.ipv4 ++ rows.ipv6
       assert row.usage == %{kind: :count, count: 2}
       # Detail still lists each interface's record.
       assert length(IPAM.prefix_view(scope, prefix).addresses) == 3
+      {:ok, _} = IPAM.delete_prefix(scope, prefix)
     end
   end
 
@@ -291,6 +294,70 @@ defmodule Renga.IPAMTest do
     assert Enum.map(coverage.missing_ipv4, & &1.id) == [v6_only.id]
     assert coverage.total == 3
     assert IPAM.vlan_dual_stack(scope, voice.id) == nil
+  end
+
+  test "utilization is namespace-local, with observed addresses in the global table", %{
+    scope: scope
+  } do
+    global_site = prefix_fixture(scope, "10.0.0.0/16")
+    global_users = prefix_fixture(scope, "10.0.10.0/24")
+    prefix_fixture(scope, "10.0.40.0/24")
+    blue_site = prefix_fixture(scope, "10.0.0.0/16", %{vrf: "blue"})
+    blue_users = prefix_fixture(scope, "10.0.10.0/24", %{vrf: "blue"})
+    prefix_fixture(scope, "10.0.20.0/23", %{vrf: "blue"})
+    prefix_fixture(scope, "10.0.30.0/25", %{vrf: "blue"})
+
+    {_host, ports} = device_fixture(scope, "server", "namespaces", ~w(eth0))
+    address_fixture(scope, ports["eth0"], "10.0.10.5")
+    managed = address_fixture(scope, ports["eth0"], "10.0.10.6")
+    {:ok, _} = IPAM.adopt_address(scope, managed.id)
+
+    usage = fn rows, prefix -> Enum.find(rows.ipv4, &(&1.node.prefix.id == prefix.id)).usage end
+
+    global = IPAM.list_prefix_rows(scope, nil)
+    blue = IPAM.list_prefix_rows(scope, blue_site.vrf_id)
+
+    # The global table counts its own observed hosts and children only.
+    assert %{used: 2} = usage.(global, global_users)
+    assert %{kind: :children, allocated: 2, total: 256} = usage.(global, global_site)
+
+    # A VRF counts the union of its own child space at its planning level
+    # (/25 here: the /24 is 2 blocks, the /23 4, the /25 1), never the
+    # global table's children or addresses.
+    assert %{used: 0} = usage.(blue, blue_users)
+    assert %{kind: :children, allocated: 7, total: 512, level: 25} = usage.(blue, blue_site)
+
+    global_view = IPAM.prefix_view(scope, global_users)
+    assert global_view.addresses_observable?
+    assert length(global_view.addresses) == 2
+    assert global_view.address_map.used == 2
+
+    blue_view = IPAM.prefix_view(scope, IPAM.get_prefix!(scope, blue_users.id))
+    refute blue_view.addresses_observable?
+    assert blue_view.addresses == []
+    assert blue_view.address_map.used == 0
+    refute Enum.any?(blue_view.address_map.cells, &(&1.state == :managed))
+  end
+
+  test "dual-stack coverage counts only the global table's prefixes", %{scope: scope} do
+    group = vlan_group_fixture(scope, "dual-vrf")
+    users = vlan_fixture(scope, group, 10, "users")
+    v4 = prefix_fixture(scope, "10.0.10.0/24")
+    v6 = prefix_fixture(scope, "2001:db8:a:10::/64", %{vrf: "blue"})
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v4.id, users.id)
+    {:ok, _} = Topology.attach_prefix_vlan(scope, v6.id, users.id)
+
+    {_both, ports} = device_fixture(scope, "server", "both-vrf", ~w(eth0))
+    address_fixture(scope, ports["eth0"], "10.0.10.5")
+    address_fixture(scope, ports["eth0"], "2001:db8:a:10::5")
+
+    # The IPv6 side is in a VRF, where no address is observed yet, so there
+    # is no coverage to report rather than a false "missing IPv6".
+    assert IPAM.vlan_dual_stack(scope, users.id) == nil
+
+    global_v6 = prefix_fixture(scope, "2001:db8:a:10::/64")
+    {:ok, _} = Topology.attach_prefix_vlan(scope, global_v6.id, users.id)
+    assert %{total: 1, both: [_]} = IPAM.vlan_dual_stack(scope, users.id)
   end
 
   test "never shows another organization's prefixes or addresses", %{scope: scope} do

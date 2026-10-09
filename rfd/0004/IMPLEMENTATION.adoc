@@ -24,7 +24,7 @@ Implements link:README.adoc[RFD 4: IP address management].
   requiring operator approval by renaming, and rejecting resulting exact-CIDR
   conflicts. Test case variants with contained but non-identical CIDRs.
 * [x] Replace interim prefix uniqueness with null-safe global/VRF constraints.
-* [ ] Make utilization namespace-local with unions of child-prefix space.
+* [x] Make utilization namespace-local with unions of child-prefix space.
 * [x] Switch the prefix views' routing-table selector to VRF records.
 * [x] Add `/network/vrfs`.
 
