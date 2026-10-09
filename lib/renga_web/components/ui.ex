@@ -566,4 +566,105 @@ defmodule RengaWeb.UI do
     )
     |> JS.hide(to: "##{id}", transition: {"block", "block", "hidden"}, time: 150)
   end
+
+  ## Settings and sign-in pages
+
+  @doc """
+  Renders a settings page: a title, a sentence saying what the page is
+  for, optional actions on the right, and its sections below. Settings
+  pages sit outside the six areas, so they share this frame instead of the
+  object page.
+
+  ## Examples
+
+      <.settings_page id="teams" title="Teams" description="The groups that answer for resources.">
+        <:actions><.button variant="primary">New team</.button></:actions>
+        ...
+      </.settings_page>
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :description, :string, default: nil
+  attr :class, :any, default: "max-w-4xl", doc: "the page's width"
+  slot :actions
+  slot :inner_block, required: true
+
+  def settings_page(assigns) do
+    ~H"""
+    <section id={@id} class={["mx-auto w-full space-y-6", @class]}>
+      <header class="flex flex-wrap items-end justify-between gap-3">
+        <div class="min-w-0">
+          <h1 class="text-xl font-semibold tracking-tight text-fg">{@title}</h1>
+          <p :if={@description} class="mt-1 max-w-2xl text-sm text-fg-muted">{@description}</p>
+        </div>
+        <div :if={@actions != []} class="flex items-center gap-2">{render_slot(@actions)}</div>
+      </header>
+      {render_slot(@inner_block)}
+    </section>
+    """
+  end
+
+  @doc """
+  Renders one section of a settings page: its name and what it changes on
+  the left, its controls on the right; stacked on narrow screens.
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :description, :string, default: nil
+  slot :inner_block, required: true
+
+  def settings_section(assigns) do
+    ~H"""
+    <section
+      id={@id}
+      aria-labelledby={"#{@id}-title"}
+      class="grid gap-4 border-t border-edge pt-6 md:grid-cols-[14rem_minmax(0,1fr)] md:gap-8"
+    >
+      <div>
+        <h2 id={"#{@id}-title"} class="text-sm font-medium text-fg">{@title}</h2>
+        <p :if={@description} class="mt-1 text-xs text-fg-muted">{@description}</p>
+      </div>
+      <div class="min-w-0">{render_slot(@inner_block)}</div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the card that holds a sign-in, registration, or confirmation
+  form, centered on the canvas with the product mark above it.
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  slot :subtitle
+  slot :footer, doc: "a line below the card, such as a link to sign up"
+  slot :inner_block, required: true
+
+  def auth_card(assigns) do
+    ~H"""
+    <div id={@id} class="mx-auto flex w-full max-w-sm flex-col gap-5 py-6 sm:py-12">
+      <div class="space-y-3 text-center">
+        <span class="mx-auto grid size-10 place-items-center rounded-lg border border-edge bg-surface text-accent">
+          <.icon name="hero-server-stack-solid" class="size-5" />
+        </span>
+        <h1 class="text-xl font-semibold tracking-tight text-fg">{@title}</h1>
+        <p :if={@subtitle != []} class="text-sm text-fg-muted">{render_slot(@subtitle)}</p>
+      </div>
+      <div class="space-y-4 rounded-xl border border-edge bg-surface p-5 shadow-sm sm:p-6">
+        {render_slot(@inner_block)}
+      </div>
+      <p :if={@footer != []} class="text-center text-sm text-fg-muted">{render_slot(@footer)}</p>
+    </div>
+    """
+  end
+
+  @doc "A labeled rule between two ways of doing the same thing, such as signing in."
+  attr :label, :string, required: true
+
+  def divider(assigns) do
+    ~H"""
+    <div class="flex items-center gap-3 text-xs text-fg-muted" role="separator">
+      <span class="h-px flex-1 bg-edge" />{@label}<span class="h-px flex-1 bg-edge" />
+    </div>
+    """
+  end
 end
