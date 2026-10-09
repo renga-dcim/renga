@@ -20,7 +20,7 @@ defmodule Renga.Inventory.ChangeEvent do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(created discovered updated conflict stale manual_override override_removed
+  @kinds ~w(created deleted discovered updated conflict stale manual_override override_removed
              finding_assigned finding_snoozed finding_exception finding_exception_removed
              request_created request_approved request_rejected request_withdrawn
              owner_changed rule_applied)

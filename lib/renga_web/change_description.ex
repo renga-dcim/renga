@@ -13,6 +13,12 @@ defmodule RengaWeb.ChangeDescription do
       do: "Created #{String.replace(field, "_", " ")} #{value}"
 
   def describe(%{kind: "created"}), do: "Created"
+
+  def describe(%{kind: "deleted", field: field, old_value: %{"value" => value}})
+      when is_binary(field),
+      do: "Deleted #{String.replace(field, "_", " ")} #{value}"
+
+  def describe(%{kind: "deleted"}), do: "Deleted"
   def describe(%{kind: "discovered"}), do: "Discovered"
   def describe(%{kind: "stale"}), do: "Marked stale"
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
