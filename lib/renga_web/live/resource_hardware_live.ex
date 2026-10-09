@@ -150,14 +150,8 @@ defmodule RengaWeb.ResourceHardwareLive do
           done(socket, "#{row.label} is out until #{date(workflow.exception_expires_at)}")
 
         {:error, %Ecto.Changeset{errors: errors}} ->
-          errors =
-            Enum.map(errors, fn
-              {:exception_reason, error} -> {:reason, error}
-              {:exception_expires_at, error} -> {:until, error}
-              other -> other
-            end)
-
-          {:noreply, assign(socket, :gap_form, to_form(params, as: :gap, errors: errors))}
+          form = to_form(params, as: :gap, errors: Enum.map(errors, &gap_error/1))
+          {:noreply, assign(socket, :gap_form, form)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "You are not allowed to record this")}
@@ -228,6 +222,11 @@ defmodule RengaWeb.ResourceHardwareLive do
         {:noreply, socket |> put_flash(:error, "That request is no longer open") |> reload()}
     end
   end
+
+  # The gap form names its fields after what they ask, not the workflow's.
+  defp gap_error({:exception_reason, error}), do: {:reason, error}
+  defp gap_error({:exception_expires_at, error}), do: {:until, error}
+  defp gap_error(other), do: other
 
   # Owners and admins change the expectation now; members ask for it.
   defp submit_expectation(socket, row, change, params, form_key, as) do

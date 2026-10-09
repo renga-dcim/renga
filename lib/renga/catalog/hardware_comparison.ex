@@ -187,23 +187,24 @@ defmodule Renga.Catalog.HardwareComparison do
     rows =
       Enum.map(rows, fn row ->
         case Map.fetch(pairs, row.key) do
-          {:ok, actual} ->
-            override = if row.expected.exception_id, do: [:override], else: []
-
-            %{
-              row
-              | state: :local_change,
-                actual: actual,
-                reasons: [:drift | row.reasons] ++ override,
-                differences: ComponentMatch.differences(row.effective, actual)
-            }
-
-          :error ->
-            row
+          {:ok, actual} -> in_place_row(row, actual)
+          :error -> row
         end
       end)
 
     {rows, Enum.reject(unclaimed, &MapSet.member?(paired_ids, &1.id))}
+  end
+
+  defp in_place_row(row, actual) do
+    override = if row.expected.exception_id, do: [:override], else: []
+
+    %{
+      row
+      | state: :local_change,
+        actual: actual,
+        reasons: [:drift | row.reasons] ++ override,
+        differences: ComponentMatch.differences(row.effective, actual)
+    }
   end
 
   defp in_position?(row, actual) do
