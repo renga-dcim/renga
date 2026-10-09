@@ -43,6 +43,15 @@ defmodule Renga.IPAM.PrefixTreeTest do
   end
 
   describe "build/1" do
+    test "never nests a prefix under an exact duplicate of itself" do
+      trees =
+        PrefixTree.build([prefix("10.0.0.0/24"), prefix("10.0.0.0/24"), prefix("10.0.0.0/25")])
+
+      [first, second] = trees[{nil, :ipv4}]
+
+      assert {first.children, length(second.children)} == {[], 1}
+    end
+
     test "nests prefixes per routing table and family" do
       trees =
         PrefixTree.build([
