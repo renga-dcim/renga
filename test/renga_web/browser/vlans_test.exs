@@ -19,11 +19,11 @@ defmodule RengaWeb.Browser.VlansTest do
     scope = Renga.Accounts.scope_for_user(user, organization.id)
 
     group = vlan_group_fixture(scope, "fabric")
-    users = vlan_fixture(scope, group, 10, "users")
+    users = vlan_fixture(scope, group, 4094, "users")
     {leaf, ports} = device_fixture(scope, "switch", "leaf-01", ~w(swp1 swp2))
     desire_vlans(scope, ports["swp1"], "access", users)
     desire_vlans(scope, ports["swp2"], "access", users)
-    report_vlans(scope, leaf, group, %{"swp1" => {"access", [{10, "untagged"}]}})
+    report_vlans(scope, leaf, group, %{"swp1" => {"access", [{4094, "untagged"}]}})
 
     conn =
       add_session_cookie(
@@ -40,7 +40,7 @@ defmodule RengaWeb.Browser.VlansTest do
     %{conn: conn, group: group, users: users, swp2: ports["swp2"].id}
   end
 
-  test "a single VLAN is a visible tick in a full-size group", context do
+  test "the last VLAN remains visibly inside a full-size group's strip", context do
     context.conn
     |> visit("/network/vlans")
     |> assert_has("body .phx-connected")
@@ -48,7 +48,10 @@ defmodule RengaWeb.Browser.VlansTest do
     |> evaluate(
       """
       Array.from(document.querySelectorAll('#vlan-group-#{context.group.id}-strip [data-range] > span'))
-        .map((tick) => tick.getBoundingClientRect().width)
+        .map((tick) => {
+          const box = tick.getBoundingClientRect(), segment = tick.parentElement.getBoundingClientRect();
+          return Math.max(0, Math.min(box.right, segment.right) - Math.max(box.left, segment.left));
+        })
       """,
       fn widths ->
         assert [width] = widths

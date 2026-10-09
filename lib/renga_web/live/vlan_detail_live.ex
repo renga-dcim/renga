@@ -72,12 +72,15 @@ defmodule RengaWeb.VlanDetailLive do
   end
 
   @impl true
-  def handle_info({:inventory_changed, _organization_id}, socket) do
-    if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
-
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
     {:noreply,
      assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
   end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
 
   def handle_info(:reload, socket) do
     {:noreply, socket |> assign(:reload_timer, nil) |> load_members() |> load_prefixes()}

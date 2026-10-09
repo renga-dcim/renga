@@ -61,6 +61,25 @@ defmodule RengaWeb.VlanDetailLiveTest do
     assert has_element?(view, "#member-#{ports["swp3"].id}")
   end
 
+  test "refreshes membership under sustained traffic without losing Differences filter", %{
+    conn: conn,
+    scope: scope,
+    vlan: vlan
+  } do
+    {_leaf, ports} = device_fixture(scope, "switch", "live-leaf", ~w(swp1))
+    port = ports["swp1"]
+    {:ok, view, _} = live(conn, ~p"/network/vlans/#{vlan}?show=differences")
+    desire_vlans(scope, port, "access", vlan)
+
+    for _ <- 1..7 do
+      send(view.pid, {:inventory_changed, scope.organization_id})
+      Process.sleep(100)
+    end
+
+    assert has_element?(view, "#member-#{port.id} [data-member-state=planned_only]")
+    assert has_element?(view, "#vlan-members-differences[aria-current]")
+  end
+
   test "managers link and unlink IP prefixes", %{conn: conn, scope: scope, vlan: vlan} do
     prefix = create_prefix(scope, "detail-prefix", "192.0.2.0/24")
 

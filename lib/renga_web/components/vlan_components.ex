@@ -42,7 +42,7 @@ defmodule RengaWeb.VlanComponents do
         <span
           :for={vid <- segment.used}
           class="absolute inset-y-0 min-w-0.5 bg-accent"
-          style={"left: #{offset(segment, vid)}%; width: #{100 / segment.size}%"}
+          style={"left: min(#{offset(segment, vid)}%, calc(100% - max(0.125rem, #{100 / segment.size}%))); width: #{100 / segment.size}%"}
         />
       </span>
     </span>

@@ -14,15 +14,18 @@ defmodule RengaWeb.VlanLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Inventory
+  alias Renga.Inventory.Changes
   alias Renga.Topology
   alias Renga.Topology.VlanUsage
   alias RengaWeb.VlanComponents
 
   @status_options [{"Active", "active"}, {"Reserved", "reserved"}, {"Deprecated", "deprecated"}]
+  @reload_after_ms 400
 
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
+    if connected?(socket), do: Changes.subscribe(scope)
 
     {:ok,
      socket
@@ -30,6 +33,7 @@ defmodule RengaWeb.VlanLive do
        page_title: "VLANs",
        can_manage?: Inventory.organization_manager?(scope),
        status_options: @status_options,
+       reload_timer: nil,
        vlan_form: vlan_form()
      )}
   end
@@ -78,6 +82,25 @@ defmodule RengaWeb.VlanLive do
       true ->
         {:noreply, create_vlan(socket, scope, params, name, vid)}
     end
+  end
+
+  @impl true
+  def handle_info(
+        {:inventory_changed, _organization_id},
+        %{assigns: %{reload_timer: nil}} = socket
+      ) do
+    {:noreply,
+     assign(socket, :reload_timer, Process.send_after(self(), :reload, @reload_after_ms))}
+  end
+
+  def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
+
+  def handle_info(:reload, socket) do
+    {:noreply,
+     socket
+     |> assign(:reload_timer, nil)
+     |> load_vlans(socket.assigns.group_filter)
+     |> load_membership(socket.assigns.interface)}
   end
 
   @impl true

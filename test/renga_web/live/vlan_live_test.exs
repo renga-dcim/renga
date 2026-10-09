@@ -56,6 +56,29 @@ defmodule RengaWeb.VlanLiveTest do
     refute has_element?(view, "#vlan-#{second_vlan.id}")
   end
 
+  test "live updates preserve group and interface filters and unfinished input", %{
+    conn: conn,
+    scope: scope
+  } do
+    group = vlan_group_fixture(scope, "live")
+    {_device, ports} = device_fixture(scope, "switch", "leaf", ~w(swp1))
+    port = ports["swp1"]
+    {:ok, view, _} = live(conn, ~p"/network/vlans?#{[group_id: group.id, interface_id: port.id]}")
+    view |> form("#vlan-form", vlan: %{name: "unfinished"}) |> render_change()
+    vlan = vlan_fixture(scope, group, 20, "new VLAN")
+    desire_vlans(scope, port, "access", vlan)
+
+    for _ <- 1..7 do
+      send(view.pid, {:inventory_changed, scope.organization_id})
+      Process.sleep(100)
+    end
+
+    assert has_element?(view, "#vlan-#{vlan.id}")
+    assert has_element?(view, "#vlan-form input[value=unfinished]")
+    assert has_element?(view, "#vlan-group-#{group.id} a[aria-current=true]")
+    assert has_element?(view, "#desired-memberships", "new VLAN")
+  end
+
   test "shows desired and observed interface membership separately", %{
     conn: conn,
     scope: scope
