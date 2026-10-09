@@ -69,5 +69,5 @@ Implements link:README.adoc[RFD 8: Product experience].
 
 * [x] Store theme, accent, and density per user with an organization default
   accent.
-* [ ] Restyle authentication and settings pages onto the shared components.
+* [x] Restyle authentication and settings pages onto the shared components.
 * [ ] Verify every phone-complete task at 390px width in UI tests.
