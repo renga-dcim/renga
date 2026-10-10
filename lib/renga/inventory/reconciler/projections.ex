@@ -1121,7 +1121,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
          source,
          observation,
          resource,
-         _interface,
+         interface,
          %Address{} = address,
          {cast_address, attrs},
          overrides
@@ -1137,7 +1137,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
       )
 
     changes =
-      reconcile_address_mask(scope, source, observation, resource, address, cast_address, changes)
+      reconcile_address_mask(
+        scope,
+        source,
+        observation,
+        resource,
+        interface,
+        address,
+        cast_address,
+        changes
+      )
 
     metadata =
       address.metadata
@@ -1168,7 +1177,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
   # A changed mask updates the one observed assignment of the host, under
   # the same precedence as presence: an older replay or a lower-priority
   # source keeps its report as evidence without moving the canonical mask.
-  defp reconcile_address_mask(scope, source, observation, resource, address, reported, changes) do
+  defp reconcile_address_mask(
+         scope,
+         source,
+         observation,
+         resource,
+         interface,
+         address,
+         reported,
+         changes
+       ) do
     if inet_netmask(reported) != inet_netmask(address.address) and
          source_wins?(
            source,
@@ -1181,7 +1199,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
         source,
         observation,
         resource,
-        "addresses.#{format_inet(address.address)}.address",
+        "interfaces.#{interface.name}.addresses.#{format_inet(address.address)}.address",
         format_inet(address.address),
         format_inet(reported)
       )

@@ -3652,7 +3652,7 @@ defmodule Renga.Inventory.ReconcilerTest do
     address_events = fn ->
       context.scope
       |> Inventory.list_change_events(resource.id)
-      |> Enum.filter(&String.starts_with?(&1.field || "", "addresses."))
+      |> Enum.filter(&String.contains?(&1.field || "", "addresses."))
       |> Enum.map(&{&1.field, &1.old_value["value"], &1.new_value["value"]})
     end
 
@@ -3676,7 +3676,7 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert length(reported_masks.()) == 3
 
     assert address_events.() == [
-             {"addresses.192.0.2.10/24.address", "192.0.2.10/24", "192.0.2.10/32"}
+             {"interfaces.eth0.addresses.192.0.2.10/24.address", "192.0.2.10/24", "192.0.2.10/32"}
            ]
 
     # Replaying the older observation keeps its evidence but not its mask.
@@ -3695,6 +3695,44 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert Enum.filter(address_events.(), fn {field, _old, _new} ->
              String.ends_with?(field, ".present")
            end) == [{"addresses.192.0.2.10/32.present", true, false}]
+  end
+
+  test "mask changes on different interfaces have distinct, replay-safe Activity events" do
+    context = context()
+
+    initial =
+      observation(context, "1", %{"machine_id" => "multi-interface-masks"}, %{}, [
+        %{"name" => "eth0", "addresses" => ["192.0.2.10/24"]},
+        %{"name" => "eth1", "addresses" => ["192.0.2.10/24"]}
+      ])
+
+    {:ok, resource, true} = Inventory.reconcile_observation(context.scope, initial.id)
+
+    changed =
+      observation(context, "2", %{"machine_id" => "multi-interface-masks"}, %{}, [
+        %{"name" => "eth0", "addresses" => ["192.0.2.10/28"]},
+        %{"name" => "eth1", "addresses" => ["192.0.2.10/32"]}
+      ])
+
+    for _ <- 1..2 do
+      assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, changed.id)
+
+      events =
+        context.scope
+        |> Inventory.list_change_events(resource.id)
+        |> Enum.filter(
+          &(&1.observation_id == changed.id and String.ends_with?(&1.field || "", ".address"))
+        )
+        |> Enum.map(&{&1.field, &1.old_value["value"], &1.new_value["value"]})
+        |> Enum.sort()
+
+      assert events == [
+               {"interfaces.eth0.addresses.192.0.2.10/24.address", "192.0.2.10/24",
+                "192.0.2.10/28"},
+               {"interfaces.eth1.addresses.192.0.2.10/24.address", "192.0.2.10/24",
+                "192.0.2.10/32"}
+             ]
+    end
   end
 
   test "same-name discoveries receive collision-resistant resource names" do
