@@ -393,6 +393,13 @@ Inbox and on the affected prefix, address, and resource pages. No VRF setup is
 required before creating global prefixes or addresses. As RFD 8 states,
 prefixes are readable but not editable on a phone.
 
+The VRFs page also lists the routing domains collectors report, per source and
+key, with what each resolved to and how many interfaces claim it. Owners and
+admins map a key to a VRF or the global table, or leave it to automatic
+matching, and set which sources' claims are authoritative there. A resource's
+interfaces show their current routing domain, and an unmapped-domain finding
+links to its mapping.
+
 Routes belong inside the existing `live_session
 :require_authenticated_user` block and `[:browser,
 :require_authenticated_user]` pipeline because IPAM contains organization

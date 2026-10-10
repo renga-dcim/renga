@@ -2,8 +2,9 @@ defmodule RengaWeb.Browser.VrfsTest do
   @moduledoc """
   The VRF list in a real browser: an admin creates, renames, and deletes a
   VRF through the side panel and confirmation dialog, and at phone width the
-  list stays readable without horizontal scrolling and without controls,
-  because VRFs are not edited on a phone.
+  list and the routing domains collectors report stay readable without
+  horizontal scrolling and without controls, because VRFs are not edited on
+  a phone.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -228,6 +229,52 @@ defmodule RengaWeb.Browser.VrfsTest do
     # scrolled out of view.
     |> evaluate(
       "(el => el.scrollWidth <= el.clientWidth)(document.getElementById('vrf-list').closest('div'))",
+      &assert(&1 == true)
+    )
+  end
+
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "routing domains are readable but not mapped on a phone", context do
+    {:ok, agent} =
+      Renga.Inventory.create_source(context.scope, %{kind: "host_agent", name: "agent"})
+
+    long_key = "tenant-" <> String.duplicate("lab", 30)
+
+    {:ok, observation} =
+      Renga.Inventory.create_observation(context.scope, agent.id, %{
+        idempotency_key: "phone-domains",
+        observed_at: ~U[2026-08-01 12:00:00Z],
+        payload: %{
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "router-1"},
+              "interfaces" => [%{"name" => "eth0", "routing_domain" => %{"key" => long_key}}]
+            }
+          ]
+        }
+      })
+
+    {:ok, _, _} = Renga.Inventory.reconcile_observation(context.scope, observation.id)
+    row = "routing-domain-#{RengaWeb.VrfLive.domain_id(agent.id, long_key)}"
+
+    context.conn
+    |> visit("/network/vrfs")
+    |> assert_has("body .phx-connected")
+    |> assert_has("##{row}", text: "Unmapped")
+    |> evaluate(visible_js("#{row}-form"), &assert(&1 == false))
+    |> evaluate(visible_js("source-#{agent.id}-authority-form"), &assert(&1 == false))
+    |> assert_has("#source-#{agent.id}-authority", text: "Authoritative")
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
+    |> evaluate(
+      "(el => el.scrollWidth <= el.clientWidth)(document.getElementById('routing-domain-list').closest('div'))",
       &assert(&1 == true)
     )
   end

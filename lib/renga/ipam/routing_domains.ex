@@ -308,6 +308,77 @@ defmodule Renga.IPAM.RoutingDomains do
     |> Map.new(&{&1.interface_id, &1})
   end
 
+  @doc """
+  The routing domains sources currently report, one entry per source and
+  key (ignoring case), with how the interfaces claiming it resolved and any
+  explicit mapping. Mappings of keys nobody reports now are listed too, so
+  they can still be reviewed and removed. Sorted by source name, then key.
+
+  Each entry is `%{source:, key:, mapping:, outcomes:}`, where `outcomes` is
+  `[%{resolution:, vrf:, interface_count:}]`: interfaces claiming one key
+  can resolve differently when they report different route distinguishers.
+  """
+  def list_reported(%Scope{organization_id: organization_id} = scope) do
+    outcomes =
+      InterfaceRoutingDomain
+      |> where([d], d.organization_id == ^organization_id)
+      |> group_by([d], [
+        d.source_id,
+        fragment("lower(?)", d.source_local_key),
+        d.resolution,
+        d.vrf_id
+      ])
+      |> select([d], %{
+        source_id: d.source_id,
+        key: min(d.source_local_key),
+        resolution: d.resolution,
+        vrf_id: d.vrf_id,
+        interface_count: count(d.interface_id)
+      })
+      |> Repo.all()
+
+    mappings =
+      Map.new(list_mappings(scope), &{{&1.source_id, String.downcase(&1.source_local_key)}, &1})
+
+    sources = Map.new(Inventory.list_sources(scope), &{&1.id, &1})
+    vrfs = Map.new(Repo.all(where(Vrf, [v], v.organization_id == ^organization_id)), &{&1.id, &1})
+
+    reported =
+      outcomes
+      |> Enum.group_by(&{&1.source_id, String.downcase(&1.key)})
+      |> Map.new(fn {{source_id, _} = id, rows} ->
+        {id,
+         %{
+           source: Map.fetch!(sources, source_id),
+           key: rows |> Enum.map(& &1.key) |> Enum.min(),
+           mapping: Map.get(mappings, id),
+           outcomes:
+             rows
+             |> Enum.map(
+               &%{
+                 resolution: &1.resolution,
+                 vrf: &1.vrf_id && Map.get(vrfs, &1.vrf_id),
+                 interface_count: &1.interface_count
+               }
+             )
+             |> Enum.sort_by(&(-&1.interface_count))
+         }}
+      end)
+
+    unreported =
+      mappings
+      |> Map.drop(Map.keys(reported))
+      |> Map.new(fn {id, mapping} ->
+        {id,
+         %{source: mapping.source, key: mapping.source_local_key, mapping: mapping, outcomes: []}}
+      end)
+
+    reported
+    |> Map.merge(unreported)
+    |> Map.values()
+    |> Enum.sort_by(&{String.downcase(&1.source.name), String.downcase(&1.key)})
+  end
+
   @doc "Explicit mappings in the organization, with their source and VRF."
   def list_mappings(%Scope{organization_id: organization_id}) do
     RoutingDomainMapping
