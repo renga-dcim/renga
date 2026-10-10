@@ -112,6 +112,55 @@ defmodule Renga.IPAM.RoutingDomainsTest do
     assert red_id == red.id
   end
 
+  test "equal timestamps replace and withdraw claims in observation order, even on reverse replay",
+       context do
+    vrf_fixture(context.scope, "blue")
+    vrf_fixture(context.scope, "red")
+
+    for {interface, reverse?} <- [{"forward", false}, {"reverse", true}] do
+      observations =
+        for {claim, suffix} <- [
+              {%{"key" => "blue"}, "blue"},
+              {%{"key" => "red"}, "red"},
+              {nil, "withdraw"}
+            ] do
+          observation(context, context.agent, 1, %{interface => claim}, "#{interface}-#{suffix}")
+        end
+
+      [blue, red, withdrawal] = observations
+      assert blue.id < red.id and red.id < withdrawal.id
+
+      for report <- if(reverse?, do: Enum.reverse(observations), else: observations) do
+        {:ok, _, _} = Inventory.reconcile_observation(context.scope, report.id)
+        assert length(active_keys(context)) <= 1
+      end
+
+      assert active_keys(context) == []
+      assert domains(context) == %{}
+
+      for report <- observations,
+          do: {:ok, _, _} = Inventory.reconcile_observation(context.scope, report.id)
+
+      assert active_keys(context) == []
+    end
+
+    assert Repo.aggregate(RoutingDomainEvidence, :count) == 6
+  end
+
+  test "Unicode keys use database code-point limits, not grapheme counts", context do
+    too_long = String.duplicate("e\u0301", 128)
+
+    assert {:error, changeset} =
+             RoutingDomains.put_mapping(context.scope, context.agent.id, too_long, nil)
+
+    assert errors_on(changeset).source_local_key != []
+    key = String.duplicate("界", 255)
+    assert {:ok, _} = RoutingDomains.put_mapping(context.scope, context.agent.id, key, nil)
+    report(context, context.agent, 1, %{"eth0" => %{"key" => key}})
+    assert active_keys(context) == [key]
+    assert domains(context) == %{"eth0" => {"mapping", nil}}
+  end
+
   test "mappings and authority are for owners and admins, inside the organization", context do
     user = user_fixture()
     organization_membership_fixture(user, context.organization, %{role: "member"})
@@ -139,6 +188,12 @@ defmodule Renga.IPAM.RoutingDomainsTest do
   # Reports one resource's interfaces with routing-domain claims; `:absent`
   # leaves the field out.
   defp report(context, source, second, claims, suffix \\ "") do
+    observation = observation(context, source, second, claims, suffix)
+    {:ok, _resource, _created?} = Inventory.reconcile_observation(context.scope, observation.id)
+    observation
+  end
+
+  defp observation(context, source, second, claims, suffix) do
     interfaces =
       Enum.map(claims, fn
         {name, :absent} -> %{"name" => name}
@@ -160,7 +215,6 @@ defmodule Renga.IPAM.RoutingDomainsTest do
         }
       })
 
-    {:ok, _resource, _created?} = Inventory.reconcile_observation(context.scope, observation.id)
     observation
   end
 

@@ -97,10 +97,10 @@ defmodule Renga.IPAM.RoutingDomains do
   # back.
   defp record_claim(organization_id, source, observation, interface, claim) do
     {key, route_distinguisher, metadata} = claim_attrs(claim)
-    newer = newer_report_at(organization_id, source.id, interface.id, observation.observed_at)
+    newer = newer_report_at(organization_id, source.id, interface.id, observation)
 
     if is_nil(newer),
-      do: supersede(organization_id, source, interface, observation.observed_at)
+      do: supersede(organization_id, source, interface, observation)
 
     %RoutingDomainEvidence{
       organization_id: organization_id,
@@ -118,12 +118,16 @@ defmodule Renga.IPAM.RoutingDomains do
     |> Repo.insert!()
   end
 
-  defp supersede(organization_id, source, interface, observed_at) do
+  defp supersede(organization_id, source, interface, observation) do
     RoutingDomainEvidence
     |> where([e], e.organization_id == ^organization_id and e.source_id == ^source.id)
     |> where([e], e.interface_id == ^interface.id and is_nil(e.stale_at))
-    |> where([e], e.observed_at < ^observed_at)
-    |> Repo.update_all(set: [stale_at: observed_at])
+    |> where(
+      [e],
+      e.observed_at < ^observation.observed_at or
+        (e.observed_at == ^observation.observed_at and e.observation_id < ^observation.id)
+    )
+    |> Repo.update_all(set: [stale_at: observation.observed_at])
   end
 
   defp claim_attrs(nil), do: {nil, nil, %{}}
@@ -133,10 +137,17 @@ defmodule Renga.IPAM.RoutingDomains do
      claim |> Map.get("metadata", %{}) |> then(&if(is_map(&1), do: &1, else: %{}))}
   end
 
-  defp newer_report_at(organization_id, source_id, interface_id, observed_at) do
+  # Match inventory freshness: observation identity breaks millisecond ties,
+  # including withdrawals, independently of reconciliation/replay order.
+  defp newer_report_at(organization_id, source_id, interface_id, observation) do
     RoutingDomainEvidence
     |> where([e], e.organization_id == ^organization_id and e.source_id == ^source_id)
-    |> where([e], e.interface_id == ^interface_id and e.observed_at > ^observed_at)
+    |> where([e], e.interface_id == ^interface_id)
+    |> where(
+      [e],
+      e.observed_at > ^observation.observed_at or
+        (e.observed_at == ^observation.observed_at and e.observation_id > ^observation.id)
+    )
     |> select([e], min(e.observed_at))
     |> Repo.one()
   end
@@ -218,7 +229,7 @@ defmodule Renga.IPAM.RoutingDomains do
         asc: evidence.interface_id,
         desc: source.authoritative_routing_domains,
         desc: evidence.observed_at,
-        asc: evidence.id
+        desc: evidence.observation_id
       ],
       select: %{
         id: evidence.id,

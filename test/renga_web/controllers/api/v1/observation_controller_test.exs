@@ -713,11 +713,13 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       end
 
       assert {:ok, _} = with_domain.(%{"key" => "blue", "route_distinguisher" => "65000:1"})
+      assert {:ok, _} = with_domain.(%{"key" => String.duplicate("界", 255)})
       # Null withdraws the source's claim.
       assert {:ok, _} = with_domain.(nil)
 
       for {domain, message} <- [
             {%{"key" => " "}, "must not be blank"},
+            {%{"key" => String.duplicate("e\u0301", 128)}, "must be at most 255 code points"},
             {%{"route_distinguisher" => "65000:1"}, "must be a string"},
             {%{"key" => "blue", "route_distinguisher" => 1},
              "must be a string of at most 255 bytes"},
@@ -726,6 +728,31 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         assert {:error, errors} = with_domain.(domain)
         assert Enum.any?(errors, &(&1.message == message)), inspect({domain, errors})
       end
+    end
+
+    test "rejects oversized Unicode routing-domain keys before raw storage" do
+      %{source: source, token: token} = source_fixture()
+
+      payload =
+        source
+        |> valid_observation_payload(%{"observation_id" => "oversized-domain"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "routing_domain"],
+          %{"key" => String.duplicate("e\u0301", 128)}
+        )
+
+      response =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> json_response(422)
+
+      assert Enum.any?(
+               response["errors"],
+               &(&1["path"] == "resources.0.interfaces.0.routing_domain.key")
+             )
+
+      assert Repo.aggregate(Observation, :count) == 0
     end
 
     test "rejects explicit null interface kind and status before raw storage" do

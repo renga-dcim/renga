@@ -269,6 +269,8 @@ A claim is an interface's `routing_domain`: an object with the source-local
 claim, and an absent field says nothing, so earlier claims stand. Each source
 has at most one active claim per interface: a newer report supersedes or
 withdraws it, and a late replay of an older report is stored already stale.
+Reports with the same timestamp are ordered by observation ID, matching
+inventory freshness, so reconciliation order cannot undo a withdrawal.
 The current claim is the newest active one, preferring authoritative
 sources. Its key resolves, first match wins, through an explicit mapping for
 that source and key (to a VRF or the global table), a VRF with the same

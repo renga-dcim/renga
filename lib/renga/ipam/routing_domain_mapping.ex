@@ -29,7 +29,7 @@ defmodule Renga.IPAM.RoutingDomainMapping do
     |> cast(attrs, [:source_local_key, :vrf_id])
     |> update_change(:source_local_key, &String.trim/1)
     |> validate_required([:organization_id, :source_id, :source_local_key])
-    |> validate_length(:source_local_key, max: 255)
+    |> validate_length(:source_local_key, max: 255, count: :codepoints)
     |> assoc_constraint(:source, name: :source_routing_domain_mappings_tenant_source_fkey)
     |> foreign_key_constraint(:vrf_id, name: :source_routing_domain_mappings_tenant_vrf_fkey)
     |> unique_constraint(:source_local_key,

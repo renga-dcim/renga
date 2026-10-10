@@ -43,8 +43,8 @@ defmodule Renga.IPAM.RoutingDomainEvidence do
       :observation_id,
       :observed_at
     ])
-    |> validate_length(:source_local_key, max: 255)
-    |> validate_length(:route_distinguisher, max: 255)
+    |> validate_length(:source_local_key, max: 255, count: :codepoints)
+    |> validate_length(:route_distinguisher, max: 255, count: :bytes)
     |> assoc_constraint(:interface,
       name: :interface_routing_domain_evidence_tenant_interface_fkey
     )

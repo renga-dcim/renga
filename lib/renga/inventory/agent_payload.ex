@@ -651,9 +651,14 @@ defmodule Renga.Inventory.AgentPayload do
     case Map.get(domain, "key") do
       key when is_binary(key) ->
         cond do
-          String.trim(key) == "" -> [error(path, "must not be blank") | errors]
-          String.length(key) > 255 -> [error(path, "must be at most 255 code points") | errors]
-          true -> errors
+          String.trim(key) == "" ->
+            [error(path, "must not be blank") | errors]
+
+          length(String.codepoints(key)) > 255 ->
+            [error(path, "must be at most 255 code points") | errors]
+
+          true ->
+            errors
         end
 
       _missing ->
