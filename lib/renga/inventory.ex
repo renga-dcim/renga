@@ -2112,6 +2112,7 @@ defmodule Renga.Inventory do
     scope
     |> Reconciler.reconcile(observation)
     |> apply_triage_rules(scope)
+    |> reconcile_address_findings(scope)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2120,6 +2121,7 @@ defmodule Renga.Inventory do
       scope
       |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
       |> apply_triage_rules(scope)
+      |> reconcile_address_findings(scope)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2134,6 +2136,7 @@ defmodule Renga.Inventory do
     scope
     |> Reconciler.reconcile_once(observation)
     |> apply_triage_rules(scope)
+    |> reconcile_address_findings(scope)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2144,6 +2147,7 @@ defmodule Renga.Inventory do
         authorize: fn -> authorize_reconciliation!(scope) end
       )
       |> apply_triage_rules(scope)
+      |> reconcile_address_findings(scope)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2172,6 +2176,24 @@ defmodule Renga.Inventory do
   end
 
   defp apply_triage_rules(result, _scope), do: result
+
+  # What a collector reports opens and resolves address findings, after the
+  # report is committed. As with triage rules, a failure never fails the
+  # report; the next report or IPAM change reconciles again.
+  defp reconcile_address_findings({:ok, %Resource{}, _discovered?} = result, scope) do
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
+    result
+  rescue
+    exception ->
+      Logger.error(
+        "address findings failed for #{scope.organization_id}: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      result
+  end
+
+  defp reconcile_address_findings(result, _scope), do: result
 
   @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.

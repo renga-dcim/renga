@@ -298,6 +298,22 @@ and distinct interface or resource, independent of reported mask.
 Unmapped-domain findings take precedence over namespace-dependent address
 findings because no safe namespace match exists.
 
+The namespace-independent findings follow these rules. Only routable observed
+addresses are compared: loopback, link-local, and multicast addresses are
+unique by nobody's design. An address inside any strict prefix is in strict
+scope, and the finding names the most specific strict prefix; a non-strict
+prefix inside a strict one cannot opt out, because the policy is a boolean.
+Outside-prefix findings start once the namespace has a prefix of the
+address's family, so modeling only IPv4 never flags every IPv6 address. A
+prefix-length finding compares the canonical observed mask with the most
+specific non-container prefix containing the host, skipping containers, which are not
+subnets, and host-length reports, which usually mean the source did not know
+the mask. A stale assignment is an allocated address assigned to an interface
+that no longer reports it, on a resource some collector reports addresses
+for; documented assignments on unobserved equipment are not stale. Until
+collectors report routing domains every observed address is global, so these
+findings compare it with global prefixes and managed addresses only.
+
 == Utilization
 
 Prefix utilization is namespace-local and calculated from distinct host values

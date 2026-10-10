@@ -65,7 +65,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Surface unmanaged-in-strict-prefix, outside-prefix, stale managed,
   duplicate, and prefix-length findings with source evidence, and show them on
   the affected prefix, address, and resource pages.
-* [ ] Resolve findings as observed state converges without deleting immutable
+* [x] Resolve findings as observed state converges without deleting immutable
   observation or change history.
 
 == Phase 6: Routing domains
