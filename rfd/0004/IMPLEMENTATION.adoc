@@ -46,7 +46,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [x] Test adopt, release, and re-adopt of the same canonical identity, including
   surviving observed-only occupancy, ended assignments, retired-role behavior,
   and separate removal of one shared assignment.
-* [ ] Add `/network/addresses` with managed-address search, reservations, and
+* [x] Add `/network/addresses` with managed-address search, reservations, and
   assignments.
 
 == Phase 4: Observed identity
