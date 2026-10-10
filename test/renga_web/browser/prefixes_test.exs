@@ -1,8 +1,8 @@
 defmodule RengaWeb.Browser.PrefixesTest do
   @moduledoc """
   The prefix views in a real browser: a container's space map opens the
-  child a cell stands for, a prefix and a planning level are created from
-  side panels, and at phone width long IPv6 prefixes keep their usage beside
+  child a cell stands for, a prefix, a planning level, and the next free
+  child or host are created from side panels, and at phone width long IPv6 prefixes keep their usage beside
   or below them, the addressing plan and findings wrap instead of
   scrolling, and the edit controls are hidden because prefixes are not
   edited on a phone.
@@ -102,6 +102,46 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("#addressing-plan-ipv6", text: "/52 zone")
     |> visit("/network/prefixes/#{context.site.id}")
     |> assert_has("#prefix-space-summary", text: "1 of 16 zone /52s allocated")
+  end
+
+  test "an admin takes the next free child and then a host from the panel", context do
+    context.conn
+    |> visit("/network/prefixes/#{context.site.id}")
+    |> assert_has("body .phx-connected")
+    |> PhoenixTest.Playwright.click("#next-free")
+    |> assert_has("#next-free-panel [role=dialog]", text: "Next free")
+    |> assert_has("#next-free-preview", text: "Next free: 2001:db8:a::/56")
+    |> PhoenixTest.Playwright.click("#allocate")
+    |> assert_has("#flash-info", text: "Allocated 2001:db8:a::/56")
+    |> refute_has("#next-free-panel [role=dialog]")
+
+    leaf = prefix_fixture(context.scope, "192.0.2.0/29")
+
+    context.conn
+    |> visit("/network/prefixes/#{leaf.id}")
+    |> assert_has("body .phx-connected")
+    |> PhoenixTest.Playwright.click("#next-free")
+    |> assert_has("#next-free-panel [role=dialog]", text: "Next free: 192.0.2.1/29")
+    |> fill_in("#next-free-form input[name='next_free[dns_name]']", "DNS name (optional)",
+      with: "gw.example.net"
+    )
+    |> PhoenixTest.Playwright.click("#allocate")
+    |> assert_has("#flash-info", text: "Allocated 192.0.2.1/29")
+    |> assert_has("#address-cell-1[data-state=managed]")
+    # Reopen only once the panel has closed, and act only once it shows.
+    |> refute_has("#next-free-panel [role=dialog]")
+    |> PhoenixTest.Playwright.click("#next-free")
+    |> assert_has("#next-free-panel [role=dialog]", text: "Next free: 192.0.2.2/29")
+    # Switching to a child prefix swaps the fields, keeps the default
+    # length, and previews a block; the managed .1 occupies the first /30.
+    |> select("#next-free-form select[name='next_free[kind]']", "Allocate a",
+      option: "Child prefix",
+      exact: false
+    )
+    |> assert_has("#next-free-panel [role=dialog] input[name='next_free[length]']")
+    |> refute_has("#next-free-form input[name='next_free[dns_name]']")
+    |> fill_in("#next-free-form input[name='next_free[length]']", "Prefix length", with: "30")
+    |> assert_has("#next-free-preview", text: "Next free: 192.0.2.4/30")
   end
 
   test "edit validation, save, and delete cancellation and confirmation", context do
@@ -230,6 +270,7 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("body .phx-connected")
     |> evaluate(visible_js("edit-prefix"), &assert(&1 == false))
     |> evaluate(visible_js("delete-prefix"), &assert(&1 == false))
+    |> evaluate(visible_js("next-free"), &assert(&1 == false))
   end
 
   @tag browser_context_opts: [

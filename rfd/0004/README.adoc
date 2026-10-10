@@ -418,6 +418,13 @@ matching, and set which sources' claims are authoritative there. A resource's
 interfaces show their current routing domain, and an unmapped-domain finding
 links to its mapping.
 
+A prefix's page offers owners and admins "Next free": a side panel that
+previews the first free child prefix of a chosen length (the planning level by
+default) or, in a leaf, the first free host, and allocates it with a status or
+allocation state, DNS name, and description. The preview follows the form,
+but the allocation re-reads the space when it is made. Like the other Network
+edits, it is hidden on a phone.
+
 Routes belong inside the existing `live_session
 :require_authenticated_user` block and `[:browser,
 :require_authenticated_user]` pipeline because IPAM contains organization

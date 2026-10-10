@@ -767,8 +767,9 @@ defmodule Renga.IPAM do
   @doc """
   Everything a prefix's page shows: its `node` (with the prefixes inside it
   in its routing table), `ancestors` from the outermost, the view `mode`
-  and that mode's data, the linked `vlans` and their other-family
-  `counterparts`.
+  and that mode's data, its `planning_level` (`{length, name}`, see
+  `PrefixTree.planning_level/2`), the linked `vlans` and their
+  other-family `counterparts`.
 
   Addresses are listed for leaves only; a container shows its child space.
   """
@@ -795,6 +796,7 @@ defmodule Renga.IPAM do
       node: node,
       ancestors: Enum.sort_by(ancestors, &Cidr.length(&1.prefix)),
       mode: mode,
+      planning_level: PrefixTree.planning_level(node, plan),
       vlans: pairing.vlans,
       counterparts: pairing.counterparts
     }

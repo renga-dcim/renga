@@ -82,7 +82,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 * [x] Add an optional per-family organization addressing plan that drives the
   child-space map's planning levels.
-* [ ] Add a serialized next-free prefix and host allocator for owners and
+* [x] Add a serialized next-free prefix and host allocator for owners and
   admins, sharing organization-first locking with all managed writes affecting
   availability and excluding known occupied and non-assignable space.
 * [x] Prove allocation safety under allocator-versus-allocator,
