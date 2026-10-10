@@ -240,9 +240,14 @@ defmodule Renga.IPAMAddressesTest do
       # the one interface it was adopted from; the old shared role is gone.
       {:ok, readopted} = IPAM.adopt_address(context.admin, observed.id)
       assert readopted.id == adopted.id
-      assert readopted.role == "ordinary"
+      assert Repo.reload!(readopted).role == "ordinary"
       assert [%{interface_id: eth0_id}] = readopted.assignments
       assert eth0_id == context.eth0.id
+
+      assert {:error, changeset} =
+               IPAM.assign_address(context.admin, readopted.id, context.other_eth0.id)
+
+      assert %{interface_id: [_]} = errors_on(changeset)
 
       assert [%{managed: %{id: managed_id}} | _] = IPAM.prefix_view(context.admin, lan).addresses
       assert managed_id == adopted.id
