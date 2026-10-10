@@ -52,14 +52,15 @@ defmodule Renga.IPAM do
     prefix: "prefix",
     vrf_id: "routing_table",
     status: "status",
-    description: "description"
+    description: "description",
+    strict: "address_policy"
   ]
 
   @doc """
   Creates a prefix and its resource envelope. Owners and admins only.
 
   `attrs` are the typed prefix fields (`prefix`, `vrf_id`, `status`,
-  `description`); a nil `vrf_id` is the global table. The envelope gets a
+  `description`, `strict`); a nil `vrf_id` is the global table. The envelope gets a
   stable generated name, so editing the CIDR later never renames it, and
   shows the CIDR, and the VRF when there is one, as its display name.
   Returns `{:error, :forbidden}` for anyone else, or the changeset when the
@@ -122,9 +123,9 @@ defmodule Renga.IPAM do
   end
 
   @doc """
-  Changes a prefix's CIDR, routing table, status, or description. Owners and
-  admins only. Each changed field writes an `updated` change event, and a
-  new CIDR or table renames the envelope's display name.
+  Changes a prefix's CIDR, routing table, status, description, or address
+  policy. Owners and admins only. Each changed field writes an `updated`
+  change event, and a new CIDR or table renames the envelope's display name.
   """
   def update_prefix(
         %Scope{organization_id: organization_id} = scope,
@@ -223,6 +224,8 @@ defmodule Renga.IPAM do
   defp event_value(:vrf_id, %Prefix{vrf: nil}), do: %{"value" => nil}
   defp event_value(:vrf_id, %Prefix{vrf: vrf}), do: %{"value" => vrf.name, "vrf_id" => vrf.id}
   defp event_value(:prefix, %Prefix{prefix: cidr}), do: %{"value" => Cidr.format(cidr)}
+  defp event_value(:strict, %Prefix{strict: true}), do: %{"value" => "strict"}
+  defp event_value(:strict, %Prefix{strict: false}), do: %{"value" => "normal"}
   defp event_value(field, %Prefix{} = prefix), do: %{"value" => Map.fetch!(prefix, field)}
 
   defp prefix_label(cidr, nil), do: Cidr.format(cidr)

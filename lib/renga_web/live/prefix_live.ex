@@ -314,6 +314,14 @@ defmodule RengaWeb.PrefixLive do
               {Cidr.format(row.node.prefix.prefix)}
             </.link>
             <span
+              :if={row.node.prefix.strict}
+              id={"prefix-row-#{row.node.prefix.id}-strict"}
+              title="Strict: every observed address should be managed"
+              class="self-center rounded border border-accent/40 bg-accent-tint px-1 text-[11px] text-fg"
+            >
+              Strict
+            </span>
+            <span
               :if={row.node.prefix.description}
               class="hidden min-w-0 truncate text-xs text-fg-muted sm:inline"
             >
