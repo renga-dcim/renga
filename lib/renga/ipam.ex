@@ -47,6 +47,7 @@ defmodule Renga.IPAM do
   alias Renga.IPAM.IpAddress
   alias Renga.IPAM.IpAddressAssignment
   alias Renga.IPAM.PrefixTree
+  alias Renga.IPAM.RoutingDomains
   alias Renga.IPAM.Vrf
   alias Renga.Repo
   alias Renga.Topology
@@ -334,6 +335,8 @@ defmodule Renga.IPAM do
           new_value: %{"value" => name}
         })
 
+      # A new name or route distinguisher can resolve reported domains.
+      {:ok, :ok} = RoutingDomains.refresh(organization_id)
       %{vrf | resource: resource}
     end)
     |> Changes.broadcast(organization_id)
@@ -379,6 +382,7 @@ defmodule Renga.IPAM do
           })
       end
 
+      {:ok, :ok} = RoutingDomains.refresh(organization_id)
       %{updated | resource: resource}
     end)
     |> Changes.broadcast(organization_id)
@@ -423,6 +427,7 @@ defmodule Renga.IPAM do
         })
 
       Repo.delete!(current.resource)
+      {:ok, :ok} = RoutingDomains.refresh(organization_id)
       current
     end)
     |> Changes.broadcast(organization_id)

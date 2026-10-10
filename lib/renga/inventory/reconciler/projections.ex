@@ -86,6 +86,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
         allow_new_rows?
       )
 
+    :ok =
+      Renga.IPAM.RoutingDomains.record_claims(
+        scope.organization_id,
+        source,
+        observation,
+        resource.id,
+        interfaces
+      )
+
     reconcile_interface_relationships(
       scope,
       source,
