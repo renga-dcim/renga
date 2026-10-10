@@ -39,11 +39,11 @@ Implements link:README.adoc[RFD 4: IP address management].
   combining managed intent and observed hosts without double-counting.
 * [ ] Apply status-specific container utilization, including empty containers,
   separately from the existing child-driven presentation mode.
-* [ ] Add optional assignments with tenant-safe constraints, address-row locking,
+* [x] Add optional assignments with tenant-safe constraints, address-row locking,
   ordinary single-assignment validation, and explicit shared-address roles.
 * [x] Move Adopt and release onto the new model in one transaction each, writing
   change events, and migrate existing managed addresses with their interfaces.
-* [ ] Test adopt, release, and re-adopt of the same canonical identity, including
+* [x] Test adopt, release, and re-adopt of the same canonical identity, including
   surviving observed-only occupancy, ended assignments, retired-role behavior,
   and separate removal of one shared assignment.
 * [ ] Add `/network/addresses` with managed-address search, reservations, and
