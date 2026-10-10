@@ -79,6 +79,39 @@ defmodule RengaWeb.RoutingDomainLiveTest do
     refute Repo.reload!(context.agent).authoritative_routing_domains
   end
 
+  test "authority remains editable after disabling a claimless source and reloading", context do
+    {:ok, source} =
+      Inventory.create_source(context.admin, %{kind: "host_agent", name: "claimless"})
+
+    {:ok, view, _} = live(context.admin_conn, ~p"/network/vrfs")
+    selector = "#source-#{source.id}-authority-form"
+    view |> form(selector) |> render_change(%{authority: %{authoritative: "false"}})
+    assert has_element?(view, selector)
+    refute Repo.reload!(source).authoritative_routing_domains
+    {:ok, reloaded, _} = live(context.admin_conn, ~p"/network/vrfs")
+    assert has_element?(reloaded, selector)
+    reloaded |> form(selector) |> render_change(%{authority: %{authoritative: "true"}})
+    assert Repo.reload!(source).authoritative_routing_domains
+  end
+
+  test "an advisory source with losing claims can be promoted", context do
+    {:ok, provider} =
+      Inventory.create_source(context.admin, %{kind: "vm_provider", name: "provider"})
+
+    report(context.admin, provider, [{"eth0", %{"key" => "blue"}}])
+    refute Repo.reload!(provider).authoritative_routing_domains
+    ports = Map.new(context.resource.interfaces, &{&1.name, &1})
+
+    assert RoutingDomains.domains_for(context.admin, [ports["eth0"].id])[ports["eth0"].id].source_id ==
+             context.agent.id
+
+    {:ok, view, _} = live(context.admin_conn, ~p"/network/vrfs")
+    selector = "#source-#{provider.id}-authority-form"
+    assert has_element?(view, selector)
+    view |> form(selector) |> render_change(%{authority: %{authoritative: "true"}})
+    assert Repo.reload!(provider).authoritative_routing_domains
+  end
+
   test "a mapping of a key nobody reports now stays listed", context do
     {:ok, _} = RoutingDomains.put_mapping(context.admin, context.agent.id, "old", nil)
     {:ok, view, _html} = live(context.member_conn, ~p"/network/vrfs")

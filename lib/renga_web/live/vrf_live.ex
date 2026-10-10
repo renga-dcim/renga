@@ -243,19 +243,12 @@ defmodule RengaWeb.VrfLive do
     |> load_routing_domains()
   end
 
-  # Each row carries its own form, so a choice applies on change. Sources
-  # that never reported a routing domain are listed for authority only when
-  # their kind reads device configuration or someone already made them
-  # authoritative; others would be noise.
+  # Authority controls must remain available even without winning claims,
+  # including after disabling a source so it can be enabled again.
   defp load_routing_domains(socket) do
     scope = socket.assigns.current_scope
     domains = RoutingDomains.list_reported(scope)
-    reporting = MapSet.new(domains, & &1.source.id)
-
-    sources =
-      scope
-      |> Inventory.list_sources()
-      |> Enum.filter(&(MapSet.member?(reporting, &1.id) or &1.authoritative_routing_domains))
+    sources = Inventory.list_sources(scope)
 
     assign(socket,
       routing_domains:
