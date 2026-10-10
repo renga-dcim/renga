@@ -85,7 +85,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [ ] Add a serialized next-free prefix and host allocator for owners and
   admins, sharing organization-first locking with all managed writes affecting
   availability and excluding known occupied and non-assignable space.
-* [ ] Prove allocation safety under allocator-versus-allocator,
+* [x] Prove allocation safety under allocator-versus-allocator,
   allocator-versus-manual-write, and prefix-resize races, with availability
   checks and durable allocation in the same transaction.
 

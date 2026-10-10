@@ -43,6 +43,7 @@ defmodule Renga.IPAM do
   alias Renga.Inventory.ResourceStore
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.AddressFindings
+  alias Renga.IPAM.Allocator
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.IpAddress
   alias Renga.IPAM.InterfaceRoutingDomain
@@ -74,49 +75,53 @@ defmodule Renga.IPAM do
   CIDR is invalid or already exists in its routing table.
   """
   def create_prefix(%Scope{organization_id: organization_id} = scope, attrs) do
-    ipam_transaction(scope, fn ->
-      validation = Prefix.changeset(%Prefix{organization_id: organization_id}, attrs)
+    ipam_transaction(scope, fn -> insert_prefix(scope, attrs) end)
+    |> Changes.broadcast(organization_id)
+  end
 
-      # The resource does not exist yet, so its absence is the one error
-      # expected here; anything else is the caller's input.
-      if Keyword.delete(validation.errors, :resource_id) != [] do
-        Repo.rollback(%{validation | action: :insert})
+  # The prefix, its envelope, and its change event, inside the caller's
+  # transaction, which holds the organization lock.
+  defp insert_prefix(%Scope{organization_id: organization_id} = scope, attrs) do
+    validation = Prefix.changeset(%Prefix{organization_id: organization_id}, attrs)
+
+    # The resource does not exist yet, so its absence is the one error
+    # expected here; anything else is the caller's input.
+    if Keyword.delete(validation.errors, :resource_id) != [] do
+      Repo.rollback(%{validation | action: :insert})
+    end
+
+    vrf = scoped_vrf(organization_id, Ecto.Changeset.get_field(validation, :vrf_id))
+    label = prefix_label(Ecto.Changeset.get_field(validation, :prefix), vrf)
+
+    resource =
+      case ResourceStore.insert(organization_id, %{
+             kind: "prefix",
+             name: "prefix-" <> Ecto.UUID.generate(),
+             display_name: label,
+             lifecycle_state: "active"
+           }) do
+        {:ok, resource} -> resource
+        {:error, changeset} -> Repo.rollback(changeset)
       end
 
-      vrf = scoped_vrf(organization_id, Ecto.Changeset.get_field(validation, :vrf_id))
-      label = prefix_label(Ecto.Changeset.get_field(validation, :prefix), vrf)
+    prefix =
+      %Prefix{organization_id: organization_id, resource_id: resource.id}
+      |> Prefix.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, prefix} -> prefix
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
 
-      resource =
-        case ResourceStore.insert(organization_id, %{
-               kind: "prefix",
-               name: "prefix-" <> Ecto.UUID.generate(),
-               display_name: label,
-               lifecycle_state: "active"
-             }) do
-          {:ok, resource} -> resource
-          {:error, changeset} -> Repo.rollback(changeset)
-        end
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: "created",
+        field: "prefix",
+        resource_id: resource.id,
+        new_value: %{"value" => label}
+      })
 
-      prefix =
-        %Prefix{organization_id: organization_id, resource_id: resource.id}
-        |> Prefix.changeset(attrs)
-        |> Repo.insert()
-        |> case do
-          {:ok, prefix} -> prefix
-          {:error, changeset} -> Repo.rollback(changeset)
-        end
-
-      {:ok, _event} =
-        Inventory.create_change_event(scope, %{
-          kind: "created",
-          field: "prefix",
-          resource_id: resource.id,
-          new_value: %{"value" => label}
-        })
-
-      %{prefix | resource: resource, vrf: vrf}
-    end)
-    |> Changes.broadcast(organization_id)
+    %{prefix | resource: resource, vrf: vrf}
   end
 
   @doc """
@@ -190,6 +195,219 @@ defmodule Renga.IPAM do
       current
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  ## Allocation
+
+  @doc """
+  The first free child prefix of `length` inside `parent`, without taking
+  it: `{:ok, cidr}`, `{:error, :full}`, or `{:error, :invalid_length}` for
+  a length no longer than the parent's or past the host length.
+
+  Free means no child prefix, managed host, or observed host in the
+  parent's routing table touches it (`allocate_prefix/4` explains what
+  occupies space). It is a suggestion; only `allocate_prefix/4` holds it.
+  """
+  def next_free_prefix(%Scope{organization_id: organization_id}, %Prefix{} = parent, length) do
+    with :ok <- valid_child_length(parent, length) do
+      parent.prefix
+      |> Allocator.next_block(length, occupants(organization_id, parent))
+      |> free_result()
+    end
+  end
+
+  @doc """
+  The first free host inside a leaf `parent`, without taking it:
+  `{:ok, address}` with the parent's length, `{:error, :full}`, or
+  `{:error, :has_children}` for a prefix whose space belongs to children.
+  The family's non-assignable addresses are never offered
+  (`Renga.IPAM.Allocator.non_assignable/1`).
+  """
+  def next_free_host(%Scope{organization_id: organization_id}, %Prefix{} = parent) do
+    if child_prefixes?(organization_id, parent) do
+      {:error, :has_children}
+    else
+      parent.prefix
+      |> Allocator.next_host(occupants(organization_id, parent))
+      |> free_result()
+    end
+  end
+
+  @doc """
+  Creates the first free child prefix of `length` inside `parent`, as
+  `create_prefix/2` would with `attrs` (status, description, address
+  policy). Owners and admins only.
+
+  Allocation is serialized with every managed write that changes what is
+  free: it runs under the organization lock that prefix, address,
+  assignment, and adoption writes also take first, locks the parent so a
+  resize or move meanwhile is seen, and re-reads the space before writing
+  in the same transaction. Two allocations, or an allocation and a manual
+  write, therefore never take the same space.
+
+  Space is occupied by child prefixes, current managed hosts (reserved or
+  allocated), observed hosts in the parent's routing table, and observed
+  hosts whose routing domain is unmapped, which could be anywhere. The
+  guarantee covers known inventory, not a device nobody has reported yet.
+
+  Returns `{:error, :full}`, `{:error, :invalid_length}`,
+  `{:error, :forbidden}`, or a changeset for invalid `attrs`; a parent
+  deleted meanwhile raises `Ecto.NoResultsError`.
+  """
+  def allocate_prefix(
+        %Scope{organization_id: organization_id} = scope,
+        %Prefix{id: id},
+        length,
+        attrs \\ %{}
+      ) do
+    ipam_transaction(scope, fn ->
+      parent = lock_prefix!(organization_id, id)
+
+      with :ok <- valid_child_length(parent, length),
+           %Postgrex.INET{} = cidr <-
+             Allocator.next_block(parent.prefix, length, occupants(organization_id, parent)) do
+        attrs =
+          attrs
+          |> string_keys()
+          |> Map.merge(%{"prefix" => Cidr.format(cidr), "vrf_id" => parent.vrf_id})
+
+        insert_prefix(scope, attrs)
+      else
+        :full -> {:error, :full}
+        {:error, _reason} = error -> error
+      end
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Records the first free host inside a leaf `parent` as a managed address
+  in its routing table, with the parent's length. Owners and admins only,
+  serialized as `allocate_prefix/4` is.
+
+  `attrs` may set the allocation state (`allocated` by default), management
+  mode, role, DNS name, and description. A released record for that host is
+  reactivated rather than created again. Returns `{:error, :full}`,
+  `{:error, :has_children}`, `{:error, :forbidden}`, or a changeset.
+  """
+  def allocate_address(
+        %Scope{organization_id: organization_id} = scope,
+        %Prefix{id: id},
+        attrs \\ %{}
+      ) do
+    ipam_transaction(scope, fn ->
+      parent = lock_prefix!(organization_id, id)
+
+      with false <- child_prefixes?(organization_id, parent),
+           %Postgrex.INET{} = host <-
+             Allocator.next_host(parent.prefix, occupants(organization_id, parent)) do
+        record_allocated_host(scope, parent, host, attrs)
+      else
+        true -> {:error, :has_children}
+        :full -> {:error, :full}
+      end
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp record_allocated_host(
+         %Scope{organization_id: organization_id} = scope,
+         parent,
+         host,
+         attrs
+       ) do
+    attrs =
+      %{"allocation_state" => "allocated"}
+      |> Map.merge(string_keys(attrs))
+      |> Map.merge(%{"address" => Cidr.format(host), "vrf_id" => parent.vrf_id})
+
+    validation = change_ip_address(%IpAddress{organization_id: organization_id}, attrs)
+
+    if validation.valid?,
+      do: establish_ip_address(scope, validation, attrs),
+      else: Repo.rollback(%{validation | action: :insert})
+  end
+
+  defp valid_child_length(%Prefix{prefix: cidr}, length) when is_integer(length) do
+    if length > Cidr.length(cidr) and length <= Cidr.bits(Cidr.family(cidr)),
+      do: :ok,
+      else: {:error, :invalid_length}
+  end
+
+  defp valid_child_length(_parent, _length), do: {:error, :invalid_length}
+
+  defp free_result(:full), do: {:error, :full}
+  defp free_result(%Postgrex.INET{} = free), do: {:ok, free}
+
+  defp string_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+  defp child_prefixes?(organization_id, %Prefix{prefix: cidr, vrf_id: vrf_id}) do
+    Prefix
+    |> where([prefix], prefix.organization_id == ^organization_id)
+    |> where_vrf(vrf_id)
+    |> where([prefix], fragment("? << ?", prefix.prefix, type(^cidr, Renga.Types.Cidr)))
+    |> Repo.exists?()
+  end
+
+  # Everything that takes space inside `parent`, as integer intervals: its
+  # child prefixes, current managed hosts, and observed hosts in its routing
+  # table or with an unmapped routing domain.
+  defp occupants(organization_id, %Prefix{prefix: cidr, vrf_id: vrf_id}) do
+    children =
+      Prefix
+      |> where([prefix], prefix.organization_id == ^organization_id)
+      |> where_vrf(vrf_id)
+      |> where([prefix], fragment("? << ?", prefix.prefix, type(^cidr, Renga.Types.Cidr)))
+      |> select([prefix], prefix.prefix)
+      |> Repo.all()
+
+    managed =
+      IpAddress
+      |> where([ip], ip.organization_id == ^organization_id)
+      |> where_vrf(vrf_id)
+      |> where([ip], fragment("host(?)::inet <<= ?", ip.address, type(^cidr, Renga.Types.Cidr)))
+      |> join(:inner, [ip], resource in assoc(ip, :resource))
+      |> where([_ip, resource], resource.lifecycle_state == "active")
+      |> select([ip], fragment("host(?)::inet", ip.address))
+      |> Repo.all()
+
+    observed =
+      Address
+      |> where([address], address.organization_id == ^organization_id)
+      |> where(
+        [address],
+        fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+      )
+      |> where(
+        [address],
+        fragment("host(?)::inet <<= ?", address.address, type(^cidr, Renga.Types.Cidr))
+      )
+      |> join(:left, [address], domain in InterfaceRoutingDomain,
+        on: domain.interface_id == address.interface_id
+      )
+      |> where_observed_namespace(vrf_id)
+      |> select([address], fragment("host(?)::inet", address.address))
+      |> Repo.all()
+
+    Enum.map(children ++ managed ++ observed, &Allocator.range/1)
+  end
+
+  # An unmapped routing domain could be any namespace, so its addresses
+  # occupy space in every one rather than being handed out twice.
+  defp where_observed_namespace(query, nil) do
+    where(
+      query,
+      [_address, domain],
+      is_nil(domain.vrf_id) or domain.resolution == "unmapped"
+    )
+  end
+
+  defp where_observed_namespace(query, vrf_id) do
+    where(
+      query,
+      [_address, domain],
+      domain.vrf_id == ^vrf_id or domain.resolution == "unmapped"
+    )
   end
 
   # Every prefix and address write changes which address findings should be
@@ -966,29 +1184,35 @@ defmodule Renga.IPAM do
         )
 
       unless validation.valid?, do: Repo.rollback(%{validation | action: :insert})
-
-      intent =
-        Map.new([:address, :vrf_id, :allocation_state, :management_mode, :role], fn field ->
-          {field, Ecto.Changeset.get_field(validation, field)}
-        end)
-
-      notes = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
-
-      ip_address =
-        case lock_managed_host(organization_id, intent.vrf_id, intent.address) do
-          nil ->
-            insert_ip_address(scope, intent, notes)
-
-          %IpAddress{resource: %{lifecycle_state: "retired"}} = retired ->
-            reactivate(scope, retired, intent, notes)
-
-          _current ->
-            Repo.rollback(already_managed(validation))
-        end
-
-      Repo.preload(ip_address, [:vrf, assignments: [interface: :resource]], force: true)
+      establish_ip_address(scope, validation, attrs)
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  # Records a validated address as current intent, inside the caller's
+  # transaction: a new record, or the host's released one reactivated, so a
+  # namespace keeps one canonical record per host.
+  defp establish_ip_address(%Scope{organization_id: organization_id} = scope, validation, attrs) do
+    intent =
+      Map.new([:address, :vrf_id, :allocation_state, :management_mode, :role], fn field ->
+        {field, Ecto.Changeset.get_field(validation, field)}
+      end)
+
+    notes = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
+
+    ip_address =
+      case lock_managed_host(organization_id, intent.vrf_id, intent.address) do
+        nil ->
+          insert_ip_address(scope, intent, notes)
+
+        %IpAddress{resource: %{lifecycle_state: "retired"}} = retired ->
+          reactivate(scope, retired, intent, notes)
+
+        _current ->
+          Repo.rollback(already_managed(validation))
+      end
+
+    Repo.preload(ip_address, [:vrf, assignments: [interface: :resource]], force: true)
   end
 
   @doc """
