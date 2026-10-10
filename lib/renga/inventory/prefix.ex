@@ -44,7 +44,7 @@ defmodule Renga.Inventory.Prefix do
   def changeset(prefix, attrs) do
     prefix
     |> cast(attrs, [:prefix, :vrf_id, :status, :description, :strict, :metadata])
-    |> validate_required([:organization_id, :resource_id, :prefix, :status])
+    |> validate_required([:organization_id, :resource_id, :prefix, :status, :strict])
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource, name: :prefixes_organization_resource_fkey)

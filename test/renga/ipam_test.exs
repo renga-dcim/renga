@@ -21,6 +21,27 @@ defmodule Renga.IPAMTest do
     %{scope: Accounts.scope_for_user(user, organization.id)}
   end
 
+  test "strict policy rejects nil without writes and preserves omitted values", %{scope: scope} do
+    events = Repo.aggregate(Renga.Inventory.ChangeEvent, :count)
+    assert {:error, changeset} = IPAM.create_prefix(scope, %{prefix: "192.0.2.0/24", strict: nil})
+    assert errors_on(changeset).strict == ["can't be blank"]
+    assert Repo.aggregate(Renga.Inventory.Prefix, :count) == 0
+    assert Repo.aggregate(Renga.Inventory.ChangeEvent, :count) == events
+
+    assert {:ok, prefix} = IPAM.create_prefix(scope, %{prefix: "192.0.2.0/24"})
+    refute prefix.strict
+    assert {:ok, prefix} = IPAM.update_prefix(scope, prefix, %{strict: true})
+    events = Repo.aggregate(Renga.Inventory.ChangeEvent, :count)
+    assert {:error, changeset} = IPAM.update_prefix(scope, prefix, %{strict: nil})
+    assert errors_on(changeset).strict == ["can't be blank"]
+    assert Repo.reload!(prefix).strict
+    assert Repo.aggregate(Renga.Inventory.ChangeEvent, :count) == events
+    assert {:ok, prefix} = IPAM.update_prefix(scope, prefix, %{description: "unchanged policy"})
+    assert prefix.strict
+    assert {:ok, prefix} = IPAM.update_prefix(scope, prefix, %{strict: false})
+    refute prefix.strict
+  end
+
   test "lists each family's tree for one routing table with usage", %{scope: scope} do
     site = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
     users_v4 = prefix_fixture(scope, "10.0.10.0/24")
