@@ -601,6 +601,28 @@ defmodule Renga.IPAMTest do
     assert %{used: 1, managed_unseen: 1} = blue_view.address_map
   end
 
+  test "a shared address assigned and observed on two interfaces is one host", %{scope: scope} do
+    lan = prefix_fixture(scope, "192.0.2.0/28")
+    {_a, a_ports} = device_fixture(scope, "server", "lb-a", ~w(eth0))
+    {_b, b_ports} = device_fixture(scope, "server", "lb-b", ~w(eth0))
+    address_fixture(scope, a_ports["eth0"], "192.0.2.5/28")
+    address_fixture(scope, b_ports["eth0"], "192.0.2.5/28")
+    {:ok, vip} = IPAM.create_ip_address(scope, %{address: "192.0.2.5/28", role: "vip"})
+    {:ok, _} = IPAM.assign_address(scope, vip.id, a_ports["eth0"].id)
+    {:ok, _} = IPAM.assign_address(scope, vip.id, b_ports["eth0"].id)
+
+    %{ipv4: rows} = IPAM.list_prefix_rows(scope, nil)
+    assert %{used: 1} = Enum.find(rows, &(&1.node.prefix.id == lan.id)).usage
+
+    view = IPAM.prefix_view(scope, lan)
+    assert %{used: 1, managed_unseen: 0} = view.address_map
+
+    # Each observation lists the one managed record, which names both.
+    assert [%{managed: %{id: id} = managed}, %{managed: %{id: id}}] = view.addresses
+    assert id == vip.id
+    assert length(managed.assignments) == 2
+  end
+
   test "never shows another organization's prefixes or addresses", %{scope: scope} do
     lan = prefix_fixture(scope, "192.0.2.0/28")
 

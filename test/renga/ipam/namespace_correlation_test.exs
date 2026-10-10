@@ -306,7 +306,43 @@ defmodule Renga.IPAM.NamespaceCorrelationTest do
     assert recurrence.workflow.exception_reason == "Known tenant"
   end
 
-  # Reports router-1's interfaces as `{name, address | :none, claim | :absent}`.
+  test "a first-hop redundancy role in a VRF suppresses only that VRF's duplicate", context do
+    report(context, 1, [
+      {"eth0", "10.0.0.9/24", %{"key" => "blue"}},
+      {"eth1", "10.0.0.9/24", %{"key" => "blue"}},
+      {"eth2", "10.0.0.9/24", :absent},
+      {"eth3", "10.0.0.9/24", :absent}
+    ])
+
+    duplicates = fn ->
+      context
+      |> open_findings()
+      |> Enum.filter(&(elem(&1, 0) == "duplicate_address"))
+      |> Enum.map(&elem(&1, 1))
+    end
+
+    assert duplicates.() == ~w(eth0 eth1 eth2 eth3)
+
+    # The gateway address in blue is meant to be on both; the same host in
+    # the global table is still a duplicate there.
+    [blue_address | _] =
+      context |> observed() |> Enum.filter(&(&1.interface_id in interface_ids(context, ~w(eth0))))
+
+    {:ok, managed} = IPAM.adopt_address(context.scope, blue_address.id)
+    assert managed.vrf_id == context.blue.id
+    {:ok, _vrrp} = IPAM.update_ip_address(context.scope, managed, %{role: "vrrp"})
+
+    assert duplicates.() == ~w(eth2 eth3)
+  end
+
+  defp interface_ids(context, names) do
+    Inventory.Interface
+    |> where([i], i.organization_id == ^context.scope.organization_id and i.name in ^names)
+    |> select([i], i.id)
+    |> Repo.all()
+  end
+
+  # Reports router-1's interfaces as `{name, address | :none, claim | :absent}`.  # Reports router-1's interfaces as `{name, address | :none, claim | :absent}`.
   defp report(context, second, interfaces) do
     interfaces =
       Enum.map(interfaces, fn {name, address, claim} ->
