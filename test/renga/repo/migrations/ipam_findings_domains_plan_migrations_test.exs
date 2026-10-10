@@ -93,11 +93,24 @@ defmodule Renga.Repo.Migrations.IpamFindingsDomainsPlanMigrationsTest do
              "address_findings_open_resolution_index"
 
     # The address domain joins the shared workflow.
+    assert {:ok, _} = insert_workflow(repo, acme, host, "component", "legacy-component")
+    assert {:ok, _} = insert_change_request(repo, acme, host, "lifecycle")
+
+    legacy_workflows =
+      rows(repo, "SELECT id::text, domain, resolution_key FROM finding_workflows")
+
+    legacy_requests =
+      rows(repo, "SELECT id::text, kind, after_value, reason FROM change_requests")
+
     assert violates(insert_workflow(repo, acme, host, "address", "192.0.2.5")) ==
              "finding_workflows_valid_domain"
 
+    assert violates(insert_change_request(repo, acme, host, "adoption")) ==
+             "change_requests_valid_kind"
+
     assert [@finding_workflows] = up(repo, @finding_workflows)
     assert {:ok, _} = insert_workflow(repo, acme, host, "address", "192.0.2.5")
+    assert {:ok, _} = insert_change_request(repo, acme, host, "adoption")
 
     # Collectors that read device configuration become authoritative for
     # routing domains; other sources stay advisory.
@@ -156,7 +169,20 @@ defmodule Renga.Repo.Migrations.IpamFindingsDomainsPlanMigrationsTest do
       assert [[nil]] = rows(repo, "SELECT to_regclass('#{table}')::text")
     end
 
-    assert [[0]] = rows(repo, "SELECT count(*)::int FROM finding_workflows")
+    # Rollback removes only the new domains/kinds and restores both old constraints.
+    assert rows(repo, "SELECT id::text, domain, resolution_key FROM finding_workflows") ==
+             legacy_workflows
+
+    assert rows(repo, "SELECT id::text, kind, after_value, reason FROM change_requests") ==
+             legacy_requests
+
+    assert violates(insert_workflow(repo, acme, host, "address", "192.0.2.6")) ==
+             "finding_workflows_valid_domain"
+
+    assert violates(insert_change_request(repo, acme, host, "adoption")) ==
+             "change_requests_valid_kind"
+
+    assert violates(insert_workflow(repo, acme, host, "component", long_key)) == :too_long
 
     assert [] =
              rows(repo, """
@@ -192,6 +218,15 @@ defmodule Renga.Repo.Migrations.IpamFindingsDomainsPlanMigrationsTest do
        inserted_at, updated_at)
     VALUES (gen_random_uuid(), '#{organization}', '#{resource}', '#{domain}',
             gen_random_uuid(), 'duplicate_address', '#{key}', now(), now())
+    """)
+  end
+
+  defp insert_change_request(repo, organization, resource, kind) do
+    query(repo, """
+    INSERT INTO change_requests
+      (id, organization_id, resource_id, kind, after_value, reason, inserted_at, updated_at)
+    VALUES (gen_random_uuid(), '#{organization}', '#{resource}', '#{kind}',
+            '{"value":"active"}', 'preserve this request', now(), now())
     """)
   end
 
