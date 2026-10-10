@@ -47,6 +47,7 @@ defmodule Renga.IPAM do
   alias Renga.IPAM.IpAddress
   alias Renga.IPAM.InterfaceRoutingDomain
   alias Renga.IPAM.IpAddressAssignment
+  alias Renga.IPAM.PlanLevel
   alias Renga.IPAM.PrefixTree
   alias Renga.IPAM.RoutingDomains
   alias Renga.IPAM.Vrf
@@ -452,6 +453,54 @@ defmodule Renga.IPAM do
     |> Enum.each(&rename_envelope(&1.resource, prefix_label(&1.prefix, vrf)))
   end
 
+  ## Addressing plan
+
+  @doc """
+  The organization's addressing plan levels (RFD 4, "Addressing plan and
+  allocation"), IPv4 first, each family ordered by length.
+  """
+  def list_plan_levels(%Scope{organization_id: organization_id}) do
+    PlanLevel
+    |> where([level], level.organization_id == ^organization_id)
+    |> order_by([level], asc: level.family, asc: level.prefix_length)
+    |> Repo.all()
+  end
+
+  @doc "A changeset for the plan level form."
+  def change_plan_level(%PlanLevel{} = level, attrs \\ %{}) do
+    changeset = PlanLevel.changeset(level, attrs)
+    errors = Keyword.delete(changeset.errors, :organization_id)
+    %{changeset | errors: errors, valid?: errors == []}
+  end
+
+  @doc """
+  Adds a level to the organization's addressing plan. Owners and admins
+  only. A family holds each length once; levels need no particular order,
+  since a family's plan is its levels sorted by length.
+  """
+  def create_plan_level(%Scope{organization_id: organization_id} = scope, attrs) do
+    Inventory.organization_management_transaction(scope, fn ->
+      %PlanLevel{organization_id: organization_id, created_by_id: scope.user.id}
+      |> PlanLevel.changeset(attrs)
+      |> Repo.insert()
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Removes a level from the organization's addressing plan; containers it
+  planned fall back to the next level or the guess. Owners and admins only.
+  """
+  def delete_plan_level(%Scope{organization_id: organization_id} = scope, id) do
+    Inventory.organization_management_transaction(scope, fn ->
+      PlanLevel
+      |> where([level], level.organization_id == ^organization_id and level.id == ^id)
+      |> Repo.one!()
+      |> Repo.delete()
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
   @doc """
   One routing table's prefix trees as rows, `%{ipv4: rows, ipv6: rows}`.
 
@@ -471,6 +520,7 @@ defmodule Renga.IPAM do
     trees = PrefixTree.build(prefixes)
     counts = address_counts(organization_id, Enum.map(prefixes, & &1.id))
     pairing = pairing(scope)
+    plan = list_plan_levels(scope)
 
     Map.new([:ipv4, :ipv6], fn family ->
       rows =
@@ -479,7 +529,7 @@ defmodule Renga.IPAM do
         |> PrefixTree.flatten()
         |> Enum.map(fn {node, depth} ->
           node
-          |> row(depth, Map.get(counts, node.prefix.id, 0))
+          |> row(depth, Map.get(counts, node.prefix.id, 0), plan)
           |> Map.merge(Map.get(pairing, node.prefix.id, %{vlans: [], counterparts: []}))
           |> then(&Map.put(&1, :single_stack?, &1.vlans != [] and &1.counterparts == []))
         end)
@@ -521,6 +571,7 @@ defmodule Renga.IPAM do
     [node] = PrefixTree.build([prefix | inside]) |> Map.values() |> hd()
     mode = PrefixTree.mode(node)
     pairing = Map.get(pairing(scope), prefix.id, %{vlans: [], counterparts: []})
+    plan = list_plan_levels(scope)
 
     %{
       node: node,
@@ -529,7 +580,7 @@ defmodule Renga.IPAM do
       vlans: pairing.vlans,
       counterparts: pairing.counterparts
     }
-    |> Map.merge(mode_data(organization_id, mode, node))
+    |> Map.merge(mode_data(organization_id, mode, node, plan))
   end
 
   @doc """
@@ -540,14 +591,24 @@ defmodule Renga.IPAM do
 
   How a prefix is *shown* still follows its children (`PrefixTree.mode/1`),
   so an active prefix with children keeps its child-space map while its
-  usage counts hosts.
+  usage counts hosts. A container counts blocks at the level the
+  addressing `plan` sets (`list_plan_levels/1`), or a guessed one.
   """
-  def usage(%{prefix: %{status: "container"}} = node, _address_count) do
-    space = PrefixTree.child_space(node)
-    %{kind: :children, allocated: space.allocated, total: space.total, level: space.level}
+  def usage(node, address_count, plan \\ [])
+
+  def usage(%{prefix: %{status: "container"}} = node, _address_count, plan) do
+    space = PrefixTree.child_space(node, plan)
+
+    %{
+      kind: :children,
+      allocated: space.allocated,
+      total: space.total,
+      level: space.level,
+      level_name: space.level_name
+    }
   end
 
-  def usage(node, address_count) do
+  def usage(node, address_count, _plan) do
     cidr = node.prefix.prefix
 
     case PrefixTree.host_mode(cidr) do
@@ -566,23 +627,24 @@ defmodule Renga.IPAM do
     end
   end
 
-  defp row(node, depth, address_count) do
-    %{node: node, depth: depth, usage: usage(node, address_count)}
+  defp row(node, depth, address_count, plan) do
+    %{node: node, depth: depth, usage: usage(node, address_count, plan)}
   end
 
   defp usable_hosts(size, cidr) do
     if Cidr.length(cidr) <= 30, do: size - 2, else: size
   end
 
-  defp mode_data(_organization_id, :container, node), do: %{space: PrefixTree.space_map(node)}
+  defp mode_data(_organization_id, :container, node, plan),
+    do: %{space: PrefixTree.space_map(node, plan)}
 
-  defp mode_data(organization_id, :address_map, node) do
+  defp mode_data(organization_id, :address_map, node, _plan) do
     observed = addresses_in(organization_id, node.prefix)
     entries = address_entries(organization_id, node.prefix, observed)
     %{addresses: entries, address_map: PrefixTree.address_map(node, observed, entries)}
   end
 
-  defp mode_data(organization_id, :address_table, node) do
+  defp mode_data(organization_id, :address_table, node, _plan) do
     observed = addresses_in(organization_id, node.prefix)
     %{addresses: address_entries(organization_id, node.prefix, observed)}
   end
