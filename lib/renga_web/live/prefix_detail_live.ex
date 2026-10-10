@@ -202,6 +202,13 @@ defmodule RengaWeb.PrefixDetailLive do
   defp address_result({:error, %Ecto.Changeset{}}, socket, _message),
     do: {:noreply, socket |> put_flash(:error, "That address is already managed") |> load_view()}
 
+  defp address_result({:error, :unmapped_routing_domain}, socket, _message) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "Its interface's routing domain is not mapped to a VRF yet")
+     |> load_view()}
+  end
+
   defp address_result({:error, :invalid_address}, socket, _message),
     do:
       {:noreply, socket |> put_flash(:error, "That address is no longer observed") |> load_view()}
@@ -226,14 +233,16 @@ defmodule RengaWeb.PrefixDetailLive do
     assign(socket, findings: findings, finding_total: total)
   end
 
-  # Address findings compare observed addresses, which are global until
-  # collectors report routing domains, so a VRF prefix has none yet. Open,
-  # snoozed, and excepted findings all describe the prefix as it is.
-  defp prefix_findings(_scope, %{vrf_id: vrf_id}) when not is_nil(vrf_id), do: {[], 0}
-
+  # Findings about addresses inside the prefix in its own routing table.
+  # Open, snoozed, and excepted findings all describe the prefix as it is.
   defp prefix_findings(scope, prefix) do
     Enum.reduce(~w(open snoozed excepted), {[], 0}, fn state, {findings, total} ->
-      {rows, count} = Findings.list_address_findings(scope, [prefix.prefix], state: state)
+      {rows, count} =
+        Findings.list_address_findings(scope, [prefix.prefix],
+          state: state,
+          vrf_id: prefix.vrf_id
+        )
+
       {findings ++ rows, total + count}
     end)
   end
@@ -294,14 +303,14 @@ defmodule RengaWeb.PrefixDetailLive do
         </:status>
 
         <p
-          :if={@view.mode != :container and not @view.addresses_observable?}
+          :if={@view.mode != :container and @prefix.vrf}
           id="prefix-addresses-global-note"
           class="mb-4 flex items-start gap-2 rounded-md border border-edge bg-sunken px-3 py-2 text-sm text-fg-muted"
         >
           <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
           <span>
-            Collectors do not report routing tables yet, so addresses they observe are in the
-            global table and are not counted in {table_label(@prefix.vrf)}.
+            Observed addresses count in {table_label(@prefix.vrf)} when a collector reports their
+            interface in that routing domain. Without a claim they are in the global table.
           </span>
         </p>
 
@@ -398,7 +407,7 @@ defmodule RengaWeb.PrefixDetailLive do
               Dual stack on VLAN {vlan.vid}:
               <span class="font-mono text-fg">{length(coverage.both)} of {coverage.total}</span>
               devices within this VLAN's Global-table prefixes have both families.
-              VRF prefixes are excluded until collectors report routing domains.
+              VRF prefixes are not part of this coverage.
               <.link navigate={~p"/network/vlans/#{vlan.id}"} class="text-link hover:underline">
                 See which
               </.link>

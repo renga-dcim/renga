@@ -326,9 +326,18 @@ specific non-container prefix containing the host, skipping containers, which ar
 subnets, and host-length reports, which usually mean the source did not know
 the mask. A stale assignment is an allocated address assigned to an interface
 that no longer reports it, on a resource some collector reports addresses
-for; documented assignments on unobserved equipment are not stale. Until
-collectors report routing domains every observed address is global, so these
-findings compare it with global prefixes and managed addresses only.
+for; documented assignments on unobserved equipment are not stale. Each
+observed address is compared with prefixes and managed addresses in its
+resolved namespace, and an address without a claim is global.
+
+Precedence follows from what each finding can safely claim. An interface
+whose current claim is unmapped has no namespace, so its addresses take part
+in no namespace-dependent finding (strict, outside-prefix, prefix-length,
+duplicate, stale, or wrong-VRF) and count in no prefix; the interface carries
+the unmapped-domain finding instead. A wrong-VRF finding on an assignment
+replaces the stale finding the same assignment would otherwise raise, since
+the address cannot be observed in its namespace on an interface that is in
+another one.
 
 == Utilization
 

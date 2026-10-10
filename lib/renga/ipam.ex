@@ -16,11 +16,11 @@ defmodule Renga.IPAM do
   an IPv6 prefix derives from the optional prefix-to-VLAN relationship, so
   it needs no model of its own.
 
-  Utilization is namespace-local (RFD 4, "Utilization"). Collectors do not
-  report routing domains yet, so every observed address is in the global
-  table and counts toward global prefixes only. Managed addresses carry
-  their own routing table and count there, so a VRF's prefixes are occupied
-  by the addresses managed in that VRF.
+  Utilization is namespace-local (RFD 4, "Utilization"). An observed address
+  is in the namespace its interface's routing-domain claim resolves to, or
+  the global table without a claim (`Renga.IPAM.RoutingDomains`), and counts
+  toward prefixes there; one whose claim is unmapped counts nowhere. Managed
+  addresses carry their own routing table and count there.
 
   Observed addresses are normal: they become findings only in the conditions
   `Renga.IPAM.AddressFindings` reconciles, such as an unmanaged address in a
@@ -45,6 +45,7 @@ defmodule Renga.IPAM do
   alias Renga.IPAM.AddressFindings
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.IpAddress
+  alias Renga.IPAM.InterfaceRoutingDomain
   alias Renga.IPAM.IpAddressAssignment
   alias Renga.IPAM.PrefixTree
   alias Renga.IPAM.RoutingDomains
@@ -336,7 +337,7 @@ defmodule Renga.IPAM do
         })
 
       # A new name or route distinguisher can resolve reported domains.
-      {:ok, :ok} = RoutingDomains.refresh(organization_id)
+      :ok = RoutingDomains.resolve_again(organization_id)
       %{vrf | resource: resource}
     end)
     |> Changes.broadcast(organization_id)
@@ -382,7 +383,7 @@ defmodule Renga.IPAM do
           })
       end
 
-      {:ok, :ok} = RoutingDomains.refresh(organization_id)
+      :ok = RoutingDomains.resolve_again(organization_id)
       %{updated | resource: resource}
     end)
     |> Changes.broadcast(organization_id)
@@ -427,7 +428,7 @@ defmodule Renga.IPAM do
         })
 
       Repo.delete!(current.resource)
-      {:ok, :ok} = RoutingDomains.refresh(organization_id)
+      :ok = RoutingDomains.resolve_again(organization_id)
       current
     end)
     |> Changes.broadcast(organization_id)
@@ -529,7 +530,6 @@ defmodule Renga.IPAM do
       counterparts: pairing.counterparts
     }
     |> Map.merge(mode_data(organization_id, mode, node))
-    |> Map.put(:addresses_observable?, is_nil(prefix.vrf_id))
   end
 
   @doc """
@@ -636,14 +636,16 @@ defmodule Renga.IPAM do
   re-checked in the database.
 
   In one transaction it creates an allocated `ip_address` in the observed
-  address's routing table (global until collectors report routing domains)
-  with the observed mask, takes the management mode from the assignment
+  address's routing table (its interface's resolved namespace) with the
+  observed mask, takes the management mode from the assignment
   method where it is known, and assigns it to the interface it was seen on.
   A released address with the same host is reactivated rather than created
   again, so its history stays one record. `attrs` may carry a description
   or DNS name.
 
-  Returns `{:error, changeset}` when the host is already managed there.
+  Returns `{:error, changeset}` when the host is already managed there, and
+  `{:error, :unmapped_routing_domain}` when the interface's routing domain
+  maps to no namespace.
   """
   def adopt_address(%Scope{organization_id: organization_id} = scope, address_id, attrs \\ %{}) do
     ipam_transaction(scope, fn ->
@@ -651,11 +653,19 @@ defmodule Renga.IPAM do
       interface = Repo.preload(observed, interface: :resource).interface
       attrs = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
 
+      # The address is adopted in the namespace its interface is in; an
+      # unmapped routing domain has no safe namespace to adopt it into.
+      vrf_id =
+        case RoutingDomains.namespace(organization_id, observed.interface_id) do
+          {:ok, vrf_id} -> vrf_id
+          :unmapped -> Repo.rollback(:unmapped_routing_domain)
+        end
+
       # Adoption establishes new current intent, so a released shared role
       # does not come back with the address.
       intent = %{
         address: observed.address,
-        vrf_id: nil,
+        vrf_id: vrf_id,
         allocation_state: "allocated",
         management_mode: management_mode(observed),
         role: "ordinary",
@@ -663,7 +673,7 @@ defmodule Renga.IPAM do
       }
 
       ip_address =
-        case lock_managed_host(organization_id, nil, observed.address) do
+        case lock_managed_host(organization_id, vrf_id, observed.address) do
           nil ->
             insert_ip_address(scope, intent, attrs)
 
@@ -703,24 +713,35 @@ defmodule Renga.IPAM do
   end
 
   @doc """
-  An observed address and whether its host is managed in the global table,
-  where every observed address is until collectors report routing domains.
-  Nil when the id is malformed or names no present address in the organization.
+  An observed address, its namespace (`vrf_id`, nil for the global table),
+  and whether its host is managed there; `unmapped?` when its interface's
+  routing domain maps to no namespace. Nil when the id is malformed or names
+  no present address in the organization.
   Adoption requests use it for their value and to confirm the address.
   """
   def observed_address(%Scope{organization_id: organization_id}, id) do
     with {:ok, id} <- Ecto.UUID.cast(id),
          %Address{} = address <- Repo.get_by(Address, organization_id: organization_id, id: id),
          true <- address.metadata["present"] != false do
-      managed? =
-        IpAddress
-        |> join(:inner, [ip], resource in assoc(ip, :resource))
-        |> where([ip], ip.organization_id == ^organization_id and is_nil(ip.vrf_id))
-        |> where([ip], fragment("host(?)::inet = host(?)::inet", ip.address, ^address.address))
-        |> where([_ip, resource], resource.lifecycle_state != "retired")
-        |> Repo.exists?()
+      case RoutingDomains.namespace(organization_id, address.interface_id) do
+        {:ok, vrf_id} ->
+          managed? =
+            IpAddress
+            |> join(:inner, [ip], resource in assoc(ip, :resource))
+            |> where([ip], ip.organization_id == ^organization_id)
+            |> where_vrf(vrf_id)
+            |> where(
+              [ip],
+              fragment("host(?)::inet = host(?)::inet", ip.address, ^address.address)
+            )
+            |> where([_ip, resource], resource.lifecycle_state != "retired")
+            |> Repo.exists?()
 
-      %{address: address, managed?: managed?}
+          %{address: address, vrf_id: vrf_id, managed?: managed?}
+
+        :unmapped ->
+          %{address: address, vrf_id: nil, managed?: false, unmapped?: true}
+      end
     else
       _missing -> nil
     end
@@ -1276,9 +1297,9 @@ defmodule Renga.IPAM do
   Dual-stack coverage for a VLAN: which devices have addresses in its IPv4
   prefixes, its IPv6 prefixes, or both.
 
-  `nil` when the VLAN does not carry both families in the global table,
-  because coverage only means something once both are planned where
-  addresses are observed; VRF prefixes have none yet (see the moduledoc).
+  `nil` when the VLAN does not carry both families in the global table.
+  Coverage compares global prefixes with addresses observed in the global
+  table; VRF prefixes are left out.
   """
   def vlan_dual_stack(%Scope{organization_id: organization_id} = scope, vlan_id) do
     prefixes =
@@ -1308,6 +1329,7 @@ defmodule Renga.IPAM do
 
     Address
     |> where([address], address.organization_id == ^organization_id)
+    |> in_namespace(nil)
     |> where(
       [address],
       fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
@@ -1320,8 +1342,8 @@ defmodule Renga.IPAM do
         type(^cidrs, {:array, Renga.Types.Cidr})
       )
     )
-    |> join(:inner, [address], resource in assoc(address, :resource))
-    |> select([_address, resource], resource)
+    |> join(:inner, [address], resource in assoc(address, :resource), as: :resource)
+    |> select([resource: resource], resource)
     |> distinct(true)
     |> Repo.all()
     |> Map.new(&{&1.id, &1})
@@ -1329,12 +1351,12 @@ defmodule Renga.IPAM do
 
   defp sort_devices(devices), do: Enum.sort_by(devices, & &1.name)
 
-  # Observed addresses are global until collectors report routing domains.
-  defp addresses_in(_organization_id, %Prefix{vrf_id: vrf_id}) when not is_nil(vrf_id), do: []
-
-  defp addresses_in(organization_id, %Prefix{prefix: cidr}) do
+  # Observed addresses in the prefix's routing table: those whose interface's
+  # routing domain resolves there, or that have no claim for the global table.
+  defp addresses_in(organization_id, %Prefix{prefix: cidr, vrf_id: vrf_id}) do
     Address
     |> where([address], address.organization_id == ^organization_id)
+    |> in_namespace(vrf_id)
     |> where(
       [address],
       fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
@@ -1346,6 +1368,7 @@ defmodule Renga.IPAM do
     # Use the winning presence observation's report of the current mask,
     # never another source's historical hints or another mask's report.
     |> join(:left, [address], evidence in AddressEvidence,
+      as: :evidence,
       on:
         evidence.organization_id == address.organization_id and evidence.address_id == address.id and
           evidence.address == address.address and
@@ -1355,7 +1378,7 @@ defmodule Renga.IPAM do
             address.metadata
           )
     )
-    |> select_merge([address, evidence], %{
+    |> select_merge([address, evidence: evidence], %{
       metadata: fragment("COALESCE(?, '{}'::jsonb) || ?", evidence.metadata, address.metadata)
     })
     |> order_by([address], asc: address.address)
@@ -1364,8 +1387,8 @@ defmodule Renga.IPAM do
   end
 
   # One query counts every prefix's occupied hosts at once: the union of
-  # observed hosts (global until collectors report routing domains) and
-  # current managed addresses in the prefix's own routing table. A host that
+  # observed hosts in the prefix's routing table (by their interface's
+  # resolved routing domain) and current managed addresses there. A host that
   # is both, or that several interfaces report, is used once. A small IPv4
   # prefix's network and broadcast addresses are not assignable, so they
   # never count.
@@ -1386,7 +1409,10 @@ defmodule Renga.IPAM do
         JOIN LATERAL (
           SELECT host(addresses.address)::inet AS host
           FROM addresses
-          WHERE prefixes.vrf_id IS NULL
+          LEFT JOIN interface_routing_domains AS domain
+            ON domain.interface_id = addresses.interface_id
+          WHERE domain.vrf_id IS NOT DISTINCT FROM prefixes.vrf_id
+            AND domain.resolution IS DISTINCT FROM 'unmapped'
             AND addresses.organization_id = prefixes.organization_id
             AND (addresses.metadata->'present') IS DISTINCT FROM 'false'::jsonb
             AND host(addresses.address)::inet <<= prefixes.prefix
@@ -1435,6 +1461,23 @@ defmodule Renga.IPAM do
          vlans: vlan_ids |> Enum.map(&Map.get(vlans, &1)) |> Enum.reject(&is_nil/1),
          counterparts: counterparts
        }}
+    end)
+  end
+
+  # Observed addresses whose interface is in a namespace: a VRF, or the
+  # global table with nil, which holds every interface without a claim and
+  # never one whose claim is unmapped.
+  defp in_namespace(query, vrf_id) do
+    query
+    |> join(:left, [address], domain in InterfaceRoutingDomain,
+      as: :domain,
+      on: domain.interface_id == address.interface_id
+    )
+    |> where([domain: domain], is_nil(domain.resolution) or domain.resolution != "unmapped")
+    |> then(fn query ->
+      if vrf_id,
+        do: where(query, [domain: domain], domain.vrf_id == ^vrf_id),
+        else: where(query, [domain: domain], is_nil(domain.vrf_id))
     end)
   end
 

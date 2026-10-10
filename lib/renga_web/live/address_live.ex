@@ -303,16 +303,16 @@ defmodule RengaWeb.AddressLive do
     |> load_address_findings()
   end
 
-  # Open address findings about the listed hosts, by host. Findings compare
-  # observed addresses, which are global until collectors report routing
-  # domains, so only current global addresses can have any.
+  # Open address findings about the listed hosts, by namespace and host: the
+  # same host in another routing table is another address.
   defp load_address_findings(socket) do
     %{current_scope: scope, addresses: addresses, editing: editing} = socket.assigns
     hosts = finding_hosts(addresses)
 
     {editing_findings, editing_total} =
       if editing,
-        do: Findings.list_address_findings(scope, finding_hosts([editing])),
+        do:
+          Findings.list_address_findings(scope, finding_hosts([editing]), vrf_id: editing.vrf_id),
         else: {[], 0}
 
     assign(socket,
@@ -323,15 +323,13 @@ defmodule RengaWeb.AddressLive do
   end
 
   defp finding_hosts(addresses) do
-    for %{vrf_id: nil, resource: %{lifecycle_state: state}} = address <- addresses,
+    for %{resource: %{lifecycle_state: state}} = address <- addresses,
         state != "retired",
         do: %{address.address | netmask: nil}
   end
 
-  defp findings_for(findings, %IpAddress{vrf_id: nil} = address),
-    do: Map.get(findings, host(address))
-
-  defp findings_for(_findings, _address), do: nil
+  defp findings_for(findings, %IpAddress{} = address),
+    do: Map.get(findings, {address.vrf_id, host(address)})
 
   # Selects use stable tagged identities, so a VRF named `global` cannot
   # collide with the Global table. Existing name-based links remain aliases.

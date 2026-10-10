@@ -144,20 +144,32 @@ defmodule Renga.Findings do
     {findings, total}
   end
 
-  @doc "Complete per-host counts and a singleton link target, independent of detail limits."
+  @doc """
+  Complete counts per namespace and host, keyed `{vrf_id, host}` (nil for
+  the global table), each with a singleton link target, independent of
+  detail limits.
+  """
   def count_address_findings(%Scope{} = scope, networks) do
     scope
     |> address_query(networks, [], Renga.Time.utc_now_ms())
-    |> group_by([finding: finding], fragment("host((?->>'address')::inet)", finding.details))
+    |> group_by([finding: finding], [
+      fragment("?->>'vrf_id'", finding.details),
+      fragment("host((?->>'address')::inet)", finding.details)
+    ])
     |> select([finding: finding], {
-      fragment("host((?->>'address')::inet)", finding.details),
+      {fragment("?->>'vrf_id'", finding.details),
+       fragment("host((?->>'address')::inet)", finding.details)},
       %{count: count(finding.id), id: min(fragment("?::text", finding.id))}
     })
     |> Repo.all()
     |> Map.new()
   end
 
+  # `:vrf_id` narrows to one namespace: a VRF id, or nil for the global
+  # table. Address findings name their VRF in `details`; global ones none.
   defp address_query(scope, networks, opts, now) do
+    {namespace, opts} = Keyword.pop(opts, :vrf_id, :any)
+
     scope
     |> filtered_query(Keyword.put(opts, :domain, "address"), now)
     |> where(
@@ -168,7 +180,16 @@ defmodule Renga.Findings do
         type(^networks, {:array, Renga.Types.Inet})
       )
     )
+    |> filter_namespace(namespace)
   end
+
+  defp filter_namespace(query, :any), do: query
+
+  defp filter_namespace(query, nil),
+    do: where(query, [finding: finding], is_nil(fragment("?->>'vrf_id'", finding.details)))
+
+  defp filter_namespace(query, vrf_id),
+    do: where(query, [finding: finding], fragment("?->>'vrf_id'", finding.details) == ^vrf_id)
 
   @doc "Page size used by `list_findings/2`."
   def per_page, do: @per_page
