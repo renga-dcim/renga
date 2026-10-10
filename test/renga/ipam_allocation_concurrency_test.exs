@@ -13,6 +13,7 @@ defmodule Renga.IPAMAllocationConcurrencyTest do
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
   import Renga.TopologyFixtures
+  import Renga.MutationRace, only: [race: 2]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
@@ -157,52 +158,6 @@ defmodule Renga.IPAMAllocationConcurrencyTest do
 
       assert {Cidr.format(first.prefix), Cidr.format(second.prefix)} ==
                {"10.0.1.0/24", "10.0.2.0/24"}
-    end)
-  end
-
-  # Runs `held` in a transaction kept open until `competing` has had time to
-  # block on it, then releases it. Returns both results.
-  defp race(held, competing) do
-    {held_task, release} = held_mutation(held)
-    assert_receive :mutation_ready, 1_000
-
-    competing_task = concurrent(competing)
-
-    # The competing write waits on the organization lock the first holds.
-    assert Task.yield(competing_task, 200) == nil
-    release.()
-
-    {:ok, held_result} = Task.await(held_task)
-    {held_result, Task.await(competing_task)}
-  end
-
-  defp held_mutation(mutation) do
-    test_process = self()
-
-    task =
-      concurrent(fn ->
-        Repo.transaction(fn ->
-          result = mutation.()
-          send(test_process, :mutation_ready)
-
-          receive do
-            :release_mutation -> result
-          end
-        end)
-      end)
-
-    {task, fn -> send(task.pid, :release_mutation) end}
-  end
-
-  defp concurrent(fun) do
-    Task.async(fn ->
-      :ok = Sandbox.checkout(Repo, sandbox: false)
-
-      try do
-        fun.()
-      after
-        Sandbox.checkin(Repo)
-      end
     end)
   end
 
