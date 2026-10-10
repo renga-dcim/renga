@@ -1498,15 +1498,7 @@ defmodule RengaWeb.InboxLive do
   defp group_label("drift"), do: "Drift"
   defp group_label("health"), do: "Health"
 
-  @acronyms %{"vlan" => "VLAN", "vid" => "VID", "nvme" => "NVMe", "psu" => "PSU"}
-
-  defp kind_label(kind) do
-    kind
-    |> Format.humanize()
-    |> String.capitalize()
-    |> String.split(" ")
-    |> Enum.map_join(" ", &Map.get(@acronyms, &1, &1))
-  end
+  defp kind_label(kind), do: RengaWeb.FindingComponents.kind_label(kind)
 
   defp domain_label("component"), do: "Hardware components"
   defp domain_label("hardware_match"), do: "Catalog match"

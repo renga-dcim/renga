@@ -20,8 +20,10 @@ defmodule RengaWeb.PrefixDetailLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.PrefixComponents
 
+  alias Renga.Findings
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
@@ -29,12 +31,17 @@ defmodule RengaWeb.PrefixDetailLive do
   alias Renga.IPAM.Cidr
 
   @reload_after_ms 400
+  @expiry_refresh_ms 30_000
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     scope = socket.assigns.current_scope
     prefix = IPAM.get_prefix!(scope, id)
-    if connected?(socket), do: Changes.subscribe(scope)
+
+    if connected?(socket) do
+      Changes.subscribe(scope)
+      Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    end
 
     {:ok,
      socket
@@ -165,6 +172,11 @@ defmodule RengaWeb.PrefixDetailLive do
     Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
   end
 
+  def handle_info(:refresh_expiry, socket) do
+    Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    {:noreply, load_prefix_findings(socket)}
+  end
+
   defp assign_prefix(socket, prefix) do
     assign(socket,
       prefix: prefix,
@@ -206,6 +218,24 @@ defmodule RengaWeb.PrefixDetailLive do
         |> Enum.map(&{&1, IPAM.vlan_dual_stack(scope, &1.id)})
         |> Enum.reject(fn {_vlan, coverage} -> is_nil(coverage) end)
     )
+    |> load_prefix_findings()
+  end
+
+  defp load_prefix_findings(socket) do
+    {findings, total} = prefix_findings(socket.assigns.current_scope, socket.assigns.prefix)
+    assign(socket, findings: findings, finding_total: total)
+  end
+
+  # Address findings compare observed addresses, which are global until
+  # collectors report routing domains, so a VRF prefix has none yet. Open,
+  # snoozed, and excepted findings all describe the prefix as it is.
+  defp prefix_findings(_scope, %{vrf_id: vrf_id}) when not is_nil(vrf_id), do: {[], 0}
+
+  defp prefix_findings(scope, prefix) do
+    Enum.reduce(~w(open snoozed excepted), {[], 0}, fn state, {findings, total} ->
+      {rows, count} = Findings.list_address_findings(scope, [prefix.prefix], state: state)
+      {findings ++ rows, total + count}
+    end)
   end
 
   @impl true
@@ -274,6 +304,15 @@ defmodule RengaWeb.PrefixDetailLive do
             global table and are not counted in {table_label(@prefix.vrf)}.
           </span>
         </p>
+
+        <section :if={@findings != []} id="prefix-findings" class="mb-6 space-y-2">
+          <h2 class="text-sm font-semibold text-fg">
+            {@finding_total} address {if @finding_total == 1,
+              do: "finding",
+              else: "findings"}
+          </h2>
+          <.finding_list id="prefix-finding-list" findings={@findings} total={@finding_total} />
+        </section>
 
         <%= case @view.mode do %>
           <% :container -> %>

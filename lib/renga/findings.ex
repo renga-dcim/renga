@@ -40,6 +40,7 @@ defmodule Renga.Findings do
   @states ~w(open snoozed excepted resolved)
   @groups ~w(drift health)
   @per_page 50
+  @address_finding_limit 500
 
   # Drift: what is observed differs from what is expected or planned. Every
   # other kind is a health finding: ambiguous, unknown, or conflicting
@@ -115,6 +116,58 @@ defmodule Renga.Findings do
       |> build_findings(now)
 
     {findings, total}
+  end
+
+  @doc """
+  Address findings about hosts inside any of `networks` (CIDRs or hosts as
+  `Postgrex.INET`), newest observation first, for the pages where those
+  addresses live: a prefix, managed addresses, a resource's interfaces.
+
+  Options are those of `list_findings/2` (`:state`, `:resource_id`, and so
+  on). Unlike the Inbox queue it is not paged, but stops at
+  #{@address_finding_limit} findings. Returns `{findings, total}` so a
+  bounded detail list cannot be mistaken for all the affected records.
+  """
+  def list_address_findings(%Scope{} = scope, networks, opts \\ []) do
+    now = Renga.Time.utc_now_ms()
+    query = address_query(scope, networks, opts, now)
+    total = Repo.aggregate(query, :count)
+
+    findings =
+      query
+      |> order_for(Keyword.get(opts, :state, "open"))
+      |> limit(@address_finding_limit)
+      |> select_finding()
+      |> Repo.all()
+      |> build_findings(now)
+
+    {findings, total}
+  end
+
+  @doc "Complete per-host counts and a singleton link target, independent of detail limits."
+  def count_address_findings(%Scope{} = scope, networks) do
+    scope
+    |> address_query(networks, [], Renga.Time.utc_now_ms())
+    |> group_by([finding: finding], fragment("host((?->>'address')::inet)", finding.details))
+    |> select([finding: finding], {
+      fragment("host((?->>'address')::inet)", finding.details),
+      %{count: count(finding.id), id: min(fragment("?::text", finding.id))}
+    })
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp address_query(scope, networks, opts, now) do
+    scope
+    |> filtered_query(Keyword.put(opts, :domain, "address"), now)
+    |> where(
+      [finding: finding],
+      fragment(
+        "host((?->>'address')::inet)::inet <<= ANY(?)",
+        finding.details,
+        type(^networks, {:array, Renga.Types.Inet})
+      )
+    )
   end
 
   @doc "Page size used by `list_findings/2`."

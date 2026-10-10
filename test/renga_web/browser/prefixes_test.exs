@@ -3,7 +3,8 @@ defmodule RengaWeb.Browser.PrefixesTest do
   The prefix views in a real browser: a container's space map opens the
   child a cell stands for, a prefix is created from the side panel, and at
   phone width long IPv6 prefixes keep their usage beside or below them,
-  with the edit controls hidden because prefixes are not edited on a phone.
+  findings wrap instead of scrolling, and the edit controls are hidden
+  because prefixes are not edited on a phone.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -183,6 +184,61 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("body .phx-connected")
     |> evaluate(visible_js("edit-prefix"), &assert(&1 == false))
     |> evaluate(visible_js("delete-prefix"), &assert(&1 == false))
+  end
+
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "a strict prefix's findings stay readable on a phone", context do
+    prefix =
+      prefix_fixture(context.scope, "2001:db8:a:300:1::/80", %{strict: true})
+
+    {_host, ports} =
+      device_fixture(context.scope, "server", "a-long-hostname-for-wrapping", ~w(eth0))
+
+    address_fixture(context.scope, ports["eth0"], "2001:db8:a:300:1:abcd:ef01:2345/80")
+
+    {_other, other_ports} =
+      device_fixture(context.scope, "server", "another-long-hostname", ~w(eth0))
+
+    address_fixture(context.scope, other_ports["eth0"], "2001:db8:a:300:1:abcd:ef01:2345/80")
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(context.scope.organization_id)
+
+    [first, second | _] = Renga.Repo.all(Renga.IPAM.AddressFinding)
+
+    {:ok, _} =
+      Renga.Findings.snooze(
+        context.scope,
+        Renga.Findings.get_finding!(context.scope, "address", first.id),
+        DateTime.add(Renga.Time.utc_now_ms(), 3600)
+      )
+
+    {:ok, _} =
+      Renga.Findings.accept_exception(
+        context.scope,
+        Renga.Findings.get_finding!(context.scope, "address", second.id),
+        %{"exception_reason" => "Temporary"}
+      )
+
+    context.conn
+    |> visit("/network/prefixes/#{prefix.id}")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#prefix-findings", text: "Unmanaged in strict prefix")
+    |> assert_has("#prefix-findings", text: "Snoozed")
+    |> assert_has("#prefix-findings", text: "Exception")
+    |> evaluate(
+      "Array.from(document.querySelectorAll('#prefix-finding-list > li > span.basis-full')).map(el => el.getBoundingClientRect().width >= 200 && el.getBoundingClientRect().height < 160)",
+      fn checks ->
+        assert length(checks) == 4
+        assert Enum.all?(checks)
+      end
+    )
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
   end
 
   @tag browser_context_opts: [
