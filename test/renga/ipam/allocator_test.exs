@@ -70,12 +70,34 @@ defmodule Renga.IPAM.AllocatorTest do
 
     assert Cidr.format(Allocator.next_host(cidr("192.0.2.0/31"), [])) == "192.0.2.0/31"
 
-    # IPv6: the Subnet-Router anycast address is skipped, and in a /64 the
-    # top 128 subnet anycast addresses are never reached.
+    # IPv6: skip Subnet-Router anycast and the registered subnet-anycast IIDs.
     assert Cidr.format(Allocator.next_host(cidr("2001:db8::/64"), [])) == "2001:db8::1/64"
     assert Cidr.format(Allocator.next_host(cidr("2001:db8::/127"), [])) == "2001:db8::/127"
 
-    assert [_, {top_first, top_last}] = Allocator.non_assignable(cidr("2001:db8::/64"))
-    assert top_last - top_first == 127
+    assert [_, reserved] = Allocator.non_assignable(cidr("2001:db8::/64"))
+    assert reserved == Allocator.range(cidr("2001:db8::fdff:ffff:ffff:ff80/121"))
+  end
+
+  test "IPv6 subnet-anycast IIDs are skipped in narrow and multi-subnet parents" do
+    for parent <- ["2001:db8::/64", "2001:db8::/63"] do
+      {first, _} = Allocator.range(cidr(parent))
+      {reserved_first, _} = Allocator.range(cidr("2001:db8::fdff:ffff:ffff:ff80/121"))
+
+      assert Cidr.format(Allocator.next_host(cidr(parent), [{first, reserved_first - 1}])) ==
+               "2001:db8:0:0:fe00::/#{Cidr.length(cidr(parent))}"
+    end
+
+    # An occupant jumps into the reservation of a later /64 without enumerating subnets.
+    {first, _} = Allocator.range(cidr("2001:db8::/32"))
+    {reserved_first, _} = Allocator.range(cidr("2001:db8:abcd:1234:fdff:ffff:ffff:ff80/121"))
+
+    assert Cidr.format(Allocator.next_host(cidr("2001:db8::/32"), [{first, reserved_first - 1}])) ==
+             "2001:db8:abcd:1234:fe00::/32"
+
+    assert Allocator.next_host(cidr("2001:db8::fdff:ffff:ffff:ff80/121"), []) == :full
+    assert Allocator.next_host(cidr("2001:db8::fdff:ffff:ffff:fffe/127"), []) == :full
+
+    assert Cidr.format(Allocator.next_host(cidr("2001:db8::ffff:ffff:ffff:ff80/121"), [])) ==
+             "2001:db8::ffff:ffff:ffff:ff81/121"
   end
 end
