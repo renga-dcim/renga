@@ -314,8 +314,8 @@ defmodule RengaWeb.ResourceLive.Show do
             resource={@resource}
             form={@lifecycle_form}
             options={@lifecycle_options}
-            can_manage?={@can_manage_lifecycle?}
-            can_request?={@can_request?}
+            can_manage?={@can_manage_lifecycle? && @resource.kind != "ip_address"}
+            can_request?={@can_request? && @resource.kind != "ip_address"}
             request={@lifecycle_request}
             request_form={@lifecycle_request_form}
             current_user_id={@current_scope.user.id}
@@ -756,8 +756,12 @@ defmodule RengaWeb.ResourceLive.Show do
         </.form>
       </details>
       <p id="resource-lifecycle-help" class="text-xs leading-5 text-fg-muted">
-        Classifies this resource for planning and filters. It does not control the device or
-        reflect agent connectivity.
+        <%= if @resource.kind == "ip_address" do %>
+          Managed by IPAM. Release the address to end its assignments and retire it.
+        <% else %>
+          Classifies this resource for planning and filters. It does not control the device or
+          reflect agent connectivity.
+        <% end %>
       </p>
     </section>
     """
@@ -1103,9 +1107,11 @@ defmodule RengaWeb.ResourceLive.Show do
         icon: "hero-arrow-path-rounded-square",
         run: JS.focus(to: "#resource-lifecycle-form select"),
         unavailable:
-          if(!assigns.can_manage_lifecycle?,
-            do: "Requires the owner or admin role"
-          )
+          cond do
+            assigns.resource.kind == "ip_address" -> "Managed by IPAM Release"
+            !assigns.can_manage_lifecycle? -> "Requires the owner or admin role"
+            true -> nil
+          end
       },
       %{
         id: "open-hardware",

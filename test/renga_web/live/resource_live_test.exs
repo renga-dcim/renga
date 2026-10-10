@@ -98,6 +98,25 @@ defmodule RengaWeb.ResourceLiveTest do
     }
   end
 
+  test "IP-address lifecycle controls stay with IPAM, including bulk selections", %{
+    conn: conn,
+    scope: scope,
+    interface: interface
+  } do
+    [observed] = Inventory.list_addresses(scope, interface.id)
+    {:ok, managed} = Renga.IPAM.adopt_address(scope, observed.id)
+    {:ok, view, _} = live(conn, ~p"/inventory/#{managed.resource_id}")
+    refute has_element?(view, "#resource-lifecycle-form")
+    refute has_element?(view, "#resource-lifecycle-request-toggle")
+    assert has_element?(view, "#resource-lifecycle-help", "Managed by IPAM")
+
+    {:ok, view, _} = live(conn, ~p"/inventory?#{[sel: managed.resource_id]}")
+    refute has_element?(view, "#bulk-lifecycle-menu")
+    assert has_element?(view, "#bulk-lifecycle-ipam")
+    render_hook(view, "bulk_lifecycle", %{"state" => "retired"})
+    assert Inventory.get_resource!(scope, managed.resource_id).lifecycle_state == "active"
+  end
+
   test "organization managers update lifecycle from the full resource detail", %{
     conn: conn,
     scope: scope,

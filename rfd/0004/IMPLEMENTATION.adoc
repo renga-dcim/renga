@@ -30,10 +30,10 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 3: Managed addresses
 
-* [ ] Evolve `managed_addresses` into `ip_address` envelopes and typed
+* [x] Evolve `managed_addresses` into `ip_address` envelopes and typed
   projections that retain the intended mask while enforcing managed identity by
   namespace and host value.
-* [ ] Keep lifecycle, allocation state, management mode, and shared-address role
+* [x] Keep lifecycle, allocation state, management mode, and shared-address role
   orthogonal in the managed address model.
 * [ ] Include managed-but-unobserved occupancy in distinct-host utilization,
   combining managed intent and observed hosts without double-counting.
@@ -41,7 +41,7 @@ Implements link:README.adoc[RFD 4: IP address management].
   separately from the existing child-driven presentation mode.
 * [ ] Add optional assignments with tenant-safe constraints, address-row locking,
   ordinary single-assignment validation, and explicit shared-address roles.
-* [ ] Move Adopt and release onto the new model in one transaction each, writing
+* [x] Move Adopt and release onto the new model in one transaction each, writing
   change events, and migrate existing managed addresses with their interfaces.
 * [ ] Test adopt, release, and re-adopt of the same canonical identity, including
   surviving observed-only occupancy, ended assignments, retired-role behavior,

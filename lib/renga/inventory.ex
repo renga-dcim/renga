@@ -51,7 +51,7 @@ defmodule Renga.Inventory do
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf ip_address)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -376,6 +376,13 @@ defmodule Renga.Inventory do
     end)
   end
 
+  # Release must end assignments and audit them before retiring the envelope.
+  defp protect_managed_resource_fields(changeset, "ip_address") do
+    if Ecto.Changeset.changed?(changeset, :lifecycle_state),
+      do: Ecto.Changeset.add_error(changeset, :lifecycle_state, "is managed by IPAM"),
+      else: changeset
+  end
+
   defp protect_managed_resource_fields(changeset, _kind), do: changeset
 
   defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
@@ -386,11 +393,11 @@ defmodule Renga.Inventory do
     |> Repo.rollback()
   end
 
-  # A prefix or VRF envelope without its typed projection would be an
-  # invisible, unconstrained CIDR or namespace; Renga.IPAM creates both in
-  # one transaction.
+  # An IPAM envelope without its typed projection would be an invisible,
+  # unconstrained CIDR, namespace, or address; Renga.IPAM creates both in one
+  # transaction.
   defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
-       when kind in ~w(prefix vrf) do
+       when kind in ~w(prefix vrf ip_address) do
     %Resource{organization_id: organization_id}
     |> Resource.changeset(attrs)
     |> Ecto.Changeset.add_error(:kind, "must be created through the IPAM context")
@@ -1246,6 +1253,17 @@ defmodule Renga.Inventory do
       result ->
         Changes.broadcast(result, scope.organization_id)
     end
+  end
+
+  @doc "Whether a selection can use generic lifecycle controls rather than IPAM Release."
+  def resources_lifecycle_editable?(%Scope{organization_id: organization_id}, ids) do
+    ids = Enum.flat_map(ids, &List.wrap(Ecto.UUID.cast(&1) |> ok_value()))
+
+    not Repo.exists?(
+      from resource in Resource,
+        where: resource.organization_id == ^organization_id and resource.id in ^ids,
+        where: resource.kind == "ip_address"
+    )
   end
 
   @doc """

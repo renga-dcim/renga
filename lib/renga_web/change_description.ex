@@ -21,6 +21,15 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "deleted"}), do: "Deleted"
   def describe(%{kind: "discovered"}), do: "Discovered"
   def describe(%{kind: "stale"}), do: "Marked stale"
+  # A managed address's assignment names its interface.
+  def describe(%{kind: "updated", field: "assignment", new_value: %{"value" => interface}})
+      when is_binary(interface),
+      do: "Assigned to #{interface}"
+
+  def describe(%{kind: "updated", field: "assignment", old_value: %{"value" => interface}})
+      when is_binary(interface),
+      do: "Unassigned from #{interface}"
+
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
   def describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
 
@@ -75,6 +84,7 @@ defmodule RengaWeb.ChangeDescription do
 
   # What a created or deleted record is; acronyms keep their capitals.
   defp noun("vrf"), do: "VRF"
+  defp noun("ip_address"), do: "IP address"
   defp noun(field), do: String.replace(field, "_", " ")
 
   defp request_change(%{field: field, new_value: %{"value" => value}}) do

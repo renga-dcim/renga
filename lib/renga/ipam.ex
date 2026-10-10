@@ -23,8 +23,9 @@ defmodule Renga.IPAM do
   place them there.
 
   Observed addresses are normal and never findings. An owner or admin adopts
-  one into managed state when it needs state of its own; a managed address
-  that is no longer observed stays listed as managed, not seen.
+  one into a managed `ip_address` (RFD 4, Phase 3) when it needs state of
+  its own; a managed address that is no longer observed stays listed as
+  managed, not seen. Release retires the address instead of deleting it.
   """
 
   import Ecto.Query, warn: false
@@ -38,7 +39,8 @@ defmodule Renga.IPAM do
   alias Renga.Inventory.ResourceStore
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.Cidr
-  alias Renga.IPAM.ManagedAddress
+  alias Renga.IPAM.IpAddress
+  alias Renga.IPAM.IpAddressAssignment
   alias Renga.IPAM.PrefixTree
   alias Renga.IPAM.Vrf
   alias Renga.Repo
@@ -575,62 +577,305 @@ defmodule Renga.IPAM do
     Enum.sort_by(observed_entries ++ unseen, &Cidr.to_integer(&1.inet))
   end
 
-  # Managed addresses are adopted from observed ones, so they are global too.
-  defp managed_in(_organization_id, %Prefix{vrf_id: vrf_id}) when not is_nil(vrf_id), do: []
-
-  defp managed_in(organization_id, %Prefix{prefix: cidr}) do
-    ManagedAddress
-    |> where([managed], managed.organization_id == ^organization_id)
-    |> where([managed], fragment("? <<= ?", managed.address, type(^cidr, Renga.Types.Cidr)))
-    |> preload(interface: :resource)
+  # Current managed intent in the prefix's routing table: a retired address
+  # is history and no longer occupies anything. Identity is the host, so an
+  # address managed with a wider intended mask still sits in the prefix.
+  defp managed_in(organization_id, %Prefix{prefix: cidr, vrf_id: vrf_id}) do
+    IpAddress
+    |> where([ip], ip.organization_id == ^organization_id)
+    |> where_vrf(vrf_id)
+    |> where(
+      [ip],
+      fragment("host(?)::inet <<= ?", ip.address, type(^cidr, Renga.Types.Cidr))
+    )
+    |> join(:inner, [ip], resource in assoc(ip, :resource))
+    |> where([_ip, resource], resource.lifecycle_state == "active")
+    |> preload(assignments: [interface: :resource])
     |> Repo.all()
   end
 
   @doc """
-  Adopts an observed address into managed state, remembering the interface
-  it was seen on. Owners and admins only.
+  Adopts an observed address into managed state. Owners and admins only,
+  re-checked in the database.
+
+  In one transaction it creates an allocated `ip_address` in the observed
+  address's routing table (global until collectors report routing domains)
+  with the observed mask, takes the management mode from the assignment
+  method where it is known, and assigns it to the interface it was seen on.
+  A released address with the same host is reactivated rather than created
+  again, so its history stays one record. `attrs` may carry a description
+  or DNS name.
+
+  Returns `{:error, changeset}` when the host is already managed there.
   """
   def adopt_address(%Scope{organization_id: organization_id} = scope, address_id, attrs \\ %{}) do
-    if Inventory.organization_manager?(scope) do
-      address =
-        Address
-        |> where(
-          [address],
-          address.organization_id == ^organization_id and address.id == ^address_id
-        )
-        |> where(
-          [address],
-          fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
-        )
-        |> Repo.one!()
+    Inventory.organization_management_transaction(scope, fn ->
+      observed = observed_address!(organization_id, address_id)
+      interface = Repo.preload(observed, interface: :resource).interface
+      attrs = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
 
-      %ManagedAddress{
-        organization_id: organization_id,
-        address: %{address.address | netmask: Cidr.bits(Cidr.family(address.address))},
-        interface_id: address.interface_id,
+      intent = %{
+        address: observed.address,
+        allocation_state: "allocated",
+        management_mode: management_mode(observed),
         adopted_by_id: scope.user.id
       }
-      |> ManagedAddress.changeset(attrs)
-      |> Repo.insert()
-      |> Changes.broadcast(organization_id)
+
+      ip_address =
+        case lock_managed_host(organization_id, nil, observed.address) do
+          nil ->
+            insert_ip_address(scope, intent, attrs)
+
+          %IpAddress{resource: %{lifecycle_state: "retired"}} = retired ->
+            reactivate(scope, retired, intent, attrs)
+
+          current ->
+            Repo.rollback(already_managed(current))
+        end
+
+      assign!(scope, ip_address, interface)
+      Repo.preload(ip_address, [assignments: [interface: :resource]], force: true)
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  @doc """
+  Releases a managed address back to observed-only. Owners and admins only.
+
+  Every current assignment ends and the envelope is retired rather than
+  deleted, so Activity keeps its history and a later adoption reactivates
+  the same record. Releasing an already released address changes nothing.
+  """
+  def release_address(%Scope{organization_id: organization_id} = scope, ip_address_id) do
+    Inventory.organization_management_transaction(scope, fn ->
+      current = lock_ip_address!(organization_id, ip_address_id)
+
+      if current.resource.lifecycle_state == "retired" do
+        current
+      else
+        Enum.each(current.assignments, &unassign!(scope, current, &1))
+        resource = set_lifecycle!(scope, current.resource, "retired")
+        %{current | resource: resource, assignments: []}
+      end
+    end)
+    |> Changes.broadcast(organization_id)
+  end
+
+  defp observed_address!(organization_id, address_id) do
+    observed =
+      Address
+      |> where(
+        [address],
+        address.organization_id == ^organization_id and address.id == ^address_id
+      )
+      |> where(
+        [address],
+        fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    # Match the prefix view's winning evidence, not another collector's hints.
+    if observation_id = get_in(observed.metadata, ["presence_owner", "observation_id"]) do
+      evidence =
+        Repo.get_by(AddressEvidence,
+          organization_id: organization_id,
+          address_id: observed.id,
+          observation_id: observation_id
+        )
+
+      metadata =
+        if evidence, do: Map.merge(evidence.metadata, observed.metadata), else: observed.metadata
+
+      %{observed | metadata: metadata}
     else
-      {:error, :forbidden}
+      observed
     end
   end
 
-  @doc "Releases a managed address back to observed-only. Owners and admins only."
-  def release_address(%Scope{organization_id: organization_id} = scope, managed_id) do
-    if Inventory.organization_manager?(scope) do
-      ManagedAddress
-      |> where(
-        [managed],
-        managed.organization_id == ^organization_id and managed.id == ^managed_id
-      )
-      |> Repo.one!()
-      |> Repo.delete()
-      |> Changes.broadcast(organization_id)
-    else
-      {:error, :forbidden}
+  # The canonical record for a host in a namespace, whatever its state, so
+  # re-adoption and reservation reuse it instead of inserting another.
+  defp lock_managed_host(organization_id, vrf_id, address) do
+    IpAddress
+    |> where([ip], ip.organization_id == ^organization_id)
+    |> where_vrf(vrf_id)
+    |> where(
+      [ip],
+      fragment("host(?)::inet = host(?)::inet", ip.address, type(^address, Renga.Types.Inet))
+    )
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+    |> Repo.preload(:resource)
+  end
+
+  defp lock_ip_address!(organization_id, id) do
+    IpAddress
+    |> where([ip], ip.organization_id == ^organization_id and ip.id == ^id)
+    |> lock("FOR UPDATE")
+    |> Repo.one!()
+    |> Repo.preload([:resource, :vrf, assignments: [interface: :resource]])
+  end
+
+  defp insert_ip_address(scope, intent, attrs) do
+    %Scope{organization_id: organization_id} = scope
+    label = ip_address_label(intent.address, nil)
+
+    resource =
+      case ResourceStore.insert(organization_id, %{
+             kind: "ip_address",
+             name: "ip-address-" <> Ecto.UUID.generate(),
+             display_name: label,
+             lifecycle_state: "active"
+           }) do
+        {:ok, resource} -> resource
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+    ip_address =
+      %IpAddress{organization_id: organization_id, resource_id: resource.id}
+      |> struct(intent)
+      |> IpAddress.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, ip_address} -> ip_address
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: "created",
+        field: "ip_address",
+        resource_id: resource.id,
+        new_value: %{"value" => label}
+      })
+
+    %{ip_address | resource: resource}
+  end
+
+  @ip_address_event_fields [
+    :address,
+    :allocation_state,
+    :management_mode,
+    :dns_name,
+    :description
+  ]
+
+  # A released address comes back as the same record: lifecycle first, then
+  # each intent field that differs, each written to Activity.
+  defp reactivate(scope, %IpAddress{} = retired, intent, attrs) do
+    resource = set_lifecycle!(scope, retired.resource, "active")
+
+    updated =
+      retired
+      |> Ecto.Changeset.change(intent)
+      |> IpAddress.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, updated} -> updated
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+    for field <- @ip_address_event_fields,
+        Map.fetch!(retired, field) != Map.fetch!(updated, field) do
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "updated",
+          field: Atom.to_string(field),
+          resource_id: resource.id,
+          old_value: ip_address_event_value(field, retired),
+          new_value: ip_address_event_value(field, updated)
+        })
+    end
+
+    %{updated | resource: resource}
+  end
+
+  defp already_managed(%IpAddress{} = current) do
+    current
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.add_error(:address, "is already managed in this routing table")
+    |> Map.put(:action, :insert)
+  end
+
+  defp set_lifecycle!(scope, resource, state) do
+    updated =
+      case ResourceStore.update(resource, %{lifecycle_state: state}) do
+        {:ok, updated} -> updated
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: "updated",
+        field: "lifecycle_state",
+        resource_id: resource.id,
+        old_value: %{"value" => resource.lifecycle_state},
+        new_value: %{"value" => state}
+      })
+
+    updated
+  end
+
+  defp assign!(scope, %IpAddress{} = ip_address, interface) do
+    %IpAddressAssignment{
+      organization_id: scope.organization_id,
+      ip_address_id: ip_address.id,
+      interface_id: interface.id,
+      assigned_by_id: scope.user.id
+    }
+    |> IpAddressAssignment.changeset()
+    |> Repo.insert()
+    |> case do
+      {:ok, _assignment} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: "updated",
+        field: "assignment",
+        resource_id: ip_address.resource_id,
+        new_value: assignment_event_value(interface)
+      })
+  end
+
+  defp unassign!(scope, %IpAddress{} = ip_address, %IpAddressAssignment{} = assignment) do
+    Repo.delete!(assignment)
+
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: "updated",
+        field: "assignment",
+        resource_id: ip_address.resource_id,
+        old_value: assignment_event_value(assignment.interface)
+      })
+  end
+
+  # Names the interface for reading and keeps its id, since interface names
+  # repeat across resources.
+  defp assignment_event_value(interface) do
+    %{
+      "value" => "#{interface.name} on #{interface.resource.name}",
+      "interface_id" => interface.id
+    }
+  end
+
+  defp ip_address_event_value(:address, %IpAddress{address: address}),
+    do: %{"value" => Cidr.format(address)}
+
+  defp ip_address_event_value(field, %IpAddress{} = ip_address),
+    do: %{"value" => Map.fetch!(ip_address, field)}
+
+  # The envelope's display name is the host, and the VRF when there is one.
+  defp ip_address_label(address, vrf) do
+    host = Cidr.format(%{address | netmask: Cidr.bits(Cidr.family(address))})
+    if vrf, do: "#{host} (#{vrf.name})", else: host
+  end
+
+  defp management_mode(%Address{} = observed) do
+    case AddressAssignment.method(observed) do
+      :unknown -> nil
+      method -> Atom.to_string(method)
     end
   end
 

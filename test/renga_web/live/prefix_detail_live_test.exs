@@ -182,7 +182,12 @@ defmodule RengaWeb.PrefixDetailLiveTest do
       assert has_element?(view, "#prefix-addresses [data-status='observed']", "Observed")
       view |> element("#address-#{address.id}-adopt") |> render_click()
       assert has_element?(view, "#prefix-addresses [data-status='managed']", "Managed")
-      [managed] = Renga.Repo.all(Renga.IPAM.ManagedAddress)
+
+      managed =
+        Enum.find(
+          Renga.Repo.all(Renga.IPAM.IpAddress),
+          &(&1.address.address == address.address.address)
+        )
 
       report_addresses(scope, source, [])
       {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")

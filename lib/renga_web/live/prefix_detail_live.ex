@@ -648,7 +648,7 @@ defmodule RengaWeb.PrefixDetailLive do
         assigns,
         :interface,
         (assigns.entry.address && assigns.entry.address.interface) ||
-          (assigns.entry.managed && assigns.entry.managed.interface)
+          (assigns.entry.managed && assigned_interface(assigns.entry.managed))
       )
 
     ~H"""
@@ -664,6 +664,10 @@ defmodule RengaWeb.PrefixDetailLive do
     <span :if={!@interface} class="text-fg-subtle">—</span>
     """
   end
+
+  # A managed address not seen any more shows where it is meant to be.
+  defp assigned_interface(%{assignments: [assignment | _]}), do: assignment.interface
+  defp assigned_interface(_managed), do: nil
 
   defp entry_id(%{address: %{id: id}}), do: "address-#{id}"
   defp entry_id(%{managed: %{id: id}}), do: "managed-#{id}"
