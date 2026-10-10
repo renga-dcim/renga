@@ -120,8 +120,8 @@ defmodule Renga.Findings do
 
   @doc """
   Address findings about hosts inside any of `networks` (CIDRs or hosts as
-  `Postgrex.INET`), newest observation first, for the pages where those
-  addresses live: a prefix, managed addresses, a resource's interfaces.
+  `Postgrex.INET`, or `:any`), newest observation first, for the pages where
+  those addresses live: a prefix, managed addresses, a resource's interfaces.
 
   Options are those of `list_findings/2` (`:state`, `:resource_id`, and so
   on). Unlike the Inbox queue it is not paged, but stops at
@@ -172,7 +172,17 @@ defmodule Renga.Findings do
 
     scope
     |> filtered_query(Keyword.put(opts, :domain, "address"), now)
-    |> where(
+    |> filter_networks(networks)
+    |> filter_namespace(namespace)
+  end
+
+  # `:any` keeps findings about no address too, such as an unmapped
+  # routing domain, for a page scoped some other way (a resource).
+  defp filter_networks(query, :any), do: query
+
+  defp filter_networks(query, networks) do
+    where(
+      query,
       [finding: finding],
       fragment(
         "host((?->>'address')::inet)::inet <<= ANY(?)",
@@ -180,7 +190,6 @@ defmodule Renga.Findings do
         type(^networks, {:array, Renga.Types.Inet})
       )
     )
-    |> filter_namespace(namespace)
   end
 
   defp filter_namespace(query, :any), do: query

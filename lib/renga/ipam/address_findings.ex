@@ -1,6 +1,6 @@
 defmodule Renga.IPAM.AddressFindings do
   @moduledoc """
-  Reconciles the namespace-independent address findings (RFD 4, "Findings").
+  Reconciles the address findings (RFD 4, "Findings").
 
   Each run computes, for one organization, every condition that should be
   open now and makes the open findings match: new conditions open a finding,
@@ -29,9 +29,18 @@ defmodule Renga.IPAM.AddressFindings do
     * `duplicate_address` - one host observed on several interfaces, unless
       its managed address has a shared role (VIP, anycast, first-hop
       redundancy). One finding per interface, naming the others.
-    * `stale_managed_assignment` - an allocated global address assigned to
-      an interface that does not currently report it, on a resource some
-      collector reports addresses for.
+    * `stale_managed_assignment` - an allocated address assigned to an
+      interface that does not currently report it in the address's
+      namespace, on a resource some collector reports addresses for.
+    * `wrong_vrf` - a managed address assigned to an interface an
+      authoritative source reports in another mapped namespace. It replaces
+      the stale finding for that assignment: the address is not missing, it
+      is in the wrong place. The same host used in another VRF is not a
+      conflict by itself.
+    * `unmapped_routing_domain` - an interface's current claim names a
+      routing domain no mapping, route distinguisher, or VRF name resolves.
+      It is the only finding about addresses on that interface until the
+      domain is mapped.
   """
 
   import Ecto.Query, warn: false
@@ -61,7 +70,10 @@ defmodule Renga.IPAM.AddressFindings do
 
       findings =
         Enum.flat_map(observed, &observed_findings(&1, families, vrfs)) ++
-          duplicate_findings(observed, vrfs) ++ stale_findings(organization_id, vrfs)
+          duplicate_findings(observed, vrfs) ++
+          stale_findings(organization_id, vrfs) ++
+          wrong_vrf_findings(organization_id, vrfs) ++
+          unmapped_findings(organization_id)
 
       findings
       |> with_evidence(organization_id)
@@ -341,6 +353,9 @@ defmodule Renga.IPAM.AddressFindings do
            AND ip.allocation_state = 'allocated'
            AND envelope.lifecycle_state <> 'retired'
            AND domain.resolution IS DISTINCT FROM 'unmapped'
+           -- A wrong-VRF finding replaces the stale one.
+           AND NOT (COALESCE(domain.authoritative, false)
+                    AND domain.vrf_id IS DISTINCT FROM ip.vrf_id)
            AND NOT (
              domain.vrf_id IS NOT DISTINCT FROM ip.vrf_id
              AND EXISTS (
@@ -382,6 +397,100 @@ defmodule Renga.IPAM.AddressFindings do
       }
     end)
   end
+
+  ## Routing domains
+
+  # An assignment to an interface an authoritative source reports in another
+  # mapped namespace. The same host in another VRF is not a conflict; only
+  # the explicit assignment to this interface is.
+  defp wrong_vrf_findings(organization_id, vrfs) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT assignment.interface_id, ip.id, ip.address, ip.vrf_id, interface.name,
+               domain.vrf_id, domain.source_id, domain.source_local_key, domain.observed_at
+          FROM ip_address_assignments AS assignment
+          JOIN ip_addresses AS ip ON ip.id = assignment.ip_address_id
+          JOIN resources AS envelope ON envelope.id = ip.resource_id
+          JOIN interfaces AS interface ON interface.id = assignment.interface_id
+          JOIN interface_routing_domains AS domain
+            ON domain.interface_id = assignment.interface_id
+         WHERE assignment.organization_id = $1
+           AND envelope.lifecycle_state <> 'retired'
+           AND domain.authoritative
+           AND domain.resolution <> 'unmapped'
+           AND domain.vrf_id IS DISTINCT FROM ip.vrf_id
+        """,
+        [Ecto.UUID.dump!(organization_id)]
+      )
+
+    Enum.map(rows, fn [interface_id, ip_id, address, vrf_id, interface | rest] ->
+      [interface_vrf_id, source_id, key, observed_at] = rest
+      ip_id = Ecto.UUID.load!(ip_id)
+      vrf_id = vrf_id && Ecto.UUID.load!(vrf_id)
+      interface_vrf_id = interface_vrf_id && Ecto.UUID.load!(interface_vrf_id)
+
+      %{
+        interface_id: Ecto.UUID.load!(interface_id),
+        kind: "wrong_vrf",
+        resolution_key: ip_id,
+        message:
+          "Managed address #{labeled(host(address), vrf_id, vrfs)} is assigned to #{interface}, " <>
+            "which is in #{table_name(interface_vrf_id, vrfs)}",
+        details:
+          %{
+            "ip_address_id" => ip_id,
+            "address" => Cidr.format(address),
+            "interface_vrf_id" => interface_vrf_id,
+            "interface_vrf" => interface_vrf_id && Map.get(vrfs, interface_vrf_id),
+            "source_id" => Ecto.UUID.load!(source_id),
+            "routing_domain" => key
+          }
+          |> put_namespace(vrf_id, vrfs),
+        observed_address_id: nil,
+        last_observed_at: observed_at
+      }
+    end)
+  end
+
+  # An interface whose current claim names a domain nothing maps. One
+  # finding per interface, keyed by the source and key, so mapping the key
+  # resolves all of them at once.
+  defp unmapped_findings(organization_id) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT domain.interface_id, domain.source_id, source.name, domain.source_local_key,
+               domain.route_distinguisher, domain.observed_at
+          FROM interface_routing_domains AS domain
+          JOIN sources AS source ON source.id = domain.source_id
+         WHERE domain.organization_id = $1 AND domain.resolution = 'unmapped'
+        """,
+        [Ecto.UUID.dump!(organization_id)]
+      )
+
+    Enum.map(rows, fn [interface_id, source_id, source, key, route_distinguisher, observed_at] ->
+      source_id = Ecto.UUID.load!(source_id)
+
+      %{
+        interface_id: Ecto.UUID.load!(interface_id),
+        kind: "unmapped_routing_domain",
+        resolution_key: "#{source_id}:#{String.downcase(key)}",
+        message: "Routing domain #{key} reported by #{source} is not mapped to a VRF",
+        details: %{
+          "source_id" => source_id,
+          "source" => source,
+          "routing_domain" => key,
+          "route_distinguisher" => route_distinguisher
+        },
+        observed_address_id: nil,
+        last_observed_at: observed_at
+      }
+    end)
+  end
+
+  defp table_name(nil, _vrfs), do: "the global table"
+  defp table_name(vrf_id, vrfs), do: Map.get(vrfs, vrf_id)
 
   # A finding names its namespace, so pages can match it to the prefix or
   # managed address it is about. Global findings carry no VRF.

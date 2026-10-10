@@ -308,6 +308,7 @@ defmodule RengaWeb.ResourceLive.Show do
               resource={@resource}
               address_findings={@address_findings}
               address_finding_total={@address_finding_total}
+              routing_domains={@routing_domains}
             />
           <% :sources -> %>
             <.sources resource={@resource} signals={@signals} />
@@ -889,6 +890,7 @@ defmodule RengaWeb.ResourceLive.Show do
   attr :resource, :map, required: true
   attr :address_findings, :map, default: %{}
   attr :address_finding_total, :integer, default: 0
+  attr :routing_domains, :map, default: %{}
 
   defp network(assigns) do
     ~H"""
@@ -916,6 +918,11 @@ defmodule RengaWeb.ResourceLive.Show do
           <p class="font-mono text-sm font-semibold text-fg">{interface.name}</p>
           <p class="text-xs capitalize text-fg-muted">{interface.kind} · {interface.status}</p>
           <p class="font-mono text-xs text-fg-muted">{format_mac(interface.mac_address)}</p>
+          <.routing_domain
+            :if={domain = Map.get(@routing_domains, interface.id)}
+            id={"interface-#{interface.id}-routing-domain"}
+            domain={domain}
+          />
         </div>
         <div class="flex flex-wrap gap-2">
           <span
@@ -1211,6 +1218,38 @@ defmodule RengaWeb.ResourceLive.Show do
     end)
   end
 
+  attr :id, :string, required: true
+  attr :domain, Renga.IPAM.InterfaceRoutingDomain, required: true
+
+  # The interface's current routing-domain claim and what it resolved to.
+  # An interface without a claim shows nothing: it is in the global table.
+  defp routing_domain(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      data-resolution={@domain.resolution}
+      title={"Reported as #{@domain.source_local_key}"}
+      class={[
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+        if(@domain.resolution == "unmapped",
+          do: "border border-warn-line bg-warn-fill text-warn-text",
+          else: "bg-sunken text-fg-muted"
+        )
+      ]}
+    >
+      <.icon name="hero-globe-alt" class="size-3.5" />
+      <%= cond do %>
+        <% @domain.resolution == "unmapped" -> %>
+          {@domain.source_local_key} · unmapped
+        <% @domain.vrf -> %>
+          VRF {@domain.vrf.name}
+        <% true -> %>
+          Global table
+      <% end %>
+    </span>
+    """
+  end
+
   # Accepted exceptions are shown on the resource so everyone who views it
   # knows what was set aside and why (RFD 8, "Inbox").
   defp assign_findings(socket) do
@@ -1222,18 +1261,17 @@ defmodule RengaWeb.ResourceLive.Show do
       open_finding_count: open_count,
       exceptions: Findings.list_resource_exceptions(scope, resource.id),
       address_findings: address_findings,
-      address_finding_total: address_finding_total
+      address_finding_total: address_finding_total,
+      routing_domains:
+        Renga.IPAM.RoutingDomains.domains_for(scope, Enum.map(resource.interfaces, & &1.id))
     )
   end
 
   # Open address findings on each of the resource's interfaces, shown beside
-  # the addresses they are about.
+  # the addresses they are about, including an interface's unmapped routing
+  # domain, which names no address.
   defp interface_address_findings(scope, resource) do
-    {:ok, ipv4} = Renga.Types.Inet.cast("0.0.0.0/0")
-    {:ok, ipv6} = Renga.Types.Inet.cast("::/0")
-
-    {findings, total} =
-      Findings.list_address_findings(scope, [ipv4, ipv6], resource_id: resource.id)
+    {findings, total} = Findings.list_address_findings(scope, :any, resource_id: resource.id)
 
     {Enum.group_by(findings, & &1.interface_id), total}
   end

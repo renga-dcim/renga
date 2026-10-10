@@ -98,13 +98,22 @@ defmodule Renga.IPAM.NamespaceCorrelationTest do
     report(context, 1, [{"eth0", "10.0.0.5/24", %{"key" => "lab"}}])
     [observed] = observed(context)
 
-    assert open_findings(context) == []
+    # The unmapped domain is the only finding: the strict prefix cannot be
+    # judged until the address has a namespace.
+    assert open_findings(context) == [
+             {"unmapped_routing_domain", "eth0",
+              "Routing domain lab reported by agent is not mapped to a VRF"}
+           ]
+
     assert %{unmapped?: true, managed?: false} = IPAM.observed_address(context.scope, observed.id)
     assert {:error, :unmapped_routing_domain} = IPAM.adopt_address(context.scope, observed.id)
 
-    # Mapped to blue, it is adopted there.
+    # Mapped to blue, the finding resolves and the address is adopted there.
     {:ok, _} =
       IPAM.RoutingDomains.put_mapping(context.scope, context.agent.id, "lab", context.blue.id)
+
+    assert open_findings(context) == []
+    assert [%{status: "resolved"}] = Repo.all(AddressFinding)
 
     assert {:ok, managed} = IPAM.adopt_address(context.scope, observed.id)
     assert managed.vrf_id == context.blue.id
@@ -151,7 +160,11 @@ defmodule Renga.IPAM.NamespaceCorrelationTest do
     assert {[], 0} = Findings.list_findings(context.scope, domain: "address", state: "excepted")
 
     report(context, 2, [{"eth0", "10.0.0.5/24", %{"key" => "lab"}}])
-    assert open_findings(context) == []
+
+    assert open_findings(context) == [
+             {"unmapped_routing_domain", "eth0",
+              "Routing domain lab reported by agent is not mapped to a VRF"}
+           ]
 
     {:ok, _} =
       IPAM.RoutingDomains.put_mapping(context.scope, context.agent.id, "lab", context.blue.id)
@@ -229,6 +242,68 @@ defmodule Renga.IPAM.NamespaceCorrelationTest do
     assert_receive {:inventory_changed, ^org}
     {:error, _} = IPAM.RoutingDomains.put_mapping(context.scope, context.agent.id, "", nil)
     refute_receive {:inventory_changed, ^org}
+  end
+
+  test "an authoritative claim in another namespace makes an assignment wrong, not stale",
+       context do
+    red = vrf_fixture(context.scope, "red")
+    report(context, 1, [{"eth0", "10.0.0.5/24", :absent}])
+    [observed] = observed(context)
+    {:ok, managed} = IPAM.adopt_address(context.scope, observed.id)
+    assert is_nil(managed.vrf_id)
+
+    # The interface moves to red; the global assignment is in the wrong
+    # place, not missing, and a red address of the same host is no conflict.
+    report(context, 2, [{"eth0", "10.0.0.5/24", %{"key" => "red"}}])
+
+    assert open_findings(context) == [
+             {"wrong_vrf", "eth0",
+              "Managed address 10.0.0.5 is assigned to eth0, which is in red"}
+           ]
+
+    assert [%{details: details}] = Repo.all(where(AddressFinding, kind: "wrong_vrf"))
+    assert details["interface_vrf_id"] == red.id
+    assert details["routing_domain"] == "red"
+    refute Map.has_key?(details, "vrf_id")
+
+    # An advisory claim cannot call it wrong; the assignment is then only
+    # not observed in its namespace.
+    {:ok, _} = IPAM.RoutingDomains.set_source_authority(context.scope, context.agent.id, false)
+
+    assert open_findings(context) == [
+             {"stale_managed_assignment", "eth0",
+              "Managed address 10.0.0.5 is not observed on eth0"}
+           ]
+
+    # Back in the global table, the assignment is current again.
+    {:ok, _} = IPAM.RoutingDomains.set_source_authority(context.scope, context.agent.id, true)
+    report(context, 3, [{"eth0", "10.0.0.5/24", nil}])
+    assert open_findings(context) == []
+  end
+
+  test "maximum-length unmapped keys support workflows that survive recurrence", context do
+    key = String.duplicate("x", 255)
+    report(context, 1, [{"eth0", :none, %{"key" => key}}])
+    {[finding], 1} = Findings.list_findings(context.scope, domain: "address")
+    assert finding.kind == "unmapped_routing_domain"
+    {:ok, _} = Findings.assign(context.scope, finding, context.scope.user.id)
+    {:ok, _} = Findings.snooze(context.scope, finding, DateTime.add(DateTime.utc_now(), 3600))
+
+    {:ok, _} =
+      Findings.accept_exception(context.scope, finding, %{"exception_reason" => "Known tenant"})
+
+    {:ok, mapping} =
+      IPAM.RoutingDomains.put_mapping(context.scope, context.agent.id, key, context.blue.id)
+
+    assert open_findings(context) == []
+    {:ok, _} = IPAM.RoutingDomains.delete_mapping(context.scope, mapping.id)
+
+    assert {[recurrence], 1} =
+             Findings.list_findings(context.scope, domain: "address", state: "excepted")
+
+    refute recurrence.id == finding.id
+    assert recurrence.workflow.assignee_user_id == context.scope.user.id
+    assert recurrence.workflow.exception_reason == "Known tenant"
   end
 
   # Reports router-1's interfaces as `{name, address | :none, claim | :absent}`.

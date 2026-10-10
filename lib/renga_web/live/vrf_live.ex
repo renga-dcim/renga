@@ -11,6 +11,12 @@ defmodule RengaWeb.VrfLive do
 
   An organization models a handful of routing namespaces, so the list is a
   plain assign, as for teams.
+
+  Routing domains (Phase 6) lists what collectors report interfaces in, per
+  source and key, and what each resolved to. Owners and admins map a key to
+  a VRF or the global table, or leave it to automatic matching, and choose
+  which sources' claims are authoritative enough to call a managed
+  assignment wrong.
   """
   use RengaWeb, :live_view
 
@@ -19,6 +25,7 @@ defmodule RengaWeb.VrfLive do
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
+  alias Renga.IPAM.RoutingDomains
   alias Renga.IPAM.Vrf
 
   @reload_after_ms 400
@@ -126,6 +133,59 @@ defmodule RengaWeb.VrfLive do
     Ecto.Query.CastError -> {:noreply, vrf_gone(socket)}
   end
 
+  # The mapping is looked up from the reloaded list, never taken from the
+  # client; an unchanged choice writes nothing.
+  def handle_event("map_domain", %{"mapping" => params}, socket) do
+    %{current_scope: scope} = socket.assigns
+    %{"source_id" => source_id, "key" => key, "target" => target} = params
+    domain = Enum.find(RoutingDomains.list_reported(scope), &same_domain?(&1, source_id, key))
+
+    result =
+      case {domain, target} do
+        {nil, _} -> {:error, :gone}
+        {%{mapping: nil}, "automatic"} -> {:ok, nil}
+        {%{mapping: mapping}, "automatic"} -> RoutingDomains.delete_mapping(scope, mapping.id)
+        {_, "global"} -> RoutingDomains.put_mapping(scope, source_id, domain.key, nil)
+        {_, vrf_id} -> RoutingDomains.put_mapping(scope, source_id, domain.key, vrf_id)
+      end
+
+    {:noreply, socket |> mapping_result(result, key) |> load_routing_domains()}
+  rescue
+    Ecto.NoResultsError ->
+      {:noreply, socket |> mapping_result({:error, :gone}, "") |> load_tables()}
+
+    Ecto.Query.CastError ->
+      {:noreply, socket |> mapping_result({:error, :gone}, "") |> load_tables()}
+  end
+
+  def handle_event("set_authority", %{"authority" => params}, socket) do
+    %{"source_id" => source_id, "authoritative" => value} = params
+
+    case RoutingDomains.set_source_authority(
+           socket.assigns.current_scope,
+           source_id,
+           value == "true"
+         ) do
+      {:ok, source} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :info,
+           "#{source.name}'s routing domains are #{if source.authoritative_routing_domains, do: "authoritative", else: "advisory"}"
+         )
+         |> load_routing_domains()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage routing domains")}
+    end
+  rescue
+    Ecto.NoResultsError ->
+      {:noreply, socket |> put_flash(:error, "That source was deleted") |> load_tables()}
+
+    Ecto.Query.CastError ->
+      {:noreply, socket |> put_flash(:error, "That source was deleted") |> load_tables()}
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
     if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -148,6 +208,21 @@ defmodule RengaWeb.VrfLive do
     |> load_tables()
   end
 
+  defp same_domain?(domain, source_id, key),
+    do: domain.source.id == source_id and String.downcase(domain.key) == String.downcase(key)
+
+  defp mapping_result(socket, {:ok, nil}, _key), do: socket
+  defp mapping_result(socket, {:ok, _}, key), do: put_flash(socket, :info, "#{key} mapped")
+
+  defp mapping_result(socket, {:error, :forbidden}, _key),
+    do: put_flash(socket, :error, "Only owners and admins manage routing domains")
+
+  defp mapping_result(socket, {:error, :gone}, _key),
+    do: put_flash(socket, :error, "That routing domain or VRF is gone")
+
+  defp mapping_result(socket, {:error, %Ecto.Changeset{}}, key),
+    do: put_flash(socket, :error, "#{key} could not be mapped")
+
   # Explicit openings reset input identity; validation/reloads retain it.
   defp assign_form(socket, vrf) do
     assign(socket,
@@ -160,9 +235,53 @@ defmodule RengaWeb.VrfLive do
     scope = socket.assigns.current_scope
     counts = IPAM.prefix_counts(scope)
 
-    assign(socket,
+    socket
+    |> assign(
       global_count: Map.get(counts, nil, 0),
       vrfs: Enum.map(IPAM.list_vrfs(scope), &%{vrf: &1, prefix_count: Map.get(counts, &1.id, 0)})
+    )
+    |> load_routing_domains()
+  end
+
+  # Authority controls must remain available even without winning claims,
+  # including after disabling a source so it can be enabled again.
+  defp load_routing_domains(socket) do
+    scope = socket.assigns.current_scope
+    domains = RoutingDomains.list_reported(scope)
+    sources = Inventory.list_sources(scope)
+
+    assign(socket,
+      routing_domains:
+        Enum.map(domains, fn domain ->
+          Map.put(
+            domain,
+            :form,
+            to_form(
+              %{
+                "source_id" => domain.source.id,
+                "key" => domain.key,
+                "target" => mapping_target(domain.mapping)
+              },
+              as: :mapping,
+              id: "routing-domain-#{domain_id(domain)}-form"
+            )
+          )
+        end),
+      authority_sources:
+        Enum.map(sources, fn source ->
+          %{
+            source: source,
+            form:
+              to_form(
+                %{
+                  "source_id" => source.id,
+                  "authoritative" => source.authoritative_routing_domains
+                },
+                as: :authority,
+                id: "source-#{source.id}-authority-form"
+              )
+          }
+        end)
     )
   end
 
@@ -287,6 +406,13 @@ defmodule RengaWeb.VrfLive do
           No VRFs yet. Every prefix is in the global table until a VRF models another routing
           namespace.
         </p>
+
+        <.routing_domains
+          domains={@routing_domains}
+          sources={@authority_sources}
+          vrfs={@vrfs}
+          can_manage?={@can_manage?}
+        />
       </section>
 
       <.confirm_dialog
@@ -344,6 +470,169 @@ defmodule RengaWeb.VrfLive do
     </Layouts.app>
     """
   end
+
+  attr :domains, :list, required: true
+  attr :sources, :list, required: true
+  attr :vrfs, :list, required: true
+  attr :can_manage?, :boolean, required: true
+
+  # Collectors name routing domains in their own words; this is where those
+  # words meet the managed VRFs.
+  defp routing_domains(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :targets,
+        [{"Automatic", "automatic"}, {"Global table", "global"}] ++
+          Enum.map(assigns.vrfs, &{"VRF #{&1.vrf.name}", &1.vrf.id})
+      )
+
+    ~H"""
+    <section id="routing-domains" class="space-y-3 pt-4">
+      <div>
+        <h2 class="text-base font-semibold text-fg">Routing domains</h2>
+        <p class="mt-1 max-w-2xl text-sm text-fg-muted">
+          What collectors report interfaces in. A key resolves to a VRF by mapping, route
+          distinguisher, or name; <span class="font-mono">default</span>
+          is the global table. Addresses on an unmapped domain are left out of every comparison
+          until it is mapped.
+        </p>
+      </div>
+
+      <p :if={@domains == []} id="routing-domains-empty" class="text-sm text-fg-muted">
+        No collector reports routing domains. Interfaces without a claim are in the global table.
+      </p>
+
+      <.table
+        :if={@domains != []}
+        id="routing-domain-list"
+        rows={@domains}
+        row_id={&"routing-domain-#{domain_id(&1)}"}
+        class="rounded-lg border border-edge bg-surface"
+      >
+        <:col :let={domain} label="Reported" class="py-2">
+          <span class="block font-mono text-sm wrap-anywhere text-fg">{domain.key}</span>
+          <span class="block text-xs text-fg-muted">{domain.source.name}</span>
+          <%!-- The mapping column is hidden on a phone; only an explicit
+                mapping needs saying there. --%>
+          <span :if={domain.mapping} class="block text-xs text-fg-muted sm:hidden">
+            Mapped to {mapping_label(domain.mapping)}
+          </span>
+        </:col>
+        <:col :let={domain} label="Resolves to">
+          <span
+            :if={domain.outcomes == []}
+            class="text-xs text-fg-muted"
+          >
+            Not reported now
+          </span>
+          <span class="flex flex-wrap gap-1.5">
+            <span
+              :for={outcome <- domain.outcomes}
+              data-resolution={outcome.resolution}
+              class={[
+                "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs",
+                if(outcome.resolution == "unmapped",
+                  do: "border-warn-line bg-warn-fill text-warn-text",
+                  else: "border-edge text-fg"
+                )
+              ]}
+            >
+              {outcome_label(outcome)}
+              <span class="tabular-nums text-fg-muted">
+                · {interface_label(outcome.interface_count)}
+              </span>
+            </span>
+          </span>
+        </:col>
+        <:col :let={domain} label="Mapping" class="hidden whitespace-nowrap sm:table-cell">
+          <.form
+            :if={@can_manage?}
+            for={domain.form}
+            id={domain.form.id}
+            phx-change="map_domain"
+            class="min-w-44 [&_.field]:mb-0"
+          >
+            <input
+              type="hidden"
+              name={domain.form[:source_id].name}
+              value={domain.form[:source_id].value}
+            />
+            <input type="hidden" name={domain.form[:key].name} value={domain.form[:key].value} />
+            <.input
+              field={domain.form[:target]}
+              type="select"
+              aria-label={"Map #{domain.key}"}
+              options={@targets}
+            />
+          </.form>
+          <span :if={!@can_manage?} class="text-xs text-fg-muted">
+            {mapping_label(domain.mapping)}
+          </span>
+        </:col>
+      </.table>
+
+      <div :if={@sources != []} id="routing-domain-authority" class="space-y-2">
+        <h3 class="text-sm font-medium text-fg">Authoritative sources</h3>
+        <p class="max-w-2xl text-xs text-fg-muted">
+          An authoritative source's claim wins over others for the same interface and can mark a
+          managed assignment as being in the wrong VRF. Collectors that read a device's own
+          configuration are authoritative by default.
+        </p>
+        <ul class="divide-y divide-line rounded-lg border border-edge bg-surface">
+          <li
+            :for={%{source: source, form: form} <- @sources}
+            id={"source-#{source.id}-authority"}
+            class="flex flex-wrap items-center justify-between gap-3 px-4 py-2"
+          >
+            <span>
+              <span class="block text-sm text-fg">{source.name}</span>
+              <span class="block text-xs text-fg-muted">{source.kind}</span>
+            </span>
+            <.form
+              :if={@can_manage?}
+              for={form}
+              id={form.id}
+              phx-change="set_authority"
+              class="hidden sm:block [&_.field]:mb-0"
+            >
+              <input type="hidden" name={form[:source_id].name} value={form[:source_id].value} />
+              <.input field={form[:authoritative]} type="checkbox" label="Authoritative" />
+            </.form>
+            <span class={["text-xs text-fg-muted", @can_manage? && "sm:hidden"]}>
+              {if source.authoritative_routing_domains, do: "Authoritative", else: "Advisory"}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+    """
+  end
+
+  defp domain_id(domain), do: domain_id(domain.source.id, domain.key)
+
+  @doc false
+  # Keys can carry any character; a digest keeps DOM ids valid and stable.
+  def domain_id(source_id, key) do
+    :crypto.hash(:sha256, source_id <> ":" <> String.downcase(key))
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
+  end
+
+  defp mapping_target(nil), do: "automatic"
+  defp mapping_target(%{vrf_id: nil}), do: "global"
+  defp mapping_target(%{vrf_id: vrf_id}), do: vrf_id
+
+  defp mapping_label(nil), do: "Automatic"
+  defp mapping_label(%{vrf: nil}), do: "Global table"
+  defp mapping_label(%{vrf: vrf}), do: "VRF #{vrf.name}"
+
+  defp outcome_label(%{resolution: "unmapped"}), do: "Unmapped"
+  defp outcome_label(%{vrf: nil}), do: "Global table"
+  defp outcome_label(%{vrf: vrf}), do: "VRF #{vrf.name}"
+
+  defp interface_label(1), do: "1 interface"
+  defp interface_label(count), do: "#{count} interfaces"
 
   defp row_id(:global), do: "vrf-global"
   defp row_id(%{vrf: vrf}), do: "vrf-#{vrf.id}"

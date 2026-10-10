@@ -76,7 +76,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [x] Define finding precedence and correlate active observed assignments by
   resolved namespace and host value without treating same-address use in another
   VRF as inherently wrong.
-* [ ] Surface wrong-VRF and unmapped routing-domain findings.
+* [x] Surface wrong-VRF and unmapped routing-domain findings.
 
 == Phase 7: Addressing plan and allocation
 
