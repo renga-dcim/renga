@@ -228,6 +228,13 @@ defmodule RengaWeb.InboxLive do
     {:noreply, socket |> decision_flash(result) |> after_decision()}
   end
 
+  def handle_event("withdraw_request", %{"id" => id}, socket) do
+    scope = socket.assigns.current_scope
+    request = Requests.get_request(scope, id)
+    result = if request, do: Requests.withdraw(scope, request), else: {:error, :not_found}
+    {:noreply, socket |> decision_flash(result) |> after_decision() |> load_selected()}
+  end
+
   def handle_event("withdraw_request", _params, socket) do
     %{selected_request: request, current_scope: scope} = socket.assigns
     result = if request, do: Requests.withdraw(scope, request), else: {:error, :not_found}

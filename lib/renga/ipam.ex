@@ -700,12 +700,13 @@ defmodule Renga.IPAM do
   @doc """
   An observed address and whether its host is managed in the global table,
   where every observed address is until collectors report routing domains.
-  Nil when the id is malformed or names no address in the organization.
+  Nil when the id is malformed or names no present address in the organization.
   Adoption requests use it for their value and to confirm the address.
   """
   def observed_address(%Scope{organization_id: organization_id}, id) do
     with {:ok, id} <- Ecto.UUID.cast(id),
-         %Address{} = address <- Repo.get_by(Address, organization_id: organization_id, id: id) do
+         %Address{} = address <- Repo.get_by(Address, organization_id: organization_id, id: id),
+         true <- address.metadata["present"] != false do
       managed? =
         IpAddress
         |> join(:inner, [ip], resource in assoc(ip, :resource))
@@ -1048,7 +1049,9 @@ defmodule Renga.IPAM do
         fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
       )
       |> lock("FOR UPDATE")
-      |> Repo.one!()
+      |> Repo.one()
+
+    if is_nil(observed), do: Repo.rollback(:invalid_address)
 
     # Match the prefix view's winning evidence, not another collector's hints.
     if observation_id = get_in(observed.metadata, ["presence_owner", "observation_id"]) do

@@ -159,23 +159,14 @@ defmodule Renga.Requests do
   the address as the approver. `attrs` carries the reason.
   """
   def request_adoption(%Scope{} = scope, %Resource{} = resource, address_id, attrs) do
-    case IPAM.observed_address(scope, address_id) do
-      %{address: %{resource_id: resource_id} = address} when resource_id == resource.id ->
-        create(
-          scope,
-          resource,
-          "adoption",
-          "address:" <> address.id,
-          Map.put(attrs, "value", "Managed"),
-          %{
-            "address_id" => address.id,
-            "address" => Cidr.format(address.address)
-          }
-        )
-
-      _other ->
-        {:error, :invalid_address}
-    end
+    create(
+      scope,
+      resource,
+      "adoption",
+      "address:" <> address_id,
+      Map.put(attrs, "value", "Managed"),
+      %{"address_id" => address_id}
+    )
   end
 
   @doc "A blank changeset for a request form."
@@ -195,6 +186,8 @@ defmodule Renga.Requests do
       authorize!(scope, ["member"])
       resource = Inventory.get_resource!(scope, resource.id)
       now = Renga.Time.utc_now_ms()
+
+      extra = after_value_details(scope, resource, kind, extra)
 
       changeset =
         %Request{
@@ -218,6 +211,21 @@ defmodule Renga.Requests do
     end)
     |> Changes.broadcast(organization_id)
   end
+
+  # Called only after authorization holds the organization lock: adoption's
+  # value describes a present, unmanaged address on the requested resource.
+  defp after_value_details(scope, resource, "adoption", extra) do
+    case IPAM.observed_address(scope, extra["address_id"]) do
+      %{address: %{resource_id: resource_id} = address, managed?: false}
+      when resource_id == resource.id ->
+        Map.put(extra, "address", Cidr.format(address.address))
+
+      _other ->
+        Repo.rollback(:invalid_address)
+    end
+  end
+
+  defp after_value_details(_scope, _resource, _kind, extra), do: extra
 
   @doc """
   The value the request would change, as it is now, so an approver can see

@@ -422,7 +422,7 @@ defmodule Renga.IPAMTest do
     other_scope = Accounts.scope_for_user(other, organization.id)
     {_host, ports} = device_fixture(other_scope, "server", "foreign-adoption", ~w(eth0))
     address = address_fixture(other_scope, ports["eth0"], "192.0.2.5/24")
-    assert_raise Ecto.NoResultsError, fn -> IPAM.adopt_address(scope, address.id) end
+    assert {:error, :invalid_address} = IPAM.adopt_address(scope, address.id)
     assert {:ok, managed} = IPAM.adopt_address(other_scope, address.id)
     assert_raise Ecto.NoResultsError, fn -> IPAM.release_address(scope, managed.id) end
     assert Renga.Repo.reload!(managed)
@@ -445,7 +445,7 @@ defmodule Renga.IPAMTest do
     assert %{total: 1, both: [_]} = IPAM.vlan_dual_stack(scope, vlan.id)
     report_addresses(scope, source, ["192.0.2.5/24"])
     assert %{both: [], missing_ipv6: [_], total: 1} = IPAM.vlan_dual_stack(scope, vlan.id)
-    assert_raise Ecto.NoResultsError, fn -> IPAM.adopt_address(scope, v6.id) end
+    assert {:error, :invalid_address} = IPAM.adopt_address(scope, v6.id)
     report_addresses(scope, source, [])
     assert %{total: 0} = IPAM.vlan_dual_stack(scope, vlan.id)
     report_addresses(scope, source, ["192.0.2.5/24", "2001:db8:1::5/64"])

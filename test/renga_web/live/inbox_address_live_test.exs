@@ -148,6 +148,96 @@ defmodule RengaWeb.InboxAddressLiveTest do
              })
   end
 
+  test "withdraw targets the pending adoption, not another selected request", context do
+    {:ok, other} =
+      Requests.request_lifecycle(context.member, context.web, %{
+        "value" => "retired",
+        "reason" => "other request"
+      })
+
+    {:ok, request} =
+      Requests.request_adoption(context.member, context.web, context.observed.id, %{
+        "reason" => "document address"
+      })
+
+    {:ok, view, _} =
+      live(
+        context.member_conn,
+        ~p"/inbox?#{[finding: "address:#{context.finding.id}", request: other.id]}"
+      )
+
+    view |> element("#address-finding-request-withdraw") |> render_click()
+    assert Repo.reload!(request).status == "withdrawn"
+    assert Repo.reload!(other).status == "open"
+    assert has_element?(view, "#address-finding-request-form")
+  end
+
+  test "managed and withdrawn addresses cannot create adoption requests", context do
+    {:ok, _} = IPAM.adopt_address(context.admin, context.observed.id)
+
+    assert {:error, :invalid_address} =
+             Requests.request_adoption(
+               context.member,
+               context.web,
+               context.observed.id,
+               %{"reason" => "already managed"}
+             )
+
+    {:ok, source} =
+      Renga.Inventory.create_source(context.admin, %{kind: "host_agent", name: "stale"})
+
+    [observed] = report_addresses(context.admin, source, ["192.0.2.6/24"])
+    report_addresses(context.admin, source, [])
+    resource = Renga.Inventory.get_resource!(context.member, observed.resource_id)
+
+    assert {:error, :invalid_address} =
+             Requests.request_adoption(
+               context.member,
+               resource,
+               observed.id,
+               %{"reason" => "withdrawn"}
+             )
+
+    assert Repo.aggregate(Requests.Request, :count) == 0
+  end
+
+  test "approval and direct adoption handle an authoritative withdrawal without crashing",
+       context do
+    {:ok, source} =
+      Renga.Inventory.create_source(context.admin, %{kind: "host_agent", name: "stale"})
+
+    [observed] = report_addresses(context.admin, source, ["192.0.2.6/24"])
+    resource = Renga.Inventory.get_resource!(context.member, observed.resource_id)
+    finding = Repo.get_by!(AddressFinding, resolution_key: "192.0.2.6", status: "open")
+
+    {:ok, request} =
+      Requests.request_adoption(context.member, resource, observed.id, %{"reason" => "document"})
+
+    {:ok, view, _} =
+      live(context.admin_conn, ~p"/inbox?#{[group: "requests", request: request.id]}")
+
+    {:ok, finding_view, _} =
+      live(context.admin_conn, ~p"/inbox?#{[finding: "address:#{finding.id}"]}")
+
+    report_addresses(context.admin, source, [])
+    events = Repo.aggregate(Renga.Inventory.ChangeEvent, :count)
+    assert {:error, :invalid_address} = Requests.approve(context.admin, request)
+
+    view
+    |> form("#request-decision-form", decision_form: %{note: ""})
+    |> put_submitter("#request-approve")
+    |> render_submit()
+
+    assert has_element?(view, "#request-status", "open")
+    assert has_element?(view, "#flash-error")
+    # Send the action before the debounced broadcast refresh removes the button.
+    render_click(finding_view, "adopt_address")
+    assert has_element?(finding_view, "#flash-error")
+    assert Repo.reload!(request).status == "open"
+    assert Repo.aggregate(IPAM.IpAddress, :count) == 0
+    assert Repo.aggregate(Renga.Inventory.ChangeEvent, :count) == events
+  end
+
   defp sign_in(organization, role) do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: role})
