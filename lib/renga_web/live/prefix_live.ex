@@ -14,9 +14,12 @@ defmodule RengaWeb.PrefixLive do
   A routing table's trees are bounded by what an organization plans, and
   the two trees must be laid out together, so rows are plain assigns.
 
-  Owners and admins create prefixes from a side panel (RFD 4, Phase 1).
-  As RFD 8 sets for the Network area, the control is hidden on a phone,
-  where prefixes are readable but not editable.
+  Owners and admins create prefixes from a side panel (RFD 4, Phase 1),
+  and edit the organization's addressing plan (Phase 7) in another: the
+  per-family levels that decide which child length a container counts in.
+  Everyone sees the plan above the trees. As RFD 8 sets for the Network
+  area, the controls are hidden on a phone, where prefixes are readable but
+  not editable.
   """
   use RengaWeb, :live_view
 
@@ -29,6 +32,7 @@ defmodule RengaWeb.PrefixLive do
   alias Renga.Inventory.Prefix
   alias Renga.IPAM
   alias Renga.IPAM.Cidr
+  alias Renga.IPAM.PlanLevel
 
   @reload_after_ms 400
 
@@ -68,6 +72,7 @@ defmodule RengaWeb.PrefixLive do
       socket
       |> assign(tables: tables, query: query)
       |> assign_prefix_form(IPAM.change_prefix(%Prefix{vrf_id: vrf && vrf.id}))
+      |> assign_plan_form(plan_level_changeset(%{}))
       |> load_rows()
 
     if current && table_param(vrf) != params["vrf"],
@@ -109,6 +114,44 @@ defmodule RengaWeb.PrefixLive do
     end
   end
 
+  def handle_event("validate_plan_level", %{"plan_level" => params}, socket) do
+    {:noreply,
+     assign_plan_form(socket, params |> plan_level_changeset() |> Map.put(:action, :validate))}
+  end
+
+  def handle_event("create_plan_level", %{"plan_level" => params}, socket) do
+    case IPAM.create_plan_level(socket.assigns.current_scope, params) do
+      {:ok, level} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "/#{level.prefix_length} #{level.name} added to the plan")
+         |> assign_plan_form(plan_level_changeset(%{"family" => level.family}))
+         |> load_rows()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage the addressing plan")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign_plan_form(socket, changeset)}
+    end
+  end
+
+  def handle_event("delete_plan_level", %{"id" => id}, socket) do
+    case IPAM.delete_plan_level(socket.assigns.current_scope, id) do
+      {:ok, level} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "/#{level.prefix_length} #{level.name} removed from the plan")
+         |> load_rows()}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins manage the addressing plan")}
+    end
+  rescue
+    Ecto.NoResultsError -> {:noreply, load_rows(socket)}
+    Ecto.Query.CastError -> {:noreply, load_rows(socket)}
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
     if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -147,6 +190,15 @@ defmodule RengaWeb.PrefixLive do
   defp assign_prefix_form(socket, changeset),
     do: assign(socket, :prefix_form, to_form(changeset, id: "prefix-form"))
 
+  # The new level defaults to IPv6, where plans matter most: its trees are
+  # far too large to read without one.
+  defp plan_level_changeset(params) do
+    IPAM.change_plan_level(%PlanLevel{}, Map.put_new(params, "family", "ipv6"))
+  end
+
+  defp assign_plan_form(socket, changeset),
+    do: assign(socket, :plan_form, to_form(changeset, id: "plan-level-form"))
+
   defp load_rows(socket) do
     %{query: query, current_scope: scope} = socket.assigns
     rows = IPAM.list_prefix_rows(scope, query.vrf && query.vrf.id)
@@ -159,6 +211,7 @@ defmodule RengaWeb.PrefixLive do
 
     assign(socket,
       rows: rows,
+      plan: Enum.group_by(IPAM.list_plan_levels(scope), & &1.family),
       highlighted: highlighted,
       table_form: to_form(%{"vrf" => table_param(query.vrf) || ""}, as: :table)
     )
@@ -183,7 +236,10 @@ defmodule RengaWeb.PrefixLive do
             </p>
           </div>
           <div class="flex flex-wrap items-end gap-3">
-            <div :if={@can_manage?} class="hidden sm:block">
+            <div :if={@can_manage?} class="hidden gap-2 sm:flex">
+              <.button id="edit-plan" phx-click={show_overlay("plan-panel")}>
+                Addressing plan
+              </.button>
               <.button id="new-prefix" variant="primary" phx-click={show_overlay("prefix-panel")}>
                 New prefix
               </.button>
@@ -208,6 +264,8 @@ defmodule RengaWeb.PrefixLive do
             </.form>
           </div>
         </header>
+
+        <.plan_summary plan={@plan} />
 
         <p
           :if={@query.vrf}
@@ -261,7 +319,125 @@ defmodule RengaWeb.PrefixLive do
           </.button>
         </:footer>
       </.side_panel>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="plan-panel"
+        title="Addressing plan"
+        description="Planning levels per address family. A container counts and maps its space in the first planned length longer than its own; without one, in the length its children mostly use."
+      >
+        <div class="space-y-5">
+          <section
+            :for={family <- PlanLevel.families()}
+            id={"plan-panel-#{family}"}
+            class="space-y-2"
+          >
+            <h3 class="text-xs font-medium text-fg-muted">{family_label(family)}</h3>
+            <p
+              :if={Map.get(@plan, family, []) == []}
+              class="text-sm text-fg-muted"
+            >
+              No levels; containers use the length their children mostly use.
+            </p>
+            <ul
+              :if={Map.get(@plan, family, []) != []}
+              class="divide-y divide-edge rounded-md border border-edge"
+            >
+              <li
+                :for={level <- Map.get(@plan, family, [])}
+                id={"plan-level-#{level.id}"}
+                class="flex items-center justify-between gap-3 px-3 py-1.5"
+              >
+                <span class="text-sm">
+                  <span class="font-mono text-fg">/{level.prefix_length}</span>
+                  <span class="text-fg-muted">{level.name}</span>
+                </span>
+                <button
+                  id={"plan-level-#{level.id}-delete"}
+                  type="button"
+                  phx-click={JS.push("delete_plan_level", value: %{id: level.id})}
+                  aria-label={"Remove /#{level.prefix_length} #{level.name}"}
+                  class="min-h-tap cursor-pointer text-sm text-crit hover:underline"
+                >
+                  Remove
+                </button>
+              </li>
+            </ul>
+          </section>
+
+          <.form
+            for={@plan_form}
+            id="plan-level-form"
+            phx-change="validate_plan_level"
+            phx-submit="create_plan_level"
+            class="space-y-1 border-t border-line pt-4"
+          >
+            <h3 class="mb-2 text-xs font-medium text-fg-muted">Add a level</h3>
+            <.input
+              field={@plan_form[:family]}
+              type="select"
+              label="Address family"
+              options={Enum.map(PlanLevel.families(), &{family_label(&1), &1})}
+            />
+            <.input
+              field={@plan_form[:prefix_length]}
+              type="number"
+              label="Prefix length"
+              placeholder="56"
+              min="1"
+              max="127"
+            />
+            <.input
+              field={@plan_form[:name]}
+              type="text"
+              label="Each block is a"
+              placeholder="hall"
+              autocomplete="off"
+            />
+          </.form>
+        </div>
+        <:footer>
+          <.button
+            id="add-plan-level"
+            variant="primary"
+            form="plan-level-form"
+            phx-disable-with="Adding…"
+          >
+            Add level
+          </.button>
+        </:footer>
+      </.side_panel>
     </Layouts.app>
+    """
+  end
+
+  attr :plan, :map, required: true
+
+  # The plan reads as a path from the widest level down, per family, for
+  # everyone, phone included.
+  defp plan_summary(assigns) do
+    ~H"""
+    <div
+      :if={@plan != %{}}
+      id="addressing-plan"
+      class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-fg-muted"
+    >
+      <span class="text-xs font-medium">Addressing plan</span>
+      <span
+        :for={family <- PlanLevel.families()}
+        :if={Map.get(@plan, family, []) != []}
+        id={"addressing-plan-#{family}"}
+        class="flex flex-wrap items-center gap-1.5"
+      >
+        <span class="text-xs">{family_label(family)}</span>
+        <%= for {level, index} <- Enum.with_index(Map.fetch!(@plan, family)) do %>
+          <.icon :if={index > 0} name="hero-chevron-right-mini" class="size-3.5 text-fg-subtle" />
+          <span class="rounded border border-edge bg-surface px-1.5 py-0.5 text-xs">
+            <span class="font-mono text-fg">/{level.prefix_length}</span> {level.name}
+          </span>
+        <% end %>
+      </span>
+    </div>
     """
   end
 

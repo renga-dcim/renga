@@ -367,6 +367,15 @@ current guess from the most common child length, and it offers "next free" at
 each level: the first unallocated child prefix of the planned length, or the
 first unallocated host in a leaf prefix.
 
+The plan belongs to the organization and applies in every routing table. A
+level is a child length, so neither a whole-space `/0` nor a host length is
+one, and a family holds each length once. A container counts and maps its
+space in the first planned length of its family longer than its own,
+whatever children it has; past the plan's deepest level, or with no plan, the
+level is still guessed from its children. Owners and admins edit the plan on
+the Prefixes page, and everyone sees it there and in each container's usage,
+such as "5 of 256 hall /56s".
+
 The initial allocator and all managed writes affecting allocation availability
 share the organization's serialization lock, acquired in the existing topology
 order: organization, membership, then domain rows. This includes manual prefix

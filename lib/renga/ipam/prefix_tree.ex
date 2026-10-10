@@ -55,32 +55,48 @@ defmodule Renga.IPAM.PrefixTree do
 
   @doc """
   The child space a container covers, as planning-level blocks
-  (`%{allocated, total, level}`). With no children yet there is no level to
-  infer, so it counts blocks one octet deeper (or the host length) until an
-  addressing plan says otherwise.
+  (`%{allocated, total, level, level_name}`), at the level `planning_level/2`
+  chooses. `level_name` names a planned level and is nil for a guessed one.
   """
-  def child_space(%{children: []} = node) do
-    cidr = node.prefix.prefix
-    length = Cidr.length(cidr)
-    level = min(length + 8, Cidr.bits(Cidr.family(cidr)))
-    %{allocated: 0, total: 1 <<< (level - length), level: level}
-  end
-
-  def child_space(%{prefix: %{prefix: cidr}, children: children} = node) do
-    level = planning_level(node)
+  def child_space(%{prefix: %{prefix: cidr}, children: children} = node, plan \\ []) do
+    {level, name} = planning_level(node, plan)
 
     %{
       allocated: allocated_blocks(children, level, Cidr.bits(Cidr.family(cidr))),
       total: 1 <<< (level - Cidr.length(cidr)),
-      level: level
+      level: level,
+      level_name: name
     }
   end
 
   @doc """
-  The planning level of a container: the most common length among its
-  direct children, ties going to the longer prefix.
+  The planning level of a container, as `{length, name}`.
+
+  `plan` is the organization's addressing plan levels (`%{family,
+  prefix_length, name}`, any family). The first planned length of the
+  container's family longer than its own is the level, whatever children
+  exist, so a map follows the plan rather than its contents. Without one,
+  the level is guessed with a nil name: the most common length among its
+  direct children, ties going to the longer prefix, or one octet deeper (at
+  most the host length) while it has none.
   """
-  def planning_level(%{children: children}) do
+  def planning_level(%{prefix: %{prefix: cidr}} = node, plan \\ []) do
+    family = cidr |> Cidr.family() |> Atom.to_string()
+    length = Cidr.length(cidr)
+
+    plan
+    |> Enum.filter(&(&1.family == family and &1.prefix_length > length))
+    |> Enum.min_by(& &1.prefix_length, fn -> nil end)
+    |> case do
+      nil -> {guessed_level(node), nil}
+      level -> {level.prefix_length, level.name}
+    end
+  end
+
+  defp guessed_level(%{prefix: %{prefix: cidr}, children: []}),
+    do: min(Cidr.length(cidr) + 8, Cidr.bits(Cidr.family(cidr)))
+
+  defp guessed_level(%{children: children}) do
     children
     |> Enum.frequencies_by(&Cidr.length(&1.prefix.prefix))
     |> Enum.max_by(fn {length, count} -> {count, length} end)
@@ -88,7 +104,8 @@ defmodule Renga.IPAM.PrefixTree do
   end
 
   @doc """
-  The child-space map of a container.
+  The child-space map of a container, at the level `planning_level/2`
+  chooses from `plan`.
 
   Cells are blocks at the planning level, or coarser blocks when that level
   would need more than #{@max_cells} cells. Each cell is `:allocated` (one
@@ -96,11 +113,11 @@ defmodule Renga.IPAM.PrefixTree do
   part of it), or `:free`. `allocated` and `total` count planning-level
   blocks, for "5 of 256 /56s".
   """
-  def space_map(%{prefix: %{prefix: cidr}, children: children} = node) do
+  def space_map(%{prefix: %{prefix: cidr}, children: children} = node, plan \\ []) do
     family = Cidr.family(cidr)
     bits = Cidr.bits(family)
     length = Cidr.length(cidr)
-    level = planning_level(node)
+    {level, _name} = planning_level(node, plan)
     cell_length = min(level, length + 8)
     base = Cidr.network_at(cidr, length)
     cell_size = 1 <<< (bits - cell_length)
@@ -113,7 +130,7 @@ defmodule Renga.IPAM.PrefixTree do
       end
 
     node
-    |> child_space()
+    |> child_space(plan)
     |> Map.merge(%{cell_length: cell_length, cells: cells})
   end
 

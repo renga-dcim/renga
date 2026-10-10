@@ -15,8 +15,8 @@ defmodule RengaWeb.PrefixComponents do
 
   @doc """
   Renders a prefix's usage: children allocated for a container ("5 of 256
-  /56s"), a utilization bar for a small IPv4 leaf, and an address count
-  otherwise, never a percentage.
+  /56s", or "5 of 256 hall /56s" at a planned level), a utilization bar for
+  a small IPv4 leaf, and an address count otherwise, never a percentage.
   """
   attr :usage, :map, required: true
   attr :id, :string, default: nil
@@ -25,7 +25,7 @@ defmodule RengaWeb.PrefixComponents do
     ~H"""
     <span id={@id} data-usage="children" class="font-mono text-xs tabular-nums text-fg-muted">
       <span class="text-fg">{delimit(@usage.allocated)}</span>
-      of {delimit(@usage.total)} /{@usage.level}s
+      of {delimit(@usage.total)} <.level length={@usage.level} name={@usage[:level_name]} />
     </span>
     """
   end
@@ -49,6 +49,19 @@ defmodule RengaWeb.PrefixComponents do
     <span id={@id} data-usage="count" class="font-mono text-xs tabular-nums text-fg-muted">
       {delimit(@usage.count)} {if @usage.count == 1, do: "address", else: "addresses"}
     </span>
+    """
+  end
+
+  @doc """
+  Renders blocks of a planning level in the plural: "/56s", or with the
+  addressing plan's name for a planned level, "hall /56s".
+  """
+  attr :length, :integer, required: true
+  attr :name, :string, default: nil
+
+  def level(assigns) do
+    ~H"""
+    <span :if={@name} class="font-sans">{@name} </span>/{@length}s
     """
   end
 
@@ -142,8 +155,8 @@ defmodule RengaWeb.PrefixComponents do
   defp cidr_text(text), do: text
 
   @doc "`IPv4` or `IPv6`."
-  def family_label(:ipv4), do: "IPv4"
-  def family_label(:ipv6), do: "IPv6"
+  def family_label(family) when family in [:ipv4, "ipv4"], do: "IPv4"
+  def family_label(family) when family in [:ipv6, "ipv6"], do: "IPv6"
 
   @doc "A routing table's name: `Global` or the VRF."
   def table_label(nil), do: "Global"

@@ -116,6 +116,50 @@ defmodule Renga.IPAM.PrefixTreeTest do
       assert Enum.at(map.cells, 1).child.prefix.id == "2001:db8:a:100::/56"
     end
 
+    test "an addressing plan sets the level a container counts and maps in" do
+      plan = [
+        %{family: "ipv6", prefix_length: 48, name: "site"},
+        %{family: "ipv6", prefix_length: 56, name: "hall"},
+        %{family: "ipv6", prefix_length: 64, name: "VLAN"}
+      ]
+
+      # Its children are /64s, but the plan's next level below a /48 is the
+      # /56 hall: two /64s in one hall count one block.
+      [node] =
+        PrefixTree.build([
+          prefix("2001:db8:a::/48"),
+          prefix("2001:db8:a:1::/64"),
+          prefix("2001:db8:a:2::/64"),
+          prefix("2001:db8:a:300::/64")
+        ])[{nil, :ipv6}]
+
+      assert PrefixTree.planning_level(node) == {64, nil}
+      assert PrefixTree.planning_level(node, plan) == {56, "hall"}
+
+      map = PrefixTree.space_map(node, plan)
+      assert {map.level, map.level_name, map.allocated, map.total} == {56, "hall", 2, 256}
+      assert Enum.map(Enum.take(map.cells, 4), & &1.state) == [:partial, :free, :free, :partial]
+
+      # Before any child, the plan sets the level instead of one octet down;
+      # past the plan's deepest level the guess applies again.
+      [empty] = PrefixTree.build([prefix("2001:db8:b::/48")])[{nil, :ipv6}]
+
+      assert PrefixTree.child_space(empty, plan) |> Map.take([:level, :total]) == %{
+               level: 56,
+               total: 256
+             }
+
+      [deep] = PrefixTree.build([prefix("2001:db8:c::/64")])[{nil, :ipv6}]
+      assert PrefixTree.planning_level(deep, plan) == {72, nil}
+
+      # Another family's levels never apply; its own do.
+      [v4] = PrefixTree.build([prefix("10.0.0.0/16")])[{nil, :ipv4}]
+      assert PrefixTree.planning_level(v4, plan) == {24, nil}
+
+      assert PrefixTree.planning_level(v4, [%{family: "ipv4", prefix_length: 20, name: "rack"}]) ==
+               {20, "rack"}
+    end
+
     test "coarsens the map when the planning level has too many cells" do
       [node] =
         PrefixTree.build([prefix("2001:db8::/32"), prefix("2001:db8:1::/48")])[{nil, :ipv6}]

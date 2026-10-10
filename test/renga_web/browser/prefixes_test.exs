@@ -1,10 +1,11 @@
 defmodule RengaWeb.Browser.PrefixesTest do
   @moduledoc """
   The prefix views in a real browser: a container's space map opens the
-  child a cell stands for, a prefix is created from the side panel, and at
-  phone width long IPv6 prefixes keep their usage beside or below them,
-  findings wrap instead of scrolling, and the edit controls are hidden
-  because prefixes are not edited on a phone.
+  child a cell stands for, a prefix and a planning level are created from
+  side panels, and at phone width long IPv6 prefixes keep their usage beside
+  or below them, the addressing plan and findings wrap instead of
+  scrolling, and the edit controls are hidden because prefixes are not
+  edited on a phone.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -83,6 +84,24 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("#flash-info", text: "Prefix 10.0.20.0/24 created")
     |> assert_has("#prefix-tree-ipv4", text: "10.0.20.0/24")
     |> refute_has("#prefix-panel [role=dialog]")
+  end
+
+  test "an admin adds a planning level from the plan panel", context do
+    context.conn
+    |> visit("/network/prefixes?family=ipv6")
+    |> assert_has("body .phx-connected")
+    |> PhoenixTest.Playwright.click("#edit-plan")
+    |> assert_has("#plan-panel [role=dialog]", text: "Addressing plan")
+    |> fill_in("#plan-level-form input[name='plan_level[prefix_length]']", "Prefix length",
+      with: "52"
+    )
+    |> fill_in("#plan-level-form input[name='plan_level[name]']", "Each block is a", with: "zone")
+    |> PhoenixTest.Playwright.click("#add-plan-level")
+    |> assert_has("#flash-info", text: "/52 zone added to the plan")
+    |> assert_has("#plan-panel-ipv6", text: "zone")
+    |> assert_has("#addressing-plan-ipv6", text: "/52 zone")
+    |> visit("/network/prefixes/#{context.site.id}")
+    |> assert_has("#prefix-space-summary", text: "1 of 16 zone /52s allocated")
   end
 
   test "edit validation, save, and delete cancellation and confirmation", context do
@@ -176,10 +195,37 @@ defmodule RengaWeb.Browser.PrefixesTest do
          viewport: %{width: 390, height: 844}
        ]
   test "prefixes are readable but not editable on a phone", context do
+    {:ok, _} =
+      Renga.IPAM.create_plan_level(context.scope, %{
+        family: "ipv6",
+        prefix_length: 48,
+        name: "site"
+      })
+
+    {:ok, _} =
+      Renga.IPAM.create_plan_level(context.scope, %{
+        family: "ipv6",
+        prefix_length: 56,
+        name: "hall"
+      })
+
+    {:ok, _} =
+      Renga.IPAM.create_plan_level(context.scope, %{
+        family: "ipv6",
+        prefix_length: 64,
+        name: "VLAN"
+      })
+
     context.conn
     |> visit("/network/prefixes")
     |> assert_has("body .phx-connected")
     |> evaluate(visible_js("new-prefix"), &assert(&1 == false))
+    |> evaluate(visible_js("edit-plan"), &assert(&1 == false))
+    |> evaluate(visible_js("addressing-plan-ipv6"), &assert(&1 == true))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
     |> visit("/network/prefixes/#{context.hall.id}")
     |> assert_has("body .phx-connected")
     |> evaluate(visible_js("edit-prefix"), &assert(&1 == false))

@@ -558,8 +558,11 @@ defmodule Renga.IPAMTest do
     usage = fn rows, prefix -> Enum.find(rows, &(&1.node.prefix.id == prefix.id)).usage end
 
     # An empty container has nothing allocated, one octet deeper.
-    assert usage.(ipv4, empty) == %{kind: :children, allocated: 0, total: 256, level: 24}
-    assert usage.(ipv6, v6_empty) == %{kind: :children, allocated: 0, total: 256, level: 56}
+    assert usage.(ipv4, empty) ==
+             %{kind: :children, allocated: 0, total: 256, level: 24, level_name: nil}
+
+    assert usage.(ipv6, v6_empty) ==
+             %{kind: :children, allocated: 0, total: 256, level: 56, level_name: nil}
 
     # An active parent counts its hosts, inside children or not, though it is
     # still shown as child space.
