@@ -567,6 +567,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_positive_integer(interface, "speed_mbps", "#{path}.speed_mbps")
     |> validate_optional_map(interface, "metadata", "#{path}.metadata")
     |> validate_interface_addresses(interface, path)
+    |> validate_interface_routing_domain(interface, path)
     |> validate_interface_vlans(interface, path)
     |> validate_interface_neighbors(interface, path)
     |> validate_interface_relationships(interface, path)
@@ -619,6 +620,52 @@ defmodule Renga.Inventory.AgentPayload do
 
       _invalid ->
         [error("#{path}.addresses", "must be a list") | errors]
+    end
+  end
+
+  # A routing-domain claim (RFD 4, "Observation correlation"): an object
+  # naming the source-local domain, or null to withdraw the source's claim.
+  # Absent says nothing.
+  defp validate_interface_routing_domain(errors, interface, path) do
+    path = "#{path}.routing_domain"
+
+    case Map.fetch(interface, "routing_domain") do
+      :error ->
+        errors
+
+      {:ok, nil} ->
+        errors
+
+      {:ok, %{} = domain} ->
+        errors
+        |> validate_routing_domain_key(domain, "#{path}.key")
+        |> validate_optional_routing_domain_string(domain, "route_distinguisher", path)
+        |> validate_optional_map(domain, "metadata", "#{path}.metadata")
+
+      {:ok, _invalid} ->
+        [error(path, "must be an object or null") | errors]
+    end
+  end
+
+  defp validate_routing_domain_key(errors, domain, path) do
+    case Map.get(domain, "key") do
+      key when is_binary(key) ->
+        cond do
+          String.trim(key) == "" -> [error(path, "must not be blank") | errors]
+          String.length(key) > 255 -> [error(path, "must be at most 255 code points") | errors]
+          true -> errors
+        end
+
+      _missing ->
+        [error(path, "must be a string") | errors]
+    end
+  end
+
+  defp validate_optional_routing_domain_string(errors, domain, field, path) do
+    case Map.get(domain, field) do
+      nil -> errors
+      value when is_binary(value) and byte_size(value) <= 255 -> errors
+      _invalid -> [error("#{path}.#{field}", "must be a string of at most 255 bytes") | errors]
     end
   end
 

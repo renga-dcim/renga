@@ -130,6 +130,16 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
   test "rollback retains the presence watermark so old reports cannot revive historical masks",
        %{repo: repo} do
     Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
+
+    # The current application runs against this older schema here, so give
+    # it the later columns its schemas read and write; none of them takes
+    # part in the host migration or its rollback.
+    {:ok, _} =
+      query(repo, """
+      ALTER TABLE sources
+        ADD COLUMN authoritative_routing_domains boolean NOT NULL DEFAULT false
+      """)
+
     Renga.Repo.put_dynamic_repo(repo)
 
     try do

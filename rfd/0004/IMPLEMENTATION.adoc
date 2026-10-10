@@ -70,7 +70,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 6: Routing domains
 
-* [ ] Add observation-linked routing-domain claims, authoritative source
+* [x] Add observation-linked routing-domain claims, authoritative source
   capability, external-domain mapping, stale membership handling, and an
   unmapped-domain outcome; absent claims remain global.
 * [ ] Define finding precedence and correlate active observed assignments by

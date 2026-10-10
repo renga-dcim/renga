@@ -264,6 +264,20 @@ managed VRF through a stable external identifier, route distinguisher, or an
 explicit organization-scoped source mapping. An explicit but unmapped key
 produces `unmapped_routing_domain` and is not silently treated as global.
 
+A claim is an interface's `routing_domain`: an object with the source-local
+`key` and an optional `route_distinguisher`. `null` withdraws the source's
+claim, and an absent field says nothing, so earlier claims stand. Each source
+has at most one active claim per interface: a newer report supersedes or
+withdraws it, and a late replay of an older report is stored already stale.
+The current claim is the newest active one, preferring authoritative
+sources. Its key resolves, first match wins, through an explicit mapping for
+that source and key (to a VRF or the global table), a VRF with the same
+route distinguisher, a VRF with the same name ignoring case, and the
+reserved key `default` for the global table; anything else is unmapped.
+Host agents and switch pollers read a device's own configuration, so their
+claims are authoritative unless an owner or admin says otherwise; other
+sources are not.
+
 Correlation first resolves the namespace, then compares normalized host values.
 The reported prefix length remains evidence and is compared with the
 most-specific managed prefix in that namespace. A `wrong_vrf` finding requires

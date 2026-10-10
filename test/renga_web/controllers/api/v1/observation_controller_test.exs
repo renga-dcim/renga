@@ -699,6 +699,35 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert {:ok, _attrs} = AgentPayload.validate_observation(payload, source)
     end
 
+    test "validates an interface's routing-domain claim" do
+      %{source: source} = source_fixture()
+
+      with_domain = fn domain ->
+        source
+        |> valid_observation_payload(%{"observation_id" => "routing-domain"})
+        |> put_in(
+          ["resources", Access.at(0), "interfaces", Access.at(0), "routing_domain"],
+          domain
+        )
+        |> AgentPayload.validate_observation(source)
+      end
+
+      assert {:ok, _} = with_domain.(%{"key" => "blue", "route_distinguisher" => "65000:1"})
+      # Null withdraws the source's claim.
+      assert {:ok, _} = with_domain.(nil)
+
+      for {domain, message} <- [
+            {%{"key" => " "}, "must not be blank"},
+            {%{"route_distinguisher" => "65000:1"}, "must be a string"},
+            {%{"key" => "blue", "route_distinguisher" => 1},
+             "must be a string of at most 255 bytes"},
+            {"blue", "must be an object or null"}
+          ] do
+        assert {:error, errors} = with_domain.(domain)
+        assert Enum.any?(errors, &(&1.message == message)), inspect({domain, errors})
+      end
+    end
+
     test "rejects explicit null interface kind and status before raw storage" do
       %{source: source, token: token} = source_fixture()
 
