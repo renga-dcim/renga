@@ -18,6 +18,7 @@ defmodule RengaWeb.ResourceLive.Show do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   import RengaWeb.InventoryComponents
+  import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.RequestComponents, only: [pending_request: 1]
 
   alias Renga.Catalog
@@ -303,7 +304,7 @@ defmodule RengaWeb.ResourceLive.Show do
               exceptions={@exceptions}
             />
           <% :network -> %>
-            <.network resource={@resource} />
+            <.network resource={@resource} address_findings={@address_findings} />
           <% :sources -> %>
             <.sources resource={@resource} signals={@signals} />
           <% :activity -> %>
@@ -882,6 +883,7 @@ defmodule RengaWeb.ResourceLive.Show do
   end
 
   attr :resource, :map, required: true
+  attr :address_findings, :map, default: %{}
 
   defp network(assigns) do
     ~H"""
@@ -907,6 +909,12 @@ defmodule RengaWeb.ResourceLive.Show do
           </span>
           <span :if={interface.addresses == []} class="text-xs text-fg-muted">No addresses</span>
         </div>
+        <.finding_list
+          :if={Map.get(@address_findings, interface.id, []) != []}
+          id={"interface-#{interface.id}-address-findings"}
+          findings={Map.fetch!(@address_findings, interface.id)}
+          show_where={false}
+        />
         <div
           id={"interface-#{interface.id}-layer2-links"}
           class="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-line pt-3"
@@ -1193,8 +1201,20 @@ defmodule RengaWeb.ResourceLive.Show do
 
     assign(socket,
       open_finding_count: open_count,
-      exceptions: Findings.list_resource_exceptions(scope, resource.id)
+      exceptions: Findings.list_resource_exceptions(scope, resource.id),
+      address_findings: interface_address_findings(scope, resource)
     )
+  end
+
+  # Open address findings on each of the resource's interfaces, shown beside
+  # the addresses they are about.
+  defp interface_address_findings(scope, resource) do
+    {:ok, ipv4} = Renga.Types.Inet.cast("0.0.0.0/0")
+    {:ok, ipv6} = Renga.Types.Inet.cast("::/0")
+
+    scope
+    |> Findings.list_address_findings([ipv4, ipv6], resource_id: resource.id)
+    |> Enum.group_by(& &1.interface_id)
   end
 
   defp assign_provenance(socket) do

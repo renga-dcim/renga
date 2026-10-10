@@ -3,7 +3,8 @@ defmodule RengaWeb.Browser.PrefixesTest do
   The prefix views in a real browser: a container's space map opens the
   child a cell stands for, a prefix is created from the side panel, and at
   phone width long IPv6 prefixes keep their usage beside or below them,
-  with the edit controls hidden because prefixes are not edited on a phone.
+  findings wrap instead of scrolling, and the edit controls are hidden
+  because prefixes are not edited on a phone.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -183,6 +184,31 @@ defmodule RengaWeb.Browser.PrefixesTest do
     |> assert_has("body .phx-connected")
     |> evaluate(visible_js("edit-prefix"), &assert(&1 == false))
     |> evaluate(visible_js("delete-prefix"), &assert(&1 == false))
+  end
+
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "a strict prefix's findings stay readable on a phone", context do
+    prefix =
+      prefix_fixture(context.scope, "2001:db8:a:300:1::/80", %{strict: true})
+
+    {_host, ports} =
+      device_fixture(context.scope, "server", "a-long-hostname-for-wrapping", ~w(eth0))
+
+    address_fixture(context.scope, ports["eth0"], "2001:db8:a:300:1:abcd:ef01:2345/80")
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(context.scope.organization_id)
+
+    context.conn
+    |> visit("/network/prefixes/#{prefix.id}")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#prefix-findings", text: "Unmanaged in strict prefix")
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
   end
 
   @tag browser_context_opts: [

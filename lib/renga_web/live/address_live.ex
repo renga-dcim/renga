@@ -20,6 +20,9 @@ defmodule RengaWeb.AddressLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  import RengaWeb.FindingComponents, only: [finding_list: 1]
+
+  alias Renga.Findings
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
@@ -275,6 +278,7 @@ defmodule RengaWeb.AddressLive do
 
     assign(socket,
       addresses: addresses,
+      findings: address_findings(scope, addresses),
       truncated?: length(addresses) == IPAM.address_list_limit(),
       filter_form:
         to_form(
@@ -287,6 +291,29 @@ defmodule RengaWeb.AddressLive do
         )
     )
   end
+
+  # Open address findings about the listed hosts, by host. Findings compare
+  # observed addresses, which are global until collectors report routing
+  # domains, so only current global addresses can have any.
+  defp address_findings(scope, addresses) do
+    hosts =
+      for %{vrf_id: nil, resource: %{lifecycle_state: state}} = address <- addresses,
+          state != "retired",
+          do: %{address.address | netmask: nil}
+
+    if hosts == [] do
+      %{}
+    else
+      scope
+      |> Findings.list_address_findings(hosts)
+      |> Enum.group_by(&(&1.details["address"] |> String.split("/") |> hd()))
+    end
+  end
+
+  defp findings_for(findings, %IpAddress{vrf_id: nil} = address),
+    do: Map.get(findings, host(address), [])
+
+  defp findings_for(_findings, _address), do: []
 
   # Selects use stable tagged identities, so a VRF named `global` cannot
   # collide with the Global table. Existing name-based links remain aliases.
@@ -393,6 +420,15 @@ defmodule RengaWeb.AddressLive do
             <span :if={address.description} class="block text-xs wrap-anywhere text-fg-subtle">
               {address.description}
             </span>
+            <.link
+              :if={findings_for(@findings, address) != []}
+              id={"address-#{address.id}-findings"}
+              navigate={finding_path(findings_for(@findings, address))}
+              class="mt-1 inline-flex items-center gap-1 text-xs text-warn-text hover:underline"
+            >
+              <.icon name="hero-exclamation-triangle-mini" class="size-3.5" />
+              {finding_count(findings_for(@findings, address))}
+            </.link>
             <%!-- On a phone the state and assignments move under the
                   address, so one column carries the row. --%>
             <span class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 sm:hidden">
@@ -569,6 +605,15 @@ defmodule RengaWeb.AddressLive do
         </.form>
 
         <section
+          :if={@editing && findings_for(@findings, @editing) != []}
+          id="address-findings"
+          class="mt-6 space-y-2 border-t border-edge pt-4"
+        >
+          <h3 class="text-sm font-semibold text-fg">Findings</h3>
+          <.finding_list id="address-finding-list" findings={findings_for(@findings, @editing)} />
+        </section>
+
+        <section
           :if={@editing}
           id="address-assignments"
           class="mt-6 space-y-3 border-t border-edge pt-4"
@@ -673,6 +718,13 @@ defmodule RengaWeb.AddressLive do
   end
 
   defp current?(address), do: address.resource.lifecycle_state != "retired"
+
+  defp finding_count([_one]), do: "1 finding"
+  defp finding_count(findings), do: "#{length(findings)} findings"
+
+  # One finding opens in the Inbox; several open the Inbox's address queue.
+  defp finding_path([finding]), do: ~p"/inbox?#{[finding: "address:#{finding.id}"]}"
+  defp finding_path(_findings), do: ~p"/inbox?#{[domain: "address"]}"
 
   defp host(%IpAddress{address: address}),
     do: Cidr.format(%{address | netmask: Cidr.bits(Cidr.family(address))})

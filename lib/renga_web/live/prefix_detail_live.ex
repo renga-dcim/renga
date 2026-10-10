@@ -20,8 +20,10 @@ defmodule RengaWeb.PrefixDetailLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.PrefixComponents
 
+  alias Renga.Findings
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
@@ -200,12 +202,24 @@ defmodule RengaWeb.PrefixDetailLive do
 
     assign(socket,
       view: view,
+      findings: prefix_findings(scope, socket.assigns.prefix),
       family: Cidr.family(socket.assigns.prefix.prefix),
       coverage:
         view.vlans
         |> Enum.map(&{&1, IPAM.vlan_dual_stack(scope, &1.id)})
         |> Enum.reject(fn {_vlan, coverage} -> is_nil(coverage) end)
     )
+  end
+
+  # Address findings compare observed addresses, which are global until
+  # collectors report routing domains, so a VRF prefix has none yet. Open,
+  # snoozed, and excepted findings all describe the prefix as it is.
+  defp prefix_findings(_scope, %{vrf_id: vrf_id}) when not is_nil(vrf_id), do: []
+
+  defp prefix_findings(scope, prefix) do
+    Enum.flat_map(~w(open snoozed excepted), fn state ->
+      Findings.list_address_findings(scope, [prefix.prefix], state: state)
+    end)
   end
 
   @impl true
@@ -274,6 +288,15 @@ defmodule RengaWeb.PrefixDetailLive do
             global table and are not counted in {table_label(@prefix.vrf)}.
           </span>
         </p>
+
+        <section :if={@findings != []} id="prefix-findings" class="mb-6 space-y-2">
+          <h2 class="text-sm font-semibold text-fg">
+            {length(@findings)} address {if length(@findings) == 1,
+              do: "finding",
+              else: "findings"}
+          </h2>
+          <.finding_list id="prefix-finding-list" findings={@findings} />
+        </section>
 
         <%= case @view.mode do %>
           <% :container -> %>
