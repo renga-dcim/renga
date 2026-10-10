@@ -2150,6 +2150,33 @@ defmodule Renga.InventoryTest do
       assert relationship_evidence.observed_at == context.observation.observed_at
     end
 
+    test "one observation keeps each reported mask of an address once", context do
+      report = fn address ->
+        Inventory.create_address_evidence(
+          context.scope,
+          context.source.id,
+          context.observation.id,
+          context.address.id,
+          %{address: address}
+        )
+      end
+
+      assert {:ok, _} = report.("192.0.2.10/24")
+      assert {:ok, _} = report.("192.0.2.10/32")
+
+      assert {:error, changeset} = report.("192.0.2.10/24")
+      assert {"has already been taken", _} = changeset.errors[:organization_id]
+
+      reported =
+        AddressEvidence
+        |> Repo.all()
+        |> Enum.filter(&(&1.address_id == context.address.id))
+        |> Enum.map(&Renga.IPAM.Cidr.format(&1.address))
+
+      # A host-length report formats as the bare host.
+      assert Enum.sort(reported) == ["192.0.2.10", "192.0.2.10/24"]
+    end
+
     test "evidence timestamps are derived from the immutable observation", context do
       supplied_observed_at = ~U[2099-01-01 00:00:00Z]
 

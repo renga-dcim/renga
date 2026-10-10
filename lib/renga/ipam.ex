@@ -1011,7 +1011,8 @@ defmodule Renga.IPAM do
         Repo.get_by(AddressEvidence,
           organization_id: organization_id,
           address_id: observed.id,
-          observation_id: observation_id
+          observation_id: observation_id,
+          address: observed.address
         )
 
       metadata =
@@ -1289,10 +1290,12 @@ defmodule Renga.IPAM do
       [address],
       fragment("host(?)::inet <<= ?", address.address, type(^cidr, Renga.Types.Cidr))
     )
-    # Use the winning presence observation, never another source's historical hints.
+    # Use the winning presence observation's report of the current mask,
+    # never another source's historical hints or another mask's report.
     |> join(:left, [address], evidence in AddressEvidence,
       on:
         evidence.organization_id == address.organization_id and evidence.address_id == address.id and
+          evidence.address == address.address and
           fragment(
             "?::text = ?->'presence_owner'->>'observation_id'",
             evidence.observation_id,

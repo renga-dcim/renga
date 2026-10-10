@@ -1033,11 +1033,14 @@ defmodule Renga.Inventory.Reconciler.Projections do
           overrides
         )
 
+      # Replays are idempotent per reported address, so distinct masks of
+      # one host in one observation each keep their evidence.
       existing =
         Repo.get_by(AddressEvidence,
           organization_id: scope.organization_id,
           observation_id: observation.id,
-          address_id: address.id
+          address_id: address.id,
+          address: cast_address
         )
 
       unless existing do
