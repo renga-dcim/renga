@@ -30,11 +30,16 @@ defmodule RengaWeb.AddressLive do
   alias Renga.IPAM.IpAddress
 
   @reload_after_ms 400
+  @expiry_refresh_ms 30_000
 
   @impl true
   def mount(_params, _session, socket) do
     scope = socket.assigns.current_scope
-    if connected?(socket), do: Changes.subscribe(scope)
+
+    if connected?(socket) do
+      Changes.subscribe(scope)
+      Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    end
 
     {:ok,
      socket
@@ -85,7 +90,8 @@ defmodule RengaWeb.AddressLive do
      socket
      |> clear_flash()
      |> reset_panel(ip_address)
-     |> assign(panel: :edit, editing: ip_address)}
+     |> assign(panel: :edit, editing: ip_address)
+     |> load_address_findings()}
   rescue
     Ecto.NoResultsError -> {:noreply, address_gone(socket)}
     Ecto.Query.CastError -> {:noreply, address_gone(socket)}
@@ -229,6 +235,11 @@ defmodule RengaWeb.AddressLive do
     {:noreply, socket |> assign(:reload_timer, nil) |> load_addresses()}
   end
 
+  def handle_info(:refresh_expiry, socket) do
+    Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
+    {:noreply, load_address_findings(socket)}
+  end
+
   defp address_gone(socket, message \\ "That address is gone") do
     socket
     |> put_flash(:error, message)
@@ -278,7 +289,6 @@ defmodule RengaWeb.AddressLive do
 
     assign(socket,
       addresses: addresses,
-      findings: address_findings(scope, addresses),
       truncated?: length(addresses) == IPAM.address_list_limit(),
       filter_form:
         to_form(
@@ -290,30 +300,38 @@ defmodule RengaWeb.AddressLive do
           as: :filter
         )
     )
+    |> load_address_findings()
   end
 
   # Open address findings about the listed hosts, by host. Findings compare
   # observed addresses, which are global until collectors report routing
   # domains, so only current global addresses can have any.
-  defp address_findings(scope, addresses) do
-    hosts =
-      for %{vrf_id: nil, resource: %{lifecycle_state: state}} = address <- addresses,
-          state != "retired",
-          do: %{address.address | netmask: nil}
+  defp load_address_findings(socket) do
+    %{current_scope: scope, addresses: addresses, editing: editing} = socket.assigns
+    hosts = finding_hosts(addresses)
 
-    if hosts == [] do
-      %{}
-    else
-      scope
-      |> Findings.list_address_findings(hosts)
-      |> Enum.group_by(&(&1.details["address"] |> String.split("/") |> hd()))
-    end
+    {editing_findings, editing_total} =
+      if editing,
+        do: Findings.list_address_findings(scope, finding_hosts([editing])),
+        else: {[], 0}
+
+    assign(socket,
+      findings: Findings.count_address_findings(scope, hosts),
+      editing_findings: editing_findings,
+      editing_finding_total: editing_total
+    )
+  end
+
+  defp finding_hosts(addresses) do
+    for %{vrf_id: nil, resource: %{lifecycle_state: state}} = address <- addresses,
+        state != "retired",
+        do: %{address.address | netmask: nil}
   end
 
   defp findings_for(findings, %IpAddress{vrf_id: nil} = address),
-    do: Map.get(findings, host(address), [])
+    do: Map.get(findings, host(address))
 
-  defp findings_for(_findings, _address), do: []
+  defp findings_for(_findings, _address), do: nil
 
   # Selects use stable tagged identities, so a VRF named `global` cannot
   # collide with the Global table. Existing name-based links remain aliases.
@@ -421,7 +439,7 @@ defmodule RengaWeb.AddressLive do
               {address.description}
             </span>
             <.link
-              :if={findings_for(@findings, address) != []}
+              :if={findings_for(@findings, address)}
               id={"address-#{address.id}-findings"}
               navigate={finding_path(findings_for(@findings, address))}
               class="mt-1 inline-flex items-center gap-1 text-xs text-warn-text hover:underline"
@@ -605,12 +623,16 @@ defmodule RengaWeb.AddressLive do
         </.form>
 
         <section
-          :if={@editing && findings_for(@findings, @editing) != []}
+          :if={@editing && @editing_finding_total > 0}
           id="address-findings"
           class="mt-6 space-y-2 border-t border-edge pt-4"
         >
           <h3 class="text-sm font-semibold text-fg">Findings</h3>
-          <.finding_list id="address-finding-list" findings={findings_for(@findings, @editing)} />
+          <.finding_list
+            id="address-finding-list"
+            findings={@editing_findings}
+            total={@editing_finding_total}
+          />
         </section>
 
         <section
@@ -719,11 +741,11 @@ defmodule RengaWeb.AddressLive do
 
   defp current?(address), do: address.resource.lifecycle_state != "retired"
 
-  defp finding_count([_one]), do: "1 finding"
-  defp finding_count(findings), do: "#{length(findings)} findings"
+  defp finding_count(%{count: 1}), do: "1 finding"
+  defp finding_count(%{count: count}), do: "#{count} findings"
 
   # One finding opens in the Inbox; several open the Inbox's address queue.
-  defp finding_path([finding]), do: ~p"/inbox?#{[finding: "address:#{finding.id}"]}"
+  defp finding_path(%{count: 1, id: id}), do: ~p"/inbox?#{[finding: "address:#{id}"]}"
   defp finding_path(_findings), do: ~p"/inbox?#{[domain: "address"]}"
 
   defp host(%IpAddress{address: address}),

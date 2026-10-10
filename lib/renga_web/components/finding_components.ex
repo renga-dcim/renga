@@ -27,6 +27,7 @@ defmodule RengaWeb.FindingComponents do
   attr :id, :string, required: true
   attr :findings, :list, required: true
   attr :show_where, :boolean, default: true
+  attr :total, :integer, default: 0
 
   def finding_list(assigns) do
     ~H"""
@@ -47,8 +48,10 @@ defmodule RengaWeb.FindingComponents do
         >
           {kind_label(finding.kind)}
         </.link>
-        <span class="min-w-0 flex-1 break-words text-fg-muted">{finding.message}</span>
-        <span :if={@show_where} class="font-mono text-xs text-fg-muted">
+        <span class="min-w-0 basis-full break-words text-fg-muted sm:flex-1 sm:basis-0">
+          {finding.message}
+        </span>
+        <span :if={@show_where} class="min-w-0 break-words font-mono text-xs text-fg-muted">
           {finding.interface_name} · {finding.resource.display_name || finding.resource.name}
         </span>
         <span
@@ -57,6 +60,16 @@ defmodule RengaWeb.FindingComponents do
         >
           {state_label(finding.state)}
         </span>
+      </li>
+      <li
+        :if={@total > length(@findings)}
+        id={"#{@id}-truncated"}
+        class="px-3 py-2 text-sm text-fg-muted"
+      >
+        Showing first {length(@findings)} of {@total} findings.
+        <.link navigate={~p"/inbox?#{[domain: "address"]}"} class="text-link hover:underline">
+          View all in Inbox
+        </.link>
       </li>
     </ul>
     """

@@ -125,11 +125,39 @@ defmodule Renga.Findings do
 
   Options are those of `list_findings/2` (`:state`, `:resource_id`, and so
   on). Unlike the Inbox queue it is not paged, but stops at
-  #{@address_finding_limit} findings.
+  #{@address_finding_limit} findings. Returns `{findings, total}` so a
+  bounded detail list cannot be mistaken for all the affected records.
   """
   def list_address_findings(%Scope{} = scope, networks, opts \\ []) do
     now = Renga.Time.utc_now_ms()
+    query = address_query(scope, networks, opts, now)
+    total = Repo.aggregate(query, :count)
 
+    findings =
+      query
+      |> order_for(Keyword.get(opts, :state, "open"))
+      |> limit(@address_finding_limit)
+      |> select_finding()
+      |> Repo.all()
+      |> build_findings(now)
+
+    {findings, total}
+  end
+
+  @doc "Complete per-host counts and a singleton link target, independent of detail limits."
+  def count_address_findings(%Scope{} = scope, networks) do
+    scope
+    |> address_query(networks, [], Renga.Time.utc_now_ms())
+    |> group_by([finding: finding], fragment("host((?->>'address')::inet)", finding.details))
+    |> select([finding: finding], {
+      fragment("host((?->>'address')::inet)", finding.details),
+      %{count: count(finding.id), id: min(fragment("?::text", finding.id))}
+    })
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  defp address_query(scope, networks, opts, now) do
     scope
     |> filtered_query(Keyword.put(opts, :domain, "address"), now)
     |> where(
@@ -140,11 +168,6 @@ defmodule Renga.Findings do
         type(^networks, {:array, Renga.Types.Inet})
       )
     )
-    |> order_for(Keyword.get(opts, :state, "open"))
-    |> limit(@address_finding_limit)
-    |> select_finding()
-    |> Repo.all()
-    |> build_findings(now)
   end
 
   @doc "Page size used by `list_findings/2`."

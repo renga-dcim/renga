@@ -304,7 +304,11 @@ defmodule RengaWeb.ResourceLive.Show do
               exceptions={@exceptions}
             />
           <% :network -> %>
-            <.network resource={@resource} address_findings={@address_findings} />
+            <.network
+              resource={@resource}
+              address_findings={@address_findings}
+              address_finding_total={@address_finding_total}
+            />
           <% :sources -> %>
             <.sources resource={@resource} signals={@signals} />
           <% :activity -> %>
@@ -884,10 +888,24 @@ defmodule RengaWeb.ResourceLive.Show do
 
   attr :resource, :map, required: true
   attr :address_findings, :map, default: %{}
+  attr :address_finding_total, :integer, default: 0
 
   defp network(assigns) do
     ~H"""
     <section id="resource-interfaces" class="space-y-3">
+      <p
+        :if={@address_finding_total > Enum.sum(Enum.map(Map.values(@address_findings), &length/1))}
+        id="resource-address-findings-truncated"
+        class="text-sm text-fg-muted"
+      >
+        Showing first {Enum.sum(Enum.map(Map.values(@address_findings), &length/1))} of {@address_finding_total} address findings; some interfaces may have more.
+        <.link
+          navigate={~p"/inbox?#{[domain: "address", resource: @resource.id]}"}
+          class="text-link hover:underline"
+        >
+          View all in Inbox
+        </.link>
+      </p>
       <p :if={@resource.interfaces == []} class="text-sm text-fg-muted">No interfaces reported.</p>
       <div
         :for={interface <- @resource.interfaces}
@@ -1198,11 +1216,13 @@ defmodule RengaWeb.ResourceLive.Show do
   defp assign_findings(socket) do
     %{current_scope: scope, resource: resource} = socket.assigns
     {_findings, open_count} = Findings.list_findings(scope, resource_id: resource.id)
+    {address_findings, address_finding_total} = interface_address_findings(scope, resource)
 
     assign(socket,
       open_finding_count: open_count,
       exceptions: Findings.list_resource_exceptions(scope, resource.id),
-      address_findings: interface_address_findings(scope, resource)
+      address_findings: address_findings,
+      address_finding_total: address_finding_total
     )
   end
 
@@ -1212,9 +1232,10 @@ defmodule RengaWeb.ResourceLive.Show do
     {:ok, ipv4} = Renga.Types.Inet.cast("0.0.0.0/0")
     {:ok, ipv6} = Renga.Types.Inet.cast("::/0")
 
-    scope
-    |> Findings.list_address_findings([ipv4, ipv6], resource_id: resource.id)
-    |> Enum.group_by(& &1.interface_id)
+    {findings, total} =
+      Findings.list_address_findings(scope, [ipv4, ipv6], resource_id: resource.id)
+
+    {Enum.group_by(findings, & &1.interface_id), total}
   end
 
   defp assign_provenance(socket) do

@@ -199,12 +199,42 @@ defmodule RengaWeb.Browser.PrefixesTest do
       device_fixture(context.scope, "server", "a-long-hostname-for-wrapping", ~w(eth0))
 
     address_fixture(context.scope, ports["eth0"], "2001:db8:a:300:1:abcd:ef01:2345/80")
+
+    {_other, other_ports} =
+      device_fixture(context.scope, "server", "another-long-hostname", ~w(eth0))
+
+    address_fixture(context.scope, other_ports["eth0"], "2001:db8:a:300:1:abcd:ef01:2345/80")
     {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(context.scope.organization_id)
+
+    [first, second | _] = Renga.Repo.all(Renga.IPAM.AddressFinding)
+
+    {:ok, _} =
+      Renga.Findings.snooze(
+        context.scope,
+        Renga.Findings.get_finding!(context.scope, "address", first.id),
+        DateTime.add(Renga.Time.utc_now_ms(), 3600)
+      )
+
+    {:ok, _} =
+      Renga.Findings.accept_exception(
+        context.scope,
+        Renga.Findings.get_finding!(context.scope, "address", second.id),
+        %{"exception_reason" => "Temporary"}
+      )
 
     context.conn
     |> visit("/network/prefixes/#{prefix.id}")
     |> assert_has("body .phx-connected")
     |> assert_has("#prefix-findings", text: "Unmanaged in strict prefix")
+    |> assert_has("#prefix-findings", text: "Snoozed")
+    |> assert_has("#prefix-findings", text: "Exception")
+    |> evaluate(
+      "Array.from(document.querySelectorAll('#prefix-finding-list > li > span.basis-full')).map(el => el.getBoundingClientRect().width >= 200 && el.getBoundingClientRect().height < 160)",
+      fn checks ->
+        assert length(checks) == 4
+        assert Enum.all?(checks)
+      end
+    )
     |> evaluate(
       "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
       &assert(&1 == true)
