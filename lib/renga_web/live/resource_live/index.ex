@@ -304,6 +304,7 @@ defmodule RengaWeb.ResourceLive.Index do
       resource_count: result.total,
       page: result.page,
       has_next_page?: result.has_next?,
+      lifecycle_editable?: Inventory.resources_lifecycle_editable?(scope, query.selected),
       page_ids: Enum.map(result.entries, & &1.id)
     )
     |> stream(:resources, with_group_headers(result.entries, query.group, group_counts),
@@ -531,6 +532,7 @@ defmodule RengaWeb.ResourceLive.Index do
           :if={@query.selected != []}
           count={length(@query.selected)}
           can_manage?={@can_manage?}
+          lifecycle_editable?={@lifecycle_editable?}
           teams={@teams}
         />
       </section>
@@ -694,6 +696,7 @@ defmodule RengaWeb.ResourceLive.Index do
   # in a floating bar). Each lifecycle choice confirms with the count first.
   attr :count, :integer, required: true
   attr :can_manage?, :boolean, required: true
+  attr :lifecycle_editable?, :boolean, required: true
   attr :teams, :list, required: true
 
   defp bulk_bar(assigns) do
@@ -711,7 +714,7 @@ defmodule RengaWeb.ResourceLive.Index do
       </span>
       <span class="flex-1" />
       <%= if @can_manage? do %>
-        <details id="bulk-lifecycle-menu" class="relative">
+        <details :if={@lifecycle_editable?} id="bulk-lifecycle-menu" class="relative">
           <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-accent-fg hover:bg-accent-hover">
             Set lifecycle <.icon name="hero-chevron-up-mini" class="size-4" />
           </summary>
@@ -733,6 +736,9 @@ defmodule RengaWeb.ResourceLive.Index do
             </button>
           </div>
         </details>
+        <span :if={!@lifecycle_editable?} id="bulk-lifecycle-ipam" class="text-xs text-fg-muted">
+          Release IP addresses through IPAM
+        </span>
         <form
           :if={@teams != []}
           id="bulk-owner-form"
@@ -763,7 +769,7 @@ defmodule RengaWeb.ResourceLive.Index do
 
       <.confirm_dialog
         :for={{state, label, _meaning} <- @lifecycles}
-        :if={@can_manage?}
+        :if={@can_manage? && @lifecycle_editable?}
         id={"bulk-lifecycle-#{state}"}
         title={"Set #{count_label(@count)} to #{label}?"}
         confirm_label={"Set to #{label}"}

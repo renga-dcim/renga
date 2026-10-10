@@ -376,6 +376,13 @@ defmodule Renga.Inventory do
     end)
   end
 
+  # Release must end assignments and audit them before retiring the envelope.
+  defp protect_managed_resource_fields(changeset, "ip_address") do
+    if Ecto.Changeset.changed?(changeset, :lifecycle_state),
+      do: Ecto.Changeset.add_error(changeset, :lifecycle_state, "is managed by IPAM"),
+      else: changeset
+  end
+
   defp protect_managed_resource_fields(changeset, _kind), do: changeset
 
   defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
@@ -1246,6 +1253,17 @@ defmodule Renga.Inventory do
       result ->
         Changes.broadcast(result, scope.organization_id)
     end
+  end
+
+  @doc "Whether a selection can use generic lifecycle controls rather than IPAM Release."
+  def resources_lifecycle_editable?(%Scope{organization_id: organization_id}, ids) do
+    ids = Enum.flat_map(ids, &List.wrap(Ecto.UUID.cast(&1) |> ok_value()))
+
+    not Repo.exists?(
+      from resource in Resource,
+        where: resource.organization_id == ^organization_id and resource.id in ^ids,
+        where: resource.kind == "ip_address"
+    )
   end
 
   @doc """

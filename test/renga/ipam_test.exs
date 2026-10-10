@@ -288,8 +288,31 @@ defmodule Renga.IPAMTest do
   test "a released address is history, and re-adoption records what changed", %{scope: scope} do
     lan = prefix_fixture(scope, "192.0.2.0/28")
     {:ok, source} = Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "history"})
-    [observed] = report_addresses(scope, source, ["192.0.2.5/24"])
+
+    [observed] =
+      report_addresses(scope, source, [
+        %{"address" => "192.0.2.5/24", "metadata" => %{"assignment" => "dhcp"}}
+      ])
+
+    # A newer historical hint must not outrank the canonical presence owner.
+    evidence = Repo.get_by!(Renga.Inventory.AddressEvidence, address_id: observed.id)
+
+    {:ok, history} =
+      Renga.Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "non-winning-hint",
+        observed_at: DateTime.add(evidence.observed_at, 1, :second),
+        payload: %{}
+      })
+
+    %{evidence | id: nil, observation_id: history.id}
+    |> Renga.Inventory.AddressEvidence.changeset(%{
+      metadata: %{"assignment" => "slaac"},
+      observed_at: history.observed_at
+    })
+    |> Repo.insert!()
+
     {:ok, managed} = IPAM.adopt_address(scope, observed.id)
+    assert Repo.reload!(managed).management_mode == "dhcp"
 
     # Withdrawn, the managed address is still listed as current intent...
     report_addresses(scope, source, [])
@@ -301,10 +324,21 @@ defmodule Renga.IPAMTest do
     assert IPAM.prefix_view(scope, lan).addresses == []
 
     # Seen again with another mask and adopted, the same record follows it.
-    [_withdrawn, again] = report_addresses(scope, source, ["192.0.2.5/28"])
-    assert {:ok, readopted} = IPAM.adopt_address(scope, again.id, %{description: "Web"})
+    [_withdrawn, again] =
+      report_addresses(scope, source, [
+        %{"address" => "192.0.2.5/28", "metadata" => %{"assignment" => "static"}}
+      ])
+
+    adopter = user_fixture()
+    organization = Repo.get!(Renga.Accounts.Organization, scope.organization_id)
+    organization_membership_fixture(adopter, organization, %{role: "admin"})
+    adopter_scope = Accounts.scope_for_user(adopter, organization.id)
+    assert {:ok, readopted} = IPAM.adopt_address(adopter_scope, again.id, %{description: "Web"})
     assert readopted.id == managed.id
-    assert Cidr.format(readopted.address) == "192.0.2.5/28"
+    persisted = Repo.reload!(readopted)
+    assert Cidr.format(persisted.address) == "192.0.2.5/28"
+    assert persisted.management_mode == "static"
+    assert persisted.adopted_by_id == adopter.id
 
     changes =
       scope
@@ -313,7 +347,41 @@ defmodule Renga.IPAMTest do
       |> Map.new(&{&1.field, {&1.old_value["value"], &1.new_value["value"]}})
 
     assert changes["address"] == {"192.0.2.5/24", "192.0.2.5/28"}
+    assert changes["management_mode"] == {"dhcp", "static"}
     assert changes["description"] == {nil, "Web"}
+  end
+
+  test "generic lifecycle writes cannot bypass IPAM release", %{scope: scope} do
+    {host, ports} = device_fixture(scope, "server", "lifecycle-host", ~w(eth0))
+    observed = address_fixture(scope, ports["eth0"], "192.0.2.5/24")
+    {:ok, managed} = IPAM.adopt_address(scope, observed.id)
+
+    assert {:error, changeset} =
+             Renga.Inventory.update_resource(scope, managed.resource, %{
+               lifecycle_state: "inactive"
+             })
+
+    assert %{lifecycle_state: ["is managed by IPAM"]} = errors_on(changeset)
+
+    assert {:error, changeset} =
+             Renga.Inventory.update_resource_lifecycle(scope, managed.resource, "retired")
+
+    assert %{lifecycle_state: ["is managed by IPAM"]} = errors_on(changeset)
+
+    assert {:error, _} =
+             Renga.Inventory.update_resources_lifecycle(
+               scope,
+               [host.id, managed.resource_id],
+               "retired"
+             )
+
+    assert Repo.reload!(host).lifecycle_state == "active"
+    assert Repo.reload!(managed.resource).lifecycle_state == "active"
+    assert [_] = Repo.all(IpAddressAssignment)
+
+    assert {:ok, released} = IPAM.release_address(scope, managed.id)
+    assert released.resource.lifecycle_state == "retired"
+    assert released.assignments == []
   end
 
   test "IP-address envelopes are created only through the IPAM context", %{scope: scope} do

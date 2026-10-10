@@ -662,14 +662,35 @@ defmodule Renga.IPAM do
   end
 
   defp observed_address!(organization_id, address_id) do
-    Address
-    |> where([address], address.organization_id == ^organization_id and address.id == ^address_id)
-    |> where(
-      [address],
-      fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
-    )
-    |> lock("FOR UPDATE")
-    |> Repo.one!()
+    observed =
+      Address
+      |> where(
+        [address],
+        address.organization_id == ^organization_id and address.id == ^address_id
+      )
+      |> where(
+        [address],
+        fragment("(?->'present') IS DISTINCT FROM 'false'::jsonb", address.metadata)
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one!()
+
+    # Match the prefix view's winning evidence, not another collector's hints.
+    if observation_id = get_in(observed.metadata, ["presence_owner", "observation_id"]) do
+      evidence =
+        Repo.get_by(AddressEvidence,
+          organization_id: organization_id,
+          address_id: observed.id,
+          observation_id: observation_id
+        )
+
+      metadata =
+        if evidence, do: Map.merge(evidence.metadata, observed.metadata), else: observed.metadata
+
+      %{observed | metadata: metadata}
+    else
+      observed
+    end
   end
 
   # The canonical record for a host in a namespace, whatever its state, so
@@ -746,7 +767,7 @@ defmodule Renga.IPAM do
 
     updated =
       retired
-      |> struct(intent)
+      |> Ecto.Changeset.change(intent)
       |> IpAddress.changeset(attrs)
       |> Repo.update()
       |> case do
