@@ -9,6 +9,9 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
 
   use ExUnit.Case, async: false
 
+  import Renga.InventoryFixtures, only: [organization_fixture: 0]
+  import Renga.TopologyFixtures
+
   @previous_version 20_261_017_120_000
   @migration_version 20_261_019_120_000
 
@@ -45,7 +48,7 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
     end)
 
     Renga.ScratchMigrations.run(scratch_repo, :up, to: @previous_version)
-    %{repo: scratch_repo}
+    %{repo: scratch_repo, database: scratch_database}
   end
 
   test "merges same-host rows into the most recently observed mask and keeps every report",
@@ -122,6 +125,98 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
 
     assert [[^split, ^earlier, "192.0.2.5/24"]] =
              Enum.filter(evidence(repo), fn [address, _observation, _text] -> address == split end)
+  end
+
+  test "rollback retains the presence watermark so old reports cannot revive historical masks",
+       %{repo: repo} do
+    Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
+    Renga.Repo.put_dynamic_repo(repo)
+
+    try do
+      scope = Renga.Accounts.scope_for(organization_fixture())
+
+      {:ok, source} =
+        Renga.Inventory.create_source(scope, %{kind: "host_agent", name: "rollback"})
+
+      [wide] = report_addresses(scope, source, ["192.0.2.10/24"])
+      old_observation = wide.metadata["presence_owner"]["observation_id"]
+      [current] = report_addresses(scope, source, ["192.0.2.10/32"])
+
+      Renga.ScratchMigrations.run(repo, :down, to: 20_261_018_120_000)
+      split = Renga.Repo.get_by!(Renga.Inventory.Address, address: wide.address)
+      assert split.metadata["present"] == false
+      assert split.metadata["presence_owner"] == current.metadata["presence_owner"]
+
+      assert {:ok, _, false} = Renga.Inventory.reconcile_observation(scope, old_observation)
+      assert Renga.Repo.reload!(split).metadata["present"] == false
+      assert Renga.Repo.reload!(current).address == current.address
+      assert Renga.Repo.reload!(current).metadata["present"] == true
+    after
+      Renga.Repo.put_dynamic_repo(nil)
+    end
+  end
+
+  test "merging waits for pending evidence and preserves it instead of cascading it away",
+       %{repo: repo, database: database} do
+    organization = insert_organization(repo)
+    host = insert_resource(repo, organization, "concurrent-merge")
+    source = insert_source(repo, organization)
+    earlier = insert_observation(repo, organization, source, "2026-08-01 12:00:00")
+    later = insert_observation(repo, organization, source, "2026-08-01 13:00:00")
+    interface = insert_interface(repo, organization, host, "eth0")
+    wide = insert_address(repo, organization, host, interface, "192.0.2.10/24", true)
+    narrow = insert_address(repo, organization, host, interface, "192.0.2.10/32", true)
+    insert_evidence(repo, organization, source, earlier, wide, "192.0.2.10/24")
+    insert_evidence(repo, organization, source, later, narrow, "192.0.2.10/32")
+    Renga.ScratchMigrations.run(repo, :up, to: 20_261_018_120_000)
+
+    writer = start_admin_connection(database)
+    %{rows: [[writer_pid]]} = Postgrex.query!(writer, "SELECT pg_backend_pid()", [])
+    Postgrex.query!(writer, "BEGIN", [])
+
+    try do
+      Postgrex.query!(
+        writer,
+        """
+        INSERT INTO address_evidence
+          (id, organization_id, address_id, source_id, observation_id, address, observed_at,
+           inserted_at, updated_at)
+        SELECT gen_random_uuid(), '#{organization}', '#{wide}', '#{source}', id,
+               '192.0.2.10/28', observed_at, now(), now()
+        FROM observations WHERE id = '#{earlier}'
+        """,
+        []
+      )
+
+      migration =
+        Task.async(fn -> Renga.ScratchMigrations.run(repo, :up, to: @migration_version) end)
+
+      # Synchronize on the database lock wait, not on how fast CI runs the migration.
+      assert Enum.any?(1..250, fn _ ->
+               [[blocked]] =
+                 rows(repo, """
+                 SELECT EXISTS (
+                   SELECT 1 FROM pg_stat_activity
+                   WHERE datname = '#{database}' AND #{writer_pid} = ANY(pg_blocking_pids(pid))
+                 )
+                 """)
+
+               if !blocked, do: Process.sleep(20)
+               blocked
+             end)
+
+      Postgrex.query!(writer, "COMMIT", [])
+      assert [@migration_version] = Task.await(migration, 30_000)
+
+      assert Enum.sort(evidence(repo)) ==
+               Enum.sort([
+                 [narrow, earlier, "192.0.2.10/24"],
+                 [narrow, earlier, "192.0.2.10/28"],
+                 [narrow, later, "192.0.2.10/32"]
+               ])
+    after
+      Postgrex.query!(writer, "ROLLBACK", [])
+    end
   end
 
   defp addresses(repo) do
@@ -269,7 +364,7 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
     result
   end
 
-  defp start_admin_connection do
+  defp start_admin_connection(database \\ "postgres") do
     config = Renga.Repo.config()
 
     {:ok, admin} =
@@ -278,7 +373,7 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
         port: Keyword.fetch!(config, :port),
         username: Keyword.fetch!(config, :username),
         password: Keyword.fetch!(config, :password),
-        database: "postgres"
+        database: database
       )
 
     admin

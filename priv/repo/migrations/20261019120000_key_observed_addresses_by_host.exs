@@ -19,6 +19,10 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHost do
   use Ecto.Migration
 
   def up do
+    # Hold off ingestion until every report is reparented and the new key
+    # exists; a report added to a loser mid-merge would otherwise cascade away.
+    execute "LOCK TABLE addresses, address_evidence IN EXCLUSIVE MODE"
+
     execute """
     CREATE TEMPORARY TABLE address_merges ON COMMIT DROP AS
     WITH candidates AS (
@@ -89,6 +93,8 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHost do
   end
 
   def down do
+    execute "LOCK TABLE addresses, address_evidence IN EXCLUSIVE MODE"
+
     drop index(:addresses, [:organization_id, :interface_id, "(host(address)::inet)"],
            name: :addresses_interface_host_index
          )
@@ -109,7 +115,8 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHost do
       (id, organization_id, resource_id, interface_id, kind, address, scope, metadata,
        inserted_at, updated_at)
     SELECT split.id, address.organization_id, address.resource_id, address.interface_id,
-           address.kind, split.address, address.scope, '{"present": false}'::jsonb,
+           address.kind, split.address, address.scope,
+           jsonb_build_object('present', false, 'presence_owner', address.metadata->'presence_owner'),
            address.inserted_at, address.updated_at
       FROM address_splits AS split
       JOIN addresses AS address ON address.id = split.canonical_id
