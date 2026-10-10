@@ -733,18 +733,20 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
     attrs
     |> Map.get("addresses", [])
-    |> Enum.each(
-      &reconcile_address(
+    |> Enum.map(&cast_reported_address/1)
+    |> Enum.group_by(fn {cast_address, _attrs} -> cast_address.address end)
+    |> Enum.each(fn {_host, reports} ->
+      reconcile_address(
         scope,
         source,
         observation,
         resource,
         interface,
-        &1,
+        reports,
         overrides,
         allow_new_rows?
       )
-    )
+    end)
   end
 
   defp put_interface_evidence(scope, source, observation, interface, canonical_attrs, raw_attrs) do
@@ -1002,23 +1004,28 @@ defmodule Renga.Inventory.Reconciler.Projections do
       else: second.observed_at
   end
 
+  # One canonical address per interface and host (RFD 4, "Observation
+  # correlation"): every reported mask of the host is evidence, and the
+  # canonical row carries one of them. Within an observation the shortest
+  # mask is the canonical one, because it describes the connected network
+  # and a host-length report of the same host adds nothing to it; choosing
+  # it independently of payload order keeps a replay from flapping.
   defp reconcile_address(
          scope,
          source,
          observation,
          resource,
          interface,
-         raw_address,
+         reports,
          overrides,
          allow_new_rows?
        ) do
-    attrs = normalize_address(raw_address)
-    {:ok, cast_address} = Inet.cast(attrs["address"])
+    {cast_address, attrs} = Enum.min_by(reports, fn {cast, _attrs} -> inet_netmask(cast) end)
 
     address =
       scope
       |> Inventory.list_addresses(interface.id)
-      |> Enum.find(&same_inet?(&1.address, cast_address))
+      |> Enum.find(&(&1.address.address == cast_address.address))
 
     if address || allow_new_rows? do
       address =
@@ -1029,31 +1036,43 @@ defmodule Renga.Inventory.Reconciler.Projections do
           resource,
           interface,
           address,
-          attrs,
+          {cast_address, attrs},
           overrides
         )
 
-      # Replays are idempotent per reported address, so distinct masks of
-      # one host in one observation each keep their evidence.
-      existing =
-        Repo.get_by(AddressEvidence,
-          organization_id: scope.organization_id,
-          observation_id: observation.id,
-          address_id: address.id,
-          address: cast_address
-        )
-
-      unless existing do
-        {:ok, _evidence} =
-          Inventory.create_address_evidence(
-            scope,
-            source.id,
-            observation.id,
-            address.id,
-            Map.take(attrs, ~w(address scope metadata))
-          )
-      end
+      reports
+      |> Enum.uniq_by(fn {cast, _attrs} -> inet_netmask(cast) end)
+      |> Enum.each(&put_address_evidence(scope, source, observation, address, &1))
     end
+  end
+
+  # Replays are idempotent per reported address, so distinct masks of one
+  # host in one observation each keep their evidence.
+  defp put_address_evidence(scope, source, observation, address, {cast_address, attrs}) do
+    existing =
+      Repo.get_by(AddressEvidence,
+        organization_id: scope.organization_id,
+        observation_id: observation.id,
+        address_id: address.id,
+        address: cast_address
+      )
+
+    unless existing do
+      {:ok, _evidence} =
+        Inventory.create_address_evidence(
+          scope,
+          source.id,
+          observation.id,
+          address.id,
+          Map.take(attrs, ~w(address scope metadata))
+        )
+    end
+  end
+
+  defp cast_reported_address(raw_address) do
+    attrs = normalize_address(raw_address)
+    {:ok, cast_address} = Inet.cast(attrs["address"])
+    {cast_address, attrs}
   end
 
   defp reconcile_canonical_address(
@@ -1063,7 +1082,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
          resource,
          interface,
          nil,
-         attrs,
+         {_cast_address, attrs},
          overrides
        ) do
     path = "addresses.#{attrs["address"]}"
@@ -1102,9 +1121,9 @@ defmodule Renga.Inventory.Reconciler.Projections do
          source,
          observation,
          resource,
-         _interface,
+         interface,
          %Address{} = address,
-         attrs,
+         {cast_address, attrs},
          overrides
        ) do
     {changes, owners} =
@@ -1115,6 +1134,18 @@ defmodule Renga.Inventory.Reconciler.Projections do
         ~w(scope),
         "addresses.#{attrs["address"]}",
         address.metadata
+      )
+
+    changes =
+      reconcile_address_mask(
+        scope,
+        source,
+        observation,
+        resource,
+        interface,
+        address,
+        cast_address,
+        changes
       )
 
     metadata =
@@ -1140,6 +1171,42 @@ defmodule Renga.Inventory.Reconciler.Projections do
       address
     else
       address
+    end
+  end
+
+  # A changed mask updates the one observed assignment of the host, under
+  # the same precedence as presence: an older replay or a lower-priority
+  # source keeps its report as evidence without moving the canonical mask.
+  defp reconcile_address_mask(
+         scope,
+         source,
+         observation,
+         resource,
+         interface,
+         address,
+         reported,
+         changes
+       ) do
+    if inet_netmask(reported) != inet_netmask(address.address) and
+         source_wins?(
+           source,
+           observation,
+           address.metadata["presence_owner"],
+           "addresses.presence"
+         ) do
+      record_update(
+        scope,
+        source,
+        observation,
+        resource,
+        "interfaces.#{interface.name}.addresses.#{format_inet(address.address)}.address",
+        format_inet(address.address),
+        format_inet(reported)
+      )
+
+      Map.put(changes, "address", reported)
+    else
+      changes
     end
   end
 
@@ -1209,9 +1276,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
         name = interface |> Map.fetch!("name") |> String.trim()
 
         Enum.map(Map.get(interface, "addresses", []), fn address ->
-          attrs = normalize_address(address)
-          {:ok, cast_address} = Inet.cast(attrs["address"])
-          {name, format_inet(cast_address)}
+          {cast_address, _attrs} = cast_reported_address(address)
+          {name, cast_address.address}
         end)
       end)
       |> MapSet.new()
@@ -1258,7 +1324,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
       not MapSet.member?(names, interface.name) or
         MapSet.member?(authoritative_names, interface.name)
 
-    address_key = {interface.name, format_inet(address.address)}
+    # Any reported mask of the host keeps it present.
+    address_key = {interface.name, address.address.address}
 
     if authoritative? and source_reported_address?(context.scope, context.source, address) and
          not MapSet.member?(addresses, address_key) do
@@ -1679,11 +1746,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   # Postgrex decodes an INET host mask as nil, while casting the equivalent
   # explicit /32 or /128 retains the integer. Treat both representations as
-  # the same address so repeated observations remain idempotent.
-  defp same_inet?(%Postgrex.INET{} = left, %Postgrex.INET{} = right) do
-    left.address == right.address and inet_netmask(left) == inet_netmask(right)
-  end
-
+  # the same mask so repeated observations remain idempotent.
   defp inet_netmask(%Postgrex.INET{address: address, netmask: nil})
        when tuple_size(address) == 4,
        do: 32

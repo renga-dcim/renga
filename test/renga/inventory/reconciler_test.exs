@@ -3620,6 +3620,121 @@ defmodule Renga.Inventory.ReconcilerTest do
            )
   end
 
+  test "one observed assignment per interface and host keeps every reported mask as evidence" do
+    context = context()
+    eth0 = fn addresses -> [%{"name" => "eth0", "status" => "up", "addresses" => addresses}] end
+
+    # One observation reports the host with two masks, in either order.
+    both =
+      observation(
+        context,
+        "1",
+        %{"machine_id" => "machine-1"},
+        %{},
+        eth0.(["192.0.2.10/32", "192.0.2.10/24"])
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, both.id)
+    [interface] = Inventory.list_interfaces(context.scope, resource.id)
+
+    current = fn ->
+      [address] = Inventory.list_addresses(context.scope, interface.id)
+      address
+    end
+
+    reported_masks = fn ->
+      AddressEvidence
+      |> Repo.all()
+      |> Enum.map(&{&1.observation_id, Renga.IPAM.Cidr.format(&1.address)})
+      |> Enum.sort()
+    end
+
+    address_events = fn ->
+      context.scope
+      |> Inventory.list_change_events(resource.id)
+      |> Enum.filter(&String.contains?(&1.field || "", "addresses."))
+      |> Enum.map(&{&1.field, &1.old_value["value"], &1.new_value["value"]})
+    end
+
+    # The shortest mask is canonical; both reports stay evidence.
+    assert Renga.IPAM.Cidr.format(current.().address) == "192.0.2.10/24"
+    assert reported_masks.() == Enum.sort([{both.id, "192.0.2.10"}, {both.id, "192.0.2.10/24"}])
+
+    # A replay duplicates neither evidence nor history.
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, both.id)
+    assert length(reported_masks.()) == 2
+    assert address_events.() == []
+
+    # A newer report of another mask updates the one assignment.
+    narrowed =
+      observation(context, "2", %{"machine_id" => "machine-1"}, %{}, eth0.(["192.0.2.10/32"]))
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, narrowed.id)
+    address = current.()
+    assert Renga.IPAM.Cidr.format(address.address) == "192.0.2.10"
+    assert address.metadata["present"] == true
+    assert length(reported_masks.()) == 3
+
+    assert address_events.() == [
+             {"interfaces.eth0.addresses.192.0.2.10/24.address", "192.0.2.10/24", "192.0.2.10/32"}
+           ]
+
+    # Replaying the older observation keeps its evidence but not its mask.
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, both.id)
+    assert current.().id == address.id
+    assert Renga.IPAM.Cidr.format(current.().address) == "192.0.2.10"
+    assert length(reported_masks.()) == 3
+    assert length(address_events.()) == 1
+
+    # Presence history follows the host, once, whatever masks were reported.
+    withdrawn = observation(context, "3", %{"machine_id" => "machine-1"}, %{}, eth0.([]))
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, withdrawn.id)
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, withdrawn.id)
+    assert current.().metadata["present"] == false
+
+    assert Enum.filter(address_events.(), fn {field, _old, _new} ->
+             String.ends_with?(field, ".present")
+           end) == [{"addresses.192.0.2.10/32.present", true, false}]
+  end
+
+  test "mask changes on different interfaces have distinct, replay-safe Activity events" do
+    context = context()
+
+    initial =
+      observation(context, "1", %{"machine_id" => "multi-interface-masks"}, %{}, [
+        %{"name" => "eth0", "addresses" => ["192.0.2.10/24"]},
+        %{"name" => "eth1", "addresses" => ["192.0.2.10/24"]}
+      ])
+
+    {:ok, resource, true} = Inventory.reconcile_observation(context.scope, initial.id)
+
+    changed =
+      observation(context, "2", %{"machine_id" => "multi-interface-masks"}, %{}, [
+        %{"name" => "eth0", "addresses" => ["192.0.2.10/28"]},
+        %{"name" => "eth1", "addresses" => ["192.0.2.10/32"]}
+      ])
+
+    for _ <- 1..2 do
+      assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, changed.id)
+
+      events =
+        context.scope
+        |> Inventory.list_change_events(resource.id)
+        |> Enum.filter(
+          &(&1.observation_id == changed.id and String.ends_with?(&1.field || "", ".address"))
+        )
+        |> Enum.map(&{&1.field, &1.old_value["value"], &1.new_value["value"]})
+        |> Enum.sort()
+
+      assert events == [
+               {"interfaces.eth0.addresses.192.0.2.10/24.address", "192.0.2.10/24",
+                "192.0.2.10/28"},
+               {"interfaces.eth1.addresses.192.0.2.10/24.address", "192.0.2.10/24",
+                "192.0.2.10/32"}
+             ]
+    end
+  end
+
   test "same-name discoveries receive collision-resistant resource names" do
     context = context()
 
