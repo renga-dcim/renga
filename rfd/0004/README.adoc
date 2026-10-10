@@ -306,7 +306,7 @@ prefix inside a strict one cannot opt out, because the policy is a boolean.
 Outside-prefix findings start once the namespace has a prefix of the
 address's family, so modeling only IPv4 never flags every IPv6 address. A
 prefix-length finding compares the canonical observed mask with the most
-specific prefix containing the host, skipping containers, which are not
+specific non-container prefix containing the host, skipping containers, which are not
 subnets, and host-length reports, which usually mean the source did not know
 the mask. A stale assignment is an allocated address assigned to an interface
 that no longer reports it, on a resource some collector reports addresses

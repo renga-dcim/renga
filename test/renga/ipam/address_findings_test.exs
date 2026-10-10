@@ -112,6 +112,13 @@ defmodule Renga.IPAM.AddressFindingsTest do
 
     assert [%{details: %{"observed_length" => 26, "prefix_length" => 24}}] =
              all(context, "prefix_length_mismatch")
+
+    # Containers model coverage, but do not hide the enclosing subnet's mask.
+    prefix_fixture(context.scope, "192.0.2.0/27", %{status: "container"})
+    assert [{"prefix_length_mismatch", _, "192.0.2.7", _}] = open(context)
+
+    assert [%{details: %{"prefix_length" => 24}, status: "open"}] =
+             all(context, "prefix_length_mismatch")
   end
 
   test "a host on several interfaces is a duplicate unless its role is shared", context do

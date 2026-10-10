@@ -6,7 +6,7 @@ defmodule Renga.IPAM.AddressFindings do
   open now and makes the open findings match: new conditions open a finding,
   current ones are refreshed, and the rest resolve. Resolving never deletes
   anything, so observations, evidence, change events, and resolved findings
-  keep the history. Runs serialize per organization on an advisory lock.
+  keep the history. Runs serialize with inventory writes on the organization lock.
 
   Collectors do not report routing domains yet, so every observed address is
   in the global table (RFD 4, "Observation correlation") and is compared with
@@ -24,7 +24,7 @@ defmodule Renga.IPAM.AddressFindings do
       organization has a global prefix of that address family, so modeling
       only IPv4 never flags every IPv6 address.
     * `prefix_length_mismatch` - the observed mask disagrees with the most
-      specific prefix containing the host. A container is not a subnet, and
+      specific non-container prefix containing the host. A container is not a subnet, and
       a host-length report usually means the source did not know the mask,
       so neither is compared.
     * `duplicate_address` - one host observed on several interfaces, unless
@@ -42,8 +42,6 @@ defmodule Renga.IPAM.AddressFindings do
   alias Renga.IPAM.Cidr
   alias Renga.Repo
 
-  @lock "address-findings"
-
   # Unique by nobody's design: loopback, link-local, and multicast.
   @unroutable "'{127.0.0.0/8,169.254.0.0/16,224.0.0.0/4,::1/128,fe80::/10,ff00::/8}'::inet[]"
 
@@ -54,10 +52,8 @@ defmodule Renga.IPAM.AddressFindings do
   """
   def reconcile(organization_id) do
     Repo.transaction(fn ->
-      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
-        organization_id,
-        @lock
-      ])
+      # Match IPAM and collector lock order before reading or inserting findings.
+      Renga.Inventory.lock_organization!(organization_id)
 
       now = Renga.Time.utc_now_ms()
       observed = observed_addresses(organization_id)
@@ -84,6 +80,7 @@ defmodule Renga.IPAM.AddressFindings do
                COALESCE((address.metadata -> 'presence_owner' ->> 'observed_at')::timestamptz,
                         address.updated_at),
                nearest.id, nearest.prefix, nearest.status,
+               subnet.id, subnet.prefix,
                strict_prefix.id, strict_prefix.prefix,
                managed.role
           FROM addresses AS address
@@ -98,6 +95,16 @@ defmodule Renga.IPAM.AddressFindings do
              ORDER BY masklen(prefix.prefix) DESC
              LIMIT 1
           ) AS nearest ON true
+          LEFT JOIN LATERAL (
+            SELECT prefix.id, prefix.prefix
+              FROM prefixes AS prefix
+             WHERE prefix.organization_id = address.organization_id
+               AND prefix.vrf_id IS NULL
+               AND prefix.status <> 'container'
+               AND host(address.address)::inet <<= prefix.prefix
+             ORDER BY masklen(prefix.prefix) DESC
+             LIMIT 1
+          ) AS subnet ON true
           LEFT JOIN LATERAL (
             SELECT prefix.id, prefix.prefix
               FROM prefixes AS prefix
@@ -134,7 +141,8 @@ defmodule Renga.IPAM.AddressFindings do
                         device,
                         observed_at | rest
                       ] ->
-      [nearest_id, nearest, nearest_status, strict_id, strict, managed_role] = rest
+      [nearest_id, nearest, nearest_status, subnet_id, subnet, strict_id, strict, managed_role] =
+        rest
 
       %{
         id: Ecto.UUID.load!(id),
@@ -147,6 +155,7 @@ defmodule Renga.IPAM.AddressFindings do
         observed_at: observed_at,
         nearest:
           nearest_id && %{id: Ecto.UUID.load!(nearest_id), cidr: nearest, status: nearest_status},
+        subnet: subnet_id && %{id: Ecto.UUID.load!(subnet_id), cidr: subnet},
         strict: strict_id && %{id: Ecto.UUID.load!(strict_id), cidr: strict},
         managed_role: managed_role
       }
@@ -195,10 +204,7 @@ defmodule Renga.IPAM.AddressFindings do
 
   defp outside_prefix(_observed, _families), do: nil
 
-  defp prefix_length_mismatch(
-         %{nearest: %{status: status} = nearest, address: address} = observed
-       )
-       when status != "container" do
+  defp prefix_length_mismatch(%{subnet: %{} = nearest, address: address} = observed) do
     length = Cidr.length(address)
     expected = Cidr.length(nearest.cidr)
     host_length = address |> Cidr.family() |> Cidr.bits()
