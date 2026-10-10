@@ -13,8 +13,12 @@ defmodule RengaWeb.PrefixDetailLive do
   show how each address was assigned, and hide temporary privacy addresses
   unless `?temporary=show`.
 
-  Owners and admins edit and delete the prefix (RFD 4, Phase 1); like the
-  rest of the Network area, those controls are hidden on a phone.
+  Owners and admins edit and delete the prefix (RFD 4, Phase 1), and take
+  the next free child prefix or host from a side panel (Phase 7). The panel
+  previews what is free as the form changes, but the allocation re-reads
+  the space when it is made, so the result can differ from a stale
+  preview. Like the rest of the Network area, those controls are hidden on
+  a phone.
   """
   use RengaWeb, :live_view
 
@@ -26,9 +30,11 @@ defmodule RengaWeb.PrefixDetailLive do
   alias Renga.Findings
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.Prefix
   alias Renga.IPAM
   alias Renga.IPAM.AddressAssignment
   alias Renga.IPAM.Cidr
+  alias Renga.IPAM.IpAddress
 
   @reload_after_ms 400
   @expiry_refresh_ms 30_000
@@ -51,7 +57,8 @@ defmodule RengaWeb.PrefixDetailLive do
        reload_timer: nil
      )
      |> assign_prefix(prefix)
-     |> load_view()}
+     |> load_view()
+     |> reset_next_free()}
   end
 
   @impl true
@@ -145,6 +152,38 @@ defmodule RengaWeb.PrefixDetailLive do
     Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
   end
 
+  # Only the shown fields are sent, so switching between a child prefix and
+  # a host keeps the other kind's values (its length, status, or state).
+  def handle_event("preview_next_free", %{"next_free" => params}, socket) do
+    {:noreply, assign_next_free(socket, Map.merge(socket.assigns.next_free_form.params, params))}
+  end
+
+  def handle_event("allocate", %{"next_free" => params}, socket) do
+    %{current_scope: scope, prefix: prefix} = socket.assigns
+
+    result =
+      case params["kind"] do
+        "address" ->
+          IPAM.allocate_address(
+            scope,
+            prefix,
+            Map.take(params, ~w(allocation_state dns_name description))
+          )
+
+        _prefix ->
+          IPAM.allocate_prefix(
+            scope,
+            prefix,
+            parse_length(params["length"]),
+            Map.take(params, ~w(status description))
+          )
+      end
+
+    allocation_result(result, socket, params)
+  rescue
+    Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket) do
     if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -167,7 +206,7 @@ defmodule RengaWeb.PrefixDetailLive do
         tables: IPAM.list_routing_tables(socket.assigns.current_scope)
       )
 
-    {:noreply, load_view(socket)}
+    {:noreply, socket |> load_view() |> assign_next_free(socket.assigns.next_free_form.params)}
   rescue
     Ecto.NoResultsError -> {:noreply, prefix_gone(socket)}
   end
@@ -212,6 +251,89 @@ defmodule RengaWeb.PrefixDetailLive do
   defp address_result({:error, :invalid_address}, socket, _message),
     do:
       {:noreply, socket |> put_flash(:error, "That address is no longer observed") |> load_view()}
+
+  defp allocation_result({:ok, allocated}, socket, _params) do
+    label =
+      case allocated do
+        %Prefix{prefix: cidr} -> Cidr.format(cidr)
+        %IpAddress{address: address} -> Cidr.format(address)
+      end
+
+    {:noreply,
+     socket
+     |> put_flash(:info, "Allocated #{label}")
+     |> close_overlay("next-free-panel")
+     |> load_view()
+     |> reset_next_free()}
+  end
+
+  defp allocation_result({:error, :forbidden}, socket, _params),
+    do: {:noreply, put_flash(socket, :error, "Only owners and admins allocate space")}
+
+  defp allocation_result({:error, %Ecto.Changeset{} = changeset}, socket, params) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "Not allocated: #{changeset_errors(changeset)}")
+     |> assign_next_free(params)}
+  end
+
+  # Full, a prefix with children asked for a host, or a bad length: the
+  # refreshed preview says which.
+  defp allocation_result({:error, _reason}, socket, params) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "Nothing was allocated; see what is free now")
+     |> load_view()
+     |> assign_next_free(params)}
+  end
+
+  defp changeset_errors(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+    |> Enum.map_join("; ", fn {field, messages} ->
+      "#{Phoenix.Naming.humanize(field)} #{Enum.join(messages, ", ")}"
+    end)
+  end
+
+  # A container hands out child prefixes at its planning level; a leaf
+  # hands out hosts, and may still be split.
+  defp reset_next_free(socket) do
+    {level, _name} = socket.assigns.view.planning_level
+    kind = if socket.assigns.view.mode == :container, do: "prefix", else: "address"
+
+    assign_next_free(socket, %{
+      "kind" => kind,
+      "length" => to_string(level),
+      "status" => "active",
+      "allocation_state" => "allocated",
+      "dns_name" => "",
+      "description" => ""
+    })
+  end
+
+  defp assign_next_free(socket, params) do
+    %{current_scope: scope, prefix: prefix} = socket.assigns
+
+    preview =
+      case params["kind"] do
+        "address" -> IPAM.next_free_host(scope, prefix)
+        _prefix -> IPAM.next_free_prefix(scope, prefix, parse_length(params["length"]))
+      end
+
+    assign(socket,
+      next_free_form: to_form(params, as: :next_free, id: "next-free-form"),
+      next_free_preview: preview
+    )
+  end
+
+  defp parse_length(text) when is_binary(text) do
+    case Integer.parse(String.trim(text)) do
+      {length, ""} -> length
+      _invalid -> nil
+    end
+  end
+
+  defp parse_length(_text), do: nil
 
   defp load_view(socket) do
     scope = socket.assigns.current_scope
@@ -274,6 +396,9 @@ defmodule RengaWeb.PrefixDetailLive do
         </:breadcrumb>
         <:actions :if={@can_manage?}>
           <div class="hidden gap-1.5 sm:flex">
+            <.button id="next-free" size="sm" phx-click={show_overlay("next-free-panel")}>
+              <.icon name="hero-plus-mini" class="size-4" /> Next free
+            </.button>
             <.button id="edit-prefix" size="sm" phx-click={show_overlay("prefix-edit-panel")}>
               Edit
             </.button>
@@ -451,6 +576,84 @@ defmodule RengaWeb.PrefixDetailLive do
         </:footer>
       </.side_panel>
 
+      <.side_panel
+        :if={@can_manage?}
+        id="next-free-panel"
+        title="Next free"
+        description={"Takes the first free space in #{Cidr.format(@prefix.prefix)} that no child prefix, managed address, or observed address occupies."}
+      >
+        <.form
+          for={@next_free_form}
+          id="next-free-form"
+          phx-change="preview_next_free"
+          phx-submit="allocate"
+          class="space-y-1"
+        >
+          <.input
+            field={@next_free_form[:kind]}
+            type="select"
+            label="Allocate a"
+            options={[{"Child prefix", "prefix"}, {"Host address", "address"}]}
+          />
+          <%= if @next_free_form[:kind].value == "address" do %>
+            <.input
+              field={@next_free_form[:allocation_state]}
+              type="select"
+              label="State"
+              options={Enum.map(IpAddress.allocation_states(), &{String.capitalize(&1), &1})}
+            />
+            <.input
+              field={@next_free_form[:dns_name]}
+              type="text"
+              label="DNS name (optional)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          <% else %>
+            <.input
+              field={@next_free_form[:length]}
+              type="number"
+              label="Prefix length"
+              min={Cidr.length(@prefix.prefix) + 1}
+              max={Cidr.bits(@family)}
+            />
+            <.input
+              field={@next_free_form[:status]}
+              type="select"
+              label="Status"
+              options={Enum.map(Prefix.statuses(), &{String.capitalize(&1), &1})}
+            />
+          <% end %>
+          <.input field={@next_free_form[:description]} type="text" label="Description (optional)" />
+        </.form>
+
+        <div
+          id="next-free-preview"
+          aria-live="polite"
+          class={[
+            "mt-4 rounded-md border px-3 py-2 text-sm",
+            if(match?({:ok, _}, @next_free_preview),
+              do: "border-accent/40 bg-accent-tint text-fg",
+              else: "border-dashed border-warn-line text-warn-text"
+            )
+          ]}
+        >
+          {preview_text(@next_free_preview, @next_free_form, @view.planning_level)}
+        </div>
+
+        <:footer>
+          <.button
+            id="allocate"
+            variant="primary"
+            form="next-free-form"
+            disabled={not match?({:ok, _}, @next_free_preview)}
+            phx-disable-with="Allocating…"
+          >
+            {allocate_label(@next_free_preview)}
+          </.button>
+        </:footer>
+      </.side_panel>
+
       <.confirm_dialog
         :if={@can_manage?}
         id="delete-prefix-dialog"
@@ -464,6 +667,29 @@ defmodule RengaWeb.PrefixDetailLive do
     </Layouts.app>
     """
   end
+
+  defp preview_text({:ok, free}, _form, _level), do: "Next free: #{Cidr.format(free)}"
+
+  defp preview_text({:error, :full}, form, {level, name}) do
+    case form[:kind].value do
+      "address" ->
+        "No free host is left."
+
+      _prefix ->
+        length = parse_length(form[:length].value)
+        named = if length == level and name, do: " (#{name})", else: ""
+        "No free /#{length}#{named} is left."
+    end
+  end
+
+  defp preview_text({:error, :has_children}, _form, _level),
+    do: "Hosts are allocated in leaf prefixes; this one hands out space to its children."
+
+  defp preview_text({:error, :invalid_length}, _form, _level),
+    do: "Choose a length longer than this prefix's and at most the host length."
+
+  defp allocate_label({:ok, free}), do: "Allocate #{Cidr.format(free)}"
+  defp allocate_label(_preview), do: "Allocate"
 
   attr :prefix, :any, required: true
   attr :space, :map, required: true
