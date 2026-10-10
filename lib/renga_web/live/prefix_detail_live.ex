@@ -476,9 +476,8 @@ defmodule RengaWeb.PrefixDetailLive do
         <h2 class="text-sm font-semibold text-fg">Child space</h2>
         <p id="prefix-space-summary" class="text-sm text-fg-muted">
           <span class="font-mono text-fg">{delimit(@space.allocated)}</span>
-          of {delimit(@space.total)} /{@space.level}s allocated<span :if={
-            @space.cell_length != @space.level
-          }>; each cell is a /{@space.cell_length}</span>.
+          of {delimit(@space.total)} <.level length={@space.level} name={@space.level_name} />
+          allocated<span :if={@space.cell_length != @space.level}>; each cell is a /{@space.cell_length}</span>.
         </p>
       </div>
 

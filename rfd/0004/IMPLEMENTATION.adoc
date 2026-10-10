@@ -80,7 +80,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 7: Addressing plan and allocation
 
-* [ ] Add an optional per-family organization addressing plan that drives the
+* [x] Add an optional per-family organization addressing plan that drives the
   child-space map's planning levels.
 * [ ] Add a serialized next-free prefix and host allocator for owners and
   admins, sharing organization-first locking with all managed writes affecting
