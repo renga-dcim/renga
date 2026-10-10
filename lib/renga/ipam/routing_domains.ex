@@ -353,6 +353,7 @@ defmodule Renga.IPAM.RoutingDomains do
           Repo.rollback(changeset)
       end
     end)
+    |> Inventory.Changes.broadcast(organization_id)
   end
 
   @doc "Removes an explicit mapping; the key resolves automatically again."
@@ -367,6 +368,7 @@ defmodule Renga.IPAM.RoutingDomains do
       resolve_again(organization_id)
       mapping
     end)
+    |> Inventory.Changes.broadcast(organization_id)
   end
 
   @doc "Sets whether a source's routing-domain claims are authoritative. Owners and admins only."
@@ -382,6 +384,7 @@ defmodule Renga.IPAM.RoutingDomains do
       resolve_again(organization_id)
       source
     end)
+    |> Inventory.Changes.broadcast(organization_id)
   end
 
   @doc false

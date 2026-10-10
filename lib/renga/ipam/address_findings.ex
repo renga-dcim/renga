@@ -301,7 +301,10 @@ defmodule Renga.IPAM.AddressFindings do
     %{
       interface_id: observed.interface_id,
       kind: kind,
-      resolution_key: observed.host,
+      # Global keeps its historical workflow key; a VRF's host is another
+      # identity, so moving namespaces resolves rather than rewrites history.
+      resolution_key:
+        if(observed.vrf_id, do: "vrf:#{observed.vrf_id}:#{observed.host}", else: observed.host),
       message: message,
       details:
         details
