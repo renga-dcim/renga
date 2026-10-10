@@ -4,7 +4,7 @@ defmodule Renga.Findings do
   to them (RFD 8, "Inbox").
 
   Reconciliation opens and closes findings in each domain's own table; this
-  context never does. It reads the four finding tables through one query and
+  context never does. It reads the five finding tables through one query and
   lets people record judgment on top: an assignee, a snooze until a time, or
   an exception accepted with a reason and optional expiry. Snoozes and
   exceptions only move a finding out of the open queue while they last, so
@@ -32,6 +32,7 @@ defmodule Renga.Findings do
   alias Renga.Inventory.Changes
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
+  alias Renga.IPAM.AddressFinding
   alias Renga.Repo
   alias Renga.Topology.TopologyFinding
 
@@ -48,7 +49,10 @@ defmodule Renga.Findings do
       ~w(component_drift missing_expected_component unexpected_actual_component incompatible_module_type),
     "placement" => ~w(confirmed_placement_conflict catalog_height_mismatch blocked_move),
     "topology" =>
-      ~w(missing_vlan unexpected_vlan cable_plan_drift cable_plan_conflict cable_neighbor_mismatch)
+      ~w(missing_vlan unexpected_vlan cable_plan_drift cable_plan_conflict cable_neighbor_mismatch),
+    # Every address finding is observed state disagreeing with the address
+    # plan: strictness, prefixes, assignments, or uniqueness.
+    "address" => AddressFinding.kinds()
   }
   @drift_pairs for {domain, kinds} <- @drift_kinds, kind <- kinds, do: "#{domain}:#{kind}"
 
@@ -472,8 +476,8 @@ defmodule Renga.Findings do
           workflow.resolution_key == finding.resolution_key
   end
 
-  # The four finding tables in one shape. Topology findings belong to an
-  # interface; their resource is the interface's resource.
+  # The five finding tables in one shape. Topology and address findings
+  # belong to an interface; their resource is the interface's resource.
   defp findings_union(organization_id) do
     component =
       from finding in ComponentFinding,
@@ -554,10 +558,33 @@ defmodule Renga.Findings do
           resolved_at: finding.resolved_at
         }
 
+    address =
+      from finding in AddressFinding,
+        join: interface in Interface,
+        on:
+          interface.id == finding.interface_id and interface.organization_id == ^organization_id,
+        where: finding.organization_id == ^organization_id,
+        select: %{
+          domain: type(^"address", :string),
+          id: finding.id,
+          resource_id: interface.resource_id,
+          subject_id: finding.interface_id,
+          interface_id: finding.interface_id,
+          kind: finding.kind,
+          resolution_key: finding.resolution_key,
+          status: finding.status,
+          message: finding.message,
+          details: finding.details,
+          opened_at: finding.inserted_at,
+          last_observed_at: finding.last_observed_at,
+          resolved_at: finding.resolved_at
+        }
+
     component
     |> union_all(^hardware_match)
     |> union_all(^placement)
     |> union_all(^topology)
+    |> union_all(^address)
   end
 
   defp state_filter("snoozed", now) do

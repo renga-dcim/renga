@@ -25,6 +25,8 @@ defmodule Renga.Requests do
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.Host
   alias Renga.Inventory.Resource
+  alias Renga.IPAM
+  alias Renga.IPAM.Cidr
   alias Renga.Repo
   alias Renga.Requests.Request
   alias Renga.Teams
@@ -149,6 +151,33 @@ defmodule Renga.Requests do
       else: "Expect #{details} in #{change["name"]}"
   end
 
+  @doc """
+  Proposes adopting an address observed on the resource into IPAM (RFD 4,
+  "Findings"), which only owners and admins may do. The request's field
+  names the observed address, so each has at most one open request; its
+  value reads "Managed" against the current "Observed", and approval adopts
+  the address as the approver. `attrs` carries the reason.
+  """
+  def request_adoption(%Scope{} = scope, %Resource{} = resource, address_id, attrs) do
+    case IPAM.observed_address(scope, address_id) do
+      %{address: %{resource_id: resource_id} = address} when resource_id == resource.id ->
+        create(
+          scope,
+          resource,
+          "adoption",
+          "address:" <> address.id,
+          Map.put(attrs, "value", "Managed"),
+          %{
+            "address_id" => address.id,
+            "address" => Cidr.format(address.address)
+          }
+        )
+
+      _other ->
+        {:error, :invalid_address}
+    end
+  end
+
   @doc "A blank changeset for a request form."
   def change_request(attrs \\ %{}), do: Ecto.Changeset.cast(%Request{}, attrs, [:reason])
 
@@ -201,6 +230,14 @@ defmodule Renga.Requests do
 
   defp current_value(_scope, resource, "lifecycle", _field), do: resource.lifecycle_state
 
+  defp current_value(scope, _resource, "adoption", "address:" <> address_id) do
+    case IPAM.observed_address(scope, address_id) do
+      nil -> nil
+      %{managed?: true} -> "Managed"
+      %{managed?: false} -> "Observed"
+    end
+  end
+
   defp current_value(scope, resource, "expectation", field),
     do: Catalog.describe_expectation(scope, resource.id, field)
 
@@ -218,6 +255,7 @@ defmodule Renga.Requests do
 
   defp validate_value(changeset, "owner"), do: changeset
   defp validate_value(changeset, "expectation"), do: changeset
+  defp validate_value(changeset, "adoption"), do: changeset
 
   defp validate_value(changeset, "lifecycle") do
     Ecto.Changeset.validate_change(changeset, :after_value, fn :after_value,
@@ -419,6 +457,10 @@ defmodule Renga.Requests do
     Inventory.update_resource_lifecycle(scope, resource, request.after_value["value"])
   end
 
+  defp apply_change(scope, %Request{kind: "adoption"} = request) do
+    IPAM.adopt_address(scope, request.after_value["address_id"])
+  end
+
   defp apply_change(scope, %Request{kind: "owner"} = request) do
     resource = Inventory.get_resource!(scope, request.resource_id)
     Teams.set_owner(scope, resource, request.after_value["team_id"])
@@ -497,6 +539,7 @@ defmodule Renga.Requests do
 
   defp event_field(%Request{kind: "lifecycle"}), do: "lifecycle_state"
   defp event_field(%Request{kind: "owner"}), do: "owner_team"
+  defp event_field(%Request{kind: "adoption"}), do: "adoption"
   defp event_field(%Request{kind: "expectation", field: field}), do: "expectation." <> field
   defp event_field(%Request{field: field}), do: "host." <> field
 

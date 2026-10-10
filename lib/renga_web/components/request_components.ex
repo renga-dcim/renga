@@ -11,6 +11,9 @@ defmodule RengaWeb.RequestComponents do
   @doc "What the request changes, as a short phrase: \"Lifecycle → retired\"."
   def change_summary(%{kind: "expectation"} = request), do: request.after_value["value"]
 
+  def change_summary(%{kind: "adoption"} = request),
+    do: "Adopt #{request.after_value["address"]} into IPAM"
+
   def change_summary(request) do
     "#{change_label(request)} → #{request.after_value["value"]}"
   end
@@ -19,6 +22,7 @@ defmodule RengaWeb.RequestComponents do
   def change_label(%{kind: "lifecycle"}), do: "Lifecycle"
   def change_label(%{kind: "owner"}), do: "Owner"
   def change_label(%{kind: "expectation"}), do: "Expected hardware"
+  def change_label(%{kind: "adoption"}), do: "Address management"
 
   def change_label(%{kind: "field_override", field: field}),
     do: "#{field_label(field)} override"
@@ -299,6 +303,10 @@ defmodule RengaWeb.RequestComponents do
   defp effect(%{kind: "expectation"}),
     do:
       "Approving changes what this resource expects. The catalog and other resources are unchanged."
+
+  defp effect(%{kind: "adoption"}),
+    do:
+      "Approving adopts the observed address as a managed, allocated address assigned to the interface it is seen on."
 
   defp effect(%{kind: "field_override"}),
     do: "Approving sets an override, which wins over every source until it is removed."

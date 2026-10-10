@@ -59,7 +59,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 5: Address findings
 
-* [ ] Add the `address` finding domain to the Inbox with the shared workflow:
+* [x] Add the `address` finding domain to the Inbox with the shared workflow:
   assignment, snoozing, accepted exceptions, and member requests.
 * [x] Add the strict unmanaged-address policy to prefixes, off by default.
 * [ ] Surface unmanaged-in-strict-prefix, outside-prefix, stale managed,
