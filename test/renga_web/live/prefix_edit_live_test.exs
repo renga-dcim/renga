@@ -35,7 +35,8 @@ defmodule RengaWeb.PrefixEditLiveTest do
       )
       |> render_submit()
 
-      created = Repo.get_by!(Prefix, vrf_id: blue.id, status: "container")
+      # Strict address management is opt-in.
+      created = Repo.get_by!(Prefix, vrf_id: blue.id, status: "container", strict: false)
       assert_patch(view, ~p"/network/prefixes?family=ipv6&vrf=blue")
       assert has_element?(view, "#flash-info", "Prefix 2001:db8:b::/48 created")
       assert has_element?(view, "#prefix-row-#{created.id}")
@@ -102,6 +103,39 @@ defmodule RengaWeb.PrefixEditLiveTest do
 
       assert has_element?(view, "#prefix-detail", "Reserved")
       assert %{status: "reserved", description: "Lab"} = Repo.get!(Prefix, prefix.id)
+    end
+
+    test "an admin opts a prefix in to strict address management and back", context do
+      prefix = prefix_fixture(context.admin, "10.0.0.0/24")
+      {:ok, view, _html} = live(context.admin_conn, ~p"/network/prefixes/#{prefix}")
+
+      assert has_element?(view, "#prefix-address-policy", "Observed addresses are normal")
+      refute has_element?(view, "#prefix-strict")
+
+      view |> form("#prefix-edit-form", prefix: %{strict: "true"}) |> render_submit()
+
+      assert Repo.get!(Prefix, prefix.id).strict
+      assert has_element?(view, "#prefix-strict", "Strict")
+
+      assert has_element?(
+               view,
+               "#prefix-address-policy",
+               "every observed address should be managed"
+             )
+
+      {:ok, list, _html} = live(context.admin_conn, ~p"/network/prefixes")
+      assert has_element?(list, "#prefix-row-#{prefix.id}-strict")
+
+      view |> form("#prefix-edit-form", prefix: %{strict: "false"}) |> render_submit()
+      refute Repo.get!(Prefix, prefix.id).strict
+
+      assert [{"strict", "normal"}, {"normal", "strict"}] =
+               context.admin
+               |> Renga.Inventory.list_activity()
+               |> Enum.filter(
+                 &(&1.resource_id == prefix.resource_id and &1.field == "address_policy")
+               )
+               |> Enum.map(&{&1.old_value["value"], &1.new_value["value"]})
     end
 
     test "an admin moves a prefix into a VRF picked from the list", context do

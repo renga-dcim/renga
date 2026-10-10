@@ -127,6 +127,10 @@ defmodule RengaWeb.PrefixComponents do
     <.input field={@form[:vrf_id]} type="select" label="Routing table" options={@table_options} />
     <.input field={@form[:status]} type="select" label="Status" options={@statuses} />
     <.input field={@form[:description]} type="text" label="Description (optional)" />
+    <.input field={@form[:strict]} type="checkbox" label="Strict address management" />
+    <p class="-mt-2 mb-3 text-xs text-fg-muted">
+      Every address observed here should be managed. An observed address without a managed record becomes a finding.
+    </p>
     """
   end
 

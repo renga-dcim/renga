@@ -249,6 +249,14 @@ defmodule RengaWeb.PrefixDetailLive do
           <span class="inline-flex items-center gap-1.5 rounded-md border border-edge px-2 py-0.5 text-xs text-fg">
             {String.capitalize(@prefix.status)}
           </span>
+          <span
+            :if={@prefix.strict}
+            id="prefix-strict"
+            title="Every observed address here should be managed"
+            class="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-tint px-2 py-0.5 text-xs text-fg"
+          >
+            <.icon name="hero-shield-check-mini" class="size-3.5" /> Strict
+          </span>
         </:status>
 
         <p
@@ -296,6 +304,13 @@ defmodule RengaWeb.PrefixDetailLive do
               placeholder="None"
             >
               {@prefix.description}
+            </:item>
+            <:item label="Addresses">
+              <span id="prefix-address-policy">
+                {if @prefix.strict,
+                  do: "Strict: every observed address should be managed",
+                  else: "Observed addresses are normal"}
+              </span>
             </:item>
             <:item label="Record">
               <.link

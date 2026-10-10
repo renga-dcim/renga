@@ -8,6 +8,10 @@ defmodule Renga.Inventory.Prefix do
   A routing table holds one prefix per CIDR. The table is a VRF, or the
   global table when `vrf_id` is nil (RFD 4, "VRFs"); the composite foreign
   key keeps a prefix from naming another organization's VRF.
+
+  `strict` opts the prefix in to strict address management (RFD 4,
+  "Prefixes"): inside it, an observed address with no managed record is a
+  finding. It defaults to off, because observed-only addresses are normal.
   """
 
   use Ecto.Schema
@@ -27,6 +31,7 @@ defmodule Renga.Inventory.Prefix do
     field :prefix, Cidr
     field :status, :string, default: "active"
     field :description, :string
+    field :strict, :boolean, default: false
     field :metadata, :map, default: %{}
 
     belongs_to :organization, Organization
@@ -38,7 +43,7 @@ defmodule Renga.Inventory.Prefix do
 
   def changeset(prefix, attrs) do
     prefix
-    |> cast(attrs, [:prefix, :vrf_id, :status, :description, :metadata])
+    |> cast(attrs, [:prefix, :vrf_id, :status, :description, :strict, :metadata])
     |> validate_required([:organization_id, :resource_id, :prefix, :status])
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)

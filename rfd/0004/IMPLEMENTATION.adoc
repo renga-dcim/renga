@@ -61,7 +61,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 * [ ] Add the `address` finding domain to the Inbox with the shared workflow:
   assignment, snoozing, accepted exceptions, and member requests.
-* [ ] Add the strict unmanaged-address policy to prefixes, off by default.
+* [x] Add the strict unmanaged-address policy to prefixes, off by default.
 * [ ] Surface unmanaged-in-strict-prefix, outside-prefix, stale managed,
   duplicate, and prefix-length findings with source evidence, and show them on
   the affected prefix, address, and resource pages.
