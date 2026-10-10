@@ -281,6 +281,31 @@ defmodule Renga.IPAM.NamespaceCorrelationTest do
     assert open_findings(context) == []
   end
 
+  test "maximum-length unmapped keys support workflows that survive recurrence", context do
+    key = String.duplicate("x", 255)
+    report(context, 1, [{"eth0", :none, %{"key" => key}}])
+    {[finding], 1} = Findings.list_findings(context.scope, domain: "address")
+    assert finding.kind == "unmapped_routing_domain"
+    {:ok, _} = Findings.assign(context.scope, finding, context.scope.user.id)
+    {:ok, _} = Findings.snooze(context.scope, finding, DateTime.add(DateTime.utc_now(), 3600))
+
+    {:ok, _} =
+      Findings.accept_exception(context.scope, finding, %{"exception_reason" => "Known tenant"})
+
+    {:ok, mapping} =
+      IPAM.RoutingDomains.put_mapping(context.scope, context.agent.id, key, context.blue.id)
+
+    assert open_findings(context) == []
+    {:ok, _} = IPAM.RoutingDomains.delete_mapping(context.scope, mapping.id)
+
+    assert {[recurrence], 1} =
+             Findings.list_findings(context.scope, domain: "address", state: "excepted")
+
+    refute recurrence.id == finding.id
+    assert recurrence.workflow.assignee_user_id == context.scope.user.id
+    assert recurrence.workflow.exception_reason == "Known tenant"
+  end
+
   # Reports router-1's interfaces as `{name, address | :none, claim | :absent}`.
   defp report(context, second, interfaces) do
     interfaces =
