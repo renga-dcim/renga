@@ -41,11 +41,39 @@ defmodule Renga.IPAM.PrefixTree do
 
   @doc "How a prefix is shown: `:container`, `:address_map`, or `:address_table`."
   def mode(%{children: [_ | _]}), do: :container
+  def mode(%{prefix: %{prefix: cidr}}), do: host_mode(cidr)
 
-  def mode(%{prefix: %{prefix: cidr}}) do
+  @doc """
+  How a prefix's hosts are measured: per address for an IPv4 prefix with at
+  most #{@address_map_limit} addresses, as a count otherwise.
+  """
+  def host_mode(cidr) do
     if Cidr.family(cidr) == :ipv4 and Cidr.size(cidr) <= @address_map_limit,
       do: :address_map,
       else: :address_table
+  end
+
+  @doc """
+  The child space a container covers, as planning-level blocks
+  (`%{allocated, total, level}`). With no children yet there is no level to
+  infer, so it counts blocks one octet deeper (or the host length) until an
+  addressing plan says otherwise.
+  """
+  def child_space(%{children: []} = node) do
+    cidr = node.prefix.prefix
+    length = Cidr.length(cidr)
+    level = min(length + 8, Cidr.bits(Cidr.family(cidr)))
+    %{allocated: 0, total: 1 <<< (level - length), level: level}
+  end
+
+  def child_space(%{prefix: %{prefix: cidr}, children: children} = node) do
+    level = planning_level(node)
+
+    %{
+      allocated: allocated_blocks(children, level, Cidr.bits(Cidr.family(cidr))),
+      total: 1 <<< (level - Cidr.length(cidr)),
+      level: level
+    }
   end
 
   @doc """
@@ -84,13 +112,9 @@ defmodule Renga.IPAM.PrefixTree do
         cell(cell, children)
       end
 
-    %{
-      level: level,
-      cell_length: cell_length,
-      cells: cells,
-      total: 1 <<< (level - length),
-      allocated: allocated_blocks(children, level, bits)
-    }
+    node
+    |> child_space()
+    |> Map.merge(%{cell_length: cell_length, cells: cells})
   end
 
   defp cell(cell, children) do
@@ -161,12 +185,16 @@ defmodule Renga.IPAM.PrefixTree do
       end
 
     usable = if reserved?, do: size - 2, else: size
-    used_count = Enum.count(cells, &(&1.state == :used))
+    # Observed and managed-but-unseen hosts both occupy space; a host that is
+    # both is one used cell.
+    managed_unseen = Enum.count(cells, &(&1.state == :managed))
+    used_count = Enum.count(cells, &(&1.state == :used)) + managed_unseen
 
     %{
       cells: cells,
       usable: usable,
       used: used_count,
+      managed_unseen: managed_unseen,
       percent: if(usable > 0, do: round(used_count / usable * 100), else: 0)
     }
   end

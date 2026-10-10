@@ -35,9 +35,9 @@ Implements link:README.adoc[RFD 4: IP address management].
   namespace and host value.
 * [x] Keep lifecycle, allocation state, management mode, and shared-address role
   orthogonal in the managed address model.
-* [ ] Include managed-but-unobserved occupancy in distinct-host utilization,
+* [x] Include managed-but-unobserved occupancy in distinct-host utilization,
   combining managed intent and observed hosts without double-counting.
-* [ ] Apply status-specific container utilization, including empty containers,
+* [x] Apply status-specific container utilization, including empty containers,
   separately from the existing child-driven presentation mode.
 * [x] Add optional assignments with tenant-safe constraints, address-row locking,
   ordinary single-assignment validation, and explicit shared-address roles.
