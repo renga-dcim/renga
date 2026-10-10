@@ -63,7 +63,8 @@ defmodule Renga.Repo.Migrations.HardenPrefixesTest do
     refute error.message =~ "red"
   end
 
-  test "adds the constraints when every routing table is already unique", %{scratch_repo: repo} do
+  test "adds the constraints when every routing table is already unique, and drops them on rollback",
+       %{scratch_repo: repo} do
     Renga.ScratchMigrations.run(repo, :up, to: @previous_version)
     organization_id = insert_organization(repo)
 
@@ -77,6 +78,11 @@ defmodule Renga.Repo.Migrations.HardenPrefixesTest do
 
     assert {:error, %Postgrex.Error{postgres: %{constraint: "prefixes_valid_status"}}} =
              insert_prefix(repo, organization_id, "10.1.0.0/24", nil, "planned")
+
+    # Rolling back removes both constraints again.
+    Renga.ScratchMigrations.run(repo, :down, to: @migration_version)
+    assert {:ok, _} = insert_prefix(repo, organization_id, "10.0.0.0/24", nil)
+    assert {:ok, _} = insert_prefix(repo, organization_id, "10.1.0.0/24", nil, "planned")
   end
 
   defp insert_organization(repo) do
