@@ -106,6 +106,14 @@ defmodule Renga.IPAM.AllocationTest do
     assert {:error, :full} = IPAM.next_free_host(context.admin, lan)
   end
 
+  test "a leaf containing only reserved IPv6 subnet-anycast IIDs is full", context do
+    leaf = prefix_fixture(context.admin, "2001:db8::fdff:ffff:ffff:ff80/121")
+
+    assert {:error, :full} = IPAM.next_free_host(context.admin, leaf)
+    assert {:error, :full} = IPAM.allocate_address(context.admin, leaf)
+    assert IPAM.list_ip_addresses(context.admin) == []
+  end
+
   test "allocation refuses what it cannot do", context do
     parent = prefix_fixture(context.admin, "10.0.0.0/24")
     prefix_fixture(context.admin, "10.0.0.0/25")

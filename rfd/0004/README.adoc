@@ -391,8 +391,11 @@ An observed host whose routing domain is unmapped could be in any namespace,
 so it occupies space in all of them rather than being handed out twice.
 Non-assignable addresses are the IPv4 network and broadcast addresses up to
 `/30` (RFC 3021 leaves `/31` and `/32` whole), and for IPv6 the
-Subnet-Router anycast address up to `/126` plus, up to `/64`, the top 128
-subnet anycast addresses (RFC 4291, RFC 2526). A host is only allocated in a
+Subnet-Router anycast address up to `/126` plus the reserved subnet-anycast
+IIDs `fdff:ffff:ffff:ff80` through `fdff:ffff:ffff:ffff` in each `/64`,
+including narrower leaves that intersect that range (RFC 4291, RFC 2526).
+These repeating ranges are skipped arithmetically, not enumerated.
+A host is only allocated in a
 leaf; a prefix with children hands out space as child prefixes. An
 allocation is an ordinary prefix or managed address, written to Activity,
 and reuses a released address's record for its host.
