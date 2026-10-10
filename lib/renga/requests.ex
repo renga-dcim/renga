@@ -216,9 +216,16 @@ defmodule Renga.Requests do
   # value describes a present, unmanaged address on the requested resource.
   defp after_value_details(scope, resource, "adoption", extra) do
     case IPAM.observed_address(scope, extra["address_id"]) do
-      %{address: %{resource_id: resource_id} = address, managed?: false}
+      %{unmapped?: true} ->
+        Repo.rollback(:unmapped_routing_domain)
+
+      %{address: %{resource_id: resource_id} = address, managed?: false, vrf_id: vrf_id}
       when resource_id == resource.id ->
-        Map.put(extra, "address", Cidr.format(address.address))
+        Map.merge(extra, %{
+          "address" => Cidr.format(address.address),
+          "vrf_id" => vrf_id,
+          "vrf" => if(vrf_id, do: IPAM.get_vrf!(scope, vrf_id).name, else: "Global")
+        })
 
       _other ->
         Repo.rollback(:invalid_address)
@@ -231,6 +238,22 @@ defmodule Renga.Requests do
   The value the request would change, as it is now, so an approver can see
   whether it moved since the request was made.
   """
+  def current_value(%Scope{} = scope, %Request{kind: "adoption"} = request) do
+    requested_vrf_id = request.after_value["vrf_id"]
+
+    case IPAM.observed_address(scope, request.after_value["address_id"]) do
+      %{unmapped?: true} ->
+        "Unmapped routing domain"
+
+      %{vrf_id: vrf_id} when vrf_id != requested_vrf_id ->
+        table = if(vrf_id, do: IPAM.get_vrf!(scope, vrf_id).name, else: "Global")
+        "Observed in #{table}"
+
+      _other ->
+        current_value(scope, nil, "adoption", request.field)
+    end
+  end
+
   def current_value(%Scope{} = scope, %Request{} = request) do
     resource = Inventory.get_resource!(scope, request.resource_id)
     current_value(scope, resource, request.kind, request.field)
@@ -466,7 +489,16 @@ defmodule Renga.Requests do
   end
 
   defp apply_change(scope, %Request{kind: "adoption"} = request) do
-    IPAM.adopt_address(scope, request.after_value["address_id"])
+    # Approval's organization lock protects this check and adoption together.
+    # Namespace is part of the requested address identity, not a moving target.
+    requested_vrf_id = request.after_value["vrf_id"]
+
+    case IPAM.observed_address(scope, request.after_value["address_id"]) do
+      nil -> {:error, :invalid_address}
+      %{unmapped?: true} -> {:error, :unmapped_routing_domain}
+      %{vrf_id: vrf_id} when vrf_id != requested_vrf_id -> {:error, :stale}
+      _current -> IPAM.adopt_address(scope, request.after_value["address_id"])
+    end
   end
 
   defp apply_change(scope, %Request{kind: "owner"} = request) do

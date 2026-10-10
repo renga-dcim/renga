@@ -73,7 +73,7 @@ Implements link:README.adoc[RFD 4: IP address management].
 * [x] Add observation-linked routing-domain claims, authoritative source
   capability, external-domain mapping, stale membership handling, and an
   unmapped-domain outcome; absent claims remain global.
-* [ ] Define finding precedence and correlate active observed assignments by
+* [x] Define finding precedence and correlate active observed assignments by
   resolved namespace and host value without treating same-address use in another
   VRF as inherently wrong.
 * [ ] Surface wrong-VRF and unmapped routing-domain findings.

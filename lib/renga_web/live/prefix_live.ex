@@ -216,9 +216,8 @@ defmodule RengaWeb.PrefixLive do
         >
           <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
           <span>
-            Collectors do not report routing tables yet, so observed addresses count in the
-            global table. Prefixes in {@query.vrf.name} count their child prefixes and the
-            addresses managed in {@query.vrf.name}.
+            Prefixes in {@query.vrf.name} count their child prefixes, the addresses managed in {@query.vrf.name}, and observed addresses whose interfaces collectors report in it.
+            Observed addresses without a routing-domain claim count in the global table.
           </span>
         </p>
 

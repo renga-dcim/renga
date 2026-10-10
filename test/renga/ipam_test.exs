@@ -511,13 +511,12 @@ defmodule Renga.IPAMTest do
     assert %{used: 0} = usage.(blue, blue_users)
     assert %{kind: :children, allocated: 7, total: 512, level: 25} = usage.(blue, blue_site)
 
+    # Without a routing-domain claim the observed hosts are global.
     global_view = IPAM.prefix_view(scope, global_users)
-    assert global_view.addresses_observable?
     assert length(global_view.addresses) == 2
     assert global_view.address_map.used == 2
 
     blue_view = IPAM.prefix_view(scope, IPAM.get_prefix!(scope, blue_users.id))
-    refute blue_view.addresses_observable?
     assert blue_view.addresses == []
     assert blue_view.address_map.used == 0
     refute Enum.any?(blue_view.address_map.cells, &(&1.state == :managed))

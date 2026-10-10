@@ -107,7 +107,7 @@ defmodule RengaWeb.PrefixLiveTest do
     refute has_element?(view, "#prefix-row-#{p.users_v4.id}")
   end
 
-  test "explains that observed addresses count in the global table", %{conn: conn, scope: scope} do
+  test "explains which observed addresses count in a VRF", %{conn: conn, scope: scope} do
     p = plan(scope)
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes")
@@ -117,7 +117,7 @@ defmodule RengaWeb.PrefixLiveTest do
     assert has_element?(view, "#prefix-vrf-addresses-note", "global table")
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{p.blue}")
-    assert has_element?(view, "#prefix-addresses-global-note", "not counted in blue")
+    assert has_element?(view, "#prefix-addresses-global-note", "reports their interface")
 
     {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{p.users_v4}")
     refute has_element?(view, "#prefix-addresses-global-note")

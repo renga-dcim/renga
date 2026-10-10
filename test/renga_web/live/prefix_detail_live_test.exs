@@ -260,7 +260,7 @@ defmodule RengaWeb.PrefixDetailLiveTest do
     assert has_element?(
              tenant_view,
              "#prefix-dual-stack-#{users.id}",
-             "VRF prefixes are excluded"
+             "VRF prefixes are not part of this coverage"
            )
 
     {:ok, vlan_view, _html} = live(conn, ~p"/network/vlans/#{users}")

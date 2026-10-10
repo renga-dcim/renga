@@ -282,6 +282,23 @@ defmodule Renga.IPAM.RoutingDomains do
 
   ## Reading
 
+  @doc """
+  The namespace an interface's addresses are in: `{:ok, vrf_id}`, with nil
+  for the global table (also when the interface has no claim), or
+  `:unmapped` when its claim resolves to nothing.
+  """
+  def namespace(organization_id, interface_id) do
+    InterfaceRoutingDomain
+    |> where([d], d.organization_id == ^organization_id and d.interface_id == ^interface_id)
+    |> select([d], {d.resolution, d.vrf_id})
+    |> Repo.one()
+    |> case do
+      nil -> {:ok, nil}
+      {"unmapped", _vrf_id} -> :unmapped
+      {_resolution, vrf_id} -> {:ok, vrf_id}
+    end
+  end
+
   @doc "The resolved routing domain of each of the interfaces, by interface id."
   def domains_for(%Scope{organization_id: organization_id}, interface_ids) do
     InterfaceRoutingDomain
@@ -329,13 +346,14 @@ defmodule Renga.IPAM.RoutingDomains do
       |> Repo.insert_or_update()
       |> case do
         {:ok, mapping} ->
-          {:ok, :ok} = refresh(organization_id)
+          resolve_again(organization_id)
           mapping
 
         {:error, changeset} ->
           Repo.rollback(changeset)
       end
     end)
+    |> Inventory.Changes.broadcast(organization_id)
   end
 
   @doc "Removes an explicit mapping; the key resolves automatically again."
@@ -347,9 +365,10 @@ defmodule Renga.IPAM.RoutingDomains do
         |> Repo.one!()
 
       Repo.delete!(mapping)
-      {:ok, :ok} = refresh(organization_id)
+      resolve_again(organization_id)
       mapping
     end)
+    |> Inventory.Changes.broadcast(organization_id)
   end
 
   @doc "Sets whether a source's routing-domain claims are authoritative. Owners and admins only."
@@ -362,9 +381,19 @@ defmodule Renga.IPAM.RoutingDomains do
         |> Source.routing_domain_authority_changeset(value)
         |> Repo.update!()
 
-      {:ok, :ok} = refresh(organization_id)
+      resolve_again(organization_id)
       source
     end)
+    |> Inventory.Changes.broadcast(organization_id)
+  end
+
+  @doc false
+  # A changed mapping, authority, or VRF can move interfaces between
+  # namespaces, so the address findings that compare in them follow.
+  def resolve_again(organization_id) do
+    {:ok, :ok} = refresh(organization_id)
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(organization_id)
+    :ok
   end
 
   defp scoped_source!(organization_id, source_id) do

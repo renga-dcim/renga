@@ -273,7 +273,7 @@ defmodule RengaWeb.VlanDetailLive do
                 devices within this VLAN's Global-table prefixes have both IPv4 and IPv6.
               </p>
               <p class="text-xs text-fg-muted">
-                VRF prefixes are excluded until collectors report routing domains.
+                VRF prefixes are not part of this coverage.
               </p>
             </div>
             <div class="grid gap-3 sm:grid-cols-2">

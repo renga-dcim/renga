@@ -12,7 +12,8 @@ defmodule RengaWeb.RequestComponents do
   def change_summary(%{kind: "expectation"} = request), do: request.after_value["value"]
 
   def change_summary(%{kind: "adoption"} = request),
-    do: "Adopt #{request.after_value["address"]} into IPAM"
+    do:
+      "Adopt #{request.after_value["address"]} into IPAM (#{request.after_value["vrf"] || "Global"})"
 
   def change_summary(request) do
     "#{change_label(request)} → #{request.after_value["value"]}"
@@ -177,6 +178,9 @@ defmodule RengaWeb.RequestComponents do
             Changed since requested; it is now {@current_value || "not set"}.
           </p>
           <p class="text-xs text-fg-muted">{effect(@request)}</p>
+          <p :if={@request.kind == "adoption"} id="request-namespace" class="text-xs text-fg-muted">
+            Requested routing table: {@request.after_value["vrf"] || "Global"}
+          </p>
         </section>
 
         <.properties id="request-properties" title="Request">

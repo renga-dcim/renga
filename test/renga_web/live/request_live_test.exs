@@ -8,6 +8,7 @@ defmodule RengaWeb.RequestLiveTest do
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Renga.TopologyFixtures
 
   alias Renga.Inventory
   alias Renga.Requests
@@ -34,6 +35,76 @@ defmodule RengaWeb.RequestLiveTest do
       member: member_scope,
       resource: resource
     }
+  end
+
+  test "mounted prefix views and adoption review follow a routing-table remap", context do
+    blue = vrf_fixture(context.admin, "blue")
+    red = vrf_fixture(context.admin, "red")
+    blue_prefix = prefix_fixture(context.admin, "10.0.0.0/24", %{vrf_id: blue.id})
+    red_prefix = prefix_fixture(context.admin, "10.0.0.0/24", %{vrf_id: red.id})
+    {:ok, source} = Inventory.create_source(context.admin, %{kind: "host_agent", name: "agent"})
+
+    {:ok, observation} =
+      Inventory.create_observation(context.admin, source.id, %{
+        idempotency_key: "namespace-request",
+        observed_at: DateTime.utc_now(),
+        payload: %{
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"machine_id" => "routing-server"},
+              "interfaces" => [
+                %{
+                  "name" => "eth0",
+                  "addresses" => ["10.0.0.5/24"],
+                  "routing_domain" => %{"key" => "blue"}
+                }
+              ]
+            }
+          ]
+        }
+      })
+
+    {:ok, resource, _} = Inventory.reconcile_observation(context.admin, observation.id)
+    address = Renga.Repo.get_by!(Inventory.Address, resource_id: resource.id)
+
+    {:ok, request} =
+      Requests.request_adoption(context.member, resource, address.id, %{
+        "reason" => "Blue service"
+      })
+
+    {:ok, inbox, _} =
+      live(context.admin_conn, ~p"/inbox?#{[group: "requests", request: request.id]}")
+
+    {:ok, blue_view, _} = live(context.admin_conn, ~p"/network/prefixes/#{blue_prefix.id}")
+    {:ok, red_view, _} = live(context.admin_conn, ~p"/network/prefixes/#{red_prefix.id}")
+    assert has_element?(inbox, "#request-namespace", "blue")
+    refute has_element?(inbox, "#request-moved")
+    assert has_element?(blue_view, "#address-#{address.id}")
+    refute has_element?(red_view, "#address-#{address.id}")
+
+    {:ok, _} = Renga.IPAM.RoutingDomains.put_mapping(context.admin, source.id, "blue", red.id)
+    assert eventually(fn -> has_element?(inbox, "#request-moved", "Observed in red") end)
+    assert eventually(fn -> not has_element?(blue_view, "#address-#{address.id}") end)
+    assert eventually(fn -> has_element?(red_view, "#address-#{address.id}") end)
+    assert has_element?(inbox, "#request-namespace", "blue")
+
+    inbox
+    |> form("#request-decision-form")
+    |> put_submitter("#request-approve")
+    |> render_submit()
+
+    assert has_element?(inbox, "#flash-error", "moved routing tables")
+    assert has_element?(inbox, "#request-status", "open")
+    assert Renga.Repo.aggregate(Renga.IPAM.IpAddress, :count) == 0
+  end
+
+  defp eventually(fun, attempts \\ 30) do
+    cond do
+      fun.() -> true
+      attempts == 0 -> false
+      true -> Process.sleep(50) && eventually(fun, attempts - 1)
+    end
   end
 
   test "a member requests a lifecycle change and can withdraw it", context do

@@ -207,6 +207,14 @@ defmodule RengaWeb.InboxLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :adoption_form, to_form(changeset, as: :adoption))}
 
+      {:error, :unmapped_routing_domain} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Map the interface's routing domain before requesting adoption"
+         )}
+
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Only members request adoption")}
     end
@@ -343,6 +351,17 @@ defmodule RengaWeb.InboxLive do
 
   defp decision_flash(socket, {:error, reason}) when reason in [:closed, :not_found],
     do: put_flash(socket, :error, "That request is no longer open")
+
+  defp decision_flash(socket, {:error, :stale}),
+    do:
+      put_flash(
+        socket,
+        :error,
+        "The requested address moved routing tables; withdraw this request and request adoption again"
+      )
+
+  defp decision_flash(socket, {:error, :unmapped_routing_domain}),
+    do: put_flash(socket, :error, "Map the interface's routing domain before approving adoption")
 
   defp decision_flash(socket, {:error, _reason}),
     do:
