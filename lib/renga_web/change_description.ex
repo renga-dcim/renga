@@ -87,6 +87,9 @@ defmodule RengaWeb.ChangeDescription do
   defp noun("ip_address"), do: "IP address"
   defp noun(field), do: String.replace(field, "_", " ")
 
+  defp request_change(%{field: "adoption", new_value: %{"address" => address}}),
+    do: "adoption of #{address}"
+
   defp request_change(%{field: field, new_value: %{"value" => value}}) do
     property =
       field |> to_string() |> String.replace_prefix("host.", "") |> String.replace("_", " ")

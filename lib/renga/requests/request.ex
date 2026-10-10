@@ -1,7 +1,8 @@
 defmodule Renga.Requests.Request do
   @moduledoc """
   A change a member proposed but may not apply: a resource's lifecycle, an
-  override of one host field, its owning team, or the hardware it expects. Values are stored as
+  override of one host field, its owning team, the hardware it expects, or
+  the adoption of an address observed on it. Values are stored as
   `%{"value" => ...}` so the record reads the same whatever the field type.
   """
 
@@ -17,7 +18,7 @@ defmodule Renga.Requests.Request do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
-  @kinds ~w(lifecycle field_override owner expectation)
+  @kinds ~w(lifecycle field_override owner expectation adoption)
   @statuses ~w(open approved rejected withdrawn)
 
   schema "change_requests" do

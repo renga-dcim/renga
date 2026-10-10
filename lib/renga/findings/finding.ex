@@ -2,7 +2,7 @@ defmodule Renga.Findings.Finding do
   @moduledoc """
   One finding from any domain, in the shape the Inbox reads.
 
-  Component, hardware match, placement, and topology findings live in their
+  Component, hardware match, placement, topology, and address findings live in their
   own tables with their own reconcilers; this struct is the common read
   model `Renga.Findings` builds over them, joined with the finding's
   workflow state. It is not persisted.

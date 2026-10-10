@@ -190,6 +190,10 @@ defmodule RengaWeb.PrefixDetailLive do
   defp address_result({:error, %Ecto.Changeset{}}, socket, _message),
     do: {:noreply, socket |> put_flash(:error, "That address is already managed") |> load_view()}
 
+  defp address_result({:error, :invalid_address}, socket, _message),
+    do:
+      {:noreply, socket |> put_flash(:error, "That address is no longer observed") |> load_view()}
+
   defp load_view(socket) do
     scope = socket.assigns.current_scope
     view = IPAM.prefix_view(scope, socket.assigns.prefix)

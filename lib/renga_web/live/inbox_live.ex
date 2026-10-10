@@ -24,6 +24,8 @@ defmodule RengaWeb.InboxLive do
 
   alias Renga.Findings
   alias Renga.DCIM
+  alias Renga.Inventory
+  alias Renga.IPAM
   alias Renga.Requests
   alias Renga.Requests.Request
   alias Renga.Teams
@@ -71,7 +73,11 @@ defmodule RengaWeb.InboxLive do
        request_current: nil,
        decision_form: decision_form(),
        can_triage?: Teams.can_manage?(scope),
-       selected_triage: nil
+       selected_triage: nil,
+       can_adopt?: Inventory.organization_manager?(scope),
+       can_request?: Requests.can_request?(scope),
+       adoption_request: nil,
+       adoption_form: adoption_form()
      )}
   end
 
@@ -150,6 +156,62 @@ defmodule RengaWeb.InboxLive do
     |> reply()
   end
 
+  # An unmanaged address in a strict prefix is fixed by adopting it, which
+  # owners and admins do here and members request. Both read the observed
+  # address from the reloaded finding, never from the client.
+  def handle_event("adopt_address", _params, socket) do
+    %{selected: finding, current_scope: scope} = socket.assigns
+
+    case adoptable_address(finding) do
+      nil ->
+        {:noreply, socket}
+
+      address_id ->
+        case IPAM.adopt_address(scope, address_id) do
+          {:ok, adopted} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "#{IPAM.Cidr.format(adopted.address)} adopted")
+             |> load_findings()
+             |> load_selected()}
+
+          {:error, :forbidden} ->
+            {:noreply, put_flash(socket, :error, "Only owners and admins adopt addresses")}
+
+          {:error, _reason} ->
+            {:noreply,
+             socket
+             |> put_flash(:error, "The address could not be adopted; it may already be managed")
+             |> load_selected()}
+        end
+    end
+  end
+
+  def handle_event("request_adoption", %{"adoption" => params}, socket) do
+    %{selected: finding, current_scope: scope} = socket.assigns
+
+    with address_id when not is_nil(address_id) <- adoptable_address(finding),
+         {:ok, _request} <-
+           Requests.request_adoption(scope, finding.resource, address_id, %{
+             "reason" => params["reason"] || ""
+           }) do
+      {:noreply,
+       socket
+       |> put_flash(:info, "Adoption requested")
+       |> assign(:adoption_form, adoption_form())
+       |> load_selected()}
+    else
+      nil ->
+        {:noreply, socket}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, :adoption_form, to_form(changeset, as: :adoption))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Only members request adoption")}
+    end
+  end
+
   def handle_event("decide", %{"decision" => decision} = params, socket)
       when decision in ~w(approve approve_all reject) do
     %{selected_request: request, similar: similar, current_scope: scope} = socket.assigns
@@ -164,6 +226,13 @@ defmodule RengaWeb.InboxLive do
       end
 
     {:noreply, socket |> decision_flash(result) |> after_decision()}
+  end
+
+  def handle_event("withdraw_request", %{"id" => id}, socket) do
+    scope = socket.assigns.current_scope
+    request = Requests.get_request(scope, id)
+    result = if request, do: Requests.withdraw(scope, request), else: {:error, :not_found}
+    {:noreply, socket |> decision_flash(result) |> after_decision() |> load_selected()}
   end
 
   def handle_event("withdraw_request", _params, socket) do
@@ -401,10 +470,36 @@ defmodule RengaWeb.InboxLive do
         assign(socket,
           selected: finding,
           history: Findings.list_history(scope, finding),
-          exception_form: socket.assigns.exception_form || exception_form(finding)
+          exception_form: socket.assigns.exception_form || exception_form(finding),
+          adoption_request: adoption_request(scope, finding)
         )
     end
   end
+
+  defp adoption_request(scope, finding) do
+    case adoptable_address(finding) do
+      nil -> nil
+      id -> Requests.open_request(scope, finding.resource.id, "adoption", "address:" <> id)
+    end
+  end
+
+  # Only an open unmanaged-in-strict finding is fixed by adoption.
+  defp adoptable_address(%{
+         domain: "address",
+         kind: "unmanaged_in_strict_prefix",
+         status: "open",
+         details: %{"observed_address_id" => id}
+       }),
+       do: id
+
+  defp adoptable_address(_finding), do: nil
+
+  defp adoption_form, do: to_form(%{"reason" => ""}, as: :adoption)
+
+  # The finding's address without its mask, so the address list finds the
+  # host rather than every address in its network.
+  defp address_host(%{details: %{"address" => address}}),
+    do: address |> String.split("/") |> hd()
 
   defp load_requests(socket) do
     %{query: query, current_scope: scope} = socket.assigns
@@ -912,6 +1007,11 @@ defmodule RengaWeb.InboxLive do
         snoozes={@snoozes}
         expiries={@expiries}
         exception_form={@exception_form}
+        can_adopt?={@can_adopt?}
+        can_request?={@can_request?}
+        adoption_request={@adoption_request}
+        adoption_form={@adoption_form}
+        current_user_id={@current_scope.user.id}
       />
 
       <.request_panel
@@ -1117,6 +1217,11 @@ defmodule RengaWeb.InboxLive do
   attr :snoozes, :list, required: true
   attr :expiries, :list, required: true
   attr :exception_form, :any, required: true
+  attr :can_adopt?, :boolean, default: false
+  attr :can_request?, :boolean, default: false
+  attr :adoption_request, :any, default: nil
+  attr :adoption_form, :any, default: nil
+  attr :current_user_id, :string, default: nil
 
   defp finding_panel(assigns) do
     ~H"""
@@ -1145,6 +1250,16 @@ defmodule RengaWeb.InboxLive do
             {Format.datetime(@finding.resolved_at)}
           </:item>
         </.properties>
+
+        <.address_finding
+          :if={@finding.domain == "address"}
+          finding={@finding}
+          can_adopt?={@can_adopt?}
+          can_request?={@can_request?}
+          adoption_request={@adoption_request}
+          adoption_form={@adoption_form}
+          current_user_id={@current_user_id}
+        />
 
         <section :if={@finding.details != %{}} id="finding-details" class="space-y-2">
           <h3 class="text-xs font-medium text-fg-muted">Diagnostic evidence</h3>
@@ -1294,6 +1409,80 @@ defmodule RengaWeb.InboxLive do
     """
   end
 
+  attr :finding, :map, required: true
+  attr :can_adopt?, :boolean, required: true
+  attr :can_request?, :boolean, required: true
+  attr :adoption_request, :any, required: true
+  attr :adoption_form, :any, required: true
+  attr :current_user_id, :string, required: true
+
+  # Where an address finding is fixed: its prefix, the managed addresses,
+  # and, for an unmanaged address in a strict prefix, adoption.
+  defp address_finding(assigns) do
+    assigns = assign(assigns, :adoptable?, adoptable_address(assigns.finding) != nil)
+
+    ~H"""
+    <section id="address-finding" class="space-y-3">
+      <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+        <.link
+          :if={@finding.details["prefix_id"]}
+          id="address-finding-prefix"
+          navigate={~p"/network/prefixes/#{@finding.details["prefix_id"]}"}
+          class="text-link hover:underline"
+        >
+          Open prefix {@finding.details["prefix"]}
+        </.link>
+        <.link
+          id="address-finding-addresses"
+          navigate={~p"/network/addresses?#{[q: address_host(@finding)]}"}
+          class="text-link hover:underline"
+        >
+          Find in managed addresses
+        </.link>
+      </div>
+
+      <.button
+        :if={@adoptable? and @can_adopt?}
+        id="address-finding-adopt"
+        type="button"
+        variant="primary"
+        phx-click="adopt_address"
+        phx-disable-with="Adopting…"
+      >
+        Adopt {@finding.details["address"]}
+      </.button>
+
+      <.pending_request
+        :if={@adoptable? and @adoption_request}
+        id="address-finding-request"
+        request={@adoption_request}
+        current_user_id={@current_user_id}
+      />
+
+      <.form
+        :if={@adoptable? and @can_request? and is_nil(@adoption_request)}
+        for={@adoption_form}
+        id="address-finding-request-form"
+        phx-submit="request_adoption"
+        class="space-y-1.5"
+      >
+        <p class="text-xs font-medium text-fg-muted">Request adoption</p>
+        <.input
+          field={@adoption_form[:reason]}
+          type="textarea"
+          label="Why should this address be managed?"
+          rows="2"
+        />
+        <div class="flex justify-end">
+          <.button id="address-finding-request-save" phx-disable-with="Requesting…">
+            Request adoption
+          </.button>
+        </div>
+      </.form>
+    </section>
+    """
+  end
+
   ## Labels
 
   defp state_options,
@@ -1323,6 +1512,7 @@ defmodule RengaWeb.InboxLive do
   defp domain_label("hardware_match"), do: "Catalog match"
   defp domain_label("placement"), do: "Placement"
   defp domain_label("topology"), do: "Network"
+  defp domain_label("address"), do: "IP addresses"
 
   defp state_label(%{state: :open}), do: "Open"
   defp state_label(%{state: :snoozed}), do: "Snoozed"
@@ -1365,8 +1555,9 @@ defmodule RengaWeb.InboxLive do
        when domain in ["component", "hardware_match"],
        do: ~p"/inventory/#{resource}/hardware"
 
-  defp resource_path(%{domain: "topology", resource: resource}),
-    do: ~p"/inventory/#{resource}/network"
+  defp resource_path(%{domain: domain, resource: resource})
+       when domain in ["topology", "address"],
+       do: ~p"/inventory/#{resource}/network"
 
   defp resource_path(%{resource: resource}), do: ~p"/inventory/#{resource}"
 
