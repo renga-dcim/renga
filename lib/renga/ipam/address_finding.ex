@@ -5,7 +5,9 @@ defmodule Renga.IPAM.AddressFinding do
 
   `kind` is one of `kinds/0`. The finding belongs to the interface the
   address is observed or assigned on, and `resolution_key` names the address
-  there (its host, or the managed address for a stale assignment), so the
+  there (its host, prefixed with its VRF outside the global table; the
+  managed address for a stale or wrong-VRF assignment; or the source and key
+  of an unmapped routing domain), so the
   finding's identity survives a mask change and its workflow follows a
   recurrence. `details` keep the involved records and source evidence.
   """
@@ -18,7 +20,7 @@ defmodule Renga.IPAM.AddressFinding do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
-  @kinds ~w(unmanaged_in_strict_prefix outside_prefix stale_managed_assignment duplicate_address prefix_length_mismatch)
+  @kinds ~w(unmanaged_in_strict_prefix outside_prefix stale_managed_assignment duplicate_address prefix_length_mismatch wrong_vrf unmapped_routing_domain)
 
   schema "address_findings" do
     field :kind, :string

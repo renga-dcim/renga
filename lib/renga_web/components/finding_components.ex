@@ -9,7 +9,7 @@ defmodule RengaWeb.FindingComponents do
 
   alias RengaWeb.Format
 
-  @acronyms %{"vlan" => "VLAN", "vid" => "VID", "nvme" => "NVMe", "psu" => "PSU"}
+  @acronyms %{"vlan" => "VLAN", "vid" => "VID", "vrf" => "VRF", "nvme" => "NVMe", "psu" => "PSU"}
 
   @doc "A finding kind as a label: \"missing_vlan\" -> \"Missing VLAN\"."
   def kind_label(kind) do

@@ -1436,7 +1436,8 @@ defmodule RengaWeb.InboxLive do
   attr :current_user_id, :string, required: true
 
   # Where an address finding is fixed: its prefix, the managed addresses,
-  # and, for an unmanaged address in a strict prefix, adoption.
+  # the routing-domain mappings for an unmapped domain, and, for an
+  # unmanaged address in a strict prefix, adoption.
   defp address_finding(assigns) do
     assigns = assign(assigns, :adoptable?, adoptable_address(assigns.finding) != nil)
 
@@ -1452,11 +1453,20 @@ defmodule RengaWeb.InboxLive do
           Open prefix {@finding.details["prefix"]}
         </.link>
         <.link
+          :if={@finding.details["address"]}
           id="address-finding-addresses"
           navigate={~p"/network/addresses?#{[q: address_host(@finding)]}"}
           class="text-link hover:underline"
         >
           Find in managed addresses
+        </.link>
+        <.link
+          :if={@finding.kind == "unmapped_routing_domain"}
+          id="address-finding-routing-domains"
+          navigate={~p"/network/vrfs" <> "#routing-domains"}
+          class="text-link hover:underline"
+        >
+          Map routing domain {@finding.details["routing_domain"]}
         </.link>
       </div>
 

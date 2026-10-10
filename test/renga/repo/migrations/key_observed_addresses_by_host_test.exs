@@ -127,6 +127,9 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
              Enum.filter(evidence(repo), fn [address, _observation, _text] -> address == split end)
   end
 
+  # Current code on the rolled-back schema: address findings, which need
+  # later tables, fail and are logged without failing ingestion.
+  @tag :capture_log
   test "rollback retains the presence watermark so old reports cannot revive historical masks",
        %{repo: repo} do
     Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
