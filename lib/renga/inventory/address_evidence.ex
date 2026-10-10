@@ -3,7 +3,10 @@ defmodule Renga.Inventory.AddressEvidence do
   Observation-scoped source evidence for a canonical assigned address.
 
   Both evidence and canonical state use PostgreSQL `inet`, preserving address
-  family and prefix length through reconciliation.
+  family and prefix length through reconciliation. One observation may report
+  the same host with several masks; each reported `inet` is its own evidence
+  row, so the link is unique per observation, canonical address, and reported
+  address.
   """
 
   use Ecto.Schema
@@ -49,7 +52,7 @@ defmodule Renga.Inventory.AddressEvidence do
     |> assoc_constraint(:address_record, name: :address_evidence_tenant_address_fkey)
     |> assoc_constraint(:source, name: :address_evidence_tenant_source_fkey)
     |> assoc_constraint(:observation, name: :address_evidence_tenant_observation_fkey)
-    |> unique_constraint([:organization_id, :observation_id, :address_id],
+    |> unique_constraint([:organization_id, :observation_id, :address_id, :address],
       name: :address_evidence_observation_link_index
     )
   end
