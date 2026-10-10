@@ -22,10 +22,13 @@ defmodule Renga.IPAM do
   their own routing table and count there, so a VRF's prefixes are occupied
   by the addresses managed in that VRF.
 
-  Observed addresses are normal and never findings. An owner or admin adopts
-  one into a managed `ip_address` (RFD 4, Phase 3) when it needs state of
-  its own; a managed address that is no longer observed stays listed as
-  managed, not seen. Release retires the address instead of deleting it.
+  Observed addresses are normal: they become findings only in the conditions
+  `Renga.IPAM.AddressFindings` reconciles, such as an unmanaged address in a
+  strict prefix, and every prefix and address write here reconciles those
+  findings before it commits. An owner or admin adopts one into a managed
+  `ip_address` (RFD 4, Phase 3) when it needs state of its own; a managed
+  address that is no longer observed stays listed as managed, not seen.
+  Release retires the address instead of deleting it.
   """
 
   import Ecto.Query, warn: false
@@ -39,6 +42,7 @@ defmodule Renga.IPAM do
   alias Renga.Inventory.Prefix
   alias Renga.Inventory.ResourceStore
   alias Renga.IPAM.AddressAssignment
+  alias Renga.IPAM.AddressFindings
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.IpAddress
   alias Renga.IPAM.IpAddressAssignment
@@ -67,7 +71,7 @@ defmodule Renga.IPAM do
   CIDR is invalid or already exists in its routing table.
   """
   def create_prefix(%Scope{organization_id: organization_id} = scope, attrs) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       validation = Prefix.changeset(%Prefix{organization_id: organization_id}, attrs)
 
       # The resource does not exist yet, so its absence is the one error
@@ -132,7 +136,7 @@ defmodule Renga.IPAM do
         %Prefix{id: id} = baseline,
         attrs
       ) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       current = lock_prefix!(organization_id, id)
 
       # A row lock serializes writes but cannot detect an outdated editing form.
@@ -167,7 +171,7 @@ defmodule Renga.IPAM do
   keeps the history with no resource to link to.
   """
   def delete_prefix(%Scope{organization_id: organization_id} = scope, %Prefix{id: id}) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       current = lock_prefix!(organization_id, id)
 
       {:ok, _event} =
@@ -183,6 +187,21 @@ defmodule Renga.IPAM do
       current
     end)
     |> Changes.broadcast(organization_id)
+  end
+
+  # Every prefix and address write changes which address findings should be
+  # open, so each one reconciles them before it commits (RFD 4, "Findings").
+  defp ipam_transaction(%Scope{organization_id: organization_id} = scope, mutation) do
+    Inventory.organization_management_transaction(scope, fn ->
+      case mutation.() do
+        {:error, _reason} = error ->
+          error
+
+        result ->
+          {:ok, :ok} = AddressFindings.reconcile(organization_id)
+          result
+      end
+    end)
   end
 
   # The envelope's display name follows the CIDR and table; its stable
@@ -622,7 +641,7 @@ defmodule Renga.IPAM do
   Returns `{:error, changeset}` when the host is already managed there.
   """
   def adopt_address(%Scope{organization_id: organization_id} = scope, address_id, attrs \\ %{}) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       observed = observed_address!(organization_id, address_id)
       interface = Repo.preload(observed, interface: :resource).interface
       attrs = Map.take(attrs, [:description, :dns_name, "description", "dns_name"])
@@ -664,7 +683,7 @@ defmodule Renga.IPAM do
   the same record. Releasing an already released address changes nothing.
   """
   def release_address(%Scope{organization_id: organization_id} = scope, ip_address_id) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       current = lock_ip_address!(organization_id, ip_address_id)
 
       if current.resource.lifecycle_state == "retired" do
@@ -827,7 +846,7 @@ defmodule Renga.IPAM do
   changeset when the host is already managed there or the input is invalid.
   """
   def create_ip_address(%Scope{organization_id: organization_id} = scope, attrs) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       validation =
         change_ip_address(
           %IpAddress{organization_id: organization_id, allocation_state: "reserved"},
@@ -875,7 +894,7 @@ defmodule Renga.IPAM do
         %IpAddress{id: id} = baseline,
         attrs
       ) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       current = lock_ip_address!(organization_id, id)
       if current.resource.lifecycle_state == "retired", do: Repo.rollback(:retired)
 
@@ -930,7 +949,7 @@ defmodule Renga.IPAM do
         ip_address_id,
         interface_id
       ) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       current = lock_ip_address!(organization_id, ip_address_id)
       if current.resource.lifecycle_state == "retired", do: Repo.rollback(:retired)
 
@@ -967,7 +986,7 @@ defmodule Renga.IPAM do
   assignments in place. Owners and admins only, recorded in Activity.
   """
   def unassign_address(%Scope{organization_id: organization_id} = scope, assignment_id) do
-    Inventory.organization_management_transaction(scope, fn ->
+    ipam_transaction(scope, fn ->
       %{ip_address_id: ip_address_id} =
         IpAddressAssignment
         |> where([a], a.organization_id == ^organization_id and a.id == ^assignment_id)
