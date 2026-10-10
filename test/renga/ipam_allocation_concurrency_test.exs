@@ -107,6 +107,59 @@ defmodule Renga.IPAMAllocationConcurrencyTest do
     end)
   end
 
+  test "IPv6 allocations race safely, without enumerating the space" do
+    with_ipam(fn scope, other ->
+      site = prefix_fixture(scope, "2001:db8::/48", %{status: "container"})
+
+      assert {{:ok, first}, {:ok, second}} =
+               race(fn -> IPAM.allocate_prefix(scope, site, 64) end, fn ->
+                 IPAM.allocate_prefix(other, site, 64)
+               end)
+
+      assert {Cidr.format(first.prefix), Cidr.format(second.prefix)} ==
+               {"2001:db8::/64", "2001:db8:0:1::/64"}
+
+      # The subnet-router anycast ::0 is never handed out.
+      lan = first
+
+      assert {{:ok, first_host}, {:ok, second_host}} =
+               race(fn -> IPAM.allocate_address(scope, lan) end, fn ->
+                 IPAM.allocate_address(other, lan)
+               end)
+
+      assert {Cidr.format(first_host.address), Cidr.format(second_host.address)} ==
+               {"2001:db8::1/64", "2001:db8::2/64"}
+    end)
+  end
+
+  test "allocations in a VRF and the global table take space in their own table" do
+    with_ipam(fn scope, other ->
+      blue = vrf_fixture(scope, "blue")
+      global = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
+      in_blue = prefix_fixture(scope, "10.0.0.0/16", %{status: "container", vrf_id: blue.id})
+      prefix_fixture(scope, "10.0.0.0/24")
+
+      # Different tables still serialize on the organization lock, and the
+      # global /24 does not occupy blue.
+      assert {{:ok, blue_child}, {:ok, global_child}} =
+               race(fn -> IPAM.allocate_prefix(scope, in_blue, 24) end, fn ->
+                 IPAM.allocate_prefix(other, global, 24)
+               end)
+
+      assert {Cidr.format(blue_child.prefix), blue_child.vrf_id} == {"10.0.0.0/24", blue.id}
+      assert {Cidr.format(global_child.prefix), global_child.vrf_id} == {"10.0.1.0/24", nil}
+
+      # Two allocations in blue still take different space.
+      assert {{:ok, first}, {:ok, second}} =
+               race(fn -> IPAM.allocate_prefix(scope, in_blue, 24) end, fn ->
+                 IPAM.allocate_prefix(other, in_blue, 24)
+               end)
+
+      assert {Cidr.format(first.prefix), Cidr.format(second.prefix)} ==
+               {"10.0.1.0/24", "10.0.2.0/24"}
+    end)
+  end
+
   # Runs `held` in a transaction kept open until `competing` has had time to
   # block on it, then releases it. Returns both results.
   defp race(held, competing) do
