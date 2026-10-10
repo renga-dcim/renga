@@ -323,11 +323,14 @@ defmodule Renga.IPAMTest do
     {:ok, _} = IPAM.release_address(scope, managed.id)
     assert IPAM.prefix_view(scope, lan).addresses == []
 
-    # Seen again with another mask and adopted, the same record follows it.
-    [_withdrawn, again] =
+    # Seen again with another mask, the one observed assignment of the host
+    # follows it, and so does the managed record when adopted again.
+    [again] =
       report_addresses(scope, source, [
         %{"address" => "192.0.2.5/28", "metadata" => %{"assignment" => "static"}}
       ])
+
+    assert again.id == observed.id
 
     adopter = user_fixture()
     organization = Repo.get!(Renga.Accounts.Organization, scope.organization_id)

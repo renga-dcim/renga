@@ -4,6 +4,11 @@ defmodule Renga.Inventory.Address do
 
   Addresses live outside interface metadata so IPAM, stale detection, and
   duplicate-address checks can become normal queries in later phases.
+
+  Identity is the interface plus the host value (RFD 4, "Observation
+  correlation"): `192.0.2.10/24` and `192.0.2.10/32` on one interface are one
+  observed assignment. The row carries the currently reported mask, and every
+  submitted address and mask stays in `Renga.Inventory.AddressEvidence`.
   """
 
   use Ecto.Schema
@@ -46,7 +51,11 @@ defmodule Renga.Inventory.Address do
     |> assoc_constraint(:organization)
     |> assoc_constraint(:resource, name: :addresses_organization_resource_fkey)
     |> assoc_constraint(:interface, name: :addresses_interface_resource_fkey)
-    |> unique_constraint([:organization_id, :interface_id, :address])
+    |> unique_constraint([:organization_id, :interface_id, :address],
+      name: :addresses_interface_host_index,
+      error_key: :address,
+      message: "is already observed on this interface"
+    )
   end
 
   defp validate_kind_matches_address(changeset) do

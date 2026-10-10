@@ -1958,7 +1958,7 @@ defmodule Renga.InventoryTest do
       end
     end
 
-    test "addresses are unique per interface", %{scope: scope, interface: interface} do
+    test "addresses are unique per interface and host", %{scope: scope, interface: interface} do
       attrs = %{
         kind: "ipv4",
         address: "192.0.2.10/24"
@@ -1966,8 +1966,13 @@ defmodule Renga.InventoryTest do
 
       assert {:ok, _address} = Inventory.create_address(scope, interface.id, attrs)
       assert {:error, changeset} = Inventory.create_address(scope, interface.id, attrs)
+      assert %{address: ["is already observed on this interface"]} = errors_on(changeset)
 
-      assert %{organization_id: ["has already been taken"]} = errors_on(changeset)
+      # Identity is the host: another mask of it is the same assignment.
+      assert {:error, changeset} =
+               Inventory.create_address(scope, interface.id, %{attrs | address: "192.0.2.10/32"})
+
+      assert %{address: ["is already observed on this interface"]} = errors_on(changeset)
     end
 
     test "address validations enforce kind and native inet parsing", %{
