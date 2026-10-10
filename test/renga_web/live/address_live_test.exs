@@ -136,6 +136,32 @@ defmodule RengaWeb.AddressLiveTest do
     refute has_element?(view, "#address-panel")
   end
 
+  test "an admin reserves an IPv6 address in a VRF and finds it by prefix", context do
+    blue = vrf_fixture(context.admin, "blue")
+    {:ok, global} = IPAM.create_ip_address(context.admin, %{address: "2001:db8::7/64"})
+    {:ok, view, _html} = live(context.admin_conn, ~p"/network/addresses")
+
+    view |> element("#new-address") |> render_click()
+
+    view
+    |> form("#address-form", ip_address: %{address: "2001:DB8::7/64", vrf_id: blue.id})
+    |> render_submit()
+
+    assert has_element?(view, "#flash-info", "2001:db8::7 reserved")
+    in_blue = Repo.get_by!(IpAddress, vrf_id: blue.id)
+    assert has_element?(view, "#address-#{in_blue.id}", "2001:db8::7/64")
+    assert has_element?(view, "#address-#{in_blue.id}", "blue")
+
+    # An IPv6 prefix finds hosts in every table; a VRF filter keeps its own.
+    view |> form("#address-filter", filter: %{q: "2001:db8::/64"}) |> render_change()
+    assert has_element?(view, "#address-#{in_blue.id}")
+    assert has_element?(view, "#address-#{global.id}")
+
+    {:ok, view, _html} = live(context.member_conn, ~p"/network/addresses?vrf=blue&q=2001:db8::7")
+    assert has_element?(view, "#address-#{in_blue.id}")
+    refute has_element?(view, "#address-#{global.id}")
+  end
+
   test "an admin shares a VIP across interfaces and removes one assignment", context do
     {:ok, address} = IPAM.create_ip_address(context.admin, %{address: "192.0.2.20/24"})
     {:ok, view, _html} = live(context.admin_conn, ~p"/network/addresses")

@@ -13,6 +13,7 @@ defmodule Renga.IPAMAllocationConcurrencyTest do
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
   import Renga.TopologyFixtures
+  import Renga.MutationRace, only: [race: 2]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
@@ -107,49 +108,56 @@ defmodule Renga.IPAMAllocationConcurrencyTest do
     end)
   end
 
-  # Runs `held` in a transaction kept open until `competing` has had time to
-  # block on it, then releases it. Returns both results.
-  defp race(held, competing) do
-    {held_task, release} = held_mutation(held)
-    assert_receive :mutation_ready, 1_000
+  test "IPv6 allocations race safely, without enumerating the space" do
+    with_ipam(fn scope, other ->
+      site = prefix_fixture(scope, "2001:db8::/48", %{status: "container"})
 
-    competing_task = concurrent(competing)
+      assert {{:ok, first}, {:ok, second}} =
+               race(fn -> IPAM.allocate_prefix(scope, site, 64) end, fn ->
+                 IPAM.allocate_prefix(other, site, 64)
+               end)
 
-    # The competing write waits on the organization lock the first holds.
-    assert Task.yield(competing_task, 200) == nil
-    release.()
+      assert {Cidr.format(first.prefix), Cidr.format(second.prefix)} ==
+               {"2001:db8::/64", "2001:db8:0:1::/64"}
 
-    {:ok, held_result} = Task.await(held_task)
-    {held_result, Task.await(competing_task)}
+      # The subnet-router anycast ::0 is never handed out.
+      lan = first
+
+      assert {{:ok, first_host}, {:ok, second_host}} =
+               race(fn -> IPAM.allocate_address(scope, lan) end, fn ->
+                 IPAM.allocate_address(other, lan)
+               end)
+
+      assert {Cidr.format(first_host.address), Cidr.format(second_host.address)} ==
+               {"2001:db8::1/64", "2001:db8::2/64"}
+    end)
   end
 
-  defp held_mutation(mutation) do
-    test_process = self()
+  test "allocations in a VRF and the global table take space in their own table" do
+    with_ipam(fn scope, other ->
+      blue = vrf_fixture(scope, "blue")
+      global = prefix_fixture(scope, "10.0.0.0/16", %{status: "container"})
+      in_blue = prefix_fixture(scope, "10.0.0.0/16", %{status: "container", vrf_id: blue.id})
+      prefix_fixture(scope, "10.0.0.0/24")
 
-    task =
-      concurrent(fn ->
-        Repo.transaction(fn ->
-          result = mutation.()
-          send(test_process, :mutation_ready)
+      # Different tables still serialize on the organization lock, and the
+      # global /24 does not occupy blue.
+      assert {{:ok, blue_child}, {:ok, global_child}} =
+               race(fn -> IPAM.allocate_prefix(scope, in_blue, 24) end, fn ->
+                 IPAM.allocate_prefix(other, global, 24)
+               end)
 
-          receive do
-            :release_mutation -> result
-          end
-        end)
-      end)
+      assert {Cidr.format(blue_child.prefix), blue_child.vrf_id} == {"10.0.0.0/24", blue.id}
+      assert {Cidr.format(global_child.prefix), global_child.vrf_id} == {"10.0.1.0/24", nil}
 
-    {task, fn -> send(task.pid, :release_mutation) end}
-  end
+      # Two allocations in blue still take different space.
+      assert {{:ok, first}, {:ok, second}} =
+               race(fn -> IPAM.allocate_prefix(scope, in_blue, 24) end, fn ->
+                 IPAM.allocate_prefix(other, in_blue, 24)
+               end)
 
-  defp concurrent(fun) do
-    Task.async(fn ->
-      :ok = Sandbox.checkout(Repo, sandbox: false)
-
-      try do
-        fun.()
-      after
-        Sandbox.checkin(Repo)
-      end
+      assert {Cidr.format(first.prefix), Cidr.format(second.prefix)} ==
+               {"10.0.1.0/24", "10.0.2.0/24"}
     end)
   end
 

@@ -213,6 +213,39 @@ defmodule Renga.IPAM.AddressFindingsTest do
              []
   end
 
+  test "IPv6 addresses raise the same findings, keyed by their compressed host", context do
+    prefix_fixture(context.scope, "2001:db8::/64", %{strict: true})
+    address_fixture(context.scope, context.web_eth0, "2001:db8::5/64")
+    address_fixture(context.scope, context.web_eth1, "2001:db8::6/80")
+    address_fixture(context.scope, context.db_eth0, "2001:db8:1::5/64")
+    shared = address_fixture(context.scope, context.web_eth0, "2001:db8::9/64")
+    address_fixture(context.scope, context.db_eth0, "2001:db8::9/64")
+    reconcile(context)
+
+    assert context |> open() |> Enum.map(fn {kind, _, key, _} -> {kind, key} end) == [
+             {"duplicate_address", "2001:db8::9"},
+             {"duplicate_address", "2001:db8::9"},
+             {"outside_prefix", "2001:db8:1::5"},
+             {"prefix_length_mismatch", "2001:db8::6"},
+             {"unmanaged_in_strict_prefix", "2001:db8::5"},
+             {"unmanaged_in_strict_prefix", "2001:db8::6"},
+             {"unmanaged_in_strict_prefix", "2001:db8::9"},
+             {"unmanaged_in_strict_prefix", "2001:db8::9"}
+           ]
+
+    # Managed as anycast, the shared host is neither a duplicate nor
+    # unmanaged on either interface.
+    {:ok, managed} = IPAM.adopt_address(context.scope, shared.id)
+    {:ok, _anycast} = IPAM.update_ip_address(context.scope, managed, %{role: "anycast"})
+
+    assert context |> open() |> Enum.map(fn {kind, _, key, _} -> {kind, key} end) == [
+             {"outside_prefix", "2001:db8:1::5"},
+             {"prefix_length_mismatch", "2001:db8::6"},
+             {"unmanaged_in_strict_prefix", "2001:db8::5"},
+             {"unmanaged_in_strict_prefix", "2001:db8::6"}
+           ]
+  end
+
   defp reconcile(context),
     do: {:ok, :ok} = AddressFindings.reconcile(context.scope.organization_id)
 
