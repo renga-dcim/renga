@@ -17,6 +17,7 @@ defmodule Renga.IPAMAddressesTest do
   alias Renga.IPAM
   alias Renga.IPAM.Cidr
   alias Renga.IPAM.IpAddress
+  alias Renga.IPAM.IpAddressAssignment
 
   setup do
     organization = organization_fixture()
@@ -72,6 +73,31 @@ defmodule Renga.IPAMAddressesTest do
                context.admin
                |> Inventory.list_activity()
                |> Enum.filter(&(&1.resource_id == reserved.resource_id))
+    end
+
+    test "an IPv6 address is managed, assigned, and identified by its host", context do
+      assert {:ok, address} =
+               IPAM.create_ip_address(context.admin, %{
+                 address: "2001:DB8:0:0::10/64",
+                 allocation_state: "allocated",
+                 management_mode: "slaac"
+               })
+
+      assert Cidr.format(address.address) == "2001:db8::10/64"
+      assert Repo.get!(Resource, address.resource_id).display_name == "2001:db8::10"
+
+      assert {:error, changeset} =
+               IPAM.create_ip_address(context.admin, %{address: "2001:db8::10/128"})
+
+      assert %{address: ["is already managed in this routing table"]} = errors_on(changeset)
+
+      assert {:ok, %{assignments: [%{interface_id: eth0_id}]}} =
+               IPAM.assign_address(context.admin, address.id, context.eth0.id)
+
+      assert eth0_id == context.eth0.id
+
+      assert [%{id: id}] = IPAM.list_ip_addresses(context.admin, %{"q" => "2001:db8::10"})
+      assert id == address.id
     end
 
     test "refuses invalid input, another organization's VRF, and members", context do
@@ -167,6 +193,19 @@ defmodule Renga.IPAMAddressesTest do
       assert_raise Ecto.NoResultsError, fn ->
         IPAM.assign_address(other, address.id, foreign_ports["eth0"].id)
       end
+
+      # The database refuses the cross-organization pair too, whatever code
+      # reaches it.
+      assert {:error, changeset} =
+               %IpAddressAssignment{
+                 organization_id: context.admin.organization_id,
+                 ip_address_id: address.id,
+                 interface_id: foreign_ports["eth0"].id
+               }
+               |> IpAddressAssignment.changeset()
+               |> Repo.insert()
+
+      assert %{interface_id: ["does not exist"]} = errors_on(changeset)
 
       member = scope_for(context.organization, "member")
       assert {:error, :forbidden} = IPAM.assign_address(member, address.id, context.eth0.id)

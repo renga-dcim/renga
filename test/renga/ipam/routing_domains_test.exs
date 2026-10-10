@@ -183,6 +183,17 @@ defmodule Renga.IPAM.RoutingDomainsTest do
     assert_raise Ecto.NoResultsError, fn ->
       RoutingDomains.put_mapping(context.scope, foreign.id, "blue", nil)
     end
+
+    # Nor may a key map to another organization's VRF.
+    other_admin = user_fixture()
+    organization_membership_fixture(other_admin, other, %{role: "admin"})
+    foreign_vrf = vrf_fixture(Accounts.scope_for_user(other_admin, other.id), "blue")
+
+    assert {:error, changeset} =
+             RoutingDomains.put_mapping(context.scope, context.agent.id, "blue", foreign_vrf.id)
+
+    assert %{vrf_id: ["does not exist"]} = errors_on(changeset)
+    assert RoutingDomains.list_mappings(context.scope) == []
   end
 
   # Reports one resource's interfaces with routing-domain claims; `:absent`
