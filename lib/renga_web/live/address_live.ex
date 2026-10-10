@@ -5,7 +5,7 @@ defmodule RengaWeb.AddressLive do
 
   The list searches by address or CIDR (hosts inside it), or by text across
   the DNS name, description, and assigned interfaces and devices, in one
-  routing table or all of them (`?q=`, `?vrf=` with a VRF name or `global`,
+  routing table or all of them (`?q=`, `?vrf=` with a tagged VRF id, name alias, or `global`,
   `?released=true`). Released addresses are history and hidden by default.
 
   Owners and admins reserve an address in a side panel, edit its intent,
@@ -70,14 +70,19 @@ defmodule RengaWeb.AddressLive do
   end
 
   def handle_event("new", _params, socket) do
-    {:noreply, socket |> reset_panel() |> assign(panel: :new)}
+    {:noreply, socket |> clear_flash() |> reset_panel() |> assign(panel: :new)}
   end
 
   # Editing starts from the stored address, which is also the stale-edit
   # baseline for its intent fields.
   def handle_event("edit", %{"id" => id}, socket) do
     ip_address = IPAM.get_ip_address!(socket.assigns.current_scope, id)
-    {:noreply, socket |> reset_panel(ip_address) |> assign(panel: :edit, editing: ip_address)}
+
+    {:noreply,
+     socket
+     |> clear_flash()
+     |> reset_panel(ip_address)
+     |> assign(panel: :edit, editing: ip_address)}
   rescue
     Ecto.NoResultsError -> {:noreply, address_gone(socket)}
     Ecto.Query.CastError -> {:noreply, address_gone(socket)}
@@ -169,18 +174,25 @@ defmodule RengaWeb.AddressLive do
   def handle_event("unassign", %{"id" => assignment_id}, socket) do
     %{current_scope: scope, editing: editing} = socket.assigns
 
-    case IPAM.unassign_address(scope, assignment_id) do
-      {:ok, remaining} ->
-        {:noreply,
-         socket
-         |> assign(editing: %{editing | assignments: remaining.assignments}, assign_error: nil)
-         |> load_addresses()}
+    # The assignment must belong to this server-owned edit session, not
+    # merely to some address in the same organization.
+    if socket.assigns.panel == :edit && editing &&
+         Enum.any?(editing.assignments, &(&1.id == assignment_id)) do
+      case IPAM.unassign_address(scope, assignment_id) do
+        {:ok, remaining} ->
+          {:noreply,
+           socket
+           |> assign(editing: %{editing | assignments: remaining.assignments}, assign_error: nil)
+           |> load_addresses()}
 
-      {:error, :forbidden} ->
-        {:noreply, put_flash(socket, :error, "Only owners and admins manage addresses")}
+        {:error, :forbidden} ->
+          {:noreply, put_flash(socket, :error, "Only owners and admins manage addresses")}
 
-      {:error, :not_found} ->
-        {:noreply, refresh_assignments(socket)}
+        {:error, :not_found} ->
+          {:noreply, refresh_assignments(socket)}
+      end
+    else
+      {:noreply, assign(socket, :assign_error, "That assignment is not part of this edit")}
     end
   rescue
     Ecto.NoResultsError -> {:noreply, refresh_assignments(socket)}
@@ -276,9 +288,11 @@ defmodule RengaWeb.AddressLive do
     )
   end
 
-  # `?vrf=` names a VRF regardless of case, or `global`; anything else is
-  # every routing table.
+  # Selects use stable tagged identities, so a VRF named `global` cannot
+  # collide with the Global table. Existing name-based links remain aliases.
   defp table_filter(_vrfs, "global"), do: :global
+
+  defp table_filter(vrfs, "id:" <> id), do: Enum.find(vrfs, :all, &(&1.id == id))
 
   defp table_filter(vrfs, name) when is_binary(name) and name != "" do
     key = String.downcase(name)
@@ -293,7 +307,7 @@ defmodule RengaWeb.AddressLive do
 
   defp table_param(:all), do: nil
   defp table_param(:global), do: "global"
-  defp table_param(vrf), do: vrf.name
+  defp table_param(vrf), do: "id:" <> vrf.id
 
   defp addresses_path(query) do
     params =
@@ -354,7 +368,7 @@ defmodule RengaWeb.AddressLive do
               label="Routing table"
               options={[
                 {"All tables", ""},
-                {"Global", "global"} | Enum.map(@vrfs, &{&1.name, &1.name})
+                {"Global", "global"} | Enum.map(@vrfs, &{&1.name, table_param(&1)})
               ]}
             />
           </div>
@@ -597,7 +611,13 @@ defmodule RengaWeb.AddressLive do
             Not assigned to any interface.
           </p>
 
-          <.form for={%{}} as={:assign} id="assign-form" phx-change="search_interfaces">
+          <.form
+            for={%{}}
+            as={:assign}
+            id="assign-form"
+            phx-change="search_interfaces"
+            phx-submit="search_interfaces"
+          >
             <.input
               type="search"
               name="assign[interface]"

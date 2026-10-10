@@ -46,7 +46,7 @@ defmodule RengaWeb.Browser.AddressesTest do
   test "an admin reserves an address and assigns it by interface search", context do
     session =
       context.conn
-      |> visit("/network/addresses")
+      |> visit("/network/addresses?q=192.0.2.0%2F24&vrf=global")
       |> assert_has("body .phx-connected")
       |> PhoenixTest.Playwright.click("#new-address")
       |> assert_has("#address-panel [role=dialog]", text: "Reserve address")
@@ -62,8 +62,24 @@ defmodule RengaWeb.Browser.AddressesTest do
     session
     |> PhoenixTest.Playwright.click("#address-#{reserved.id}-edit")
     |> assert_has("#address-panel [role=dialog]", text: "Edit 192.0.2.10")
+    |> refute_has("#flash-info")
+    |> fill_in("#address-form input[name='ip_address[description]']", "Description (optional)",
+      with: "Unsaved intent"
+    )
     |> fill_in("#assign-interface", "Assign to an interface", with: "web")
+    |> press("#assign-interface", "Enter")
     |> assert_has("#assign-#{context.eth0.id}")
+    |> assert_has("#address-panel [role=dialog]", text: "Edit 192.0.2.10")
+    |> evaluate(
+      "document.querySelector('#address-form input[name=\"ip_address[description]\"]').value",
+      &assert(&1 == "Unsaved intent")
+    )
+    |> evaluate("window.location.search", fn query ->
+      assert URI.decode_query(String.trim_leading(query, "?")) == %{
+               "q" => "192.0.2.0/24",
+               "vrf" => "global"
+             }
+    end)
     |> PhoenixTest.Playwright.click("#assign-#{context.eth0.id}")
     |> assert_has("#address-assignments", text: "eth0")
     |> assert_has("#address-#{reserved.id}", text: "web-01")

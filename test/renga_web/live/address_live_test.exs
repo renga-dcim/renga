@@ -91,6 +91,25 @@ defmodule RengaWeb.AddressLiveTest do
     assert has_element?(view, "#address-list-empty", "No managed address matches")
   end
 
+  test "the Global table and a VRF named global have distinct filters", context do
+    table = vrf_fixture(context.admin, "global")
+    {:ok, global} = IPAM.create_ip_address(context.admin, %{address: "192.0.2.10"})
+
+    {:ok, in_vrf} =
+      IPAM.create_ip_address(context.admin, %{address: "192.0.2.10", vrf_id: table.id})
+
+    {:ok, view, _} = live(context.member_conn, ~p"/network/addresses")
+    view |> form("#address-filter", filter: %{vrf: "id:" <> table.id}) |> render_change()
+    assert_patch(view, ~p"/network/addresses?#{[vrf: "id:" <> table.id]}")
+    assert has_element?(view, "#address-#{in_vrf.id}")
+    refute has_element?(view, "#address-#{global.id}")
+
+    view |> form("#address-filter", filter: %{vrf: "global"}) |> render_change()
+    assert_patch(view, ~p"/network/addresses?vrf=global")
+    assert has_element?(view, "#address-#{global.id}")
+    refute has_element?(view, "#address-#{in_vrf.id}")
+  end
+
   test "an admin reserves an address and sees the form's errors", context do
     {:ok, _} = IPAM.create_ip_address(context.admin, %{address: "192.0.2.10/24"})
     {:ok, view, _html} = live(context.admin_conn, ~p"/network/addresses")
@@ -148,6 +167,36 @@ defmodule RengaWeb.AddressLiveTest do
     view |> element("#assignment-#{first.id}-remove") |> render_click()
     refute has_element?(view, "#assignment-#{first.id}")
     assert length(IPAM.get_ip_address!(context.admin, address.id).assignments) == 1
+  end
+
+  test "unassignment is scoped to the open edit and refreshes concurrent removals", context do
+    observed_a = address_fixture(context.admin, context.web_eth0, "192.0.2.21")
+    observed_b = address_fixture(context.admin, context.lb_eth0, "192.0.2.22")
+    {:ok, a} = IPAM.adopt_address(context.admin, observed_a.id)
+    {:ok, b} = IPAM.adopt_address(context.admin, observed_b.id)
+    [assignment_a] = a.assignments
+    [assignment_b] = b.assignments
+    {:ok, view, _} = live(context.admin_conn, ~p"/network/addresses")
+
+    render_hook(view, "unassign", %{"id" => assignment_b.id})
+    assert [_] = IPAM.get_ip_address!(context.admin, b.id).assignments
+    view |> element("#address-#{a.id}-edit") |> render_click()
+    view |> form("#address-form", ip_address: %{description: "My draft"}) |> render_change()
+
+    render_hook(view, "unassign", %{"id" => assignment_b.id})
+    assert [_] = IPAM.get_ip_address!(context.admin, b.id).assignments
+    assert has_element?(view, "#assignment-#{assignment_a.id}")
+    refute has_element?(view, "#assignment-#{assignment_b.id}")
+
+    {:ok, _} = IPAM.unassign_address(context.admin, assignment_a.id)
+    view |> element("#assignment-#{assignment_a.id}-remove") |> render_click()
+    assert has_element?(view, "#address-unassigned")
+    assert has_element?(view, "#assign-error", "already removed")
+
+    assert has_element?(
+             view,
+             "#address-form input[name='ip_address[description]'][value='My draft']"
+           )
   end
 
   test "a stale edit stays open with the conflict instead of overwriting", context do
