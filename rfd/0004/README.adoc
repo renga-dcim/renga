@@ -238,6 +238,14 @@ creating a second host assignment on the same interface. The migration merges
 existing same-host rows on one interface, keeping the most recently observed
 mask on the canonical row and every evidence row.
 
+A mask moves under the same source precedence as presence, so an older replay
+or a lower-priority source adds evidence without changing the canonical mask.
+When one observation reports several masks of the host, the shortest is
+canonical regardless of report order: it describes the connected network,
+and a choice independent of payload order keeps replays from flapping. The
+migration applies the same rule to rows observed together, and prefers a row
+still present over one an authoritative report has withdrawn.
+
 Before reparenting evidence, change its uniqueness and ingestion idempotency
 contract to preserve distinct reported masks within the same observation and
 canonical address. Migration and replay tests include `/24` and `/32` reports

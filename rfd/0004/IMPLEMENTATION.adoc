@@ -51,10 +51,10 @@ Implements link:README.adoc[RFD 4: IP address management].
 
 == Phase 4: Observed identity
 
-* [ ] Change observed-address identity to interface plus host value while
+* [x] Change observed-address identity to interface plus host value while
   preserving every reported address and mask in observation evidence, merging
   existing same-host rows.
-* [ ] Update evidence uniqueness and ingestion idempotency before reparenting;
+* [x] Update evidence uniqueness and ingestion idempotency before reparenting;
   test same-observation `/24` and `/32` reports, replay, and presence history.
 
 == Phase 5: Address findings
