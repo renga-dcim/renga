@@ -29,6 +29,9 @@ defmodule Renga.Inventory.Agent do
     field :capabilities, {:array, :string}, default: []
     field :metadata, :map, default: %{}
     field :registered_at, :utc_datetime_usec
+    # The latest authenticated API request, whatever became of its payload.
+    # Set by intake authentication, never cast.
+    field :last_contacted_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source, Source
