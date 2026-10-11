@@ -91,6 +91,14 @@ Fan-out is a first-class use: running `query.listening_sockets@1` across a
 saved view answers "which hosts listen on port 23" as one batch whose results
 appear as a table.
 
+== Decisions from review
+
+* The agent enables the `inventory`-sensitivity queries by default, as RFD 9
+  does for `observe` capabilities; `sensitive` queries need an explicit
+  `[jobs]` entry.
+* `query.packages@1` ships in the first set as a `sensitive` query, so
+  fleet-wide version questions are answerable by owners and admins.
+
 == User interaction
 
 * A resource's Queries tab lists the queries its agent offers, runs one, and
