@@ -101,6 +101,17 @@ VM's activity and the organization feed. Desired-state changes are ordinary
 change events, so the record shows who wanted the VM off and when it actually
 went off.
 
+== Decisions from review
+
+* Two-operator approval for `force_off` and `reset` is off by default; an
+  organization enables it. A reason and a confirmation naming the VM are always
+  required.
+* A request waiting for its second approval expires after 15 minutes, so a
+  stale request cannot be approved against a VM that has since changed.
+* A graceful `shutdown` that times out fails and says so; it never falls back
+  to `force_off`. The operator requests `force_off` separately, with its own
+  reason and confirmation.
+
 == Rollout
 
 . Add desired power state on VM envelopes and the drift finding.
