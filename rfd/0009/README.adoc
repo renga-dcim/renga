@@ -1,0 +1,202 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/146
+:labels: agent, api, control-plane, security, software
+
+= RFD 9 Durable jobs and agent capabilities
+
+== Goal
+
+Deliver the control primitive RFD 1 names: persisted jobs that agents lease over
+HTTPS polling, with explicit capability advertisement and agent-local policy.
+The first job type is deliberately harmless, an on-demand inventory collection,
+so the whole path (request, authorization, lease, execution, events, audit) can
+ship and harden before any operation that changes a host.
+
+An optional Phoenix Channels connection may later notify agents that work is
+waiting. It never carries jobs itself, so polling stays the only correctness
+path.
+
+== Non-goals
+
+* Operational queries, live terminals, and VM lifecycle operations. They get
+  their own RFDs (12, 13, and 14) and build on this one.
+* Arbitrary command or shell execution, under any capability name.
+* A general workflow engine. A job targets one agent and runs one capability.
+* Replacing scheduled inventory. Agents keep collecting on their own interval
+  whether or not jobs work.
+
+== Capabilities
+
+A capability is a named, versioned operation an agent can perform, written
+`name@version`, for example `inventory.collect@1`. The existing `capabilities`
+list on check-ins and agents keeps its meaning. Entries without a version
+(today's `host.inventory`) describe what an agent reports, not jobs it accepts.
+
+Each capability has a risk class fixed by its definition, not by configuration:
+
+* `observe`: reads the host and reports, changing nothing else (on-demand
+  collection, typed read-only queries).
+* `operate`: changes host or guest state (VM power, service restarts).
+* `interactive`: opens a session a person drives (terminals).
+
+An agent advertises a job capability only when it is compiled in and enabled by
+local policy. Local policy lives in the agent's configuration file, not in Renga:
+
+[source,toml]
+----
+[jobs]
+enabled = ["inventory.collect"]
+----
+
+`observe` capabilities may be enabled by default. `operate` and `interactive`
+capabilities are never enabled by default, and Renga cannot enable them
+remotely. The agent re-checks its policy when it leases a job, so a job created
+against an advertisement that has since been withdrawn is refused rather than
+run.
+
+Server-side authorization is independent: an organization setting lists which
+capabilities may be targeted at all, and a user's role decides which they may
+request. Owners and admins may request `observe` jobs. Requesting `operate` and
+`interactive` jobs needs grants that RFDs 13 and 14 define. Neither side's
+check substitutes for the other.
+
+== Job model
+
+`jobs` is an organization-scoped table. Each job targets one agent and carries:
+
+* the capability name and version, and parameters validated against that
+  capability's schema before the job is stored;
+* who requested it (a user, or the system for scheduled work);
+* an optional idempotency key, unique per organization, so a retried request
+  creates one job;
+* `not_after`, the deadline for an agent to lease it;
+* the current state, attempt count, lease token, and lease expiry.
+
+States are `queued`, `leased`, `running`, `succeeded`, `failed`, `cancelled`,
+and `expired`. A request that fans out to many agents creates one job per agent
+sharing a `batch_id`.
+
+`job_events` is append-only and is the job's history: `created`, `leased`,
+`started`, `progress`, `output`, `succeeded`, `failed`, `cancel_requested`,
+`cancelled`, `lease_lost`, and `expired`, each with its actor (user, agent, or
+system), time, and a bounded payload. A trigger rejects updates and deletes on
+events. The job row is a projection kept in step with its events by one context
+module that writes both in the same transaction.
+
+Output is bounded per job (initially 64 KiB of events in total), so a job can
+never become an unbounded log sink. Jobs and their events are kept for 90 days
+by default; retention is an organization setting.
+
+== Delivery over HTTPS
+
+Polling is the correctness path. All three endpoints use the existing intake
+authentication (RFD 3) and record contact like any other request.
+
+* `POST /api/v1/agent/jobs/lease` sends the capabilities the agent will run
+  now. The server leases up to the requested number of queued jobs for that
+  installation using `FOR UPDATE SKIP LOCKED`, returning each job with a fresh
+  lease token and a lease that expires in 60 seconds.
+* `POST /api/v1/agent/jobs/:id/events` appends `started`, `progress`, `output`,
+  and the final result. It requires the current lease token, extends the lease,
+  and is idempotent per event sequence number, so a retried post is not
+  recorded twice. Its response says whether cancellation was requested.
+* A check-in response carries `jobs_waiting: true` when queued jobs exist for
+  the installation, so an agent leases promptly without a separate polling
+  loop. Otherwise the agent tries to lease once per check-in interval.
+
+A server worker, following the existing periodic-worker pattern, sweeps expired
+leases. A job whose lease lapsed goes back to `queued` with a `lease_lost` event
+if attempts remain and `not_after` has not passed; otherwise it becomes
+`expired`. Expired and abandoned work therefore never stays `running` forever.
+
+== Agent execution
+
+Jobs run on their own worker thread with a concurrency of one at first, so they
+can never delay lease check-ins or scheduled inventory. Each capability has a
+fixed timeout, and the agent checks for cancellation between steps and on every
+event post. A job that outlives its timeout is reported as failed, not left
+running.
+
+`inventory.collect@1` runs the normal collection, delivers the observation
+through the on-disk queue, and returns the observation ID as its result. It
+proves the path without adding any new power over the host.
+
+== Phoenix Channels notification
+
+A later phase adds a per-installation channel authenticated like the HTTPS API.
+The server pushes `jobs_waiting` when it queues a job for a connected agent, and
+the agent then calls the same lease endpoint. The channel never delivers job
+content, results, or authority. If the socket drops or is never established,
+the agent behaves exactly as it would without it.
+
+Streaming interactive output (RFD 13) may later use the channel. That is that
+RFD's decision, not a reason to route ordinary jobs through it.
+
+== Trust boundary
+
+An intake key authenticates an organization, and the installation ID is a
+correlation identifier, not proof of identity (RFD 3). Anyone holding a key can
+therefore lease jobs addressed to any installation in that organization. That is
+acceptable for `observe` jobs, which reveal no more than the same key could
+already submit.
+
+It is not acceptable for `operate` or `interactive` jobs. Those require
+per-installation credentials that a leaked shared key cannot impersonate.
+Designing them (enrollment-time key pairs, mutual TLS, or signed lease requests)
+is a prerequisite of RFDs 13 and 14 and is out of scope here.
+
+== User interaction
+
+* A resource whose agent advertises `inventory.collect@1` offers "Collect now"
+  to owners and admins. The result links to the observation it produced.
+* A Jobs view in the Operations area lists jobs by state, capability, target,
+  and requester, with each job's event history.
+* Job requests, outcomes, and cancellations appear in the resource's Activity
+  tab and the organization activity feed.
+* The Collectors page shows each agent's advertised job capabilities next to its
+  inventory capabilities.
+
+== Failure modes
+
+[cols="1,2"]
+|===
+|Situation |Outcome
+
+|Agent offline when a job is created
+|The job waits until `not_after`, then expires with an event.
+
+|Agent crashes mid-job
+|The lease lapses, the job is re-queued with `lease_lost`, or expires.
+
+|Lease token reused after re-lease
+|Event posts are rejected; only the current holder can report.
+
+|Capability withdrawn after the job was created
+|The agent refuses at lease time; the job fails with a policy reason.
+
+|Server restart
+|Jobs and events are rows; work resumes on the next lease or sweep.
+
+|Channel connection lost
+|No effect on correctness; polling continues.
+|===
+
+== Rollout
+
+. Add the schema, the job context, event immutability, and the lease sweeper.
+. Add the agent lease and event endpoints and the check-in hint.
+. Teach the agent `[jobs]` policy, the job worker, and `inventory.collect@1`.
+. Add "Collect now", the Jobs view, and activity entries.
+. Add the optional Channels notification.
+
+== Open questions
+
+* Should the organization-level capability allow list default to allowing all
+  `observe` capabilities, or start empty?
+* Is 90 days the right default retention for job history?
+* Fan-out requests: should a batch cap its size, or rely on rate limits?
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].

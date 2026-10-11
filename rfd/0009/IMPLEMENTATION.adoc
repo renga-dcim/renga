@@ -1,0 +1,40 @@
+= RFD 0009 implementation checklist
+
+Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
+
+== Phase 1: Jobs and events
+
+* [ ] Add organization-scoped `jobs` and append-only `job_events` with
+  composite tenant keys and a trigger rejecting event updates and deletes.
+* [ ] Add the job context: create with capability parameter validation and
+  idempotency, cancel, and the transitions, writing each event with its
+  projection in one transaction.
+* [ ] Sweep lapsed leases back to `queued` or `expired` with events.
+
+== Phase 2: Delivery
+
+* [ ] Add `POST /api/v1/agent/jobs/lease` with `SKIP LOCKED` leasing and lease
+  tokens.
+* [ ] Add `POST /api/v1/agent/jobs/:id/events` with token checks, lease
+  extension, per-sequence idempotency, and cancellation in the response.
+* [ ] Add the `jobs_waiting` hint to check-in responses.
+
+== Phase 3: Agent
+
+* [ ] Parse `name@version` capabilities and the `[jobs]` policy, and advertise
+  only compiled-in, enabled job capabilities.
+* [ ] Run jobs on a dedicated worker with timeouts and cancellation, re-checking
+  policy at lease time.
+* [ ] Implement `inventory.collect@1` through the observation queue.
+
+== Phase 4: Interface
+
+* [ ] Add "Collect now" for owners and admins where the agent advertises it.
+* [ ] Add the Jobs view with event history, and job entries in activity.
+* [ ] Show advertised job capabilities on the Collectors page.
+
+== Phase 5: Channels notification
+
+* [ ] Add an authenticated per-installation channel that pushes `jobs_waiting`
+  and never carries job content.
+* [ ] Teach the agent to lease on notification and fall back to polling.
