@@ -1,0 +1,29 @@
+= RFD 0010 implementation checklist
+
+Implements link:README.adoc[RFD 10: Power inventory and topology].
+
+== Phase 1: Panels and feeds
+
+* [ ] Add power panels at sites and locations, and power feeds with supply,
+  phase, voltage, amperage, maximum utilization, side, and optional rack.
+* [ ] Show panels and feeds with computed capacity on a site power page.
+
+== Phase 2: Ports, outlets, and connections
+
+* [ ] Create typed power ports and outlets from catalog templates, including on
+  existing assets.
+* [ ] Add the `power` cable kind to the RFD 7 plan, assertion, and cable model.
+* [ ] Compute each device's power path and show where an incomplete path stops.
+
+== Phase 3: Load and redundancy
+
+* [ ] Sum allocated load per feed and per three-phase leg.
+* [ ] Compute redundancy by distinct feed sides and show it on devices.
+* [ ] Add the "what fails if this feed fails" view.
+
+== Phase 4: Evidence and findings
+
+* [ ] Accept power supply status and draw from host agents and outlet and leg
+  readings from PDU sources, and show measured load beside allocated load.
+* [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
+  incomplete-path findings in a Power Inbox domain.
