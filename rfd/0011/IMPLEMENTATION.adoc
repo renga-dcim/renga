@@ -29,8 +29,8 @@ Implements link:README.adoc[RFD 11: Read-only switch and virtualization collecto
 
 == Phase 4: Findings and interface
 
-* [ ] Open target-unreachable, neighbor-mismatch, VM-on-two-hypervisors, and
-  guest-without-VM findings.
+* [ ] Open target-unreachable, neighbor-mismatch, and VM-on-two-hypervisors
+  findings, and the guest-without-VM finding for organizations that opt in.
 * [ ] Show poller targets and unreachable targets on the Collectors page.
 
 == Phase 5: gNMI

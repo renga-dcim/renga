@@ -150,7 +150,15 @@ size limit by splitting large target sets across several reports.
 * **VM active on two hypervisors** in competing fresh evidence, not merely
   defined on both.
 * **Guest without a VM**: a host agent whose `dmi_uuid` matches no domain on any
-  reporting hypervisor, when the organization has libvirt collection enabled.
+  reporting hypervisor. Organizations opt in once every hypervisor reports;
+  while libvirt collection is still being rolled out, it would flag every guest
+  on an uncollected hypervisor.
+
+== Decisions from review
+
+* Default polling stays at 15 minutes for SNMP and 5 for libvirt, configurable
+  per module.
+* The guest-without-VM finding is off unless an organization opts in.
 
 == User interaction
 
