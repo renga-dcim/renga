@@ -6,7 +6,8 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 * [ ] Add power panels at sites and locations, and power feeds with supply,
   phase, voltage, amperage, maximum utilization, side, and optional rack.
-* [ ] Show panels and feeds with computed capacity on a site power page.
+* [ ] Define voltage/current conventions and show usable AC capacity in VA and
+  DC capacity in W on a site power page, never mixing W, VA, and A.
 
 == Phase 2: Ports, outlets, and connections
 
@@ -17,7 +18,10 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 == Phase 3: Load and redundancy
 
-* [ ] Sum allocated load per feed and per three-phase leg.
+* [ ] Sum allocated watts per feed and per three-phase leg; require explicit
+  power-factor provenance for AC conversion and show unknown headroom when
+  conversion or leg coverage is incomplete. Test non-unity power factor and
+  an overloaded leg despite aggregate headroom.
 * [ ] Compute redundancy by distinct feed sides and show it on devices.
 * [ ] Add the "what fails if this feed fails" view.
 

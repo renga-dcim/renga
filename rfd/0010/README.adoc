@@ -56,14 +56,28 @@ both on side `a` is not redundant, whatever its supply count says.
 
 == Capacity and utilization
 
-A feed's capacity is voltage × amperage × (√3 for three-phase) × maximum
-utilization. Allocated load sums the allocated draw of every port on the feed's
-path. Measured load comes from evidence when a source reports it.
+Electrical quantities retain their units: real power in W, apparent power in
+VA, and current in A. For AC, usable apparent capacity is voltage × amperage ×
+maximum utilization for single-phase, or √3 × line-to-line voltage × line
+current × maximum utilization for balanced three-phase. Single-phase voltage
+is measured across the supply conductors. DC capacity is voltage × amperage ×
+maximum utilization in W. The configured amperage is the circuit's rated
+current, not an observed load.
 
-Renga shows both, never one in place of the other: allocated load answers "can
-I plug in another server", measured load answers "is this feed actually hot".
-Three-phase PDUs show load per leg, because one overloaded leg trips while the
-feed as a whole looks fine.
+Allocated real load sums the allocated input watts of ports on the feed's path.
+AC conversion from W to VA requires an explicit per-load power factor
+(VA = W / power factor, with 0 < power factor <= 1), including its provenance
+as configured or measured. Missing power factor leaves allocated apparent load
+and current headroom unknown; Renga does not silently assume unity or compare
+watts directly with VA. Measured W, VA, current, and power factor remain
+separate evidence, with their measurement time and coverage.
+
+Renga shows allocated and measured load side by side, comparing only compatible
+quantities. Watt totals alone are not verified circuit headroom or assurance
+that another server can safely be connected. Three-phase PDUs show current and
+allocated load per leg using that leg's voltage and load assignment; the
+balanced aggregate formula cannot establish per-leg headroom. Missing leg
+assignments or conversion data show incomplete capacity, not spare capacity.
 
 == Evidence
 
@@ -83,8 +97,9 @@ operator resolves, as LLDP evidence does for data cables in RFD 7.
 
 * **Not redundant**: a device whose power ports do not reach two sides, when its
   hardware type has more than one power port.
-* **Feed near capacity**: allocated or measured load above the feed's maximum
-  utilization, or a three-phase leg out of balance.
+* **Feed near capacity**: allocated or measured load exceeds usable capacity in
+  compatible units, or a three-phase leg exceeds its current limit or is out of
+  balance. Unknown conversion or leg data is shown as incomplete capacity.
 * **Supply failed**: a power supply reported failed or without input.
 * **Unexpected draw**: an outlet drawing power with no connection recorded.
 * **Path incomplete**: a port connected to an outlet whose PDU has no feed.
