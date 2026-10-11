@@ -61,6 +61,60 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "[id^='rotate-collector-']")
   end
 
+  test "shows contact, lease, accepted, and reconciled as separate clocks", %{
+    conn: conn,
+    scope: scope,
+    source: source,
+    agent: agent
+  } do
+    Repo.update_all(from(a in Renga.Inventory.Agent, where: a.id == ^agent.id),
+      set: [last_contacted_at: ~U[2026-10-10 08:00:00.000000Z]]
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+
+    assert has_element?(
+             view,
+             "#collector-connection-#{source.id}",
+             "contact 2026-10-10 08:00 UTC"
+           )
+
+    assert has_element?(view, "#collector-connection-#{source.id}", "expires")
+    assert has_element?(view, "#collector-inventory-#{source.id}", "No inventory yet")
+
+    # Accepted but not yet reconciled: the reconciled clock has not moved.
+    {:ok, first} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "clocks-first",
+        observed_at: ~U[2026-10-09 12:34:00.000Z],
+        payload: %{"resources" => []}
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    inventory = "#collector-inventory-#{source.id}"
+    assert has_element?(view, inventory, "accepted")
+    assert has_element?(view, inventory, "reconciled Never")
+    assert has_element?(view, inventory, "Latest report not reconciled yet")
+
+    reconcile(scope, first, "succeeded")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, inventory, "reconciled 2026-10-09 12:34 UTC")
+    refute has_element?(view, inventory, "Latest report")
+
+    # A newer report that fails keeps the reconciled clock where it was.
+    {:ok, second} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "clocks-second",
+        observed_at: ~U[2026-10-09 13:00:00.000Z],
+        payload: %{"resources" => []}
+      })
+
+    reconcile(scope, second, "failed")
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, inventory, "reconciled 2026-10-09 12:34 UTC")
+    assert has_element?(view, inventory, "Latest report failed to reconcile")
+  end
+
   test "shows each collector's undelivered observation backlog", %{
     conn: conn,
     source: source,
@@ -268,5 +322,17 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     agent
     |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "observation_queue", queue))
     |> Repo.update!()
+  end
+
+  defp reconcile(scope, observation, status) do
+    now = Renga.Time.utc_now_ms()
+
+    {:ok, _} =
+      Inventory.create_observation_reconciliation(scope, observation.id, %{
+        status: status,
+        attempt: 1,
+        started_at: now,
+        completed_at: now
+      })
   end
 end

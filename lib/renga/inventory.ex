@@ -94,18 +94,6 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Returns each scoped source's latest accepted inventory timestamp.
-  """
-  def latest_observation_times(%Scope{organization_id: organization_id}) do
-    Observation
-    |> where([observation], observation.organization_id == ^organization_id)
-    |> group_by([observation], observation.source_id)
-    |> select([observation], {observation.source_id, max(observation.observed_at)})
-    |> Repo.all()
-    |> Map.new()
-  end
-
-  @doc """
   Fetches a source only when it belongs to the caller's organization scope.
   """
   def get_source!(%Scope{organization_id: organization_id}, id) do
