@@ -1,0 +1,27 @@
+= RFD 0013 implementation checklist
+
+Implements link:README.adoc[RFD 13: Live terminal].
+
+== Phase 1: Installation credentials
+
+* [ ] Generate an Ed25519 key pair per installation and present the public key
+  on check-in.
+* [ ] Record first keys as pending, approve them by fingerprint on the
+  Collectors page, and open a finding when a key changes.
+* [ ] Require signed leases for `operate` and `interactive` jobs.
+
+== Phase 2: Access
+
+* [ ] Add organization enablement and expiring terminal grants over target sets.
+* [ ] Require WebAuthn or fresh-password step-up within five minutes.
+
+== Phase 3: Sessions
+
+* [ ] Add `terminal.session@1` with renewing, idle-limited leases.
+* [ ] Relay the PTY over a Phoenix Channels topic, running as the agent's
+  configured non-root `run_as` account.
+* [ ] End sessions on revocation, admin action, lease loss, or disconnect.
+
+== Phase 4: Recording
+
+* [ ] Record bounded asciicast streams with retention, replay, and replay audit.

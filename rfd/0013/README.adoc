@@ -1,0 +1,101 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/149
+:labels: agent, control-plane, security, software
+
+= RFD 13 Live terminal
+
+== Goal
+
+Give authorized operators an interactive terminal on a host through Renga, when
+nothing else will do, with more control and a better record than handing out
+SSH access. RFD 1 requires live terminal access to be disabled by default and to
+need strong authentication, RBAC, agent-side allow/deny policy, short
+per-session leases, target-level access rules, and session recording. This RFD
+designs each, and the installation credentials that terminals and RFD 14's VM
+operations both need.
+
+== Installation credentials
+
+An intake key authenticates an organization, not a machine (RFD 3), so anyone
+holding it can claim to be any installation. That is fine for inventory and RFD
+9's `observe` jobs, and fatal for a terminal.
+
+Each installation therefore generates an Ed25519 key pair in its state directory
+(mode 0600) and presents the public key on check-in. Renga records the first key
+it sees for an installation as pending. An owner or admin approves it on the
+Collectors page, comparing the fingerprint the agent prints locally. From then
+on, every lease of an `operate` or `interactive` job must be signed with the
+approved key, over the job ID, lease token, and a server nonce. A key change
+returns the installation to pending, blocks its privileged jobs, and opens a
+finding. A stolen intake key alone can then report inventory, but cannot take a
+terminal or VM job.
+
+== Enabling terminals
+
+A terminal session requires all of these:
+
+. The agent enables it locally (`[terminal] enabled = true`), names the local
+  account sessions run as (`run_as`), and has an approved installation key.
+  `run_as` may not be root, and the agent refuses to start a session as UID 0.
+. The organization enables terminals.
+. The user holds a terminal grant covering the target. A grant names a target
+  set (resources, a saved view, or an owning team) and an expiry of at most 30
+  days. Owners and admins create grants; nobody holds one by default, including
+  owners.
+. The user has authenticated strongly within the last five minutes: a WebAuthn
+  assertion, or a fresh password entry where WebAuthn is not set up.
+
+== Session flow
+
+. The user opens a terminal from the resource page. Renga checks the grant and
+  step-up authentication, then creates an `interactive` job,
+  `terminal.session@1`, with a lease of at most 10 minutes that renews while the
+  session is active and ends after 5 idle minutes.
+. The agent leases it with a signed request and opens a PTY as `run_as`.
+. Input and output flow over a Phoenix Channels relay: the browser and the
+  agent each join the session's topic. Terminals are the one feature that
+  requires the channel. They are not a correctness path, so when the channel is
+  down there is no terminal, rather than a degraded one.
+. Revoking the grant, an admin ending the session, the lease lapsing, or the
+  channel dropping all end the session, and the agent kills the PTY's process
+  group.
+
+== Recording
+
+Renga records every session's input and output as an asciicast stream, with
+timestamps, bounded at 50 MiB per session and kept for one year by default.
+Command logging is not used as the record, because a shell can always hide a
+command from it. The user is told before a session starts that it is recorded.
+Owners and admins can replay sessions, and every replay is itself logged.
+
+== Threats
+
+[cols="1,2"]
+|===
+|Threat |Mitigation
+
+|Leaked intake key
+|Cannot sign leases; no approved installation key.
+
+|Compromised Renga account
+|Needs a current grant and step-up authentication; the session is recorded.
+
+|Malicious request to run as root
+|`run_as` is local agent configuration, never a request parameter; UID 0 is refused.
+
+|Renga server compromise
+|Cannot enable terminals on agents that have them disabled locally.
+|===
+
+== Rollout
+
+. Add installation key pairs, approval, signed leases for privileged jobs, and
+  key-change findings.
+. Add organization enablement, terminal grants, and step-up authentication.
+. Add the channel relay, the agent PTY session, and lifecycle enforcement.
+. Add recording, replay, and replay auditing.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].

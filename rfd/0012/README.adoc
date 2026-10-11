@@ -1,0 +1,102 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/149
+:labels: agent, control-plane, security, software
+
+= RFD 12 Operational queries
+
+== Goal
+
+Let operators ask a host a specific, read-only question on demand, such as
+"what is listening on this host" or "which services are failed", and get a
+typed answer without shell access. RFD 1 requires operational queries to be
+typed, read-only collector operations and never an alias for arbitrary shell
+execution. This RFD defines them on RFD 9's jobs.
+
+== What a query is
+
+A query is an RFD 9 capability in the `observe` class named `query.<name>@<version>`.
+Its definition fixes:
+
+* a parameter schema, validated by Renga before the job is stored and again by
+  the agent before it runs;
+* a result schema and a maximum result size;
+* a timeout;
+* a sensitivity: `inventory` (no more revealing than an observation) or
+  `sensitive` (reveals software versions, running services, or other detail an
+  attacker would value).
+
+The agent implements each query natively, through procfs, netlink, or systemd's
+D-Bus interface. Where a query must run a program, the argument vector is fixed
+in the agent's code and never includes text from the request. There is no query
+that takes a command, a path to execute, or a script.
+
+== First queries
+
+[cols="2,3,1"]
+|===
+|Capability |Answers |Sensitivity
+
+|`query.listening_sockets@1`
+|Listening TCP and UDP sockets with their process names
+|sensitive
+
+|`query.services@1`
+|systemd units and their active, failed, and enabled states
+|sensitive
+
+|`query.disk_usage@1`
+|Filesystem capacity and use, beyond the inventory snapshot
+|inventory
+
+|`query.routes@1`
+|The routing table per routing domain
+|inventory
+
+|`query.time_sync@1`
+|Clock synchronization source, offset, and status
+|inventory
+
+|`query.packages@1`
+|Installed packages and versions, bounded and filterable by name
+|sensitive
+|===
+
+== Authorization
+
+Queries are off until an organization enables them, and each can be enabled
+separately. Owners and admins may run enabled queries. An organization may also
+let members run `inventory`-sensitivity queries; `sensitive` queries stay with
+owners and admins. The agent's `[jobs]` policy must also enable each query; the
+agent default enables only `inventory` queries.
+
+== Results
+
+A query's result is its job's final event, bounded by the query's maximum size
+and kept for the job retention period. Results are not observations: they never
+change canonical inventory, freshness, or findings. A question worth answering
+continuously belongs in the collector's regular payload, not in a scheduled
+query.
+
+Fan-out is a first-class use: running `query.listening_sockets@1` across a
+saved view answers "which hosts listen on port 23" as one batch whose results
+appear as a table.
+
+== User interaction
+
+* A resource's Queries tab lists the queries its agent offers, runs one, and
+  shows recent results with who ran them.
+* From a saved view, "Run query" fans out to every matching host and shows the
+  batch's results as they arrive.
+* Every run appears in activity, with the requester and parameters.
+
+== Rollout
+
+. Define the query capability shape, the sensitivity rule, and the
+  organization settings.
+. Implement the first queries in the agent behind `[jobs]` policy.
+. Add the Queries tab and fan-out from saved views.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].

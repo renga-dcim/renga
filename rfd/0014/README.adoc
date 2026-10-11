@@ -1,0 +1,86 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/149
+:labels: control-plane, security, virtualization, software
+
+= RFD 14 VM lifecycle operations
+
+== Goal
+
+Let authorized operators start, stop, and reboot virtual machines from Renga,
+where they already see each VM, its hypervisor, and its guest. RFD 1 names VM
+lifecycle as a later control slice; RFD 11 makes VMs observable read-only. This
+RFD adds the operations on RFD 9's jobs, with the installation credentials from
+RFD 13.
+
+Live migration and placement are deliberately later: they need capacity and
+affinity modeling that this RFD does not attempt.
+
+== Operations
+
+`vm.power@1` is an `operate` capability on hypervisor installations running the
+RFD 11 libvirt module. Its `action` parameter is one of:
+
+* `start`;
+* `shutdown`: a graceful ACPI shutdown, waiting up to a timeout;
+* `reboot`: a graceful reboot;
+* `force_off`: immediate power off, the equivalent of pulling the plug;
+* `reset`: immediate reset.
+
+Each action is idempotent: asking to start a running VM succeeds and records
+that nothing changed. The job's result is the VM's state before and after,
+taken from libvirt.
+
+== Desired and observed state
+
+A VM's envelope gains a desired power state. Requesting an operation records
+the desired state and creates the job. The VM's observed state keeps coming
+from RFD 11 evidence. When the two disagree for longer than the VM's freshness
+window, Renga opens a power-state drift finding.
+
+The first release does not enforce desired state automatically. A VM that is
+shut down from inside the guest raises drift for an operator to resolve; Renga
+does not restart it on its own.
+
+== Authorization
+
+An operation requires all of these:
+
+* the hypervisor agent enables `vm.power` locally and has an approved
+  installation key (RFD 13);
+* the organization enables VM operations;
+* the user holds a VM operator grant over a target set containing the VM, with
+  an expiry, created by an owner or admin. Owners and admins are not granted it
+  implicitly.
+
+`force_off` and `reset` also require a reason and a confirmation that names the
+VM. An organization may require a second operator's approval for them: the job
+waits in `queued` until someone else with a grant approves it, or it expires.
+
+== Safety
+
+Before any request, Renga shows a preview with the VM, its hypervisor, current
+observed state, whether a guest agent is reporting from it, and the resources
+that list it as a dependency. The preview uses the same data the job runs on,
+so the action an operator confirms is the action that runs.
+
+== Audit
+
+Every request, approval, job event, and resulting state change appears in the
+VM's activity and the organization feed. Desired-state changes are ordinary
+change events, so the record shows who wanted the VM off and when it actually
+went off.
+
+== Rollout
+
+. Add desired power state on VM envelopes and the drift finding.
+. Add `vm.power@1` to the libvirt module with idempotent actions and
+  before-and-after state.
+. Add organization enablement, VM operator grants, and reasons and
+  confirmation for destructive actions.
+. Add two-operator approval as an organization option.
+. Add the preview and the power controls on the VM page.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].
