@@ -228,15 +228,20 @@ defmodule Renga.Inventory.AgentPayload do
       :error ->
         errors
 
-      {:ok, queue} when is_map(queue) ->
-        errors
-        |> validate_queue_counts(queue)
-        |> validate_queue_age(queue)
-
-      {:ok, _invalid} ->
-        [error("metadata.observation_queue", "must be an object") | errors]
+      {:ok, queue} ->
+        observation_queue_errors(queue) ++ errors
     end
   end
+
+  @doc "Validates both incoming queue reports and metadata stored before this contract existed."
+  def observation_queue_errors(queue) when is_map(queue) do
+    []
+    |> validate_queue_counts(queue)
+    |> validate_queue_age(queue)
+  end
+
+  def observation_queue_errors(_invalid),
+    do: [error("metadata.observation_queue", "must be an object")]
 
   defp validate_queue_counts(errors, queue) do
     Enum.reduce(@observation_queue_counts, errors, fn key, errors ->

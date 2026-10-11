@@ -205,6 +205,16 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                scope
                |> Inventory.get_agent!(agent_id)
                |> Renga.Inventory.Agent.observation_queue()
+
+      max = 9_007_199_254_740_991
+      boundary = %{queue | "entries" => max, "bytes" => max, "oldest_age_seconds" => max}
+      conn = check_in_json(build_conn(), token, %{"observation_queue" => boundary})
+      assert json_response(conn, 202)
+
+      assert %{entries: ^max, bytes: ^max, oldest_age_seconds: ^max} =
+               scope
+               |> Inventory.get_agent!(agent_id)
+               |> Renga.Inventory.Agent.observation_queue()
     end
 
     test "rejects malformed observation queue health", %{conn: conn} do
@@ -226,9 +236,14 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
              "must be a non-negative integer"},
             {%{valid | "bytes" => "12"}, "metadata.observation_queue.bytes",
              "must be a non-negative integer"},
+            {%{valid | "bytes" => 9_007_199_254_740_992}, "metadata.observation_queue.bytes",
+             "must be a non-negative integer"},
             {Map.delete(valid, "expired"), "metadata.observation_queue.expired",
              "must be a non-negative integer"},
             {%{valid | "oldest_age_seconds" => 1.5},
+             "metadata.observation_queue.oldest_age_seconds",
+             "must be a non-negative integer or null"},
+            {%{valid | "oldest_age_seconds" => 9_007_199_254_740_992},
              "metadata.observation_queue.oldest_age_seconds",
              "must be a non-negative integer or null"},
             {Map.delete(valid, "oldest_age_seconds"),

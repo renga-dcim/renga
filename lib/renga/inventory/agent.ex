@@ -12,6 +12,7 @@ defmodule Renga.Inventory.Agent do
 
   alias Renga.Accounts.Organization
   alias Renga.Inventory.AgentLease
+  alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Source
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -37,29 +38,32 @@ defmodule Renga.Inventory.Agent do
   end
 
   @doc """
-  The observation queue health the agent reported in its latest check-in, or
-  `nil` for an agent that predates the queue.
+  The last reported observation queue health, or `nil` when no complete,
+  valid report is stored. Check-ins omitting this metadata retain the old report.
 
   `dropped` totals the entries the agent removed undelivered (for space, by age,
   rejected, or unreadable) since it last started; the backlog itself survives
-  restarts. Check-ins validate the shape before it is stored.
+  restarts. Legacy metadata may predate intake validation, so it is checked
+  again before presentation rather than coerced into a healthy empty queue.
   """
-  def observation_queue(%__MODULE__{metadata: %{"observation_queue" => %{} = queue}}) do
-    dropped_for_space = Map.get(queue, "dropped_for_space", 0)
-    expired = Map.get(queue, "expired", 0)
-    rejected = Map.get(queue, "rejected", 0)
-    unreadable = Map.get(queue, "unreadable", 0)
+  def observation_queue(%__MODULE__{metadata: %{"observation_queue" => queue}}) do
+    if AgentPayload.observation_queue_errors(queue) == [] do
+      dropped_for_space = Map.fetch!(queue, "dropped_for_space")
+      expired = Map.fetch!(queue, "expired")
+      rejected = Map.fetch!(queue, "rejected")
+      unreadable = Map.fetch!(queue, "unreadable")
 
-    %{
-      entries: Map.get(queue, "entries", 0),
-      bytes: Map.get(queue, "bytes", 0),
-      oldest_age_seconds: Map.get(queue, "oldest_age_seconds"),
-      dropped_for_space: dropped_for_space,
-      expired: expired,
-      rejected: rejected,
-      unreadable: unreadable,
-      dropped: dropped_for_space + expired + rejected + unreadable
-    }
+      %{
+        entries: Map.fetch!(queue, "entries"),
+        bytes: Map.fetch!(queue, "bytes"),
+        oldest_age_seconds: Map.fetch!(queue, "oldest_age_seconds"),
+        dropped_for_space: dropped_for_space,
+        expired: expired,
+        rejected: rejected,
+        unreadable: unreadable,
+        dropped: dropped_for_space + expired + rejected + unreadable
+      }
+    end
   end
 
   def observation_queue(_agent), do: nil

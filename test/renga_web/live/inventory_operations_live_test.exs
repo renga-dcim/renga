@@ -96,6 +96,40 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
            )
   end
 
+  test "malformed legacy queue metadata is not reported rather than crashing", %{
+    conn: conn,
+    source: source,
+    agent: agent
+  } do
+    valid = %{
+      "entries" => 1,
+      "bytes" => 100,
+      "oldest_age_seconds" => 5,
+      "dropped_for_space" => 0,
+      "expired" => 0,
+      "rejected" => 0,
+      "unreadable" => 0
+    }
+
+    for queue <- [
+          %{},
+          %{"dropped_for_space" => "1"},
+          [],
+          Map.delete(valid, "oldest_age_seconds"),
+          %{valid | "rejected" => "1"},
+          %{valid | "entries" => 9_007_199_254_740_992},
+          %{valid | "oldest_age_seconds" => -1}
+        ] do
+      agent
+      |> Ecto.Changeset.change(metadata: %{"observation_queue" => queue})
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      assert has_element?(view, "#collector-queue-#{source.id}", "Not reported")
+      refute has_element?(view, "#collector-queue-#{source.id}", "Empty")
+    end
+  end
+
   test "creates and reveals an intake key once", %{conn: conn, scope: scope} do
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
 
