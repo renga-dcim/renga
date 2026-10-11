@@ -18,6 +18,8 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 == Phase 3: Load and redundancy
 
+* [ ] Add an optional organization-wide default power factor, labelling any
+  headroom computed from it.
 * [ ] Sum allocated watts per feed and per three-phase leg; require explicit
   power-factor provenance for AC conversion and show unknown headroom when
   conversion or leg coverage is incomplete. Test non-unity power factor and
@@ -27,7 +29,8 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 == Phase 4: Evidence and findings
 
-* [ ] Accept power supply status and draw from host agents and outlet and leg
-  readings from PDU sources, and show measured load beside allocated load.
+* [ ] Accept outlet and leg readings from PDU sources and show measured load
+  beside allocated load.
+* [ ] Accept power supply status and draw from host agents.
 * [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
   incomplete-path findings in a Power Inbox domain.

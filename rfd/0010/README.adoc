@@ -28,7 +28,8 @@ adds observed draw and supply health as evidence.
 
 * `PowerPanel`: a named panel placed at a site or location from RFD 5.
 * `PowerFeed`: one circuit from a panel, with supply (AC or DC), phase (single
-  or three), voltage, amperage, maximum utilization (default 80%), and a
+  or three), voltage, amperage, maximum utilization (default 80%, editable per
+  feed), and a
   redundancy side (`a`, `b`, or none). A feed may be assigned to a rack.
 * Power outlets and power ports are typed endpoints created from the RFD 6
   catalog templates (`power_outlet` and `power_port`), the same way interfaces
@@ -69,7 +70,10 @@ AC conversion from W to VA requires an explicit per-load power factor
 (VA = W / power factor, with 0 < power factor <= 1), including its provenance
 as configured or measured. Missing power factor leaves allocated apparent load
 and current headroom unknown; Renga does not silently assume unity or compare
-watts directly with VA. Measured W, VA, current, and power factor remain
+watts directly with VA. An owner may set one organization-wide default power
+factor; until then no default exists. Headroom computed from that default is
+labelled as resting on a configured default rather than a per-load value.
+Measured W, VA, current, and power factor remain
 separate evidence, with their measurement time and coverage.
 
 Renga shows allocated and measured load side by side, comparing only compatible
@@ -83,10 +87,12 @@ assignments or conversion data show incomplete capacity, not spare capacity.
 
 Power evidence arrives through observations like everything else:
 
-* host agents report power supplies as components (RFD 6), with status and
-  input watts when the platform exposes them;
 * PDU and UPS collectors (RFD 11) report outlet state, per-outlet and per-leg
-  current, and inlet voltage;
+  current, and inlet voltage. They come first, because they cover every device
+  in a rack and are the only source of leg balance;
+* host agents report power supplies as components (RFD 6), with status and
+  input watts when the platform exposes them, which unprivileged agents often
+  cannot read;
 * BMC sources may report supply health and draw.
 
 Evidence never creates or removes a power connection. An outlet reporting draw
@@ -125,6 +131,15 @@ UPS runtime modeling, generator and transfer-switch topology, cooling, power
 billing, and automatic outlet control. Switching an outlet would be an `operate`
 capability under RFD 9 and needs its own design.
 
+== Decisions from review
+
+* An owner may set an organization-wide default power factor; headroom that
+  uses it is labelled as resting on a configured default, and nothing is
+  assumed until it is set.
+* New feeds default to 80% maximum utilization, editable per feed.
+* Measured load comes first from PDU readings through RFD 11 collectors; host
+  power supply readings follow.
+
 == Rollout
 
 . Add panels and feeds at sites and locations, with capacity.
@@ -132,7 +147,7 @@ capability under RFD 9 and needs its own design.
   assets.
 . Add power connections on the RFD 7 cable model and compute power paths.
 . Add allocated load, redundancy, and the "what fails" view.
-. Add power evidence and measured load from host agents and PDU collectors.
+. Add measured load from PDU collectors, then supply evidence from host agents.
 . Add the power findings and the Power Inbox domain.
 
 == Implementation
