@@ -1,9 +1,10 @@
 //! JSON models matching the Phoenix host-agent contract.
 
+use crate::queue::QueueHealth;
 use chrono::{DateTime, Utc};
 use serde::{ser::SerializeMap, Serialize, Serializer};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::SystemTime};
 use uuid::Uuid;
 
 /// Phoenix's configured maximum encoded request-body size for observations.
@@ -157,15 +158,47 @@ pub struct CheckIn {
 #[derive(Debug, Serialize)]
 pub struct AgentMetadata {
     pub agent_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_queue: Option<QueueReport>,
 }
 
 impl CheckIn {
-    pub fn new(capabilities: Vec<&'static str>) -> Self {
+    pub fn new(capabilities: Vec<&'static str>, observation_queue: Option<QueueReport>) -> Self {
         Self {
             capabilities,
             metadata: AgentMetadata {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
+                observation_queue,
             },
+        }
+    }
+}
+
+/// The observation queue's health as a check-in reports it, so Renga can show a collector's
+/// undelivered backlog. Must match `Renga.Inventory.AgentPayload`. Drop counts cover the agent's
+/// current run; the backlog itself survives restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QueueReport {
+    pub entries: u64,
+    pub bytes: u64,
+    /// `null` when nothing is queued.
+    pub oldest_age_seconds: Option<u64>,
+    pub dropped_for_space: u64,
+    pub expired: u64,
+    pub rejected: u64,
+    pub unreadable: u64,
+}
+
+impl QueueReport {
+    pub fn new(health: &QueueHealth, now: SystemTime) -> Self {
+        Self {
+            entries: health.entries as u64,
+            bytes: health.bytes,
+            oldest_age_seconds: health.oldest_age(now).map(|age| age.as_secs()),
+            dropped_for_space: health.counters.dropped_for_space,
+            expired: health.counters.expired,
+            rejected: health.counters.rejected,
+            unreadable: health.counters.unreadable,
         }
     }
 }
@@ -242,11 +275,56 @@ mod tests {
     }
     #[test]
     fn checkin_has_capability_and_identity() {
-        let value = serde_json::to_value(CheckIn::new(vec!["host.inventory"])).unwrap();
+        let value = serde_json::to_value(CheckIn::new(vec!["host.inventory"], None)).unwrap();
         assert_eq!(value["capabilities"][0], "host.inventory");
         assert_eq!(
             value["metadata"]["agent_version"],
             env!("CARGO_PKG_VERSION")
         );
+        assert!(value["metadata"].get("observation_queue").is_none());
+    }
+
+    #[test]
+    fn checkin_reports_queue_health_as_of_now() {
+        use crate::queue::QueueCounters;
+        use serde_json::json;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let queued_at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let health = QueueHealth {
+            entries: 3,
+            bytes: 12_000,
+            oldest_queued_at: Some(queued_at),
+            counters: QueueCounters {
+                dropped_for_space: 1,
+                expired: 2,
+                rejected: 3,
+                unreadable: 4,
+            },
+        };
+        let report = QueueReport::new(&health, queued_at + Duration::from_secs(90));
+        let value = serde_json::to_value(CheckIn::new(vec![], Some(report))).unwrap();
+
+        assert_eq!(
+            value["metadata"]["observation_queue"],
+            json!({
+                "entries": 3,
+                "bytes": 12_000,
+                "oldest_age_seconds": 90,
+                "dropped_for_space": 1,
+                "expired": 2,
+                "rejected": 3,
+                "unreadable": 4
+            })
+        );
+
+        let empty = QueueHealth {
+            entries: 0,
+            bytes: 0,
+            oldest_queued_at: None,
+            counters: QueueCounters::default(),
+        };
+        let value = serde_json::to_value(QueueReport::new(&empty, queued_at)).unwrap();
+        assert_eq!(value["oldest_age_seconds"], Value::Null);
     }
 }

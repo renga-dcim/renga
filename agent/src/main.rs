@@ -3,8 +3,8 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
-    payload::{CheckIn, Observation},
-    queue::{Drained, ObservationQueue, QueueLimits},
+    payload::{CheckIn, Observation, QueueReport},
+    queue::{Drained, ObservationQueue, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
     transport::{encode_observation, FailureKind, HttpClient},
 };
@@ -110,10 +110,9 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config, &args.state_directory)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
-    let queue = Arc::new(Mutex::new(ObservationQueue::open(
-        &args.state_directory,
-        QueueLimits::default(),
-    )?));
+    let queue = ObservationQueue::open(&args.state_directory, QueueLimits::default())?;
+    let monitor = queue.monitor();
+    let queue = Arc::new(Mutex::new(queue));
     // Anchor periodic deadlines before startup work so a slow startup check-in cannot postpone
     // the first lease renewal by another full check-in interval.
     let scheduler_epoch = Instant::now();
@@ -123,10 +122,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             stopped: &stopped,
             labels: &config.labels,
             queue: &queue,
+            monitor: &monitor,
         };
         return aggregated_result(deliver_startup(&operations));
     }
-    if let Err(failure) = send_checkin(&client) {
+    if let Err(failure) = send_checkin(&client, &monitor) {
         warn!(error = %failure, "startup delivery failed: check-in");
     }
     if stopped.cancelled() {
@@ -151,7 +151,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         for job in scheduler.due_until_cancelled(now, &stopped) {
             match job {
                 Job::CheckIn => {
-                    if let Err(failure) = send_checkin(&client) {
+                    if let Err(failure) = send_checkin(&client, &monitor) {
                         warn!(error = %failure, "check-in failed");
                     }
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
@@ -233,8 +233,13 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn send_checkin(client: &HttpClient) -> Result<(), Box<dyn Error>> {
-    client.post_checkin(&CheckIn::new(collectors::capabilities()))?;
+/// Renews the lease and reports the queue's latest health, which a delivery pass in progress
+/// cannot hold up.
+fn send_checkin(client: &HttpClient, monitor: &QueueMonitor) -> Result<(), Box<dyn Error>> {
+    let queue = monitor
+        .latest()
+        .map(|health| QueueReport::new(&health, SystemTime::now()));
+    client.post_checkin(&CheckIn::new(collectors::capabilities(), queue))?;
     info!("check-in posted");
     Ok(())
 }
@@ -326,7 +331,7 @@ fn flush(
 /// Logs queue health whenever a pass changed or left anything, so an outage's backlog is
 /// visible in the agent's logs until it clears.
 fn report_queue(queue: &ObservationQueue, drained: &Drained) {
-    let health = match queue.health(SystemTime::now()) {
+    let health = match queue.health() {
         Ok(health) => health,
         Err(error) => {
             warn!(%error, "cannot read observation queue health");
@@ -341,7 +346,9 @@ fn report_queue(queue: &ObservationQueue, drained: &Drained) {
         rejected = drained.rejected,
         queued = health.entries,
         queued_bytes = health.bytes,
-        oldest_queued_seconds = health.oldest_age.map(|age| age.as_secs()),
+        oldest_queued_seconds = health
+            .oldest_age(SystemTime::now())
+            .map(|age| age.as_secs()),
         dropped_for_space = health.counters.dropped_for_space,
         expired = health.counters.expired,
         rejected_total = health.counters.rejected,
@@ -366,11 +373,12 @@ struct RuntimeOperations<'a> {
     stopped: &'a Cancellation,
     labels: &'a BTreeMap<String, String>,
     queue: &'a Mutex<ObservationQueue>,
+    monitor: &'a QueueMonitor,
 }
 
 impl Operations for RuntimeOperations<'_> {
     fn checkin(&self) -> Result<(), Box<dyn Error>> {
-        send_checkin(self.client)
+        send_checkin(self.client, self.monitor)
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
         send_inventory(self.client, self.stopped, self.labels, self.queue)
@@ -486,13 +494,13 @@ mod tests {
             server.join().unwrap(),
             [br#"{"n":1}"#.to_vec(), br#"{"n":2}"#.to_vec()]
         );
-        assert_eq!(lock(&queue).health(SystemTime::now()).unwrap().entries, 1);
+        assert_eq!(lock(&queue).health().unwrap().entries, 1);
 
         // A later flush finds the server back, and a repeat answered as a duplicate counts.
         let (origin, server) = stub_server(vec![200]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(server.join().unwrap(), [br#"{"n":2}"#.to_vec()]);
-        assert_eq!(lock(&queue).health(SystemTime::now()).unwrap().entries, 0);
+        assert_eq!(lock(&queue).health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
     }
 
