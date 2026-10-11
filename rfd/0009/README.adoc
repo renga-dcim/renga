@@ -204,6 +204,14 @@ is a prerequisite of RFDs 13 and 14 and is out of scope here.
 * Job history is kept for 90 days by default.
 * Fan-out batches have no size cap; per-organization rate limits and agent-side
   leasing bound the load instead.
+* Agent jobs live in Renga's own `jobs` and `job_events` tables rather than a
+  job library such as Oban. Those libraries run work on application nodes;
+  these jobs are leased by remote agents over HTTPS with lease tokens, signed
+  requests later, and a tenant-scoped append-only history, which a library's
+  state machine and table would have to be worked around to provide. The lease
+  sweeper follows the existing periodic-worker pattern and is idempotent, so it
+  is safe on every node. Adopting a library later for server-side background
+  work (sweeps, retention, reconciliation retries) stays open.
 
 == Implementation
 
