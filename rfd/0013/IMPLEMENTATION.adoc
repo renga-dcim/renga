@@ -9,6 +9,10 @@ Implements link:README.adoc[RFD 13: Live terminal].
 * [ ] Record first keys as pending, approve them by fingerprint on the
   Collectors page, and open a finding when a key changes.
 * [ ] Require signed leases for `operate` and `interactive` jobs.
+* [ ] Approve versioned resource-to-installation/key bindings independently of
+  shared-key inventory; bind jobs and signatures to them and revalidate at
+  dispatch/lease. Test shared-key reassociation and view-membership poisoning,
+  missing/conflicting bindings, and binding changes after job creation.
 
 == Phase 2: Access
 

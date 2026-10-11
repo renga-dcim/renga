@@ -31,6 +31,26 @@ returns the installation to pending, blocks its privileged jobs, and opens a
 finding. A stolen intake key alone can then report inventory, but cannot take a
 terminal or VM job.
 
+== Trusted privileged targets
+
+Approving a key proves installation identity, not which resource it may control.
+Privileged targeting requires a separately approved, organization-scoped binding
+between the resource ID and installation ID plus approved key fingerprint. An
+owner/admin verifies this binding through a trusted enrollment process; shared
+intake observations, submitted identifiers, source associations, and saved-view
+membership cannot create or silently change it. Binding changes require explicit
+approval and invalidate pending authorizations for the old binding.
+
+Grants authorize resource IDs against these trusted bindings, not whichever
+agent an inventory report currently associates with them. Target sets derived
+from views or teams must not gain privileged targets through shared-key
+inventory alone. Renga captures the binding/version in each job and rechecks
+the grant, organization policy, binding, and approved credential before dispatch
+and lease. The signed request includes the target and binding version alongside
+the job ID, lease token, and nonce. Missing, changed, or conflicting bindings
+block execution instead of redirecting a job to another installation. RFD 14
+extends the same rule to the provider and domain identity of a VM.
+
 == Enabling terminals
 
 A terminal session requires all of these:
