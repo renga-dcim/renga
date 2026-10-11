@@ -18,6 +18,7 @@ use std::{
     fmt, fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tracing::warn;
@@ -65,8 +66,34 @@ pub struct QueueCounters {
 pub struct QueueHealth {
     pub entries: usize,
     pub bytes: u64,
-    pub oldest_age: Option<Duration>,
+    pub oldest_queued_at: Option<SystemTime>,
     pub counters: QueueCounters,
+}
+
+impl QueueHealth {
+    pub fn oldest_age(&self, now: SystemTime) -> Option<Duration> {
+        // A clock stepped backwards makes an entry look new rather than old.
+        self.oldest_queued_at
+            .map(|queued_at| now.duration_since(queued_at).unwrap_or_default())
+    }
+}
+
+/// The queue's health as of its last change, readable while a delivery pass holds the queue
+/// itself, so lease check-ins can report it without waiting.
+#[derive(Clone, Default)]
+pub struct QueueMonitor(Arc<Mutex<Option<QueueHealth>>>);
+
+impl QueueMonitor {
+    pub fn latest(&self) -> Option<QueueHealth> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn publish(&self, health: QueueHealth) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(health);
+    }
 }
 
 /// The result of one pass over the queue.
@@ -113,11 +140,16 @@ pub struct ObservationQueue {
     limits: QueueLimits,
     next_sequence: u64,
     counters: QueueCounters,
+    monitor: QueueMonitor,
 }
 
 impl ObservationQueue {
     /// Opens the queue under the agent's state directory, creating it on first use.
-    pub fn open(state_directory: &Path, limits: QueueLimits) -> Result<Self, QueueError> {
+    pub fn open(
+        state_directory: &Path,
+        limits: QueueLimits,
+        monitor: QueueMonitor,
+    ) -> Result<Self, QueueError> {
         let directory = state_directory.join(QUEUE_DIRECTORY);
         fs::create_dir_all(&directory)
             .map_err(|error| io_error("create observation queue", &directory, error))?;
@@ -138,13 +170,19 @@ impl ObservationQueue {
             limits,
             next_sequence: 0,
             counters: QueueCounters::default(),
+            monitor,
         };
         queue.remove_abandoned_temporaries(SystemTime::now())?;
         queue.next_sequence = queue
             .entries()?
             .last()
             .map_or(0, |entry| entry.sequence + 1);
+        queue.publish_health();
         Ok(queue)
+    }
+
+    pub fn monitor(&self) -> QueueMonitor {
+        self.monitor.clone()
     }
 
     /// Persists an encoded observation, durably, behind every entry already queued.
@@ -179,6 +217,7 @@ impl ObservationQueue {
             if remove(&oldest.path)? {
                 self.counters.dropped_for_space += 1;
             }
+            self.publish_health();
             remaining -= 1;
             bytes -= oldest.bytes;
         }
@@ -186,9 +225,12 @@ impl ObservationQueue {
         let path = self
             .directory
             .join(entry_name(sequence, now, observation_id));
-        self.write_atomically(&path, body)?;
-        self.next_sequence = sequence + 1;
-        Ok(())
+        let written = self.write_atomically(&path, body);
+        if written.is_ok() {
+            self.next_sequence = sequence + 1;
+        }
+        self.publish_health();
+        written
     }
 
     /// Delivers queued observations oldest first. An accepted or rejected entry is removed and
@@ -207,12 +249,16 @@ impl ObservationQueue {
             let body = match fs::read(&entry.path) {
                 Ok(body) => body,
                 // Another agent process sharing this state directory delivered it first.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.publish_health();
+                    continue;
+                }
                 Err(error) => {
                     warn!(entry = %entry.path.display(), %error, "dropping unreadable queued observation");
                     if remove(&entry.path)? {
                         self.counters.unreadable += 1;
                     }
+                    self.publish_health();
                     continue;
                 }
             };
@@ -220,6 +266,7 @@ impl ObservationQueue {
                 Ok(()) => {
                     remove(&entry.path)?;
                     drained.delivered += 1;
+                    self.publish_health();
                 }
                 Err(error) if error.kind() == FailureKind::PayloadRejected => {
                     warn!(entry = %entry.path.display(), %error, "server rejected queued observation; dropping it");
@@ -227,6 +274,7 @@ impl ObservationQueue {
                         self.counters.rejected += 1;
                         drained.rejected += 1;
                     }
+                    self.publish_health();
                 }
                 Err(error) => {
                     drained.blocked = Some(error);
@@ -234,17 +282,25 @@ impl ObservationQueue {
                 }
             }
         }
+        self.publish_health();
         Ok(drained)
     }
 
-    pub fn health(&self, now: SystemTime) -> Result<QueueHealth, QueueError> {
+    pub fn health(&self) -> Result<QueueHealth, QueueError> {
         let entries = self.entries()?;
         Ok(QueueHealth {
             entries: entries.len(),
             bytes: entries.iter().map(|entry| entry.bytes).sum(),
-            oldest_age: entries.first().map(|entry| entry.age(now)),
+            oldest_queued_at: entries.first().map(|entry| entry.queued_at),
             counters: self.counters,
         })
+    }
+
+    /// A health read that fails leaves the previous snapshot in place.
+    fn publish_health(&self) {
+        if let Ok(health) = self.health() {
+            self.monitor.publish(health);
+        }
     }
 
     /// Queued entries in delivery order. Files the queue did not name are left alone.
@@ -284,6 +340,7 @@ impl ObservationQueue {
             if remove(&entry.path)? {
                 self.counters.expired += 1;
             }
+            self.publish_health();
         }
         Ok(current)
     }
@@ -414,7 +471,7 @@ mod tests {
         }
 
         fn open(&self, limits: QueueLimits) -> ObservationQueue {
-            ObservationQueue::open(&self.state, limits).unwrap()
+            ObservationQueue::open(&self.state, limits, QueueMonitor::default()).unwrap()
         }
 
         fn directory(&self) -> PathBuf {
@@ -485,7 +542,7 @@ mod tests {
         assert_eq!(offered, ["first", "second", "third"]);
         assert_eq!((drained.delivered, drained.rejected), (3, 0));
         assert!(drained.blocked.is_none());
-        assert_eq!(queue.health(at(3)).unwrap().entries, 0);
+        assert_eq!(queue.health().unwrap().entries, 0);
     }
 
     #[test]
@@ -532,7 +589,7 @@ mod tests {
 
         assert_eq!(offered, ["first", "malformed", "third"]);
         assert_eq!((drained.delivered, drained.rejected), (2, 1));
-        let health = queue.health(at(1)).unwrap();
+        let health = queue.health().unwrap();
         assert_eq!(health.entries, 0);
         assert_eq!(health.counters.rejected, 1);
     }
@@ -545,7 +602,7 @@ mod tests {
             enqueue(&mut queue, body, at(0));
         }
 
-        assert_eq!(queue.health(at(0)).unwrap().counters.dropped_for_space, 1);
+        assert_eq!(queue.health().unwrap().counters.dropped_for_space, 1);
         let (_drained, offered) = drain_with(&mut queue, at(0), accept);
         assert_eq!(offered, ["second", "third"]);
     }
@@ -558,7 +615,7 @@ mod tests {
             enqueue(&mut queue, body, at(0));
         }
 
-        let health = queue.health(at(0)).unwrap();
+        let health = queue.health().unwrap();
         assert_eq!((health.entries, health.bytes), (2, 8));
         assert_eq!(health.counters.dropped_for_space, 1);
 
@@ -580,7 +637,7 @@ mod tests {
         let (_drained, offered) = drain_with(&mut queue, at(61), accept);
 
         assert_eq!(offered, ["fresh"]);
-        assert_eq!(queue.health(at(61)).unwrap().counters.expired, 1);
+        assert_eq!(queue.health().unwrap().counters.expired, 1);
     }
 
     #[test]
@@ -589,8 +646,8 @@ mod tests {
         let mut queue = fixture.open(limits(100, 1_000, 60));
         enqueue(&mut queue, "queued", at(1_000));
 
-        let health = queue.health(at(0)).unwrap();
-        assert_eq!(health.oldest_age, Some(Duration::ZERO));
+        let health = queue.health().unwrap();
+        assert_eq!(health.oldest_age(at(0)), Some(Duration::ZERO));
         let (_drained, offered) = drain_with(&mut queue, at(0), accept);
         assert_eq!(offered, ["queued"]);
     }
@@ -610,7 +667,7 @@ mod tests {
 
             let result = queue.enqueue(Uuid::new_v4(), b"new", now);
             let drained = queue.drain(now, &Cancellation::default(), |_| Ok(()));
-            let health = queue.health(now).unwrap();
+            let health = queue.health().unwrap();
             set_mode(&fixture.directory(), 0o700).unwrap();
 
             assert!(result.is_err());
@@ -626,11 +683,11 @@ mod tests {
         let fixture = Fixture::new();
         let mut queue = fixture.open(QueueLimits::default());
         assert_eq!(
-            queue.health(at(0)).unwrap(),
+            queue.health().unwrap(),
             QueueHealth {
                 entries: 0,
                 bytes: 0,
-                oldest_age: None,
+                oldest_queued_at: None,
                 counters: QueueCounters::default(),
             }
         );
@@ -638,9 +695,55 @@ mod tests {
         enqueue(&mut queue, "abc", at(10));
         enqueue(&mut queue, "defgh", at(40));
 
-        let health = queue.health(at(100)).unwrap();
+        let health = queue.health().unwrap();
         assert_eq!((health.entries, health.bytes), (2, 8));
-        assert_eq!(health.oldest_age, Some(Duration::from_secs(90)));
+        assert_eq!(health.oldest_age(at(100)), Some(Duration::from_secs(90)));
+    }
+
+    #[test]
+    fn the_monitor_follows_every_change_without_the_queue() {
+        let fixture = Fixture::new();
+        let mut queue = fixture.open(QueueLimits::default());
+        enqueue(&mut queue, "carried over", at(0));
+        drop(queue);
+
+        // A restarted agent reports the backlog it found on disk before any delivery.
+        let mut queue = fixture.open(limits(1, 1_000, 3_600));
+        let monitor = queue.monitor();
+        assert_eq!(monitor.latest().unwrap().entries, 1);
+
+        enqueue(&mut queue, "newer", at(10));
+        let health = monitor.latest().unwrap();
+        assert_eq!(health.entries, 1);
+        assert_eq!(health.oldest_queued_at, Some(at(10)));
+        assert_eq!(health.counters.dropped_for_space, 1);
+
+        drain_with(&mut queue, at(20), accept);
+        assert_eq!(monitor.latest().unwrap().entries, 0);
+
+        let mut queue = fixture.open(QueueLimits::default());
+        enqueue(&mut queue, "first", at(30));
+        enqueue(&mut queue, "second", at(40));
+        let monitor = queue.monitor();
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            queue
+                .drain(at(50), &Cancellation::default(), |body| {
+                    if body == b"second" {
+                        paused_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    Ok(())
+                })
+                .unwrap()
+        });
+        paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let health = monitor.latest().unwrap();
+        resume_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().delivered, 2);
+        assert_eq!(health.entries, 1);
+        assert_eq!(health.oldest_queued_at, Some(at(40)));
     }
 
     #[test]
@@ -659,7 +762,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(drained.delivered, 1);
-        assert_eq!(queue.health(at(0)).unwrap().entries, 1);
+        assert_eq!(queue.health().unwrap().entries, 1);
     }
 
     #[test]
@@ -683,7 +786,7 @@ mod tests {
 
         assert!(!abandoned.exists());
         assert!(in_progress.exists());
-        assert_eq!(queue.health(at(0)).unwrap().entries, 0);
+        assert_eq!(queue.health().unwrap().entries, 0);
         let (_drained, offered) = drain_with(&mut queue, at(0), accept);
         assert!(offered.is_empty());
         assert!(directory.join("notes.txt").exists());

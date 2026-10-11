@@ -42,6 +42,14 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
     }
   end
 
+  # Posts a JSON body so integers and nulls arrive as JSON types, as from the agent.
+  defp check_in_json(conn, token, metadata) do
+    conn
+    |> authorize(token)
+    |> put_req_header("content-type", "application/json")
+    |> post(~p"/api/v1/agent/checkins", Jason.encode!(%{"metadata" => metadata}))
+  end
+
   defp authorize(conn, token, installation_id \\ @installation_id) do
     conn
     |> put_req_header("authorization", "Bearer #{token}")
@@ -163,6 +171,89 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                  }
                ]
              } = json_response(conn, 422)
+    end
+
+    test "stores the observation queue health the agent reports", %{conn: conn} do
+      %{scope: scope, token: token} = source_fixture()
+
+      queue = %{
+        "entries" => 3,
+        "bytes" => 12_000,
+        "oldest_age_seconds" => 5_400,
+        "dropped_for_space" => 1,
+        "expired" => 0,
+        "rejected" => 2,
+        "unreadable" => 0,
+        "added_by_a_newer_agent" => true
+      }
+
+      conn =
+        check_in_json(conn, token, %{"agent_version" => "0.2.0", "observation_queue" => queue})
+
+      %{"agent" => %{"id" => agent_id}} = json_response(conn, 202)
+      agent = Inventory.get_agent!(scope, agent_id)
+
+      assert %{entries: 3, bytes: 12_000, oldest_age_seconds: 5_400, dropped: 3} =
+               Renga.Inventory.Agent.observation_queue(agent)
+
+      # An empty queue has no oldest entry, and each check-in replaces the last report.
+      empty = %{queue | "entries" => 0, "bytes" => 0, "oldest_age_seconds" => nil}
+      conn = check_in_json(build_conn(), token, %{"observation_queue" => empty})
+      assert json_response(conn, 202)
+
+      assert %{entries: 0, oldest_age_seconds: nil} =
+               scope
+               |> Inventory.get_agent!(agent_id)
+               |> Renga.Inventory.Agent.observation_queue()
+
+      max = 9_007_199_254_740_991
+      boundary = %{queue | "entries" => max, "bytes" => max, "oldest_age_seconds" => max}
+      conn = check_in_json(build_conn(), token, %{"observation_queue" => boundary})
+      assert json_response(conn, 202)
+
+      assert %{entries: ^max, bytes: ^max, oldest_age_seconds: ^max} =
+               scope
+               |> Inventory.get_agent!(agent_id)
+               |> Renga.Inventory.Agent.observation_queue()
+    end
+
+    test "rejects malformed observation queue health", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      valid = %{
+        "entries" => 0,
+        "bytes" => 0,
+        "oldest_age_seconds" => nil,
+        "dropped_for_space" => 0,
+        "expired" => 0,
+        "rejected" => 0,
+        "unreadable" => 0
+      }
+
+      for {queue, path, message} <- [
+            {[], "metadata.observation_queue", "must be an object"},
+            {%{valid | "entries" => -1}, "metadata.observation_queue.entries",
+             "must be a non-negative integer"},
+            {%{valid | "bytes" => "12"}, "metadata.observation_queue.bytes",
+             "must be a non-negative integer"},
+            {%{valid | "bytes" => 9_007_199_254_740_992}, "metadata.observation_queue.bytes",
+             "must be a non-negative integer"},
+            {Map.delete(valid, "expired"), "metadata.observation_queue.expired",
+             "must be a non-negative integer"},
+            {%{valid | "oldest_age_seconds" => 1.5},
+             "metadata.observation_queue.oldest_age_seconds",
+             "must be a non-negative integer or null"},
+            {%{valid | "oldest_age_seconds" => 9_007_199_254_740_992},
+             "metadata.observation_queue.oldest_age_seconds",
+             "must be a non-negative integer or null"},
+            {Map.delete(valid, "oldest_age_seconds"),
+             "metadata.observation_queue.oldest_age_seconds", "is required"}
+          ] do
+        conn = check_in_json(conn, token, %{"observation_queue" => queue})
+
+        assert %{"errors" => [%{"path" => ^path, "message" => ^message}]} =
+                 json_response(conn, 422)
+      end
     end
 
     test "rejects metadata larger than the encoded storage limit", %{conn: conn} do

@@ -19,6 +19,10 @@ defmodule Renga.Inventory.AgentPayload do
   @max_observation_id_length 255
   @max_future_observation_skew_seconds 300
   @max_postgres_integer 2_147_483_647
+  # Integers the agent can report without JavaScript clients losing precision.
+  @max_json_safe_integer 9_007_199_254_740_991
+  # Mirrors `QueueReport` in agent/src/payload.rs.
+  @observation_queue_counts ~w(entries bytes dropped_for_space expired rejected unreadable)
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
@@ -174,6 +178,7 @@ defmodule Renga.Inventory.AgentPayload do
         errors
         |> validate_agent_metadata_size(metadata)
         |> validate_agent_version(metadata)
+        |> validate_observation_queue(metadata)
 
       _invalid ->
         [error("metadata", "must be an object") | errors]
@@ -215,6 +220,58 @@ defmodule Renga.Inventory.AgentPayload do
         [error("metadata.agent_version", "must be a string") | errors]
     end
   end
+
+  # The agent's on-disk queue health, shown per collector. Fields this server does
+  # not know are ignored so a newer agent can add some without losing its lease.
+  defp validate_observation_queue(errors, metadata) do
+    case Map.fetch(metadata, "observation_queue") do
+      :error ->
+        errors
+
+      {:ok, queue} ->
+        observation_queue_errors(queue) ++ errors
+    end
+  end
+
+  @doc "Validates both incoming queue reports and metadata stored before this contract existed."
+  def observation_queue_errors(queue) when is_map(queue) do
+    []
+    |> validate_queue_counts(queue)
+    |> validate_queue_age(queue)
+  end
+
+  def observation_queue_errors(_invalid),
+    do: [error("metadata.observation_queue", "must be an object")]
+
+  defp validate_queue_counts(errors, queue) do
+    Enum.reduce(@observation_queue_counts, errors, fn key, errors ->
+      if queue_count?(Map.get(queue, key)),
+        do: errors,
+        else: [
+          error("metadata.observation_queue.#{key}", "must be a non-negative integer") | errors
+        ]
+    end)
+  end
+
+  defp validate_queue_age(errors, queue) do
+    path = "metadata.observation_queue.oldest_age_seconds"
+
+    case Map.fetch(queue, "oldest_age_seconds") do
+      {:ok, nil} ->
+        errors
+
+      {:ok, age} ->
+        if queue_count?(age),
+          do: errors,
+          else: [error(path, "must be a non-negative integer or null") | errors]
+
+      :error ->
+        [error(path, "is required") | errors]
+    end
+  end
+
+  defp queue_count?(value),
+    do: is_integer(value) and value >= 0 and value <= @max_json_safe_integer
 
   defp validate_payload_size(errors, params) do
     case Jason.encode(params) do

@@ -4,6 +4,7 @@ defmodule RengaWeb.InventoryOperationsLive do
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Inventory
+  alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
 
   @refresh_interval 30_000
@@ -301,11 +302,12 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <th scope="col" class="px-cell font-medium">
                     Last inventory
                   </th>
+                  <th scope="col" class="px-cell font-medium">Delivery queue</th>
                 </tr>
               </thead>
               <tbody id="collectors" phx-update="stream">
                 <tr id="collectors-empty" class="hidden only:table-row">
-                  <td colspan="5" class="px-cell py-8 text-center text-sm text-fg-muted">
+                  <td colspan="6" class="px-cell py-8 text-center text-sm text-fg-muted">
                     No discovered collectors match this view.
                   </td>
                 </tr>
@@ -346,6 +348,9 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <td class="px-cell py-2 font-mono text-xs text-fg-muted">
                     {format_time(Map.get(@last_inventory_by_source, source.id))}
                   </td>
+                  <td id={"collector-queue-#{source.id}"} class="whitespace-nowrap px-cell py-2">
+                    <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -374,6 +379,34 @@ defmodule RengaWeb.InventoryOperationsLive do
       ]} />
       {if(@state == :connected, do: "Connected", else: "Disconnected")}
     </span>
+    """
+  end
+
+  attr :queue, :map, required: true
+
+  # Observations the agent holds on disk because Renga has not accepted them yet,
+  # as of its latest check-in. A backlog means inventory here is older than the
+  # host's; drops mean some observations will never arrive.
+  defp collector_queue(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% is_nil(@queue) -> %>
+        <span class="text-xs text-fg-subtle">Not reported</span>
+      <% @queue.entries == 0 -> %>
+        <span class="text-xs text-fg-muted">Empty</span>
+      <% true -> %>
+        <p class="text-xs font-medium text-warn-text">{@queue.entries} undelivered</p>
+        <p class="font-mono text-[11px] text-fg-muted">
+          oldest {format_age(@queue.oldest_age_seconds)} · {format_bytes(@queue.bytes)}
+        </p>
+    <% end %>
+    <p
+      :if={@queue && @queue.dropped > 0}
+      class="text-[11px] font-medium text-crit"
+      title={dropped_breakdown(@queue)}
+    >
+      {@queue.dropped} dropped since restart
+    </p>
     """
   end
 
@@ -428,6 +461,27 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   defp short_installation_id(installation_id) do
     "#{String.slice(installation_id, 0, 8)}…#{String.slice(installation_id, -4, 4)}"
+  end
+
+  defp format_age(nil), do: "unknown"
+  defp format_age(seconds) when seconds < 60, do: "#{seconds}s"
+  defp format_age(seconds) when seconds < 3_600, do: "#{div(seconds, 60)}m"
+  defp format_age(seconds) when seconds < 86_400, do: "#{div(seconds, 3_600)}h"
+  defp format_age(seconds), do: "#{div(seconds, 86_400)}d"
+
+  defp format_bytes(bytes) when bytes < 1_000, do: "#{bytes} B"
+  defp format_bytes(bytes) when bytes < 1_000_000, do: "#{Float.round(bytes / 1_000, 1)} kB"
+  defp format_bytes(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"
+
+  defp dropped_breakdown(queue) do
+    [
+      {queue.dropped_for_space, "to make room"},
+      {queue.expired, "after seven days"},
+      {queue.rejected, "rejected by Renga"},
+      {queue.unreadable, "unreadable"}
+    ]
+    |> Enum.reject(fn {count, _reason} -> count == 0 end)
+    |> Enum.map_join(", ", fn {count, reason} -> "#{count} #{reason}" end)
   end
 
   defp format_time(nil), do: "Never"

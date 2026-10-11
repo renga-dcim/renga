@@ -118,8 +118,9 @@ entry only when the server refuses the payload itself (a malformed or oversized
 body, or an observation ID reused for different content); transient, credential,
 and enrollment failures keep it queued for a later attempt. The queue holds at
 most 512 entries, 64 MiB, and seven days of observations, dropping the oldest
-first because each host observation is a full snapshot. Its health is visible in
-the agent's logs; reporting it to Renga itself remains open.
+first because each host observation is a full snapshot. Its health appears in the
+agent's logs and in every check-in, and Renga shows each collector's undelivered
+backlog and dropped observations on the Collectors settings page.
 
 Switch collection should prefer protocol-first implementations. VM collection
 begins read-only, with libvirt/KVM before broader provider support. Every source
