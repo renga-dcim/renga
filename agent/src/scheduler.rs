@@ -8,20 +8,30 @@ pub enum Job {
     CheckIn,
     Inventory,
     Reload,
+    /// Retry delivering observations still in the on-disk queue.
+    Flush,
 }
 
 pub struct Scheduler {
     checkin: Instant,
     inventory: Instant,
     reload: Instant,
+    flush: Instant,
 }
 
 impl Scheduler {
-    pub fn new(now: Instant, checkin: Duration, inventory: Duration, reload: Duration) -> Self {
+    pub fn new(
+        now: Instant,
+        checkin: Duration,
+        inventory: Duration,
+        reload: Duration,
+        flush: Duration,
+    ) -> Self {
         Self {
             checkin: now + checkin,
             inventory: now + inventory,
             reload: now + reload,
+            flush: now + flush,
         }
     }
 
@@ -30,6 +40,7 @@ impl Scheduler {
             (Job::CheckIn, self.checkin),
             (Job::Inventory, self.inventory),
             (Job::Reload, self.reload),
+            (Job::Flush, self.flush),
         ]
         .into_iter()
         .filter_map(|(job, at)| (at <= now).then_some(job))
@@ -52,6 +63,7 @@ impl Scheduler {
             Job::CheckIn => self.checkin = next,
             Job::Inventory => self.inventory = next,
             Job::Reload => self.reload = next,
+            Job::Flush => self.flush = next,
         }
     }
 
@@ -74,7 +86,7 @@ impl Scheduler {
     }
 
     pub fn wait(&self, now: Instant) -> Duration {
-        [self.checkin, self.inventory, self.reload]
+        [self.checkin, self.inventory, self.reload, self.flush]
             .into_iter()
             .min()
             .unwrap()
@@ -92,7 +104,13 @@ mod tests {
         let checkin = Duration::from_secs(30);
         let inventory = Duration::from_secs(60);
         let refresh = Duration::from_secs(10);
-        let mut scheduler = Scheduler::new(started, checkin, inventory, refresh);
+        let mut scheduler = Scheduler::new(
+            started,
+            checkin,
+            inventory,
+            refresh,
+            Duration::from_secs(86_400),
+        );
 
         for elapsed in [10, 20, 30, 40, 50] {
             let refreshed_at = started + Duration::from_secs(elapsed);
@@ -112,7 +130,13 @@ mod tests {
         let started = Instant::now();
         let checkin = Duration::from_secs(20);
         let inventory = Duration::from_secs(60);
-        let mut scheduler = Scheduler::new(started, checkin, inventory, Duration::from_secs(5));
+        let mut scheduler = Scheduler::new(
+            started,
+            checkin,
+            inventory,
+            Duration::from_secs(5),
+            Duration::from_secs(86_400),
+        );
 
         scheduler.refresh_intervals(
             started + Duration::from_secs(5),
@@ -136,6 +160,7 @@ mod tests {
             Duration::from_secs(20),
             Duration::from_secs(60),
             Duration::from_secs(5),
+            Duration::from_secs(86_400),
         );
 
         scheduler.refresh_intervals(
@@ -162,6 +187,7 @@ mod tests {
             Duration::from_secs(60),
             Duration::from_secs(3600),
             Duration::from_secs(59),
+            Duration::from_secs(86_400),
         );
 
         scheduler.refresh_intervals(
@@ -185,6 +211,7 @@ mod tests {
             Duration::from_secs(2),
             Duration::from_secs(3),
             Duration::from_secs(4),
+            Duration::from_secs(86_400),
         );
         assert!(scheduler.due(now).is_empty());
         assert_eq!(
@@ -200,6 +227,35 @@ mod tests {
     }
 
     #[test]
+    fn queue_flushes_come_due_on_their_own_interval() {
+        let now = Instant::now();
+        let mut scheduler = Scheduler::new(
+            now,
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+        );
+        assert_eq!(scheduler.wait(now), Duration::from_secs(60));
+        assert_eq!(
+            scheduler.due(now + Duration::from_secs(120)),
+            vec![Job::CheckIn, Job::Flush]
+        );
+
+        scheduler.reschedule(
+            Job::Flush,
+            now + Duration::from_secs(120),
+            Duration::from_secs(120),
+        );
+        assert!(!scheduler
+            .due(now + Duration::from_secs(239))
+            .contains(&Job::Flush));
+        assert!(scheduler
+            .due(now + Duration::from_secs(240))
+            .contains(&Job::Flush));
+    }
+
+    #[test]
     fn startup_work_does_not_shift_first_checkin_deadline() {
         let startup_began = Instant::now();
         let scheduler = Scheduler::new(
@@ -207,6 +263,7 @@ mod tests {
             Duration::from_secs(60),
             Duration::from_secs(3600),
             Duration::from_secs(300),
+            Duration::from_secs(86_400),
         );
 
         assert!(scheduler
@@ -218,7 +275,13 @@ mod tests {
     fn cancellation_stops_remaining_due_jobs() {
         let stopped = Cancellation::default();
         let now = Instant::now();
-        let scheduler = Scheduler::new(now, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let scheduler = Scheduler::new(
+            now,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
         let mut jobs = scheduler.due_until_cancelled(now, &stopped);
         assert_eq!(jobs.next(), Some(Job::CheckIn));
         stopped.cancel();
