@@ -1736,7 +1736,7 @@ defmodule Renga.Catalog do
       revision = %{revision | finalized_at: finalized_at}
 
       Repo.preload(revision,
-        component_templates: from(template in ComponentTemplate, order_by: template.name)
+        component_templates: ComponentTemplate.ordered()
       )
     end)
   end
@@ -1842,7 +1842,7 @@ defmodule Renga.Catalog do
         where: not is_nil(revision.finalized_at),
         order_by: [desc: revision.revision],
         preload: [
-          component_templates: ^from(template in ComponentTemplate, order_by: template.name)
+          component_templates: ^ComponentTemplate.ordered()
         ]
 
     Repo.preload(type, [:resource, manufacturer: :resource, revisions: revisions])

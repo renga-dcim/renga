@@ -2,6 +2,7 @@ defmodule Renga.Catalog.ComponentTemplate do
   use Ecto.Schema
 
   import Ecto.Changeset
+  import Ecto.Query, only: [from: 2]
 
   alias Renga.Catalog.JSONB
 
@@ -25,6 +26,17 @@ defmodule Renga.Catalog.ComponentTemplate do
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :catalog_type_revision, Renga.Catalog.TypeRevision
     timestamps()
+  end
+
+  @doc """
+  Component templates in name order, for preloading a revision's templates.
+
+  Names compare byte by byte (`COLLATE "C"`), so the order is the same on
+  every database whatever its default collation: a locale collation would
+  put `eth0` before `PSU1`, and the CI database does the opposite.
+  """
+  def ordered do
+    from(template in __MODULE__, order_by: fragment(~s(? COLLATE "C"), template.name))
   end
 
   def changeset(template, attrs) do

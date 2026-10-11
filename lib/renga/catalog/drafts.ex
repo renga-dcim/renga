@@ -356,7 +356,7 @@ defmodule Renga.Catalog.Drafts do
   defp preload_templates(revision) do
     Repo.preload(
       revision,
-      [component_templates: from(template in ComponentTemplate, order_by: template.name)],
+      [component_templates: ComponentTemplate.ordered()],
       force: true
     )
   end
