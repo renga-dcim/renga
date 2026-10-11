@@ -145,7 +145,11 @@ pub struct ObservationQueue {
 
 impl ObservationQueue {
     /// Opens the queue under the agent's state directory, creating it on first use.
-    pub fn open(state_directory: &Path, limits: QueueLimits) -> Result<Self, QueueError> {
+    pub fn open(
+        state_directory: &Path,
+        limits: QueueLimits,
+        monitor: QueueMonitor,
+    ) -> Result<Self, QueueError> {
         let directory = state_directory.join(QUEUE_DIRECTORY);
         fs::create_dir_all(&directory)
             .map_err(|error| io_error("create observation queue", &directory, error))?;
@@ -158,13 +162,15 @@ impl ObservationQueue {
             )));
         }
         set_mode(&directory, 0o700)?;
+        // The child's sync cannot persist its name in the parent after first-use creation.
+        sync_directory(state_directory)?;
 
         let mut queue = Self {
             directory,
             limits,
             next_sequence: 0,
             counters: QueueCounters::default(),
-            monitor: QueueMonitor::default(),
+            monitor,
         };
         queue.remove_abandoned_temporaries(SystemTime::now())?;
         queue.next_sequence = queue
@@ -193,7 +199,7 @@ impl ObservationQueue {
                 self.limits.max_bytes
             )));
         }
-        let entries = self.expire(self.entries()?, now);
+        let entries = self.expire(self.entries()?, now)?;
         let sequence = self
             .next_sequence
             .max(entries.last().map_or(0, |entry| entry.sequence + 1));
@@ -208,8 +214,10 @@ impl ObservationQueue {
                 entry = %oldest.path.display(),
                 "observation queue full; dropping its oldest observation"
             );
-            remove(&oldest.path);
-            self.counters.dropped_for_space += 1;
+            if remove(&oldest.path)? {
+                self.counters.dropped_for_space += 1;
+            }
+            self.publish_health();
             remaining -= 1;
             bytes -= oldest.bytes;
         }
@@ -234,31 +242,39 @@ impl ObservationQueue {
         mut deliver: impl FnMut(&[u8]) -> Result<(), TransportError>,
     ) -> Result<Drained, QueueError> {
         let mut drained = Drained::default();
-        for entry in self.expire(self.entries()?, now) {
+        for entry in self.expire(self.entries()?, now)? {
             if cancellation.cancelled() {
                 break;
             }
             let body = match fs::read(&entry.path) {
                 Ok(body) => body,
                 // Another agent process sharing this state directory delivered it first.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.publish_health();
+                    continue;
+                }
                 Err(error) => {
                     warn!(entry = %entry.path.display(), %error, "dropping unreadable queued observation");
-                    remove(&entry.path);
-                    self.counters.unreadable += 1;
+                    if remove(&entry.path)? {
+                        self.counters.unreadable += 1;
+                    }
+                    self.publish_health();
                     continue;
                 }
             };
             match deliver(&body) {
                 Ok(()) => {
-                    remove(&entry.path);
+                    remove(&entry.path)?;
                     drained.delivered += 1;
+                    self.publish_health();
                 }
                 Err(error) if error.kind() == FailureKind::PayloadRejected => {
                     warn!(entry = %entry.path.display(), %error, "server rejected queued observation; dropping it");
-                    remove(&entry.path);
-                    self.counters.rejected += 1;
-                    drained.rejected += 1;
+                    if remove(&entry.path)? {
+                        self.counters.rejected += 1;
+                        drained.rejected += 1;
+                    }
+                    self.publish_health();
                 }
                 Err(error) => {
                     drained.blocked = Some(error);
@@ -315,16 +331,18 @@ impl ObservationQueue {
         Ok(entries)
     }
 
-    fn expire(&mut self, entries: Vec<Entry>, now: SystemTime) -> Vec<Entry> {
+    fn expire(&mut self, entries: Vec<Entry>, now: SystemTime) -> Result<Vec<Entry>, QueueError> {
         let (expired, current): (Vec<_>, Vec<_>) = entries
             .into_iter()
             .partition(|entry| entry.age(now) > self.limits.max_age);
         for entry in expired {
             warn!(entry = %entry.path.display(), "dropping queued observation older than the queue's age limit");
-            remove(&entry.path);
-            self.counters.expired += 1;
+            if remove(&entry.path)? {
+                self.counters.expired += 1;
+            }
+            self.publish_health();
         }
-        current
+        Ok(current)
     }
 
     fn write_atomically(&self, path: &Path, body: &[u8]) -> Result<(), QueueError> {
@@ -361,7 +379,7 @@ impl ObservationQueue {
                         now.duration_since(modified).unwrap_or_default() > ABANDONED_TEMPORARY_AGE
                     });
             if abandoned {
-                remove(&item.path());
+                remove(&item.path())?;
             }
         }
         Ok(())
@@ -390,13 +408,12 @@ fn parse_entry_name(name: &str) -> Option<(u64, SystemTime)> {
     Some((sequence.parse().ok()?, queued_at))
 }
 
-/// Removes an entry, tolerating one already gone. A failed removal only means the entry is
-/// offered again later, which the server answers as a duplicate.
-fn remove(path: &Path) {
+/// Only a successful unlink frees capacity and counts as this process dropping an entry.
+fn remove(path: &Path) -> Result<bool, QueueError> {
     match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => warn!(entry = %path.display(), %error, "cannot remove queued observation"),
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error("remove queued observation", path, error)),
     }
 }
 
@@ -454,7 +471,7 @@ mod tests {
         }
 
         fn open(&self, limits: QueueLimits) -> ObservationQueue {
-            ObservationQueue::open(&self.state, limits).unwrap()
+            ObservationQueue::open(&self.state, limits, QueueMonitor::default()).unwrap()
         }
 
         fn directory(&self) -> PathBuf {
@@ -635,6 +652,32 @@ mod tests {
         assert_eq!(offered, ["queued"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn failed_unlinks_do_not_claim_capacity_or_count_drops() {
+        // Root bypasses directory permissions; this fault requires an unprivileged process.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for now in [at(0), at(61)] {
+            let fixture = Fixture::new();
+            let mut queue = fixture.open(limits(1, 10, 60));
+            enqueue(&mut queue, "old", at(0));
+            set_mode(&fixture.directory(), 0o500).unwrap();
+
+            let result = queue.enqueue(Uuid::new_v4(), b"new", now);
+            let drained = queue.drain(now, &Cancellation::default(), |_| Ok(()));
+            let health = queue.health().unwrap();
+            set_mode(&fixture.directory(), 0o700).unwrap();
+
+            assert!(result.is_err());
+            assert!(drained.is_err());
+            assert_eq!((health.entries, health.bytes), (1, 3));
+            assert_eq!(health.counters, QueueCounters::default());
+            assert_eq!(drain_with(&mut queue, at(0), accept).1, ["old"]);
+        }
+    }
+
     #[test]
     fn health_reports_size_and_the_oldest_entry_age() {
         let fixture = Fixture::new();
@@ -677,6 +720,30 @@ mod tests {
 
         drain_with(&mut queue, at(20), accept);
         assert_eq!(monitor.latest().unwrap().entries, 0);
+
+        let mut queue = fixture.open(QueueLimits::default());
+        enqueue(&mut queue, "first", at(30));
+        enqueue(&mut queue, "second", at(40));
+        let monitor = queue.monitor();
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            queue
+                .drain(at(50), &Cancellation::default(), |body| {
+                    if body == b"second" {
+                        paused_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    Ok(())
+                })
+                .unwrap()
+        });
+        paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let health = monitor.latest().unwrap();
+        resume_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().delivered, 2);
+        assert_eq!(health.entries, 1);
+        assert_eq!(health.oldest_queued_at, Some(at(40)));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use renga_agent::{
     collectors,
     config::Config,
     payload::{CheckIn, Observation, QueueReport},
-    queue::{Drained, ObservationQueue, QueueLimits, QueueMonitor},
+    queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
     transport::{encode_observation, FailureKind, HttpClient},
 };
@@ -23,6 +23,39 @@ use tracing_subscriber::EnvFilter;
 const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 /// How long an inventory waits for a queue flush already using the delivery worker.
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
+
+/// Queue failure degrades durability, not lease renewal or direct delivery. Only delivery
+/// work retries opening it, so filesystem recovery cannot hold up periodic check-ins.
+struct DeliveryQueue {
+    state_directory: PathBuf,
+    queue: Option<ObservationQueue>,
+    monitor: QueueMonitor,
+}
+
+impl DeliveryQueue {
+    fn new(state_directory: PathBuf) -> Self {
+        let mut delivery = Self {
+            state_directory,
+            queue: None,
+            monitor: QueueMonitor::default(),
+        };
+        if let Err(error) = delivery.ready() {
+            warn!(%error, "cannot open observation queue; using direct delivery until it recovers");
+        }
+        delivery
+    }
+
+    fn ready(&mut self) -> Result<&mut ObservationQueue, QueueError> {
+        if self.queue.is_none() {
+            self.queue = Some(ObservationQueue::open(
+                &self.state_directory,
+                QueueLimits::default(),
+                self.monitor.clone(),
+            )?);
+        }
+        Ok(self.queue.as_mut().unwrap())
+    }
+}
 
 /// Work running on the delivery thread, which owns the observation queue while it runs.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,8 +143,8 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config, &args.state_directory)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
-    let queue = ObservationQueue::open(&args.state_directory, QueueLimits::default())?;
-    let monitor = queue.monitor();
+    let queue = DeliveryQueue::new(args.state_directory.clone());
+    let monitor = queue.monitor.clone();
     let queue = Arc::new(Mutex::new(queue));
     // Anchor periodic deadlines before startup work so a slow startup check-in cannot postpone
     // the first lease renewal by another full check-in interval.
@@ -233,8 +266,6 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// Renews the lease and reports the queue's latest health, which a delivery pass in progress
-/// cannot hold up.
 fn send_checkin(client: &HttpClient, monitor: &QueueMonitor) -> Result<(), Box<dyn Error>> {
     let queue = monitor
         .latest()
@@ -249,7 +280,7 @@ fn spawn_inventory(
     client: &HttpClient,
     stopped: &Cancellation,
     config: &Config,
-    queue: &Arc<Mutex<ObservationQueue>>,
+    queue: &Arc<Mutex<DeliveryQueue>>,
 ) {
     let client = client.clone();
     let stopped = stopped.clone();
@@ -268,13 +299,16 @@ fn send_inventory(
     client: &HttpClient,
     stopped: &Cancellation,
     labels: &BTreeMap<String, String>,
-    queue: &Mutex<ObservationQueue>,
+    queue: &Mutex<DeliveryQueue>,
 ) -> Result<(), Box<dyn Error>> {
     let observation = Observation::new(collectors::collect(stopped)?).with_labels(labels);
     let observation_id = observation.observation_id;
     let body = encode_observation(&observation)?;
-    let mut queue = lock(queue);
-    if let Err(failure) = queue.enqueue(observation_id, &body, SystemTime::now()) {
+    let mut delivery = lock(queue);
+    if let Err(failure) = delivery
+        .ready()
+        .and_then(|queue| queue.enqueue(observation_id, &body, SystemTime::now()))
+    {
         // Delivering without durability still beats losing this observation outright. The
         // server keeps its newest observation current, so overtaking older entries is safe.
         warn!(error = %failure, %observation_id, "cannot queue observation; delivering it directly");
@@ -283,6 +317,7 @@ fn send_inventory(
         return Ok(());
     }
 
+    let queue = delivery.ready()?;
     let mut outcome = None;
     let drained = queue.drain(SystemTime::now(), stopped, |entry| {
         let result = client.post_encoded_observation(entry);
@@ -291,7 +326,7 @@ fn send_inventory(
         }
         result
     })?;
-    report_queue(&queue, &drained);
+    report_queue(queue, &drained);
     match outcome {
         Some(Ok(())) => {
             info!(%observation_id, "observation posted");
@@ -315,13 +350,14 @@ fn send_inventory(
 fn flush(
     client: &HttpClient,
     stopped: &Cancellation,
-    queue: &Mutex<ObservationQueue>,
+    queue: &Mutex<DeliveryQueue>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut queue = lock(queue);
+    let mut delivery = lock(queue);
+    let queue = delivery.ready()?;
     let drained = queue.drain(SystemTime::now(), stopped, |entry| {
         client.post_encoded_observation(entry)
     })?;
-    report_queue(&queue, &drained);
+    report_queue(queue, &drained);
     match drained.blocked {
         Some(error) if !error.is_cancelled() => Err(error.into()),
         _ => Ok(()),
@@ -359,7 +395,7 @@ fn report_queue(queue: &ObservationQueue, drained: &Drained) {
 
 /// The queue holds no invariant a panicking holder could break mid-update: every entry change
 /// is a single file operation.
-fn lock(queue: &Mutex<ObservationQueue>) -> MutexGuard<'_, ObservationQueue> {
+fn lock(queue: &Mutex<DeliveryQueue>) -> MutexGuard<'_, DeliveryQueue> {
     queue.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -372,7 +408,7 @@ struct RuntimeOperations<'a> {
     client: &'a HttpClient,
     stopped: &'a Cancellation,
     labels: &'a BTreeMap<String, String>,
-    queue: &'a Mutex<ObservationQueue>,
+    queue: &'a Mutex<DeliveryQueue>,
     monitor: &'a QueueMonitor,
 }
 
@@ -479,9 +515,11 @@ mod tests {
     #[test]
     fn flush_replays_queued_bodies_exactly_and_keeps_what_the_server_could_not_take() {
         let state = std::env::temp_dir().join(format!("renga-flush-{}", uuid::Uuid::new_v4()));
-        let queue = Mutex::new(ObservationQueue::open(&state, QueueLimits::default()).unwrap());
+        let queue = Mutex::new(DeliveryQueue::new(state.clone()));
         for body in [&br#"{"n":1}"#[..], br#"{"n":2}"#] {
             lock(&queue)
+                .ready()
+                .unwrap()
                 .enqueue(uuid::Uuid::new_v4(), body, SystemTime::now())
                 .unwrap();
         }
@@ -494,13 +532,65 @@ mod tests {
             server.join().unwrap(),
             [br#"{"n":1}"#.to_vec(), br#"{"n":2}"#.to_vec()]
         );
-        assert_eq!(lock(&queue).health().unwrap().entries, 1);
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 1);
 
         // A later flush finds the server back, and a repeat answered as a duplicate counts.
         let (origin, server) = stub_server(vec![200]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(server.join().unwrap(), [br#"{"n":2}"#.to_vec()]);
-        assert_eq!(lock(&queue).health().unwrap().entries, 0);
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn an_unavailable_queue_does_not_stop_startup_and_recovers_on_delivery_work() {
+        let state = std::env::temp_dir().join(format!("renga-degraded-{}", uuid::Uuid::new_v4()));
+        let identity = renga_agent::identity::load_or_create(&state, None).unwrap();
+        std::fs::write(state.join("observations"), b"not a directory").unwrap();
+        let (origin, server) = stub_server(vec![200, 202]);
+        let config = state.join("agent.toml");
+        std::fs::write(&config, format!(
+            "renga_url = {origin:?}\nallow_insecure_http = true\nintake_api_key = \"test-token\"\nmax_retry_attempts = 1\n"
+        )).unwrap();
+
+        run_configured(
+            Args {
+                config,
+                state_directory: state.clone(),
+                once: true,
+                dry_run: false,
+            },
+            Cancellation::default(),
+        )
+        .unwrap();
+        let bodies = server.join().unwrap();
+        assert_eq!(bodies.len(), 2);
+        let checkin: serde_json::Value = serde_json::from_slice(&bodies[0]).unwrap();
+        let observation: serde_json::Value = serde_json::from_slice(&bodies[1]).unwrap();
+        assert!(checkin["capabilities"].is_array());
+        assert!(observation["observation_id"].is_string());
+        assert_eq!(
+            renga_agent::identity::load_or_create(&state, None).unwrap(),
+            identity
+        );
+
+        // The same degraded runtime opens the queue after the operator repairs the path.
+        let queue = Mutex::new(DeliveryQueue::new(state.clone()));
+        let monitor = lock(&queue).monitor.clone();
+        assert!(monitor.latest().is_none());
+        std::fs::remove_file(state.join("observations")).unwrap();
+        let (origin, server) = stub_server(vec![202]);
+        send_inventory(
+            &stub_client(&origin),
+            &Cancellation::default(),
+            &BTreeMap::new(),
+            &queue,
+        )
+        .unwrap();
+        assert_eq!(server.join().unwrap().len(), 1);
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        assert_eq!(monitor.latest().unwrap().entries, 0);
+        assert!(state.join("observations").is_dir());
         std::fs::remove_dir_all(state).unwrap();
     }
 

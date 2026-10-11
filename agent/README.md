@@ -111,10 +111,15 @@ observations, 64 MiB, and seven days, dropping the oldest first when a limit is
 reached. Each delivery pass that leaves or removes anything logs an
 `observation queue` line with the backlog's size, its oldest entry's age, and
 counts of observations dropped for space, expired, or rejected. Every check-in
-reports the same health, and Renga shows it in the Delivery queue column of the
-Collectors settings page; drop counts cover the agent's current run. Queued
-observations belong to the installation, not the server: after pointing an
-agent at a different Renga, it delivers its backlog there.
+reports the same health, and Renga shows the last reported health in the
+Delivery queue column of the Collectors settings page; drop counts cover the
+agent's current run. Check-ins omitting queue health retain the last report.
+Queued observations belong to the installation, not the server: after pointing
+an agent at a different Renga, it delivers its backlog there.
+
+If the queue cannot open or make room, check-ins continue and new inventory is
+sent directly without durability. Delivery work retries opening the queue on
+later inventory and flush passes; periodic check-ins never wait for that retry.
 
 `--dry-run` collects once and prints pretty JSON without loading configuration or
 using the network. `--once` loads configuration and attempts both a check-in and
