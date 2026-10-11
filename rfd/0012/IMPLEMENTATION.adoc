@@ -1,0 +1,11 @@
+= RFD 0012 implementation checklist
+
+Implements link:README.adoc[RFD 12: Operational queries].
+
+* [ ] Define query capabilities with parameter and result schemas, size limits,
+  timeouts, and sensitivity, validated by Renga and the agent.
+* [ ] Add per-query organization enablement and the member rule for
+  `inventory`-sensitivity queries.
+* [ ] Implement the first six queries natively in the agent, with no request text
+  reaching any program arguments.
+* [ ] Add the resource Queries tab and saved-view fan-out with batch results.

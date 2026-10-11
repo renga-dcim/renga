@@ -1,0 +1,11 @@
+= RFD 0014 implementation checklist
+
+Implements link:README.adoc[RFD 14: VM lifecycle operations].
+
+* [ ] Add desired power state on VM envelopes and the power-state drift finding.
+* [ ] Add idempotent `vm.power@1` actions to the libvirt module, returning the
+  state before and after.
+* [ ] Add organization enablement and expiring VM operator grants, with a reason
+  and confirmation for `force_off` and `reset`.
+* [ ] Add optional two-operator approval for destructive actions.
+* [ ] Add the operation preview and power controls on the VM page.
