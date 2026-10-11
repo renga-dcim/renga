@@ -1,0 +1,156 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/148
+:labels: agent, collectors, network, virtualization, software
+
+= RFD 11 Read-only switch and virtualization collectors
+
+== Goal
+
+Bring network switches and virtual machines into Renga's observed inventory
+without installing anything on them. RFD 1 calls for protocol-first switch
+collection and read-only VM collection starting with libvirt/KVM; this RFD
+designs both as collectors that report through the same observation API, so
+reconciliation, freshness, findings, and the four collection clocks apply
+unchanged.
+
+Read-only means exactly that: no collector in this RFD changes device or
+hypervisor configuration. VM lifecycle operations are RFD 14.
+
+== Deployment
+
+Collectors run inside the existing `renga-agent` binary as optional modules,
+configured per installation:
+
+[source,toml]
+----
+[[collectors.snmp]]
+targets = ["10.0.0.1", "10.0.0.2"]
+version = "3"
+username = "renga"
+auth_protocol = "sha256"
+auth_password_file = "/etc/renga/snmp-auth"
+privacy_protocol = "aes128"
+privacy_password_file = "/etc/renga/snmp-priv"
+
+[collectors.libvirt]
+uri = "qemu:///system"
+----
+
+Reusing the agent gives every collector the installation identity, intake key,
+on-disk queue, check-ins, and packaging already shipped. A poller host is an
+ordinary installation whose source kind becomes `switch_poller` or
+`vm_provider` when it reports on behalf of other devices; its own host
+inventory stays a separate host observation.
+
+Device credentials stay on the collector host, read from files the agent's
+service account can read. They are never sent to Renga, never logged, and never
+appear in observations.
+
+== Observation payload
+
+Today an observation must contain exactly one host resource. Provider
+observations need many resources per report: one per switch polled or VM
+listed. The payload gains a `scope` that says what the report is authoritative
+for:
+
+* `host`: the existing single-host report, unchanged.
+* `targets`: a switch poller's report for the listed targets. A target polled
+  successfully is authoritative for its own interfaces and neighbors; a target
+  that timed out is listed as unreachable, and its facts stay unknown rather
+  than absent.
+* `hypervisor`: a libvirt report for one hypervisor, authoritative for the
+  domains defined on it.
+
+Partial, paginated, or failed collection never marks inventory absent (RFD 1).
+Only a complete, successful report for a scope can retire what that scope no
+longer contains.
+
+== Switch collection
+
+SNMP comes first because nearly every switch supports it read-only. The first
+release reads:
+
+* system identity (`SNMPv2-MIB`, `ENTITY-MIB` serial and model);
+* interfaces, names, speeds, status, and MAC addresses (`IF-MIB`);
+* LLDP neighbors (`LLDP-MIB`), feeding the RFD 7 neighbor evidence that host
+  agents already report from the other end;
+* VLAN membership (`Q-BRIDGE-MIB`), feeding RFD 7 membership evidence;
+* optionally, the bridge forwarding table, behind a per-target flag because it
+  is large on busy switches.
+
+SNMPv3 with authentication and privacy is the default. SNMPv2c is allowed for
+lab gear only with an explicit `allow_v2c = true`. gNMI/OpenConfig is a later
+module behind the same payload, for switches where SNMP is incomplete.
+
+A switch's identity is its chassis serial number, with the LLDP chassis ID and
+management address as supporting identifiers, so a switch reported by two
+pollers reconciles to one resource.
+
+== Virtualization collection
+
+libvirt comes first, read-only, over the local socket on each hypervisor (an
+agent already runs there) or a read-only remote URI. It reports:
+
+* the hypervisor as the host it already is, plus its role as a VM host;
+* each defined domain: name, UUID, state, vCPU and memory allocation, disks,
+  and virtual interfaces with MAC addresses and the bridge or network they
+  attach to.
+
+A VM is correlated with the host agent running inside it by the SMBIOS system
+UUID that libvirt assigns and the guest agent reports as `dmi_uuid`, with MAC
+addresses as supporting evidence. When both exist they reconcile to one
+resource with two sources, the hypervisor's view and the guest's own, rather
+than two machines.
+
+Placement is evidence: the domain's hypervisor is where the VM runs now. A
+migrated VM moves without an operator touching it, and a VM seen on two
+hypervisors at once opens a finding.
+
+== Scheduling and limits
+
+Each module polls on its own interval (default 15 minutes for SNMP, 5 for
+libvirt), within per-target timeouts and a cap on concurrent targets. A slow
+switch can never hold up host inventory or lease check-ins, because modules
+run on their own worker like RFD 9 jobs. Each report respects the observation
+size limit by splitting large target sets across several reports.
+
+== Findings
+
+* **Target unreachable**: a configured switch has not answered for longer than
+  its freshness window.
+* **Neighbor mismatch**: LLDP from the switch disagrees with the host's report
+  of the same link (RFD 7 already compares cables with LLDP).
+* **VM on two hypervisors** at once.
+* **Guest without a VM**: a host agent whose `dmi_uuid` matches no domain on any
+  reporting hypervisor, when the organization has libvirt collection enabled.
+
+== User interaction
+
+* Switches and VMs appear in inventory like hosts, with sources that say which
+  poller or hypervisor reported them.
+* A switch's Ports tab (RFD 7) fills in from switch evidence instead of only
+  from the hosts plugged into it.
+* A VM shows its hypervisor, allocation, and the guest agent's view side by
+  side.
+* The Collectors page shows each poller's targets and which were unreachable on
+  its latest report.
+
+== Initial exclusions
+
+Cloud provider APIs, VMware vCenter, Proxmox and Hyper-V APIs, SNMP traps,
+streaming telemetry, and any write operation. Each later provider reuses the
+payload scopes above.
+
+== Rollout
+
+. Add payload scopes and multi-resource observations, with authority limited to
+  each scope.
+. Add the SNMP module with SNMPv3, identity, interfaces, LLDP, and VLANs.
+. Add the libvirt module and VM-to-guest correlation.
+. Add the collector findings and the poller detail on the Collectors page.
+. Add gNMI/OpenConfig as a second switch module.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].

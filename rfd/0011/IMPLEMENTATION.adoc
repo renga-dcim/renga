@@ -1,0 +1,32 @@
+= RFD 0011 implementation checklist
+
+Implements link:README.adoc[RFD 11: Read-only switch and virtualization collectors].
+
+== Phase 1: Provider observations
+
+* [ ] Add payload scopes (`host`, `targets`, `hypervisor`) and multi-resource
+  observations, retiring facts only from complete, successful reports.
+* [ ] Record unreachable targets as unknown, never absent.
+
+== Phase 2: Switches over SNMP
+
+* [ ] Add the agent SNMP module with SNMPv3 by default, credentials read from
+  local files, and opt-in SNMPv2c.
+* [ ] Report identity, interfaces, LLDP neighbors, and VLAN membership.
+* [ ] Reconcile switches by chassis serial across pollers.
+
+== Phase 3: Virtualization over libvirt
+
+* [ ] Add the read-only libvirt module reporting domains, allocation, disks, and
+  virtual interfaces.
+* [ ] Correlate VMs with guest host agents by SMBIOS UUID and MAC addresses.
+
+== Phase 4: Findings and interface
+
+* [ ] Open target-unreachable, neighbor-mismatch, VM-on-two-hypervisors, and
+  guest-without-VM findings.
+* [ ] Show poller targets and unreachable targets on the Collectors page.
+
+== Phase 5: gNMI
+
+* [ ] Add a gNMI/OpenConfig switch module behind the same payload.
