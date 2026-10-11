@@ -6,5 +6,6 @@ pub mod command;
 pub mod config;
 pub mod identity;
 pub mod payload;
+pub mod queue;
 pub mod scheduler;
 pub mod transport;

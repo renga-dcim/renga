@@ -40,7 +40,7 @@ pub struct TransportError {
 }
 
 impl TransportError {
-    fn new(message: String, kind: FailureKind) -> Self {
+    pub(crate) fn new(message: String, kind: FailureKind) -> Self {
         Self { message, kind }
     }
 
