@@ -99,12 +99,33 @@ when state is absent, requires it to match existing state, and then no longer
 needs the override. Portable-tarball installations can select a writable path
 with `--state-directory`; its default is `/var/lib/renga`.
 
+Every collected observation is written to `observations/` under the state
+directory before the first delivery attempt, so an outage or restart does not
+lose it. The agent delivers queued observations oldest first after each
+inventory and retries anything left every two minutes, replaying the stored
+body unchanged so Renga recognizes a repeat by its observation ID. An entry is
+removed once Renga accepts it, or when Renga rejects the payload itself as
+malformed, oversized, or reusing an observation ID; network, server, credential,
+and enrollment failures leave it queued. The queue keeps at most 512
+observations, 64 MiB, and seven days, dropping the oldest first when a limit is
+reached. Each delivery pass that leaves or removes anything logs an
+`observation queue` line with the backlog's size, its oldest entry's age, and
+counts of observations dropped for space, expired, or rejected. Queued
+observations belong to the installation, not the server: after pointing an
+agent at a different Renga, it delivers its backlog there.
+
+If the queue cannot open or make room, check-ins continue and new inventory is
+sent directly without durability. Delivery work retries opening the queue on
+later inventory and flush passes; periodic check-ins never wait for that retry.
+
 `--dry-run` collects once and prints pretty JSON without loading configuration or
 using the network. `--once` loads configuration and attempts both a check-in and
 an inventory observation; after both attempts it exits unsuccessfully if either
-failed and reports all failures. With neither option the agent attempts both at
-startup, logs either failure independently, then schedules periodic check-ins and inventory, and retries transient HTTP
-failures with backoff. SIGTERM/SIGINT stops retry attempts and backoff promptly,
+failed and reports all failures. An observation that `--once` could not deliver
+stays queued for the next run or the daemon. With neither option the agent
+attempts both at startup, logs either failure independently, then schedules
+periodic check-ins and inventory, and retries transient HTTP failures with
+backoff. SIGTERM/SIGINT stops retry attempts and backoff promptly,
 including during `--once`. A blocking request already in flight can continue up
 to `request_timeout_seconds` before the process exits. Collector subprocesses
 are separately bounded to two seconds and are killed and reaped on timeout or

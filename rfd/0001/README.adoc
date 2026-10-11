@@ -111,9 +111,15 @@ The durability target is a bounded local observation queue. The agent persists a
 collected payload before delivery, retries queued observations across process and
 network restarts, and removes an item only after server acceptance or a recorded
 permanent-rejection policy. Queue size, age, and disk use are bounded and visible.
-The delivered MVP currently uses bounded in-memory retry and may lose an
-observation after exhausting that budget; implementing the local queue remains
-open architecture work rather than an implied current guarantee.
+The delivered agent queues each observation under its state directory before the
+first delivery attempt and replays the queue oldest first, byte for byte, so the
+server deduplicates a repeat by observation ID. The rejection policy removes an
+entry only when the server refuses the payload itself (a malformed or oversized
+body, or an observation ID reused for different content); transient, credential,
+and enrollment failures keep it queued for a later attempt. The queue holds at
+most 512 entries, 64 MiB, and seven days of observations, dropping the oldest
+first because each host observation is a full snapshot. Its health is visible in
+the agent's logs; reporting it to Renga itself remains open.
 
 Switch collection should prefer protocol-first implementations. VM collection
 begins read-only, with libvirt/KVM before broader provider support. Every source

@@ -20,19 +20,40 @@ const OBSERVATION_PATH: &str = "/api/v1/observations";
 const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
 const BACKOFF_SLICE: Duration = Duration::from_millis(25);
 
+/// How a failed delivery should be treated by whoever holds the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// The network or server may recover: timeouts, connection failures, 408, 429, and 5xx.
+    Transient,
+    /// The server will never accept this exact payload: it is malformed, too large, or its
+    /// observation ID was already used for a different payload. Retrying it cannot succeed.
+    PayloadRejected,
+    /// Everything else, such as revoked credentials, enrollment conflicts, redirects, or local
+    /// setup errors. The payload itself may be fine once an operator fixes the cause.
+    Permanent,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportError {
     message: String,
-    transient: bool,
+    kind: FailureKind,
 }
 
 impl TransportError {
-    fn new(message: String, transient: bool) -> Self {
-        Self { message, transient }
+    pub(crate) fn new(message: String, kind: FailureKind) -> Self {
+        Self { message, kind }
     }
 
     fn cancelled() -> Self {
-        Self::new("HTTP delivery cancelled".into(), false)
+        Self::new("HTTP delivery cancelled".into(), FailureKind::Permanent)
+    }
+
+    pub fn kind(&self) -> FailureKind {
+        self.kind
+    }
+
+    fn transient(&self) -> bool {
+        self.kind == FailureKind::Transient
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -66,12 +87,13 @@ impl HttpClient {
             .renga_url
             .split_once("://")
             .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
-        let base_url = Url::parse(&config.renga_url)
-            .map_err(|_| TransportError::new("invalid Renga server URL".into(), false))?;
+        let base_url = Url::parse(&config.renga_url).map_err(|_| {
+            TransportError::new("invalid Renga server URL".into(), FailureKind::Permanent)
+        })?;
         if base_url.scheme() == "http" && !config.allow_insecure_http {
             return Err(TransportError::new(
                 "Renga server URL must use HTTPS unless insecure HTTP is explicitly enabled".into(),
-                false,
+                FailureKind::Permanent,
             ));
         }
         // The agent API is rooted at the origin. Rejecting base paths avoids silently
@@ -88,21 +110,30 @@ impl HttpClient {
             return Err(TransportError::new(
                 "Renga server URL must be an HTTP(S) origin without credentials, path, query, or fragment"
                     .into(),
-                false,
+                FailureKind::Permanent,
             ));
         }
         let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.intake_api_key))
-            .map_err(|_| TransportError::new("invalid intake API key".into(), false))?;
+            .map_err(|_| {
+                TransportError::new("invalid intake API key".into(), FailureKind::Permanent)
+            })?;
         authorization.set_sensitive(true);
-        let installation_id = HeaderValue::from_str(&config.installation_id.to_string())
-            .map_err(|_| TransportError::new("invalid installation ID".into(), false))?;
+        let installation_id =
+            HeaderValue::from_str(&config.installation_id.to_string()).map_err(|_| {
+                TransportError::new("invalid installation ID".into(), FailureKind::Permanent)
+            })?;
         let client = Client::builder()
             .timeout(config.request_timeout)
             .redirect(Policy::none())
             .build()
-            .map_err(|e| TransportError::new(format!("cannot build HTTP client: {e}"), false))?;
+            .map_err(|e| {
+                TransportError::new(
+                    format!("cannot build HTTP client: {e}"),
+                    FailureKind::Permanent,
+                )
+            })?;
         Ok(Self {
             client,
             checkin_url,
@@ -118,22 +149,12 @@ impl HttpClient {
         self.post(self.checkin_url.clone(), value)
     }
     pub fn post_observation(&self, value: &Observation) -> Result<(), TransportError> {
-        let body = serde_json::to_vec(value).map_err(|_| {
-            TransportError::new("cannot serialize observation payload".into(), false)
-        })?;
-        if body.len() > MAX_OBSERVATION_BYTES {
-            return Err(TransportError::new(
-                format!(
-                    "encoded observation exceeds {MAX_OBSERVATION_BYTES}-byte limit (encoded size: {} bytes)",
-                    body.len()
-                ),
-                false,
-            ));
-        }
-        self.post_encoded_observation(body)
+        self.post_encoded_observation(&encode_observation(value)?)
     }
 
-    fn post_encoded_observation(&self, body: Vec<u8>) -> Result<(), TransportError> {
+    /// Posts an observation exactly as encoded, so a queued payload replays byte for byte and
+    /// the server can recognize a repeat by its observation ID.
+    pub fn post_encoded_observation(&self, body: &[u8]) -> Result<(), TransportError> {
         retry(
             self.attempts,
             self.request_timeout,
@@ -144,7 +165,7 @@ impl HttpClient {
                     .header(AUTHORIZATION, self.authorization.clone())
                     .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(body.clone())
+                    .body(body.to_vec())
                     .send()
                     .map_err(request_error)?;
                 response_result(response)
@@ -174,17 +195,42 @@ impl HttpClient {
     }
 }
 
+/// Encodes an observation for delivery, refusing one the API could never parse.
+pub fn encode_observation(value: &Observation) -> Result<Vec<u8>, TransportError> {
+    let body = serde_json::to_vec(value).map_err(|_| {
+        TransportError::new(
+            "cannot serialize observation payload".into(),
+            FailureKind::PayloadRejected,
+        )
+    })?;
+    if body.len() > MAX_OBSERVATION_BYTES {
+        return Err(TransportError::new(
+            format!(
+                "encoded observation exceeds {MAX_OBSERVATION_BYTES}-byte limit (encoded size: {} bytes)",
+                body.len()
+            ),
+            FailureKind::PayloadRejected,
+        ));
+    }
+    Ok(body)
+}
+
 fn request_error(error: reqwest::Error) -> TransportError {
-    TransportError::new(
-        format!("HTTP request failed: {error}"),
-        error.is_timeout() || error.is_connect() || error.is_request(),
-    )
+    let kind = if error.is_timeout() || error.is_connect() || error.is_request() {
+        FailureKind::Transient
+    } else {
+        FailureKind::Permanent
+    };
+    TransportError::new(format!("HTTP request failed: {error}"), kind)
 }
 
 fn endpoint_url(base_url: &Url, path: &str) -> Result<Url, TransportError> {
-    base_url
-        .join(path)
-        .map_err(|_| TransportError::new("cannot construct Renga API endpoint URL".into(), false))
+    base_url.join(path).map_err(|_| {
+        TransportError::new(
+            "cannot construct Renga API endpoint URL".into(),
+            FailureKind::Permanent,
+        )
+    })
 }
 
 fn response_result(mut response: Response) -> Result<(), TransportError> {
@@ -193,13 +239,37 @@ fn response_result(mut response: Response) -> Result<(), TransportError> {
         return Ok(());
     }
     let excerpt = bounded_error_excerpt(&mut response);
-    let transient = status == StatusCode::REQUEST_TIMEOUT
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error();
     Err(TransportError::new(
         format!("server returned {status}; response excerpt: {excerpt:?}"),
-        transient,
+        failure_kind(status, &excerpt),
     ))
+}
+
+fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
+    match status {
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => FailureKind::Transient,
+        status if status.is_server_error() => FailureKind::Transient,
+        StatusCode::BAD_REQUEST
+        | StatusCode::PAYLOAD_TOO_LARGE
+        | StatusCode::UNPROCESSABLE_ENTITY => FailureKind::PayloadRejected,
+        // A conflict is about the payload only when its observation ID was reused; an
+        // enrollment conflict belongs to the installation and leaves the payload deliverable.
+        StatusCode::CONFLICT if rejects_path(excerpt, "observation_id") => {
+            FailureKind::PayloadRejected
+        }
+        _ => FailureKind::Permanent,
+    }
+}
+
+fn rejects_path(excerpt: &str, path: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(excerpt)
+        .ok()
+        .and_then(|body| body.get("errors")?.as_array().cloned())
+        .is_some_and(|errors| {
+            errors
+                .iter()
+                .any(|error| error.get("path").and_then(|value| value.as_str()) == Some(path))
+        })
 }
 
 fn bounded_error_excerpt(reader: &mut impl Read) -> String {
@@ -223,7 +293,7 @@ fn retry<T>(
         }
         match operation() {
             Ok(value) => return Ok(value),
-            Err(error) if !error.transient || attempt == attempts => return Err(error),
+            Err(error) if !error.transient() || attempt == attempts => return Err(error),
             Err(error) => {
                 // Do not start an attempt whose configured timeout cannot fit inside the fixed
                 // delivery budget; check-in interval plus this budget must remain below lease TTL.
@@ -280,7 +350,12 @@ mod tests {
     }
 
     fn error(transient: bool) -> TransportError {
-        TransportError::new("failure".into(), transient)
+        let kind = if transient {
+            FailureKind::Transient
+        } else {
+            FailureKind::Permanent
+        };
+        TransportError::new("failure".into(), kind)
     }
 
     #[test]
@@ -291,6 +366,41 @@ mod tests {
 
         assert_eq!(excerpt.len(), MAX_ERROR_BODY);
         assert_eq!(body.position(), MAX_ERROR_BODY as u64);
+    }
+
+    #[test]
+    fn classifies_failures_by_who_can_fix_them() {
+        let reused_id = r#"{"status":"rejected","errors":[{"path":"observation_id","message":"has already been used for a different payload"}]}"#;
+        let enrolled = r#"{"status":"rejected","errors":[{"path":"installation_id","message":"collector credential is already enrolled by another installation"}]}"#;
+
+        for (status, excerpt, kind) in [
+            (StatusCode::SERVICE_UNAVAILABLE, "", FailureKind::Transient),
+            (StatusCode::TOO_MANY_REQUESTS, "", FailureKind::Transient),
+            (StatusCode::REQUEST_TIMEOUT, "", FailureKind::Transient),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "",
+                FailureKind::PayloadRejected,
+            ),
+            (StatusCode::BAD_REQUEST, "", FailureKind::PayloadRejected),
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "",
+                FailureKind::PayloadRejected,
+            ),
+            (
+                StatusCode::CONFLICT,
+                reused_id,
+                FailureKind::PayloadRejected,
+            ),
+            (StatusCode::CONFLICT, enrolled, FailureKind::Permanent),
+            (StatusCode::CONFLICT, "not json", FailureKind::Permanent),
+            (StatusCode::UNAUTHORIZED, "", FailureKind::Permanent),
+            (StatusCode::FORBIDDEN, "", FailureKind::Permanent),
+            (StatusCode::NOT_FOUND, "", FailureKind::Permanent),
+        ] {
+            assert_eq!(failure_kind(status, excerpt), kind, "{status} {excerpt}");
+        }
     }
 
     fn oversized_observation() -> Observation {
@@ -364,7 +474,7 @@ mod tests {
 
         let error = client.post_observation(&observation).unwrap_err();
 
-        assert!(!error.transient);
+        assert_eq!(error.kind(), FailureKind::PayloadRejected);
         assert!(error.to_string().contains("exceeds 256000-byte limit"));
         assert!(matches!(
             listener.accept(),
@@ -397,7 +507,11 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("302 Found"));
-        assert!(!error.transient, "redirects must not be retried");
+        assert_eq!(
+            error.kind(),
+            FailureKind::Permanent,
+            "redirects must not be retried"
+        );
         server.join().unwrap();
     }
 
