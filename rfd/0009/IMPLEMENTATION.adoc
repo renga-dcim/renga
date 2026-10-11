@@ -10,6 +10,9 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
   idempotency, cancel, and the transitions, writing each event with its
   projection in one transaction.
 * [ ] Sweep lapsed leases back to `queued` or `expired` with events.
+* [ ] Default new organizations to allowing every `observe` capability, keep
+  job history for a configurable 90 days, and rate-limit job creation per
+  organization.
 
 == Phase 2: Delivery
 

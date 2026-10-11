@@ -49,15 +49,17 @@ local policy. Local policy lives in the agent's configuration file, not in Renga
 enabled = ["inventory.collect"]
 ----
 
-`observe` capabilities may be enabled by default. `operate` and `interactive`
-capabilities are never enabled by default, and Renga cannot enable them
-remotely. The agent re-checks its policy when it leases a job, so a job created
+A fresh installation enables its `observe` capabilities, so on-demand
+collection works without a configuration change; an operator can disable any of
+them in `[jobs]`. `operate` and `interactive` capabilities are never enabled by
+default, and Renga cannot enable them remotely. The agent re-checks its policy when it leases a job, so a job created
 against an advertisement that has since been withdrawn is refused rather than
 run.
 
 Server-side authorization is independent: an organization setting lists which
 capabilities may be targeted at all, and a user's role decides which they may
-request. Owners and admins may request `observe` jobs. Requesting `operate` and
+request. A new organization allows every `observe` capability and no `operate`
+or `interactive` one; owners change the list. Owners and admins may request `observe` jobs. Requesting `operate` and
 `interactive` jobs needs grants that RFDs 13 and 14 define. Neither side's
 check substitutes for the other.
 
@@ -75,7 +77,10 @@ check substitutes for the other.
 
 States are `queued`, `leased`, `running`, `succeeded`, `failed`, `cancelled`,
 and `expired`. A request that fans out to many agents creates one job per agent
-sharing a `batch_id`.
+sharing a `batch_id`. Batches have no size cap. Instead, job creation is
+rate-limited per organization (initially 10,000 jobs a minute), and agents
+lease their own work, so a large batch spreads across the fleet's check-in
+intervals rather than arriving at once.
 
 `job_events` is append-only and is the job's history: `created`, `leased`,
 `started`, `progress`, `output`, `succeeded`, `failed`, `cancel_requested`,
@@ -190,12 +195,15 @@ is a prerequisite of RFDs 13 and 14 and is out of scope here.
 . Add "Collect now", the Jobs view, and activity entries.
 . Add the optional Channels notification.
 
-== Open questions
+== Decisions from review
 
-* Should the organization-level capability allow list default to allowing all
-  `observe` capabilities, or start empty?
-* Is 90 days the right default retention for job history?
-* Fan-out requests: should a batch cap its size, or rely on rate limits?
+* A new organization allows every `observe` capability; `operate` and
+  `interactive` capabilities start disallowed.
+* A fresh agent enables its `observe` capabilities; everything else is off until
+  configured locally.
+* Job history is kept for 90 days by default.
+* Fan-out batches have no size cap; per-organization rate limits and agent-side
+  leasing bound the load instead.
 
 == Implementation
 
