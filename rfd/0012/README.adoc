@@ -70,6 +70,15 @@ let members run `inventory`-sensitivity queries; `sensitive` queries stay with
 owners and admins. The agent's `[jobs]` policy must also enable each query; the
 agent default enables only `inventory` queries.
 
+Sensitivity also governs reading retained parameters, output, results, and
+events, not just requesting execution. Every job/detail/event endpoint, recent
+history, batch table, and export checks the reader's current organization and
+sensitivity authorization. Sensitive payloads remain owner/admin-only even if
+a member can see generic job history; inventory results follow the current
+organization member-query policy. Having requested a job grants no permanent
+read access after authorization is revoked. Activity exposes only authorized
+summaries, never sensitive parameters or results through a generic feed.
+
 == Results
 
 A query's result is its job's final event, bounded by the query's maximum size
@@ -88,7 +97,8 @@ appear as a table.
   shows recent results with who ran them.
 * From a saved view, "Run query" fans out to every matching host and shows the
   batch's results as they arrive.
-* Every run appears in activity, with the requester and parameters.
+* Every run appears in activity with an authorized summary; parameters and
+  results are visible only through sensitivity-authorized views.
 
 == Rollout
 

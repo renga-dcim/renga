@@ -6,6 +6,10 @@ Implements link:README.adoc[RFD 12: Operational queries].
   timeouts, and sensitivity, validated by Renga and the agent.
 * [ ] Add per-query organization enablement and the member rule for
   `inventory`-sensitivity queries.
+* [ ] Enforce current sensitivity authorization on retained parameters, results,
+  events, history, batch tables, exports, and activity summaries. Test a member
+  reading an admin's sensitive job and a previously authorized reader after
+  revocation, including generic Jobs endpoints.
 * [ ] Implement the first six queries natively in the agent, with no request text
   reaching any program arguments.
 * [ ] Add the resource Queries tab and saved-view fan-out with batch results.
