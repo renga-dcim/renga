@@ -1,0 +1,125 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/147
+:labels: dcim, inventory, power, software
+
+= RFD 10 Power inventory and topology
+
+== Goal
+
+Model how power reaches equipment, from the panel to the power supply, so
+operators can answer what loses power when a feed fails, which devices lack
+redundant supply, and how close each feed is to its limit. RFD 5 left power
+feeds, panels, outlets, and power paths to a later RFD; this is that RFD.
+
+Power follows the same rule as the rest of Renga: planned connections, observed
+evidence, and the current topology stay distinct, and evidence never rewires
+the plan silently.
+
+== NetBox reference
+
+NetBox models power panels at a site or location, power feeds from a panel to a
+rack, power outlets on PDUs, and power ports on devices, joined by cables. A
+feed carries its supply type, phase, voltage, amperage, and maximum utilization;
+a power port carries its maximum and allocated draw. Renga keeps that shape and
+adds observed draw and supply health as evidence.
+
+== Model
+
+* `PowerPanel`: a named panel placed at a site or location from RFD 5.
+* `PowerFeed`: one circuit from a panel, with supply (AC or DC), phase (single
+  or three), voltage, amperage, maximum utilization (default 80%), and a
+  redundancy side (`a`, `b`, or none). A feed may be assigned to a rack.
+* Power outlets and power ports are typed endpoints created from the RFD 6
+  catalog templates (`power_outlet` and `power_port`), the same way interfaces
+  come from interface templates. A PDU is an ordinary `pdu` resource with outlet
+  templates. A server's power supplies give it power ports.
+* A power port carries its maximum draw and allocated draw in watts; an outlet
+  carries its feed leg on three-phase PDUs.
+* Power connections reuse RFD 7's plan, assertion, and current-cable model with
+  a `power` cable kind. A connection joins a power port to an outlet, or a PDU's
+  inlet port to a feed.
+
+Every power object gets a resource envelope and typed projection, like the
+other DCIM objects.
+
+== Power path
+
+The current power path of a device is the chain from each of its power ports
+through an outlet, its PDU, and the PDU's inlet to a feed and panel. Renga
+computes it from current power connections; it is never stored as a separate
+truth. A port whose chain is incomplete shows where it stops.
+
+Redundancy is a property of the path: a device is redundantly powered when its
+ports reach at least two feeds on different sides. A device with two supplies
+both on side `a` is not redundant, whatever its supply count says.
+
+== Capacity and utilization
+
+A feed's capacity is voltage × amperage × (√3 for three-phase) × maximum
+utilization. Allocated load sums the allocated draw of every port on the feed's
+path. Measured load comes from evidence when a source reports it.
+
+Renga shows both, never one in place of the other: allocated load answers "can
+I plug in another server", measured load answers "is this feed actually hot".
+Three-phase PDUs show load per leg, because one overloaded leg trips while the
+feed as a whole looks fine.
+
+== Evidence
+
+Power evidence arrives through observations like everything else:
+
+* host agents report power supplies as components (RFD 6), with status and
+  input watts when the platform exposes them;
+* PDU and UPS collectors (RFD 11) report outlet state, per-outlet and per-leg
+  current, and inlet voltage;
+* BMC sources may report supply health and draw.
+
+Evidence never creates or removes a power connection. An outlet reporting draw
+with no connected port, or a supply reporting no input, opens a finding that an
+operator resolves, as LLDP evidence does for data cables in RFD 7.
+
+== Findings
+
+* **Not redundant**: a device whose power ports do not reach two sides, when its
+  hardware type has more than one power port.
+* **Feed near capacity**: allocated or measured load above the feed's maximum
+  utilization, or a three-phase leg out of balance.
+* **Supply failed**: a power supply reported failed or without input.
+* **Unexpected draw**: an outlet drawing power with no connection recorded.
+* **Path incomplete**: a port connected to an outlet whose PDU has no feed.
+
+Findings join the Inbox under a Power domain and follow the existing workflow.
+
+== User interaction
+
+* A site's power page lists panels and feeds with capacity bars for allocated
+  and measured load.
+* A rack shows its feeds, its PDUs' outlets, and which device each outlet
+  serves, next to the elevation.
+* A device's Hardware tab shows its power ports, their path to a feed, and a
+  redundancy badge.
+* "What fails if this feed fails" is a feed action listing every device that
+  loses all of its supply, and every device that loses its redundancy.
+
+Mutations require the managed-inventory owner/admin policy.
+
+== Initial exclusions
+
+UPS runtime modeling, generator and transfer-switch topology, cooling, power
+billing, and automatic outlet control. Switching an outlet would be an `operate`
+capability under RFD 9 and needs its own design.
+
+== Rollout
+
+. Add panels and feeds at sites and locations, with capacity.
+. Create power ports and outlets from catalog templates on existing and new
+  assets.
+. Add power connections on the RFD 7 cable model and compute power paths.
+. Add allocated load, redundancy, and the "what fails" view.
+. Add power evidence and measured load from host agents and PDU collectors.
+. Add the power findings and the Power Inbox domain.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].
