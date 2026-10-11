@@ -27,9 +27,27 @@ RFD 11 libvirt module. Its `action` parameter is one of:
 * `force_off`: immediate power off, the equivalent of pulling the plug;
 * `reset`: immediate reset.
 
-Each action is idempotent: asking to start a running VM succeeds and records
-that nothing changed. The job's result is the VM's state before and after,
-taken from libvirt.
+`start`, `shutdown`, and `force_off` converge to a requested power state: asking
+to start a running VM succeeds and records that nothing changed. `reboot` and
+`reset` are imperative, non-idempotent actions; a running state before and after
+does not prove whether either action occurred. The job's result records the
+VM's state before and after from libvirt and whether the action's outcome is
+known.
+
+Each operation has a stable identity (the job ID) across delivery attempts,
+bound to its approved target and action. The agent durably records execution
+intent before invoking libvirt and retains known outcomes for duplicate
+deliveries. This prevents ordinary duplicate execution, but cannot atomically
+commit an external libvirt effect with the execution record.
+
+This extends RFD 9's retry contract: lease loss for `reboot` or `reset` must not
+automatically requeue execution. A crash or lost completion after execution may
+have begun records an uncertain outcome (an explicit job outcome/event), not
+success or a safe-to-retry failure. Reconciliation or operator investigation
+must resolve it; a new attempt requires a new explicitly authorized operation.
+Neither an expired lease nor a durable started marker proves no effect occurred.
+Convergent actions may retry only against the same valid target after checking
+current state and authorization; no retry crosses a changed binding.
 
 == Desired and observed state
 
@@ -53,6 +71,15 @@ An operation requires all of these:
   an expiry, created by an owner or admin. Owners and admins are not granted it
   implicitly.
 
+The RFD 13 trusted binding includes the VM resource ID, provider installation
+and approved key, collector ID, hypervisor identity, and libvirt domain UUID.
+Shared-key VM correlation or placement evidence cannot approve or redirect this
+binding. Migration or a provider change requires trusted rebinding and fresh
+authorization, not automatic retargeting of queued work. For active operations,
+fresh unambiguous placement must agree with the binding. Starting an inactive VM
+requires a fresh definition on the explicitly approved provider, not arbitrary
+selection among hosts that retain its definition.
+
 `force_off` and `reset` also require a reason and a confirmation that names the
 VM. An organization may require a second operator's approval for them: the job
 waits in `queued` until someone else with a grant approves it, or it expires.
@@ -61,8 +88,11 @@ waits in `queued` until someone else with a grant approves it, or it expires.
 
 Before any request, Renga shows a preview with the VM, its hypervisor, current
 observed state, whether a guest agent is reporting from it, and the resources
-that list it as a dependency. The preview uses the same data the job runs on,
-so the action an operator confirms is the action that runs.
+that list it as a dependency. The preview captures the approved target binding
+and version with the action. Dispatch and the agent revalidate that target and
+current domain state immediately before execution. Changed binding, stale or
+ambiguous placement, or a conflicting state requires a new preview and approval,
+never silently changing the provider or VM the operator confirmed.
 
 == Audit
 
@@ -74,8 +104,8 @@ went off.
 == Rollout
 
 . Add desired power state on VM envelopes and the drift finding.
-. Add `vm.power@1` to the libvirt module with idempotent actions and
-  before-and-after state.
+. Add `vm.power@1` to the libvirt module with convergent versus imperative
+  retry rules, uncertain outcomes, and before-and-after state.
 . Add organization enablement, VM operator grants, and reasons and
   confirmation for destructive actions.
 . Add two-operator approval as an organization option.
