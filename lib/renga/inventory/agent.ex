@@ -36,6 +36,34 @@ defmodule Renga.Inventory.Agent do
     timestamps()
   end
 
+  @doc """
+  The observation queue health the agent reported in its latest check-in, or
+  `nil` for an agent that predates the queue.
+
+  `dropped` totals the entries the agent removed undelivered (for space, by age,
+  rejected, or unreadable) since it last started; the backlog itself survives
+  restarts. Check-ins validate the shape before it is stored.
+  """
+  def observation_queue(%__MODULE__{metadata: %{"observation_queue" => %{} = queue}}) do
+    dropped_for_space = Map.get(queue, "dropped_for_space", 0)
+    expired = Map.get(queue, "expired", 0)
+    rejected = Map.get(queue, "rejected", 0)
+    unreadable = Map.get(queue, "unreadable", 0)
+
+    %{
+      entries: Map.get(queue, "entries", 0),
+      bytes: Map.get(queue, "bytes", 0),
+      oldest_age_seconds: Map.get(queue, "oldest_age_seconds"),
+      dropped_for_space: dropped_for_space,
+      expired: expired,
+      rejected: rejected,
+      unreadable: unreadable,
+      dropped: dropped_for_space + expired + rejected + unreadable
+    }
+  end
+
+  def observation_queue(_agent), do: nil
+
   def changeset(agent, attrs) do
     agent
     |> cast(attrs, [:name, :status, :version, :capabilities, :metadata, :registered_at],
