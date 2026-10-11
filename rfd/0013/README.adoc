@@ -108,6 +108,14 @@ Owners and admins can replay sessions, and every replay is itself logged.
 |Cannot enable terminals on agents that have them disabled locally.
 |===
 
+== Decisions from review
+
+* Step-up authentication is a WebAuthn assertion when the user has one
+  registered, otherwise a fresh password entry, within five minutes.
+* Recordings are kept for one year by default; organizations may change it.
+* Owners and admins may grant terminal access to themselves. Such a grant is
+  audited like any other, and every session it opens is recorded.
+
 == Rollout
 
 . Add installation key pairs, approval, signed leases for privileged jobs, and
