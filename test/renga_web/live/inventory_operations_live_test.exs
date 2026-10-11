@@ -61,6 +61,41 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "[id^='rotate-collector-']")
   end
 
+  test "shows each collector's undelivered observation backlog", %{
+    conn: conn,
+    source: source,
+    agent: agent
+  } do
+    queue_cell = "#collector-queue-#{source.id}"
+
+    # An agent that predates the queue reports nothing.
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, queue_cell, "Not reported")
+
+    report_queue(agent, %{"entries" => 0, "bytes" => 0, "oldest_age_seconds" => nil})
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, queue_cell, "Empty")
+    refute has_element?(view, queue_cell, "dropped")
+
+    report_queue(agent, %{
+      "entries" => 14,
+      "bytes" => 1_250_000,
+      "oldest_age_seconds" => 3 * 3_600 + 59,
+      "dropped_for_space" => 2,
+      "rejected" => 1
+    })
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, queue_cell, "14 undelivered")
+    assert has_element?(view, queue_cell, "oldest 3h · 1.3 MB")
+
+    assert has_element?(
+             view,
+             "#{queue_cell} [title='2 to make room, 1 rejected by Renga']",
+             "3 dropped since restart"
+           )
+  end
+
   test "creates and reveals an intake key once", %{conn: conn, scope: scope} do
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
 
@@ -185,5 +220,19 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
     refute has_element?(view, "#intake-key-#{foreign_key.id}")
     refute has_element?(view, "#intake-api-keys", "Secret")
+  end
+
+  # Stores a queue report as the agent's latest check-in would, defaulting the
+  # counters a test does not care about to zero.
+  defp report_queue(agent, queue) do
+    queue =
+      Map.merge(
+        %{"dropped_for_space" => 0, "expired" => 0, "rejected" => 0, "unreadable" => 0},
+        queue
+      )
+
+    agent
+    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "observation_queue", queue))
+    |> Repo.update!()
   end
 end
