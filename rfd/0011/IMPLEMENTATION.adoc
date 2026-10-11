@@ -4,6 +4,9 @@ Implements link:README.adoc[RFD 11: Read-only switch and virtualization collecto
 
 == Phase 1: Provider observations
 
+* [ ] Extend RFD 3 registration to stable per-installation collector Sources
+  without retyping the host source; preserve collector identity through queue
+  replay and maintain stream/target freshness independently of host activity.
 * [ ] Add payload scopes (`host`, `targets`, `hypervisor`) and multi-resource
   observations, retiring facts only from complete, successful reports.
 * [ ] Record unreachable targets as unknown, never absent.
@@ -20,6 +23,9 @@ Implements link:README.adoc[RFD 11: Read-only switch and virtualization collecto
 * [ ] Add the read-only libvirt module reporting domains, allocation, disks, and
   virtual interfaces.
 * [ ] Correlate VMs with guest host agents by SMBIOS UUID and MAC addresses.
+* [ ] Separate defined-on from fresh active placement. Test migration with an
+  inactive persistent source definition, conflicting fresh active claims, and
+  stale/missing evidence; never select an arbitrary privileged target.
 
 == Phase 4: Findings and interface
 

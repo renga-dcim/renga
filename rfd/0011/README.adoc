@@ -11,8 +11,8 @@ Bring network switches and virtual machines into Renga's observed inventory
 without installing anything on them. RFD 1 calls for protocol-first switch
 collection and read-only VM collection starting with libvirt/KVM; this RFD
 designs both as collectors that report through the same observation API, so
-reconciliation, freshness, findings, and the four collection clocks apply
-unchanged.
+reconciliation, freshness, findings, and the four collection clocks retain
+their meanings, with inventory clocks scoped to each collector stream.
 
 Read-only means exactly that: no collector in this RFD changes device or
 hypervisor configuration. VM lifecycle operations are RFD 14.
@@ -38,10 +38,25 @@ uri = "qemu:///system"
 ----
 
 Reusing the agent gives every collector the installation identity, intake key,
-on-disk queue, check-ins, and packaging already shipped. A poller host is an
-ordinary installation whose source kind becomes `switch_poller` or
-`vm_provider` when it reports on behalf of other devices; its own host
-inventory stays a separate host observation.
+on-disk queue, check-ins, and packaging already shipped. An installation can
+run host, SNMP, and libvirt collection together; it never retypes its host
+source or moves historical observations to a different source.
+
+This extends RFD 3's one-source-per-installation registration contract. The
+installation keeps one Agent and its existing host source. Additional streams
+have server-resolved Sources keyed by organization, installation UUID, and a
+stable locally configured collector ID, with immutable kind (`switch_poller`
+or `vm_provider`). Multiple instances of a module use distinct collector IDs;
+changing a target address does not change its stream identity. Omitting the
+collector ID preserves the existing host API. Every queued observation retains
+its collector ID so replay resolves to the original source, not whichever
+module is currently enabled.
+
+Contact and lease belong to the installation. Accepted and reconciled inventory
+clocks belong to each stream, with freshness and completeness tracked for its
+reported targets or hypervisor. Host check-ins or successful host reports
+cannot make stale switch or libvirt evidence fresh. Registering/removing streams
+does not silently transfer or retire another stream's evidence.
 
 Device credentials stay on the collector host, read from files the agent's
 service account can read. They are never sent to Renga, never logged, and never
@@ -103,9 +118,20 @@ addresses as supporting evidence. When both exist they reconcile to one
 resource with two sources, the hypervisor's view and the guest's own, rather
 than two machines.
 
-Placement is evidence: the domain's hypervisor is where the VM runs now. A
-migrated VM moves without an operator touching it, and a VM seen on two
-hypervisors at once opens a finding.
+Defined-on and active placement are different evidence. An inactive persistent
+domain may remain defined on the source after migration; that definition does
+not claim current execution there. Active domain state (including paused
+domains that still occupy the host), observation time, and the stream's
+freshness determine execution placement. A complete report that a domain is
+inactive or absent withdraws only that source's active-placement claim.
+
+A migrated VM moves without an operator touching it when sufficiently fresh
+active evidence identifies one hypervisor. Competing fresh active claims open
+a finding and leave placement ambiguous; stale or missing evidence leaves it
+unknown. Renga never picks an arbitrary hypervisor, and privileged operations
+(RFD 14) cannot treat inactive definitions as active placement or use ambiguous
+placement to select their target. Starting an inactive VM instead requires the
+explicitly approved provider/domain binding defined in RFD 14.
 
 == Scheduling and limits
 
@@ -121,7 +147,8 @@ size limit by splitting large target sets across several reports.
   its freshness window.
 * **Neighbor mismatch**: LLDP from the switch disagrees with the host's report
   of the same link (RFD 7 already compares cables with LLDP).
-* **VM on two hypervisors** at once.
+* **VM active on two hypervisors** in competing fresh evidence, not merely
+  defined on both.
 * **Guest without a VM**: a host agent whose `dmi_uuid` matches no domain on any
   reporting hypervisor, when the organization has libvirt collection enabled.
 
