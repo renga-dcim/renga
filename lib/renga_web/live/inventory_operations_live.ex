@@ -6,6 +6,7 @@ defmodule RengaWeb.InventoryOperationsLive do
   alias Renga.Inventory
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
+  alias Renga.Inventory.CollectionClocks
 
   @refresh_interval 30_000
 
@@ -299,9 +300,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <th scope="col" class="px-cell font-medium">Connection</th>
                   <th scope="col" class="px-cell font-medium">Resource</th>
                   <th scope="col" class="px-cell font-medium">Installation</th>
-                  <th scope="col" class="px-cell font-medium">
-                    Last inventory
-                  </th>
+                  <th scope="col" class="px-cell font-medium">Inventory</th>
                   <th scope="col" class="px-cell font-medium">Delivery queue</th>
                 </tr>
               </thead>
@@ -320,10 +319,13 @@ defmodule RengaWeb.InventoryOperationsLive do
                     <p class="font-medium">{source.name}</p>
                     <p class="font-mono text-xs text-fg-muted">{collector_version(source)}</p>
                   </td>
-                  <td class="px-cell py-2">
+                  <td id={"collector-connection-#{source.id}"} class="px-cell py-2">
                     <.collector_state_pill source={source} />
-                    <p class="font-mono text-[11px] text-fg-muted">
+                    <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
                       {collector_lease_expiry(source)}
+                    </p>
+                    <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
+                      contact {format_time(collector_agent(source).last_contacted_at)}
                     </p>
                   </td>
                   <td class="px-cell py-2">
@@ -345,8 +347,8 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <td class="px-cell py-2 font-mono text-xs text-fg-muted">
                     {short_installation_id(collector_agent(source).installation_id)}
                   </td>
-                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
-                    {format_time(Map.get(@last_inventory_by_source, source.id))}
+                  <td id={"collector-inventory-#{source.id}"} class="px-cell py-2">
+                    <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
                   </td>
                   <td id={"collector-queue-#{source.id}"} class="whitespace-nowrap px-cell py-2">
                     <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
@@ -379,6 +381,31 @@ defmodule RengaWeb.InventoryOperationsLive do
       ]} />
       {if(@state == :connected, do: "Connected", else: "Disconnected")}
     </span>
+    """
+  end
+
+  attr :clocks, CollectionClocks, default: nil
+
+  # Accepted and reconciled are separate clocks (RFD 1): a report Renga took
+  # in but could not reconcile does not make the inventory it shows current.
+  defp collector_inventory(assigns) do
+    ~H"""
+    <%= if @clocks do %>
+      <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
+        accepted {format_time(@clocks.accepted_at)}
+      </p>
+      <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
+        reconciled {format_time(@clocks.reconciled_observed_at)}
+      </p>
+      <p :if={@clocks.latest_outcome == "failed"} class="text-[11px] font-medium text-crit">
+        Latest report failed to reconcile
+      </p>
+      <p :if={@clocks.latest_outcome in [nil, "pending", "running"]} class="text-[11px] text-fg-muted">
+        Latest report not reconciled yet
+      </p>
+    <% else %>
+      <span class="text-xs text-fg-subtle">No inventory yet</span>
+    <% end %>
     """
   end
 
@@ -424,7 +451,7 @@ defmodule RengaWeb.InventoryOperationsLive do
       end)
 
     socket
-    |> assign(:last_inventory_by_source, Inventory.latest_observation_times(scope))
+    |> assign(:clocks_by_source, CollectionClocks.by_source(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
     |> stream(:intake_api_keys, Inventory.list_intake_api_keys(scope), reset: true)
     |> stream(:sources, sources, reset: true)
