@@ -322,8 +322,7 @@ defmodule RengaWeb.DesignSystemLive do
               <.icon
                 name="hero-information-circle-mini"
                 class="mt-0.5 size-4 shrink-0 text-info"
-              />
-              This rack is planned and holds no devices yet.
+              /> This rack is planned and holds no devices yet.
             </p>
           </div>
         </.ds_section>
