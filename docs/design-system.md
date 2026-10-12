@@ -6,6 +6,13 @@ it are in [RFD 8, "Product experience"](../rfd/0008/README.adoc) (especially
 them, and the conventions the shipped screens already follow, into rules a new
 screen can apply without reverse-engineering existing code.
 
+To see it rendered, run the app in development (`mix phx.server`) and open
+[`/dev/design-system`](http://localhost:4401/dev/design-system). The page
+draws every token and shared component with the real CSS, and its switches
+preview each accent, theme, and density without saving anything. Its source is
+[`RengaWeb.DesignSystemLive`](../lib/renga_web/live/design_system_live.ex);
+add a sample there when you add a token or a shared component.
+
 The system has four parts, and each has one home:
 
 | Part | Lives in | Owns |
@@ -231,7 +238,8 @@ layout with 44px touch targets.
   query) or, for status, in the three status blocks; then a Tailwind name in
   `app.css`'s `@theme inline`. Document it in the tables above.
 - **A new component** goes in `RengaWeb.UI` with a `@doc` and example, styled
-  only with tokens, and gets a LiveViewTest in `test/renga_web/components`.
+  only with tokens, gets a LiveViewTest in `test/renga_web/components`, and
+  a sample on the design system page.
   Browser-only behavior (layout, focus, touch targets) gets a Playwright test.
 - **The guard** lists screens written before the tokens under `@legacy` with
   their remaining violation counts. Counts may only go down; when you touch a
