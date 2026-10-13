@@ -14,6 +14,7 @@ defmodule RengaWeb.DesignSystemLiveTest do
     assert has_element?(view, "#status-attention [data-signal='drift']")
     assert has_element?(view, "#sample-nodes [data-list-group]")
     assert has_element?(view, "#sample-object")
+    refute has_element?(view, "#theme-toggle-header")
   end
 
   test "previews accent, theme, and density from the URL", %{conn: conn} do

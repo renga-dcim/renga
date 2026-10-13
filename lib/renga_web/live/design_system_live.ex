@@ -156,7 +156,7 @@ defmodule RengaWeb.DesignSystemLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} show_theme_toggle={false}>
       <div id="design-system" class="space-y-10">
         <.header>
           Design system
@@ -528,18 +528,20 @@ defmodule RengaWeb.DesignSystemLive do
 
   defp preview_switch(assigns) do
     ~H"""
-    <div class="flex items-center gap-2">
-      <span class="text-xs font-medium text-fg-muted">{@label}</span>
-      <.segmented id={@id} label={@label}>
-        <:option
-          :for={{value, text} <- @options}
-          id={"#{@id}-#{value}"}
-          patch={preview_path(@preview, %{@key => value})}
-          active={Map.fetch!(@preview, @key) == value}
-        >
-          {text}
-        </:option>
-      </.segmented>
+    <div class="flex min-w-0 items-center gap-2">
+      <span class="shrink-0 text-xs font-medium text-fg-muted">{@label}</span>
+      <div class="min-w-0 overflow-x-auto">
+        <.segmented id={@id} label={@label}>
+          <:option
+            :for={{value, text} <- @options}
+            id={"#{@id}-#{value}"}
+            patch={preview_path(@preview, %{@key => value})}
+            active={Map.fetch!(@preview, @key) == value}
+          >
+            {text}
+          </:option>
+        </.segmented>
+      </div>
     </div>
     """
   end
