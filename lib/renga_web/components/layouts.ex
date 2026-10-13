@@ -42,6 +42,10 @@ defmodule RengaWeb.Layouts do
 
   attr :content_class, :string, default: "p-6", doc: "classes for the authenticated workspace"
 
+  attr :show_theme_toggle, :boolean,
+    default: true,
+    doc: "whether the layout renders its standard theme control"
+
   attr :sidebar_views, :list,
     default: [],
     doc: "the person's pinned saved views, from `RengaWeb.SidebarViews`"
@@ -142,7 +146,11 @@ defmodule RengaWeb.Layouts do
                 {@current_scope.user.email}
               </span>
             </.link>
-            <.theme_toggle id="theme-toggle" current_scope={@current_scope} />
+            <.theme_toggle
+              :if={@show_theme_toggle}
+              id="theme-toggle"
+              current_scope={@current_scope}
+            />
             <.link
               href={~p"/users/log-out"}
               method="delete"
@@ -207,7 +215,11 @@ defmodule RengaWeb.Layouts do
             >
               <.icon name="hero-magnifying-glass" class="size-4" />
             </button>
-            <.theme_toggle id="theme-toggle-mobile" current_scope={@current_scope} />
+            <.theme_toggle
+              :if={@show_theme_toggle}
+              id="theme-toggle-mobile"
+              current_scope={@current_scope}
+            />
           </div>
         </header>
         <div class={["min-h-0 flex-1", @content_class]}>
@@ -237,7 +249,11 @@ defmodule RengaWeb.Layouts do
             <span>Renga</span>
           </.link>
           <div class="ml-auto flex items-center gap-1">
-            <.theme_toggle id="theme-toggle-header" current_scope={@current_scope} />
+            <.theme_toggle
+              :if={@show_theme_toggle}
+              id="theme-toggle-header"
+              current_scope={@current_scope}
+            />
             <.link
               :if={@current_scope && @current_scope.user}
               href={~p"/users/log-out"}

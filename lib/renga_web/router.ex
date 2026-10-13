@@ -51,6 +51,17 @@ defmodule RengaWeb.Router do
     end
   end
 
+  # The living design system (docs/design-system.md). It shows sample data
+  # only, so it needs no sign-in; test builds compile it for its own tests.
+  if Application.compile_env(:renga, :dev_routes) ||
+       Application.compile_env(:renga, :test_routes) do
+    scope "/dev", RengaWeb do
+      pipe_through :browser
+
+      live "/design-system", DesignSystemLive
+    end
+  end
+
   # Fixture pages from test/support that browser tests drive, such as the
   # shared component review page. Only test builds compile these routes.
   if Application.compile_env(:renga, :test_routes) do
