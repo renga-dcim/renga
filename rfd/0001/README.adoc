@@ -99,7 +99,11 @@ Four operational clocks remain distinct: latest authenticated API contact,
 latest accepted inventory observation, latest successfully reconciled inventory,
 and agent lease expiry/connectivity. A successful check-in must not imply fresh
 inventory, and accepted-but-failed reconciliation must not advance the last
-successful inventory clock.
+successful inventory clock. Renga records contact for every authenticated
+request before judging its payload, renews the lease only for an accepted
+check-in or observation, takes the accepted clock from its own receipt time,
+and takes the reconciled clock from the observed time of the newest observation
+that reconciled; the Collectors page shows all four.
 
 == Agent and collector direction
 

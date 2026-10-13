@@ -94,18 +94,6 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Returns each scoped source's latest accepted inventory timestamp.
-  """
-  def latest_observation_times(%Scope{organization_id: organization_id}) do
-    Observation
-    |> where([observation], observation.organization_id == ^organization_id)
-    |> group_by([observation], observation.source_id)
-    |> select([observation], {observation.source_id, max(observation.observed_at)})
-    |> Repo.all()
-    |> Map.new()
-  end
-
-  @doc """
   Fetches a source only when it belongs to the caller's organization scope.
   """
   def get_source!(%Scope{organization_id: organization_id}, id) do
@@ -200,6 +188,31 @@ defmodule Renga.Inventory do
   end
 
   def authenticate_intake_api_key(_token), do: :error
+
+  @doc """
+  Records that an installation made an authenticated API request, whatever
+  becomes of its payload.
+
+  Contact is its own clock (RFD 1, "Collection model"): a collector whose
+  reports are all rejected is still reachable, though nothing renews its
+  lease. An installation that has not registered yet has no agent to update;
+  it records contact when its first accepted request registers it.
+  """
+  def record_intake_contact(%IntakeApiKey{organization_id: organization_id}, installation_id) do
+    now = Renga.Time.utc_now_ms()
+
+    from(agent in Agent,
+      where: agent.organization_id == ^organization_id,
+      where: agent.installation_id == ^installation_id,
+      # A slower request finishing late never moves the clock backwards.
+      update: [
+        set: [last_contacted_at: fragment("GREATEST(?, ?)", agent.last_contacted_at, ^now)]
+      ]
+    )
+    |> Repo.update_all([])
+
+    :ok
+  end
 
   @doc """
   Automatically registers or refreshes an intake-authenticated installation.
@@ -2906,6 +2919,10 @@ defmodule Renga.Inventory do
       %Agent{organization_id: organization_id, source_id: source_id}
       |> Agent.changeset(attrs)
       |> Ecto.Changeset.put_change(:updated_at, Map.fetch!(attrs, :registered_at))
+      # Only a new agent takes this: intake authentication has already
+      # recorded contact for one that exists, and the conflict update below
+      # leaves the column alone.
+      |> Ecto.Changeset.put_change(:last_contacted_at, Map.fetch!(attrs, :registered_at))
 
     changeset =
       case Map.fetch(attrs, :installation_id) do
