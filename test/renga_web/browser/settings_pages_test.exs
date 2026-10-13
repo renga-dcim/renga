@@ -98,7 +98,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     # wired until the socket connects.
     |> assert_has("body .phx-connected")
     |> assert_has("#collector-#{agent.source_id}", text: "67e55044…e0c8")
-    |> assert_has("#collector-#{agent.source_id}", text: "2026-10-09 12:34 UTC")
+    |> assert_has("#collector-inventory-#{agent.source_id}", text: "accepted")
     |> evaluate(
       "[...document.querySelectorAll('#collector-#{agent.source_id} td')].every(c => getComputedStyle(c).display !== 'none')",
       &assert(&1 == true)

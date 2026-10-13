@@ -18,6 +18,9 @@ defmodule RengaWeb.IntakeAuth do
          {:ok, installation_id} <- installation_id(conn),
          {:ok, %IntakeApiKey{organization: %Organization{} = organization} = key} <-
            Inventory.authenticate_intake_api_key(token) do
+      # Before the payload is judged, so a rejected report still counts.
+      :ok = Inventory.record_intake_contact(key, installation_id)
+
       conn
       |> assign(:current_scope, Accounts.scope_for(organization))
       |> assign(:current_installation_id, installation_id)

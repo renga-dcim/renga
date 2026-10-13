@@ -17,13 +17,13 @@ Implements link:README.adoc[RFD 1: Renga DCIM architecture].
 * [X] Deliver IPAM under link:../0004/README.adoc[RFD 4].
 * [X] Add a bounded on-disk observation queue that survives agent restarts and
   reports queue health without unbounded disk growth.
+* [X] Preserve distinct latest-contact, accepted-inventory,
+  successfully-reconciled-inventory, and lease clocks in collection and UI
+  projections.
 * [ ] Define power inventory and topology in a dedicated RFD.
 * [ ] Add durable jobs and explicit agent capabilities with polling as the
   correctness path.
 * [ ] Add optional Phoenix Channels control acceleration.
 * [ ] Add read-only switch and virtualization provider collectors.
-* [ ] Preserve distinct latest-contact, accepted-inventory,
-  successfully-reconciled-inventory, and lease clocks in collection and UI
-  projections.
 * [ ] Design privileged live query, terminal, and VM lifecycle operations as
   separate RFDs before implementation.
