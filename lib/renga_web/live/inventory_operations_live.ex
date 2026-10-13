@@ -377,7 +377,7 @@ defmodule RengaWeb.InventoryOperationsLive do
       <%!-- A dot when connected and a square when not, so the state reads without color. --%>
       <span class={[
         "size-1.5",
-        if(@state == :connected, do: "rounded-full bg-ok", else: "rounded-[1px] bg-crit")
+        if(@state == :connected, do: "rounded-full bg-ok", else: "bg-crit")
       ]} />
       {if(@state == :connected, do: "Connected", else: "Disconnected")}
     </span>

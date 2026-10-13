@@ -43,6 +43,7 @@ custom classes must fully style the input
 
 ### UI/UX & design guidelines
 
+- **Follow the design system in `docs/design-system.md`** before writing any UI: compose the shared components in `RengaWeb.CoreComponents` and `RengaWeb.UI`, and style only with the token names (`bg-surface`, `text-fg-muted`, `h-row`, ...). Never use Tailwind palette colors, hex values, or daisyUI names; `test/renga_web/components/design_system_test.exs` fails on them
 - **Produce world-class UI designs** with a focus on usability, aesthetics, and modern design principles
 - Implement **subtle micro-interactions** (e.g., button hover effects, and smooth transitions)
 - Ensure **clean typography, spacing, and layout balance** for a refined, premium look
