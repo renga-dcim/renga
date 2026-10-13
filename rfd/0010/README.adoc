@@ -108,7 +108,8 @@ power; PDU outlet state and per-outlet and per-leg readings.
 fails if this feed fails".
 |===
 
-Discovery can suggest a power connection but never records one.
+Discovery can suggest a power connection (see <<suggested-connections>>) but
+never records one.
 
 == Evidence sources
 
@@ -200,6 +201,22 @@ Evidence never creates or removes a power connection. An outlet reporting draw
 with no connected port, or a supply reporting no input, opens a finding that an
 operator resolves, as LLDP evidence does for data cables in RFD 7.
 
+[[suggested-connections]]
+=== Suggested connections
+
+Which outlet a power supply is plugged into is the hardest fact to enter and
+keep current, and readings can point to it. Renga suggests a connection when:
+
+* an outlet's measured draw tracks one supply's input power over a window, and
+  no other unconnected supply in the rack tracks it as well; or
+* an outlet turns off or loses draw at the same time as one supply loses input.
+
+A suggestion is a finding carrying the readings that support it. Accepting it
+records the planned connection as an operator's change; dismissing it
+suppresses that pairing. Suggestions are never applied automatically, and an
+existing connection is never replaced by one; a contradicting reading opens
+the usual mismatch finding instead.
+
 == Findings
 
 * **Not redundant**: a device whose power ports do not reach two sides, when its
@@ -209,6 +226,8 @@ operator resolves, as LLDP evidence does for data cables in RFD 7.
   balance. Unknown conversion or leg data is shown as incomplete capacity.
 * **Supply failed**: a power supply reported failed or without input.
 * **Unexpected draw**: an outlet drawing power with no connection recorded.
+* **Suggested connection**: readings point to a supply's outlet; see
+  <<suggested-connections>>.
 * **Path incomplete**: a port connected to an outlet whose PDU has no feed.
 
 Findings join the Inbox under a Power domain and follow the existing workflow.
@@ -238,6 +257,8 @@ capability under RFD 9 and needs its own design.
   uses it is labelled as resting on a configured default, and nothing is
   assumed until it is set.
 * New feeds default to 80% maximum utilization, editable per feed.
+* Readings may suggest which outlet a supply uses, as a finding an operator
+  accepts or dismisses; they never record a connection.
 * Measured load comes first from PDU readings through RFD 11 collectors; host
   power supply readings follow.
 * The agent's own power sources are hwmon (on by default), an SMBIOS snapshot

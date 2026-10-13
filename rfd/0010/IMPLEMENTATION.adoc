@@ -43,3 +43,5 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   Collectors page.
 * [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
   incomplete-path findings in a Power Inbox domain.
+* [ ] Suggest supply-to-outlet connections from correlated readings, accepted
+  or dismissed by an operator and never applied automatically.
