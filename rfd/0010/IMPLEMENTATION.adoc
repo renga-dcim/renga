@@ -24,7 +24,11 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   power-factor provenance for AC conversion and show unknown headroom when
   conversion or leg coverage is incomplete. Test non-unity power factor and
   an overloaded leg despite aggregate headroom.
+* [ ] Require fresh, valid, complete measured coverage before showing positive
+  headroom. Never turn missing, failed, stale, or non-finite values into zero,
+  and never sum an aggregate with its constituent sensors.
 * [ ] Compute redundancy by distinct feed sides and show it on devices.
+  Keep structural path redundancy separate from live supply availability.
 * [ ] Add the "what fails if this feed fails" view.
 
 == Phase 4: Evidence and findings
@@ -33,6 +37,11 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   beside allocated load.
 * [ ] Accept power supply status and draw from host agents, recording each
   reading's source.
+* [ ] Give every reading stable target/sensor identity, measurement boundary,
+  quantity/unit, sampling window, source and mapping version, event and receipt
+  times, validity, and declared coverage. Advance current values by event time,
+  expire them independently of check-ins, and apply source precedence only to
+  fresh, valid, equivalent readings. Test late replay and expiry.
 * [ ] Read hwmon power in the agent, and snapshot the SMBIOS tables with a
   failure-tolerant privileged helper. Read the two fixed source files without
   following links, atomically publish one boot-identified generation with
@@ -59,9 +68,21 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 == Phase 5: Measured history
 
-* [ ] Sample readings on their own interval and deliver them in batches through
-  the on-disk queue, apart from inventory observations.
-* [ ] Add the `Renga.Telemetry.Store` behaviour and the built-in adapter keeping
-  five-minute averages for 30 days in Postgres.
+* [ ] Define a versioned telemetry batch with replay ID and stable source,
+  collector, target, and sensor identities. Accept it idempotently through a
+  typed endpoint that cannot alter inventory reconciliation or completeness
+  clocks.
+* [ ] Persist telemetry in a separately bounded, typed queue namespace. Give
+  inventory delivery priority, prevent telemetry from evicting or indefinitely
+  delaying inventory, and report the count and time range of telemetry dropped
+  under age, entry, or byte backpressure.
+* [ ] Add the `Renga.Telemetry.Store` behaviour with organization-scoped writes
+  and fixed-bucket range reads returning average, minimum, maximum, last, and
+  count, with empty buckets represented as gaps. Add the built-in Postgres
+  adapter with enforced 30-day retention and five-minute buckets.
+* [ ] Require external adapters to supply both ingestion and tenant-scoped range
+  queries. Treat remote write alone as incomplete, and leave external retention
+  and downsampling to documented operator-managed backend policy.
 * [ ] Show measured-load trends on feeds and devices, keeping findings and
-  capacity on the latest readings only.
+  capacity on eligible current readings only and independent of the chart
+  store.

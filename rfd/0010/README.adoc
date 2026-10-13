@@ -226,6 +226,41 @@ The agent reports every power source in its check-ins as `available`,
 status beside each agent, with the local exporter or configuration that would
 enable a source that is not permitted.
 
+=== Reading identity and eligibility
+
+A power sample has a canonical identity: stable target and sensor identifiers;
+the measurement boundary (`host_input`, `supply_input`, `supply_output`,
+`outlet`, `feed`, or `leg`); quantity and unit; sampling-window start and end;
+the source stream and mapping version; event time; and a validity status. It
+also carries server receipt time for audit, but receipt and agent check-in times
+never make an old sample fresh. Non-finite values, unit mismatches, failed
+scrapes, and explicit missing values are invalid evidence, not zero.
+
+The current-reading projection advances by event time within one source and
+sensor series. A replayed or delayed sample is retained for history but cannot
+replace a newer current value. Implausibly future event times are invalid.
+Every source mapping declares a freshness window; expiration is evaluated from
+the sample's event time independently of installation contact, inventory
+acceptance, and reconciliation clocks.
+
+Readings from different sources are equivalent only when target, sensor
+meaning, measurement boundary, quantity, unit, and sampling window are truly
+comparable. Source precedence, including native over exporter, selects among
+equivalent readings only while each candidate is valid and fresh. It never
+substitutes a supply-output measurement for host input or a rolling average for
+an instantaneous value.
+
+Each aggregate declares what it covers. Capacity calculations require fresh,
+valid coverage of every contributing load, conversion, and leg; incomplete
+coverage yields unknown headroom and can never display positive spare
+capacity. One calculation uses either a boundary's aggregate total or its
+constituent sensors, never both. Missing, stale, or failed data remains unknown.
+
+Redundancy remains a structural property of confirmed power paths. Live supply
+or outlet availability is separate evidence and may open a supply-failed
+finding, but it does not rewrite the structural redundancy badge or create a
+path.
+
 == Evidence and connections
 
 Evidence never creates or removes a power connection. An outlet reporting draw
@@ -251,24 +286,49 @@ the usual mismatch finding instead.
 == Measured history
 
 Readings are sampled on their own interval (one minute by default) and
-delivered in batches through the agent's on-disk queue, separately from
-inventory observations, so a reading never triggers reconciliation.
+delivered through a versioned telemetry payload. Each batch has a replay ID and
+retains the installation, source stream, collector, target, and sensor
+identities that produced every sample. A typed telemetry endpoint accepts each
+source/replay-ID pair idempotently; its payload cannot be mistaken for an
+inventory observation.
+
+The agent persists telemetry in a separate queue namespace whose entries carry
+their payload type and destination. Entry, byte, and age limits apply only to
+that queue. When backpressure exceeds those limits, it drops the oldest
+telemetry batch, reports the lost batch count and time range in queue health,
+and never evicts an inventory observation. Delivery drains inventory first and
+caps telemetry work per pass, so a telemetry backlog cannot delay inventory or
+lease check-ins indefinitely. Telemetry acceptance does not advance inventory
+accepted/reconciled clocks, change snapshot completeness, retire inventory, or
+trigger reconciliation.
 
 Renga keeps the latest reading of each quantity, with its time, source, and
-coverage, in its own tables. Findings, headroom, and redundancy use only those
-latest readings.
+coverage, in its own current-reading tables using the event-time rules above.
+Findings and headroom use only eligible current readings; structural redundancy
+uses confirmed paths. A separate bounded correlation window supports connection
+suggestions as described above.
 
 History sits behind a `Renga.Telemetry.Store` behaviour, which writes samples,
-reads a time range with downsampling, and enforces retention:
+and reads an organization-scoped time range in fixed buckets. Every bucket
+returns average, minimum, maximum, last, and sample count; a bucket with no
+samples is a gap and is never interpolated or returned as zero.
 
 * The default adapter is built in and bounded. It keeps five-minute averages in
-  Postgres for 30 days, so a self-hosted Renga needs no extra infrastructure.
-* Opt-in adapters can keep far longer histories elsewhere, for example
-  Prometheus or VictoriaMetrics through remote write, or TimescaleDB.
+  Postgres for 30 days and enforces that retention itself, so a self-hosted
+  Renga needs no extra infrastructure.
+* An external adapter must provide both write transport and a tenant-scoped
+  range-query API with the same bucket and gap semantics. Prometheus or
+  VictoriaMetrics remote write supplies only ingestion and is incomplete
+  without a corresponding PromQL-compatible read path. External retention and
+  downsampling are operator-managed backend policy, which the adapter reports
+  rather than pretending to enforce. A TimescaleDB adapter can provide both
+  sides directly.
 
 The store only feeds charts and trends. Swapping adapters, or losing the store,
-never changes a finding or a capacity figure. The behaviour is not specific to
-power; later RFDs may record other readings through it.
+never changes current-reading eligibility, a finding, or a capacity figure.
+Store queries always include organization scope, and an external adapter must
+isolate that scope in its backend namespace and query. The behaviour is not
+specific to power; later RFDs may record other readings through it.
 
 == Findings
 
@@ -313,8 +373,12 @@ capability under RFD 9 and needs its own design.
 * New feeds default to 80% maximum utilization, editable per feed.
 * Measured history sits behind a swappable `Renga.Telemetry.Store` behaviour.
   The built-in adapter keeps five-minute averages for 30 days in Postgres;
-  other adapters may keep longer histories. Findings and capacity use only the
-  latest readings, never the store.
+  other adapters must provide both tenant-scoped writes and range reads, with
+  retention managed by their backend. Findings and capacity use eligible
+  current readings, never the chart store.
+* Telemetry uses a versioned payload and its own bounded queue and endpoint.
+  Replay is idempotent, loss is reported, and telemetry cannot evict or starve
+  inventory or alter inventory reconciliation and completeness clocks.
 * Readings may suggest which outlet a supply uses, as a finding an operator
   accepts or dismisses; they never record a connection.
 * Measured load comes first from the RFD 10 `power_poller`; its PDU/UPS and
