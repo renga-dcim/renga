@@ -47,7 +47,7 @@ defmodule RengaWeb.DesignSystemTest do
      ~r/\#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-fA-F])/},
     {"text size outside the type scale", ~r/(?<![\w-])text-\[(?!1[01]px\])[^\]]+\]/},
     {"radius outside the radius scale",
-     ~r/(?<![\w-])rounded(?:-[trblse]{1,2})?-(?:2xl|3xl|\[[^\]]+\])(?![\w-])/}
+     ~r/(?<![\w-])rounded(?:-[trblse]{1,2})?-(?:[2-4]xl|\[[^\]]+\])(?![\w-])/}
   ]
 
   test "recognizes every forbidden design-system category" do
@@ -60,6 +60,8 @@ defmodule RengaWeb.DesignSystemTest do
           "bg-[#11223344]",
           "text-[2rem]",
           "rounded-t-2xl",
+          "rounded-4xl",
+          "dark:rounded-t-4xl",
           "rounded-[40px]"
         ] do
       assert violations_in(~s(<div class="#{class}"></div>)) != [],
