@@ -15,6 +15,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [7: Layer 2 topology and VLANs](0007/README.adoc) | VLAN namespaces, interface membership, observed adjacency, reconciled links, and physical cables |
 | [8: Product experience](0008/README.adoc) | Information architecture, shared interaction patterns, Inbox and triage, visual design, and extension points |
 | [9: Durable jobs and agent capabilities](0009/README.adoc) | Persisted jobs leased over HTTPS polling, capability advertisement, agent-local policy, and optional Channels notification |
+| [10: Power inventory and topology](0010/README.adoc) | Panels, feeds, PDU outlets, device power ports, power paths, redundancy, capacity, and power evidence |
 
 ## Source format
 

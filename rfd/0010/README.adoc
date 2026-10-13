@@ -1,0 +1,433 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: published
+:discussion: https://github.com/renga-dcim/renga/pull/147
+:labels: dcim, inventory, power, software
+
+= RFD 10 Power inventory and topology
+
+== Goal
+
+Model how power reaches equipment, from the panel to the power supply, so
+operators can answer what loses power when a feed fails, which devices lack
+redundant supply, and how close each feed is to its limit. RFD 5 left power
+feeds, panels, outlets, and power paths to a later RFD; this is that RFD.
+
+Power follows the same rule as the rest of Renga: planned connections, observed
+evidence, and the current topology stay distinct, and evidence never rewires
+the plan silently.
+
+== NetBox reference
+
+NetBox models power panels at a site or location, power feeds from a panel to a
+rack, power outlets on PDUs, and power ports on devices, joined by cables. A
+feed carries its supply type, phase, voltage, amperage, and maximum utilization;
+a power port carries its maximum and allocated draw. Renga keeps that shape and
+adds observed draw and supply health as evidence.
+
+== Model
+
+* `PowerPanel`: a named panel placed at a site or location from RFD 5.
+* `PowerFeed`: one circuit from a panel, with supply (AC or DC), phase (single
+  or three), voltage, amperage, maximum utilization (default 80%, editable per
+  feed), and a
+  redundancy side (`a`, `b`, or none). A feed may be assigned to a rack.
+* Power outlets and power ports are typed endpoints created from the RFD 6
+  catalog templates (`power_outlet` and `power_port`), the same way interfaces
+  come from interface templates. A PDU is an ordinary `pdu` resource with outlet
+  templates. A server's power supplies give it power ports.
+* A power port carries its maximum draw and allocated draw in watts; an outlet
+  carries its feed leg on three-phase PDUs.
+* Power connections reuse RFD 7's plan, assertion, and current-cable model with
+  a `power` cable kind. A connection joins a power port to an outlet, or a PDU's
+  inlet port to a feed.
+
+Every power object gets a resource envelope and typed projection, like the
+other DCIM objects.
+
+== Power path
+
+The current power path of a device is the chain from each of its power ports
+through an outlet, its PDU, and the PDU's inlet to a feed and panel. Renga
+computes it from current power connections; it is never stored as a separate
+truth. A port whose chain is incomplete shows where it stops.
+
+Redundancy is a property of the path: a device is redundantly powered when its
+ports reach at least two feeds on different sides. A device with two supplies
+both on side `a` is not redundant, whatever its supply count says.
+
+== Capacity and utilization
+
+Electrical quantities retain their units: real power in W, apparent power in
+VA, and current in A. For AC, usable apparent capacity is voltage × amperage ×
+maximum utilization for single-phase, or √3 × line-to-line voltage × line
+current × maximum utilization for balanced three-phase. Single-phase voltage
+is measured across the supply conductors. DC capacity is voltage × amperage ×
+maximum utilization in W. The configured amperage is the circuit's rated
+current, not an observed load.
+
+Allocated real load sums the allocated input watts of ports on the feed's path.
+AC conversion from W to VA requires an explicit per-load power factor
+(VA = W / power factor, with 0 < power factor <= 1), including its provenance
+as configured or measured. Missing power factor leaves allocated apparent load
+and current headroom unknown; Renga does not silently assume unity or compare
+watts directly with VA. An owner may set one organization-wide default power
+factor; until then no default exists. Headroom computed from that default is
+labelled as resting on a configured default rather than a per-load value.
+Measured W, VA, current, and power factor remain
+separate evidence, with their measurement time and coverage.
+
+Renga shows allocated and measured load side by side, comparing only compatible
+quantities. Watt totals alone are not verified circuit headroom or assurance
+that another server can safely be connected. Three-phase PDUs show current and
+allocated load per leg using that leg's voltage and load assignment; the
+balanced aggregate formula cannot establish per-leg headroom. Missing leg
+assignments or conversion data show incomplete capacity, not spare capacity.
+
+== Entered, discovered, and computed
+
+Nothing on the network knows a building's electrical layout, so part of the
+model is always entered. Evidence fills in the rest, and Renga computes what
+follows from both.
+
+[cols="1,3"]
+|===
+|Kind |Data
+
+|Entered
+|Panels and feeds with their supply, phase, voltage, amperage, maximum
+utilization, side, and rack; power connections (which outlet each port is
+plugged into); allocated draw per port, defaulting from the hardware type's
+catalog template; the organization's default power factor.
+
+|Discovered
+|Power supplies with model, serial, and rated watts; supply status; host input
+power; PDU outlet state and per-outlet and per-leg readings.
+
+|Computed
+|Power paths, redundancy, allocated and measured load, headroom, and "what
+fails if this feed fails".
+|===
+
+Discovery can suggest a power connection (see <<suggested-connections>>) but
+never records one.
+
+== Evidence sources
+
+Inventory facts such as installed supplies arrive through observations. Timed
+power readings use the telemetry batches defined below, and every fact and
+reading records which source produced it.
+
+=== Host agent
+
+The agent runs as an unprivileged account in a systemd sandbox with no
+capabilities and no device access. Its power sources respect that:
+
+* **hwmon:** `power*_input` and `power*_average` under `/sys/class/hwmon`, from
+  drivers such as `acpi_power_meter` that many servers expose. These files are
+  world-readable, so this works in the existing sandbox and is on by default.
+* **SMBIOS power supplies:** the firmware's System Power Supply records (type
+  39) list each supply's location, vendor, model, serial, rated watts, and
+  whether it is hot-swappable. The raw tables are root-only but never change
+  until the next boot, so a failure-tolerant privileged pre-start helper reads
+  only the fixed `DMI` and `smbios_entry_point` files from
+  `/sys/firmware/dmi/tables`. It opens the source and destination without
+  following symbolic links, writes both files with explicit `root:renga-agent`
+  ownership and `0440` permissions into a new generation under a root-owned,
+  non-agent-writable directory, writes the boot ID and generation ID into its
+  manifest, then publishes the complete generation with one atomic rename.
+  The agent rejects a partial generation or one from another boot. The unit
+  invokes the helper through a five-second wall-clock deadline with a one-second
+  TERM-to-KILL grace period, both completing well before the unit's startup
+  deadline, and uses an ignored-failure `ExecStartPre=-+` command. Deadline
+  expiry kills and reaps the helper, publishes no partial generation, reports
+  the source unavailable, and continues ordinary agent startup; it does not
+  rely on `TimeoutStartSec` for recovery. The `+` prefix deliberately runs the
+  helper outside the service's normal filesystem sandbox; its fixed source,
+  no-follow opens, and root-controlled destination are therefore the security
+  boundary. Nothing is written into agent-controlled `/var/lib/renga`. The same
+  snapshot supplies the DMI UUID and serial, which the sandboxed agent cannot
+  read today and RFD 11 uses to match VMs to their guests. Vendors do not always
+  populate these records; empty records report nothing rather than an absent
+  supply.
+* **Direct in-band IPMI is not used.** `/dev/ipmi0` accepts caller-selected BMC
+  commands, so device permissions cannot enforce sensor-only access. The main
+  agent keeps `PrivateDevices=true` and never joins an IPMI group. Operators
+  that need in-band DCMI or supply sensors run a locally managed
+  `ipmi_exporter`, whose metrics the sandboxed agent reads over the bounded
+  exporter interface below. Out-of-band Redfish is collected separately.
+* **RAPL is not used.** Its energy counters have been root-only since 2020
+  because they leak secrets through a power side channel (CVE-2020-8694), and
+  they measure only the CPU package and memory, often well under the supply's
+  input. They can never count toward feed capacity. A later opt-in, trend-only
+  source stays possible.
+
+Neither the agent nor Renga can grant a source more privilege. Enabling one is
+a local operator action, like enabling job capabilities in RFD 9.
+
+=== Local Prometheus exporters
+
+Hosts that already run Prometheus exporters can let the agent read them
+instead:
+
+[source,toml]
+----
+[[exporters]]
+url = "http://127.0.0.1:9100/metrics" # node_exporter
+
+[[exporters]]
+url = "http://127.0.0.1:9290/metrics" # ipmi_exporter
+----
+
+The agent scrapes each endpoint in its own worker and keeps only a fixed,
+versioned mapping of known metrics: the DCMI power reading, power-type and
+supply sensors from ipmi_exporter, and hwmon power from node_exporter.
+Everything else stays in Prometheus. This keeps privilege with the exporter
+the operator already configured, leaves the agent's sandbox unchanged, and
+needs no Prometheus server; readings travel in telemetry batches tied to the
+agent's identity and work behind NAT.
+
+The fetch contract is deliberately narrow:
+
+* HTTP and HTTPS endpoints must resolve to loopback, and the agent verifies the
+  actual peer address on every connection. A configured endpoint requires an
+  explicit `allow_remote = true` to connect elsewhere. Redirects are disabled,
+  proxy environment variables are ignored for loopback endpoints, and a
+  remote endpoint is revalidated against the same configured destination
+  policy on every connection.
+* Connect and total request time, decoded response bytes, parsed series,
+  labels per series, and samples per scrape are bounded. Authentication, when
+  configured for a remote endpoint, comes from endpoint-specific local files;
+  the Renga intake key is never sent to an exporter.
+* A timeout, limit violation, unreachable endpoint, or malformed response
+  fails that source scrape and never becomes a zero reading.
+* When a native source and an exporter produce fresh, valid readings for the
+  same target, measurement boundary, quantity, unit, and sampling window, the
+  native reading wins and the exporter's is kept as supporting evidence.
+
+Other RFDs may map more exporter metrics through the same configuration.
+
+=== Collectors and BMCs
+
+This RFD owns two read-only collector modules in the existing agent: a
+`power_poller` for PDU and UPS protocols, beginning with SNMP, and a
+`bmc_power` collector for Redfish. The first measured-load rollout is the PDU
+portion of `power_poller`, because it covers every device in a rack and is the
+only source of per-outlet and per-leg load. UPS support follows through the
+same stream. Redfish reports supply health, input watts, and capacity without
+host privilege.
+
+The modules reuse RFD 11's collector framework and contracts for stable
+installation-local collector IDs, server-resolved stream identity,
+credential-locality, isolated scheduling, per-stream freshness, and queue
+replay. RFD 11 itself supplies switch and libvirt modules, not these power
+protocols. Until that shared framework exists, measured-load rollout depends
+on it; implementing PDU/UPS and Redfish collection remains in RFD 10.
+
+=== Source status
+
+The agent reports every power source in its check-ins as `available`,
+`not_permitted`, `not_present`, or `unreachable`. The Collectors page shows that
+status beside each agent, with the local exporter or configuration that would
+enable a source that is not permitted.
+
+=== Reading identity and eligibility
+
+A power sample has a canonical identity: stable target and sensor identifiers;
+the measurement boundary (`host_input`, `supply_input`, `supply_output`,
+`outlet`, `feed`, or `leg`); quantity and unit; sampling-window start and end;
+the source stream and mapping version; event time; and a validity status. It
+also carries server receipt time for audit, but receipt and agent check-in times
+never make an old sample fresh. Non-finite values, unit mismatches, failed
+scrapes, and explicit missing values are invalid evidence, not zero.
+
+The current-reading projection advances by event time within one source and
+sensor series. A replayed or delayed sample is retained for history but cannot
+replace a newer current value. Implausibly future event times are invalid.
+Every source mapping declares a freshness window; expiration is evaluated from
+the sample's event time independently of installation contact, inventory
+acceptance, and reconciliation clocks.
+
+Readings from different sources are equivalent only when target, sensor
+meaning, measurement boundary, quantity, unit, and sampling window are truly
+comparable. Source precedence, including native over exporter, selects among
+equivalent readings only while each candidate is valid and fresh. It never
+substitutes a supply-output measurement for host input or a rolling average for
+an instantaneous value.
+
+Each aggregate declares what it covers. Measured-headroom calculations require
+fresh, valid coverage of every contributing load, conversion, and leg;
+incomplete coverage yields unknown headroom and can never display positive
+spare capacity. One calculation uses either a boundary's aggregate total or
+its constituent sensors, never both. Missing, stale, or failed data remains
+unknown.
+
+Redundancy remains a structural property of confirmed power paths. Live supply
+or outlet availability is separate evidence and may open a supply-failed
+finding, but it does not rewrite the structural redundancy badge or create a
+path.
+
+== Evidence and connections
+
+Evidence never creates or removes a power connection. An outlet reporting draw
+with no connected port, or a supply reporting no input, opens a finding that an
+operator resolves, as LLDP evidence does for data cables in RFD 7.
+
+[[suggested-connections]]
+=== Suggested connections
+
+Which outlet a power supply is plugged into is the hardest fact to enter and
+keep current, and readings can point to it. Renga suggests a connection when:
+
+* an outlet's measured draw tracks one supply's input power over a window, and
+  no other unconnected supply in the rack tracks it as well; or
+* an outlet turns off or loses draw at the same time as one supply loses input.
+
+Correlation uses dedicated, bounded state rather than the latest-reading
+projection or chart store. For each candidate sensor it keeps at most the last
+24 hours and 1,440 one-minute samples. Candidate series must have at least 30
+minutes of overlapping fresh, valid coverage, with at least 80% of expected
+samples present. Samples pair by event time within one sampling interval.
+Correlation requires either three distinct paired load transitions or a paired
+outlet-state and supply-input transition; similarity from a rack- or feed-wide
+common-mode event does not qualify. If another candidate falls within the same
+confidence margin, the result is ambiguous and no suggestion opens.
+
+A suggestion is a finding with an immutable evidence bundle containing the
+paired sample identities, values, times, boundaries, and score, so its basis
+survives expiry from the correlation window or telemetry store. Accepting the
+finding opens RFD 7's prefilled assertion flow; only an authorized operator's
+submitted `CableAssertion`, after endpoint compatibility and termination
+checks, can change the current cable projection. Acceptance does not mutate the
+cable plan, and neither acceptance nor dismissal rewires automatically. An
+existing connection is never replaced by a suggestion; contradicting readings
+open the usual mismatch finding instead.
+
+== Measured history
+
+Readings are sampled on their own interval (one minute by default) and
+delivered through a versioned telemetry payload. Each batch has a replay ID and
+retains the installation, source stream, collector, target, and sensor
+identities that produced every sample. A typed telemetry endpoint accepts each
+source/replay-ID pair idempotently; its payload cannot be mistaken for an
+inventory observation.
+
+The agent persists telemetry in a separate queue namespace whose entries carry
+their payload type and destination. Entry, byte, and age limits apply only to
+that queue. When backpressure exceeds those limits, it drops the oldest
+telemetry batch, reports the lost batch count and time range in queue health,
+and never evicts an inventory observation. Delivery drains inventory first and
+caps telemetry work per pass, so a telemetry backlog cannot delay inventory or
+lease check-ins indefinitely. Telemetry acceptance does not advance inventory
+accepted/reconciled clocks, change snapshot completeness, retire inventory, or
+trigger reconciliation.
+
+Renga keeps the latest reading of each quantity, with its time, source, and
+coverage, in its own current-reading tables using the event-time rules above.
+Findings and headroom use only eligible current readings; structural redundancy
+uses confirmed paths. A separate bounded correlation window supports connection
+suggestions as described above.
+
+History sits behind a `Renga.Telemetry.Store` behaviour, which writes samples,
+and reads an organization-scoped time range in fixed buckets. Every bucket
+returns average, minimum, maximum, last, and sample count; a bucket with no
+samples is a gap and is never interpolated or returned as zero.
+
+* The default adapter is built in and bounded. It keeps five-minute buckets in
+  Postgres for 30 days and enforces that retention itself, so a self-hosted
+  Renga needs no extra infrastructure.
+* An external adapter must provide both write transport and a tenant-scoped
+  range-query API with the same bucket and gap semantics. Prometheus or
+  VictoriaMetrics remote write supplies only ingestion and is incomplete
+  without a corresponding PromQL-compatible read path. External retention and
+  downsampling are operator-managed backend policy, which the adapter reports
+  rather than pretending to enforce. A TimescaleDB adapter can provide both
+  sides directly.
+
+The store only feeds charts and trends. Swapping adapters, or losing the store,
+never changes current-reading eligibility, a finding, or a capacity figure.
+Store queries always include organization scope, and an external adapter must
+isolate that scope in its backend namespace and query. The behaviour is not
+specific to power; later RFDs may record other readings through it.
+
+== Findings
+
+* **Not redundant**: a device whose power ports do not reach two sides, when its
+  hardware type has more than one power port.
+* **Feed near capacity**: allocated or measured load exceeds usable capacity in
+  compatible units, or a three-phase leg exceeds its current limit or is out of
+  balance. Unknown conversion or leg data is shown as incomplete capacity.
+* **Supply failed**: a power supply reported failed or without input.
+* **Unexpected draw**: an outlet drawing power with no connection recorded.
+* **Suggested connection**: readings point to a supply's outlet; see
+  <<suggested-connections>>.
+* **Path incomplete**: a port connected to an outlet whose PDU has no feed.
+
+Findings join the Inbox under a Power domain and follow the existing workflow.
+
+== User interaction
+
+* A site's power page lists panels and feeds with capacity bars for allocated
+  and measured load, and each feed and device shows a measured-load trend from
+  the telemetry store.
+* A rack shows its feeds, its PDUs' outlets, and which device each outlet
+  serves, next to the elevation.
+* A device's Hardware tab shows its power ports, their path to a feed, and a
+  redundancy badge.
+* "What fails if this feed fails" is a feed action listing every device that
+  loses all of its supply, and every device that loses its redundancy.
+
+Mutations require the managed-inventory owner/admin policy.
+
+== Initial exclusions
+
+UPS runtime modeling, generator and transfer-switch topology, cooling, power
+billing, and automatic outlet control. Switching an outlet would be an `operate`
+capability under RFD 9 and needs its own design.
+
+== Decisions from review
+
+* An owner may set an organization-wide default power factor; headroom that
+  uses it is labelled as resting on a configured default, and nothing is
+  assumed until it is set.
+* New feeds default to 80% maximum utilization, editable per feed.
+* Measured history sits behind a swappable `Renga.Telemetry.Store` behaviour.
+  The built-in adapter keeps five-minute buckets for 30 days in Postgres;
+  other adapters must provide both tenant-scoped writes and range reads, with
+  retention managed by their backend. Findings and capacity use eligible
+  current readings, never the chart store.
+* Telemetry uses a versioned payload and its own bounded queue and endpoint.
+  Replay is idempotent, loss is reported, and telemetry cannot evict or starve
+  inventory or alter inventory reconciliation and completeness clocks.
+* Readings may suggest which outlet a supply uses, as a finding an operator
+  accepts or dismisses. Correlation uses its own bounded window, preserves the
+  supporting samples, suppresses ambiguous/common-mode matches, and requires
+  an authorized RFD 7 cable assertion before the current projection changes.
+* Measured load comes first from the RFD 10 `power_poller`; its PDU/UPS and
+  Redfish modules reuse RFD 11's collector contracts but are not supplied by
+  RFD 11. Host power supply readings follow.
+* The agent's own power sources are hwmon (on by default), an SMBIOS snapshot
+  atomically published by a privileged pre-start helper into root-controlled
+  storage, and local exporters. Direct `/dev/ipmi0` access and RAPL are not
+  used.
+* The agent can read local Prometheus exporters, such as node_exporter and
+  ipmi_exporter, through a fixed metric mapping and bounded fetch contract.
+  Endpoints are loopback by default, and equivalent native readings win over
+  exporter readings only while fresh and valid.
+
+== Rollout
+
+. Add panels and feeds at sites and locations, with capacity.
+. Create power ports and outlets from catalog templates on existing and new
+  assets.
+. Add power connections on the RFD 7 cable model and compute power paths.
+. Add allocated load, redundancy, and the "what fails" view.
+. Add measured load through the RFD 10 PDU collector, then supply evidence from
+  host agents: hwmon and the SMBIOS snapshot, local exporters, and the RFD 10
+  Redfish collector.
+. Add the power findings and the Power Inbox domain.
+. Add the telemetry store with its bounded Postgres adapter, and measured-load
+  trends.
+
+== Implementation
+
+Progress is tracked in link:IMPLEMENTATION.adoc[the implementation checklist].
