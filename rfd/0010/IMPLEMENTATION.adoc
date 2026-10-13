@@ -46,7 +46,12 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   failure-tolerant privileged helper. Read the two fixed source files without
   following links, atomically publish one boot-identified generation with
   agent-readable permissions under a root-owned, non-agent-writable directory,
-  and reject partial or prior-boot generations.
+  and reject partial or prior-boot generations. Give the helper a five-second
+  wall-clock deadline and one-second TERM-to-KILL grace period inside the unit's
+  startup deadline; deadline expiry must publish nothing and become an ignored
+  source failure without relying on `TimeoutStartSec`. In package/service tests,
+  verify missing source files, nonzero exit, and an injected hanging helper all
+  leave the main agent able to start and check in.
 * [ ] Scrape configured local exporters through a fixed metric mapping, loopback
   by default. Enforce the destination on actual connections, disable redirects
   and loopback proxies, bound time and decoded data cardinality in an isolated

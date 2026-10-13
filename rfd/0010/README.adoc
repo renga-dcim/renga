@@ -136,15 +136,19 @@ capabilities and no device access. Its power sources respect that:
   non-agent-writable directory, writes the boot ID and generation ID into its
   manifest, then publishes the complete generation with one atomic rename.
   The agent rejects a partial generation or one from another boot. The unit
-  uses an ignored-failure `ExecStartPre=-+` command, so an unavailable snapshot
-  reports that source unavailable without preventing ordinary agent startup.
-  The `+` prefix deliberately runs the helper outside the service's normal
-  filesystem sandbox; its fixed source, no-follow opens, and root-controlled
-  destination are therefore the security boundary. Nothing is written into
-  agent-controlled `/var/lib/renga`. The same snapshot supplies the DMI UUID
-  and serial, which the sandboxed agent cannot read today and RFD 11 uses to
-  match VMs to their guests. Vendors do not always populate these records;
-  empty records report nothing rather than an absent supply.
+  invokes the helper through a five-second wall-clock deadline with a one-second
+  TERM-to-KILL grace period, both completing well before the unit's startup
+  deadline, and uses an ignored-failure `ExecStartPre=-+` command. Deadline
+  expiry kills and reaps the helper, publishes no partial generation, reports
+  the source unavailable, and continues ordinary agent startup; it does not
+  rely on `TimeoutStartSec` for recovery. The `+` prefix deliberately runs the
+  helper outside the service's normal filesystem sandbox; its fixed source,
+  no-follow opens, and root-controlled destination are therefore the security
+  boundary. Nothing is written into agent-controlled `/var/lib/renga`. The same
+  snapshot supplies the DMI UUID and serial, which the sandboxed agent cannot
+  read today and RFD 11 uses to match VMs to their guests. Vendors do not always
+  populate these records; empty records report nothing rather than an absent
+  supply.
 * **Direct in-band IPMI is not used.** `/dev/ipmi0` accepts caller-selected BMC
   commands, so device permissions cannot enforce sensor-only access. The main
   agent keeps `PrivateDevices=true` and never joins an IPMI group. Operators
