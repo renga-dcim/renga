@@ -81,6 +81,38 @@ A terminal session requires all of these:
   channel dropping all end the session, and the agent kills the PTY's process
   group.
 
+The browser renders the session with xterm.js, which implements terminal
+emulation (escape sequences, colors, mouse, paste, and resizing). The relay only
+carries bytes and window-size changes, so Renga implements no terminal
+behavior itself. Each keystroke's round trip adds the browser-to-Renga and
+Renga-to-agent latency, typically tens of milliseconds, comparable to other
+relayed web terminals.
+
+== Native SSH clients
+
+Operators may use their own terminal and SSH client instead of the browser. A
+host behind NAT cannot accept a direct connection, and an agent-generated key
+would have to be shipped to the user as a secret, so neither is used. Instead:
+
+* A `renga` command-line tool signs in through the browser, where step-up
+  authentication happens, and serves as OpenSSH's `ProxyCommand`. It tunnels
+  the SSH stream through the same session relay, so latency matches the browser
+  path and hosts need no inbound port.
+* Renga runs an SSH certificate authority. After the same grant and step-up
+  checks, and the creation of the same `terminal.session@1` job, it signs the
+  user's own public key as a user certificate valid for five minutes, with the
+  job ID as its key ID. The certificate permits a PTY and nothing else: no port,
+  agent, or X11 forwarding, and no `exec` or subsystems such as SFTP.
+* The agent terminates SSH with an embedded server rather than the host's
+  `sshd`. It accepts only a certificate from the Renga CA key it pinned when its
+  installation key was approved, whose key ID matches the session job it holds,
+  and opens the PTY as `run_as` exactly as for the browser.
+
+Because the agent owns the PTY, recording, idle limits, and termination work
+the same for both paths. Using the host's `sshd` was rejected: the encrypted
+stream could not be recorded, every host would need `sshd_config` changes, and
+`sshd` would allow forwarding and file transfer outside this RFD's controls.
+
 == Recording
 
 Renga records every session's input and output as an asciicast stream, with
@@ -106,6 +138,14 @@ Owners and admins can replay sessions, and every replay is itself logged.
 
 |Renga server compromise
 |Cannot enable terminals on agents that have them disabled locally.
+
+|Stolen SSH certificate
+|Valid for five minutes, bound to one session job held by one agent, and
+useless without the matching private key.
+
+|Tunneling or file transfer over SSH
+|The certificate and the agent's server refuse forwarding, `exec`, and
+subsystems.
 |===
 
 == Decisions from review
@@ -113,6 +153,9 @@ Owners and admins can replay sessions, and every replay is itself logged.
 * Step-up authentication is a WebAuthn assertion when the user has one
   registered, otherwise a fresh password entry, within five minutes.
 * Recordings are kept for one year by default; organizations may change it.
+* Operators may connect with their own SSH client through the `renga` CLI, using
+  five-minute certificates from Renga's SSH CA and the agent's embedded SSH
+  server, alongside the browser terminal.
 * Owners and admins may grant terminal access to themselves. Such a grant is
   audited like any other, and every session it opens is recorded.
 
@@ -123,6 +166,7 @@ Owners and admins can replay sessions, and every replay is itself logged.
 . Add organization enablement, terminal grants, and step-up authentication.
 . Add the channel relay, the agent PTY session, and lifecycle enforcement.
 . Add recording, replay, and replay auditing.
+. Add the SSH CA, the `renga` CLI tunnel, and the agent's embedded SSH server.
 
 == Implementation
 

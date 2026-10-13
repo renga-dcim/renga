@@ -29,3 +29,12 @@ Implements link:README.adoc[RFD 13: Live terminal].
 == Phase 4: Recording
 
 * [ ] Record bounded asciicast streams with retention, replay, and replay audit.
+
+== Phase 5: Native SSH clients
+
+* [ ] Add the SSH CA issuing five-minute, PTY-only user certificates keyed to a
+  session job after grant and step-up checks.
+* [ ] Add the `renga` CLI sign-in and `ProxyCommand` tunnel over the session
+  relay.
+* [ ] Add the agent's embedded SSH server, pinning the CA key at installation
+  approval and refusing forwarding, `exec`, and subsystems.
