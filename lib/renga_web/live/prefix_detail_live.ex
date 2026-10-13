@@ -719,7 +719,7 @@ defmodule RengaWeb.PrefixDetailLive do
             data-state={cell.state}
             title={cell_title(cell)}
             class={[
-              "relative block aspect-square rounded-[2px] transition-opacity hover:opacity-80",
+              "relative block aspect-square rounded-sm transition-opacity hover:opacity-80",
               "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
               cell_class(cell.state)
             ]}
@@ -730,13 +730,13 @@ defmodule RengaWeb.PrefixDetailLive do
             :if={!cell.child}
             data-state={cell.state}
             title={cell_title(cell)}
-            class={["block aspect-square rounded-[2px]", cell_class(cell.state)]}
+            class={["block aspect-square rounded-sm", cell_class(cell.state)]}
           />
         <% end %>
       </div>
       <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted">
         <li :for={state <- [:allocated, :partial, :free]} class="flex items-center gap-1.5">
-          <span class={["size-3 rounded-[2px]", cell_class(state)]} />
+          <span class={["size-3 rounded-sm", cell_class(state)]} />
           {state |> Atom.to_string() |> String.capitalize()}
         </li>
       </ul>
@@ -787,12 +787,12 @@ defmodule RengaWeb.PrefixDetailLive do
           id={"address-cell-#{cell.offset}"}
           data-state={cell.state}
           title={address_title(cell)}
-          class={["block aspect-square rounded-[2px]", address_class(cell.state)]}
+          class={["block aspect-square rounded-sm", address_class(cell.state)]}
         />
       </div>
       <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted">
         <li :for={state <- [:used, :managed, :free, :network]} class="flex items-center gap-1.5">
-          <span class={["size-3 rounded-[2px]", address_class(state)]} />
+          <span class={["size-3 rounded-sm", address_class(state)]} />
           {address_legend(state)}
         </li>
       </ul>

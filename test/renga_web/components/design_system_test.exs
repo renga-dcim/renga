@@ -34,16 +34,47 @@ defmodule RengaWeb.DesignSystemTest do
             secondary-content secondary neutral-content neutral accent-content
             info-content success-content success warning-content warning
             error-content error)
+  @daisy_components ~w(alert badge btn link)
 
   @rules [
     {"raw Tailwind palette color",
-     ~r/(?<![\w-])(?:[\w-]+:)*(?:#{Enum.join(@utilities, "|")})-(?:(?:#{Enum.join(@palette, "|")})-\d{2,3}|black|white)(?![\w-])/},
+     ~r/(?<![\w-])(?:[\w-]+:)*(?:#{Enum.join(@utilities, "|")})(?:-[trblxyse]{1,2})?-(?:(?:#{Enum.join(@palette, "|")})-\d{2,3}|black|white)(?:\/(?:\d{1,3}|\[[^\]]+\]))?(?![\w-])/},
     {"former daisyUI color name",
      ~r/(?<![\w-])(?:[\w-]+:)*(?:#{Enum.join(@utilities, "|")})-(?:#{Enum.join(@daisy, "|")})(?![\w-])/},
-    {"hex color", ~r/#[0-9a-fA-F]{6}\b/},
-    {"text size outside the type scale", ~r/(?<![\w-])text-\[(?!1[01]px\])[^\]]+px\]/},
-    {"radius outside the radius scale", ~r/(?<![\w-])rounded-(?:2xl|3xl)(?![\w-])/}
+    {"former daisyUI component color",
+     ~r/(?<![\w-])(?:[\w-]+:)*(?:#{Enum.join(@daisy_components, "|")})-(?:primary|secondary|accent|neutral|info|success|warning|error)(?![\w-])/},
+    {"hex color",
+     ~r/\#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-fA-F])/},
+    {"text size outside the type scale", ~r/(?<![\w-])text-\[(?!1[01]px\])[^\]]+\]/},
+    {"radius outside the radius scale",
+     ~r/(?<![\w-])rounded(?:-[trblse]{1,2})?-(?:2xl|3xl|\[[^\]]+\])(?![\w-])/}
   ]
+
+  test "recognizes every forbidden design-system category" do
+    for class <- [
+          "bg-red-500",
+          "dark:border-t-red-500/30",
+          "btn-primary",
+          "text-base-content/60",
+          "bg-[#fff]",
+          "bg-[#11223344]",
+          "text-[2rem]",
+          "rounded-t-2xl",
+          "rounded-[40px]"
+        ] do
+      assert violations_in(~s(<div class="#{class}"></div>)) != [],
+             "expected #{class} to violate the design system"
+    end
+  end
+
+  test "accepts token classes and the documented arbitrary type sizes" do
+    markup = """
+    <div class="bg-surface border-t-edge text-fg rounded-xl text-[10px]"></div>
+    <span class="bg-accent-tint text-[11px] shadow-lg"></span>
+    """
+
+    assert violations_in(markup) == []
+  end
 
   test "markup uses design tokens instead of raw colors and off-scale values" do
     counts = Map.new(source_files(), &{&1, violations(&1)})
@@ -76,6 +107,11 @@ defmodule RengaWeb.DesignSystemTest do
   defp violations(file) do
     file
     |> File.read!()
+    |> violations_in()
+  end
+
+  defp violations_in(text) do
+    text
     |> String.split("\n")
     |> Enum.with_index(1)
     |> Enum.flat_map(fn {text, line} ->
