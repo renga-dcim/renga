@@ -113,7 +113,8 @@ never records one.
 
 == Evidence sources
 
-Power evidence arrives through observations like everything else, and every
+Inventory facts such as installed supplies arrive through observations. Timed
+power readings use the telemetry batches defined below, and every fact and
 reading records which source produced it.
 
 === Host agent
@@ -127,19 +128,29 @@ capabilities and no device access. Its power sources respect that:
 * **SMBIOS power supplies:** the firmware's System Power Supply records (type
   39) list each supply's location, vendor, model, serial, rated watts, and
   whether it is hot-swappable. The raw tables are root-only but never change
-  until the next boot, so a privileged `ExecStartPre=+` step copies
-  `/sys/firmware/dmi/tables` into the agent's state directory when the service
-  starts, and the unprivileged agent parses that copy. Root only ever runs the
-  copy. The same snapshot supplies the DMI UUID and serial, which the sandboxed
-  agent cannot read today and RFD 11 uses to match VMs to their guests.
-  Vendors do not always populate these records; empty records report nothing
-  rather than an absent supply.
-* **In-band IPMI (opt-in):** power supply status, per-supply input watts, and
-  the DCMI system power reading, for hosts that run no IPMI exporter. Reading
-  `/dev/ipmi0` needs device access the sandbox denies, so the package ships an
-  add-on the operator installs: a udev rule giving the IPMI devices to a
-  `renga-ipmi` group, and a unit drop-in adding that group and allowing only
-  that device in place of `PrivateDevices`.
+  until the next boot, so a failure-tolerant privileged pre-start helper reads
+  only the fixed `DMI` and `smbios_entry_point` files from
+  `/sys/firmware/dmi/tables`. It opens the source and destination without
+  following symbolic links, writes both files with explicit `root:renga-agent`
+  ownership and `0440` permissions into a new generation under a root-owned,
+  non-agent-writable directory, writes the boot ID and generation ID into its
+  manifest, then publishes the complete generation with one atomic rename.
+  The agent rejects a partial generation or one from another boot. The unit
+  uses an ignored-failure `ExecStartPre=-+` command, so an unavailable snapshot
+  reports that source unavailable without preventing ordinary agent startup.
+  The `+` prefix deliberately runs the helper outside the service's normal
+  filesystem sandbox; its fixed source, no-follow opens, and root-controlled
+  destination are therefore the security boundary. Nothing is written into
+  agent-controlled `/var/lib/renga`. The same snapshot supplies the DMI UUID
+  and serial, which the sandboxed agent cannot read today and RFD 11 uses to
+  match VMs to their guests. Vendors do not always populate these records;
+  empty records report nothing rather than an absent supply.
+* **Direct in-band IPMI is not used.** `/dev/ipmi0` accepts caller-selected BMC
+  commands, so device permissions cannot enforce sensor-only access. The main
+  agent keeps `PrivateDevices=true` and never joins an IPMI group. Operators
+  that need in-band DCMI or supply sensors run a locally managed
+  `ipmi_exporter`, whose metrics the sandboxed agent reads over the bounded
+  exporter interface below. Out-of-band Redfish is collected separately.
 * **RAPL is not used.** Its energy counters have been root-only since 2020
   because they leak secrets through a power side channel (CVE-2020-8694), and
   they measure only the CPU package and memory, often well under the supply's
@@ -163,37 +174,57 @@ url = "http://127.0.0.1:9100/metrics" # node_exporter
 url = "http://127.0.0.1:9290/metrics" # ipmi_exporter
 ----
 
-The agent scrapes each endpoint and keeps only a fixed, versioned mapping of
-known metrics: the DCMI power reading, power-type and supply sensors from
-ipmi_exporter, and hwmon power from node_exporter. Everything else stays in
-Prometheus. This keeps privilege with the exporter the operator already
-configured, leaves the agent's sandbox unchanged, and needs no Prometheus
-server; readings travel in the agent's own observations, so they work behind
-NAT and are tied to the agent's identity.
+The agent scrapes each endpoint in its own worker and keeps only a fixed,
+versioned mapping of known metrics: the DCMI power reading, power-type and
+supply sensors from ipmi_exporter, and hwmon power from node_exporter.
+Everything else stays in Prometheus. This keeps privilege with the exporter
+the operator already configured, leaves the agent's sandbox unchanged, and
+needs no Prometheus server; readings travel in telemetry batches tied to the
+agent's identity and work behind NAT.
 
-* Endpoints must be loopback addresses unless an endpoint explicitly allows a
-  remote address, because a local `/metrics` endpoint is unauthenticated.
-* When a native source and an exporter report the same quantity, the native
-  reading wins and the exporter's is kept as supporting evidence.
-* An unreachable endpoint or an unparseable response is a source status, not
-  missing data.
+The fetch contract is deliberately narrow:
+
+* HTTP and HTTPS endpoints must resolve to loopback, and the agent verifies the
+  actual peer address on every connection. A configured endpoint requires an
+  explicit `allow_remote = true` to connect elsewhere. Redirects are disabled,
+  proxy environment variables are ignored for loopback endpoints, and a
+  remote endpoint is revalidated against the same configured destination
+  policy on every connection.
+* Connect and total request time, decoded response bytes, parsed series,
+  labels per series, and samples per scrape are bounded. Authentication, when
+  configured for a remote endpoint, comes from endpoint-specific local files;
+  the Renga intake key is never sent to an exporter.
+* A timeout, limit violation, unreachable endpoint, or malformed response
+  fails that source scrape and never becomes a zero reading.
+* When a native source and an exporter produce fresh, valid readings for the
+  same target, measurement boundary, quantity, unit, and sampling window, the
+  native reading wins and the exporter's is kept as supporting evidence.
 
 Other RFDs may map more exporter metrics through the same configuration.
 
 === Collectors and BMCs
 
-* PDU and UPS collectors (RFD 11) report outlet state, per-outlet and per-leg
-  current, and inlet voltage. They come first, because they cover every device
-  in a rack and are the only source of leg balance.
-* BMC sources (Redfish) may report supply health, input watts, and capacity
-  with no privilege on the host.
+This RFD owns two read-only collector modules in the existing agent: a
+`power_poller` for PDU and UPS protocols, beginning with SNMP, and a
+`bmc_power` collector for Redfish. The first measured-load rollout is the PDU
+portion of `power_poller`, because it covers every device in a rack and is the
+only source of per-outlet and per-leg load. UPS support follows through the
+same stream. Redfish reports supply health, input watts, and capacity without
+host privilege.
+
+The modules reuse RFD 11's collector framework and contracts for stable
+installation-local collector IDs, server-resolved stream identity,
+credential-locality, isolated scheduling, per-stream freshness, and queue
+replay. RFD 11 itself supplies switch and libvirt modules, not these power
+protocols. Until that shared framework exists, measured-load rollout depends
+on it; implementing PDU/UPS and Redfish collection remains in RFD 10.
 
 === Source status
 
 The agent reports every power source in its check-ins as `available`,
 `not_permitted`, `not_present`, or `unreachable`. The Collectors page shows that
-status beside each agent, with the add-on or configuration that would enable a
-source that is not permitted.
+status beside each agent, with the local exporter or configuration that would
+enable a source that is not permitted.
 
 == Evidence and connections
 
@@ -286,14 +317,17 @@ capability under RFD 9 and needs its own design.
   latest readings, never the store.
 * Readings may suggest which outlet a supply uses, as a finding an operator
   accepts or dismisses; they never record a connection.
-* Measured load comes first from PDU readings through RFD 11 collectors; host
-  power supply readings follow.
+* Measured load comes first from the RFD 10 `power_poller`; its PDU/UPS and
+  Redfish modules reuse RFD 11's collector contracts but are not supplied by
+  RFD 11. Host power supply readings follow.
 * The agent's own power sources are hwmon (on by default), an SMBIOS snapshot
-  taken by a privileged copy at service start, and opt-in in-band IPMI through
-  a shipped add-on. RAPL is not used.
+  atomically published by a privileged pre-start helper into root-controlled
+  storage, and local exporters. Direct `/dev/ipmi0` access and RAPL are not
+  used.
 * The agent can read local Prometheus exporters, such as node_exporter and
-  ipmi_exporter, through a fixed metric mapping. Endpoints are loopback by
-  default, and native readings win over exporter readings.
+  ipmi_exporter, through a fixed metric mapping and bounded fetch contract.
+  Endpoints are loopback by default, and equivalent native readings win over
+  exporter readings only while fresh and valid.
 
 == Rollout
 
@@ -302,8 +336,9 @@ capability under RFD 9 and needs its own design.
   assets.
 . Add power connections on the RFD 7 cable model and compute power paths.
 . Add allocated load, redundancy, and the "what fails" view.
-. Add measured load from PDU collectors, then supply evidence from host agents:
-  hwmon and the SMBIOS snapshot, then local exporters, then the IPMI add-on.
+. Add measured load through the RFD 10 PDU collector, then supply evidence from
+  host agents: hwmon and the SMBIOS snapshot, local exporters, and the RFD 10
+  Redfish collector.
 . Add the power findings and the Power Inbox domain.
 . Add the telemetry store with its bounded Postgres adapter, and measured-load
   trends.

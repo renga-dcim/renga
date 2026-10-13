@@ -34,11 +34,22 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 * [ ] Accept power supply status and draw from host agents, recording each
   reading's source.
 * [ ] Read hwmon power in the agent, and snapshot the SMBIOS tables with a
-  privileged copy at service start for power supplies and DMI identity.
+  failure-tolerant privileged helper. Read the two fixed source files without
+  following links, atomically publish one boot-identified generation with
+  agent-readable permissions under a root-owned, non-agent-writable directory,
+  and reject partial or prior-boot generations.
 * [ ] Scrape configured local exporters through a fixed metric mapping, loopback
-  by default, with native readings taking precedence.
-* [ ] Ship the in-band IPMI add-on (udev rule, group, and unit drop-in) and read
-  IPMI power when it is installed.
+  by default. Enforce the destination on actual connections, disable redirects
+  and loopback proxies, bound time and decoded data cardinality in an isolated
+  worker, never send intake credentials, and treat malformed or bounded-out
+  scrapes as source failures rather than zero readings.
+* [ ] Keep direct IPMI device access out of the main agent. Map in-band readings
+  only from a locally managed ipmi_exporter and leave `PrivateDevices=true`.
+* [ ] Add the RFD 10 `power_poller` collector for PDU/UPS protocols, beginning
+  with PDU SNMP as the initial measured-load producer, and add the `bmc_power`
+  Redfish collector. Reuse RFD 11's collector stream identity,
+  credential-locality, isolated scheduling, freshness, and replay contracts
+  without claiming its switch/libvirt modules provide these protocols.
 * [ ] Report each power source's status in check-ins and show it on the
   Collectors page.
 * [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
