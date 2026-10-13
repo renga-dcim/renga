@@ -22,7 +22,9 @@ Implements link:README.adoc[RFD 11: Read-only switch and virtualization collecto
 
 * [ ] Add the read-only libvirt module reporting domains, allocation, disks, and
   virtual interfaces.
-* [ ] Correlate VMs with guest host agents by SMBIOS UUID and MAC addresses.
+* [ ] Correlate VMs with guest host agents by the SMBIOS UUID from RFD 10's
+  snapshot, using MAC addresses only as supporting evidence; open a "possible
+  same machine" finding for MAC-only matches instead of merging.
 * [ ] Separate defined-on from fresh active placement. Test migration with an
   inactive persistent source definition, conflicting fresh active claims, and
   stale/missing evidence; never select an arbitrary privileged target.

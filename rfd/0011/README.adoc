@@ -116,7 +116,20 @@ A VM is correlated with the host agent running inside it by the SMBIOS system
 UUID that libvirt assigns and the guest agent reports as `dmi_uuid`, with MAC
 addresses as supporting evidence. When both exist they reconcile to one
 resource with two sources, the hypervisor's view and the guest's own, rather
-than two machines.
+than two machines. Either side may report first.
+
+The sandboxed agent cannot read the DMI UUID itself, because
+`/sys/class/dmi/id/product_uuid` is root-only. Guests report `dmi_uuid` from the
+SMBIOS snapshot that RFD 10 defines, so that snapshot is a prerequisite of
+automatic correlation. A guest without it keeps an empty `dmi_uuid` and is
+never matched by UUID.
+
+MAC addresses alone never merge two resources, because they are reassigned,
+cloned with images, and spoofable. When a guest without a usable UUID shares
+every MAC address of exactly one fresh domain, Renga opens a "possible same
+machine" finding carrying that evidence. An operator confirms it, merging the
+resources as an operator's assertion, or dismisses it, which suppresses that
+pairing.
 
 Defined-on and active placement are different evidence. An inactive persistent
 domain may remain defined on the source after migration; that definition does
@@ -153,12 +166,17 @@ size limit by splitting large target sets across several reports.
   reporting hypervisor. Organizations opt in once every hypervisor reports;
   while libvirt collection is still being rolled out, it would flag every guest
   on an uncollected hypervisor.
+* **Possible same machine**: a guest without a usable `dmi_uuid` whose MAC
+  addresses match exactly one fresh domain.
 
 == Decisions from review
 
 * Default polling stays at 15 minutes for SNMP and 5 for libvirt, configurable
   per module.
 * The guest-without-VM finding is off unless an organization opts in.
+* VM-to-guest correlation depends on RFD 10's SMBIOS snapshot for the guest's
+  `dmi_uuid`. A MAC-only match opens a "possible same machine" finding for an
+  operator to confirm and never merges resources by itself.
 
 == User interaction
 
@@ -182,7 +200,8 @@ payload scopes above.
 . Add payload scopes and multi-resource observations, with authority limited to
   each scope.
 . Add the SNMP module with SNMPv3, identity, interfaces, LLDP, and VLANs.
-. Add the libvirt module and VM-to-guest correlation.
+. Add the libvirt module and VM-to-guest correlation, after RFD 10's SMBIOS
+  snapshot ships in the agent.
 . Add the collector findings and the poller detail on the Collectors page.
 . Add gNMI/OpenConfig as a second switch module.
 
