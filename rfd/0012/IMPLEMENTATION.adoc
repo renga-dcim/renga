@@ -13,3 +13,10 @@ Implements link:README.adoc[RFD 12: Operational queries].
 * [ ] Implement the first six queries natively in the agent, with no request text
   reaching any program arguments.
 * [ ] Add the resource Queries tab and saved-view fan-out with batch results.
+* [ ] Connect the agent to a local `osqueryd` through its extensions socket and
+  report the backend's status.
+* [ ] Answer named queries with fixed osquery SQL when available, falling back
+  to native implementations.
+* [ ] Add `query.sql@1`: sensitive, off by default, owner/admin only, refused
+  unless the daemon's `disable_tables` covers the agent's deny list, with
+  bounded tabular results.

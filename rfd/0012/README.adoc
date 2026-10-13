@@ -62,6 +62,47 @@ that takes a command, a path to execute, or a script.
 |sensitive
 |===
 
+These are the prefilled options every host offers with no extra software.
+They stay native so a plain installation answers the common questions.
+
+== osquery backend
+
+Renga does not grow a bespoke query language. For anything beyond the named
+queries, hosts run https://osquery.io[osquery], which already models hundreds of
+tables across Linux, macOS, and Windows.
+
+The agent never runs osquery itself. It talks to a locally managed `osqueryd`
+over osquery's extensions socket, which the operator makes reachable by the
+agent's account. osquery keeps its own privileges, the agent's sandbox does not
+change, and the agent reports the backend's status (`available`,
+`not_permitted`, `not_present`) on the Collectors page like any other source.
+
+When the backend is available, named queries may be answered by fixed SQL that
+ships with the agent's version. For example, `query.packages@1` reads osquery's
+package tables. The result still matches the query's own schema, and the
+native implementation is used whenever osquery is absent.
+
+=== Ad hoc SQL
+
+`query.sql@1` runs an operator-written osquery `SELECT` and is the one query
+whose text comes from the request. Free-form SQL is not typed in the RFD 1
+sense, because some osquery tables read arbitrary files (`file`, `yara`,
+`augeas`), make network requests (`curl`, `curl_certificate`), or copy files off
+the host (`carves`). It is therefore bounded differently from the named
+queries:
+
+* It is always `sensitive`, off by default in both the organization and the
+  agent's `[jobs]` policy, and limited to owners and admins.
+* Dangerous tables are excluded by osquery itself through its `disable_tables`
+  flag, not by parsing SQL in Renga or the agent. Before each run the agent
+  reads the daemon's flags and refuses with a policy reason unless every table
+  on the agent's deny list is disabled.
+* Results are a bounded table: column names and string values, with row and
+  byte limits and the same timeout as other queries.
+
+The UI offers `query.sql@1` only on hosts whose agent reports the backend
+available, and otherwise explains that installing osquery unlocks it.
+
 == Authorization
 
 Queries are off until an organization enables them, and each can be enabled
@@ -99,14 +140,26 @@ appear as a table.
 * `query.packages@1` ships in the first set as a `sensitive` query, so
   fleet-wide version questions are answerable by owners and admins.
 
+* Named queries stay native as prefilled options; full query capability comes
+  from osquery, which operators install and run themselves.
+* Ad hoc osquery SQL is a separate `sensitive`, off-by-default query, with
+  dangerous tables disabled in osquery itself.
+
 == User interaction
 
 * A resource's Queries tab lists the queries its agent offers, runs one, and
-  shows recent results with who ran them.
+  shows recent results with who ran them. Where the agent reports osquery
+  available, it also offers an SQL editor for `query.sql@1`.
 * From a saved view, "Run query" fans out to every matching host and shows the
   batch's results as they arrive.
 * Every run appears in activity with an authorized summary; parameters and
   results are visible only through sensitivity-authorized views.
+
+== Later
+
+A natural-language interface may later sit on top of these queries as an LLM
+integration that drafts a named query or osquery SQL for the operator to review
+before it runs. It would add no new execution path and is left to its own RFD.
 
 == Rollout
 
@@ -114,6 +167,7 @@ appear as a table.
   organization settings.
 . Implement the first queries in the agent behind `[jobs]` policy.
 . Add the Queries tab and fan-out from saved views.
+. Add the osquery backend, osquery-backed named queries, and `query.sql@1`.
 
 == Implementation
 
