@@ -23,6 +23,8 @@ path.
   their own RFDs (12, 13, and 14) and build on this one.
 * Arbitrary command or shell execution, under any capability name.
 * A general workflow engine. A job targets one agent and runs one capability.
+  Multi-step workflows sit above jobs (see <<orchestration>>), and their
+  adapters get their own RFD.
 * Replacing scheduled inventory. Agents keep collecting on their own interval
   whether or not jobs work.
 
@@ -63,6 +65,44 @@ or `interactive` one; owners change the list. Owners and admins may request `obs
 `interactive` jobs needs grants that RFDs 13 and 14 define. Neither side's
 check substitutes for the other.
 
+=== Retry classes
+
+Running a job is at least once: a lease can lapse after the agent has acted but
+before its final event post arrives. Nothing can make an effect outside
+Renga's database exactly once, so each capability's definition also fixes how
+safe it is to run again:
+
+* `idempotent`: running it again has no further effect beyond a new report.
+  Every `observe` capability is idempotent; `inventory.collect@1` produces a new
+  observation, and observations are already deduplicated by ID.
+* `convergent`: it drives the target toward a stated end state, so a retry
+  first reads the current state and acts only if the target is not there yet
+  ("power on", "set desired state").
+* `imperative`: each run is a new effect ("reboot", "reset", terminal input).
+  It is never run again automatically.
+
+Retry class is part of a capability's version. Changing it means a new version,
+so a job's retry rule cannot change after it was requested.
+
+=== Capability modules
+
+Each capability is one module implementing a `Renga.Jobs.Capability`
+behaviour, and a registry maps `name@version` to its module. The module
+declares:
+
+* its name and version;
+* its risk class and retry class;
+* how to validate its parameters and results;
+* its timeout and output limit;
+* whether its output is sensitive, and an authorization hook that can narrow,
+  but never widen, the organization and role checks above;
+* how its result is shown.
+
+The job context, delivery endpoints, and sweeper know nothing about any one
+capability. RFDs 11 to 14 add capabilities as new modules without changing
+them. The agent has a matching Rust trait, and only capabilities compiled into
+the agent can be advertised.
+
 == Job model
 
 `jobs` is an organization-scoped table. Each job targets one agent and carries:
@@ -76,7 +116,9 @@ check substitutes for the other.
 * the current state, attempt count, lease token, and lease expiry.
 
 States are `queued`, `leased`, `running`, `succeeded`, `failed`, `cancelled`,
-and `expired`. A request that fans out to many agents creates one job per agent
+`expired`, and `uncertain`. `uncertain` means the job may have taken effect but
+Renga cannot tell; only an imperative job can end there, and only a person or a
+later reconciliation resolves it. A request that fans out to many agents creates one job per agent
 sharing a `batch_id`. Batches have no size cap. Instead, job creation is
 rate-limited per organization (initially 10,000 jobs a minute), and agents
 lease their own work, so a large batch spreads across the fleet's check-in
@@ -84,7 +126,7 @@ intervals rather than arriving at once.
 
 `job_events` is append-only and is the job's history: `created`, `leased`,
 `started`, `progress`, `output`, `succeeded`, `failed`, `cancel_requested`,
-`cancelled`, `lease_lost`, and `expired`, each with its actor (user, agent, or
+`cancelled`, `lease_lost`, `expired`, `uncertain`, and `resolved`, each with its actor (user, agent, or
 system), time, and a bounded payload. A trigger rejects updates and deletes on
 events. The job row is a projection kept in step with its events by one context
 module that writes both in the same transaction.
@@ -111,9 +153,18 @@ authentication (RFD 3) and record contact like any other request.
   loop. Otherwise the agent tries to lease once per check-in interval.
 
 A server worker, following the existing periodic-worker pattern, sweeps expired
-leases. A job whose lease lapsed goes back to `queued` with a `lease_lost` event
-if attempts remain and `not_after` has not passed; otherwise it becomes
-`expired`. Expired and abandoned work therefore never stays `running` forever.
+leases and records a `lease_lost` event for each. What happens next depends on
+how far the job got and its capability's retry class:
+
+* A job that never reached `started` goes back to `queued` if attempts remain
+  and `not_after` has not passed, whatever its class, because nothing ran.
+* A started `idempotent` or `convergent` job goes back to `queued` under the same
+  conditions.
+* A started `imperative` job becomes `uncertain`. Running it again needs a new
+  job, requested and authorized afresh.
+* Anything else becomes `expired`.
+
+Expired and abandoned work therefore never stays `running` forever.
 
 == Agent execution
 
@@ -122,6 +173,15 @@ can never delay lease check-ins or scheduled inventory. Each capability has a
 fixed timeout, and the agent checks for cancellation between steps and on every
 event post. A job that outlives its timeout is reported as failed, not left
 running.
+
+Before running a job, the agent writes its job ID to a bounded record in its
+state directory, and it adds the outcome once the job ends. When the same job
+is delivered again, after a lost final post or a re-lease, the agent re-sends
+the recorded outcome instead of running the job again. A job that is recorded
+as started but has no outcome (the agent crashed mid-run) is reported as
+`uncertain` if it is imperative, and otherwise run again under its retry class.
+The record outlives the longest lease and retry window. It is a guard against
+duplicates, not the source of truth, which stays in Renga.
 
 `inventory.collect@1` runs the normal collection, delivers the observation
 through the on-disk queue, and returns the observation ID as its result. It
@@ -137,6 +197,41 @@ the agent behaves exactly as it would without it.
 
 Streaming interactive output (RFD 13) may later use the channel. That is that
 RFD's decision, not a reason to route ordinary jobs through it.
+
+[[orchestration]]
+== Orchestration
+
+Later RFDs need work that spans several jobs: RFD 14's power operations wait
+for approval, act, wait for the VM to settle, verify, and hand an uncertain
+outcome to a person; fan-out batches are tracked until they complete;
+reconciliation retries and remediation runbooks follow. That coordination is a
+workflow, and workflows sit above jobs.
+
+Jobs and leases are the fixed execution layer. A workflow engine coordinates
+jobs but never leases them: agents sit behind NAT and pull work over HTTPS with
+their intake key (RFD 3), so no engine can call into them, and giving agents
+credentials for an engine's own workers would replace Renga's trust boundary
+and move the job history out of its tenant-scoped, append-only records.
+
+The adapter boundary is a `Renga.Workflows.Engine` behaviour that starts a run,
+delivers job events to it, cancels it, and reports its status. It does not
+expose an engine's replay or determinism rules, so capabilities and the job
+context stay engine-agnostic.
+
+* The default adapter is built in: a Postgres state machine driven by the
+  existing periodic workers, with no extra infrastructure. Renga is
+  self-hosted and must not require operators to run a separate cluster.
+* Adapters for external engines such as Temporal or Inngest are opt-in.
+* A workflow step creates its job with an idempotency key built from the run ID
+  and step ID, so an engine retrying a step creates one job. It waits for the
+  job's final event rather than polling. The engine may retry a step, but the
+  job's retry class still applies, so an imperative job ends `uncertain` rather
+  than running twice.
+* Server-side capabilities with no agent, such as calls to a provider API, may
+  later run as workflow steps behind the same capability behaviour.
+
+The engine behaviour and its first adapters are designed in their own RFD, once
+RFD 14's workflow is written against this boundary.
 
 == Trust boundary
 
@@ -172,7 +267,12 @@ is a prerequisite of RFDs 13 and 14 and is out of scope here.
 |The job waits until `not_after`, then expires with an event.
 
 |Agent crashes mid-job
-|The lease lapses, the job is re-queued with `lease_lost`, or expires.
+|The lease lapses with `lease_lost`. An idempotent or convergent job is
+re-queued or expires; an imperative job that had started becomes `uncertain`.
+
+|Final event post lost after the job ran
+|On redelivery the agent re-sends the recorded outcome instead of running the
+job again.
 
 |Lease token reused after re-lease
 |Event posts are rejected; only the current holder can report.
@@ -202,6 +302,19 @@ is a prerequisite of RFDs 13 and 14 and is out of scope here.
 * A fresh agent enables its `observe` capabilities; everything else is off until
   configured locally.
 * Job history is kept for 90 days by default.
+* Each capability declares a retry class (`idempotent`, `convergent`, or
+  `imperative`). The sweeper re-queues a started job only when its class allows
+  it, an imperative job whose lease is lost ends `uncertain`, and the agent
+  records job outcomes so a redelivered job is not run twice. Exactly-once
+  execution is not claimed.
+* Capabilities are modules behind a `Renga.Jobs.Capability` behaviour, with a
+  matching Rust trait in the agent. Job storage and delivery are not pluggable:
+  the tables carry tenant keys, append-only events, and `SKIP LOCKED` leasing
+  in one transaction, guarantees an adapter would have to drop or rebuild.
+* Pluggable orchestration lives a layer up, behind `Renga.Workflows.Engine`,
+  with a built-in Postgres adapter by default and external engines such as
+  Temporal or Inngest opt-in. External engines coordinate jobs; they never
+  lease them.
 * Fan-out batches have no size cap; per-organization rate limits and agent-side
   leasing bound the load instead.
 * Agent jobs live in Renga's own `jobs` and `job_events` tables rather than a
