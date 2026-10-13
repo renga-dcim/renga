@@ -83,17 +83,118 @@ allocated load per leg using that leg's voltage and load assignment; the
 balanced aggregate formula cannot establish per-leg headroom. Missing leg
 assignments or conversion data show incomplete capacity, not spare capacity.
 
-== Evidence
+== Entered, discovered, and computed
 
-Power evidence arrives through observations like everything else:
+Nothing on the network knows a building's electrical layout, so part of the
+model is always entered. Evidence fills in the rest, and Renga computes what
+follows from both.
+
+[cols="1,3"]
+|===
+|Kind |Data
+
+|Entered
+|Panels and feeds with their supply, phase, voltage, amperage, maximum
+utilization, side, and rack; power connections (which outlet each port is
+plugged into); allocated draw per port, defaulting from the hardware type's
+catalog template; the organization's default power factor.
+
+|Discovered
+|Power supplies with model, serial, and rated watts; supply status; host input
+power; PDU outlet state and per-outlet and per-leg readings.
+
+|Computed
+|Power paths, redundancy, allocated and measured load, headroom, and "what
+fails if this feed fails".
+|===
+
+Discovery can suggest a power connection but never records one.
+
+== Evidence sources
+
+Power evidence arrives through observations like everything else, and every
+reading records which source produced it.
+
+=== Host agent
+
+The agent runs as an unprivileged account in a systemd sandbox with no
+capabilities and no device access. Its power sources respect that:
+
+* **hwmon:** `power*_input` and `power*_average` under `/sys/class/hwmon`, from
+  drivers such as `acpi_power_meter` that many servers expose. These files are
+  world-readable, so this works in the existing sandbox and is on by default.
+* **SMBIOS power supplies:** the firmware's System Power Supply records (type
+  39) list each supply's location, vendor, model, serial, rated watts, and
+  whether it is hot-swappable. The raw tables are root-only but never change
+  until the next boot, so a privileged `ExecStartPre=+` step copies
+  `/sys/firmware/dmi/tables` into the agent's state directory when the service
+  starts, and the unprivileged agent parses that copy. Root only ever runs the
+  copy. The same snapshot supplies the DMI UUID and serial, which the sandboxed
+  agent cannot read today and RFD 11 uses to match VMs to their guests.
+  Vendors do not always populate these records; empty records report nothing
+  rather than an absent supply.
+* **In-band IPMI (opt-in):** power supply status, per-supply input watts, and
+  the DCMI system power reading, for hosts that run no IPMI exporter. Reading
+  `/dev/ipmi0` needs device access the sandbox denies, so the package ships an
+  add-on the operator installs: a udev rule giving the IPMI devices to a
+  `renga-ipmi` group, and a unit drop-in adding that group and allowing only
+  that device in place of `PrivateDevices`.
+* **RAPL is not used.** Its energy counters have been root-only since 2020
+  because they leak secrets through a power side channel (CVE-2020-8694), and
+  they measure only the CPU package and memory, often well under the supply's
+  input. They can never count toward feed capacity. A later opt-in, trend-only
+  source stays possible.
+
+Neither the agent nor Renga can grant a source more privilege. Enabling one is
+a local operator action, like enabling job capabilities in RFD 9.
+
+=== Local Prometheus exporters
+
+Hosts that already run Prometheus exporters can let the agent read them
+instead:
+
+[source,toml]
+----
+[[exporters]]
+url = "http://127.0.0.1:9100/metrics" # node_exporter
+
+[[exporters]]
+url = "http://127.0.0.1:9290/metrics" # ipmi_exporter
+----
+
+The agent scrapes each endpoint and keeps only a fixed, versioned mapping of
+known metrics: the DCMI power reading, power-type and supply sensors from
+ipmi_exporter, and hwmon power from node_exporter. Everything else stays in
+Prometheus. This keeps privilege with the exporter the operator already
+configured, leaves the agent's sandbox unchanged, and needs no Prometheus
+server; readings travel in the agent's own observations, so they work behind
+NAT and are tied to the agent's identity.
+
+* Endpoints must be loopback addresses unless an endpoint explicitly allows a
+  remote address, because a local `/metrics` endpoint is unauthenticated.
+* When a native source and an exporter report the same quantity, the native
+  reading wins and the exporter's is kept as supporting evidence.
+* An unreachable endpoint or an unparseable response is a source status, not
+  missing data.
+
+Other RFDs may map more exporter metrics through the same configuration.
+
+=== Collectors and BMCs
 
 * PDU and UPS collectors (RFD 11) report outlet state, per-outlet and per-leg
   current, and inlet voltage. They come first, because they cover every device
-  in a rack and are the only source of leg balance;
-* host agents report power supplies as components (RFD 6), with status and
-  input watts when the platform exposes them, which unprivileged agents often
-  cannot read;
-* BMC sources may report supply health and draw.
+  in a rack and are the only source of leg balance.
+* BMC sources (Redfish) may report supply health, input watts, and capacity
+  with no privilege on the host.
+
+=== Source status
+
+The agent reports every power source in its check-ins as `available`,
+`not_permitted`, `not_present`, or `unreachable`. The Collectors page shows that
+status beside each agent, with the add-on or configuration that would enable a
+source that is not permitted.
+
+== Evidence and connections
 
 Evidence never creates or removes a power connection. An outlet reporting draw
 with no connected port, or a supply reporting no input, opens a finding that an
@@ -139,6 +240,12 @@ capability under RFD 9 and needs its own design.
 * New feeds default to 80% maximum utilization, editable per feed.
 * Measured load comes first from PDU readings through RFD 11 collectors; host
   power supply readings follow.
+* The agent's own power sources are hwmon (on by default), an SMBIOS snapshot
+  taken by a privileged copy at service start, and opt-in in-band IPMI through
+  a shipped add-on. RAPL is not used.
+* The agent can read local Prometheus exporters, such as node_exporter and
+  ipmi_exporter, through a fixed metric mapping. Endpoints are loopback by
+  default, and native readings win over exporter readings.
 
 == Rollout
 
@@ -147,7 +254,8 @@ capability under RFD 9 and needs its own design.
   assets.
 . Add power connections on the RFD 7 cable model and compute power paths.
 . Add allocated load, redundancy, and the "what fails" view.
-. Add measured load from PDU collectors, then supply evidence from host agents.
+. Add measured load from PDU collectors, then supply evidence from host agents:
+  hwmon and the SMBIOS snapshot, then local exporters, then the IPMI add-on.
 . Add the power findings and the Power Inbox domain.
 
 == Implementation

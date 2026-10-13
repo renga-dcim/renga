@@ -31,6 +31,15 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
 
 * [ ] Accept outlet and leg readings from PDU sources and show measured load
   beside allocated load.
-* [ ] Accept power supply status and draw from host agents.
+* [ ] Accept power supply status and draw from host agents, recording each
+  reading's source.
+* [ ] Read hwmon power in the agent, and snapshot the SMBIOS tables with a
+  privileged copy at service start for power supplies and DMI identity.
+* [ ] Scrape configured local exporters through a fixed metric mapping, loopback
+  by default, with native readings taking precedence.
+* [ ] Ship the in-band IPMI add-on (udev rule, group, and unit drop-in) and read
+  IPMI power when it is installed.
+* [ ] Report each power source's status in check-ins and show it on the
+  Collectors page.
 * [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
   incomplete-path findings in a Power Inbox domain.
