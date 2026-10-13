@@ -9,7 +9,10 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 * [ ] Add the job context: create with capability parameter validation and
   idempotency, cancel, and the transitions, writing each event with its
   projection in one transaction.
-* [ ] Sweep lapsed leases back to `queued` or `expired` with events.
+* [ ] Sweep lapsed leases back to `queued`, `expired`, or `uncertain` with
+  events, re-queuing a started job only when its retry class allows it.
+* [ ] Resolve `uncertain` jobs by an operator or reconciliation, with a
+  `resolved` event.
 * [ ] Default new organizations to allowing every `observe` capability, keep
   job history for a configurable 90 days, and rate-limit job creation per
   organization.
@@ -28,6 +31,8 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
   only compiled-in, enabled job capabilities.
 * [ ] Run jobs on a dedicated worker with timeouts and cancellation, re-checking
   policy at lease time.
+* [ ] Record job IDs and outcomes in the state directory and re-send the recorded
+  outcome when a job is delivered again.
 * [ ] Implement `inventory.collect@1` through the observation queue.
 
 == Phase 4: Interface
