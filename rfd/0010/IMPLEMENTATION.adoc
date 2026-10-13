@@ -1,0 +1,98 @@
+= RFD 0010 implementation checklist
+
+Implements link:README.adoc[RFD 10: Power inventory and topology].
+
+== Phase 1: Panels and feeds
+
+* [ ] Add power panels at sites and locations, and power feeds with supply,
+  phase, voltage, amperage, maximum utilization, side, and optional rack.
+* [ ] Define voltage/current conventions and show usable AC capacity in VA and
+  DC capacity in W on a site power page, never mixing W, VA, and A.
+
+== Phase 2: Ports, outlets, and connections
+
+* [ ] Create typed power ports and outlets from catalog templates, including on
+  existing assets.
+* [ ] Add the `power` cable kind to the RFD 7 plan, assertion, and cable model.
+* [ ] Compute each device's power path and show where an incomplete path stops.
+
+== Phase 3: Load and redundancy
+
+* [ ] Add an optional organization-wide default power factor, labelling any
+  headroom computed from it.
+* [ ] Sum allocated watts per feed and per three-phase leg; require explicit
+  power-factor provenance for AC conversion and show unknown headroom when
+  conversion or leg coverage is incomplete. Test non-unity power factor and
+  an overloaded leg despite aggregate headroom.
+* [ ] Require fresh, valid, complete measured coverage before showing positive
+  headroom. Never turn missing, failed, stale, or non-finite values into zero,
+  and never sum an aggregate with its constituent sensors.
+* [ ] Compute redundancy by distinct feed sides and show it on devices.
+  Keep structural path redundancy separate from live supply availability.
+* [ ] Add the "what fails if this feed fails" view.
+
+== Phase 4: Evidence and findings
+
+* [ ] Accept outlet and leg readings from PDU sources and show measured load
+  beside allocated load.
+* [ ] Accept power supply status and draw from host agents, recording each
+  reading's source.
+* [ ] Give every reading stable target/sensor identity, measurement boundary,
+  quantity/unit, sampling window, source and mapping version, event and receipt
+  times, validity, and declared coverage. Advance current values by event time,
+  expire them independently of check-ins, and apply source precedence only to
+  fresh, valid, equivalent readings. Test late replay and expiry.
+* [ ] Read hwmon power in the agent, and snapshot the SMBIOS tables with a
+  failure-tolerant privileged helper. Read the two fixed source files without
+  following links, atomically publish one boot-identified generation with
+  agent-readable permissions under a root-owned, non-agent-writable directory,
+  and reject partial or prior-boot generations. Give the helper a five-second
+  wall-clock deadline and one-second TERM-to-KILL grace period inside the unit's
+  startup deadline; deadline expiry must publish nothing and become an ignored
+  source failure without relying on `TimeoutStartSec`. In package/service tests,
+  verify missing source files, nonzero exit, and an injected hanging helper all
+  leave the main agent able to start and check in.
+* [ ] Scrape configured local exporters through a fixed metric mapping, loopback
+  by default. Enforce the destination on actual connections, disable redirects
+  and loopback proxies, bound time and decoded data cardinality in an isolated
+  worker, never send intake credentials, and treat malformed or bounded-out
+  scrapes as source failures rather than zero readings.
+* [ ] Keep direct IPMI device access out of the main agent. Map in-band readings
+  only from a locally managed ipmi_exporter and leave `PrivateDevices=true`.
+* [ ] Add the RFD 10 `power_poller` collector for PDU/UPS protocols, beginning
+  with PDU SNMP as the initial measured-load producer, and add the `bmc_power`
+  Redfish collector. Reuse RFD 11's collector stream identity,
+  credential-locality, isolated scheduling, freshness, and replay contracts
+  without claiming its switch/libvirt modules provide these protocols.
+* [ ] Report each power source's status in check-ins and show it on the
+  Collectors page.
+* [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
+  incomplete-path findings in a Power Inbox domain.
+* [ ] Maintain a bounded 24-hour/1,440-sample correlation window independent of
+  current readings and chart history. Require overlapping fresh coverage,
+  event-time pairing tolerance, and distinct paired transitions; suppress
+  ambiguous and common-mode matches. Preserve the supporting samples in the
+  finding, and require an authorized RFD 7 `CableAssertion` before
+  reconciliation can change a current cable. Never mutate the plan or replace
+  a cable automatically.
+
+== Phase 5: Measured history
+
+* [ ] Define a versioned telemetry batch with replay ID and stable source,
+  collector, target, and sensor identities. Accept it idempotently through a
+  typed endpoint that cannot alter inventory reconciliation or completeness
+  clocks.
+* [ ] Persist telemetry in a separately bounded, typed queue namespace. Give
+  inventory delivery priority, prevent telemetry from evicting or indefinitely
+  delaying inventory, and report the count and time range of telemetry dropped
+  under age, entry, or byte backpressure.
+* [ ] Add the `Renga.Telemetry.Store` behaviour with organization-scoped writes
+  and fixed-bucket range reads returning average, minimum, maximum, last, and
+  count, with empty buckets represented as gaps. Add the built-in Postgres
+  adapter with enforced 30-day retention and five-minute buckets.
+* [ ] Require external adapters to supply both ingestion and tenant-scoped range
+  queries. Treat remote write alone as incomplete, and leave external retention
+  and downsampling to documented operator-managed backend policy.
+* [ ] Show measured-load trends on feeds and devices, keeping findings and
+  capacity on eligible current readings only and independent of the chart
+  store.
