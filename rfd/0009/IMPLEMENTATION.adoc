@@ -6,6 +6,8 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 * [ ] Add organization-scoped `jobs` and append-only `job_events` with
   composite tenant keys and a trigger rejecting event updates and deletes.
+* [ ] Add the `Renga.Jobs.Capability` behaviour and a registry keyed by
+  `name@version`.
 * [ ] Add the job context: create with capability parameter validation and
   idempotency, cancel, and the transitions, writing each event with its
   projection in one transaction.
@@ -33,7 +35,8 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
   policy at lease time.
 * [ ] Record job IDs and outcomes in the state directory and re-send the recorded
   outcome when a job is delivered again.
-* [ ] Implement `inventory.collect@1` through the observation queue.
+* [ ] Add the capability trait and implement `inventory.collect@1` through the
+  observation queue.
 
 == Phase 4: Interface
 
