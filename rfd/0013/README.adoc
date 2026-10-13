@@ -108,6 +108,26 @@ would have to be shipped to the user as a secret, so neither is used. Instead:
   installation key was approved, whose key ID matches the session job it holds,
   and opens the PTY as `run_as` exactly as for the browser.
 
+=== CA key rotation and recovery
+
+Pinning protects agents from a server that swaps the CA key, so the key changes
+only in ways the agent can verify or an operator performs locally:
+
+* **Rotation:** Renga publishes the successor CA public key in check-in
+  responses, signed by the currently pinned key. The agent pins the successor
+  only when that signature verifies against the key it already trusts, keeps
+  accepting certificates from the old key until an overlap period ends, logs
+  the change, and reports it so Renga opens an informational finding. A
+  successor that does not chain from the pinned key is refused and opens a
+  finding.
+* **Recovery:** if the pinned key is lost or compromised, an operator runs
+  `renga-agent reset-ssh-ca` on the host. That clears the pin and blocks native
+  SSH until the agent pins a key again at its next installation-key approval.
+  Nothing Renga sends can clear a pin remotely.
+
+A compromised pinned key can sign a successor, so recovery from compromise is
+always the local reset, never rotation.
+
 Because the agent owns the PTY, recording, idle limits, and termination work
 the same for both paths. Using the host's `sshd` was rejected: the encrypted
 stream could not be recorded, every host would need `sshd_config` changes, and
@@ -143,6 +163,10 @@ Owners and admins can replay sessions, and every replay is itself logged.
 |Valid for five minutes, bound to one session job held by one agent, and
 useless without the matching private key.
 
+|Swapped SSH CA key
+|Agents accept only a successor signed by their pinned key; anything else is
+refused and opens a finding. Clearing a pin needs local access.
+
 |Tunneling or file transfer over SSH
 |The certificate and the agent's server refuse forwarding, `exec`, and
 subsystems.
@@ -156,6 +180,9 @@ subsystems.
 * Operators may connect with their own SSH client through the `renga` CLI, using
   five-minute certificates from Renga's SSH CA and the agent's embedded SSH
   server, alongside the browser terminal.
+* The SSH CA key rotates by publishing a successor signed by the pinned key;
+  recovery from a lost or compromised key is a local `renga-agent
+  reset-ssh-ca`, never a remote action.
 * Owners and admins may grant terminal access to themselves. Such a grant is
   audited like any other, and every session it opens is recorded.
 

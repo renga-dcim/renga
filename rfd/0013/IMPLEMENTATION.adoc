@@ -38,3 +38,7 @@ Implements link:README.adoc[RFD 13: Live terminal].
   relay.
 * [ ] Add the agent's embedded SSH server, pinning the CA key at installation
   approval and refusing forwarding, `exec`, and subsystems.
+* [ ] Rotate the SSH CA by publishing a successor signed by the pinned key, with
+  an overlap period and findings; add `renga-agent reset-ssh-ca` for local
+  recovery. Test a successor that does not chain and a remote attempt to clear
+  a pin.
