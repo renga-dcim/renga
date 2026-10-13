@@ -250,11 +250,12 @@ equivalent readings only while each candidate is valid and fresh. It never
 substitutes a supply-output measurement for host input or a rolling average for
 an instantaneous value.
 
-Each aggregate declares what it covers. Capacity calculations require fresh,
-valid coverage of every contributing load, conversion, and leg; incomplete
-coverage yields unknown headroom and can never display positive spare
-capacity. One calculation uses either a boundary's aggregate total or its
-constituent sensors, never both. Missing, stale, or failed data remains unknown.
+Each aggregate declares what it covers. Measured-headroom calculations require
+fresh, valid coverage of every contributing load, conversion, and leg;
+incomplete coverage yields unknown headroom and can never display positive
+spare capacity. One calculation uses either a boundary's aggregate total or
+its constituent sensors, never both. Missing, stale, or failed data remains
+unknown.
 
 Redundancy remains a structural property of confirmed power paths. Live supply
 or outlet availability is separate evidence and may open a supply-failed
@@ -277,11 +278,25 @@ keep current, and readings can point to it. Renga suggests a connection when:
   no other unconnected supply in the rack tracks it as well; or
 * an outlet turns off or loses draw at the same time as one supply loses input.
 
-A suggestion is a finding carrying the readings that support it. Accepting it
-records the planned connection as an operator's change; dismissing it
-suppresses that pairing. Suggestions are never applied automatically, and an
-existing connection is never replaced by one; a contradicting reading opens
-the usual mismatch finding instead.
+Correlation uses dedicated, bounded state rather than the latest-reading
+projection or chart store. For each candidate sensor it keeps at most the last
+24 hours and 1,440 one-minute samples. Candidate series must have at least 30
+minutes of overlapping fresh, valid coverage, with at least 80% of expected
+samples present. Samples pair by event time within one sampling interval.
+Correlation requires either three distinct paired load transitions or a paired
+outlet-state and supply-input transition; similarity from a rack- or feed-wide
+common-mode event does not qualify. If another candidate falls within the same
+confidence margin, the result is ambiguous and no suggestion opens.
+
+A suggestion is a finding with an immutable evidence bundle containing the
+paired sample identities, values, times, boundaries, and score, so its basis
+survives expiry from the correlation window or telemetry store. Accepting the
+finding opens RFD 7's prefilled assertion flow; only an authorized operator's
+submitted `CableAssertion`, after endpoint compatibility and termination
+checks, can change the current cable projection. Acceptance does not mutate the
+cable plan, and neither acceptance nor dismissal rewires automatically. An
+existing connection is never replaced by a suggestion; contradicting readings
+open the usual mismatch finding instead.
 
 == Measured history
 
@@ -313,7 +328,7 @@ and reads an organization-scoped time range in fixed buckets. Every bucket
 returns average, minimum, maximum, last, and sample count; a bucket with no
 samples is a gap and is never interpolated or returned as zero.
 
-* The default adapter is built in and bounded. It keeps five-minute averages in
+* The default adapter is built in and bounded. It keeps five-minute buckets in
   Postgres for 30 days and enforces that retention itself, so a self-hosted
   Renga needs no extra infrastructure.
 * An external adapter must provide both write transport and a tenant-scoped
@@ -372,7 +387,7 @@ capability under RFD 9 and needs its own design.
   assumed until it is set.
 * New feeds default to 80% maximum utilization, editable per feed.
 * Measured history sits behind a swappable `Renga.Telemetry.Store` behaviour.
-  The built-in adapter keeps five-minute averages for 30 days in Postgres;
+  The built-in adapter keeps five-minute buckets for 30 days in Postgres;
   other adapters must provide both tenant-scoped writes and range reads, with
   retention managed by their backend. Findings and capacity use eligible
   current readings, never the chart store.
@@ -380,7 +395,9 @@ capability under RFD 9 and needs its own design.
   Replay is idempotent, loss is reported, and telemetry cannot evict or starve
   inventory or alter inventory reconciliation and completeness clocks.
 * Readings may suggest which outlet a supply uses, as a finding an operator
-  accepts or dismisses; they never record a connection.
+  accepts or dismisses. Correlation uses its own bounded window, preserves the
+  supporting samples, suppresses ambiguous/common-mode matches, and requires
+  an authorized RFD 7 cable assertion before the current projection changes.
 * Measured load comes first from the RFD 10 `power_poller`; its PDU/UPS and
   Redfish modules reuse RFD 11's collector contracts but are not supplied by
   RFD 11. Host power supply readings follow.

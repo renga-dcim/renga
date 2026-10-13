@@ -63,8 +63,13 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   Collectors page.
 * [ ] Open not-redundant, near-capacity, supply-failed, unexpected-draw, and
   incomplete-path findings in a Power Inbox domain.
-* [ ] Suggest supply-to-outlet connections from correlated readings, accepted
-  or dismissed by an operator and never applied automatically.
+* [ ] Maintain a bounded 24-hour/1,440-sample correlation window independent of
+  current readings and chart history. Require overlapping fresh coverage,
+  event-time pairing tolerance, and distinct paired transitions; suppress
+  ambiguous and common-mode matches. Preserve the supporting samples in the
+  finding, and require an authorized RFD 7 `CableAssertion` before
+  reconciliation can change a current cable. Never mutate the plan or replace
+  a cable automatically.
 
 == Phase 5: Measured history
 
