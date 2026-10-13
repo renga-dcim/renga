@@ -45,3 +45,12 @@ Implements link:README.adoc[RFD 10: Power inventory and topology].
   incomplete-path findings in a Power Inbox domain.
 * [ ] Suggest supply-to-outlet connections from correlated readings, accepted
   or dismissed by an operator and never applied automatically.
+
+== Phase 5: Measured history
+
+* [ ] Sample readings on their own interval and deliver them in batches through
+  the on-disk queue, apart from inventory observations.
+* [ ] Add the `Renga.Telemetry.Store` behaviour and the built-in adapter keeping
+  five-minute averages for 30 days in Postgres.
+* [ ] Show measured-load trends on feeds and devices, keeping findings and
+  capacity on the latest readings only.

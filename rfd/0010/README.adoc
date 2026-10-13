@@ -217,6 +217,28 @@ suppresses that pairing. Suggestions are never applied automatically, and an
 existing connection is never replaced by one; a contradicting reading opens
 the usual mismatch finding instead.
 
+== Measured history
+
+Readings are sampled on their own interval (one minute by default) and
+delivered in batches through the agent's on-disk queue, separately from
+inventory observations, so a reading never triggers reconciliation.
+
+Renga keeps the latest reading of each quantity, with its time, source, and
+coverage, in its own tables. Findings, headroom, and redundancy use only those
+latest readings.
+
+History sits behind a `Renga.Telemetry.Store` behaviour, which writes samples,
+reads a time range with downsampling, and enforces retention:
+
+* The default adapter is built in and bounded. It keeps five-minute averages in
+  Postgres for 30 days, so a self-hosted Renga needs no extra infrastructure.
+* Opt-in adapters can keep far longer histories elsewhere, for example
+  Prometheus or VictoriaMetrics through remote write, or TimescaleDB.
+
+The store only feeds charts and trends. Swapping adapters, or losing the store,
+never changes a finding or a capacity figure. The behaviour is not specific to
+power; later RFDs may record other readings through it.
+
 == Findings
 
 * **Not redundant**: a device whose power ports do not reach two sides, when its
@@ -235,7 +257,8 @@ Findings join the Inbox under a Power domain and follow the existing workflow.
 == User interaction
 
 * A site's power page lists panels and feeds with capacity bars for allocated
-  and measured load.
+  and measured load, and each feed and device shows a measured-load trend from
+  the telemetry store.
 * A rack shows its feeds, its PDUs' outlets, and which device each outlet
   serves, next to the elevation.
 * A device's Hardware tab shows its power ports, their path to a feed, and a
@@ -257,6 +280,10 @@ capability under RFD 9 and needs its own design.
   uses it is labelled as resting on a configured default, and nothing is
   assumed until it is set.
 * New feeds default to 80% maximum utilization, editable per feed.
+* Measured history sits behind a swappable `Renga.Telemetry.Store` behaviour.
+  The built-in adapter keeps five-minute averages for 30 days in Postgres;
+  other adapters may keep longer histories. Findings and capacity use only the
+  latest readings, never the store.
 * Readings may suggest which outlet a supply uses, as a finding an operator
   accepts or dismisses; they never record a connection.
 * Measured load comes first from PDU readings through RFD 11 collectors; host
@@ -278,6 +305,8 @@ capability under RFD 9 and needs its own design.
 . Add measured load from PDU collectors, then supply evidence from host agents:
   hwmon and the SMBIOS snapshot, then local exporters, then the IPMI add-on.
 . Add the power findings and the Power Inbox domain.
+. Add the telemetry store with its bounded Postgres adapter, and measured-load
+  trends.
 
 == Implementation
 
