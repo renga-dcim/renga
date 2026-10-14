@@ -1277,10 +1277,9 @@ mod tests {
             collect_with_detection(&root, Ok("[]"), VirtDetection::None, VirtDetection::None)
                 .unwrap();
         assert!(
-            virtualization(&regular_file)
+            !virtualization(&regular_file)
                 .attributes
-                .get("container_host")
-                .is_none(),
+                .contains_key("container_host"),
             "a regular file must not identify a container runtime"
         );
 

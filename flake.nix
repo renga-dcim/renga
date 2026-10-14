@@ -43,7 +43,7 @@
           else
             "CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] muslTarget)}_LINKER";
 
-        rust-toolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+        rust-toolchain = pkgs.rust-bin.stable."1.99.0".default.override {
           extensions = [
             "rust-src"
             "rust-analyzer"

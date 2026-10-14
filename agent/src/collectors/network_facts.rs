@@ -209,7 +209,9 @@ mod tests {
     use super::*;
     use std::{cell::RefCell, collections::VecDeque};
 
-    struct Fake(RefCell<VecDeque<io::Result<(Vec<RawInterface>, Vec<RawAddress>)>>>);
+    type Dump = io::Result<(Vec<RawInterface>, Vec<RawAddress>)>;
+
+    struct Fake(RefCell<VecDeque<Dump>>);
     impl DumpProvider for Fake {
         fn interfaces(&self) -> io::Result<Vec<RawInterface>> {
             let mut pair = self.0.borrow_mut().pop_front().unwrap()?;
@@ -232,7 +234,7 @@ mod tests {
             loopback: false,
         }
     }
-    fn fake(items: Vec<io::Result<(Vec<RawInterface>, Vec<RawAddress>)>>) -> Fake {
+    fn fake(items: Vec<Dump>) -> Fake {
         Fake(RefCell::new(items.into()))
     }
 
