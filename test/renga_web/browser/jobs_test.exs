@@ -39,7 +39,7 @@ defmodule RengaWeb.Browser.JobsTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, job: job, resource: resource}
+    %{conn: conn, job: job, resource: resource, scope: scope, agent: agent}
   end
 
   defp heights(selector),
@@ -59,6 +59,20 @@ defmodule RengaWeb.Browser.JobsTest do
       "[...document.getElementById('jobs-list').closest('table').querySelectorAll('thead th')].filter(th => th.offsetParent !== null).map(th => th.textContent.trim())",
       &assert(&1 == ["Job", "Target", "State"])
     )
+  end
+
+  test "loads an older page on a phone", %{conn: conn, job: oldest, scope: scope, agent: agent} do
+    for _ <- 1..50 do
+      {:ok, _job} = Jobs.create_job(scope, agent.id, "inventory.collect@1", %{})
+    end
+
+    conn
+    |> visit("/activity/jobs")
+    |> assert_has("#jobs-load-older", text: "Load older jobs")
+    |> refute_has("#job-#{oldest.id}-state")
+    |> PhoenixTest.Playwright.click("#jobs-load-older")
+    |> assert_has("#job-#{oldest.id}-state")
+    |> refute_has("#jobs-load-older")
   end
 
   test "the job panel fits a phone and its buttons are tappable", %{conn: conn, job: job} do

@@ -76,6 +76,13 @@ defmodule RengaWeb.JobsLiveTest do
     job
   end
 
+  defp request_many(%{scope: scope, agent: agent}, count) do
+    for _ <- 1..count do
+      {:ok, job} = Jobs.create_job(scope, agent.id, @collect, %{})
+      job
+    end
+  end
+
   defp run(%{system_scope: system_scope, agent: agent}, type, payload) do
     {:ok, [{job, token}]} = Jobs.lease_jobs(system_scope, agent, [@collect], 1)
     {:ok, _} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
@@ -104,6 +111,53 @@ defmodule RengaWeb.JobsLiveTest do
 
     view |> element("#jobs-filter-needs_review") |> render_click()
     assert has_element?(view, "#jobs-list", "No job needs review.")
+  end
+
+  test "loads older jobs and resets the loaded depth when the filter changes", context do
+    open = request_many(context, 51)
+    {:ok, finished} = Jobs.create_job(context.scope, context.agent.id, @collect, %{})
+    {:ok, _finished} = Jobs.cancel_job(context.scope, finished.id)
+    {:ok, view, _html} = live(context.conn, ~p"/activity/jobs")
+
+    assert length(job_row_ids(view)) == 50
+    assert has_element?(view, "#jobs-load-older")
+
+    view |> element("#jobs-load-older") |> render_click()
+    assert length(job_row_ids(view)) == 52
+    refute has_element?(view, "#jobs-load-older")
+
+    view |> element("#jobs-filter-open") |> render_click()
+    assert length(job_row_ids(view)) == 50
+    assert has_element?(view, "#jobs-load-older")
+
+    view |> element("#jobs-load-older") |> render_click()
+    assert Enum.sort(job_row_ids(view)) == Enum.sort(Enum.map(open, &"jobs-#{&1.id}"))
+
+    view |> element("#jobs-filter-finished") |> render_click()
+    assert job_row_ids(view) == ["jobs-#{finished.id}"]
+    refute has_element?(view, "#jobs-load-older")
+  end
+
+  test "live transitions preserve the loaded depth", context do
+    jobs = request_many(context, 51)
+    oldest = List.first(jobs)
+    {:ok, view, _html} = live(context.conn, ~p"/activity/jobs?state=open")
+    view |> element("#jobs-load-older") |> render_click()
+    assert length(job_row_ids(view)) == 51
+
+    {:ok, _cancelled} = Jobs.cancel_job(context.scope, oldest.id)
+
+    assert eventually(fn ->
+             length(job_row_ids(view)) == 50 and
+               "jobs-#{oldest.id}" not in job_row_ids(view)
+           end)
+
+    {:ok, newest} = Jobs.create_job(context.scope, context.agent.id, @collect, %{})
+
+    assert eventually(fn ->
+             length(job_row_ids(view)) == 51 and
+               "jobs-#{newest.id}" in job_row_ids(view)
+           end)
   end
 
   test "opens a job's detail with its history and cancels it", context do
@@ -261,5 +315,13 @@ defmodule RengaWeb.JobsLiveTest do
       Process.sleep(25)
       eventually(fun, attempts - 1)
     end
+  end
+
+  defp job_row_ids(view) do
+    view
+    |> render()
+    |> LazyHTML.from_document()
+    |> LazyHTML.query("#jobs-list tr[data-phx-stream]")
+    |> LazyHTML.attribute("id")
   end
 end

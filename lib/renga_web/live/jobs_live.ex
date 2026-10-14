@@ -27,6 +27,7 @@ defmodule RengaWeb.JobsLive do
     {"finished", "Finished"}
   ]
   @reload_after_ms 300
+  @page_size 50
 
   @impl true
   def mount(_params, _session, socket) do
@@ -50,12 +51,30 @@ defmodule RengaWeb.JobsLive do
   @impl true
   def handle_params(params, _uri, socket) do
     group = if params["state"] in Map.keys(Jobs.state_groups()), do: params["state"]
+    reset? = !Map.has_key?(socket.assigns, :group) or socket.assigns.group != group
+    limit = if reset?, do: @page_size, else: socket.assigns.loaded_limit
 
     {:noreply,
      socket
      |> assign(:group, group)
-     |> load_jobs()
+     |> load_jobs(limit)
      |> load_job(params["id"])}
+  end
+
+  @impl true
+  def handle_event("load_older", _params, socket) do
+    opts = job_filters(socket) ++ [before: socket.assigns.oldest, limit: @page_size + 1]
+    jobs = Jobs.list_jobs(socket.assigns.current_scope, opts)
+    {page, more?} = page(jobs, @page_size)
+
+    {:noreply,
+     socket
+     |> assign(
+       oldest: List.last(page) || socket.assigns.oldest,
+       more?: more?,
+       loaded_limit: socket.assigns.loaded_limit + length(page)
+     )
+     |> stream(:jobs, page)}
   end
 
   @impl true
@@ -115,16 +134,26 @@ defmodule RengaWeb.JobsLive do
     do: {:noreply, socket |> assign(:reload_timer, nil) |> refresh()}
 
   defp refresh(socket),
-    do: socket |> load_jobs() |> load_job(socket.assigns.job && socket.assigns.job.id)
+    do:
+      socket
+      |> load_jobs(socket.assigns.loaded_limit)
+      |> load_job(socket.assigns.job && socket.assigns.job.id)
 
-  defp load_jobs(socket) do
+  defp load_jobs(socket, limit) do
     scope = socket.assigns.current_scope
-    opts = if socket.assigns.group, do: [group: socket.assigns.group], else: []
+    jobs = Jobs.list_jobs(scope, job_filters(socket) ++ [limit: limit + 1])
+    {jobs, more?} = page(jobs, limit)
 
     socket
     |> assign(:counts, Jobs.count_jobs_by_group(scope))
-    |> stream(:jobs, Jobs.list_jobs(scope, opts), reset: true)
+    |> assign(oldest: List.last(jobs), more?: more?, loaded_limit: limit)
+    |> stream(:jobs, jobs, reset: true)
   end
+
+  defp job_filters(%{assigns: %{group: nil}}), do: []
+  defp job_filters(%{assigns: %{group: group}}), do: [group: group]
+
+  defp page(jobs, limit), do: {Enum.take(jobs, limit), length(jobs) > limit}
 
   defp load_job(socket, nil), do: assign(socket, job: nil, events: [], actor_names: %{})
 
@@ -229,6 +258,10 @@ defmodule RengaWeb.JobsLive do
             {empty_message(@group)}
           </:empty>
         </.table>
+
+        <div :if={@more?} class="flex justify-center">
+          <.button id="jobs-load-older" phx-click="load_older">Load older jobs</.button>
+        </div>
       </div>
 
       <.job_panel

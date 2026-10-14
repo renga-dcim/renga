@@ -73,17 +73,29 @@ defmodule Renga.Jobs do
   @doc """
   Lists the organization's jobs, newest first, with their resource, agent,
   and requesting user. Filters by `:state`, `:group` (see `state_groups/0`),
-  `:agent_id`, `:resource_id`, and `:batch_id`, and returns at most `:limit`
-  (default 50).
+  `:agent_id`, `:resource_id`, and `:batch_id`. Pass the oldest job already
+  shown as `:before` to read the next keyset page. Returns at most `:limit`
+  jobs (default 50).
   """
   def list_jobs(%Scope{organization_id: organization_id}, opts \\ []) do
     Job
     |> where([job], job.organization_id == ^organization_id)
     |> filter_jobs(opts)
+    |> jobs_before(Keyword.get(opts, :before))
     |> order_by([job], desc: job.inserted_at, desc: job.id)
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :agent, :requested_by_user])
     |> Repo.all()
+  end
+
+  defp jobs_before(query, nil), do: query
+
+  defp jobs_before(query, %Job{inserted_at: inserted_at, id: id}) do
+    where(
+      query,
+      [job],
+      job.inserted_at < ^inserted_at or (job.inserted_at == ^inserted_at and job.id < ^id)
+    )
   end
 
   @doc """
