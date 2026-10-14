@@ -35,6 +35,60 @@ defmodule RengaWeb.Browser.DesignSystemTest do
   })()
   """
 
+  @brand_render """
+  (() => {
+    const fill = selector => getComputedStyle(document.querySelector(selector)).fill
+    const color = selector => getComputedStyle(document.querySelector(selector)).color
+    const size = selector => {
+      const box = document.querySelector(selector).getBoundingClientRect()
+      return {width: box.width, height: box.height}
+    }
+
+    return {
+      accent: color("#brand-mark"),
+      foreground: color("body"),
+      mark: fill("#brand-mark rect"),
+      wordmark_r: fill("#brand-wordmark g rect"),
+      wordmark_letters: fill("#brand-wordmark > rect"),
+      one_tone_r: fill("#brand-wordmark-one-tone g rect"),
+      one_tone_letters: fill("#brand-wordmark-one-tone > rect"),
+      mark_size: size("#brand-mark"),
+      inverted_size: size("#brand-mark-inverted"),
+      tile_size: size("#brand-mark-tile"),
+      wordmark_size: size("#brand-wordmark"),
+      caps_size: size("#brand-wordmark-caps"),
+      one_tone_size: size("#brand-wordmark-one-tone")
+    }
+  })()
+  """
+
+  @favicon_render """
+  (async () => {
+    const image = new Image()
+    image.src = "/favicon.svg"
+    await image.decode()
+
+    const canvas = document.createElement("canvas")
+    canvas.width = 16
+    canvas.height = 16
+    const context = canvas.getContext("2d")
+    context.drawImage(image, 0, 0, 16, 16)
+    const pixels = context.getImageData(0, 0, 16, 16).data
+    const alpha = (x, y) => pixels[(y * 16 + x) * 4 + 3]
+    let painted = 0
+
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i] > 0) painted++
+    }
+
+    return {
+      painted,
+      corners_transparent: [[0, 0], [15, 0], [0, 15], [15, 15]].every(([x, y]) => alpha(x, y) === 0),
+      center_transparent: alpha(8, 8) === 0
+    }
+  })()
+  """
+
   test "theme, accent, and density controls change the rendered tokens and survive reload", %{
     conn: conn
   } do
@@ -92,6 +146,32 @@ defmodule RengaWeb.Browser.DesignSystemTest do
       assert appearance["theme"] == nil
       assert appearance["theme_pref"] == "system"
       assert appearance["accent_color"] == "#e07a3f"
+    end)
+  end
+
+  test "brand variants follow the accent and foreground at their intended proportions", %{
+    conn: conn
+  } do
+    for path <- [
+          "/dev/design-system?accent=copper&density=comfortable&theme=light",
+          "/dev/design-system?accent=petrol&density=comfortable&theme=dark"
+        ] do
+      conn
+      |> visit(path)
+      |> assert_has("body .phx-connected")
+      |> evaluate(@brand_render, &assert_brand_render/1)
+    end
+  end
+
+  test "the SVG favicon paints the clipped tile at 16 pixels", %{conn: conn} do
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> evaluate(@favicon_render, fn rendering ->
+      assert rendering["painted"] > 40
+      assert rendering["painted"] < 200
+      assert rendering["corners_transparent"] == true
+      assert rendering["center_transparent"] == true
     end)
   end
 
@@ -306,5 +386,25 @@ defmodule RengaWeb.Browser.DesignSystemTest do
         end
       )
     end
+  end
+
+  defp assert_brand_render(rendering) do
+    assert rendering["mark"] == rendering["accent"]
+    assert rendering["wordmark_r"] == rendering["accent"]
+    assert rendering["wordmark_letters"] == rendering["foreground"]
+    assert rendering["one_tone_r"] == rendering["foreground"]
+    assert rendering["one_tone_letters"] == rendering["foreground"]
+
+    for key <- ~w(mark_size inverted_size tile_size) do
+      assert_in_delta rendering[key]["width"], 48, 0.1
+      assert_in_delta rendering[key]["height"], 48, 0.1
+    end
+
+    assert_in_delta rendering["wordmark_size"]["height"], 40, 0.1
+    assert_in_delta rendering["wordmark_size"]["width"] / 40, 113 / 33.2, 0.02
+    assert_in_delta rendering["caps_size"]["height"], 28, 0.1
+    assert_in_delta rendering["caps_size"]["width"] / 28, 113 / 24, 0.02
+    assert_in_delta rendering["one_tone_size"]["height"], 24, 0.1
+    assert_in_delta rendering["one_tone_size"]["width"] / 24, 113 / 33.2, 0.02
   end
 end
