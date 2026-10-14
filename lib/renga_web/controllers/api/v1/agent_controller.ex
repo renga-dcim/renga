@@ -23,7 +23,8 @@ defmodule RengaWeb.Api.V1.AgentController do
       accepted: {Schemas.CheckInAccepted, description: "Check-in recorded."},
       unauthorized: Schemas.unauthorized_response(),
       conflict:
-        {Schemas.Rejected, description: "The intake key is enrolled by another installation."},
+        {Schemas.Rejected,
+         description: "The installation ID is registered to a different collector source."},
       unprocessable_entity: {Schemas.Rejected, description: "The check-in payload is invalid."}
     ]
 

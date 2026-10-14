@@ -5,12 +5,17 @@ defmodule RengaWeb.Api.V1.Schemas.SourceIdentity do
     %{
       title: "SourceIdentity",
       description:
-        "The reporting source, as the agent believes it to be. Optional: the intake key " <>
-          "and installation ID already identify the source, and any value given must match it.",
+        "The reporting source. Optional: the intake key and installation ID already " <>
+          "identify it.",
       type: :object,
       properties: %{
         kind: %{type: [:string, :null], enum: ["host_agent", nil]},
-        source_id: %{type: [:string, :null], description: "The source's ID or name."}
+        source_id: %{
+          type: :null,
+          description:
+            "Omit, or send null. These endpoints reject any value, including the " <>
+              "collector's own source ID or name."
+        }
       }
     }
   end

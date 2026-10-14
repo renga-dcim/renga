@@ -96,8 +96,9 @@ defmodule RengaWeb.Api.V1.Schemas do
       required: true,
       schema: uuid(),
       description:
-        "The collector installation's stable UUID. An intake key is bound to the first " <>
-          "installation that uses it."
+        "The collector installation's stable UUID. Within the intake key's organization " <>
+          "it selects the collector, registering one on first use, so one key can enroll " <>
+          "a whole fleet."
     ]
   end
 

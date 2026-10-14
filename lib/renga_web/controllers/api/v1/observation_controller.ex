@@ -29,8 +29,8 @@ defmodule RengaWeb.Api.V1.ObservationController do
       conflict:
         {Schemas.Rejected,
          description:
-           "The intake key is enrolled by another installation, or the `observation_id` " <>
-             "was already used for a different payload."},
+           "The installation ID is registered to a different collector source, or the " <>
+             "`observation_id` was already used for a different payload."},
       unprocessable_entity: {Schemas.Rejected, description: "The observation is invalid."}
     ]
 

@@ -161,6 +161,7 @@ fn the_contract_accepts_edge_cases_the_server_accepts() {
 
     for (schema, fixture) in fixtures {
         let bodies: Vec<Value> = serde_json::from_str(fixture).unwrap();
+        assert!(!bodies.is_empty(), "the {schema} fixture has no bodies");
         for body in &bodies {
             assert_conforms(schema, body);
         }

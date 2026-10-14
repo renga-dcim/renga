@@ -1093,7 +1093,7 @@
       },
       "SourceIdentity": {
         "title": "SourceIdentity",
-        "description": "The reporting source, as the agent believes it to be. Optional: the intake key and installation ID already identify the source, and any value given must match it.",
+        "description": "The reporting source. Optional: the intake key and installation ID already identify it.",
         "properties": {
           "kind": {
             "enum": [
@@ -1106,11 +1106,8 @@
             ]
           },
           "source_id": {
-            "description": "The source's ID or name.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "description": "Omit, or send null. These endpoints reject any value, including the collector's own source ID or name.",
+            "type": "null"
           }
         },
         "type": "object"
@@ -1164,7 +1161,7 @@
                 }
               }
             },
-            "description": "The intake key is enrolled by another installation."
+            "description": "The installation ID is registered to a different collector source."
           },
           "422": {
             "content": {
@@ -1181,7 +1178,7 @@
         "operationId": "recordAgentCheckIn",
         "parameters": [
           {
-            "description": "The collector installation's stable UUID. An intake key is bound to the first installation that uses it.",
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
             "in": "header",
             "name": "x-renga-installation-id",
             "required": true,
@@ -1270,7 +1267,7 @@
         "operationId": "leaseAgentJobs",
         "parameters": [
           {
-            "description": "The collector installation's stable UUID. An intake key is bound to the first installation that uses it.",
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
             "in": "header",
             "name": "x-renga-installation-id",
             "required": true,
@@ -1389,7 +1386,7 @@
             }
           },
           {
-            "description": "The collector installation's stable UUID. An intake key is bound to the first installation that uses it.",
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
             "in": "header",
             "name": "x-renga-installation-id",
             "required": true,
@@ -1461,7 +1458,7 @@
                 }
               }
             },
-            "description": "The intake key is enrolled by another installation, or the `observation_id` was already used for a different payload."
+            "description": "The installation ID is registered to a different collector source, or the `observation_id` was already used for a different payload."
           },
           "422": {
             "content": {
@@ -1478,7 +1475,7 @@
         "operationId": "createObservation",
         "parameters": [
           {
-            "description": "The collector installation's stable UUID. An intake key is bound to the first installation that uses it.",
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
             "in": "header",
             "name": "x-renga-installation-id",
             "required": true,

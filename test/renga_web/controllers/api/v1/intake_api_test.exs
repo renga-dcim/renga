@@ -190,8 +190,37 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     end
   end
 
+  # The spec documents source.source_id as omitted or null because the API
+  # rejects every value today, even the collector's own source ID or name.
+  test "observations naming their source by ID or name are rejected", %{token: token} do
+    assert %{"source" => %{"id" => id, "name" => name}} =
+             build_conn()
+             |> authorize(token, @first_installation_id)
+             |> post_check_in()
+             |> valid_api_response(202)
+
+    for source_id <- [id, name] do
+      body =
+        Map.put(valid_observation_payload(), "source", %{
+          "kind" => "host_agent",
+          "source_id" => source_id
+        })
+
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/observations", body)
+
+      assert %{"errors" => [%{"path" => "source.source_id"}]} = valid_api_response(conn, 422)
+    end
+  end
+
   defp accepted_fixture(name) do
-    "test/fixtures/openapi/accepted_#{name}.json" |> File.read!() |> Jason.decode!()
+    assert [_ | _] =
+             bodies =
+             "test/fixtures/openapi/accepted_#{name}.json" |> File.read!() |> Jason.decode!()
+
+    bodies
   end
 
   defp post_json(conn, path, body) do
