@@ -99,20 +99,7 @@ defmodule Renga.Repo.Migrations.CreatePrefixVlanRelationshipsRollbackTest do
              query_scratch(scratch_repo, "SELECT * FROM prefix_vlan_relationships")
   end
 
-  defp start_admin_connection do
-    config = Renga.Repo.config()
-
-    {:ok, admin} =
-      Postgrex.start_link(
-        hostname: Keyword.fetch!(config, :hostname),
-        port: Keyword.fetch!(config, :port),
-        username: Keyword.fetch!(config, :username),
-        password: Keyword.fetch!(config, :password),
-        database: "postgres"
-      )
-
-    admin
-  end
+  defp start_admin_connection, do: Renga.ScratchMigrations.start_admin_connection()
 
   defp create_database(admin, scratch_database) do
     {:ok, %Postgrex.Result{}} =

@@ -105,18 +105,5 @@ defmodule Renga.Repo.Migrations.AddAgentLastContactedAtTest do
     rows
   end
 
-  defp start_admin_connection do
-    config = Renga.Repo.config()
-
-    {:ok, admin} =
-      Postgrex.start_link(
-        hostname: Keyword.fetch!(config, :hostname),
-        port: Keyword.fetch!(config, :port),
-        username: Keyword.fetch!(config, :username),
-        password: Keyword.fetch!(config, :password),
-        database: "postgres"
-      )
-
-    admin
-  end
+  defp start_admin_connection, do: Renga.ScratchMigrations.start_admin_connection()
 end

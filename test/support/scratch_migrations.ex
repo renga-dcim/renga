@@ -19,6 +19,18 @@ defmodule Renga.ScratchMigrations do
     end)
   end
 
+  @doc "Starts a direct Postgrex connection using the repository's active transport."
+  def start_admin_connection(database \\ "postgres") do
+    options =
+      Renga.Repo.config()
+      |> Keyword.take([:hostname, :port, :socket_dir, :username, :password])
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Keyword.put(:database, database)
+
+    {:ok, connection} = Postgrex.start_link(options)
+    connection
+  end
+
   defp without_module_conflict_warnings(fun) do
     previous = Code.get_compiler_option(:ignore_module_conflict)
     Code.put_compiler_option(:ignore_module_conflict, true)

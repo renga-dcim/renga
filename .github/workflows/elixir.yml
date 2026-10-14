@@ -8,6 +8,7 @@ name: elixir
 
 env:
   MIX_ENV: test
+  DATABASE_TRANSPORT: tcp
   DATABASE_USER: postgres
   DATABASE_PASSWORD: postgres
   DATABASE_HOST: localhost

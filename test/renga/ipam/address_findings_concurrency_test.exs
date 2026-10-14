@@ -13,8 +13,7 @@ defmodule Renga.IPAM.AddressFindingsConcurrencyTest do
   setup do
     database = "renga_findings_scratch_#{System.unique_integer([:positive])}"
     config = Repo.config()
-    admin_config = Keyword.take(config, [:hostname, :port, :username, :password])
-    {:ok, admin} = Postgrex.start_link(Keyword.put(admin_config, :database, "postgres"))
+    admin = Renga.ScratchMigrations.start_admin_connection()
     Postgrex.query!(admin, "CREATE DATABASE #{database}", [])
     repo = String.to_atom(database)
 
@@ -32,7 +31,7 @@ defmodule Renga.IPAM.AddressFindingsConcurrencyTest do
     Repo.put_dynamic_repo(repo)
 
     on_exit(fn ->
-      {:ok, admin} = Postgrex.start_link(Keyword.put(admin_config, :database, "postgres"))
+      admin = Renga.ScratchMigrations.start_admin_connection()
       Postgrex.query!(admin, "DROP DATABASE #{database} WITH (FORCE)", [])
     end)
 

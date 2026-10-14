@@ -10,11 +10,22 @@ config :argon2_elixir,
 # The MIX_TEST_PARTITION environment variable can be used
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
+#
+# Local tests use the same socket as development. CI explicitly selects TCP for
+# its service container; this avoids stale local host/port exports overriding
+# the socket configuration after an upgrade.
+database_tcp? = System.get_env("DATABASE_TRANSPORT") == "tcp"
+
 config :renga, Renga.Repo,
   username: System.get_env("DATABASE_USER") || "postgres",
-  password: System.get_env("DATABASE_PASSWORD") || "postgres",
-  hostname: System.get_env("DATABASE_HOST") || "localhost",
-  port: String.to_integer(System.get_env("DATABASE_PORT") || "5434"),
+  password: System.get_env("DATABASE_PASSWORD"),
+  hostname: if(database_tcp?, do: System.get_env("DATABASE_HOST"), else: nil),
+  port:
+    if(database_tcp?,
+      do: String.to_integer(System.get_env("DATABASE_PORT") || "5432"),
+      else: 5432
+    ),
+  socket_dir: if(database_tcp?, do: nil, else: Path.expand("../tmp/postgres-socket", __DIR__)),
   database: "renga_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2

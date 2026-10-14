@@ -55,11 +55,19 @@ rs-fmt:
 
 .PHONY: up
 up:
-	docker compose up -d
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		./scripts/local-postgres.sh start; \
+	else \
+		docker compose up -d; \
+	fi
 
 .PHONY: down
 down:
-	docker compose stop
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		./scripts/local-postgres.sh stop; \
+	else \
+		docker compose stop; \
+	fi
 
 .PHONY: migrate
 migrate:
@@ -67,7 +75,7 @@ migrate:
 
 .PHONY: db
 db:
-	psql -h 127.0.0.1 -U postgres -d renga_dev -p 5434 -W
+	psql -h "$(CURDIR)/tmp/postgres-socket" -U postgres -d renga_dev
 
 .PHONY: console
 console:
