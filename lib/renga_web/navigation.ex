@@ -91,8 +91,11 @@ defmodule RengaWeb.Navigation do
         question: "What changed?",
         icon: "hero-clock",
         sections: [
-          section(:activity, "Activity", ~p"/activity", "hero-clock",
+          section(:activity, "Changes", ~p"/activity", "hero-clock",
             keywords: ~w(history audit changes)
+          ),
+          section(:jobs, "Jobs", ~p"/activity/jobs", "hero-play-circle",
+            keywords: ~w(agents collect requests operations)
           )
         ]
       },

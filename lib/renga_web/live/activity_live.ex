@@ -3,13 +3,16 @@ defmodule RengaWeb.ActivityLive do
   The organization-wide Activity feed (RFD 8: "What changed?").
 
   It shows the inventory change events reconciliation records (discoveries,
-  field updates, conflicts, staleness) and people's actions (overrides and
-  finding workflow changes) in one feed, each attributed to the person or
-  the source behind it.
+  field updates, conflicts, staleness), people's actions (overrides and
+  finding workflow changes), and jobs requested from resources in one feed,
+  each attributed to the person or the source behind it. Jobs themselves
+  have their own tab (`RengaWeb.JobsLive`).
   """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
+
+  import RengaWeb.JobComponents, only: [job_change: 1, job_change?: 1]
 
   alias Renga.Inventory
   alias Renga.Inventory.Changes
@@ -19,7 +22,12 @@ defmodule RengaWeb.ActivityLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Changes.subscribe(socket.assigns.current_scope)
+    if connected?(socket) do
+      Changes.subscribe(socket.assigns.current_scope)
+      # A job's outcome is recorded as a change without an inventory broadcast.
+      Renga.Jobs.Changes.subscribe(socket.assigns.current_scope)
+    end
+
     events = Inventory.list_activity(socket.assigns.current_scope, limit: @page_size)
 
     {:ok,
@@ -32,6 +40,9 @@ defmodule RengaWeb.ActivityLive do
   # Observation time is not insertion time: refresh the whole displayed
   # window so late reports and bursts cannot leave permanent gaps.
   @impl true
+  def handle_info({:jobs_changed, organization_id}, socket),
+    do: handle_info({:inventory_changed, organization_id}, socket)
+
   def handle_info({:inventory_changed, _organization_id}, socket) do
     events =
       Inventory.list_activity(socket.assigns.current_scope,
@@ -88,7 +99,11 @@ defmodule RengaWeb.ActivityLive do
             </time>
           </:col>
           <:col :let={event} label="Change" class="font-medium">
-            {ChangeDescription.describe(event)}
+            <%= if job_change?(event) do %>
+              <.job_change event={event} />
+            <% else %>
+              {ChangeDescription.describe(event)}
+            <% end %>
           </:col>
           <:col :let={event} label="Resource">
             <.link
@@ -119,6 +134,7 @@ defmodule RengaWeb.ActivityLive do
   # A person when someone acted, otherwise the source that reported it, or
   # Renga itself for changes it derived.
   defp actor(%{actor_user: %{email: email}}), do: email
+  defp actor(%{metadata: %{"agent" => agent}}) when is_binary(agent), do: agent
   defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"
   defp actor(%{source: %{name: name}}), do: name
   defp actor(_event), do: "Renga"

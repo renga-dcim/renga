@@ -49,11 +49,19 @@ defmodule Renga.Jobs do
 
   ## Reading
 
-  @doc "Fetches a job in the scope's organization, or nil."
-  def get_job(%Scope{organization_id: organization_id}, id) do
+  @doc """
+  Fetches a job in the scope's organization, or nil. `:preload` loads
+  associations, such as `[:resource, :agent, :requested_by_user]`.
+  """
+  def get_job(%Scope{organization_id: organization_id}, id, opts \\ []) do
     case Ecto.UUID.cast(id) do
-      {:ok, id} -> Repo.get_by(Job, id: id, organization_id: organization_id)
-      :error -> nil
+      {:ok, id} ->
+        Job
+        |> Repo.get_by(id: id, organization_id: organization_id)
+        |> Repo.preload(Keyword.get(opts, :preload, []))
+
+      :error ->
+        nil
     end
   end
 
@@ -158,6 +166,30 @@ defmodule Renga.Jobs do
     |> where([event], event.organization_id == ^organization_id and event.job_id == ^job_id)
     |> order_by([event], asc: event.sequence)
     |> Repo.all()
+  end
+
+  @doc """
+  Names for the people and agents behind `events`, keyed by actor id: a
+  person's email or an agent's name. System events have no actor id.
+  """
+  def event_actor_names(%Scope{organization_id: organization_id}, events) do
+    ids = fn type ->
+      for %JobEvent{actor_type: ^type, actor_id: id} <- events, uniq: true, do: id
+    end
+
+    users =
+      Renga.Accounts.User
+      |> where([user], user.id in ^ids.("user"))
+      |> select([user], {user.id, user.email})
+      |> Repo.all()
+
+    agents =
+      Agent
+      |> where([agent], agent.organization_id == ^organization_id and agent.id in ^ids.("agent"))
+      |> select([agent], {agent.id, agent.name})
+      |> Repo.all()
+
+    Map.new(users ++ agents)
   end
 
   ## Requesting
@@ -1105,11 +1137,22 @@ defmodule Renga.Jobs do
     |> ChangeEvent.changeset(%{
       kind: kind,
       field: Job.capability_key(job),
-      metadata: activity_metadata(job),
+      metadata: Map.merge(activity_metadata(job), activity_actor(actor)),
       occurred_at: now
     })
     |> Repo.insert!()
   end
+
+  # Activity names the agent that reported an outcome, as it names the
+  # source behind a collector's change.
+  defp activity_actor({:agent, agent_id}) do
+    case Repo.get(Agent, agent_id) do
+      %Agent{name: name} when is_binary(name) -> %{"agent" => name}
+      _unnamed -> %{}
+    end
+  end
+
+  defp activity_actor(_actor), do: %{}
 
   defp activity_metadata(%Job{} = job) do
     %{
