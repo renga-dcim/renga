@@ -692,28 +692,19 @@
                 "not_after": {
                   "description": "After this time the job is no longer leased or retried.",
                   "format": "date-time",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 },
                 "output_limit_bytes": {
                   "description": "Budget for all report payloads, across every attempt.",
                   "minimum": 0,
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": "integer"
                 },
                 "parameters": {
                   "description": "Inputs for the capability.",
                   "type": "object"
                 },
                 "timeout_ms": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
+                  "type": "integer"
                 }
               },
               "required": [

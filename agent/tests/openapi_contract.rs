@@ -1,4 +1,5 @@
-//! Checks the agent's request bodies against the server's published OpenAPI document.
+//! Checks the agent's requests, and its decoding of responses, against the server's published
+//! OpenAPI document.
 //!
 //! The server generates `priv/openapi/v1.json` from its own validator and fails its tests when the
 //! file is stale, so a payload change on either side that breaks the contract fails here.
@@ -7,11 +8,12 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     payload::{
-        Address, CheckIn, Component, HostAttributes, Identifiers, Interface, Observation,
-        QueueReport, ResourceKind, ServerResource,
+        Address, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface, JobReport,
+        LeaseRequest, LeaseResponse, Observation, QueueReport, ReportAck, ReportType, ResourceKind,
+        ServerResource,
     },
 };
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -138,7 +140,13 @@ fn check_ins_match_the_contract() {
         unreadable: 4,
     };
 
-    assert_conforms("CheckIn", &CheckIn::new(collectors::capabilities(), None));
+    // What the agent advertises: inventory it reports plus job capabilities its policy enables.
+    let capabilities = collectors::capabilities()
+        .into_iter()
+        .map(String::from)
+        .chain(["inventory.collect@1".to_owned()])
+        .collect();
+    assert_conforms("CheckIn", &CheckIn::new(capabilities, None));
     assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(Some(90)))));
     assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(None))));
 }
@@ -180,11 +188,113 @@ fn the_contract_rejects_what_the_server_rejects() {
         ["/resources/0/identifiers", "/resources/0/interfaces/0/mtu"]
     );
 
-    let mut check_in = serde_json::to_value(CheckIn::new(vec![""], None)).unwrap();
+    let mut check_in = serde_json::to_value(CheckIn::new(vec![String::new()], None)).unwrap();
     check_in["metadata"]["observation_queue"] = json!({ "entries": 1 });
 
     assert_eq!(
         violation_paths("CheckIn", &check_in),
         ["/capabilities/0", "/metadata/observation_queue"]
     );
+}
+
+#[test]
+fn job_requests_match_the_contract() {
+    let capabilities = ["inventory.collect@1".to_owned()];
+    assert_conforms(
+        "JobLeaseRequest",
+        &LeaseRequest {
+            capabilities: &capabilities,
+            limit: 1,
+        },
+    );
+
+    // The payloads the job worker sends for each report type.
+    let reports = [
+        (ReportType::Started, json!({})),
+        (ReportType::Progress, json!({})),
+        (
+            ReportType::Succeeded,
+            json!({"result": {"observation_id": "67e55044-10b1-426f-9247-bb680e5fe0c8"}}),
+        ),
+        (
+            ReportType::Failed,
+            json!({"reason": "timed out after 300s"}),
+        ),
+        (ReportType::Cancelled, json!({})),
+    ];
+    for (sequence, (kind, payload)) in (1..).zip(&reports) {
+        assert_conforms(
+            "JobReport",
+            &JobReport {
+                lease_token: "lease-token",
+                sequence,
+                kind: *kind,
+                payload,
+            },
+        );
+    }
+}
+
+/// Asserts that `body` is a valid `schema` response and that the agent can decode it.
+fn assert_decodes<T: DeserializeOwned>(schema: &str, body: Value) -> T {
+    let errors = violations(schema, &body);
+    assert!(errors.is_empty(), "{schema} example is invalid: {errors:?}");
+    serde_json::from_value(body)
+        .unwrap_or_else(|error| panic!("the agent cannot decode a valid {schema}: {error}"))
+}
+
+#[test]
+fn the_agent_decodes_documented_responses() {
+    let ack: CheckInAck = assert_decodes(
+        "CheckInAccepted",
+        json!({
+            "status": "accepted",
+            "source": {
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "kind": "host_agent",
+                "name": "host-agent-67e55044",
+                "last_seen_at": "2026-10-14T12:00:00.000Z"
+            },
+            "agent": {
+                "id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e",
+                "name": "db-01",
+                "lease_expires_at": "2026-10-14T12:05:00.000Z"
+            },
+            "jobs_waiting": true
+        }),
+    );
+    assert_eq!(ack.jobs_waiting, Some(true));
+
+    let leased: LeaseResponse = assert_decodes(
+        "JobLease",
+        json!({
+            "jobs": [{
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "capability": "inventory.collect@1",
+                "parameters": {},
+                "attempt": 1,
+                "lease_token": "lease-token",
+                "lease_expires_at": "2026-10-14T12:01:00.000Z",
+                "not_after": "2026-10-14T13:00:00.000Z",
+                "timeout_ms": 300000,
+                "output_limit_bytes": 65536
+            }]
+        }),
+    );
+    assert_eq!(leased.jobs.len(), 1);
+
+    // A finished job has no lease left to report.
+    let ack: ReportAck = assert_decodes(
+        "JobReportAccepted",
+        json!({
+            "status": "accepted",
+            "job": {
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "state": "succeeded",
+                "lease_expires_at": null
+            },
+            "cancel_requested": false
+        }),
+    );
+    assert!(!ack.cancel_requested);
 }

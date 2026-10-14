@@ -25,16 +25,13 @@ defmodule RengaWeb.Api.V1.Schemas.JobLease do
                 description: "Proves the lease on every report about this job."
               },
               lease_expires_at: timestamp(),
-              not_after:
-                timestamp("After this time the job is no longer leased or retried.")
-                |> nullable(),
-              timeout_ms: nullable(%{type: :integer}),
-              output_limit_bytes:
-                nullable(%{
-                  type: :integer,
-                  minimum: 0,
-                  description: "Budget for all report payloads, across every attempt."
-                })
+              not_after: timestamp("After this time the job is no longer leased or retried."),
+              timeout_ms: %{type: :integer},
+              output_limit_bytes: %{
+                type: :integer,
+                minimum: 0,
+                description: "Budget for all report payloads, across every attempt."
+              }
             },
             required: [
               :id,
