@@ -952,9 +952,8 @@ defmodule RengaWeb.InboxLive do
               <span class="block truncate text-xs text-fg-muted">{finding.message}</span>
               <%!-- Phones drop the Resource and Seen columns; the row keeps both here. --%>
               <span class="block truncate text-xs text-fg-subtle sm:hidden">
-                {resource_name(finding.resource)}<span :if={finding.interface_name}> · {finding.interface_name}</span> · {Format.age(
-                  finding.last_observed_at
-                )}
+                {resource_name(finding.resource)}<span :if={finding.interface_name}> · {finding.interface_name}</span>
+                · {Format.age(finding.last_observed_at)}
               </span>
             </.link>
           </:col>

@@ -506,8 +506,7 @@ defmodule RengaWeb.ResourceHardwareLive do
 
     ~H"""
     <span class="font-mono tabular-nums text-fg">{@total}</span>
-    slots:
-    <span :for={{{count, label, class}, index} <- @parts}>{if index > 0, do: ", "}<span class={[
+    slots: <span :for={{{count, label, class}, index} <- @parts}>{if index > 0, do: ", "}<span class={[
         "font-mono tabular-nums",
         class
       ]}>{count}</span> {label}</span>.

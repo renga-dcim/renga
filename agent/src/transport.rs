@@ -12,7 +12,7 @@ use reqwest::{
     StatusCode, Url,
 };
 use serde::Serialize;
-use std::{fmt, io::Read, thread, time::Duration};
+use std::{fmt, io::Read, sync::Arc, thread, time::Duration};
 
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
@@ -124,7 +124,24 @@ impl HttpClient {
             HeaderValue::from_str(&config.installation_id.to_string()).map_err(|_| {
                 TransportError::new("invalid installation ID".into(), FailureKind::Permanent)
             })?;
+        // Pin both the provider and roots so static installations neither depend on a host CA
+        // store nor inherit a process-global Rustls provider selected by another library.
+        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|error| {
+            TransportError::new(
+                format!("cannot configure TLS protocol versions: {error}"),
+                FailureKind::Permanent,
+            )
+        })?
+        .with_root_certificates(rustls::RootCertStore::from_iter(
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+        ))
+        .with_no_client_auth();
         let client = Client::builder()
+            .tls_backend_preconfigured(tls)
             .timeout(config.request_timeout)
             .redirect(Policy::none())
             .build()
@@ -328,9 +345,11 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::BTreeMap,
+        env, fs,
         io::{Read, Write},
         net::TcpListener,
         path::PathBuf,
+        process::Command,
     };
 
     fn config(renga_url: &str, intake_api_key: &str) -> Config {
@@ -448,6 +467,84 @@ mod tests {
                 uuid::Uuid::nil().to_string()
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn constructs_https_client_without_a_host_ca_store() {
+        const CHILD: &str = "RENGA_EMPTY_CA_STORE_TEST_CHILD";
+
+        if env::var_os(CHILD).is_some() {
+            assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
+            HttpClient::new(
+                &config("https://renga.test", "valid-token"),
+                Cancellation::default(),
+            )
+            .unwrap();
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("renga-empty-ca-{}", uuid::Uuid::new_v4()));
+        let directory = root.join("certs");
+        let file = root.join("ca.pem");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&file, []).unwrap();
+
+        let status = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "transport::tests::constructs_https_client_without_a_host_ca_store",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("SSL_CERT_FILE", &file)
+            .env("SSL_CERT_DIR", &directory)
+            .status()
+            .unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn rejects_server_certificate_outside_embedded_roots() {
+        use rcgen::{generate_simple_self_signed, CertifiedKey};
+        use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig, ServerConnection, StreamOwned};
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(["localhost".to_string()]).unwrap();
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.der().clone()],
+                PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+            )
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let connection = ServerConnection::new(Arc::new(server_config)).unwrap();
+            let mut stream = StreamOwned::new(connection, stream);
+            let mut request = [0; 1];
+            assert!(stream.read(&mut request).is_err());
+        });
+
+        let client = HttpClient::new(
+            &config(
+                &format!("https://localhost:{}", address.port()),
+                "valid-token",
+            ),
+            Cancellation::default(),
+        )
+        .unwrap();
+        let error = client
+            .client
+            .get(client.checkin_url.clone())
+            .send()
+            .unwrap_err();
+
+        assert!(format!("{error:?}").contains("UnknownIssuer"));
+        server.join().unwrap();
     }
 
     #[test]
