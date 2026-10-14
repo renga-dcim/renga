@@ -397,8 +397,8 @@ defmodule RengaWeb.CoreComponents do
 
   Rows follow the density tokens, the header stays visible while scrolling,
   and wide tables scroll inside their own container. Rows can open an object
-  with `row_navigate` and mark the open one with `row_selected`. The `:empty`
-  slot shows when there are no rows, including for streams.
+  with `row_navigate` or `row_patch` and mark the open one with `row_selected`.
+  The `:empty` slot shows when there are no rows, including for streams.
 
   With `overflow="clip"` the table keeps its width instead of scrolling:
   every row stays on one line, long values end in an ellipsis and show their
@@ -407,9 +407,10 @@ defmodule RengaWeb.CoreComponents do
   "Overflow"). Give fixed-width columns a width class; the rest share the
   remaining space.
 
-  With `row_navigate`, the first column becomes a native link; its slot must
-  not contain other interactive controls. For streams, reinsert affected rows
-  (or reset the stream) when changing selection so their markup is refreshed.
+  With `row_navigate` or `row_patch`, the first column becomes a native link;
+  its slot must not contain other interactive controls. Use only one of those
+  options. For streams, reinsert affected rows (or reset the stream) when
+  changing selection so their markup is refreshed.
 
   ## Examples
 
@@ -442,6 +443,10 @@ defmodule RengaWeb.CoreComponents do
   attr :row_navigate, :any,
     default: nil,
     doc: "the function returning a path that clicking the row navigates to"
+
+  attr :row_patch, :any,
+    default: nil,
+    doc: "the function returning a path that clicking the row patches to"
 
   attr :row_selected, :any,
     default: nil,
@@ -599,10 +604,13 @@ defmodule RengaWeb.CoreComponents do
       </td>
       <td
         :for={{col, index} <- Enum.with_index(@col)}
-        phx-click={!(index == 0 && @row_navigate) && row_command(@row_click, @row_navigate, @row)}
+        phx-click={
+          !(index == 0 && (@row_navigate || @row_patch)) &&
+            row_command(@row_click, @row_navigate, @row_patch, @row)
+        }
         class={[
           "px-cell",
-          (@row_click || @row_navigate) && "hover:cursor-pointer",
+          (@row_click || @row_navigate || @row_patch) && "hover:cursor-pointer",
           @overflow == "clip" && hide_below(col[:hide_below]),
           col[:class]
         ]}
@@ -612,13 +620,22 @@ defmodule RengaWeb.CoreComponents do
               divider, keeping rows on the density pitch; touch screens
               still get the 44px minimum. --%>
         <.link
-          :if={index == 0 && @row_navigate}
+          :if={index == 0 && @row_patch}
+          id={row_link_id(@row_id, @row)}
+          patch={@row_patch.(@row)}
+          class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+        >
+          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
+        </.link>
+        <.link
+          :if={index == 0 && @row_navigate && !@row_patch}
+          id={row_link_id(@row_id, @row)}
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
           <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
         </.link>
-        <%= if !(index == 0 && @row_navigate) do %>
+        <%= if !(index == 0 && (@row_navigate || @row_patch)) do %>
           <.cell overflow={@overflow} reveal>{render_slot(col, @row_item.(@row))}</.cell>
         <% end %>
       </td>
@@ -669,9 +686,22 @@ defmodule RengaWeb.CoreComponents do
   defp hide_below("4xl"), do: "hidden @4xl:table-cell"
   defp hide_below("5xl"), do: "hidden @5xl:table-cell"
 
-  defp row_command(nil, nil, _row), do: nil
-  defp row_command(row_click, nil, row), do: row_click.(row)
-  defp row_command(_row_click, row_navigate, row), do: JS.navigate(row_navigate.(row))
+  defp row_command(nil, nil, nil, _row), do: nil
+  defp row_command(row_click, nil, nil, row), do: row_click.(row)
+
+  defp row_command(_row_click, _row_navigate, row_patch, row) when not is_nil(row_patch),
+    do: JS.patch(row_patch.(row))
+
+  defp row_command(_row_click, row_navigate, nil, row), do: JS.navigate(row_navigate.(row))
+
+  defp row_link_id(nil, _row), do: nil
+
+  defp row_link_id(row_id, row) do
+    case row_id.(row) do
+      nil -> nil
+      id -> "#{id}-link"
+    end
+  end
 
   @doc """
   Renders a [Heroicon](https://heroicons.com).

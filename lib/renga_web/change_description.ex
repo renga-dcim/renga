@@ -68,6 +68,21 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "rule_applied", new_value: value} = event),
     do: "Owner set to #{value["name"]} by #{rule_label(event)}"
 
+  # Job events read as "Inventory collection failed"; the job itself keeps
+  # the full history.
+  def describe(%{kind: "job_requested", metadata: metadata}),
+    do: "#{job_noun(metadata)} requested"
+
+  def describe(%{kind: "job_outcome", metadata: %{"state" => state} = metadata}) do
+    noun = job_noun(metadata)
+
+    case state do
+      "uncertain" -> "#{noun} needs review"
+      state when state in ~w(succeeded failed cancelled expired) -> "#{noun} #{state}"
+      _other -> "#{noun} ended"
+    end
+  end
+
   def describe(%{kind: "request_" <> action} = event) do
     verb =
       case action do
@@ -108,6 +123,9 @@ defmodule RengaWeb.ChangeDescription do
       _invalid -> iso
     end
   end
+
+  defp job_noun(%{"noun" => noun}) when is_binary(noun), do: noun
+  defp job_noun(_metadata), do: "Job"
 
   defp rule_label(%{metadata: %{"rule_name" => name}}), do: "the rule #{name}"
   defp rule_label(_event), do: "a triage rule"

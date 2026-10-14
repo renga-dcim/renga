@@ -12,6 +12,7 @@ defmodule Renga.Jobs.Job do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.User
   alias Renga.Inventory.Agent
+  alias Renga.Inventory.Resource
   alias Renga.Jobs.JobEvent
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -21,6 +22,7 @@ defmodule Renga.Jobs.Job do
   @states ~w(queued leased running succeeded failed cancelled expired uncertain)
   @finished_states ~w(succeeded failed cancelled expired)
   @leased_states ~w(leased running)
+  @open_states ~w(queued leased running)
 
   schema "jobs" do
     field :batch_id, :binary_id
@@ -51,6 +53,9 @@ defmodule Renga.Jobs.Job do
 
     belongs_to :organization, Organization
     belongs_to :agent, Agent
+    # The resource the job was requested from, for context; the agent is the
+    # target.
+    belongs_to :resource, Resource
     belongs_to :requested_by_user, User
     has_many :events, JobEvent, preload_order: [asc: :sequence]
 
@@ -60,10 +65,12 @@ defmodule Renga.Jobs.Job do
   def states, do: @states
   def finished_states, do: @finished_states
   def leased_states, do: @leased_states
+  def open_states, do: @open_states
 
   @doc "The `name@version` key that identifies the job's capability."
   def capability_key(%__MODULE__{capability: name, capability_version: version}),
     do: "#{name}@#{version}"
 
   def finished?(%__MODULE__{state: state}), do: state in @finished_states
+  def open?(%__MODULE__{state: state}), do: state in @open_states
 end

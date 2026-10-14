@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import {Overlay} from "./overlay.js"
 
 test("only the open overlay cancels; repeated close preserves focus and scroll", () => {
-  globalThis.window = new EventTarget()
+  globalThis.window = Object.assign(new EventTarget(), {requestAnimationFrame: callback => callback()})
   const classes = new Set()
   const opener = {isConnected: true, focus() { document.activeElement = this }}
   globalThis.document = {

@@ -27,6 +27,33 @@ defmodule Renga.JobsTest do
     |> Repo.update!()
   end
 
+  describe "list_jobs/2" do
+    test "keyset pages through jobs sharing an insertion timestamp without repeats", %{
+      scope: scope,
+      agent: agent
+    } do
+      jobs =
+        for _ <- 1..3 do
+          {:ok, job} = Jobs.create_job(scope, agent.id, @collect, %{})
+          job
+        end
+
+      inserted_at = ~U[2026-10-14 12:00:00.000000Z]
+      ids = Enum.map(jobs, & &1.id)
+
+      Job
+      |> where([job], job.id in ^ids)
+      |> Repo.update_all(set: [inserted_at: inserted_at])
+
+      first = Jobs.list_jobs(scope, limit: 2)
+      second = Jobs.list_jobs(scope, before: List.last(first), limit: 2)
+
+      assert length(first) == 2
+      assert length(second) == 1
+      assert first |> Kernel.++(second) |> Enum.map(& &1.id) |> Enum.sort() == Enum.sort(ids)
+    end
+  end
+
   describe "create_job/5" do
     test "queues the job with its creation event", %{scope: scope, agent: agent} do
       assert {:ok, %Job{} = job} = Jobs.create_job(scope, agent.id, @collect, %{})

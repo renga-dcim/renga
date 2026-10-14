@@ -12,6 +12,11 @@ defmodule RengaWeb.ResourceLive.Show do
 
   The page re-reads the resource when the organization's inventory changes,
   so collector reports and other people's edits appear without a refresh.
+
+  When an agent reports on the resource, owners and admins can ask it to
+  collect inventory now (RFD 9). The latest collection shows as a banner
+  under the header while it is open and for a while after it ends, and
+  follows the job as it moves.
   """
   use RengaWeb, :live_view
 
@@ -20,6 +25,7 @@ defmodule RengaWeb.ResourceLive.Show do
   import RengaWeb.InventoryComponents
   import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.RequestComponents, only: [pending_request: 1]
+  import RengaWeb.JobComponents, only: [collect_notice: 1, job_change: 1, job_change?: 1]
 
   alias Renga.Catalog
   alias Renga.Inventory
@@ -27,6 +33,8 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Inventory.Changes
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.SourcePrecedence
+  alias Renga.Jobs
+  alias Renga.Jobs.Job
   alias Renga.Requests
   alias Renga.Teams
   alias RengaWeb.Format
@@ -47,6 +55,9 @@ defmodule RengaWeb.ResourceLive.Show do
   ]
 
   @reload_after_ms 400
+  @collect_key "inventory.collect@1"
+  # A finished collection stays on the page this long, unless dismissed.
+  @collect_notice_seconds 10 * 60
   # Accepted exceptions can expire without an inventory notification.
   @expiry_refresh_ms 30_000
 
@@ -57,6 +68,7 @@ defmodule RengaWeb.ResourceLive.Show do
 
     if connected?(socket) do
       Changes.subscribe(scope)
+      Jobs.Changes.subscribe(scope)
       Process.send_after(self(), :refresh_expiry, @expiry_refresh_ms)
     end
 
@@ -71,8 +83,10 @@ defmodule RengaWeb.ResourceLive.Show do
        host_fields: @host_fields,
        can_request?: Requests.can_request?(scope),
        teams: Teams.list_teams(scope),
-       reload_timer: nil
+       reload_timer: nil,
+       dismissed_job_id: nil
      )
+     |> assign_collect()
      |> assign_provenance()
      |> assign_findings()
      |> assign_requests()
@@ -262,7 +276,44 @@ defmodule RengaWeb.ResourceLive.Show do
     end
   end
 
+  def handle_event("collect", _params, socket) do
+    %{current_scope: scope, resource: resource, collect: collect} = socket.assigns
+
+    if collect.unavailable do
+      {:noreply, put_flash(socket, :error, collect.unavailable)}
+    else
+      case Jobs.create_job(scope, collect.agent.id, @collect_key, %{}, resource_id: resource.id) do
+        {:ok, _job} ->
+          {:noreply, assign_collect(socket)}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, collect_error(reason)) |> assign_collect()}
+      end
+    end
+  end
+
+  def handle_event("cancel_collect", %{"id" => id}, socket) do
+    case Jobs.cancel_job(socket.assigns.current_scope, id) do
+      {:ok, _job} ->
+        {:noreply, assign_collect(socket)}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only owners and admins can cancel")}
+
+      {:error, _ended} ->
+        {:noreply, assign_collect(socket)}
+    end
+  end
+
+  def handle_event("dismiss_collect", _params, socket) do
+    job = socket.assigns.collect.job
+    {:noreply, socket |> assign(:dismissed_job_id, job && job.id) |> assign_collect()}
+  end
+
   @impl true
+  def handle_info({:jobs_changed, organization_id}, socket),
+    do: handle_info({:inventory_changed, organization_id}, socket)
+
   def handle_info(
         {:inventory_changed, _organization_id},
         %{assigns: %{reload_timer: nil}} = socket
@@ -274,7 +325,7 @@ defmodule RengaWeb.ResourceLive.Show do
   def handle_info({:inventory_changed, _organization_id}, socket), do: {:noreply, socket}
 
   def handle_info(:reload, socket) do
-    {:noreply, socket |> assign(:reload_timer, nil) |> reload_resource()}
+    {:noreply, socket |> assign(:reload_timer, nil) |> reload_resource() |> assign_collect()}
   end
 
   def handle_info(:refresh_expiry, socket) do
@@ -295,6 +346,16 @@ defmodule RengaWeb.ResourceLive.Show do
       command_context={@resource.display_name || @resource.name}
     >
       <.resource_frame resource={@resource} tab={tab(@live_action)} hardware?={@hardware_assignable?}>
+        <:title_action :if={@collect.agent}>
+          <.collect_button collect={@collect} />
+        </:title_action>
+        <:notice :if={@collect.notice?}>
+          <.collect_notice
+            job={@collect.job}
+            viewer_id={@current_scope.user.id}
+            can_cancel?={@can_manage_lifecycle?}
+          />
+        </:notice>
         <%= case @live_action do %>
           <% :show -> %>
             <.overview
@@ -335,6 +396,7 @@ defmodule RengaWeb.ResourceLive.Show do
             request_form={@owner_request_form}
             current_user_id={@current_scope.user.id}
           />
+          <.agent_summary :if={@collect.agent} agent={@collect.agent} collect={@collect} />
           <.properties id="resource-properties">
             <:item label="Kind">{Format.humanize(@resource.kind)}</:item>
             <:item
@@ -1119,16 +1181,141 @@ defmodule RengaWeb.ResourceLive.Show do
       >
         <span class="absolute -left-1 top-1.5 size-2 rounded-full bg-fg-subtle" />
         <p class="text-sm text-fg">
-          <span class="font-medium">{RengaWeb.ChangeDescription.describe(event)}</span>
+          <span :if={job_change?(event)} class="font-medium"><.job_change event={event} /></span>
+          <span :if={!job_change?(event)} class="font-medium">
+            {RengaWeb.ChangeDescription.describe(event)}
+          </span>
         </p>
         <p class="mt-0.5 text-xs text-fg-muted">
-          {Format.datetime(event.occurred_at)}<span :if={event.source}> · via {event.source.name}</span>
+          {Format.datetime(event.occurred_at)}<span :if={event.source}> · via {event.source.name}</span><span :if={
+            event.actor_user
+          }> · by {event.actor_user.email}</span>
         </p>
       </li>
       <li :if={@events == []} class="text-sm text-fg-muted">No changes recorded yet.</li>
     </ol>
     """
   end
+
+  attr :collect, :map, required: true
+
+  # Unavailable stays focusable (aria-disabled rather than disabled) so the
+  # reason can be reached by keyboard and screen readers, not only on hover.
+  defp collect_button(assigns) do
+    ~H"""
+    <.button
+      id="collect-now"
+      type="button"
+      phx-click={!@collect.unavailable && "collect"}
+      phx-disable-with="Requesting…"
+      aria-disabled={@collect.unavailable && "true"}
+      aria-describedby={@collect.unavailable && "collect-unavailable"}
+      title={@collect.unavailable}
+      class={@collect.unavailable && "cursor-not-allowed opacity-50 hover:bg-surface"}
+    >
+      <.icon name="hero-arrow-path-mini" class="size-4" /> Collect now
+    </.button>
+    <span :if={@collect.unavailable} id="collect-unavailable" class="sr-only">
+      {@collect.unavailable}
+    </span>
+    """
+  end
+
+  attr :agent, :map, required: true
+  attr :collect, :map, required: true
+
+  defp agent_summary(assigns) do
+    ~H"""
+    <section id="resource-agent" aria-labelledby="resource-agent-title" class="space-y-1.5">
+      <h2 id="resource-agent-title" class="text-xs font-medium text-fg-muted">Agent</h2>
+      <.clip class="text-sm text-fg">{@agent.name || "Unnamed agent"}</.clip>
+      <p class="text-xs text-fg-muted">
+        <span :if={@agent.version} class="font-mono">{@agent.version}</span>
+        <span :if={@agent.version}>·</span>
+        <%= if @collect.accepts? do %>
+          accepts <span class="font-mono">{@collect.key}</span>
+        <% else %>
+          doesn't accept on-demand collection
+        <% end %>
+      </p>
+    </section>
+    """
+  end
+
+  # The agent a collection goes to is the most recently heard-from one that
+  # accepts it; with none, the page still names the latest agent and why it
+  # cannot collect. With no agent at all the button is not shown.
+  defp assign_collect(socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+    agents = Jobs.list_resource_agents(scope, resource.id)
+
+    agent =
+      Enum.find(agents, &(&1.status == "active" and @collect_key in &1.capabilities)) ||
+        List.first(agents)
+
+    job = Jobs.latest_resource_collection(scope, resource.id)
+    accepts? = agent != nil and @collect_key in agent.capabilities
+
+    assign(socket, :collect, %{
+      key: @collect_key,
+      agent: agent,
+      accepts?: accepts?,
+      job: job,
+      notice?: notice?(job, socket.assigns.dismissed_job_id),
+      unavailable: agent && collect_unavailable(scope, agent, accepts?, job)
+    })
+  end
+
+  defp notice?(nil, _dismissed_id), do: false
+  defp notice?(%Job{id: id}, id), do: false
+
+  defp notice?(%Job{state: state}, _dismissed_id)
+       when state in ~w(queued leased running uncertain), do: true
+
+  defp notice?(%Job{finished_at: %DateTime{} = finished}, _dismissed_id),
+    do: DateTime.diff(DateTime.utc_now(), finished) < @collect_notice_seconds
+
+  defp notice?(%Job{}, _dismissed_id), do: false
+
+  defp collect_unavailable(scope, agent, accepts?, job) do
+    cond do
+      job && Job.open?(job) ->
+        "A collection is already in progress."
+
+      !Inventory.organization_manager?(scope) ->
+        "Only owners and admins can request a collection."
+
+      agent.status != "active" ->
+        "This agent is disabled. Enable it on the Collectors page to collect."
+
+      !accepts? ->
+        "This agent#{agent.version && " (#{agent.version})"} doesn't accept on-demand collection. Update it, or enable inventory.collect in its [jobs] policy."
+
+      @collect_key not in Jobs.get_settings(scope.organization).allowed_capabilities ->
+        "This organization doesn't allow on-demand collection. An owner can allow it in job settings."
+
+      true ->
+        nil
+    end
+  end
+
+  defp collect_error(:rate_limited),
+    do: "Too many jobs were requested just now. Try again in a minute."
+
+  defp collect_error(:forbidden), do: "Only owners and admins can request a collection."
+
+  defp collect_error(:capability_not_allowed),
+    do: "This organization doesn't allow on-demand collection."
+
+  defp collect_error(:agent_disabled), do: "This agent is disabled."
+
+  defp collect_error(:capability_not_advertised),
+    do: "This agent no longer accepts on-demand collection."
+
+  defp collect_error(:resource_collection_open),
+    do: "A collection is already in progress."
+
+  defp collect_error(_reason), do: "The collection could not be requested. Reload and try again."
 
   # Command menu actions for this resource. Each one that cannot run says why,
   # using the same checks that gate the page's own controls.
@@ -1155,6 +1342,17 @@ defmodule RengaWeb.ResourceLive.Show do
           if(!assigns.hardware_assignable?,
             do:
               "Only physical devices have hardware; this is a #{Format.humanize(assigns.resource.kind)}"
+          )
+      },
+      %{
+        id: "collect-now",
+        label: "Collect inventory now",
+        icon: "hero-arrow-path",
+        run: JS.push("collect"),
+        unavailable:
+          if(assigns.collect.agent,
+            do: assigns.collect.unavailable,
+            else: "No agent reports on this resource"
           )
       }
     ]

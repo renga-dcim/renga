@@ -61,6 +61,31 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     refute has_element?(view, "[id^='rotate-collector-']")
   end
 
+  test "shows the job capabilities each collector accepts", %{
+    conn: conn,
+    scope: scope,
+    source: source
+  } do
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, "#collector-jobs-#{source.id}", "None enabled")
+
+    {:ok, key} = Inventory.create_intake_api_key(scope, %{name: "Jobs fleet"})
+    {:ok, authenticated_key} = key |> elem(1) |> Inventory.authenticate_intake_api_key()
+
+    {:ok, {agent, _lease}} =
+      Inventory.record_intake_agent_check_in(scope, authenticated_key, Ecto.UUID.generate(), %{
+        capabilities: ["host.inventory", "inventory.collect@1", "vendor.thing@2"]
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+
+    jobs = "#collector-jobs-#{agent.source_id}"
+    assert has_element?(view, jobs, "inventory.collect@1")
+    refute has_element?(view, jobs, "host.inventory")
+    assert has_element?(view, "#{jobs}-list-list", "Collect inventory · observe")
+    assert has_element?(view, "#{jobs}-list-list", "Unknown to Renga")
+  end
+
   test "shows contact, lease, accepted, and reconciled as separate clocks", %{
     conn: conn,
     scope: scope,

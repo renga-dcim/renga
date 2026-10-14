@@ -14,6 +14,7 @@ defmodule RengaWeb.Api.V1.JobController do
 
   alias Renga.Inventory
   alias Renga.Jobs
+  alias Renga.Jobs.Changes
   alias Renga.Jobs.Job
   alias RengaWeb.Api.V1.Schemas
 
@@ -117,12 +118,14 @@ defmodule RengaWeb.Api.V1.JobController do
   end
 
   defp with_calling_agent(conn, operation) do
-    Inventory.with_intake_agent(
-      conn.assigns.current_scope,
-      conn.assigns.current_intake_api_key,
-      conn.assigns.current_installation_id,
-      operation
-    )
+    Changes.after_commit(fn ->
+      Inventory.with_intake_agent(
+        conn.assigns.current_scope,
+        conn.assigns.current_intake_api_key,
+        conn.assigns.current_installation_id,
+        operation
+      )
+    end)
   end
 
   defp validate_lease(params) do

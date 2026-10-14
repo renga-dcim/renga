@@ -249,7 +249,7 @@ and examples in its `@doc`.
 | One value that may not fit | `<.clip>`: ellipsis with the full text in a tooltip |
 | Several short tags in a row | `<.chip_list>`: the first chips plus a `+N` popover |
 | Page title with actions | `<.header>` |
-| A resource's page | `<.object_page>` with tabs, status, and a `<.properties>` aside |
+| A resource's page | `<.object_page>` with tabs, status, and a `<.properties>` aside; `title_action` for the one action the page is for, `notice` for work in progress on the object |
 | Lifecycle, freshness, agent, drift | `<.status_strip>` (`row` or `header` size) |
 | Editable label/value list | `<.properties>` |
 | Switch between a few views | `<.segmented>` |
@@ -261,7 +261,8 @@ and examples in its `@doc`.
 Domain modules hold pieces shared within one area: `ElevationComponents`
 (rack faces), `TopologyComponents` (link map and line styles),
 `PrefixComponents`, `VlanComponents`, `FindingComponents`,
-`RequestComponents`, `TriageComponents`, `InventoryComponents`, and
+`RequestComponents`, `TriageComponents`, `InventoryComponents`,
+`JobComponents` (job states, the collection banner, job activity), and
 `CatalogComponents`. Promote a piece to `RengaWeb.UI` once a second area
 needs it.
 

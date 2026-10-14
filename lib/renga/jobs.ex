@@ -25,7 +25,11 @@ defmodule Renga.Jobs do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Inventory.Agent
+  alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Resource
+  alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Jobs.Capability
+  alias Renga.Jobs.Changes
   alias Renga.Jobs.Job
   alias Renga.Jobs.JobEvent
   alias Renga.Jobs.Registry
@@ -45,11 +49,19 @@ defmodule Renga.Jobs do
 
   ## Reading
 
-  @doc "Fetches a job in the scope's organization, or nil."
-  def get_job(%Scope{organization_id: organization_id}, id) do
+  @doc """
+  Fetches a job in the scope's organization, or nil. `:preload` loads
+  associations, such as `[:resource, :agent, :requested_by_user]`.
+  """
+  def get_job(%Scope{organization_id: organization_id}, id, opts \\ []) do
     case Ecto.UUID.cast(id) do
-      {:ok, id} -> Repo.get_by(Job, id: id, organization_id: organization_id)
-      :error -> nil
+      {:ok, id} ->
+        Job
+        |> Repo.get_by(id: id, organization_id: organization_id)
+        |> Repo.preload(Keyword.get(opts, :preload, []))
+
+      :error ->
+        nil
     end
   end
 
@@ -59,25 +71,115 @@ defmodule Renga.Jobs do
   end
 
   @doc """
-  Lists the organization's jobs, newest first. Filters by `:state`,
-  `:agent_id`, and `:batch_id`, and returns at most `:limit` (default 50).
+  Lists the organization's jobs, newest first, with their resource, agent,
+  and requesting user. Filters by `:state`, `:group` (see `state_groups/0`),
+  `:agent_id`, `:resource_id`, `:batch_id`, and `:capability`. Pass the oldest
+  job already shown as `:before` to read the next keyset page. Returns at most
+  `:limit` jobs (default 50).
   """
   def list_jobs(%Scope{organization_id: organization_id}, opts \\ []) do
     Job
     |> where([job], job.organization_id == ^organization_id)
     |> filter_jobs(opts)
+    |> jobs_before(Keyword.get(opts, :before))
     |> order_by([job], desc: job.inserted_at, desc: job.id)
     |> limit(^Keyword.get(opts, :limit, 50))
+    |> preload([:resource, :agent, :requested_by_user])
     |> Repo.all()
+  end
+
+  defp jobs_before(query, nil), do: query
+
+  defp jobs_before(query, %Job{inserted_at: inserted_at, id: id}) do
+    where(
+      query,
+      [job],
+      job.inserted_at < ^inserted_at or (job.inserted_at == ^inserted_at and job.id < ^id)
+    )
+  end
+
+  @doc """
+  How people sort jobs: `open` ones are still waiting or running,
+  `needs_review` ones are `uncertain` until a person resolves them, and
+  `finished` ones ended.
+  """
+  def state_groups do
+    %{
+      "open" => Job.open_states(),
+      "needs_review" => ["uncertain"],
+      "finished" => Job.finished_states()
+    }
+  end
+
+  @doc "Counts the organization's jobs in each of `state_groups/0`."
+  def count_jobs_by_group(%Scope{organization_id: organization_id}) do
+    counts =
+      Job
+      |> where([job], job.organization_id == ^organization_id)
+      |> group_by([job], job.state)
+      |> select([job], {job.state, count(job.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    Map.new(state_groups(), fn {group, states} ->
+      {group, states |> Enum.map(&Map.get(counts, &1, 0)) |> Enum.sum()}
+    end)
   end
 
   defp filter_jobs(query, opts) do
     Enum.reduce(opts, query, fn
-      {:state, state}, query -> where(query, [job], job.state == ^state)
-      {:agent_id, agent_id}, query -> where(query, [job], job.agent_id == ^agent_id)
-      {:batch_id, batch_id}, query -> where(query, [job], job.batch_id == ^batch_id)
-      _other, query -> query
+      {:state, state}, query ->
+        where(query, [job], job.state == ^state)
+
+      {:group, group}, query ->
+        where(query, [job], job.state in ^Map.fetch!(state_groups(), group))
+
+      {:agent_id, agent_id}, query ->
+        where(query, [job], job.agent_id == ^agent_id)
+
+      {:resource_id, id}, query ->
+        where(query, [job], job.resource_id == ^id)
+
+      {:batch_id, batch_id}, query ->
+        where(query, [job], job.batch_id == ^batch_id)
+
+      {:capability, {name, version}}, query ->
+        where(query, [job], job.capability == ^name and job.capability_version == ^version)
+
+      _other, query ->
+        query
     end)
+  end
+
+  @doc """
+  The newest inventory collection requested from `resource`, with its agent,
+  or nil. Other resource-targeted capabilities do not replace the collection
+  state shown on the resource page.
+  """
+  def latest_resource_collection(%Scope{} = scope, resource_id) do
+    scope
+    |> list_jobs(
+      resource_id: resource_id,
+      capability: {"inventory.collect", 1},
+      limit: 1
+    )
+    |> List.first()
+  end
+
+  @doc "What people call the job's capability, such as \"Collect inventory\"."
+  def title(%Job{} = job) do
+    case Registry.fetch(Job.capability_key(job)) do
+      {:ok, capability} -> capability.title()
+      {:error, _unknown} -> Capability.default_title(job.capability)
+    end
+  end
+
+  @doc "The job as the subject of an activity sentence, such as \"Inventory collection\"."
+  def noun(%Job{} = job) do
+    case Registry.fetch(Job.capability_key(job)) do
+      {:ok, capability} -> capability.noun()
+      {:error, _unknown} -> "#{title(job)} job"
+    end
   end
 
   @doc "A job's history in the order it happened."
@@ -86,6 +188,30 @@ defmodule Renga.Jobs do
     |> where([event], event.organization_id == ^organization_id and event.job_id == ^job_id)
     |> order_by([event], asc: event.sequence)
     |> Repo.all()
+  end
+
+  @doc """
+  Names for the people and agents behind `events`, keyed by actor id: a
+  person's email or an agent's name. System events have no actor id.
+  """
+  def event_actor_names(%Scope{organization_id: organization_id}, events) do
+    ids = fn type ->
+      for %JobEvent{actor_type: ^type, actor_id: id} <- events, uniq: true, do: id
+    end
+
+    users =
+      Renga.Accounts.User
+      |> where([user], user.id in ^ids.("user"))
+      |> select([user], {user.id, user.email})
+      |> Repo.all()
+
+    agents =
+      Agent
+      |> where([agent], agent.organization_id == ^organization_id and agent.id in ^ids.("agent"))
+      |> select([agent], {agent.id, agent.name})
+      |> Repo.all()
+
+    Map.new(users ++ agents)
   end
 
   ## Requesting
@@ -106,6 +232,10 @@ defmodule Renga.Jobs do
     * `:not_after` - the deadline for an agent to lease the job, at most seven
       days away (default one hour).
     * `:batch_id` - groups jobs that one request fanned out to many agents.
+    * `:resource_id` - the resource the job was requested from. The agent
+      must report on it (one of the resource's identifier claims comes from
+      the agent's source); the job's request and outcome then appear in the
+      resource's activity.
   """
   def create_job(%Scope{} = scope, agent_id, capability_key, parameters, opts \\ []) do
     with {:ok, capability} <- Registry.fetch(capability_key),
@@ -114,6 +244,7 @@ defmodule Renga.Jobs do
         authorize_request!(scope, capability)
         do_create!(scope.organization_id, actor, agent_id, capability, parameters, opts, scope)
       end)
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -129,6 +260,7 @@ defmodule Renga.Jobs do
         scope = %Scope{organization_id: organization_id}
         do_create!(organization_id, :system, agent_id, capability, parameters, opts, scope)
       end)
+      |> Changes.broadcast(organization_id)
     end
   end
 
@@ -156,6 +288,7 @@ defmodule Renga.Jobs do
       do: Repo.rollback(:capability_not_allowed)
 
     agent = fetch_requestable_agent!(organization_id, agent_id, key)
+    resource_id = fetch_reported_resource_id!(organization_id, agent, opts[:resource_id])
     parameters = cast_parameters!(capability, parameters)
     not_after = deadline!(opts, now)
 
@@ -170,6 +303,7 @@ defmodule Renga.Jobs do
 
     case find_idempotent!(organization_id, opts[:idempotency_key]) do
       nil ->
+        ensure_single_open_resource_collection!(organization_id, resource_id, capability)
         enforce_rate_limit!(organization_id, now)
 
         job =
@@ -177,6 +311,7 @@ defmodule Renga.Jobs do
             organization_id: organization_id,
             agent_id: agent.id,
             batch_id: opts[:batch_id],
+            resource_id: resource_id,
             capability: capability.name(),
             capability_version: capability.version(),
             risk_class: Atom.to_string(capability.risk_class()),
@@ -195,7 +330,7 @@ defmodule Renga.Jobs do
         apply!(job, %{}, [{"created", actor, %{"capability" => key}}], now)
 
       %Job{} = existing ->
-        if same_request?(existing, agent.id, capability, parameters),
+        if same_request?(existing, agent.id, resource_id, capability, parameters),
           do: existing,
           else: Repo.rollback(:idempotency_conflict)
     end
@@ -223,6 +358,54 @@ defmodule Renga.Jobs do
       key not in agent.capabilities -> Repo.rollback(:capability_not_advertised)
       true -> agent
     end
+  end
+
+  # A job names a resource only when the agent reports on it, so a person
+  # cannot attach a job, and its activity, to an unrelated resource.
+  defp fetch_reported_resource_id!(_organization_id, _agent, nil), do: nil
+
+  defp fetch_reported_resource_id!(organization_id, %Agent{} = agent, resource_id) do
+    with {:ok, resource_id} <- Ecto.UUID.cast(resource_id),
+         true <-
+           Resource
+           |> where([r], r.organization_id == ^organization_id and r.id == ^resource_id)
+           |> lock("FOR SHARE")
+           |> Repo.exists?() do
+      if agent_reports_on?(organization_id, agent, resource_id),
+        do: resource_id,
+        else: Repo.rollback(:agent_not_for_resource)
+    else
+      _missing -> Repo.rollback(:resource_not_found)
+    end
+  end
+
+  defp agent_reports_on?(_organization_id, %Agent{source_id: nil}, _resource_id), do: false
+
+  defp agent_reports_on?(organization_id, %Agent{source_id: source_id}, resource_id) do
+    ResourceIdentifierClaim
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.resource_id == ^resource_id and claim.source_id == ^source_id)
+    |> Repo.exists?()
+  end
+
+  @doc """
+  The agents that report on a resource: those whose source made one of its
+  identifier claims, most recently contacted first. Jobs requested from the
+  resource go to one of these.
+  """
+  def list_resource_agents(%Scope{organization_id: organization_id}, resource_id) do
+    sources =
+      ResourceIdentifierClaim
+      |> where([claim], claim.organization_id == ^organization_id)
+      |> where([claim], claim.resource_id == ^resource_id)
+      |> select([claim], claim.source_id)
+      |> distinct(true)
+
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.source_id in subquery(sources))
+    |> order_by([agent], desc_nulls_last: agent.last_contacted_at, asc: agent.id)
+    |> Repo.all()
   end
 
   defp cast_parameters!(capability, parameters) do
@@ -268,9 +451,26 @@ defmodule Renga.Jobs do
 
   defp find_idempotent!(_organization_id, _key), do: Repo.rollback(:invalid_idempotency_key)
 
-  defp same_request?(%Job{} = job, agent_id, capability, parameters) do
-    job.agent_id == agent_id and job.capability == capability.name() and
+  defp same_request?(%Job{} = job, agent_id, resource_id, capability, parameters) do
+    job.agent_id == agent_id and job.resource_id == resource_id and
+      job.capability == capability.name() and
       job.capability_version == capability.version() and job.parameters == parameters
+  end
+
+  defp ensure_single_open_resource_collection!(_organization_id, nil, _capability), do: :ok
+
+  defp ensure_single_open_resource_collection!(organization_id, resource_id, capability) do
+    if Capability.key(capability) == "inventory.collect@1" do
+      open? =
+        Job
+        |> where([job], job.organization_id == ^organization_id)
+        |> where([job], job.resource_id == ^resource_id)
+        |> where([job], job.capability == "inventory.collect" and job.capability_version == 1)
+        |> where([job], job.state in ^Job.open_states())
+        |> Repo.exists?()
+
+      if open?, do: Repo.rollback(:resource_collection_open)
+    end
   end
 
   # Job creation is bounded per organization rather than per batch, so a large
@@ -313,6 +513,7 @@ defmodule Renga.Jobs do
         |> lock_job!(job_id)
         |> cancel!(actor, Renga.Time.utc_now_ms())
       end)
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -375,20 +576,34 @@ defmodule Renga.Jobs do
     if agent.organization_id != organization_id do
       {:error, :forbidden}
     else
-      Repo.transaction(fn ->
-        organization = lock_active_organization!(organization_id)
-        allowed = Settings.allowed_capabilities(organization)
-        now = Renga.Time.utc_now_ms()
+      result =
+        Repo.transaction(fn ->
+          organization = lock_active_organization!(organization_id)
+          allowed = Settings.allowed_capabilities(organization)
+          now = Renga.Time.utc_now_ms()
 
-        organization_id
-        |> leasable_jobs(agent, keys, limit, now)
-        |> where_risk_class(Keyword.get(opts, :risk_classes))
-        |> lock("FOR UPDATE SKIP LOCKED")
-        |> Repo.all()
-        |> Enum.flat_map(&lease_or_refuse!(&1, agent, allowed, now))
-      end)
+          jobs =
+            organization_id
+            |> leasable_jobs(agent, keys, limit, now)
+            |> where_risk_class(Keyword.get(opts, :risk_classes))
+            |> lock("FOR UPDATE SKIP LOCKED")
+            |> Repo.all()
+
+          {Enum.flat_map(jobs, &lease_or_refuse!(&1, agent, allowed, now)), jobs != []}
+        end)
+
+      broadcast_lease_change(result, organization_id)
     end
   end
+
+  # An empty response usually changed nothing, but can also mean every queued
+  # job was refused because its capability was withdrawn.
+  defp broadcast_lease_change({:ok, {leased, false}}, _organization_id), do: {:ok, leased}
+
+  defp broadcast_lease_change({:ok, {leased, true}}, organization_id),
+    do: Changes.broadcast({:ok, leased}, organization_id)
+
+  defp broadcast_lease_change(result, _organization_id), do: result
 
   defp leasable_jobs(organization_id, agent, keys, limit, now) do
     Job
@@ -495,6 +710,7 @@ defmodule Renga.Jobs do
         |> lock_job!(job_id)
         |> report!(agent, token, type, payload, sequence)
       end)
+      |> Changes.broadcast(organization_id)
     else
       {:error, :invalid_report}
     end
@@ -696,30 +912,27 @@ defmodule Renga.Jobs do
   end
 
   defp sweep_one(job_id, now, kind) do
-    {:ok, moved?} =
-      Repo.transaction(fn ->
-        Job
-        |> where([job], job.id == ^job_id)
-        |> sweep_condition(kind, now)
-        |> lock("FOR UPDATE SKIP LOCKED")
-        |> Repo.one()
-        |> move!(kind, now)
-      end)
+    Repo.transaction(fn ->
+      Job
+      |> where([job], job.id == ^job_id)
+      |> sweep_condition(kind, now)
+      |> lock("FOR UPDATE SKIP LOCKED")
+      |> Repo.one()
+      |> move!(kind, now)
+    end)
+    |> case do
+      {:ok, %Job{organization_id: organization_id}} = result ->
+        Changes.broadcast(result, organization_id)
+        true
 
-    moved?
+      {:ok, nil} ->
+        false
+    end
   end
 
-  defp move!(nil, _kind, _now), do: false
-
-  defp move!(%Job{} = job, :lease, now) do
-    lapse_lease(job, now)
-    true
-  end
-
-  defp move!(%Job{} = job, :deadline, now) do
-    expire!(job, now)
-    true
-  end
+  defp move!(nil, _kind, _now), do: nil
+  defp move!(%Job{} = job, :lease, now), do: lapse_lease(job, now)
+  defp move!(%Job{} = job, :deadline, now), do: expire!(job, now)
 
   defp sweep_condition(query, :lease, now),
     do: where(query, [job], job.state in ^Job.leased_states() and job.lease_expires_at <= ^now)
@@ -786,6 +999,7 @@ defmodule Renga.Jobs do
         authorize_member!(scope, ["owner", "admin"])
         resolve!(scope.organization_id, job_id, actor, outcome, note_payload(note))
       end)
+      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -800,6 +1014,7 @@ defmodule Renga.Jobs do
       lock_active_organization!(organization_id)
       resolve!(organization_id, job_id, :system, outcome, stringify(details))
     end)
+    |> Changes.broadcast(organization_id)
   end
 
   defp resolve!(organization_id, job_id, actor, outcome, payload) do
@@ -930,13 +1145,72 @@ defmodule Renga.Jobs do
         }
       end)
 
-    job =
+    updated =
       job
       |> Changeset.change(Map.put(changes, :last_sequence, job.last_sequence + length(entries)))
       |> Repo.update!()
 
     {_count, nil} = Repo.insert_all(JobEvent, entries)
-    job
+    record_activity!(updated, job.state, events, now)
+    updated
+  end
+
+  # A job requested from a resource shows in that resource's activity, and
+  # so in the organization's Activity feed: once when it is requested and
+  # once when it reaches an outcome. Progress stays in the job's own history.
+  @outcome_states ["uncertain" | Job.finished_states()]
+
+  defp record_activity!(%Job{resource_id: nil}, _previous_state, _events, _now), do: :ok
+
+  defp record_activity!(%Job{} = job, previous_state, events, now) do
+    actors = Enum.map(events, fn event -> {elem(event, 0), elem(event, 1)} end)
+
+    for {"created", actor} <- actors, do: insert_activity!(job, "job_requested", actor, now)
+
+    if job.state != previous_state and job.state in @outcome_states do
+      {_type, actor} = List.last(actors)
+      insert_activity!(job, "job_outcome", actor, now)
+    end
+
+    :ok
+  end
+
+  defp insert_activity!(%Job{} = job, kind, actor, now) do
+    %ChangeEvent{
+      organization_id: job.organization_id,
+      resource_id: job.resource_id,
+      actor_user_id: actor_user_id(actor)
+    }
+    |> ChangeEvent.changeset(%{
+      kind: kind,
+      field: Job.capability_key(job),
+      metadata: Map.merge(activity_metadata(job), activity_actor(actor)),
+      occurred_at: now
+    })
+    |> Repo.insert!()
+  end
+
+  # Activity names the agent that reported an outcome, as it names the
+  # source behind a collector's change.
+  defp activity_actor({:agent, agent_id}) do
+    case Repo.get(Agent, agent_id) do
+      %Agent{name: name} when is_binary(name) -> %{"agent" => name}
+      _unnamed -> %{}
+    end
+  end
+
+  defp activity_actor(_actor), do: %{}
+
+  defp activity_metadata(%Job{} = job) do
+    %{
+      "job_id" => job.id,
+      "title" => title(job),
+      "noun" => noun(job),
+      "state" => job.state,
+      "failure_reason" => job.failure_reason,
+      "observation_id" => job.result && job.result["observation_id"]
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
 
   defp event_parts({type, actor, payload}), do: {type, actor, payload, nil}

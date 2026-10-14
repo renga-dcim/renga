@@ -151,6 +151,8 @@ defmodule RengaWeb.UI do
   slot :icon
   slot :status
   slot :actions
+  slot :title_action, doc: "a button beside the title, for the one action the page is for"
+  slot :notice, doc: "a banner under the header, such as work in progress on the object"
 
   slot :tab do
     attr :navigate, :string
@@ -191,13 +193,16 @@ defmodule RengaWeb.UI do
               >
                 {render_slot(@icon)}
               </span>
-              <div class="min-w-0">
+              <div class="min-w-0 flex-1">
                 <h1 class="text-xl font-semibold tracking-tight text-fg text-balance">{@title}</h1>
                 <p :if={@subtitle} class="font-mono text-xs text-fg-muted">{@subtitle}</p>
               </div>
+              <div :if={@title_action != []} class="shrink-0">{render_slot(@title_action)}</div>
             </div>
             <div :if={@status != []}>{render_slot(@status)}</div>
           </header>
+
+          {render_slot(@notice)}
 
           <nav
             :if={@tab != []}
@@ -490,6 +495,11 @@ defmodule RengaWeb.UI do
   attr :description, :string, default: nil
   attr :show, :boolean, default: false
   attr :on_cancel, JS, default: %JS{}
+
+  attr :return_focus, :string,
+    default: nil,
+    doc: "selector to focus after a route-driven panel closes"
+
   slot :inner_block, required: true
   slot :footer
 
@@ -503,6 +513,7 @@ defmodule RengaWeb.UI do
       data-show={overlay_show(@id)}
       data-hide={overlay_hide(@id)}
       data-cancel={@on_cancel}
+      data-return-focus={@return_focus}
       class="relative z-50 hidden"
     >
       <div id={"#{@id}-backdrop"} class="fixed inset-0 hidden bg-fg/25" aria-hidden="true" />

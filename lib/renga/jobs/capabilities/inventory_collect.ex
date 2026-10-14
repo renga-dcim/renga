@@ -19,6 +19,12 @@ defmodule Renga.Jobs.Capabilities.InventoryCollect do
   def version, do: 1
 
   @impl true
+  def title, do: "Collect inventory"
+
+  @impl true
+  def noun, do: "Inventory collection"
+
+  @impl true
   def risk_class, do: :observe
 
   @impl true

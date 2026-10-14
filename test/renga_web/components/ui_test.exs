@@ -112,6 +112,29 @@ defmodule RengaWeb.UITest do
       assert present?(html, "thead th[scope='col'].font-medium")
     end
 
+    test "patches both the native row link and secondary cells" do
+      assigns = %{rows: [%{id: 1, name: "compute-01"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table
+          id="items"
+          rows={@rows}
+          row_id={&"item-#{&1.id}"}
+          row_patch={&"/inventory/#{&1.id}"}
+        >
+          <:col :let={item} label="Name">{item.name}</:col>
+          <:col :let={item} label="ID">{item.id}</:col>
+        </.table>
+        """)
+
+      assert attr_of(html, "#item-1 td:first-child a", "href") == ["/inventory/1"]
+      assert attr_of(html, "#item-1 td:first-child a", "data-phx-link") == ["patch"]
+      assert [click] = attr_of(html, "#item-1 td:nth-child(2)", "phx-click")
+      assert click =~ "patch"
+      assert click =~ "/inventory/1"
+    end
+
     test "scrolls by default and leaves cell content unwrapped" do
       assigns = %{rows: [%{id: 1, name: "compute-01"}]}
 
