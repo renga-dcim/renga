@@ -65,7 +65,7 @@ defmodule RengaWeb.BrandTest do
       {:ok, view, _html} = live(conn, ~p"/users/log-in")
 
       assert has_element?(view, "header a[aria-label='Renga home'] svg[aria-label=Renga]")
-      assert has_element?(view, "#login svg g[clip-path]")
+      assert has_element?(view, "#login svg g[clip-path='url(#login-brand-clip)']")
       refute has_element?(view, ".hero-server-stack-solid")
     end
 

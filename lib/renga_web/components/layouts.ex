@@ -244,7 +244,7 @@ defmodule RengaWeb.Layouts do
         <div class="mx-auto flex min-h-16 max-w-screen-xl items-center px-4 sm:px-6 lg:px-8">
           <.link
             navigate={if(@current_scope, do: ~p"/organizations", else: ~p"/")}
-            class="flex items-center text-fg"
+            class="flex min-h-tap items-center rounded-sm text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             aria-label="Renga home"
           >
             <Brand.wordmark class="h-6 w-auto" />
@@ -285,7 +285,10 @@ defmodule RengaWeb.Layouts do
     ~H"""
     <.link
       navigate={~p"/inbox"}
-      class={["flex items-center px-2 text-fg", @class]}
+      class={[
+        "flex min-h-tap items-center rounded-sm px-2 text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
+        @class
+      ]}
       aria-label="Renga home"
     >
       <Brand.wordmark class="h-6 w-auto text-fg" />
