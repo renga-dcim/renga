@@ -263,7 +263,8 @@ impl<'a, A: JobApi> Worker<'a, A> {
                 let cancellation = cancellation.clone();
                 let parameters = job.parameters.clone();
                 thread::spawn(move || {
-                    let _ = sender.send(capability.run(&parameters, &cancellation));
+                    let result = capability.run(&parameters, &cancellation);
+                    let _ = sender.send((Instant::now(), result));
                 })
             })?;
 
@@ -295,13 +296,46 @@ impl<'a, A: JobApi> Worker<'a, A> {
                 if reporter.lost {
                     cancellation.cancel();
                 }
+                // Reporting is blocking. Re-read every condition it could have
+                // crossed before deciding whether a buffered result was timely.
+                if self.stopped.cancelled() {
+                    cancellation.cancel();
+                    let _ = runner.join();
+                    return None;
+                }
+                let now = Instant::now();
+                match receiver.try_recv() {
+                    Ok((completed_at, result)) if completed_at <= deadline => break result,
+                    Ok(_) => {
+                        cancellation.cancel();
+                        warn!(job_id = %job.id, timeout_seconds = timeout.as_secs(), "job timed out");
+                        break timeout_failure(timeout);
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        break Err(JobFailure::Failed(
+                            "the capability stopped unexpectedly".into(),
+                        ))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                if now >= deadline {
+                    cancellation.cancel();
+                    warn!(job_id = %job.id, timeout_seconds = timeout.as_secs(), "job timed out");
+                    break timeout_failure(timeout);
+                }
                 next_heartbeat = now + self.heartbeat;
             }
+            let now = Instant::now();
             let wait = POLL
                 .min(deadline.saturating_duration_since(now))
                 .min(next_heartbeat.saturating_duration_since(now));
             match receiver.recv_timeout(wait) {
-                Ok(result) => break result,
+                Ok((completed_at, result)) if completed_at <= deadline => break result,
+                Ok(_) => {
+                    cancellation.cancel();
+                    warn!(job_id = %job.id, timeout_seconds = timeout.as_secs(), "job timed out");
+                    break timeout_failure(timeout);
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     break Err(JobFailure::Failed(
@@ -407,6 +441,13 @@ fn cancelled() -> Outcome {
     }
 }
 
+fn timeout_failure(timeout: Duration) -> Result<Value, JobFailure> {
+    Err(JobFailure::Failed(format!(
+        "timed out after {} seconds",
+        timeout.as_secs()
+    )))
+}
+
 fn confirm(records: &mut JobRecords, job_id: Uuid) {
     if let Err(error) = records.confirm(job_id, Utc::now()) {
         warn!(%job_id, %error, "cannot mark job outcome acknowledged");
@@ -434,6 +475,7 @@ mod tests {
         leases: RefCell<VecDeque<Vec<LeasedJob>>>,
         answers: RefCell<VecDeque<Result<ReportAck, TransportError>>>,
         reports: RefCell<Vec<(Uuid, u64, ReportType, Value)>>,
+        report_delays: RefCell<VecDeque<Duration>>,
         lease_calls: Cell<usize>,
         reload_on_lease: RefCell<Option<(usize, PolicyGeneration)>>,
     }
@@ -455,6 +497,10 @@ mod tests {
 
         fn reload_on_lease(&self, call: usize, generation: PolicyGeneration) {
             *self.reload_on_lease.borrow_mut() = Some((call, generation));
+        }
+
+        fn delay_reports(&self, delays: impl IntoIterator<Item = Duration>) {
+            self.report_delays.borrow_mut().extend(delays);
         }
 
         fn kinds(&self) -> Vec<ReportType> {
@@ -492,6 +538,9 @@ mod tests {
                 report.kind,
                 report.payload.clone(),
             ));
+            if let Some(delay) = self.report_delays.borrow_mut().pop_front() {
+                thread::sleep(delay);
+            }
             self.answers
                 .borrow_mut()
                 .pop_front()
@@ -782,6 +831,51 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("timed out"));
+    }
+
+    #[test]
+    fn a_late_result_buffered_during_a_slow_heartbeat_still_times_out() {
+        let capability = fake(
+            RetryClass::Idempotent,
+            Box::new(|_| {
+                thread::sleep(Duration::from_millis(70));
+                Ok(json!({"late": true}))
+            }),
+        );
+        let fixture = Fixture::new(capability);
+        let mut job = leased(Uuid::new_v4());
+        job.timeout_ms = 50;
+        let api = FakeApi::lease_once(job);
+        api.delay_reports([Duration::ZERO, Duration::from_millis(100)]);
+
+        fixture.pass(&api);
+
+        assert_eq!(*api.kinds().last().unwrap(), ReportType::Failed);
+        assert!(api.last_payload()["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("timed out"));
+    }
+
+    #[test]
+    fn an_on_time_result_buffered_during_a_slow_heartbeat_succeeds() {
+        let capability = fake(
+            RetryClass::Idempotent,
+            Box::new(|_| {
+                thread::sleep(Duration::from_millis(30));
+                Ok(json!({"on_time": true}))
+            }),
+        );
+        let fixture = Fixture::new(capability);
+        let mut job = leased(Uuid::new_v4());
+        job.timeout_ms = 70;
+        let api = FakeApi::lease_once(job);
+        api.delay_reports([Duration::ZERO, Duration::from_millis(100)]);
+
+        fixture.pass(&api);
+
+        assert_eq!(*api.kinds().last().unwrap(), ReportType::Succeeded);
+        assert_eq!(api.last_payload(), json!({"result": {"on_time": true}}));
     }
 
     #[test]
