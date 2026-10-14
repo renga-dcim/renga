@@ -181,6 +181,24 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> evaluate("window.location.search", &assert(&1 == ""))
     |> evaluate(@tooltip, &assert(&1 =~ "Refused: inventory.collect is disabled"))
     |> press(":focus", "Escape")
+    |> hover(long)
+    |> evaluate(
+      @tooltip,
+      &assert(&1 =~ "Billing analytics warehouse replica (us-east, cold standby)")
+    )
+    |> evaluate(
+      """
+      (() => {
+        const clip = document.getElementById('sample-clipped-action').closest('[data-clip]')
+        return clip.scrollWidth > clip.clientWidth
+      })()
+      """,
+      &assert(&1 == true)
+    )
+    |> click("#sample-clipped-action")
+    |> assert_has("#sample-clipped-action", "Inspected")
+    |> assert_has("#sample-clipped-action:focus")
+    |> evaluate("window.location.search", &assert(&1 == ""))
     |> click("#sample-chips-2-more")
     |> evaluate("window.location.search", &assert(&1 == ""))
     |> evaluate(

@@ -18,6 +18,12 @@ const TOOLTIP_CLASS =
   "pointer-events-none fixed inset-auto m-0 max-w-sm rounded-md border border-edge bg-surface " +
   "px-2.5 py-1.5 text-xs text-fg shadow-lg"
 
+const FOCUS_OWNER_SELECTOR =
+  "a, button, input, select, textarea, summary, label, [contenteditable='true'], " +
+  "[tabindex]:not([tabindex='-1'])"
+
+const INTERACTIVE_DESCENDANT_SELECTOR = `${FOCUS_OWNER_SELECTOR}, [phx-click]`
+
 // Places a floating box below its anchor, flipping above when there is no
 // room below, and keeps it inside the viewport horizontally.
 export function place(anchor, box, viewport) {
@@ -49,9 +55,13 @@ export function installFloating(doc = document, win = window) {
   }
 
   const focusOwner = target =>
-    target.parentElement?.closest(
-      "a, button, input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"
-    )
+    target.parentElement?.closest(FOCUS_OWNER_SELECTOR)
+
+  const interactiveDescendant = (node, target) => {
+    const owner =
+      node instanceof win.Element ? node.closest(INTERACTIVE_DESCENDANT_SELECTOR) : null
+    return owner && owner !== target && target.contains(owner)
+  }
 
   const syncClipFocus = target => {
     if (!target.matches("[data-clip-focus]")) return
@@ -129,7 +139,7 @@ export function installFloating(doc = document, win = window) {
   }
 
   doc.addEventListener("pointerover", event => {
-    if (focusedClip()) return
+    if (pending && clipped(pending) && focusedClip() === pending) return
     const target = clipAt(event.target)
     if (target === pending) return
     hide()
@@ -141,7 +151,7 @@ export function installFloating(doc = document, win = window) {
   })
 
   doc.addEventListener("pointerout", event => {
-    if (focusedClip()) return
+    if (pending && clipped(pending) && focusedClip() === pending) return
     if (clipAt(event.relatedTarget) !== pending) hide()
   })
 
@@ -165,6 +175,7 @@ export function installFloating(doc = document, win = window) {
     if (
       !target?.matches("[data-clip-focus]") ||
       focusOwner(target) ||
+      interactiveDescendant(event.target, target) ||
       !clipped(target)
     ) {
       return

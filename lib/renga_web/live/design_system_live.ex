@@ -144,6 +144,7 @@ defmodule RengaWeb.DesignSystemLive do
      |> assign(:selected_node, 1)
      |> assign(:overflow_rows, @overflow_rows)
      |> assign(:overflow_sample_long?, false)
+     |> assign(:overflow_action_clicked?, false)
      |> assign(:sample_form, sample_form())
      |> stream(:nodes, with_group_headers(@nodes))}
   end
@@ -184,6 +185,10 @@ defmodule RengaWeb.DesignSystemLive do
 
   def handle_event("toggle_overflow_sample", _params, socket) do
     {:noreply, update(socket, :overflow_sample_long?, &(!&1))}
+  end
+
+  def handle_event("overflow_nested_action", _params, socket) do
+    {:noreply, assign(socket, :overflow_action_clicked?, true)}
   end
 
   @impl true
@@ -461,6 +466,16 @@ defmodule RengaWeb.DesignSystemLive do
                 </span>
               </:col>
               <:col :let={row} label="Detail" class="text-xs text-fg-muted" hide_below="3xl">
+                <.button
+                  :if={row.id == 2}
+                  id="sample-clipped-action"
+                  size="sm"
+                  variant="ghost"
+                  class="mr-1 px-1"
+                  phx-click="overflow_nested_action"
+                >
+                  {if @overflow_action_clicked?, do: "Inspected", else: "Inspect"}
+                </.button>
                 {row.detail}
               </:col>
               <:col :let={row} label="Agent" class="w-48" hide_below="xl">
