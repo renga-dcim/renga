@@ -361,6 +361,19 @@ defmodule Renga.JobsTest do
       job: job,
       token: token
     } do
+      lease_expires_at = job.lease_expires_at
+
+      for type <- ~w(progress output) do
+        assert {:error, :invalid_transition} =
+                 Jobs.report(system_scope, agent, job.id, token, type, %{})
+      end
+
+      unchanged = Repo.reload!(job)
+      assert unchanged.state == "leased"
+      assert unchanged.lease_expires_at == lease_expires_at
+      assert unchanged.last_sequence == 2
+      assert unchanged.output_bytes == 0
+
       assert {:ok, _running} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
 
       assert {:error, :invalid_transition} =
@@ -373,19 +386,59 @@ defmodule Renga.JobsTest do
                Jobs.report(system_scope, agent, job.id, token, "resolved", %{})
     end
 
-    test "bounds the output a job can record", %{
+    test "counts stored JSONB bytes and reserves room for a terminal report", %{
       system_scope: system_scope,
       agent: agent,
       job: job,
       token: token
     } do
-      chunk = String.duplicate("x", 40 * 1024)
+      assert {:ok, running} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
 
-      assert {:ok, _job} =
-               Jobs.report(system_scope, agent, job.id, token, "output", %{"text" => chunk})
+      # PostgreSQL renders this payload as 48 bytes, one more than compact
+      # JSON. Together with the two-byte started payload it exactly fills the
+      # non-terminal half of this deliberately small budget.
+      running
+      |> Ecto.Changeset.change(output_limit_bytes: 100)
+      |> Repo.update!()
+
+      assert {:ok, output} =
+               Jobs.report(system_scope, agent, job.id, token, "output", %{
+                 "text" => String.duplicate("x", 36)
+               })
+
+      assert output.output_bytes == 50
 
       assert {:error, :output_limit_exceeded} =
-               Jobs.report(system_scope, agent, job.id, token, "output", %{"text" => chunk})
+               Jobs.report(system_scope, agent, job.id, token, "progress", %{})
+
+      assert {:ok, failed} =
+               Jobs.report(system_scope, agent, job.id, token, "failed", %{
+                 "reason" => "output_limit",
+                 "ignored" => String.duplicate("x", 1000)
+               })
+
+      assert failed.state == "failed"
+      assert failed.output_bytes == 76
+
+      assert List.last(Jobs.list_events(system_scope, job)).payload == %{
+               "reason" => "output_limit"
+             }
+    end
+
+    test "empty progress reports consume the output budget", %{
+      system_scope: system_scope,
+      agent: agent,
+      job: job,
+      token: token
+    } do
+      assert {:ok, running} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
+      running |> Ecto.Changeset.change(output_limit_bytes: 8) |> Repo.update!()
+
+      assert {:ok, progress} = Jobs.report(system_scope, agent, job.id, token, "progress", %{})
+      assert progress.output_bytes == 4
+
+      assert {:error, :output_limit_exceeded} =
+               Jobs.report(system_scope, agent, job.id, token, "progress", %{})
     end
   end
 
@@ -419,6 +472,7 @@ defmodule Renga.JobsTest do
       # Asking twice records one request.
       assert {:ok, _same} = Jobs.cancel_job(scope, job.id)
 
+      assert {:ok, _running} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
       assert {:ok, progress} = Jobs.report(system_scope, agent, job.id, token, "progress", %{})
       assert progress.cancel_requested_at
 
@@ -426,7 +480,7 @@ defmodule Renga.JobsTest do
       assert cancelled.state == "cancelled"
 
       assert event_types(scope, job) ==
-               ["created", "leased", "cancel_requested", "progress", "cancelled"]
+               ["created", "leased", "cancel_requested", "started", "progress", "cancelled"]
     end
 
     test "is for owners and admins in the job's organization", %{

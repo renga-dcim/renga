@@ -188,6 +188,20 @@ defmodule Renga.Jobs.SweepTest do
       assert resolved_event.actor_type == "system"
       assert resolved_event.payload == %{"outcome" => "failed", "observed" => "stopped"}
     end
+
+    test "oversized reconciliation details leave the job and history unchanged", %{
+      organization: organization,
+      scope: scope,
+      job: job
+    } do
+      assert {:error, :event_payload_too_large} =
+               Jobs.reconcile_job(organization.id, job.id, "failed", %{
+                 "observed" => String.duplicate("x", 64 * 1024)
+               })
+
+      assert Repo.reload!(job).state == "uncertain"
+      assert length(Jobs.list_events(scope, job)) == 5
+    end
   end
 
   test "the worker sweeps on its interval" do

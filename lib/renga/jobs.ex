@@ -37,7 +37,10 @@ defmodule Renga.Jobs do
   @max_deadline_seconds 7 * 24 * 3600
   @default_max_attempts 3
   @max_failure_reason_length 255
+  @max_event_payload_bytes 64 * 1024
+  @terminal_report_reserve_bytes 1024
   @agent_report_types ~w(started progress output succeeded failed cancelled)
+  @work_report_types ~w(started progress output)
 
   ## Reading
 
@@ -441,11 +444,16 @@ defmodule Renga.Jobs do
       unless lease_held?(job, agent, token, now), do: Repo.rollback(:lease_not_held)
 
       payload = stringify(payload)
-      output_bytes = job.output_bytes + payload_bytes(payload)
-
-      if output_bytes > job.output_limit_bytes, do: Repo.rollback(:output_limit_exceeded)
-
       {changes, payload} = report_changes!(job, type, payload, now)
+      payload_bytes = payload_bytes(payload)
+
+      if payload_bytes > @max_event_payload_bytes,
+        do: Repo.rollback(:output_limit_exceeded)
+
+      output_bytes = job.output_bytes + payload_bytes
+
+      if output_bytes > report_output_limit(job, type),
+        do: Repo.rollback(:output_limit_exceeded)
 
       changes =
         changes
@@ -467,8 +475,9 @@ defmodule Renga.Jobs do
   defp report_changes!(%Job{state: "leased"}, "started", payload, now),
     do: {%{state: "running", started_at: now}, payload}
 
-  defp report_changes!(%Job{}, type, payload, _now) when type in ~w(progress output),
-    do: {%{}, payload}
+  defp report_changes!(%Job{state: "running"}, type, payload, _now)
+       when type in ~w(progress output),
+       do: {%{}, payload}
 
   defp report_changes!(%Job{} = job, "succeeded", payload, now) do
     {:ok, capability} = Registry.fetch(Job.capability_key(job))
@@ -494,15 +503,15 @@ defmodule Renga.Jobs do
     case Map.get(payload, "reason") do
       reason when is_binary(reason) and reason != "" ->
         reason = String.slice(reason, 0, @max_failure_reason_length)
-        {finish(%{state: "failed", failure_reason: reason}, now), payload}
+        {finish(%{state: "failed", failure_reason: reason}, now), %{"reason" => reason}}
 
       _missing ->
         Repo.rollback(:invalid_failure)
     end
   end
 
-  defp report_changes!(%Job{cancel_requested_at: %DateTime{}}, "cancelled", payload, now),
-    do: {finish(%{state: "cancelled"}, now), payload}
+  defp report_changes!(%Job{cancel_requested_at: %DateTime{}}, "cancelled", _payload, now),
+    do: {finish(%{state: "cancelled"}, now), %{}}
 
   defp report_changes!(%Job{}, _type, _payload, _now), do: Repo.rollback(:invalid_transition)
 
@@ -519,8 +528,24 @@ defmodule Renga.Jobs do
 
   defp hash_token(token), do: :crypto.hash(:sha256, token)
 
-  defp payload_bytes(payload) when payload == %{}, do: 0
-  defp payload_bytes(payload), do: payload |> Renga.JSON.encode!() |> byte_size()
+  # Work reports leave room for a small terminal report, so exhausting output
+  # cannot prevent the agent from recording a failure or cancellation.
+  defp report_output_limit(%Job{} = job, type) when type in @work_report_types do
+    reserve = min(@terminal_report_reserve_bytes, div(job.output_limit_bytes, 2))
+    job.output_limit_bytes - reserve
+  end
+
+  defp report_output_limit(%Job{} = job, _terminal_type), do: job.output_limit_bytes
+
+  # PostgreSQL's JSONB text representation is the database constraint's source
+  # of truth. It differs from compact JSON at boundaries (for example, spaces
+  # after separators), so measure it in PostgreSQL rather than approximating.
+  defp payload_bytes(payload) do
+    %{rows: [[bytes]]} =
+      Repo.query!("SELECT octet_length($1::jsonb::text)", [payload])
+
+    bytes
+  end
 
   ## Sweeping
 
@@ -666,11 +691,16 @@ defmodule Renga.Jobs do
 
     unless job.state == "uncertain", do: Repo.rollback(:not_uncertain)
 
+    payload = Map.put(payload, "outcome", outcome)
+
+    if payload_bytes(payload) > @max_event_payload_bytes,
+      do: Repo.rollback(:event_payload_too_large)
+
     changes =
       %{state: outcome, finished_at: now}
       |> Map.merge(if outcome == "failed", do: %{failure_reason: "resolved_failed"}, else: %{})
 
-    apply!(job, changes, [{"resolved", actor, Map.put(payload, "outcome", outcome)}], now)
+    apply!(job, changes, [{"resolved", actor, payload}], now)
   end
 
   defp note_payload(note) when is_binary(note) and note != "",
