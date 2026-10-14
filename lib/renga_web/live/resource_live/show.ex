@@ -1312,6 +1312,9 @@ defmodule RengaWeb.ResourceLive.Show do
   defp collect_error(:capability_not_advertised),
     do: "This agent no longer accepts on-demand collection."
 
+  defp collect_error(:resource_collection_open),
+    do: "A collection is already in progress."
+
   defp collect_error(_reason), do: "The collection could not be requested. Reload and try again."
 
   # Command menu actions for this resource. Each one that cannot run says why,

@@ -112,6 +112,23 @@ defmodule Renga.Jobs.ResourceActivityTest do
              Jobs.create_job(scope, agent.id, @collect, %{}, resource_id: foreign.id)
   end
 
+  test "an idempotency key cannot replay a request for another resource", context do
+    %{organization: organization, scope: scope, agent: agent, resource: resource} = context
+    other = reported_resource_fixture(organization, agent, "compute-02")
+
+    assert {:ok, _job} =
+             Jobs.create_job(scope, agent.id, @collect, %{},
+               resource_id: resource.id,
+               idempotency_key: "collect-resource"
+             )
+
+    assert {:error, :idempotency_conflict} =
+             Jobs.create_job(scope, agent.id, @collect, %{},
+               resource_id: other.id,
+               idempotency_key: "collect-resource"
+             )
+  end
+
   test "lists a resource's agents and its latest job", context do
     %{scope: scope, agent: agent, resource: resource} = context
 

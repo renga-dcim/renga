@@ -281,6 +281,7 @@ defmodule Renga.Jobs do
 
     case find_idempotent!(organization_id, opts[:idempotency_key]) do
       nil ->
+        ensure_single_open_resource_collection!(organization_id, resource_id, capability)
         enforce_rate_limit!(organization_id, now)
 
         job =
@@ -307,7 +308,7 @@ defmodule Renga.Jobs do
         apply!(job, %{}, [{"created", actor, %{"capability" => key}}], now)
 
       %Job{} = existing ->
-        if same_request?(existing, agent.id, capability, parameters),
+        if same_request?(existing, agent.id, resource_id, capability, parameters),
           do: existing,
           else: Repo.rollback(:idempotency_conflict)
     end
@@ -428,9 +429,26 @@ defmodule Renga.Jobs do
 
   defp find_idempotent!(_organization_id, _key), do: Repo.rollback(:invalid_idempotency_key)
 
-  defp same_request?(%Job{} = job, agent_id, capability, parameters) do
-    job.agent_id == agent_id and job.capability == capability.name() and
+  defp same_request?(%Job{} = job, agent_id, resource_id, capability, parameters) do
+    job.agent_id == agent_id and job.resource_id == resource_id and
+      job.capability == capability.name() and
       job.capability_version == capability.version() and job.parameters == parameters
+  end
+
+  defp ensure_single_open_resource_collection!(_organization_id, nil, _capability), do: :ok
+
+  defp ensure_single_open_resource_collection!(organization_id, resource_id, capability) do
+    if Capability.key(capability) == "inventory.collect@1" do
+      open? =
+        Job
+        |> where([job], job.organization_id == ^organization_id)
+        |> where([job], job.resource_id == ^resource_id)
+        |> where([job], job.capability == "inventory.collect" and job.capability_version == 1)
+        |> where([job], job.state in ^Job.open_states())
+        |> Repo.exists?()
+
+      if open?, do: Repo.rollback(:resource_collection_open)
+    end
   end
 
   # Job creation is bounded per organization rather than per batch, so a large

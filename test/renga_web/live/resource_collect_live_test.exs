@@ -125,6 +125,23 @@ defmodule RengaWeb.ResourceCollectLiveTest do
     refute has_element?(view, "#collect-now[aria-disabled]")
   end
 
+  test "two stale resource sessions create one collection request", context do
+    %{conn: conn, resource: resource} = context
+    {:ok, first, _html} = live(conn, ~p"/inventory/#{resource}")
+    {:ok, second, _html} = live(conn, ~p"/inventory/#{resource}")
+
+    first |> element("#collect-now") |> render_click()
+    second |> element("#collect-now") |> render_click()
+
+    assert has_element?(second, "#flash-error", "A collection is already in progress")
+    assert [_job] = Jobs.list_jobs(context.scope, resource_id: resource.id)
+
+    assert [_request] =
+             context.scope
+             |> Inventory.list_activity()
+             |> Enum.filter(&(&1.resource_id == resource.id and &1.kind == "job_requested"))
+  end
+
   test "explains why a person or agent cannot collect", context do
     %{conn: conn, organization: organization, resource: resource} = context
     member = member_scope(organization, "member")

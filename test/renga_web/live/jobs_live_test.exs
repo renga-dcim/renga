@@ -86,7 +86,7 @@ defmodule RengaWeb.JobsLiveTest do
   test "lists jobs with their target and state, and filters by state", context do
     %{conn: conn} = context
     waiting = request(context)
-    finished = request(context)
+    {:ok, finished} = Jobs.create_job(context.scope, context.agent.id, @collect, %{})
     {:ok, _} = Jobs.cancel_job(context.scope, finished.id)
 
     {:ok, view, _html} = live(conn, ~p"/activity/jobs")
