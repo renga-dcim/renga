@@ -10,6 +10,17 @@ This is a web application written using the Phoenix web framework.
 - Add concise comments or module/function docs that explain intent, domain boundaries, security decisions, or non-obvious tradeoffs. Avoid comments that merely restate what the code does
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
+### Machine API and OpenAPI
+
+`priv/openapi/v1.json` documents the `/api` routes the agent and other clients call. It is generated from `RengaWeb.ApiSpec`; the controllers' payload validation (such as `Renga.Inventory.AgentPayload`) stays the source of truth. When you add or change an `/api` endpoint:
+
+- Declare an `operation` for every action, with a schema in `lib/renga_web/controllers/api/v1/schemas/` for each request body and every status the action can return. A test fails for an undocumented `/api` route
+- Request schemas must never reject a request the API accepts: allow `null` wherever the validator treats it as absent, and state character limits and cross-field rules in prose rather than `maxLength` or `pattern`. Read vocabularies and limits from the validator's `contract/0` instead of copying them. Response schemas are exact
+- Use `valid_api_response/2` (or `/3` when calling an action directly), never `json_response/2`, in API controller tests. It checks responses against the spec and accepted requests against their documented schema
+- Regenerate the document with `mix api.spec` and commit it; a test fails when it is stale
+- When the agent sends a new request or reads a new response field, extend `agent/tests/openapi_contract.rs`. For edge cases that only a standards-compliant validator can see, add bodies to `test/fixtures/openapi/`, which both test suites read
+- The `openapi` CI workflow fails breaking changes such as removed response fields or newly required request fields. Prefer additive changes; apply the `api-breaking-change` label only once deployed agents are known to cope
+
 ### Phoenix v1.8 guidelines
 
 - **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content
