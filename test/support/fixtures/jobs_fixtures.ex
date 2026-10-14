@@ -43,4 +43,30 @@ defmodule Renga.JobsFixtures do
 
     agent
   end
+
+  @doc "A server resource that `agent` reports on, through a claim from its source."
+  def reported_resource_fixture(organization, agent, name \\ "compute-01") do
+    scope = Accounts.scope_for(organization)
+    suffix = System.unique_integer([:positive])
+
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, agent.source_id, %{
+        observation_id: "report-#{suffix}",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{"hostname" => name}
+      })
+
+    {:ok, _claim} =
+      Inventory.create_resource_identifier_claim(scope, agent.source_id, observation.id, %{
+        resource_id: resource.id,
+        kind: "hostname",
+        value: name,
+        confidence: 100
+      })
+
+    resource
+  end
 end
