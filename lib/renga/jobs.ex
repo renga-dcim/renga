@@ -512,6 +512,157 @@ defmodule Renga.Jobs do
   defp payload_bytes(payload) when payload == %{}, do: 0
   defp payload_bytes(payload), do: payload |> Renga.JSON.encode!() |> byte_size()
 
+  ## Sweeping
+
+  @sweep_batch 500
+
+  @doc """
+  Moves jobs on whose time has run out, as the system: jobs whose lease
+  lapsed, which are re-queued, expired, cancelled or marked `uncertain` by
+  their retry class, and queued jobs past their deadline, which expire.
+
+  Each job is handled in its own transaction under `SKIP LOCKED`, so the
+  sweep is idempotent and safe to run on every node at once. Returns how many
+  jobs each part moved.
+  """
+  def sweep(now \\ Renga.Time.utc_now_ms()) do
+    lapsed =
+      Job
+      |> where([job], job.state in ^Job.leased_states() and job.lease_expires_at <= ^now)
+      |> sweep_ids()
+      |> Enum.count(&sweep_one(&1, now, :lease))
+
+    expired =
+      Job
+      |> where([job], job.state == "queued" and job.not_after <= ^now)
+      |> sweep_ids()
+      |> Enum.count(&sweep_one(&1, now, :deadline))
+
+    %{lapsed: lapsed, expired: expired}
+  end
+
+  defp sweep_ids(query) do
+    query
+    |> order_by([job], asc: job.id)
+    |> limit(@sweep_batch)
+    |> select([job], job.id)
+    |> Repo.all()
+  end
+
+  defp sweep_one(job_id, now, kind) do
+    {:ok, moved?} =
+      Repo.transaction(fn ->
+        Job
+        |> where([job], job.id == ^job_id)
+        |> sweep_condition(kind, now)
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.one()
+        |> case do
+          nil ->
+            false
+
+          %Job{} = job ->
+            if kind == :lease, do: lapse_lease(job, now), else: expire!(job, now)
+            true
+        end
+      end)
+
+    moved?
+  end
+
+  defp sweep_condition(query, :lease, now),
+    do: where(query, [job], job.state in ^Job.leased_states() and job.lease_expires_at <= ^now)
+
+  defp sweep_condition(query, :deadline, now),
+    do: where(query, [job], job.state == "queued" and job.not_after <= ^now)
+
+  defp expire!(%Job{} = job, now) do
+    apply!(
+      job,
+      %{state: "expired", finished_at: now},
+      [{"expired", :system, %{"reason" => "not_leased_before_deadline"}}],
+      now
+    )
+  end
+
+  # What a lost lease means depends on how far the job got and its retry
+  # class (RFD 9). Nothing ran before `started`, so any job may go back to
+  # the queue; a started idempotent or convergent job may too, because
+  # running it again is safe. A started imperative job may already have
+  # acted, so it becomes `uncertain` for a person or reconciliation to
+  # resolve and is never run again automatically. A requested cancellation
+  # wins over a retry.
+  defp lapse_lease(%Job{} = job, now) do
+    started? = job.state == "running"
+    imperative? = job.retry_class == "imperative"
+    retry? = job.attempts < job.max_attempts and DateTime.compare(job.not_after, now) == :gt
+
+    {next, final_events} =
+      cond do
+        started? and imperative? -> {"uncertain", [{"uncertain", :system, %{}}]}
+        not is_nil(job.cancel_requested_at) -> {"cancelled", [{"cancelled", :system, %{}}]}
+        retry? -> {"queued", []}
+        true -> {"expired", [{"expired", :system, %{"reason" => "lease_lost"}}]}
+      end
+
+    changes =
+      %{state: next, lease_token_hash: nil, leased_at: nil, lease_expires_at: nil}
+      |> Map.merge(if next == "queued", do: %{started_at: nil}, else: %{})
+      |> Map.merge(if next in Job.finished_states(), do: %{finished_at: now}, else: %{})
+
+    apply!(job, changes, [{"lease_lost", :system, %{"next_state" => next}} | final_events], now)
+  end
+
+  ## Resolving uncertain jobs
+
+  @max_note_length 1000
+
+  @doc """
+  Records what happened to an `uncertain` job, as an owner or admin who
+  checked the target. `outcome` is `"succeeded"` or `"failed"`. Resolving
+  never runs the job again; trying again means requesting a new job.
+  """
+  def resolve_job(%Scope{} = scope, job_id, outcome, note \\ nil)
+      when outcome in ~w(succeeded failed) do
+    with {:ok, actor} <- requesting_user(scope) do
+      Repo.transaction(fn ->
+        authorize_member!(scope, ["owner", "admin"])
+        resolve!(scope.organization_id, job_id, actor, outcome, note_payload(note))
+      end)
+    end
+  end
+
+  @doc """
+  Resolves an `uncertain` job from a later reconciliation, as the system,
+  for example when fresh inventory shows the target reached the job's end
+  state. `details` is recorded on the `resolved` event.
+  """
+  def reconcile_job(organization_id, job_id, outcome, details \\ %{})
+      when outcome in ~w(succeeded failed) and is_map(details) do
+    Repo.transaction(fn ->
+      lock_active_organization!(organization_id)
+      resolve!(organization_id, job_id, :system, outcome, stringify(details))
+    end)
+  end
+
+  defp resolve!(organization_id, job_id, actor, outcome, payload) do
+    job = lock_job!(organization_id, job_id)
+    now = Renga.Time.utc_now_ms()
+
+    unless job.state == "uncertain", do: Repo.rollback(:not_uncertain)
+
+    changes =
+      %{state: outcome, finished_at: now}
+      |> Map.merge(if outcome == "failed", do: %{failure_reason: "resolved_failed"}, else: %{})
+
+    apply!(job, changes, [{"resolved", actor, Map.put(payload, "outcome", outcome)}], now)
+  end
+
+  defp note_payload(note) when is_binary(note) and note != "",
+    do: %{"note" => String.slice(note, 0, @max_note_length)}
+
+  defp note_payload(_note), do: %{}
+
   ## Writing
 
   # The only writer of jobs and their events: applies `changes` to a locked
