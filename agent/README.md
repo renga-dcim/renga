@@ -24,6 +24,11 @@ cargo clippy --workspace --all-features -- -D warnings
 
 The repository-wide checks are `make lint` and `mix precommit`.
 
+`agent/scripts/test-service.sh` runs the shipped systemd unit against a
+loopback stub server and checks that SMBIOS snapshot failures never stop the
+agent from starting and checking in. It needs root on a disposable systemd host
+and runs in CI.
+
 Build a portable Linux archive and Debian package for the current CPU in
 `dist/`, then verify their contents and exercise the packaged binary's dry-run
 collector with:
