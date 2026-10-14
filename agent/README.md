@@ -2,8 +2,10 @@
 
 The Renga agent is a cross-platform service with a Linux-first inventory backend.
 It reads host facts and sends check-ins and observations to Renga over HTTP(S).
-It does **not** provide a remote shell, execute server-supplied commands, or expose
-a listening network service.
+It also runs on-demand jobs from a fixed set of capabilities compiled into the
+agent, such as an immediate inventory collection. It does **not** provide a
+remote shell, execute server-supplied commands, or expose a listening network
+service.
 
 ## Build and checks
 
@@ -146,6 +148,53 @@ invalid reload is logged and the last valid configuration remains active. There
 is currently no signal-triggered reload, so edit the file atomically or restart
 the service when an immediate change is required. Logs are structured JSON on
 stderr; systemd records them in the journal.
+
+## Jobs
+
+Renga can ask an agent to run a job, such as collecting inventory now instead
+of at the next interval (RFD 9). A job names a capability compiled into the
+agent, written `name@version`; the agent never runs anything else, and Renga
+cannot add capabilities remotely. Each capability has a risk class fixed by its
+definition: `observe` capabilities read the host and change nothing,
+`operate` capabilities change host or guest state, and `interactive`
+capabilities open a session a person drives.
+
+The optional `[jobs]` table is local policy for which capabilities Renga may
+request. Without it, every compiled-in `observe` capability is enabled, so
+on-demand collection works without a configuration change. An explicit
+`enabled` list, even an empty one, enables exactly what it names: a capability
+name enables every version, and a `name@version` key enables one. `operate` and
+`interactive` capabilities are never enabled by default. Names this agent does
+not know are accepted and enable nothing, so one file can serve several agent
+versions.
+
+```toml
+[jobs]
+enabled = ["inventory.collect"]
+```
+
+This build has one capability:
+
+* `inventory.collect@1` (`observe`): runs the normal inventory collection now,
+  delivers it through the observation queue, and reports the observation ID.
+
+Check-ins advertise the enabled capabilities next to `host.inventory`, read from
+the current policy, so a reload withdraws a capability at once. The agent
+leases jobs after a check-in that reports jobs waiting, or after any check-in
+that gives no answer, and runs them one at a time on their own thread so they
+never delay check-ins or scheduled inventory. A leased job whose capability the
+policy does not enable is refused. Each job runs under its capability's
+timeout, posts a heartbeat every 20 seconds to keep its lease, and stops when
+Renga asks to cancel it or the agent shuts down; a job that outlives its timeout
+is reported as failed.
+
+Before running a job, the agent records its ID in `jobs.json` under the state
+directory, and it adds the outcome once the job ends. A job delivered again
+after a lost report re-sends the recorded outcome instead of running twice. A
+job recorded as started without an outcome runs again unless its capability is
+imperative, in which case it fails because it may have partly run. The record
+keeps the last 128 jobs for eight days. `--once` runs no jobs and advertises
+none.
 
 ## Debian/Ubuntu package and smoke test
 
