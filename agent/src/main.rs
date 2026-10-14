@@ -8,6 +8,7 @@ use renga_agent::{
         worker::{PolicyGeneration, Worker},
         Catalog, JobPolicy,
     },
+    logging,
     notices::{Listener, Notices},
     payload::{CheckIn, CheckInAck, Observation, QueueReport},
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
@@ -23,7 +24,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
 /// How often the daemon retries observations left in the queue by a failed delivery.
 const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
@@ -125,13 +126,11 @@ enum Command {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .json()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    logging::subscriber(
+        std::io::stderr,
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    )
+    .init();
     if let Err(failure) = run(Args::parse()) {
         error!(error = %failure, "agent failed");
         std::process::exit(1);

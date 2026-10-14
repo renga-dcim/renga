@@ -1651,6 +1651,7 @@ dependencies = [
  "sysinfo",
  "toml",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "tungstenite",
  "url",

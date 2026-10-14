@@ -551,11 +551,26 @@ impl Write for Stream {
 #[allow(clippy::result_large_err)]
 mod tests {
     use super::*;
-    use std::{net::TcpListener, sync::mpsc};
+    use std::{
+        net::TcpListener,
+        sync::{mpsc, Mutex},
+    };
     use tungstenite::handshake::server::{Request, Response};
 
     const TOKEN: &str = "renga_intake_test+/key";
     const INSTALLATION: &str = "67e55044-10b1-426f-9247-bb680e5fe0c8";
+
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn endpoint(origin: &str) -> NoticeEndpoint {
         let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -905,6 +920,43 @@ mod tests {
         received.recv_timeout(Duration::from_secs(5)).unwrap();
         listener.stop();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn trace_logging_never_records_the_handshake_credential() {
+        let _ = tracing_log::LogTracer::init();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = crate::logging::subscriber(
+            move || Capture(Arc::clone(&writer_output)),
+            tracing_subscriber::EnvFilter::new("trace"),
+        );
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = server.accept().unwrap();
+            let mut socket =
+                tungstenite::accept_hdr(stream, |_request: &Request, mut response: Response| {
+                    response
+                        .headers_mut()
+                        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("phoenix"));
+                    Ok(response)
+                })
+                .unwrap();
+            while socket.read().is_ok() {}
+        });
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!("redaction-test-marker");
+            let socket = connect(&endpoint(&origin), &|| false).unwrap();
+            drop(socket);
+        });
+        server.join().unwrap();
+
+        let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("redaction-test-marker"));
+        assert!(!output.contains(TOKEN));
+        assert!(!output.contains(&STANDARD_NO_PAD.encode(TOKEN)));
     }
 
     #[test]
