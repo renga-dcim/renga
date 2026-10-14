@@ -8,4 +8,5 @@ pub mod identity;
 pub mod payload;
 pub mod queue;
 pub mod scheduler;
+pub mod smbios;
 pub mod transport;
