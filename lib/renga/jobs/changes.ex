@@ -36,14 +36,19 @@ defmodule Renga.Jobs.Changes do
   @doc """
   Defers job notifications raised by `operation` until it returns a successful
   result. The outermost caller owns publication, so nested job transactions
-  cannot announce work that a surrounding transaction later rolls back.
+  cannot announce work that a surrounding transaction later rolls back. When
+  called from an otherwise-unwrapped transaction, notifications are suppressed;
+  callers that need them must wrap the outer transaction in `after_commit/1`.
   """
   def after_commit(operation) when is_function(operation, 0) do
-    case Process.get(@deferred_key) do
-      %MapSet{} ->
+    case {Process.get(@deferred_key), Renga.Repo.in_transaction?()} do
+      {%MapSet{}, _in_transaction?} ->
         operation.()
 
-      nil ->
+      {nil, true} ->
+        operation.()
+
+      {nil, false} ->
         Process.put(@deferred_key, MapSet.new())
 
         try do

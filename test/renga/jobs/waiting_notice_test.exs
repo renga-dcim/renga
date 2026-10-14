@@ -55,15 +55,40 @@ defmodule Renga.Jobs.WaitingNoticeTest do
     assert_receive {:jobs_waiting, ^agent_id}
   end
 
-  test "a job queued inside a transaction that rolls back wakes nobody", context do
+  test "a job queued inside a bare transaction that rolls back wakes nobody", context do
     %{scope: scope, agent: agent} = context
+
+    Repo.transaction(fn ->
+      {:ok, _job} = Jobs.create_job(scope, agent.id, @collect, %{})
+      refute_receive {:jobs_waiting, _agent_id}
+      Repo.rollback(:abandoned)
+    end)
+
+    refute_receive {:jobs_waiting, _agent_id}
+  end
+
+  test "an explicit outer scope publishes only after its transaction commits", context do
+    %{scope: scope, agent: agent} = context
+    parent = self()
 
     Changes.after_commit(fn ->
       Repo.transaction(fn ->
         {:ok, _job} = Jobs.create_job(scope, agent.id, @collect, %{})
-        Repo.rollback(:abandoned)
+        refute_receive {:jobs_waiting, _agent_id}
+        send(parent, :transaction_returning)
       end)
     end)
+
+    assert_receive :transaction_returning
+    agent_id = agent.id
+    assert_receive {:jobs_waiting, ^agent_id}
+  end
+
+  test "a bare caller-owned transaction suppresses notices it cannot defer", context do
+    %{scope: scope, agent: agent} = context
+
+    assert {:ok, {:ok, _job}} =
+             Repo.transaction(fn -> Jobs.create_job(scope, agent.id, @collect, %{}) end)
 
     refute_receive {:jobs_waiting, _agent_id}
   end
