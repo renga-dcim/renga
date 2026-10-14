@@ -10,18 +10,25 @@ User=renga-agent
 Group=renga-agent
 Environment=RUST_LOG=info
 EnvironmentFile=-/etc/renga/agent.env
+# Copy the root-only SMBIOS tables into /run/renga/smbios for the sandboxed agent.
+# "+" runs only this fixed, path-less helper as root outside the sandbox; "-" makes
+# any failure, including the deadline, an unavailable source rather than a failed
+# start. timeout reaps the helper after 5s plus a 1s TERM-to-KILL grace, well inside
+# TimeoutStartSec, and the helper publishes nothing unless it finishes.
+ExecStartPre=-+/usr/bin/timeout --kill-after=1s 5s /usr/bin/renga-agent snapshot-smbios
 ExecStart=/usr/bin/renga-agent --config /etc/renga/agent.toml
 Restart=on-failure
 RestartSec=10s
+TimeoutStartSec=30s
 # Keep this above the maximum request_timeout_seconds value (20s).
 TimeoutStopSec=40s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=renga-agent
 
-# The collector only needs read access to host inventory in /proc and /sys.
-# DMI UUID/serial are best-effort with this unprivileged account; do not run as
-# root or weaken the sandbox merely to make optional firmware identifiers readable.
+# The collector only needs read access to host inventory in /proc, /sys, and the
+# SMBIOS snapshot. Do not run it as root or weaken the sandbox to read firmware
+# identifiers; the pre-start snapshot is the only privileged step.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

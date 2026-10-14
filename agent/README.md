@@ -177,9 +177,16 @@ Filesystem inventory is parsed through `procfs` from `/proc/1/mountinfo` so it
 describes the host rather than the service's sandboxed mount view. If that view
 is inaccessible or malformed, all filesystem components are omitted instead of
 falling back to the agent's mount namespace.
-The DMI UUID and serial number remain best-effort because an unprivileged
-service may not have permission to read the relevant sysfs files. Do not run the
-agent as root or weaken the sandbox to obtain those optional identifiers.
+The DMI UUID, serial number, and power supply records come from the raw SMBIOS
+tables, which only root can read. Before each start the unit runs
+`renga-agent snapshot-smbios` as root, outside the sandbox, under a five-second
+deadline. It takes no arguments, reads only the two files in
+`/sys/firmware/dmi/tables` without following links, and publishes a copy that
+only root and the `renga-agent` group can read under the root-owned
+`/run/renga/smbios`. The agent ignores a snapshot that is incomplete or from an
+earlier boot. If the helper fails or times out, the service still starts and
+those optional facts are omitted. Do not run the agent itself as root or weaken
+the sandbox to obtain them.
 The example unit allows 40 seconds for shutdown, above the maximum 20-second
 request timeout so an in-flight request can finish before systemd forcibly stops
 the service.
@@ -189,7 +196,7 @@ the service.
 The currently implemented backends support Linux and macOS. A portable `sysinfo`
 baseline provides best-effort hostname, OS/kernel/architecture, CPU, memory, and
 visible disk entries. The Linux backend enriches that baseline with stable machine
-and DMI identity, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
+and DMI identity, SMBIOS power supplies, FQDN, authoritative interfaces and addresses, PID 1 filesystems,
 and virtualization hints from `/etc`, procfs, sysfs, and the `hostname` command.
 `/etc/hostname` remains authoritative when usable, with the portable
 hostname as a fallback. Missing firmware files, utilities, permissions, or
