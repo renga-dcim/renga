@@ -509,8 +509,11 @@ fn connect_tcp(
                 .map(ListenError::from)
                 .unwrap_or_else(|| ListenError::new("server host did not resolve")));
         }
-        let until_next = next_start.saturating_duration_since(Instant::now());
-        thread::sleep(wait_slice(deadline).min(until_next).min(CONNECT_POLL));
+        let mut wait = wait_slice(deadline).min(CONNECT_POLL);
+        if next_address < addresses.len() {
+            wait = wait.min(next_start.saturating_duration_since(Instant::now()));
+        }
+        thread::sleep(wait);
     }
 }
 
@@ -728,7 +731,7 @@ mod tests {
     use super::*;
     use std::{
         net::TcpListener,
-        sync::{mpsc, Mutex},
+        sync::{atomic::AtomicUsize, mpsc, Mutex},
     };
     use tungstenite::handshake::server::{Request, Response};
 
@@ -1196,6 +1199,26 @@ mod tests {
         assert!(started.elapsed() > POLL);
         drop(stream);
         drop(accepted.join().unwrap());
+    }
+
+    #[test]
+    fn one_pending_address_polls_at_a_bounded_rate_after_the_last_stagger() {
+        let (_listener, _fillers, address) = saturated_listener();
+        let polls = AtomicUsize::new(0);
+        let started = Instant::now();
+
+        assert!(connect_tcp(
+            &[address],
+            started + CONNECT_STAGGER + Duration::from_millis(100),
+            &|| {
+                polls.fetch_add(1, Ordering::SeqCst);
+                false
+            },
+        )
+        .is_err());
+
+        assert!(started.elapsed() >= CONNECT_STAGGER);
+        assert!(polls.load(Ordering::SeqCst) < 100);
     }
 
     #[test]
