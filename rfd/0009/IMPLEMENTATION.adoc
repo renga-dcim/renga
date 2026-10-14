@@ -29,13 +29,13 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 == Phase 3: Agent
 
-* [ ] Parse `name@version` capabilities and the `[jobs]` policy, and advertise
+* [x] Parse `name@version` capabilities and the `[jobs]` policy, and advertise
   only compiled-in, enabled job capabilities.
-* [ ] Run jobs on a dedicated worker with timeouts and cancellation, re-checking
+* [x] Run jobs on a dedicated worker with timeouts and cancellation, re-checking
   policy at lease time.
-* [ ] Record job IDs and outcomes in the state directory and re-send the recorded
+* [x] Record job IDs and outcomes in the state directory and re-send the recorded
   outcome when a job is delivered again.
-* [ ] Add the capability trait and implement `inventory.collect@1` through the
+* [x] Add the capability trait and implement `inventory.collect@1` through the
   observation queue.
 
 == Phase 4: Interface
