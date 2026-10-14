@@ -12,11 +12,19 @@ if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 fi
 
-if ! sudo systemctl is-active --quiet nix-daemon.service; then
-  sudo systemctl start nix-daemon.service
+# A single-user Nix lives in ~/.nix-profile, which a stripped PATH may omit.
+if [ -x "$HOME/.nix-profile/bin/nix" ]; then
+  export PATH="$HOME/.nix-profile/bin:$PATH"
 fi
 
-sudo chmod o+rx /nix/var/nix/daemon-socket
+# A single-user Nix (see .agents/setup) has no daemon to start.
+if systemctl cat nix-daemon.service >/dev/null 2>&1; then
+  if ! sudo systemctl is-active --quiet nix-daemon.service; then
+    sudo systemctl start nix-daemon.service
+  fi
+
+  sudo chmod o+rx /nix/var/nix/daemon-socket
+fi
 
 nix_environment="$(nix print-dev-env "$repo_root")"
 eval "$nix_environment"
