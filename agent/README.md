@@ -188,6 +188,18 @@ timeout, posts a heartbeat every 20 seconds to keep its lease, and stops when
 Renga asks to cancel it or the agent shuts down; a job that outlives its timeout
 is reported as failed.
 
+When the policy enables any job capability, the agent also holds a WebSocket
+open to `/api/v1/agent/socket` and joins its installation's channel. Renga
+pushes an empty `jobs_waiting` message when it queues a job for the agent, and
+the agent starts a lease pass within a quarter of a second instead of waiting
+for its next check-in. The socket authenticates with the same intake key and
+installation ID as the HTTPS API (the key travels in the
+`Sec-WebSocket-Protocol` header, never the URL), uses the same TLS roots, and
+never carries a job, so leasing still happens over HTTPS. If the socket cannot
+connect, for example behind an HTTP proxy, which it does not use, the agent
+logs one warning per outage, retries with backoff up to five minutes, and
+leases on check-ins exactly as before.
+
 Before running a job, the agent records its ID in `jobs.json` under the state
 directory, and it adds the outcome once the job ends. A job delivered again
 after a lost report re-sends the recorded outcome instead of running twice. A
