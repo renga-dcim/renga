@@ -5,10 +5,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: renga_dev
-    ports:
-      - "5434:5432"
+    # Expose PostgreSQL only through the Unix socket mounted into the checkout.
+    command: ["postgres", "-c", "listen_addresses="]
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./tmp/postgres-socket:/var/run/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d renga_dev"]
       interval: 5s

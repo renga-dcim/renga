@@ -1,11 +1,14 @@
 import Config
 
 # Configure your database
+#
+# The container started by `make up` is reached through the Unix socket it
+# exports into tmp/postgres-socket, not through a TCP port, so there is no
+# hostname or port to configure. Socket connections are trusted, which is why no
+# password is needed.
 config :renga, Renga.Repo,
-  username: System.get_env("DATABASE_USER") || "postgres",
-  password: System.get_env("DATABASE_PASSWORD") || "postgres",
-  hostname: System.get_env("DATABASE_HOST") || "localhost",
-  port: String.to_integer(System.get_env("DATABASE_PORT") || "5434"),
+  username: "postgres",
+  socket_dir: Path.expand("../tmp/postgres-socket", __DIR__),
   database: System.get_env("DATABASE_NAME") || "renga_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,

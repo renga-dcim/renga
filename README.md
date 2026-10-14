@@ -1,5 +1,11 @@
 # Renga
 
+Renga reaches PostgreSQL through `tmp/postgres-socket`, with no database TCP
+port. On native Linux, `make up` starts the container from `docker-compose.yml`;
+on macOS, where Docker Desktop cannot forward a container socket to the host,
+it starts a native cluster from the Nix development shell instead. Run
+`make down` to stop PostgreSQL and `make db` to open a `psql` console.
+
 To start your Phoenix server:
 
 * Run `mix setup` to install and setup dependencies
