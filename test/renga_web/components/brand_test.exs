@@ -2,6 +2,8 @@ defmodule RengaWeb.BrandTest do
   use RengaWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
 
   alias RengaWeb.Brand
 
@@ -48,6 +50,30 @@ defmodule RengaWeb.BrandTest do
       html = render_component(&Brand.wordmark/1, %{tone: :one})
 
       assert count(html, ".text-accent") == 0
+    end
+  end
+
+  describe "in the app" do
+    test "the signed-out header and sign-in card show the logo", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      assert has_element?(view, "header a[aria-label='Renga home'] svg[aria-label=Renga]")
+      refute has_element?(view, ".hero-server-stack-solid")
+    end
+
+    test "the sidebar shows the wordmark", %{conn: conn} do
+      user = user_fixture()
+      organization = organization_fixture()
+      organization_membership_fixture(user, organization)
+
+      conn =
+        conn
+        |> log_in_user(user)
+        |> Plug.Conn.put_session(:current_organization_id, organization.id)
+
+      {:ok, view, _html} = live(conn, ~p"/inbox")
+
+      assert has_element?(view, "#app-sidebar a[aria-label='Renga home'] svg[aria-label=Renga]")
     end
   end
 end
