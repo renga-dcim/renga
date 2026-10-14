@@ -5,7 +5,8 @@ export const Overlay = {
   mounted() {
     this.onOpen = () => {
       if (openOverlays.includes(this)) return
-      this.opener = document.querySelector(this.el.dataset.returnFocus) || document.activeElement
+      const returnFocus = this.el.dataset.returnFocus
+      this.opener = (returnFocus && document.querySelector(returnFocus)) || document.activeElement
       this.openerId = this.opener?.id
       openOverlays.push(this)
       this.el.inert = false
