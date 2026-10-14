@@ -129,19 +129,36 @@ defmodule Renga.Jobs.ResourceActivityTest do
              )
   end
 
-  test "lists a resource's agents and its latest job", context do
-    %{scope: scope, agent: agent, resource: resource} = context
+  test "lists a resource's agents and its latest collection", context do
+    %{organization: organization, scope: scope, agent: agent, resource: resource} = context
 
     assert [listed] = Jobs.list_resource_agents(scope, resource.id)
     assert listed.id == agent.id
-    assert Jobs.latest_resource_job(scope, resource.id) == nil
+    assert Jobs.latest_resource_collection(scope, resource.id) == nil
 
     {:ok, job} = Jobs.create_job(scope, agent.id, @collect, %{}, resource_id: resource.id)
 
-    latest = Jobs.latest_resource_job(scope, resource.id)
+    latest = Jobs.latest_resource_collection(scope, resource.id)
     assert latest.id == job.id
     assert latest.agent.id == agent.id
     assert latest.requested_by_user.id == scope.user.id
+
+    restart = "test.restart@1"
+
+    organization
+    |> Ecto.Changeset.change(
+      settings: %{"jobs" => %{"allowed_capabilities" => [@collect, restart]}}
+    )
+    |> Repo.update!()
+
+    agent |> Ecto.Changeset.change(capabilities: [@collect, restart]) |> Repo.update!()
+
+    assert {:ok, _newer_job} =
+             Jobs.create_system_job(organization.id, agent.id, restart, %{"service" => "sshd"},
+               resource_id: resource.id
+             )
+
+    assert Jobs.latest_resource_collection(scope, resource.id).id == job.id
   end
 
   test "groups jobs by state for the Jobs list", context do

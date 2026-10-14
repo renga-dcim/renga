@@ -1253,7 +1253,7 @@ defmodule RengaWeb.ResourceLive.Show do
       Enum.find(agents, &(&1.status == "active" and @collect_key in &1.capabilities)) ||
         List.first(agents)
 
-    job = Jobs.latest_resource_job(scope, resource.id)
+    job = Jobs.latest_resource_collection(scope, resource.id)
     accepts? = agent != nil and @collect_key in agent.capabilities
 
     assign(socket, :collect, %{

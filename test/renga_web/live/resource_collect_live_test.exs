@@ -93,6 +93,7 @@ defmodule RengaWeb.ResourceCollectLiveTest do
            )
 
     assert has_element?(view, "#collect-notice", String.slice(observation_id, 0, 8))
+    assert has_element?(view, "#collect-notice-job", "View job")
     refute has_element?(view, "#collect-now[aria-disabled]")
     assert has_element?(view, "#recent-activity", "Inventory collection succeeded")
 

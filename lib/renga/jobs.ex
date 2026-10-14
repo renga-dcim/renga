@@ -73,9 +73,9 @@ defmodule Renga.Jobs do
   @doc """
   Lists the organization's jobs, newest first, with their resource, agent,
   and requesting user. Filters by `:state`, `:group` (see `state_groups/0`),
-  `:agent_id`, `:resource_id`, and `:batch_id`. Pass the oldest job already
-  shown as `:before` to read the next keyset page. Returns at most `:limit`
-  jobs (default 50).
+  `:agent_id`, `:resource_id`, `:batch_id`, and `:capability`. Pass the oldest
+  job already shown as `:before` to read the next keyset page. Returns at most
+  `:limit` jobs (default 50).
   """
   def list_jobs(%Scope{organization_id: organization_id}, opts \\ []) do
     Job
@@ -143,17 +143,27 @@ defmodule Renga.Jobs do
       {:batch_id, batch_id}, query ->
         where(query, [job], job.batch_id == ^batch_id)
 
+      {:capability, {name, version}}, query ->
+        where(query, [job], job.capability == ^name and job.capability_version == ^version)
+
       _other, query ->
         query
     end)
   end
 
   @doc """
-  The newest job requested from `resource`, with its agent, or nil. The
-  resource page shows it as the state of its last collection.
+  The newest inventory collection requested from `resource`, with its agent,
+  or nil. Other resource-targeted capabilities do not replace the collection
+  state shown on the resource page.
   """
-  def latest_resource_job(%Scope{} = scope, resource_id) do
-    scope |> list_jobs(resource_id: resource_id, limit: 1) |> List.first()
+  def latest_resource_collection(%Scope{} = scope, resource_id) do
+    scope
+    |> list_jobs(
+      resource_id: resource_id,
+      capability: {"inventory.collect", 1},
+      limit: 1
+    )
+    |> List.first()
   end
 
   @doc "What people call the job's capability, such as \"Collect inventory\"."

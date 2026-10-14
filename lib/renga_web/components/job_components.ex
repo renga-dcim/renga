@@ -177,7 +177,6 @@ defmodule RengaWeb.JobComponents do
         </p>
       </div>
       <.link
-        :if={@job.state != "succeeded"}
         id="collect-notice-job"
         navigate={"/activity/jobs/#{@job.id}"}
         class="inline-flex min-h-tap items-center text-xs text-link hover:underline"
