@@ -5,6 +5,7 @@
 //! capability only when it is compiled in and enabled by its own
 //! configuration. Renga cannot widen that set remotely.
 
+pub mod inventory_collect;
 pub mod record;
 pub mod worker;
 
