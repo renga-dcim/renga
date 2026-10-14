@@ -305,6 +305,112 @@ defmodule RengaWeb.UI do
     """
   end
 
+  ## Overflow
+
+  @doc """
+  Renders text that stays on one line and ends in an ellipsis when it does
+  not fit. While it is cut off, hovering or focusing it shows the full text
+  in a tooltip (`assets/js/floating.js`); the full text stays in the markup
+  for screen readers. Tables get this from `<.table overflow="clip">`.
+
+  ## Examples
+
+      <.clip id="resource-name" class="font-medium">{@resource.name}</.clip>
+  """
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  def clip(assigns) do
+    ~H"""
+    <span data-clip class={["block min-w-0 truncate", @class]} {@rest}>
+      {render_slot(@inner_block)}
+    </span>
+    """
+  end
+
+  @doc """
+  Renders short tags on one line: the first `max` items as chips and a `+N`
+  button that opens every item in a popover, so a row never wraps to fit a
+  long list.
+
+  The popover is native (`popover`), so it closes on Escape and outside
+  clicks; `assets/js/floating.js` places it under the button.
+
+  ## Examples
+
+      <.chip_list id={"agent-\#{agent.id}-jobs"} label="Accepts jobs" items={agent.capabilities}>
+        <:detail :let={capability}>
+          <span class="font-mono">{capability.key}</span>
+          <span class="text-fg-muted">{capability.risk}</span>
+        </:detail>
+      </.chip_list>
+  """
+  attr :id, :string, required: true
+  attr :items, :list, required: true
+  attr :label, :string, required: true, doc: "names the list; titles the popover"
+  attr :max, :integer, default: 1, doc: "how many chips show before the +N button"
+  attr :class, :any, default: nil
+
+  slot :chip, doc: "a chip's text, given the item; defaults to the item itself"
+  slot :detail, doc: "a popover row, given the item; defaults to the chip"
+
+  def chip_list(assigns) do
+    assigns =
+      assigns
+      |> assign(:shown, Enum.take(assigns.items, assigns.max))
+      |> assign(:more, max(length(assigns.items) - assigns.max, 0))
+
+    ~H"""
+    <span id={@id} class={["inline-flex max-w-full items-center gap-1 align-middle", @class]}>
+      <span
+        :for={item <- @shown}
+        class="min-w-0 truncate rounded-sm border border-edge bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-fg-muted"
+      >
+        <.chip_text chip={@chip} item={item} />
+      </span>
+      <%= if @more > 0 do %>
+        <button
+          id={"#{@id}-more"}
+          type="button"
+          popovertarget={"#{@id}-list"}
+          aria-label={gettext("%{count} more in %{label}", count: @more, label: @label)}
+          class="inline-flex min-h-tap min-w-tap shrink-0 items-center justify-center rounded-sm border border-edge bg-surface px-1.5 py-0.5 font-mono text-[11px] text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+        >
+          +{@more}
+        </button>
+        <div
+          id={"#{@id}-list"}
+          popover
+          data-anchor={"#{@id}-more"}
+          class="fixed inset-auto m-0 w-56 space-y-1.5 rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+        >
+          <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+            {@label}
+          </p>
+          <ul class="space-y-1.5">
+            <li :for={item <- @items} class="flex items-center justify-between gap-2">
+              <%= if @detail != [] do %>
+                {render_slot(@detail, item)}
+              <% else %>
+                <span class="min-w-0 truncate font-mono">
+                  <.chip_text chip={@chip} item={item} />
+                </span>
+              <% end %>
+            </li>
+          </ul>
+        </div>
+      <% end %>
+    </span>
+    """
+  end
+
+  attr :chip, :list, required: true
+  attr :item, :any, required: true
+
+  defp chip_text(%{chip: []} = assigns), do: ~H"{to_string(@item)}"
+  defp chip_text(assigns), do: ~H"{render_slot(@chip, @item)}"
+
   ## Segmented control
 
   @doc """

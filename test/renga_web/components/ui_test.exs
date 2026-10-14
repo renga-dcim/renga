@@ -111,6 +111,101 @@ defmodule RengaWeb.UITest do
       assert present?(html, "#item-1 td.font-medium")
       assert present?(html, "thead th[scope='col'].font-medium")
     end
+
+    test "scrolls by default and leaves cell content unwrapped" do
+      assigns = %{rows: [%{id: 1, name: "compute-01"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table id="items" rows={@rows} row_id={&"item-#{&1.id}"}>
+          <:col :let={item} label="Name" hide_below="md">{item.name}</:col>
+        </.table>
+        """)
+
+      refute present?(html, "table.table-fixed")
+      refute present?(html, "[data-clip]")
+      refute present?(html, "td.hidden")
+    end
+
+    test "clipping keeps rows on one line and drops columns below their container size" do
+      assigns = %{rows: [%{id: 1, name: "compute-01", detail: "Observation 7f3c91e2"}]}
+
+      html =
+        rendered_to_string(~H"""
+        <.table
+          id="items"
+          rows={@rows}
+          row_id={&"item-#{&1.id}"}
+          row_navigate={&"/inventory/#{&1.id}"}
+          overflow="clip"
+        >
+          <:col :let={item} label="Name">{item.name}</:col>
+          <:col :let={item} label="Detail" class="w-40" hide_below="3xl">{item.detail}</:col>
+        </.table>
+        """)
+
+      assert present?(html, "div.\\@container > table.table-fixed")
+      assert text(html, "#item-1 td:first-child a [data-clip]") == "compute-01"
+      assert text(html, "#item-1 td:nth-child(2) [data-clip]") == "Observation 7f3c91e2"
+      assert attr_of(html, "#item-1 td:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
+      assert attr_of(html, "thead th:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
+      refute attr_of(html, "thead th:first-child", "class") |> hd() =~ "hidden"
+    end
+  end
+
+  describe "clip/1" do
+    test "marks its text for the overflow tooltip" do
+      assigns = %{}
+      html = rendered_to_string(~H|<.clip id="name" class="font-medium">compute-01</.clip>|)
+
+      assert text(html, "#name[data-clip].truncate.font-medium") == "compute-01"
+    end
+  end
+
+  describe "chip_list/1" do
+    @jobs [
+      %{key: "inventory.collect@1", risk: "observe"},
+      %{key: "query.disk_usage@1", risk: "observe"},
+      %{key: "vm.power@1", risk: "operate"}
+    ]
+
+    test "shows the first chips and opens every item from +N" do
+      assigns = %{jobs: @jobs}
+
+      html =
+        rendered_to_string(~H"""
+        <.chip_list id="jobs" label="Accepts jobs" items={@jobs}>
+          <:chip :let={job}>{job.key}</:chip>
+          <:detail :let={job}>
+            <span>{job.key}</span>
+            <span>{job.risk}</span>
+          </:detail>
+        </.chip_list>
+        """)
+
+      assert text(html, "#jobs > span") == "inventory.collect@1"
+      assert text(html, "#jobs-more") == "+2"
+      assert attr_of(html, "#jobs-more", "popovertarget") == ["jobs-list"]
+      assert attr_of(html, "#jobs-more", "aria-label") == ["2 more in Accepts jobs"]
+      assert attr_of(html, "#jobs-list", "data-anchor") == ["jobs-more"]
+      assert present?(html, "#jobs-list[popover]")
+
+      assert html |> query("#jobs-list li") |> Enum.map(&squish(LazyHTML.text(&1))) ==
+               ["inventory.collect@1 observe", "query.disk_usage@1 observe", "vm.power@1 operate"]
+    end
+
+    test "has no +N when every item fits and defaults chips to the item" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.chip_list id="reports" label="Reports" items={["host.inventory"]} max={2} />
+        """)
+
+      assert text(html, "#reports") == "host.inventory"
+      refute present?(html, "#reports-more")
+      refute present?(html, "[popover]")
+    end
   end
 
   describe "object_page/1" do

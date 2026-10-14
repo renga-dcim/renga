@@ -399,6 +399,13 @@ defmodule RengaWeb.CoreComponents do
   with `row_navigate` and mark the open one with `row_selected`. The `:empty`
   slot shows when there are no rows, including for streams.
 
+  With `overflow="clip"` the table keeps its width instead of scrolling:
+  every row stays on one line, long values end in an ellipsis and show their
+  full text in a tooltip, and columns marked `hide_below` drop out when the
+  table is narrower than that container size (docs/design-system.md,
+  "Overflow"). Give fixed-width columns a width class; the rest share the
+  remaining space.
+
   With `row_navigate`, the first column becomes a native link; its slot must
   not contain other interactive controls. For streams, reinsert affected rows
   (or reset the stream) when changing selection so their markup is refreshed.
@@ -418,6 +425,12 @@ defmodule RengaWeb.CoreComponents do
       >
         <:col :let={{_id, resource}} label="Name" class="w-1/3 font-medium">{resource.name}</:col>
         <:empty>No resources match these filters.</:empty>
+      </.table>
+
+      <.table id="jobs" rows={@jobs} overflow="clip">
+        <:col :let={job} label="Target">{job.target}</:col>
+        <:col :let={job} label="State" class="w-36">{job.state}</:col>
+        <:col :let={job} label="Detail" hide_below="3xl">{job.detail}</:col>
       </.table>
   """
   attr :id, :string, required: true
@@ -464,9 +477,17 @@ defmodule RengaWeb.CoreComponents do
 
   attr :class, :any, default: nil, doc: "classes for the scroll container"
 
+  attr :overflow, :string,
+    default: "scroll",
+    values: ~w(scroll clip),
+    doc: "scroll sideways when too wide, or clip long values on one line"
+
   slot :col, required: true do
     attr :label, :string
     attr :class, :any
+
+    attr :hide_below, :string,
+      doc: "with overflow=\"clip\", hide the column below this container size (sm to 5xl)"
   end
 
   slot :action, doc: "the slot for showing user actions in the last table column"
@@ -492,8 +513,8 @@ defmodule RengaWeb.CoreComponents do
     <%!-- relative keeps absolutely positioned cell content, such as
           screen-reader labels, inside the scroll box; otherwise a wide
           table widens the whole page on a phone. --%>
-    <div class={["relative overflow-x-auto", @class]}>
-      <table class="w-full text-left text-table text-fg">
+    <div class={["relative overflow-x-auto", @overflow == "clip" && "@container", @class]}>
+      <table class={["w-full text-left text-table text-fg", @overflow == "clip" && "table-fixed"]}>
         <thead class="sticky top-0 z-10 bg-canvas text-xs text-fg-muted">
           <tr class="h-row border-b border-edge">
             <th :if={@row_checked} scope="col" class="w-0 pl-cell">
@@ -507,7 +528,15 @@ defmodule RengaWeb.CoreComponents do
                 class={@checkbox_class}
               />
             </th>
-            <th :for={col <- @col} scope="col" class={["px-cell font-medium", col[:class]]}>
+            <th
+              :for={col <- @col}
+              scope="col"
+              class={[
+                "px-cell font-medium",
+                @overflow == "clip" && ["truncate", hide_below(col[:hide_below])],
+                col[:class]
+              ]}
+            >
               {col[:label]}
             </th>
             <th :if={@action != []} scope="col" class="px-cell">
@@ -573,6 +602,7 @@ defmodule RengaWeb.CoreComponents do
         class={[
           "px-cell",
           (@row_click || @row_navigate) && "hover:cursor-pointer",
+          @overflow == "clip" && hide_below(col[:hide_below]),
           col[:class]
         ]}
       >
@@ -585,10 +615,10 @@ defmodule RengaWeb.CoreComponents do
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          {render_slot(col, @row_item.(@row))}
+          <.cell overflow={@overflow}>{render_slot(col, @row_item.(@row))}</.cell>
         </.link>
         <%= if !(index == 0 && @row_navigate) do %>
-          {render_slot(col, @row_item.(@row))}
+          <.cell overflow={@overflow}>{render_slot(col, @row_item.(@row))}</.cell>
         <% end %>
       </td>
       <td :if={@action != []} class="w-0 px-cell font-medium">
@@ -601,6 +631,30 @@ defmodule RengaWeb.CoreComponents do
     </tr>
     """
   end
+
+  attr :overflow, :string, required: true
+  slot :inner_block, required: true
+
+  defp cell(%{overflow: "clip"} = assigns) do
+    ~H"""
+    <span data-clip class="block min-w-0 truncate">{render_slot(@inner_block)}</span>
+    """
+  end
+
+  defp cell(assigns), do: ~H"{render_slot(@inner_block)}"
+
+  # Container sizes rather than viewport breakpoints, so a table in a side
+  # panel drops columns as early as one on a phone. Written out in full so
+  # Tailwind generates them.
+  defp hide_below(nil), do: nil
+  defp hide_below("sm"), do: "hidden @sm:table-cell"
+  defp hide_below("md"), do: "hidden @md:table-cell"
+  defp hide_below("lg"), do: "hidden @lg:table-cell"
+  defp hide_below("xl"), do: "hidden @xl:table-cell"
+  defp hide_below("2xl"), do: "hidden @2xl:table-cell"
+  defp hide_below("3xl"), do: "hidden @3xl:table-cell"
+  defp hide_below("4xl"), do: "hidden @4xl:table-cell"
+  defp hide_below("5xl"), do: "hidden @5xl:table-cell"
 
   defp row_command(nil, nil, _row), do: nil
   defp row_command(row_click, nil, row), do: row_click.(row)
