@@ -1,0 +1,44 @@
+= RFD 0013 implementation checklist
+
+Implements link:README.adoc[RFD 13: Live terminal].
+
+== Phase 1: Installation credentials
+
+* [ ] Generate an Ed25519 key pair per installation and present the public key
+  on check-in.
+* [ ] Record first keys as pending, approve them by fingerprint on the
+  Collectors page, and open a finding when a key changes.
+* [ ] Require signed leases for `operate` and `interactive` jobs.
+* [ ] Approve versioned resource-to-installation/key bindings independently of
+  shared-key inventory; bind jobs and signatures to them and revalidate at
+  dispatch/lease. Test shared-key reassociation and view-membership poisoning,
+  missing/conflicting bindings, and binding changes after job creation.
+
+== Phase 2: Access
+
+* [ ] Add organization enablement and expiring terminal grants over target sets.
+* [ ] Require WebAuthn or fresh-password step-up within five minutes.
+
+== Phase 3: Sessions
+
+* [ ] Add `terminal.session@1` with renewing, idle-limited leases.
+* [ ] Relay the PTY over a Phoenix Channels topic, running as the agent's
+  configured non-root `run_as` account.
+* [ ] End sessions on revocation, admin action, lease loss, or disconnect.
+
+== Phase 4: Recording
+
+* [ ] Record bounded asciicast streams with retention, replay, and replay audit.
+
+== Phase 5: Native SSH clients
+
+* [ ] Add the SSH CA issuing five-minute, PTY-only user certificates keyed to a
+  session job after grant and step-up checks.
+* [ ] Add the `renga` CLI sign-in and `ProxyCommand` tunnel over the session
+  relay.
+* [ ] Add the agent's embedded SSH server, pinning the CA key at installation
+  approval and refusing forwarding, `exec`, and subsystems.
+* [ ] Rotate the SSH CA by publishing a successor signed by the pinned key, with
+  an overlap period and findings; add `renga-agent reset-ssh-ca` for local
+  recovery. Test a successor that does not chain and a remote attempt to clear
+  a pin.

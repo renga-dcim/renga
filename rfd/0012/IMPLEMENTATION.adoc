@@ -1,0 +1,22 @@
+= RFD 0012 implementation checklist
+
+Implements link:README.adoc[RFD 12: Operational queries].
+
+* [ ] Define query capabilities with parameter and result schemas, size limits,
+  timeouts, and sensitivity, validated by Renga and the agent.
+* [ ] Add per-query organization enablement and the member rule for
+  `inventory`-sensitivity queries.
+* [ ] Enforce current sensitivity authorization on retained parameters, results,
+  events, history, batch tables, exports, and activity summaries. Test a member
+  reading an admin's sensitive job and a previously authorized reader after
+  revocation, including generic Jobs endpoints.
+* [ ] Implement the first six queries natively in the agent, with no request text
+  reaching any program arguments.
+* [ ] Add the resource Queries tab and saved-view fan-out with batch results.
+* [ ] Connect the agent to a local `osqueryd` through its extensions socket and
+  report the backend's status.
+* [ ] Answer named queries with fixed osquery SQL when available, falling back
+  to native implementations.
+* [ ] Add `query.sql@1`: sensitive, off by default, owner/admin only, refused
+  unless the daemon's `disable_tables` covers the agent's deny list, with
+  bounded tabular results.
