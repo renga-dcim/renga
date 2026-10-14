@@ -69,7 +69,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
 
   defp leased(context) do
     job = queue_job(context)
-    %{"jobs" => [%{"lease_token" => token}]} = json_response(lease(context), 200)
+    %{"jobs" => [%{"lease_token" => token}]} = valid_api_response(lease(context), 200)
     {job, token}
   end
 
@@ -77,7 +77,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
     test "leases queued jobs with a fresh token and a 60 second lease", context do
       job = queue_job(context)
 
-      assert %{"jobs" => [leased]} = json_response(lease(context), 200)
+      assert %{"jobs" => [leased]} = valid_api_response(lease(context), 200)
 
       assert %{
                "id" => id,
@@ -95,17 +95,20 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       assert_in_delta DateTime.diff(expires_at, DateTime.utc_now()), 60, 2
 
       # Leased jobs are not handed out twice.
-      assert %{"jobs" => []} = json_response(lease(context), 200)
+      assert %{"jobs" => []} = valid_api_response(lease(context), 200)
     end
 
     test "leases only the capabilities the agent will run now, up to the limit", context do
       for _ <- 1..3, do: queue_job(context)
 
       assert %{"jobs" => []} =
-               json_response(lease(context, %{"capabilities" => ["other.thing@1"]}), 200)
+               valid_api_response(lease(context, %{"capabilities" => ["other.thing@1"]}), 200)
 
       assert %{"jobs" => [_, _]} =
-               json_response(lease(context, %{"capabilities" => [@collect], "limit" => 2}), 200)
+               valid_api_response(
+                 lease(context, %{"capabilities" => [@collect], "limit" => 2}),
+                 200
+               )
     end
 
     test "never leases jobs beyond observe over the shared intake key", context do
@@ -119,7 +122,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
         })
 
       assert %{"jobs" => []} =
-               json_response(lease(context, %{"capabilities" => [@restart]}), 200)
+               valid_api_response(lease(context, %{"capabilities" => [@restart]}), 200)
     end
 
     test "validates the request", context do
@@ -131,7 +134,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
             %{"capabilities" => [@collect], "limit" => 11}
           ] do
         assert %{"status" => "rejected", "errors" => [_ | _]} =
-                 json_response(lease(context, body), 422)
+                 valid_api_response(lease(context, body), 422)
       end
     end
 
@@ -139,16 +142,17 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       unknown = %{context | installation_id: Ecto.UUID.generate()}
 
       assert %{"errors" => [%{"path" => "installation_id"}]} =
-               json_response(lease(unknown), 409)
+               valid_api_response(lease(unknown), 409)
 
       context.agent |> Ecto.Changeset.change(status: "disabled") |> Repo.update!()
 
-      assert %{"errors" => [%{"path" => "installation_id"}]} = json_response(lease(context), 403)
+      assert %{"errors" => [%{"path" => "installation_id"}]} =
+               valid_api_response(lease(context), 403)
     end
 
     test "requires intake authentication" do
       conn = post(build_conn(), ~p"/api/v1/agent/jobs/lease", %{})
-      assert json_response(conn, 401)
+      assert valid_api_response(conn, 401)
     end
 
     test "rejects a key revoked after authentication without leasing", context do
@@ -158,7 +162,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       conn =
         JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "leaseAgentJobs")
+
       assert %{state: "queued"} = Jobs.get_job!(context.scope, job.id)
     end
 
@@ -171,7 +177,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       conn =
         JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "leaseAgentJobs")
+
       assert %{state: "queued"} = Repo.get!(Renga.Jobs.Job, job.id)
     end
   end
@@ -181,10 +189,10 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       {job, token} = leased(context)
 
       assert %{"status" => "accepted", "job" => %{"state" => "running"}} =
-               json_response(report(context, job.id, token, 1, "started"), 200)
+               valid_api_response(report(context, job.id, token, 1, "started"), 200)
 
       assert %{"cancel_requested" => false, "job" => %{"lease_expires_at" => "" <> _}} =
-               json_response(
+               valid_api_response(
                  report(context, job.id, token, 2, "progress", %{"step" => "dmi"}),
                  200
                )
@@ -192,18 +200,23 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       result = %{"result" => %{"observation_id" => Ecto.UUID.generate()}}
 
       assert %{"job" => %{"state" => "succeeded", "lease_expires_at" => nil}} =
-               json_response(report(context, job.id, token, 3, "succeeded", result), 200)
+               valid_api_response(report(context, job.id, token, 3, "succeeded", result), 200)
 
       assert %{state: "succeeded"} = Jobs.get_job!(context.scope, job.id)
     end
 
     test "records a retried post once and replays a lost final response", context do
       {job, token} = leased(context)
-      json_response(report(context, job.id, token, 1, "started"), 200)
+
+      # Work reports carry opaque payloads, even keys that mean something on
+      # final reports, and a retry is matched by sequence, not payload.
+      for payload <- [%{"result" => 1, "reason" => nil}, %{"result" => [], "reason" => false}] do
+        valid_api_response(report(context, job.id, token, 1, "started", payload), 200)
+      end
 
       for _ <- 1..2 do
         assert %{"job" => %{"state" => "failed"}} =
-                 json_response(
+                 valid_api_response(
                    report(context, job.id, token, 2, "failed", %{"reason" => "boom"}),
                    200
                  )
@@ -218,55 +231,55 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       {:ok, _job} = Jobs.cancel_job(context.scope, job.id)
 
       assert %{"cancel_requested" => true} =
-               json_response(report(context, job.id, token, 1, "started"), 200)
+               valid_api_response(report(context, job.id, token, 1, "started"), 200)
 
       assert %{"job" => %{"state" => "cancelled"}} =
-               json_response(report(context, job.id, token, 2, "cancelled"), 200)
+               valid_api_response(report(context, job.id, token, 2, "cancelled"), 200)
     end
 
     test "rejects a token that does not hold the lease", context do
       {job, _token} = leased(context)
 
       assert %{"errors" => [%{"path" => "lease_token"}]} =
-               json_response(report(context, job.id, "not-the-token", 1, "started"), 409)
+               valid_api_response(report(context, job.id, "not-the-token", 1, "started"), 409)
     end
 
     test "rejects reused or stale sequences and transitions out of order", context do
       {job, token} = leased(context)
 
       assert %{"errors" => [%{"path" => "type"}]} =
-               json_response(report(context, job.id, token, 1, "progress"), 409)
+               valid_api_response(report(context, job.id, token, 1, "progress"), 409)
 
-      json_response(report(context, job.id, token, 2, "started"), 200)
-
-      assert %{"errors" => [%{"path" => "sequence"}]} =
-               json_response(report(context, job.id, token, 2, "progress"), 409)
+      valid_api_response(report(context, job.id, token, 2, "started"), 200)
 
       assert %{"errors" => [%{"path" => "sequence"}]} =
-               json_response(report(context, job.id, token, 1, "progress"), 409)
+               valid_api_response(report(context, job.id, token, 2, "progress"), 409)
+
+      assert %{"errors" => [%{"path" => "sequence"}]} =
+               valid_api_response(report(context, job.id, token, 1, "progress"), 409)
     end
 
     test "checks results against the capability", context do
       {job, token} = leased(context)
-      json_response(report(context, job.id, token, 1, "started"), 200)
+      valid_api_response(report(context, job.id, token, 1, "started"), 200)
 
       assert %{"errors" => [%{"path" => "payload.result.observation_id"} | _]} =
-               json_response(
+               valid_api_response(
                  report(context, job.id, token, 2, "succeeded", %{"result" => %{}}),
                  422
                )
 
       assert %{"errors" => [%{"path" => "payload.reason"}]} =
-               json_response(report(context, job.id, token, 3, "failed"), 422)
+               valid_api_response(report(context, job.id, token, 3, "failed"), 422)
     end
 
     test "rejects output beyond the job's limit", context do
       {job, token} = leased(context)
-      json_response(report(context, job.id, token, 1, "started"), 200)
+      valid_api_response(report(context, job.id, token, 1, "started"), 200)
       big = %{"chunk" => String.duplicate("x", 70_000)}
 
       assert %{"errors" => [%{"path" => "payload"}]} =
-               json_response(report(context, job.id, token, 2, "output", big), 413)
+               valid_api_response(report(context, job.id, token, 2, "output", big), 413)
     end
 
     test "validates the request and the job", context do
@@ -279,13 +292,13 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
             {1, "started", []}
           ] do
         assert %{"status" => "rejected"} =
-                 json_response(report(context, job.id, token, sequence, type, payload), 422)
+                 valid_api_response(report(context, job.id, token, sequence, type, payload), 422)
       end
 
       assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
 
       assert %{"job" => %{"state" => "failed"}} =
-               json_response(
+               valid_api_response(
                  report(
                    context,
                    job.id,
@@ -298,7 +311,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                )
 
       assert %{"errors" => [%{"path" => "id"}]} =
-               json_response(report(context, Ecto.UUID.generate(), token, 1, "started"), 404)
+               valid_api_response(report(context, Ecto.UUID.generate(), token, 1, "started"), 404)
     end
 
     test "never touches another organization's job", context do
@@ -307,7 +320,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       {:ok, {_key, other_token}} = Inventory.create_intake_api_key(other.scope, %{name: "Other"})
 
       assert %{"errors" => [%{"path" => "installation_id"}]} =
-               json_response(
+               valid_api_response(
                  report(%{context | token: other_token}, job.id, token, 1, "started"),
                  409
                )
@@ -328,7 +341,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
           "payload" => %{}
         })
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "reportAgentJob")
+
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
       assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
     end
@@ -346,7 +361,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
           "payload" => %{}
         })
 
-      assert %{"errors" => [%{"path" => "installation_id"}]} = json_response(conn, 403)
+      assert %{"errors" => [%{"path" => "installation_id"}]} =
+               valid_api_response(conn, 403, "reportAgentJob")
+
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
       assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
     end
@@ -356,11 +373,11 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
     test "hints that jobs are waiting", context do
       check_in = fn -> post_json(context, ~p"/api/v1/agent/checkins", %{}) end
 
-      assert %{"jobs_waiting" => false} = json_response(check_in.(), 202)
+      assert %{"jobs_waiting" => false} = valid_api_response(check_in.(), 202)
       queue_job(context)
-      assert %{"jobs_waiting" => true} = json_response(check_in.(), 202)
-      json_response(lease(context), 200)
-      assert %{"jobs_waiting" => false} = json_response(check_in.(), 202)
+      assert %{"jobs_waiting" => true} = valid_api_response(check_in.(), 202)
+      valid_api_response(lease(context), 200)
+      assert %{"jobs_waiting" => false} = valid_api_response(check_in.(), 202)
     end
   end
 end

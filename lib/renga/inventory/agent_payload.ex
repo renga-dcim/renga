@@ -32,12 +32,17 @@ defmodule Renga.Inventory.AgentPayload do
   @vlan_tagging_modes ~w(tagged untagged)
   @interface_relationship_kinds ~w(parent lower_device lag_member bridge_member bridged peer vrf_member backed_by)
   @address_kinds ~w(ipv4 ipv6)
+  @host_projection_fields ~w(hostname fqdn vendor model asset_tag)
+  @neighbor_protocols ~w(lldp cdp)
+  @neighbor_chassis_id_kinds ~w(mac_address network_address local name)
+  @neighbor_port_id_kinds ~w(mac_address local name)
+  @completeness_sections ~w(components interface_vlans interface_neighbors interface_relationships placement)
   @prohibited_resource_keys ~w(id organization_id resource_id source_id sync_run_id)
   # Mirrors the agent's own label validation (agent/src/config.rs).
   @max_labels 32
   @max_label_key_length 63
   @max_label_value_length 255
-  @label_key_pattern ~r/\A[A-Za-z0-9]([A-Za-z0-9._\/-]*[A-Za-z0-9])?\z/
+  @label_key_pattern ~r|\A[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?\z|
 
   @doc """
   Returns the maximum accepted JSON observation payload size in bytes.
@@ -48,6 +53,44 @@ defmodule Renga.Inventory.AgentPayload do
   Returns the maximum encoded JSON agent metadata size in bytes.
   """
   def max_agent_metadata_bytes, do: @max_agent_metadata_bytes
+
+  @doc """
+  Returns the vocabularies and limits this module enforces.
+
+  The OpenAPI schemas in `RengaWeb.Api.V1.Schemas` read them from here, so the
+  published contract cannot drift from what the API accepts.
+  """
+  def contract do
+    %{
+      max_observation_bytes: @max_observation_bytes,
+      max_agent_metadata_bytes: @max_agent_metadata_bytes,
+      max_string_length: @max_agent_string_length,
+      max_observation_id_length: @max_observation_id_length,
+      max_future_observation_skew_seconds: @max_future_observation_skew_seconds,
+      max_postgres_integer: @max_postgres_integer,
+      max_json_safe_integer: @max_json_safe_integer,
+      max_source_local_vlan_key_bytes: @max_source_local_vlan_key_bytes,
+      observation_queue_counts: @observation_queue_counts,
+      identifier_kinds: @accepted_identifier_kinds,
+      matchable_identifier_kinds: @matchable_identifier_kinds,
+      prohibited_resource_keys: @prohibited_resource_keys,
+      host_projection_fields: @host_projection_fields,
+      interface_kinds: @interface_kinds,
+      interface_statuses: @interface_statuses,
+      interface_vlan_modes: @interface_vlan_modes,
+      vlan_tagging_modes: @vlan_tagging_modes,
+      interface_relationship_kinds: @interface_relationship_kinds,
+      address_kinds: @address_kinds,
+      neighbor_protocols: @neighbor_protocols,
+      neighbor_chassis_id_kinds: @neighbor_chassis_id_kinds,
+      neighbor_port_id_kinds: @neighbor_port_id_kinds,
+      completeness_sections: @completeness_sections,
+      max_labels: @max_labels,
+      max_label_key_length: @max_label_key_length,
+      max_label_value_length: @max_label_value_length,
+      label_key_pattern: @label_key_pattern
+    }
+  end
 
   @doc """
   Validates an agent check-in payload and returns attrs safe for the source row.
@@ -863,7 +906,7 @@ defmodule Renga.Inventory.AgentPayload do
   defp validate_interface_neighbor(errors, %{} = neighbor, path) do
     errors
     |> validate_required_string(neighbor, "protocol", "#{path}.protocol")
-    |> validate_optional_inclusion(neighbor, "protocol", ~w(lldp cdp), "#{path}.protocol")
+    |> validate_optional_inclusion(neighbor, "protocol", @neighbor_protocols, "#{path}.protocol")
     |> validate_required_string(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
     |> validate_string_length(neighbor, "remote_chassis_id", "#{path}.remote_chassis_id")
     |> validate_optional_codepoint_length(
@@ -874,7 +917,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_inclusion(
       neighbor,
       "remote_chassis_id_kind",
-      ~w(mac_address network_address local name),
+      @neighbor_chassis_id_kinds,
       "#{path}.remote_chassis_id_kind"
     )
     |> validate_optional_non_blank_string(
@@ -893,7 +936,7 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_optional_inclusion(
       neighbor,
       "remote_port_id_kind",
-      ~w(mac_address local name),
+      @neighbor_port_id_kinds,
       "#{path}.remote_port_id_kind"
     )
     |> validate_optional_non_blank_string(
@@ -1096,7 +1139,7 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_host_projection_fields(errors, attributes, path) do
-    Enum.reduce(~w(hostname fqdn vendor model asset_tag), errors, fn field, errors ->
+    Enum.reduce(@host_projection_fields, errors, fn field, errors ->
       validate_optional_string(errors, attributes, field, "#{path}.#{field}")
     end)
   end
@@ -1230,8 +1273,7 @@ defmodule Renga.Inventory.AgentPayload do
   end
 
   defp validate_section_completeness_entry(errors, section, value) do
-    if section in ~w(components interface_vlans interface_neighbors interface_relationships placement) and
-         is_boolean(value) do
+    if section in @completeness_sections and is_boolean(value) do
       errors
     else
       [error("section_completeness.#{section}", "must be a supported boolean") | errors]

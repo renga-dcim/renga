@@ -32,7 +32,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
   end
 
   test "a first check-in records contact and a lease but no inventory", context do
-    assert %{"agent" => %{"id" => agent_id}} = check_in(context) |> json_response(202)
+    assert %{"agent" => %{"id" => agent_id}} = check_in(context) |> valid_api_response(202)
 
     agent = Repo.get!(Agent, agent_id) |> Repo.preload(:lease)
     assert agent.last_contacted_at
@@ -45,7 +45,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     rewind(agent)
 
     conn = post_observation(context, Map.delete(observation("rejected"), "observation_id"))
-    assert json_response(conn, 422)
+    assert valid_api_response(conn, 422)
 
     agent = Repo.get!(Agent, agent.id) |> Repo.preload(:lease)
     assert DateTime.after?(agent.last_contacted_at, @long_ago)
@@ -59,7 +59,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     |> put_req_header("authorization", "Bearer renga_intake_revoked")
     |> put_req_header("x-renga-installation-id", @installation_id)
     |> post(~p"/api/v1/agent/checkins", %{})
-    |> json_response(401)
+    |> valid_api_response(401)
 
     assert Repo.get!(Agent, agent.id).last_contacted_at == @long_ago
   end
@@ -68,7 +68,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     agent = registered_agent(context)
 
     conn = post_observation(context, observation("first", "2026-07-31T12:00:00Z"))
-    assert %{"reconciliation" => %{"status" => "succeeded"}} = json_response(conn, 202)
+    assert %{"reconciliation" => %{"status" => "succeeded"}} = valid_api_response(conn, 202)
 
     source_id = agent.source_id
 
@@ -101,7 +101,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     # A later check-in renews contact and the lease, and touches neither
     # inventory clock.
     rewind(agent)
-    assert json_response(check_in(context), 202)
+    assert valid_api_response(check_in(context), 202)
     assert Map.fetch!(CollectionClocks.by_source(context.scope), source_id) == clocks
     agent = Repo.get!(Agent, agent.id) |> Repo.preload(:lease)
     assert DateTime.after?(agent.last_contacted_at, @long_ago)
@@ -109,7 +109,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
   end
 
   defp registered_agent(context) do
-    %{"agent" => %{"id" => agent_id}} = check_in(context) |> json_response(202)
+    %{"agent" => %{"id" => agent_id}} = check_in(context) |> valid_api_response(202)
     Repo.get!(Agent, agent_id)
   end
 

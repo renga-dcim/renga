@@ -23,6 +23,11 @@ if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 fi
 
+# A single-user Nix lives in ~/.nix-profile, which a stripped PATH may omit.
+if [ -x "$HOME/.nix-profile/bin/nix" ]; then
+  export PATH="$HOME/.nix-profile/bin:$PATH"
+fi
+
 step "Installing a Nix release compatible with the pinned flake"
 if ! command -v nix >/dev/null 2>&1 || ! nix --version | awk '{print $3}' | awk -F. '$1 > 2 || ($1 == 2 && $2 >= 18) { found = 1 } END { exit !found }'; then
   if dpkg -s nix-bin >/dev/null 2>&1; then
@@ -47,11 +52,16 @@ if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl restart nix-daemon.service
 
-# Debian's daemon socket is group-restricted, while an already-running Amp
-# process does not pick up supplementary groups added during setup.
-sudo chmod o+rx /nix/var/nix/daemon-socket
+# Some orb images ship a single-user Nix whose store the orb user owns; it has
+# no daemon to (re)start and no socket to open.
+if systemctl cat nix-daemon.service >/dev/null 2>&1; then
+  sudo systemctl restart nix-daemon.service
+
+  # Debian's daemon socket is group-restricted, while an already-running Amp
+  # process does not pick up supplementary groups added during setup.
+  sudo chmod o+rx /nix/var/nix/daemon-socket
+fi
 
 mkdir -p "$HOME/.config/nix"
 if ! grep -qxF 'experimental-features = nix-command flakes' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
@@ -86,6 +96,9 @@ block = f'''\n# >>> renga Nix development shell >>>
 if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
   export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+fi
+if [ -x "$HOME/.nix-profile/bin/nix" ]; then
+  export PATH="$HOME/.nix-profile/bin:$PATH"
 fi
 if command -v nix >/dev/null 2>&1 && [[ "${{PWD}}" == {quoted_root} || "${{PWD}}" == {quoted_root}/* ]]; then
   eval "$(nix print-dev-env {quoted_root})"

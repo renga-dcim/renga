@@ -96,7 +96,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
     test "requires a valid organization intake key", %{conn: conn} do
       conn = post(conn, ~p"/api/v1/observations", %{})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(conn, 401)
     end
 
     test "stores and reconciles accepted raw host observations", %{conn: conn} do
@@ -120,7 +120,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                  "observation_id" => payload_observation_id,
                  "source_id" => source_id
                }
-             } = json_response(conn, 202)
+             } = valid_api_response(conn, 202)
 
       assert source_id == source.id
       assert payload_observation_id == payload["observation_id"]
@@ -154,7 +154,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "observation" => %{"id" => observation_id},
                "reconciliation" => %{"matched_resource_id" => resource_id}
-             } = json_response(conn, 202)
+             } = valid_api_response(conn, 202)
 
       observation = Repo.get!(Observation, observation_id) |> Repo.preload(:intake_api_key)
       assert observation.reported_from == %Postgrex.INET{address: {10, 20, 3, 44}, netmask: nil}
@@ -187,7 +187,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           conn
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert [%{"path" => "resources.0.labels" <> _rest} | _] = response["errors"],
                "expected #{inspect(labels)} to be rejected"
@@ -229,7 +229,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", first)
-        |> json_response(202)
+        |> valid_api_response(202)
 
       resource = Inventory.get_resource!(scope, response["reconciliation"]["matched_resource_id"])
       [interface] = Inventory.list_interfaces(scope, resource.id)
@@ -243,7 +243,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", first)
-        |> json_response(200)
+        |> valid_api_response(200)
 
       assert replay["duplicate"] == true
       assert length(Topology.list_interface_vlan_evidence(scope, interface.id)) == 1
@@ -260,7 +260,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                build_conn()
                |> authorize(token)
                |> post(~p"/api/v1/observations", partial)
-               |> json_response(202)
+               |> valid_api_response(202)
 
       assert [_membership] =
                Topology.list_current_interface_vlan_memberships(scope, interface.id)
@@ -278,7 +278,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                build_conn()
                |> authorize(token)
                |> post(~p"/api/v1/observations", complete)
-               |> json_response(202)
+               |> valid_api_response(202)
 
       assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
     end
@@ -301,7 +301,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
 
-      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert %{"status" => "rejected", "errors" => errors} = valid_api_response(conn, 422)
       paths = Enum.map(errors, & &1["path"])
       assert "resources.0.attributes.vendor" in paths
       assert "resources.0.interfaces.0.mtu" in paths
@@ -328,7 +328,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", invalid_vlan)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => vlan_errors} = response
       assert Enum.any?(vlan_errors, &(&1["path"] == "resources.0.interfaces.0.vlans"))
@@ -345,7 +345,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", self_relationship)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => relationship_errors} = response
 
@@ -383,7 +383,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(202)
+        |> valid_api_response(202)
 
       assert response["status"] == "accepted"
       evidence = Repo.one!(InterfaceNeighborEvidence)
@@ -405,7 +405,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert Enum.any?(response["errors"], &(&1["path"] == "observed_at"))
       assert Repo.aggregate(Observation, :count) == 0
@@ -434,7 +434,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert Enum.any?(response["errors"], &(&1["path"] =~ "remote_chassis_id"))
       assert Repo.aggregate(Observation, :count) == 0
@@ -466,7 +466,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert Enum.any?(response["errors"], &(&1["path"] =~ field))
       end
@@ -508,7 +508,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert Enum.any?(response["errors"], &(&1["path"] =~ value_field))
       end
@@ -673,7 +673,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => [_ | _]} = response
       end
@@ -745,7 +745,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         build_conn()
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert Enum.any?(
                response["errors"],
@@ -768,7 +768,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.#{field}"))
@@ -800,7 +800,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         conn
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => errors} = response
       assert Enum.any?(errors, &(&1["path"] == "resources.0.interfaces.0.addresses.0.kind"))
@@ -825,7 +825,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &String.starts_with?(&1["path"], "resources.0.identifiers."))
@@ -848,7 +848,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.#{field}"))
@@ -870,7 +870,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         conn
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => errors} = response
       assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
@@ -897,7 +897,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
             ~p"/api/v1/observations",
             valid_observation_payload(source, %{"resources" => [resource]})
           )
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
 
@@ -926,7 +926,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           ~p"/api/v1/observations",
           valid_observation_payload(source, %{"resources" => [resource]})
         )
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => errors} = response
       assert Enum.any?(errors, &(&1["path"] == "resources.0.attributes"))
@@ -953,7 +953,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
             ~p"/api/v1/observations",
             valid_observation_payload(source, %{"resources" => [resource]})
           )
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
@@ -1001,7 +1001,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
             ~p"/api/v1/observations",
             valid_observation_payload(source, %{"resources" => [resource]})
           )
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers.mac_address"))
@@ -1020,7 +1020,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         })
 
       conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
-      assert %{"status" => "accepted"} = json_response(conn, 202)
+      assert %{"status" => "accepted"} = valid_api_response(conn, 202)
     end
 
     test "accepts physical MAC identity while retaining non-ethernet interface evidence", %{
@@ -1062,7 +1062,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         end)
 
       conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
-      assert %{"status" => "accepted"} = json_response(conn, 202)
+      assert %{"status" => "accepted"} = valid_api_response(conn, 202)
     end
 
     test "rejects identity containing only matcher-unsupported identifiers before raw storage" do
@@ -1083,7 +1083,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
           build_conn()
           |> authorize(token)
           |> post(~p"/api/v1/observations", payload)
-          |> json_response(422)
+          |> valid_api_response(422)
 
         assert %{"status" => "rejected", "errors" => errors} = response
         assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
@@ -1113,7 +1113,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         conn
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
-        |> json_response(422)
+        |> valid_api_response(422)
 
       assert %{"status" => "rejected", "errors" => errors} = response
       paths = Enum.map(errors, & &1["path"])
@@ -1134,7 +1134,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
 
       conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
 
-      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert %{"status" => "rejected", "errors" => errors} = valid_api_response(conn, 422)
       assert Enum.any?(errors, &(&1["path"] == "resources.0.identifiers"))
 
       repeated_conn =
@@ -1142,7 +1142,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", Map.put(payload, "observation_id", "repeated-mac"))
 
-      assert %{"status" => "rejected"} = json_response(repeated_conn, 422)
+      assert %{"status" => "rejected"} = valid_api_response(repeated_conn, 422)
       assert Repo.aggregate(Observation, :count) == 0
       assert Inventory.list_resources(scope) == []
     end
@@ -1167,7 +1167,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       payload = valid_observation_payload(source, %{"resources" => [resource]})
       conn = conn |> authorize(token) |> post(~p"/api/v1/observations", payload)
 
-      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert %{"status" => "rejected", "errors" => errors} = valid_api_response(conn, 422)
       paths = Enum.map(errors, & &1["path"])
       assert "resources.0.attributes.hostname" in paths
       assert "resources.0.attributes.fqdn" in paths
@@ -1189,7 +1189,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "agent.name", "message" => "can't be blank"}]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
 
       refute Repo.get_by(Observation,
                organization_id: scope.organization_id,
@@ -1211,7 +1211,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
 
-      assert %{"status" => "accepted", "duplicate" => false} = json_response(conn, 202)
+      assert %{"status" => "accepted", "duplicate" => false} = valid_api_response(conn, 202)
     end
 
     test "rejects a missing observation id", %{conn: conn} do
@@ -1226,7 +1226,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "observation_id", "message" => "is required"}]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "rejects observation ids longer than the storage limit", %{conn: conn} do
@@ -1248,7 +1248,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                    "message" => "must be at most 255 characters"
                  }
                ]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "returns duplicate acceptance for retried observation ids", %{conn: conn} do
@@ -1260,7 +1260,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
 
-      assert %{"observation" => %{"id" => observation_id}} = json_response(first_conn, 202)
+      assert %{"observation" => %{"id" => observation_id}} = valid_api_response(first_conn, 202)
 
       retry_conn =
         build_conn()
@@ -1272,7 +1272,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                "duplicate" => true,
                "reconciliation" => %{"status" => "succeeded"},
                "observation" => %{"id" => ^observation_id}
-             } = json_response(retry_conn, 200)
+             } = valid_api_response(retry_conn, 200)
     end
 
     test "a duplicate request recovers a stored observation with no reconciliation attempt", %{
@@ -1300,7 +1300,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                  "status" => "succeeded",
                  "matched_resource_id" => resource_id
                }
-             } = json_response(conn, 200)
+             } = valid_api_response(conn, 200)
 
       assert resource_id
 
@@ -1338,7 +1338,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                  "errors" => %{"processing" => "projection_failed"}
                },
                "observation" => %{"id" => observation_id}
-             } = json_response(duplicate_conn, 200)
+             } = valid_api_response(duplicate_conn, 200)
 
       assert observation_id == observation.id
 
@@ -1353,7 +1353,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       conn
       |> authorize(token)
       |> post(~p"/api/v1/observations", payload)
-      |> json_response(202)
+      |> valid_api_response(202)
 
       second_payload = Map.put(payload, "observation_id", "report-2")
 
@@ -1362,7 +1362,8 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", second_payload)
 
-      assert %{"status" => "accepted", "duplicate" => false} = json_response(second_conn, 202)
+      assert %{"status" => "accepted", "duplicate" => false} =
+               valid_api_response(second_conn, 202)
     end
 
     test "rejects reused observation ids with different payloads", %{conn: conn} do
@@ -1372,7 +1373,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       conn
       |> authorize(token)
       |> post(~p"/api/v1/observations", payload)
-      |> json_response(202)
+      |> valid_api_response(202)
 
       changed_payload =
         payload
@@ -1387,7 +1388,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "observation_id"}]
-             } = json_response(conflict_conn, 409)
+             } = valid_api_response(conflict_conn, 409)
     end
 
     test "keeps idempotency scoped to the authenticated source tenant", %{conn: conn} do
@@ -1399,7 +1400,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       conn
       |> authorize(token)
       |> post(~p"/api/v1/observations", payload)
-      |> json_response(202)
+      |> valid_api_response(202)
 
       other_payload =
         valid_observation_payload(other_source, %{"observation_id" => "shared-observation-id"})
@@ -1409,7 +1410,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(other_token)
         |> post(~p"/api/v1/observations", other_payload)
 
-      assert %{"status" => "accepted", "duplicate" => false} = json_response(other_conn, 202)
+      assert %{"status" => "accepted", "duplicate" => false} = valid_api_response(other_conn, 202)
     end
 
     test "rejects invalid host observation payloads", %{conn: conn} do
@@ -1435,7 +1436,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
 
-      assert %{"status" => "rejected", "errors" => errors} = json_response(conn, 422)
+      assert %{"status" => "rejected", "errors" => errors} = valid_api_response(conn, 422)
 
       paths = Enum.map(errors, & &1["path"])
       assert "observed_at" in paths
@@ -1460,7 +1461,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "source.source_id"}]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
   end
 end

@@ -1,10 +1,38 @@
 defmodule RengaWeb.Api.V1.ObservationController do
   use RengaWeb, :controller
+  use Oaskit.Controller
 
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Source
+  alias RengaWeb.Api.V1.Schemas
+
+  tags ["Intake"]
+  parameter :"x-renga-installation-id", Schemas.installation_id_parameter()
+
+  operation :create,
+    operation_id: "createObservation",
+    summary: "Submit a host observation",
+    description:
+      "Stores a point-in-time report about the collector's host, then reconciles it " <>
+        "into inventory once. Retries are safe: resending an observation under the same " <>
+        "`observation_id` returns the stored one.",
+    security: Schemas.intake_security(),
+    request_body: Schemas.Observation,
+    responses: [
+      accepted: {Schemas.ObservationAccepted, description: "Observation stored."},
+      ok:
+        {Schemas.ObservationAccepted,
+         description: "This observation ID was already stored with the same payload."},
+      unauthorized: Schemas.unauthorized_response(),
+      conflict:
+        {Schemas.Rejected,
+         description:
+           "The installation ID is registered to a different collector source, or the " <>
+             "`observation_id` was already used for a different payload."},
+      unprocessable_entity: {Schemas.Rejected, description: "The observation is invalid."}
+    ]
 
   def create(%{assigns: %{current_intake_api_key: intake_api_key}} = conn, params) do
     source_identity = %Source{kind: "host_agent"}

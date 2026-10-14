@@ -1,10 +1,32 @@
 defmodule RengaWeb.Api.V1.AgentController do
   use RengaWeb, :controller
+  use Oaskit.Controller
 
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Source
   alias Renga.Jobs
+  alias RengaWeb.Api.V1.Schemas
+
+  tags ["Intake"]
+  parameter :"x-renga-installation-id", Schemas.installation_id_parameter()
+
+  operation :check_in,
+    operation_id: "recordAgentCheckIn",
+    summary: "Record a collector check-in",
+    description:
+      "Renews the collector's lease and stores its capabilities and metadata. " <>
+        "The first check-in from an installation registers the collector.",
+    security: Schemas.intake_security(),
+    request_body: {Schemas.CheckIn, required: false},
+    responses: [
+      accepted: {Schemas.CheckInAccepted, description: "Check-in recorded."},
+      unauthorized: Schemas.unauthorized_response(),
+      conflict:
+        {Schemas.Rejected,
+         description: "The installation ID is registered to a different collector source."},
+      unprocessable_entity: {Schemas.Rejected, description: "The check-in payload is invalid."}
+    ]
 
   def check_in(%{assigns: %{current_intake_api_key: intake_api_key}} = conn, params) do
     source_identity = %Source{kind: "host_agent"}

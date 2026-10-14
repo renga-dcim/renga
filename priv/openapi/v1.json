@@ -1,0 +1,1493 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Renga API",
+    "description": "Machine API for collectors. Requests authenticate with an organization intake key and identify the installation with the `x-renga-installation-id` header.",
+    "version": "v1"
+  },
+  "components": {
+    "schemas": {
+      "CheckIn": {
+        "title": "CheckIn",
+        "description": "A collector's periodic check-in. Every field is optional.",
+        "properties": {
+          "capabilities": {
+            "description": "Capabilities the collector can run now.",
+            "items": {
+              "description": "Must not be blank. At most 255 characters.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "metadata": {
+            "description": "Agent metadata, stored with the source. Must encode to at most 16000 bytes of JSON.",
+            "properties": {
+              "agent_version": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observation_queue": {
+                "$ref": "#/components/schemas/ObservationQueue"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CheckInAccepted": {
+        "title": "CheckInAccepted",
+        "additionalProperties": false,
+        "description": "The check-in was recorded and the collector's lease renewed.",
+        "properties": {
+          "agent": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
+          "jobs_waiting": {
+            "description": "True when jobs are queued for this installation, so the agent should lease now rather than at its next lease attempt.",
+            "type": "boolean"
+          },
+          "source": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "last_seen_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "name",
+              "last_seen_at"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "status",
+          "source",
+          "agent",
+          "jobs_waiting"
+        ],
+        "type": "object"
+      },
+      "HostResource": {
+        "title": "HostResource",
+        "description": "The host as the agent sees it. Fields the server assigns, such as `id`, are rejected.",
+        "properties": {
+          "components": {
+            "description": "Hardware components, stored as reported. The agent sends objects with a `kind` discriminator whose other fields depend on the kind.",
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "attributes": {
+            "description": "Descriptive host fields. `hostname` and `fqdn` must match the identifiers of the same name, ignoring case and surrounding whitespace.",
+            "properties": {
+              "asset_tag": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "fqdn": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hostname": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": false,
+              "model": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "organization_id": false,
+              "resource_id": false,
+              "source_id": false,
+              "sync_run_id": false,
+              "vendor": {
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "id": false,
+          "identifiers": {
+            "additionalProperties": false,
+            "anyOf": [
+              {
+                "required": [
+                  "hostname"
+                ]
+              },
+              {
+                "required": [
+                  "fqdn"
+                ]
+              },
+              {
+                "required": [
+                  "machine_id"
+                ]
+              },
+              {
+                "required": [
+                  "dmi_uuid"
+                ]
+              },
+              {
+                "required": [
+                  "serial_number"
+                ]
+              }
+            ],
+            "description": "Identifiers used to match the host to inventory. At least one of hostname, fqdn, machine_id, dmi_uuid, serial_number is required. `mac_address` must list exactly the MAC addresses of the present ethernet interfaces.",
+            "properties": {
+              "bmc_address": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "dmi_uuid": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "fqdn": {
+                "description": "Must not be blank. At most 255 characters.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "hostname": {
+                "description": "Must not be blank. At most 255 characters.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "mac_address": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "machine_id": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "provider_instance_id": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              },
+              "serial_number": {
+                "anyOf": [
+                  {
+                    "description": "Must not be blank. At most 255 characters.",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "interfaces": {
+            "description": "Network interfaces. Names must be unique after trimming.",
+            "items": {
+              "$ref": "#/components/schemas/Interface"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "kind": {
+            "const": "server"
+          },
+          "labels": {
+            "additionalProperties": {
+              "description": "At most 255 characters.",
+              "type": "string"
+            },
+            "description": "Operator-configured labels from the agent configuration.",
+            "maxProperties": 32,
+            "propertyNames": {
+              "maxLength": 63,
+              "pattern": "^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$"
+            },
+            "type": "object"
+          },
+          "organization_id": false,
+          "resource_id": false,
+          "source_id": false,
+          "sync_run_id": false
+        },
+        "required": [
+          "kind",
+          "identifiers"
+        ],
+        "type": "object"
+      },
+      "Interface": {
+        "title": "Interface",
+        "properties": {
+          "addresses": {
+            "items": {
+              "anyOf": [
+                {
+                  "description": "An IP address or CIDR.",
+                  "type": "string"
+                },
+                {
+                  "properties": {
+                    "address": {
+                      "description": "An IP address or CIDR.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "ipv4",
+                        "ipv6"
+                      ],
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "scope": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "address"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "ethernet",
+              "loopback",
+              "bond",
+              "bridge",
+              "vlan",
+              "virtual",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "mac_address": {
+            "description": "A MAC address in any common notation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtu": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Must not be blank. At most 255 characters.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "neighbors": {
+            "description": "LLDP or CDP neighbors. Each remote endpoint may appear once.",
+            "items": {
+              "properties": {
+                "metadata": {
+                  "type": "object"
+                },
+                "protocol": {
+                  "enum": [
+                    "lldp",
+                    "cdp"
+                  ],
+                  "type": "string"
+                },
+                "remote_chassis_id": {
+                  "description": "Must be a MAC or network address when its kind says so. Must not be blank.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "remote_chassis_id_kind": {
+                  "enum": [
+                    "mac_address",
+                    "network_address",
+                    "local",
+                    "name"
+                  ],
+                  "type": "string"
+                },
+                "remote_port_description": {
+                  "description": "Must not be blank.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "remote_port_id": {
+                  "description": "Must be a MAC address when its kind says so. Must not be blank.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "remote_port_id_kind": {
+                  "enum": [
+                    "mac_address",
+                    "local",
+                    "name"
+                  ],
+                  "type": "string"
+                },
+                "remote_system_name": {
+                  "description": "Must not be blank.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "ttl_seconds": {
+                  "maximum": 65535,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "protocol",
+                "remote_chassis_id",
+                "remote_port_id",
+                "ttl_seconds"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "relationships": {
+            "description": "Links to other interfaces on this host, never to itself.",
+            "items": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "parent",
+                    "lower_device",
+                    "lag_member",
+                    "bridge_member",
+                    "bridged",
+                    "peer",
+                    "vrf_member",
+                    "backed_by"
+                  ],
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "object"
+                },
+                "target": {
+                  "description": "The name of the related interface. Must not be blank. At most 255 characters.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "target",
+                "kind"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "routing_domain": {
+            "description": "The source-local routing domain (VRF) this interface belongs to. Null withdraws an earlier claim; omitting it says nothing.",
+            "properties": {
+              "key": {
+                "description": "Must not be blank.",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "metadata": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "route_distinguisher": {
+                "description": "At most 255 bytes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "key"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "speed_mbps": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "up",
+              "down",
+              "dormant",
+              "not_present",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "vlan_mode": {
+            "enum": [
+              "access",
+              "trunk",
+              "tagged_all"
+            ],
+            "type": "string"
+          },
+          "vlans": {
+            "description": "VLAN memberships. At most one may be untagged, `access` mode allows at most one VLAN, and each source-local VLAN may appear once.",
+            "items": {
+              "properties": {
+                "key": {
+                  "description": "Source-local VLAN identity, at most 2000 bytes and not blank. Defaults to the scope and VID.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "object"
+                },
+                "scope": {
+                  "description": "Must not be blank.",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "tagging_mode": {
+                  "enum": [
+                    "tagged",
+                    "untagged"
+                  ],
+                  "type": "string"
+                },
+                "vid": {
+                  "maximum": 4094,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "vid",
+                "tagging_mode"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "JobLease": {
+        "title": "JobLease",
+        "additionalProperties": false,
+        "description": "Jobs leased to the calling installation, possibly none. Each lease lasts until `lease_expires_at`; every newly recorded report extends it.",
+        "properties": {
+          "jobs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "attempt": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "capability": {
+                  "description": "The `name@version` to run.",
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "lease_expires_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "lease_token": {
+                  "description": "Proves the lease on every report about this job.",
+                  "type": "string"
+                },
+                "not_after": {
+                  "description": "After this time the job is no longer leased or retried.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "output_limit_bytes": {
+                  "description": "Budget for all report payloads, across every attempt.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "parameters": {
+                  "description": "Inputs for the capability.",
+                  "type": "object"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "capability",
+                "parameters",
+                "attempt",
+                "lease_token",
+                "lease_expires_at",
+                "not_after",
+                "timeout_ms",
+                "output_limit_bytes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "type": "object"
+      },
+      "JobLeaseRequest": {
+        "title": "JobLeaseRequest",
+        "properties": {
+          "capabilities": {
+            "description": "The `name@version` capabilities the agent will run now. Only jobs for these are leased.",
+            "items": {
+              "description": "At most 128 bytes.",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array"
+          },
+          "limit": {
+            "default": 1,
+            "description": "The most jobs to lease at once.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "JobReport": {
+        "title": "JobReport",
+        "description": "One numbered report on a leased job. `started` moves the job to running; `progress` and `output` follow while it runs; `succeeded`, `failed`, and `cancelled` finish it, and `cancelled` only after cancellation was requested.",
+        "properties": {
+          "lease_token": {
+            "description": "From the lease response.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "payload": {
+            "default": {},
+            "description": "Opaque for `started`, `progress`, and `output`. A `succeeded` report carries `result`, an object checked against the capability; a `failed` report carries a non-empty string `reason`. Counts toward the job's output limit.",
+            "type": "object"
+          },
+          "sequence": {
+            "description": "Grows with each report in an attempt. Resending a recorded sequence is a safe retry that records nothing.",
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": {
+            "enum": [
+              "started",
+              "progress",
+              "output",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token",
+          "sequence",
+          "type"
+        ],
+        "type": "object"
+      },
+      "JobReportAccepted": {
+        "title": "JobReportAccepted",
+        "additionalProperties": false,
+        "description": "The report is recorded, or was already recorded under its sequence.",
+        "properties": {
+          "cancel_requested": {
+            "description": "True when the agent should stop and report `cancelled`.",
+            "type": "boolean"
+          },
+          "job": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "description": "When the lease expires: extended by a newly recorded report, unchanged by a replayed one, and null once the job finished.",
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "queued",
+                  "leased",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "cancelled",
+                  "expired",
+                  "uncertain"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "state",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "status",
+          "job",
+          "cancel_requested"
+        ],
+        "type": "object"
+      },
+      "Observation": {
+        "title": "Observation",
+        "description": "One point-in-time report about the collector's host. The encoded body must be at most 256000 bytes. Unknown top-level fields are stored with the observation but not interpreted.",
+        "properties": {
+          "observation_id": {
+            "description": "Idempotency key chosen by the agent. Resending the same payload under the same key is a duplicate; a different payload under it is a conflict. Must not be blank; at most 255 characters.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "description": "When the agent collected the data. At most 300 seconds in the future. An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",
+            "type": "string"
+          },
+          "resources": {
+            "description": "Exactly one resource: the host itself.",
+            "items": {
+              "$ref": "#/components/schemas/HostResource"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "type": "array"
+          },
+          "section_completeness": {
+            "additionalProperties": false,
+            "description": "Marks sections the agent reports in full, so anything missing from them can be treated as gone rather than unknown.",
+            "properties": {
+              "components": {
+                "type": "boolean"
+              },
+              "interface_neighbors": {
+                "type": "boolean"
+              },
+              "interface_relationships": {
+                "type": "boolean"
+              },
+              "interface_vlans": {
+                "type": "boolean"
+              },
+              "placement": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "observation_id",
+          "observed_at",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "ObservationAccepted": {
+        "title": "ObservationAccepted",
+        "additionalProperties": false,
+        "description": "The observation is stored. Reconciliation into inventory runs once inline; a failure there does not reject the observation, which stays stored for retry.",
+        "properties": {
+          "duplicate": {
+            "description": "True when this observation ID was already stored with the same payload.",
+            "type": "boolean"
+          },
+          "observation": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "observation_id": {
+                "description": "The agent's idempotency key.",
+                "type": "string"
+              },
+              "observed_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "source_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "observation_id",
+              "observed_at",
+              "source_id"
+            ],
+            "type": "object"
+          },
+          "reconciliation": {
+            "additionalProperties": false,
+            "properties": {
+              "errors": {
+                "description": "Why reconciliation failed, keyed by field or stage.",
+                "type": "object"
+              },
+              "matched_resource_id": {
+                "description": "The inventory resource the observation matched, when known.",
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "status",
+          "duplicate",
+          "reconciliation",
+          "observation"
+        ],
+        "type": "object"
+      },
+      "ObservationQueue": {
+        "title": "ObservationQueue",
+        "description": "Health of the agent's on-disk observation queue. Drop counts cover the agent's current run; the backlog itself survives restarts. Unknown fields are ignored.",
+        "properties": {
+          "bytes": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dropped_for_space": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entries": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expired": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldest_age_seconds": {
+            "description": "Age of the oldest queued observation, or null when nothing is queued.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rejected": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unreadable": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "bytes",
+          "dropped_for_space",
+          "expired",
+          "rejected",
+          "unreadable",
+          "oldest_age_seconds"
+        ],
+        "type": "object"
+      },
+      "Rejected": {
+        "title": "Rejected",
+        "additionalProperties": false,
+        "description": "Why a request was refused. Each error names the offending field with a dotted path such as `resources.0.interfaces.2.mtu`.",
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "observation_id": {
+                  "description": "The stored observation that already uses this observation ID (idempotency conflicts only).",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "message"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "status": {
+            "const": "rejected",
+            "description": "Absent when authentication failed before the payload was read."
+          }
+        },
+        "required": [
+          "errors"
+        ],
+        "type": "object"
+      },
+      "SourceIdentity": {
+        "title": "SourceIdentity",
+        "description": "The reporting source. Optional: the intake key and installation ID already identify it.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "host_agent",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_id": {
+            "description": "Omit, or send null. These endpoints reject any value, including the collector's own source ID or name.",
+            "type": "null"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "intakeKey": {
+        "description": "An organization intake key (RFD 3).",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/agent/checkins": {
+      "post": {
+        "tags": [
+          "Intake"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckInAccepted"
+                }
+              }
+            },
+            "description": "Check-in recorded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation ID is registered to a different collector source."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The check-in payload is invalid."
+          }
+        },
+        "description": "Renews the collector's lease and stores its capabilities and metadata. The first check-in from an installation registers the collector.",
+        "operationId": "recordAgentCheckIn",
+        "parameters": [
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckIn"
+              }
+            }
+          },
+          "required": false
+        },
+        "summary": "Record a collector check-in"
+      }
+    },
+    "/api/v1/agent/jobs/lease": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobLease"
+                }
+              }
+            },
+            "description": "Leased jobs, possibly none."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation's agent is disabled."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation has not checked in yet."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The lease request is invalid."
+          }
+        },
+        "description": "Leases up to `limit` queued jobs for the calling installation whose capability it listed. Only `observe` jobs are leased until installations have their own credentials. The installation must have checked in first.",
+        "operationId": "leaseAgentJobs",
+        "parameters": [
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobLeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Lease queued jobs"
+      }
+    },
+    "/api/v1/agent/jobs/{id}/events": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobReportAccepted"
+                }
+              }
+            },
+            "description": "Report recorded, or replayed."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation's agent is disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "No such job for this organization."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Stop reporting or fix the sequence: the lease is not held, the sequence was used for a different report or is stale, the report is not allowed in the job's state, or the installation has not checked in."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The payload exceeds the job's output limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The report is invalid."
+          }
+        },
+        "description": "Records a numbered report on a job the installation holds and extends its lease. Resending a recorded sequence replays it without recording or extending anything. The response says whether cancellation was requested.",
+        "operationId": "reportAgentJob",
+        "parameters": [
+          {
+            "description": "The job's ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Report on a leased job"
+      }
+    },
+    "/api/v1/observations": {
+      "post": {
+        "tags": [
+          "Intake"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "This observation ID was already stored with the same payload."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "Observation stored."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation ID is registered to a different collector source, or the `observation_id` was already used for a different payload."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The observation is invalid."
+          }
+        },
+        "description": "Stores a point-in-time report about the collector's host, then reconciles it into inventory once. Retries are safe: resending an observation under the same `observation_id` returns the stored one.",
+        "operationId": "createObservation",
+        "parameters": [
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Observation"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Submit a host observation"
+      }
+    }
+  }
+}

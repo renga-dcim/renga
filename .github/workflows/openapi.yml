@@ -1,0 +1,65 @@
+---
+name: openapi
+
+# Fails a pull request whose changes to the published OpenAPI document would
+# break existing clients, such as deployed agents. Additive changes pass.
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+env:
+  SPEC: priv/openapi/v1.json
+  OASDIFF_VERSION: "1.33.0"
+  OASDIFF_SHA256: 43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
+
+jobs:
+  breaking-changes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Read the base branch's document
+        id: base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git show "$BASE_SHA:$SPEC" > "$RUNNER_TEMP/base.json" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::The base branch has no $SPEC, so there is nothing to compare."
+          fi
+
+      - name: Install oasdiff
+        if: steps.base.outputs.exists == 'true'
+        run: |
+          archive="$RUNNER_TEMP/oasdiff.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          echo "${OASDIFF_SHA256}  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" oasdiff
+
+      - name: Check for breaking changes
+        if: steps.base.outputs.exists == 'true'
+        env:
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'api-breaking-change') }}
+        run: |
+          if "$RUNNER_TEMP/oasdiff" breaking "$RUNNER_TEMP/base.json" "$SPEC" \
+            --fail-on ERR --format githubactions; then
+            exit 0
+          fi
+
+          if [ "$APPROVED" = "true" ]; then
+            echo "::warning::Breaking API changes approved with the api-breaking-change label."
+            exit 0
+          fi
+
+          echo "::error::This changes $SPEC in a way existing clients cannot handle. Make the change additive, add a new API version, or, once deployed agents are known to cope, add the api-breaking-change label."
+          exit 1

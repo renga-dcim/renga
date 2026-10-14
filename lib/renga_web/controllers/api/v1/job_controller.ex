@@ -10,14 +10,45 @@ defmodule RengaWeb.Api.V1.JobController do
   here until per-installation credentials exist.
   """
   use RengaWeb, :controller
+  use Oaskit.Controller
 
   alias Renga.Inventory
   alias Renga.Jobs
   alias Renga.Jobs.Job
+  alias RengaWeb.Api.V1.Schemas
 
   @max_lease_limit 10
   @max_capabilities 64
   @max_capability_length 128
+
+  @doc "The limits lease requests are held to, for the OpenAPI schemas."
+  def contract do
+    %{
+      max_lease_limit: @max_lease_limit,
+      max_capabilities: @max_capabilities,
+      max_capability_bytes: @max_capability_length
+    }
+  end
+
+  tags ["Jobs"]
+  parameter :"x-renga-installation-id", Schemas.installation_id_parameter()
+
+  operation :lease,
+    operation_id: "leaseAgentJobs",
+    summary: "Lease queued jobs",
+    description:
+      "Leases up to `limit` queued jobs for the calling installation whose capability it " <>
+        "listed. Only `observe` jobs are leased until installations have their own " <>
+        "credentials. The installation must have checked in first.",
+    security: Schemas.intake_security(),
+    request_body: Schemas.JobLeaseRequest,
+    responses: [
+      ok: {Schemas.JobLease, description: "Leased jobs, possibly none."},
+      unauthorized: Schemas.unauthorized_response(),
+      forbidden: {Schemas.Rejected, description: "The installation's agent is disabled."},
+      conflict: {Schemas.Rejected, description: "The installation has not checked in yet."},
+      unprocessable_entity: {Schemas.Rejected, description: "The lease request is invalid."}
+    ]
 
   def lease(conn, params) do
     with {:ok, keys, limit} <- validate_lease(params),
@@ -32,6 +63,34 @@ defmodule RengaWeb.Api.V1.JobController do
       error -> rejected(conn, error)
     end
   end
+
+  operation :create_event,
+    operation_id: "reportAgentJob",
+    summary: "Report on a leased job",
+    description:
+      "Records a numbered report on a job the installation holds and extends its lease. " <>
+        "Resending a recorded sequence replays it without recording or extending anything. " <>
+        "The response says whether cancellation was requested.",
+    security: Schemas.intake_security(),
+    parameters: [
+      id: [in: :path, required: true, schema: Schemas.uuid(), description: "The job's ID."]
+    ],
+    request_body: Schemas.JobReport,
+    responses: [
+      ok: {Schemas.JobReportAccepted, description: "Report recorded, or replayed."},
+      unauthorized: Schemas.unauthorized_response(),
+      forbidden: {Schemas.Rejected, description: "The installation's agent is disabled."},
+      not_found: {Schemas.Rejected, description: "No such job for this organization."},
+      conflict:
+        {Schemas.Rejected,
+         description:
+           "Stop reporting or fix the sequence: the lease is not held, the sequence was " <>
+             "used for a different report or is stale, the report is not allowed in the " <>
+             "job's state, or the installation has not checked in."},
+      request_entity_too_large:
+        {Schemas.Rejected, description: "The payload exceeds the job's output limit."},
+      unprocessable_entity: {Schemas.Rejected, description: "The report is invalid."}
+    ]
 
   def create_event(conn, %{"id" => job_id} = params) do
     with {:ok, report} <- validate_report(params),

@@ -1,0 +1,62 @@
+[
+  {
+    "observation_id": "accepted-edge-cases",
+    "observed_at": "2026-01-02T03:04:05,123+0100",
+    "source": null,
+    "resources": [
+      {
+        "kind": "server",
+        "identifiers": {
+          "hostname": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        },
+        "attributes": {
+          "hostname": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "vendor": null,
+          "asset_tag": null
+        },
+        "interfaces": [
+          {
+            "name": "﻿",
+            "mac_address": null,
+            "mtu": null,
+            "speed_mbps": null,
+            "metadata": null,
+            "addresses": [
+              {
+                "address": "192.0.2.1",
+                "scope": null,
+                "metadata": null
+              }
+            ],
+            "routing_domain": null
+          }
+        ],
+        "components": [
+          {
+            "kind": "memory"
+          },
+          "opaque",
+          1,
+          null
+        ],
+        "labels": {
+          "rack": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        }
+      }
+    ]
+  },
+  {
+    "observation_id": "accepted-null-sections",
+    "observed_at": "2026-01-02T03:04:05Z",
+    "resources": [
+      {
+        "kind": "server",
+        "identifiers": {
+          "hostname": "db-01"
+        },
+        "interfaces": null,
+        "components": null
+      }
+    ]
+  }
+]

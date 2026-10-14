@@ -31,3 +31,4 @@ libc = "0.2"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+jsonschema = { version = "0.58", default-features = false }

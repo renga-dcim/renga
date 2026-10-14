@@ -30,10 +30,10 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     second = build_conn() |> authorize(token, @second_installation_id) |> post_check_in()
 
     assert %{"status" => "accepted", "source" => %{"id" => first_source_id}} =
-             json_response(first, 202)
+             valid_api_response(first, 202)
 
     assert %{"status" => "accepted", "source" => %{"id" => second_source_id}} =
-             json_response(second, 202)
+             valid_api_response(second, 202)
 
     refute first_source_id == second_source_id
 
@@ -52,10 +52,10 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     second = build_conn() |> authorize(token, @first_installation_id) |> post_check_in()
 
     assert %{"source" => %{"id" => source_id}, "agent" => %{"id" => agent_id}} =
-             json_response(first, 202)
+             valid_api_response(first, 202)
 
     assert %{"source" => %{"id" => ^source_id}, "agent" => %{"id" => ^agent_id}} =
-             json_response(second, 202)
+             valid_api_response(second, 202)
 
     assert length(Inventory.list_sources(scope)) == 1
     assert length(Inventory.list_agents(scope)) == 1
@@ -76,7 +76,7 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     assert %{
              "status" => "accepted",
              "observation" => %{"id" => observation_id, "source_id" => source_id}
-           } = json_response(conn, 202)
+           } = valid_api_response(conn, 202)
 
     [agent] = Inventory.list_agents(scope)
     assert agent.installation_id == @first_installation_id
@@ -101,8 +101,8 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     first = conn |> authorize(token, @first_installation_id) |> post_check_in()
     other = build_conn() |> authorize(other_token, @first_installation_id) |> post_check_in()
 
-    assert %{"source" => %{"id" => first_source_id}} = json_response(first, 202)
-    assert %{"source" => %{"id" => other_source_id}} = json_response(other, 202)
+    assert %{"source" => %{"id" => first_source_id}} = valid_api_response(first, 202)
+    assert %{"source" => %{"id" => other_source_id}} = valid_api_response(other, 202)
     refute first_source_id == other_source_id
     assert [%{installation_id: @first_installation_id}] = Inventory.list_agents(scope)
     assert [%{installation_id: @first_installation_id}] = Inventory.list_agents(other_scope)
@@ -115,11 +115,11 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     token: token
   } do
     accepted = conn |> authorize(token, @first_installation_id) |> post_check_in()
-    assert %{"status" => "accepted"} = json_response(accepted, 202)
+    assert %{"status" => "accepted"} = valid_api_response(accepted, 202)
     assert {:ok, _key} = Inventory.revoke_intake_api_key(scope, key.id)
 
     rejected = build_conn() |> authorize(token, @first_installation_id) |> post_check_in()
-    assert %{"errors" => [%{"path" => "authorization"}]} = json_response(rejected, 401)
+    assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(rejected, 401)
     assert length(Inventory.list_agents(scope)) == 1
     assert length(Inventory.list_sources(scope)) == 1
   end
@@ -161,6 +161,72 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
 
     assert Inventory.list_sources(scope) == []
     assert Inventory.list_agents(scope) == []
+  end
+
+  # The agent's contract test (agent/tests/openapi_contract.rs) checks these
+  # same bodies against priv/openapi/v1.json with a standards-compliant
+  # validator. This test proves the API accepts them, so together they keep
+  # the spec from being stricter than the API in ways JSV shares with Elixir,
+  # such as counting characters as grapheme clusters.
+  test "the API accepts the edge-case requests the agent's contract test checks", %{
+    token: token
+  } do
+    for body <- accepted_fixture("check_ins") do
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/agent/checkins", body)
+
+      assert %{"status" => "accepted"} = valid_api_response(conn, 202)
+    end
+
+    for body <- accepted_fixture("observations") do
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/observations", body)
+
+      assert %{"status" => "accepted", "duplicate" => false} = valid_api_response(conn, 202)
+    end
+  end
+
+  # The spec documents source.source_id as omitted or null because the API
+  # rejects every value today, even the collector's own source ID or name.
+  test "observations naming their source by ID or name are rejected", %{token: token} do
+    assert %{"source" => %{"id" => id, "name" => name}} =
+             build_conn()
+             |> authorize(token, @first_installation_id)
+             |> post_check_in()
+             |> valid_api_response(202)
+
+    for source_id <- [id, name] do
+      body =
+        Map.put(valid_observation_payload(), "source", %{
+          "kind" => "host_agent",
+          "source_id" => source_id
+        })
+
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/observations", body)
+
+      assert %{"errors" => [%{"path" => "source.source_id"}]} = valid_api_response(conn, 422)
+    end
+  end
+
+  defp accepted_fixture(name) do
+    assert [_ | _] =
+             bodies =
+             "test/fixtures/openapi/accepted_#{name}.json" |> File.read!() |> Jason.decode!()
+
+    bodies
+  end
+
+  defp post_json(conn, path, body) do
+    conn
+    |> put_req_header("content-type", "application/json")
+    |> post(path, Jason.encode!(body))
   end
 
   defp authorize(conn, token, installation_id) do
