@@ -1,0 +1,130 @@
+// Floating text for the overflow pattern (docs/design-system.md, "Overflow").
+//
+// Rows stay on one line, so long values end in an ellipsis. Any element
+// marked `data-clip` shows its full text in a tooltip on hover (after a
+// short delay) or keyboard focus, but only while it is actually cut off.
+// Popovers marked `data-anchor` (the +N chip lists) open next to the
+// element named by that id instead of the viewport center.
+//
+// Both use the native popover top layer, so they are never clipped by a
+// table's scroll container or hidden under a side panel. The listeners are
+// delegated from the document, so rows patched in by LiveView need no hook.
+
+const TOOLTIP_DELAY_MS = 400
+const GAP = 4
+const MARGIN = 8
+
+const TOOLTIP_CLASS =
+  "pointer-events-none fixed inset-auto m-0 max-w-sm rounded-md border border-edge bg-surface " +
+  "px-2.5 py-1.5 text-xs text-fg shadow-lg"
+
+// Places a floating box below its anchor, flipping above when there is no
+// room below, and keeps it inside the viewport horizontally.
+export function place(anchor, box, viewport) {
+  const below = anchor.bottom + GAP
+  const above = anchor.top - GAP - box.height
+  const fitsBelow = below + box.height <= viewport.height - MARGIN
+  const top = fitsBelow || above < MARGIN ? below : above
+  const maxLeft = Math.max(MARGIN, viewport.width - MARGIN - box.width)
+  const left = Math.min(Math.max(anchor.left, MARGIN), maxLeft)
+
+  return {top, left}
+}
+
+export function clipped(el) {
+  return el.scrollWidth > el.clientWidth
+}
+
+export function installFloating(doc = document, win = window) {
+  let tooltip = null
+  let pending = null
+  let timer = null
+
+  const clipAt = node => (node instanceof win.Element ? node.closest("[data-clip]") : null)
+
+  const ensureTooltip = () => {
+    if (tooltip?.isConnected) return tooltip
+    tooltip = doc.createElement("div")
+    tooltip.id = "clip-tooltip"
+    tooltip.className = TOOLTIP_CLASS
+    tooltip.setAttribute("popover", "manual")
+    tooltip.setAttribute("role", "tooltip")
+    // The full text is already in the clipped element for assistive
+    // technology; the tooltip only repeats it visually.
+    tooltip.setAttribute("aria-hidden", "true")
+    doc.body.appendChild(tooltip)
+    return tooltip
+  }
+
+  const position = (el, anchor) => {
+    const viewport = {width: win.innerWidth, height: win.innerHeight}
+    const {top, left} = place(anchor.getBoundingClientRect(), el.getBoundingClientRect(), viewport)
+    el.style.top = `${top}px`
+    el.style.left = `${left}px`
+  }
+
+  const show = target => {
+    if (!target.isConnected || !clipped(target)) return
+    const el = ensureTooltip()
+    el.textContent = target.textContent.trim().replace(/\s+/g, " ")
+    if (!el.matches(":popover-open")) el.showPopover()
+    position(el, target)
+  }
+
+  const hide = () => {
+    clearTimeout(timer)
+    pending = null
+    if (tooltip?.matches(":popover-open")) tooltip.hidePopover()
+  }
+
+  doc.addEventListener("pointerover", event => {
+    const target = clipAt(event.target)
+    if (target === pending) return
+    hide()
+    if (!target) return
+    pending = target
+    // The pointer may have left by the time the delay ends, without a
+    // pointerout (the page scrolled under it).
+    timer = setTimeout(() => target.matches(":hover") && show(target), TOOLTIP_DELAY_MS)
+  })
+
+  doc.addEventListener("pointerout", event => {
+    if (clipAt(event.relatedTarget) !== pending) hide()
+  })
+
+  // A row link holds its clipped text, so focus lands on the parent.
+  doc.addEventListener("focusin", event => {
+    hide()
+    const target = clipAt(event.target) || event.target.querySelector?.("[data-clip]")
+    if (!target) return
+    pending = target
+    show(target)
+  })
+
+  doc.addEventListener("focusout", hide)
+  doc.addEventListener("keydown", event => event.key === "Escape" && hide())
+
+  doc.addEventListener(
+    "toggle",
+    event => {
+      const el = event.target
+      if (event.newState !== "open" || !el.dataset?.anchor) return
+      const anchor = doc.getElementById(el.dataset.anchor)
+      if (anchor) position(el, anchor)
+    },
+    true
+  )
+
+  // Floating boxes are placed once, so scrolling would leave them behind.
+  // A pending tooltip survives: hovering often scrolls the target into view.
+  doc.addEventListener(
+    "scroll",
+    event => {
+      if (tooltip?.matches(":popover-open")) tooltip.hidePopover()
+      for (const el of doc.querySelectorAll("[data-anchor]:popover-open")) {
+        if (!el.contains(event.target)) el.hidePopover()
+      }
+    },
+    true
+  )
+}

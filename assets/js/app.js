@@ -29,6 +29,7 @@ import {ListKeys} from "./list_keys"
 import {RackDrag} from "./rack_drag"
 import {CenterScroll} from "./center_scroll"
 import {TabStrip} from "./tab_strip"
+import {installFloating} from "./floating"
 
 const CommandPalette = {
   mounted() {
@@ -252,6 +253,9 @@ window.addEventListener("phx:appearance", ({detail}) => {
     root.dataset.theme = detail.theme
   }
 })
+
+// Tooltips for clipped text and anchored +N popovers.
+installFloating()
 
 // connect if there are any LiveViews on the page
 liveSocket.connect()
