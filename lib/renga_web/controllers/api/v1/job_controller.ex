@@ -99,7 +99,11 @@ defmodule RengaWeb.Api.V1.JobController do
     errors =
       []
       |> check(is_binary(token) and token != "", "lease_token", "is required")
-      |> check(is_integer(sequence) and sequence > 0, "sequence", "must be a positive integer")
+      |> check(
+        is_integer(sequence) and sequence in 1..Jobs.max_report_sequence(),
+        "sequence",
+        "must be an integer from 1 to #{Jobs.max_report_sequence()}"
+      )
       |> check(
         type in Jobs.report_types(),
         "type",

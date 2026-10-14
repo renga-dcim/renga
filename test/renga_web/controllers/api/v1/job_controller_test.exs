@@ -235,10 +235,30 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
     test "validates the request and the job", context do
       {job, token} = leased(context)
 
-      for {sequence, type, payload} <- [{0, "started", %{}}, {1, "done", %{}}, {1, "started", []}] do
+      for {sequence, type, payload} <- [
+            {0, "started", %{}},
+            {Jobs.max_report_sequence() + 1, "started", %{}},
+            {1, "done", %{}},
+            {1, "started", []}
+          ] do
         assert %{"status" => "rejected"} =
                  json_response(report(context, job.id, token, sequence, type, payload), 422)
       end
+
+      assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
+
+      assert %{"job" => %{"state" => "failed"}} =
+               json_response(
+                 report(
+                   context,
+                   job.id,
+                   token,
+                   Jobs.max_report_sequence(),
+                   "failed",
+                   %{"reason" => "stopped"}
+                 ),
+                 200
+               )
 
       assert %{"errors" => [%{"path" => "id"}]} =
                json_response(report(context, Ecto.UUID.generate(), token, 1, "started"), 404)

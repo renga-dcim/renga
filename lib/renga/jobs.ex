@@ -39,6 +39,7 @@ defmodule Renga.Jobs do
   @max_failure_reason_length 255
   @max_event_payload_bytes 64 * 1024
   @terminal_report_reserve_bytes 1024
+  @max_report_sequence 2_147_483_647
   @agent_report_types ~w(started progress output succeeded failed cancelled)
   @work_report_types ~w(started progress output)
 
@@ -334,6 +335,9 @@ defmodule Renga.Jobs do
   @doc "The report types an agent may post on a job it holds."
   def report_types, do: @agent_report_types
 
+  @doc "The largest report sequence representable by the database column."
+  def max_report_sequence, do: @max_report_sequence
+
   @doc """
   Whether `agent` has queued jobs it could lease now. Check-in responses carry
   this as `jobs_waiting`, so an agent leases promptly instead of waiting for
@@ -427,6 +431,7 @@ defmodule Renga.Jobs do
           state: "leased",
           attempts: job.attempts + 1,
           lease_token_hash: hash_token(token),
+          report_token_hash: hash_token(token),
           leased_at: now,
           lease_expires_at: lease_expiry(now),
           started_at: nil
@@ -501,13 +506,20 @@ defmodule Renga.Jobs do
   defp report!(%Job{} = job, agent, token, type, payload, sequence) do
     case delivered_report(job, agent, sequence) do
       nil -> record_report!(job, agent, token, type, payload, sequence)
-      %JobEvent{type: ^type} -> job
-      %JobEvent{} -> Repo.rollback(:sequence_conflict)
+      %JobEvent{} = event -> replay_report!(job, agent, token, type, event)
     end
   end
 
   defp valid_report_sequence?(nil), do: true
-  defp valid_report_sequence?(sequence), do: is_integer(sequence) and sequence > 0
+
+  defp valid_report_sequence?(sequence),
+    do: is_integer(sequence) and sequence in 1..@max_report_sequence
+
+  defp replay_report!(%Job{} = job, %Agent{} = agent, token, type, %JobEvent{} = event) do
+    unless report_token_matches?(job, agent, token), do: Repo.rollback(:lease_not_held)
+
+    if event.type == type, do: job, else: Repo.rollback(:sequence_conflict)
+  end
 
   # The event an earlier delivery of this report produced, if any. Scoped to
   # the job's current attempt and the reporting agent, so a sequence from a
@@ -562,6 +574,14 @@ defmodule Renga.Jobs do
       DateTime.compare(job.lease_expires_at, now) == :gt and
       Plug.Crypto.secure_compare(hash_token(token), job.lease_token_hash)
   end
+
+  defp report_token_matches?(%Job{} = job, %Agent{} = agent, token)
+       when is_binary(token) and is_binary(job.report_token_hash) do
+    job.agent_id == agent.id and
+      Plug.Crypto.secure_compare(hash_token(token), job.report_token_hash)
+  end
+
+  defp report_token_matches?(_job, _agent, _token), do: false
 
   defp report_changes!(%Job{state: "leased"}, "started", payload, now),
     do: {%{state: "running", started_at: now}, payload}
@@ -737,7 +757,13 @@ defmodule Renga.Jobs do
       end
 
     changes =
-      %{state: next, lease_token_hash: nil, leased_at: nil, lease_expires_at: nil}
+      %{
+        state: next,
+        lease_token_hash: nil,
+        report_token_hash: nil,
+        leased_at: nil,
+        lease_expires_at: nil
+      }
       |> Map.merge(if next == "queued", do: %{started_at: nil}, else: %{})
       |> Map.merge(if next in Job.finished_states(), do: %{finished_at: now}, else: %{})
 

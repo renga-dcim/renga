@@ -6,6 +6,13 @@ defmodule Renga.Repo.Migrations.AddJobEventReportSequence do
   # post find its first delivery instead of being recorded twice. Server-made
   # events (leased, lease_lost, ...) have no report sequence.
   def change do
+    alter table(:jobs) do
+      # The live lease token is cleared when a job finishes. This hash remains
+      # for that attempt so the agent can authenticate a retry whose terminal
+      # response was lost; lease loss clears it and re-leasing replaces it.
+      add :report_token_hash, :binary
+    end
+
     alter table(:job_events) do
       add :report_sequence, :integer
     end

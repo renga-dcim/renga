@@ -52,6 +52,22 @@ defmodule Renga.Jobs.ReportSequenceTest do
     assert event_types(context) == ~w(created leased started succeeded)
   end
 
+  test "a duplicate report still requires the attempt's token", context do
+    assert {:ok, %{state: "running"}} = report(context, "started", %{}, 1)
+
+    assert {:error, :lease_not_held} =
+             report(context, "started", %{}, 1, "not-the-token")
+
+    assert {:ok, %{state: "failed"} = failed} =
+             report(context, "failed", %{"reason" => "boom"}, 2)
+
+    assert {:error, :lease_not_held} =
+             report(context, "failed", %{"reason" => "boom"}, 2, "not-the-token")
+
+    assert {:ok, ^failed} = report(context, "failed", %{"reason" => "boom"}, 2)
+    assert event_types(context) == ~w(created leased started failed)
+  end
+
   test "rejects a sequence reused for another report or numbered below one recorded",
        context do
     {:ok, _running} = report(context, "started", %{}, 1)
@@ -68,9 +84,12 @@ defmodule Renga.Jobs.ReportSequenceTest do
     %{lapsed: 1} = Jobs.sweep(DateTime.add(Renga.Time.utc_now_ms(), 120))
     {:ok, [{_job, token}]} = Jobs.lease_jobs(context.system_scope, context.agent, [@collect], 1)
 
-    # The old holder retrying its report is told it lost the lease.
+    # The new attempt reuses sequence 1, but the old attempt's token cannot
+    # replay that event or add another one.
     assert {:error, :lease_not_held} = report(context, "progress", %{}, 2)
     assert {:ok, %{state: "running", attempts: 2}} = report(context, "started", %{}, 1, token)
+    assert {:error, :lease_not_held} = report(context, "started", %{}, 1)
+    assert event_types(context) == ~w(created leased started lease_lost leased started)
   end
 
   test "only the reporting agent can replay its report", context do
@@ -80,9 +99,17 @@ defmodule Renga.Jobs.ReportSequenceTest do
     assert {:error, :lease_not_held} = report(%{context | agent: other}, "started", %{}, 1)
   end
 
-  test "requires a positive integer sequence", context do
-    for sequence <- [0, -1, "1", 1.0] do
+  test "requires a sequence representable by PostgreSQL", context do
+    for sequence <- [0, -1, "1", 1.0, Jobs.max_report_sequence() + 1] do
       assert {:error, :invalid_report} = report(context, "started", %{}, sequence)
     end
+
+    assert {:ok, %{state: "failed"}} =
+             report(
+               context,
+               "failed",
+               %{"reason" => "stopped"},
+               Jobs.max_report_sequence()
+             )
   end
 end
