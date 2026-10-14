@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use renga_agent::{
     cancellation::Cancellation,
     collectors,
@@ -104,6 +104,16 @@ struct Args {
     /// Collect and print an observation without loading config or using the network.
     #[arg(long)]
     dry_run: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    // The service runs this as root before starting. It takes no paths, so a caller
+    // cannot point the privileged copy anywhere else.
+    /// Copy the root-only SMBIOS tables into a snapshot the agent can read
+    SnapshotSmbios,
 }
 
 fn main() {
@@ -121,6 +131,9 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    if let Some(Command::SnapshotSmbios) = args.command {
+        return snapshot_smbios();
+    }
     if args.dry_run {
         let observation = Observation::new(collectors::collect(&Cancellation::default())?);
         println!("{}", serde_json::to_string_pretty(&observation)?);
@@ -131,6 +144,19 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
     // startup and --once deliveries share the interruptible path.
     let stopped = install_shutdown_handler()?;
     run_configured(args, stopped)
+}
+
+#[cfg(target_os = "linux")]
+fn snapshot_smbios() -> Result<(), Box<dyn Error>> {
+    use renga_agent::smbios::snapshot::Publisher;
+    let generation = Publisher::system()?.publish()?;
+    info!(generation, "published SMBIOS snapshot");
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn snapshot_smbios() -> Result<(), Box<dyn Error>> {
+    Err("SMBIOS snapshots are only supported on Linux".into())
 }
 
 fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
@@ -559,6 +585,7 @@ mod tests {
                 state_directory: state.clone(),
                 once: true,
                 dry_run: false,
+                command: None,
             },
             Cancellation::default(),
         )
