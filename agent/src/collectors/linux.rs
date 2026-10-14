@@ -13,13 +13,19 @@ use crate::{
     payload::{
         Address, Component, HostAttributes, Identifiers, Interface, ResourceKind, ServerResource,
     },
+    smbios::{
+        snapshot,
+        table::{self, PowerSupply, Tables},
+    },
 };
 use serde_json::{json, Value};
 use std::{fs, os::unix::fs::FileTypeExt, path::Path, process::Command};
+use tracing::info;
 
 /// Non-authoritative component limits reserve payload space for identity and network facts.
 const MAX_DISK_COMPONENTS: usize = 128;
 const MAX_FILESYSTEM_COMPONENTS: usize = 512;
+const MAX_POWER_SUPPLY_COMPONENTS: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum VirtDetection {
@@ -148,6 +154,9 @@ fn collect_from_with_sources(
     components.extend(collect_disks(facts.disks));
     components.extend(collect_filesystems(filesystem_source));
     components.push(virtualization_component(root, detector));
+    let smbios = smbios_tables(root);
+    components.extend(collect_power_supplies(&smbios.power_supplies));
+    let system = smbios.system.unwrap_or_default();
     let vendor = read(root, "sys/class/dmi/id/sys_vendor");
     let model = read(root, "sys/class/dmi/id/product_name");
     Ok(ServerResource {
@@ -156,8 +165,9 @@ fn collect_from_with_sources(
             hostname: hostname.clone(),
             fqdn: fqdn.clone(),
             machine_id: read(root, "etc/machine-id"),
-            dmi_uuid: read(root, "sys/class/dmi/id/product_uuid"),
-            serial_number: read(root, "sys/class/dmi/id/product_serial"),
+            // sysfs is readable only when running as root; the snapshot covers the service.
+            dmi_uuid: read(root, "sys/class/dmi/id/product_uuid").or(system.uuid),
+            serial_number: read(root, "sys/class/dmi/id/product_serial").or(system.serial_number),
             mac_address: macs,
         },
         attributes: Some(HostAttributes {
@@ -313,6 +323,50 @@ fn collect_filesystems(source: &dyn FilesystemFactsSource) -> Vec<Component> {
     )
 }
 
+/// Tables from the snapshot the pre-start helper published. The source is optional:
+/// without a usable snapshot the agent reports no SMBIOS facts rather than failing.
+fn smbios_tables(root: &Path) -> Tables {
+    match snapshot::load(
+        &root.join(snapshot::SNAPSHOT_DIRECTORY.trim_start_matches('/')),
+        &root.join(snapshot::BOOT_ID_PATH.trim_start_matches('/')),
+    ) {
+        Ok(snapshot) => table::parse(&snapshot.entry_point, &snapshot.table),
+        Err(error) => {
+            info!(%error, "SMBIOS snapshot unavailable; omitting SMBIOS facts");
+            Tables::default()
+        }
+    }
+}
+
+fn collect_power_supplies(supplies: &[PowerSupply]) -> Vec<Component> {
+    bounded_components(
+        "smbios_power_supplies",
+        MAX_POWER_SUPPLY_COMPONENTS,
+        supplies.len(),
+        supplies.iter().map(|supply| {
+            component(
+                "power_supply",
+                [
+                    ("source", json!("smbios")),
+                    ("name", json!(supply.name)),
+                    ("location", json!(supply.location)),
+                    ("group", json!(supply.group)),
+                    ("manufacturer", json!(supply.manufacturer)),
+                    ("model", json!(supply.model)),
+                    ("serial_number", json!(supply.serial_number)),
+                    ("asset_tag", json!(supply.asset_tag)),
+                    ("revision", json!(supply.revision)),
+                    ("max_power_watts", json!(supply.max_power_watts)),
+                    ("hot_replaceable", json!(supply.hot_replaceable)),
+                    ("present", json!(supply.present)),
+                    ("unplugged", json!(supply.unplugged)),
+                    ("status", json!(supply.status)),
+                ],
+            )
+        }),
+    )
+}
+
 fn bounded_components(
     collector: &str,
     limit: usize,
@@ -425,6 +479,7 @@ mod tests {
     use crate::collectors::filesystem_facts::{self, FilesystemFacts};
     use crate::collectors::network_facts::NetworkAddress;
     use crate::collectors::system_facts::{CpuFacts, OsFacts, SystemFacts};
+    use crate::smbios::table::tests as smbios_tests;
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -520,6 +575,142 @@ mod tests {
         fs::write(root.join("etc/hostname"), "test-host\n").unwrap();
         root
     }
+    /// Publishes SMBIOS tables into the fixture the way the pre-start helper would.
+    fn publish_smbios(root: &Path, table: &[u8]) {
+        let source = root.join("sys/firmware/dmi/tables");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("DMI"), table).unwrap();
+        fs::write(
+            source.join("smbios_entry_point"),
+            smbios_tests::entry_point_3(4),
+        )
+        .unwrap();
+        let boot_id = root.join(snapshot::BOOT_ID_PATH.trim_start_matches('/'));
+        fs::create_dir_all(boot_id.parent().unwrap()).unwrap();
+        fs::write(&boot_id, "11111111-2222-3333-4444-555555555555\n").unwrap();
+        fs::create_dir_all(root.join("run")).unwrap();
+        snapshot::Publisher {
+            source,
+            destination: root.join(snapshot::SNAPSHOT_DIRECTORY.trim_start_matches('/')),
+            boot_id,
+            group: unsafe { libc::getegid() },
+        }
+        .publish()
+        .unwrap();
+    }
+
+    #[test]
+    fn reports_smbios_identity_and_power_supplies_from_the_snapshot() {
+        let root = fixture();
+        let table = [
+            smbios_tests::system_record(smbios_tests::UUID_BYTES, "SN-SMBIOS"),
+            smbios_tests::power_supply_record(0b011 << 7 | 0b011, 1100),
+        ]
+        .concat();
+        publish_smbios(&root, &table);
+        let resource = collect_from_with_ip(&root, Ok("")).unwrap();
+        assert_eq!(
+            resource.identifiers.dmi_uuid.as_deref(),
+            Some("00112233-4455-6677-8899-aabbccddeeff")
+        );
+        assert_eq!(
+            resource.identifiers.serial_number.as_deref(),
+            Some("SN-SMBIOS")
+        );
+        let supplies: Vec<_> = serde_json::to_value(&resource.components)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|component| component["kind"] == "power_supply")
+            .cloned()
+            .collect();
+        assert_eq!(
+            supplies,
+            [json!({
+                "kind": "power_supply",
+                "source": "smbios",
+                "name": "PWR SPLY,1100W",
+                "location": "PSU 1",
+                "group": 1,
+                "manufacturer": "DELL",
+                "model": "0PJMDN",
+                "serial_number": "CN1797255H0123",
+                "revision": "A00",
+                "max_power_watts": 1100,
+                "hot_replaceable": true,
+                "present": true,
+                "unplugged": false,
+                "status": "ok"
+            })]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn readable_sysfs_identity_takes_precedence_over_the_snapshot() {
+        let root = fixture();
+        publish_smbios(
+            &root,
+            &smbios_tests::system_record(smbios_tests::UUID_BYTES, "SN-SMBIOS"),
+        );
+        let dmi = root.join("sys/class/dmi/id");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::write(
+            dmi.join("product_uuid"),
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+        )
+        .unwrap();
+        fs::write(dmi.join("product_serial"), "SN-SYSFS\n").unwrap();
+        let resource = collect_from_with_ip(&root, Ok("")).unwrap();
+        assert_eq!(
+            resource.identifiers.dmi_uuid.as_deref(),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
+        assert_eq!(
+            resource.identifiers.serial_number.as_deref(),
+            Some("SN-SYSFS")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_or_stale_snapshots_omit_smbios_facts() {
+        let root = fixture();
+        let without = collect_from_with_ip(&root, Ok("")).unwrap();
+        assert_eq!(without.identifiers.dmi_uuid, None);
+
+        publish_smbios(
+            &root,
+            &[
+                smbios_tests::system_record(smbios_tests::UUID_BYTES, "SN-SMBIOS"),
+                smbios_tests::power_supply_record(0b011 << 7, 750),
+            ]
+            .concat(),
+        );
+        fs::write(
+            root.join(snapshot::BOOT_ID_PATH.trim_start_matches('/')),
+            "66666666-7777-8888-9999-000000000000\n",
+        )
+        .unwrap();
+        let stale = collect_from_with_ip(&root, Ok("")).unwrap();
+        assert_eq!(stale.identifiers.dmi_uuid, None);
+        assert_eq!(stale.identifiers.serial_number, None);
+        assert!(!stale.components.iter().any(|c| c.kind == "power_supply"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounds_power_supply_components() {
+        let supply = table::PowerSupply {
+            name: Some("PSU".into()),
+            ..Default::default()
+        };
+        let components = collect_power_supplies(&vec![supply; MAX_POWER_SUPPLY_COMPONENTS + 1]);
+        assert_eq!(components.len(), MAX_POWER_SUPPLY_COMPONENTS + 1);
+        assert_eq!(components.last().unwrap().kind, "collection_status");
+    }
+
     #[test]
     fn normalizes_firmware_placeholders() {
         assert_eq!(normalize_value(" To Be Filled By O.E.M. "), None);
