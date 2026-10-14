@@ -536,27 +536,34 @@ defmodule Renga.Jobs do
     if agent.organization_id != organization_id do
       {:error, :forbidden}
     else
-      Repo.transaction(fn ->
-        organization = lock_active_organization!(organization_id)
-        allowed = Settings.allowed_capabilities(organization)
-        now = Renga.Time.utc_now_ms()
+      result =
+        Repo.transaction(fn ->
+          organization = lock_active_organization!(organization_id)
+          allowed = Settings.allowed_capabilities(organization)
+          now = Renga.Time.utc_now_ms()
 
-        organization_id
-        |> leasable_jobs(agent, keys, limit, now)
-        |> where_risk_class(Keyword.get(opts, :risk_classes))
-        |> lock("FOR UPDATE SKIP LOCKED")
-        |> Repo.all()
-        |> Enum.flat_map(&lease_or_refuse!(&1, agent, allowed, now))
-      end)
-      |> broadcast_unless_empty(organization_id)
+          jobs =
+            organization_id
+            |> leasable_jobs(agent, keys, limit, now)
+            |> where_risk_class(Keyword.get(opts, :risk_classes))
+            |> lock("FOR UPDATE SKIP LOCKED")
+            |> Repo.all()
+
+          {Enum.flat_map(jobs, &lease_or_refuse!(&1, agent, allowed, now)), jobs != []}
+        end)
+
+      broadcast_lease_change(result, organization_id)
     end
   end
 
-  # Agents ask for work often; an empty lease changed nothing.
-  defp broadcast_unless_empty({:ok, []} = result, _organization_id), do: result
+  # An empty response usually changed nothing, but can also mean every queued
+  # job was refused because its capability was withdrawn.
+  defp broadcast_lease_change({:ok, {leased, false}}, _organization_id), do: {:ok, leased}
 
-  defp broadcast_unless_empty(result, organization_id),
-    do: Changes.broadcast(result, organization_id)
+  defp broadcast_lease_change({:ok, {leased, true}}, organization_id),
+    do: Changes.broadcast({:ok, leased}, organization_id)
+
+  defp broadcast_lease_change(result, _organization_id), do: result
 
   defp leasable_jobs(organization_id, agent, keys, limit, now) do
     Job

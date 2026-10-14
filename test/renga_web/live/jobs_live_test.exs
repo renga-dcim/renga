@@ -4,7 +4,11 @@ defmodule RengaWeb.JobsLiveTest do
   import Phoenix.LiveViewTest
   import Renga.JobsFixtures
 
+  alias Renga.Accounts
+  alias Renga.Inventory
   alias Renga.Jobs
+  alias Renga.Jobs.Changes
+  alias Renga.Repo
 
   @collect "inventory.collect@1"
 
@@ -12,7 +16,18 @@ defmodule RengaWeb.JobsLiveTest do
     %{organization: organization, scope: scope, system_scope: system_scope} =
       job_organization_fixture()
 
-    agent = agent_fixture(organization)
+    installation_id = Ecto.UUID.generate()
+    {:ok, {_key, token}} = Inventory.create_intake_api_key(scope, %{name: "Fleet"})
+    {:ok, key} = Inventory.authenticate_intake_api_key(token)
+
+    {:ok, {agent, _lease}} =
+      Inventory.record_intake_agent_check_in(
+        Accounts.scope_for(organization),
+        key,
+        installation_id,
+        %{capabilities: [@collect]}
+      )
+
     resource = reported_resource_fixture(organization, agent)
 
     conn =
@@ -26,8 +41,34 @@ defmodule RengaWeb.JobsLiveTest do
       scope: scope,
       system_scope: system_scope,
       agent: agent,
-      resource: resource
+      resource: resource,
+      token: token,
+      installation_id: installation_id
     }
+  end
+
+  defp post_json(context, path, body) do
+    build_conn()
+    |> put_req_header("authorization", "Bearer #{context.token}")
+    |> put_req_header("x-renga-installation-id", context.installation_id)
+    |> put_req_header("content-type", "application/json")
+    |> post(path, Jason.encode!(body))
+  end
+
+  defp lease_over_http(context) do
+    post_json(context, ~p"/api/v1/agent/jobs/lease", %{
+      "capabilities" => [@collect],
+      "limit" => 1
+    })
+  end
+
+  defp report_over_http(context, job, token, sequence, type) do
+    post_json(context, ~p"/api/v1/agent/jobs/#{job}/events", %{
+      "lease_token" => token,
+      "sequence" => sequence,
+      "type" => type,
+      "payload" => %{}
+    })
   end
 
   defp request(%{scope: scope, agent: agent, resource: resource}) do
@@ -103,6 +144,47 @@ defmodule RengaWeb.JobsLiveTest do
     assert has_element?(view, "#job-history [data-type=succeeded]", context.agent.name)
   end
 
+  test "follows lease and report requests made through the agent HTTP API", context do
+    job = request(context)
+    {:ok, view, _html} = live(context.conn, ~p"/activity/jobs/#{job}")
+
+    assert %{"jobs" => [%{"lease_token" => token}]} =
+             context |> lease_over_http() |> json_response(200)
+
+    assert eventually(fn ->
+             has_element?(view, "#job-panel-status[data-state=leased]", "Picked up")
+           end)
+
+    assert %{"job" => %{"state" => "running"}} =
+             context |> report_over_http(job, token, 1, "started") |> json_response(200)
+
+    assert eventually(fn ->
+             has_element?(view, "#job-panel-status[data-state=running]", "Running")
+           end)
+  end
+
+  test "an HTTP lease publishes a withdrawn-capability refusal only to its tenant", context do
+    job = request(context)
+    {:ok, view, _html} = live(context.conn, ~p"/activity/jobs/#{job}")
+    other = job_organization_fixture()
+    other_organization_id = other.organization.id
+    :ok = Changes.subscribe(context.scope)
+    :ok = Changes.subscribe(other.scope)
+
+    context.organization
+    |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => []}})
+    |> Repo.update!()
+
+    assert %{"jobs" => []} = context |> lease_over_http() |> json_response(200)
+    assert_receive {:jobs_changed, organization_id}
+    assert organization_id == context.organization.id
+    refute_receive {:jobs_changed, ^other_organization_id}
+
+    assert eventually(fn ->
+             has_element?(view, "#job-panel-status[data-state=failed]", "No longer allowed")
+           end)
+  end
+
   test "hides cancel from people who cannot cancel", context do
     %{conn: conn, organization: organization} = context
     job = request(context)
@@ -167,5 +249,17 @@ defmodule RengaWeb.JobsLiveTest do
     assert has_element?(view, "#activity-events", "Inventory collection failed")
     assert has_element?(view, "#activity-events", "collector exited 1")
     assert has_element?(view, "#activity-events", context.agent.name)
+  end
+
+  defp eventually(fun, attempts \\ 40)
+  defp eventually(_fun, 0), do: false
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(25)
+      eventually(fun, attempts - 1)
+    end
   end
 end

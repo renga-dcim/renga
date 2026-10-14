@@ -156,4 +156,21 @@ defmodule Renga.Jobs.ResourceActivityTest do
     {:ok, _} = Jobs.cancel_job(scope, job.id)
     assert_receive {:jobs_changed, ^organization_id}
   end
+
+  test "does not announce a job change rolled back by an outer transaction", context do
+    %{scope: scope, agent: agent} = context
+    organization_id = scope.organization_id
+    :ok = Changes.subscribe(scope)
+
+    assert {:error, :outer_rollback} =
+             Changes.after_commit(fn ->
+               Repo.transaction(fn ->
+                 {:ok, _job} = Jobs.create_job(scope, agent.id, @collect, %{})
+                 Repo.rollback(:outer_rollback)
+               end)
+             end)
+
+    refute_receive {:jobs_changed, ^organization_id}
+    assert Jobs.list_jobs(scope) == []
+  end
 end
