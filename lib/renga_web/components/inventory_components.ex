@@ -77,6 +77,8 @@ defmodule RengaWeb.InventoryComponents do
   attr :hardware?, :boolean, required: true
   slot :inner_block, required: true
   slot :aside
+  slot :title_action
+  slot :notice
 
   def resource_frame(assigns) do
     resource = assigns.resource
@@ -113,6 +115,8 @@ defmodule RengaWeb.InventoryComponents do
       </:breadcrumb>
       <:icon><.icon name={kind_icon(@resource.kind)} class="size-5" /></:icon>
       <:status><.resource_status id="resource-status" resource={@resource} size="header" /></:status>
+      <:title_action :if={@title_action != []}>{render_slot(@title_action)}</:title_action>
+      <:notice :if={@notice != []}>{render_slot(@notice)}</:notice>
       <:tab
         :for={{id, label, path, count} <- @tabs}
         patch={if(not separate_page?(id) and not separate_page?(@tab), do: path)}

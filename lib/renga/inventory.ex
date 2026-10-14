@@ -1080,7 +1080,7 @@ defmodule Renga.Inventory do
       from(event in ChangeEvent,
         order_by: [desc: event.occurred_at, desc: event.id],
         limit: 20,
-        preload: [:source]
+        preload: [:source, :actor_user]
       )
 
     resource =

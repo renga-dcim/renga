@@ -151,6 +151,8 @@ defmodule RengaWeb.UI do
   slot :icon
   slot :status
   slot :actions
+  slot :title_action, doc: "a button beside the title, for the one action the page is for"
+  slot :notice, doc: "a banner under the header, such as work in progress on the object"
 
   slot :tab do
     attr :navigate, :string
@@ -191,13 +193,16 @@ defmodule RengaWeb.UI do
               >
                 {render_slot(@icon)}
               </span>
-              <div class="min-w-0">
+              <div class="min-w-0 flex-1">
                 <h1 class="text-xl font-semibold tracking-tight text-fg text-balance">{@title}</h1>
                 <p :if={@subtitle} class="font-mono text-xs text-fg-muted">{@subtitle}</p>
               </div>
+              <div :if={@title_action != []} class="shrink-0">{render_slot(@title_action)}</div>
             </div>
             <div :if={@status != []}>{render_slot(@status)}</div>
           </header>
+
+          {render_slot(@notice)}
 
           <nav
             :if={@tab != []}
