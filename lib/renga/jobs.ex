@@ -335,6 +335,20 @@ defmodule Renga.Jobs do
   def report_types, do: @agent_report_types
 
   @doc """
+  Whether `agent` has queued jobs it could lease now. Check-in responses carry
+  this as `jobs_waiting`, so an agent leases promptly instead of waiting for
+  its next lease attempt.
+  """
+  def jobs_waiting?(%Scope{organization_id: organization_id}, %Agent{} = agent) do
+    now = Renga.Time.utc_now_ms()
+
+    Job
+    |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
+    |> where([job], job.state == "queued" and job.not_after > ^now)
+    |> Repo.exists?()
+  end
+
+  @doc """
   Leases up to `limit` queued jobs for `agent` among the capability keys the
   agent will run now, oldest first.
 

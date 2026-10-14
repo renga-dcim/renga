@@ -258,4 +258,16 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
     end
   end
+
+  describe "check-in" do
+    test "hints that jobs are waiting", context do
+      check_in = fn -> post_json(context, ~p"/api/v1/agent/checkins", %{}) end
+
+      assert %{"jobs_waiting" => false} = json_response(check_in.(), 202)
+      queue_job(context)
+      assert %{"jobs_waiting" => true} = json_response(check_in.(), 202)
+      json_response(lease(context), 200)
+      assert %{"jobs_waiting" => false} = json_response(check_in.(), 202)
+    end
+  end
 end

@@ -4,6 +4,7 @@ defmodule RengaWeb.Api.V1.AgentController do
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Source
+  alias Renga.Jobs
 
   def check_in(%{assigns: %{current_intake_api_key: intake_api_key}} = conn, params) do
     source_identity = %Source{kind: "host_agent"}
@@ -44,7 +45,10 @@ defmodule RengaWeb.Api.V1.AgentController do
         id: agent.id,
         name: agent.name,
         lease_expires_at: DateTime.to_iso8601(lease.expires_at)
-      }
+      },
+      # A hint, not the job itself: the agent leases right away instead of
+      # waiting for its next lease attempt (RFD 9, "Delivery over HTTPS").
+      jobs_waiting: Jobs.jobs_waiting?(conn.assigns.current_scope, agent)
     })
   end
 
