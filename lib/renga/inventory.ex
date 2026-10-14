@@ -235,6 +235,33 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Runs an agent operation only while its intake authorization remains current.
+
+  Organization, credential, and agent rows are locked in that order before
+  the operation. A credential revocation, organization disable, or agent
+  disable therefore takes effect before or after the whole operation, never
+  between authentication and its writes.
+  """
+  def with_intake_agent(
+        %Scope{organization_id: organization_id},
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        operation
+      )
+      when is_function(operation, 1) do
+    Repo.transaction(fn ->
+      ensure_intake_organization_active!(organization_id)
+      ensure_intake_api_key_current!(organization_id, intake_api_key)
+      agent = lock_active_intake_agent!(organization_id, installation_id)
+
+      case operation.(agent) do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
   Automatically registers an intake-authenticated installation and stores its observation.
   """
   def ingest_intake_observation(
@@ -525,6 +552,19 @@ defmodule Renga.Inventory do
     |> case do
       {"active", token_hash} when token_hash == authenticated_key.token_hash -> :ok
       _changed_or_missing -> Repo.rollback(:intake_credential_changed)
+    end
+  end
+
+  defp lock_active_intake_agent!(organization_id, installation_id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.installation_id == ^installation_id)
+    |> lock("FOR SHARE")
+    |> Repo.one()
+    |> case do
+      %Agent{status: "active"} = agent -> agent
+      %Agent{} -> Repo.rollback(:agent_disabled)
+      nil -> Repo.rollback(:agent_not_registered)
     end
   end
 

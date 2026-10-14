@@ -39,6 +39,7 @@ defmodule Renga.Jobs do
   @max_failure_reason_length 255
   @max_event_payload_bytes 64 * 1024
   @terminal_report_reserve_bytes 1024
+  @max_report_sequence 2_147_483_647
   @agent_report_types ~w(started progress output succeeded failed cancelled)
   @work_report_types ~w(started progress output)
 
@@ -331,6 +332,26 @@ defmodule Renga.Jobs do
 
   ## Leasing and reporting (agent side)
 
+  @doc "The report types an agent may post on a job it holds."
+  def report_types, do: @agent_report_types
+
+  @doc "The largest report sequence representable by the database column."
+  def max_report_sequence, do: @max_report_sequence
+
+  @doc """
+  Whether `agent` has queued jobs it could lease now. Check-in responses carry
+  this as `jobs_waiting`, so an agent leases promptly instead of waiting for
+  its next lease attempt.
+  """
+  def jobs_waiting?(%Scope{organization_id: organization_id}, %Agent{} = agent) do
+    now = Renga.Time.utc_now_ms()
+
+    Job
+    |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
+    |> where([job], job.state == "queued" and job.not_after > ^now)
+    |> Repo.exists?()
+  end
+
   @doc """
   Leases up to `limit` queued jobs for `agent` among the capability keys the
   agent will run now, oldest first.
@@ -340,8 +361,16 @@ defmodule Renga.Jobs do
   seconds unless a report extends it. `SKIP LOCKED` lets concurrent lease
   requests share the queue without waiting on each other. A queued job whose
   capability the organization no longer allows fails here instead of running.
+
+  ## Options
+
+    * `:risk_classes` - lease only jobs of these risk classes. Callers that
+      authenticate the agent with a shared organization credential pass
+      `["observe"]` (RFD 9, "Trust boundary").
   """
-  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit)
+  def lease_jobs(scope, agent, keys, limit, opts \\ [])
+
+  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit, opts)
       when is_list(keys) and is_integer(limit) and limit > 0 do
     if agent.organization_id != organization_id do
       {:error, :forbidden}
@@ -353,6 +382,9 @@ defmodule Renga.Jobs do
 
         organization_id
         |> leasable_jobs(agent, keys, limit, now)
+        |> where_risk_class(Keyword.get(opts, :risk_classes))
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.all()
         |> Enum.flat_map(&lease_or_refuse!(&1, agent, allowed, now))
       end)
     end
@@ -373,9 +405,12 @@ defmodule Renga.Jobs do
     )
     |> order_by([job], asc: job.inserted_at, asc: job.id)
     |> limit(^limit)
-    |> lock("FOR UPDATE SKIP LOCKED")
-    |> Repo.all()
   end
+
+  defp where_risk_class(query, nil), do: query
+
+  defp where_risk_class(query, risk_classes) when is_list(risk_classes),
+    do: where(query, [job], job.risk_class in ^risk_classes)
 
   defp lease_or_refuse!(%Job{} = job, agent, allowed, now) do
     if Job.capability_key(job) in allowed do
@@ -396,6 +431,7 @@ defmodule Renga.Jobs do
           state: "leased",
           attempts: job.attempts + 1,
           lease_token_hash: hash_token(token),
+          report_token_hash: hash_token(token),
           leased_at: now,
           lease_expires_at: lease_expiry(now),
           started_at: nil
@@ -427,50 +463,125 @@ defmodule Renga.Jobs do
   capability; `failed` payloads carry a `"reason"`; `cancelled` is accepted
   only after cancellation was requested. Agent-supplied payloads count toward
   the job's output limit.
+
+  ## Options
+
+    * `:sequence` - the agent's number for this report within the current
+      attempt, a positive integer that grows with each report. A report whose
+      sequence was already recorded by the same agent in the same attempt is
+      a retry: it returns the job as it is now without recording anything,
+      even after the job finished and the lease was released, so a lost
+      response to a final report never turns into a second outcome. Reusing
+      a sequence for a different report type is `:sequence_conflict`, and a
+      new report numbered below one already recorded is `:stale_sequence`.
   """
+  def report(scope, agent, job_id, token, type, payload, opts \\ [])
+
   def report(
         %Scope{organization_id: organization_id},
         %Agent{} = agent,
         job_id,
         token,
         type,
-        payload
+        payload,
+        opts
       )
       when type in @agent_report_types and is_map(payload) do
-    Repo.transaction(fn ->
-      job = lock_job!(organization_id, job_id)
-      now = Renga.Time.utc_now_ms()
+    sequence = Keyword.get(opts, :sequence)
 
-      unless lease_held?(job, agent, token, now), do: Repo.rollback(:lease_not_held)
-
-      payload = stringify(payload)
-      {changes, payload} = report_changes!(job, type, payload, now)
-      payload_bytes = payload_bytes(payload)
-
-      if payload_bytes > @max_event_payload_bytes,
-        do: Repo.rollback(:output_limit_exceeded)
-
-      output_bytes = job.output_bytes + payload_bytes
-
-      if output_bytes > report_output_limit(job, type),
-        do: Repo.rollback(:output_limit_exceeded)
-
-      changes =
-        changes
-        |> Map.put(:output_bytes, output_bytes)
-        |> Map.put_new(:lease_expires_at, lease_expiry(now))
-
-      apply!(job, changes, [{type, {:agent, agent.id}, payload}], now)
-    end)
+    if valid_report_sequence?(sequence) do
+      Repo.transaction(fn ->
+        organization_id
+        |> lock_job!(job_id)
+        |> report!(agent, token, type, payload, sequence)
+      end)
+    else
+      {:error, :invalid_report}
+    end
   end
 
-  def report(_scope, _agent, _job_id, _token, _type, _payload), do: {:error, :invalid_report}
+  def report(_scope, _agent, _job_id, _token, _type, _payload, _opts),
+    do: {:error, :invalid_report}
+
+  defp report!(%Job{} = job, agent, token, type, payload, sequence) do
+    case delivered_report(job, agent, sequence) do
+      nil -> record_report!(job, agent, token, type, payload, sequence)
+      %JobEvent{} = event -> replay_report!(job, agent, token, type, event)
+    end
+  end
+
+  defp valid_report_sequence?(nil), do: true
+
+  defp valid_report_sequence?(sequence),
+    do: is_integer(sequence) and sequence in 1..@max_report_sequence
+
+  defp replay_report!(%Job{} = job, %Agent{} = agent, token, type, %JobEvent{} = event) do
+    unless report_token_matches?(job, agent, token), do: Repo.rollback(:lease_not_held)
+
+    if event.type == type, do: job, else: Repo.rollback(:sequence_conflict)
+  end
+
+  # The event an earlier delivery of this report produced, if any. Scoped to
+  # the job's current attempt and the reporting agent, so a sequence from a
+  # lease that was lost and re-leased never matches.
+  defp delivered_report(_job, _agent, nil), do: nil
+
+  defp delivered_report(%Job{} = job, %Agent{} = agent, sequence) do
+    JobEvent
+    |> where([event], event.job_id == ^job.id and event.attempt == ^job.attempts)
+    |> where([event], event.actor_type == "agent" and event.actor_id == ^agent.id)
+    |> where([event], event.report_sequence == ^sequence)
+    |> Repo.one()
+  end
+
+  defp record_report!(%Job{} = job, %Agent{} = agent, token, type, payload, sequence) do
+    now = Renga.Time.utc_now_ms()
+
+    unless lease_held?(job, agent, token, now), do: Repo.rollback(:lease_not_held)
+    if stale_sequence?(job, sequence), do: Repo.rollback(:stale_sequence)
+
+    payload = stringify(payload)
+    {changes, payload} = report_changes!(job, type, payload, now)
+    payload_bytes = payload_bytes(payload)
+
+    if payload_bytes > @max_event_payload_bytes,
+      do: Repo.rollback(:output_limit_exceeded)
+
+    output_bytes = job.output_bytes + payload_bytes
+
+    if output_bytes > report_output_limit(job, type),
+      do: Repo.rollback(:output_limit_exceeded)
+
+    changes =
+      changes
+      |> Map.put(:output_bytes, output_bytes)
+      |> Map.put_new(:lease_expires_at, lease_expiry(now))
+
+    apply!(job, changes, [{type, {:agent, agent.id}, payload, sequence}], now)
+  end
+
+  defp stale_sequence?(_job, nil), do: false
+
+  defp stale_sequence?(%Job{} = job, sequence) do
+    JobEvent
+    |> where([event], event.job_id == ^job.id and event.attempt == ^job.attempts)
+    |> where([event], event.report_sequence >= ^sequence)
+    |> Repo.exists?()
+  end
 
   defp lease_held?(%Job{} = job, %Agent{} = agent, token, now) do
     job.state in Job.leased_states() and job.agent_id == agent.id and is_binary(token) and
       DateTime.compare(job.lease_expires_at, now) == :gt and
       Plug.Crypto.secure_compare(hash_token(token), job.lease_token_hash)
   end
+
+  defp report_token_matches?(%Job{} = job, %Agent{} = agent, token)
+       when is_binary(token) and is_binary(job.report_token_hash) do
+    job.agent_id == agent.id and
+      Plug.Crypto.secure_compare(hash_token(token), job.report_token_hash)
+  end
+
+  defp report_token_matches?(_job, _agent, _token), do: false
 
   defp report_changes!(%Job{state: "leased"}, "started", payload, now),
     do: {%{state: "running", started_at: now}, payload}
@@ -646,7 +757,13 @@ defmodule Renga.Jobs do
       end
 
     changes =
-      %{state: next, lease_token_hash: nil, leased_at: nil, lease_expires_at: nil}
+      %{
+        state: next,
+        lease_token_hash: nil,
+        report_token_hash: nil,
+        leased_at: nil,
+        lease_expires_at: nil
+      }
       |> Map.merge(if next == "queued", do: %{started_at: nil}, else: %{})
       |> Map.merge(if next in Job.finished_states(), do: %{finished_at: now}, else: %{})
 
@@ -794,7 +911,8 @@ defmodule Renga.Jobs do
     entries =
       events
       |> Enum.with_index(job.last_sequence + 1)
-      |> Enum.map(fn {{type, actor, payload}, sequence} ->
+      |> Enum.map(fn {event, sequence} ->
+        {type, actor, payload, report_sequence} = event_parts(event)
         {actor_type, actor_id} = actor_columns(actor)
 
         %{
@@ -807,6 +925,7 @@ defmodule Renga.Jobs do
           actor_type: actor_type,
           actor_id: actor_id,
           payload: payload,
+          report_sequence: report_sequence,
           inserted_at: now
         }
       end)
@@ -819,6 +938,9 @@ defmodule Renga.Jobs do
     {_count, nil} = Repo.insert_all(JobEvent, entries)
     job
   end
+
+  defp event_parts({type, actor, payload}), do: {type, actor, payload, nil}
+  defp event_parts({_type, _actor, _payload, _report_sequence} = event), do: event
 
   defp actor_columns({:user, user_id}), do: {"user", user_id}
   defp actor_columns({:agent, agent_id}), do: {"agent", agent_id}

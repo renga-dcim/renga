@@ -31,6 +31,8 @@ defmodule RengaWeb.Router do
     pipe_through [:api, :intake_api]
 
     post "/agent/checkins", AgentController, :check_in
+    post "/agent/jobs/lease", JobController, :lease
+    post "/agent/jobs/:id/events", JobController, :create_event
     post "/observations", ObservationController, :create
   end
 

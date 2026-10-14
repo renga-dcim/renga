@@ -36,6 +36,7 @@ defmodule Renga.Jobs.Job do
     field :max_attempts, :integer
     field :not_after, :utc_datetime_usec
     field :lease_token_hash, :binary, redact: true
+    field :report_token_hash, :binary, redact: true
     field :leased_at, :utc_datetime_usec
     field :lease_expires_at, :utc_datetime_usec
     field :started_at, :utc_datetime_usec
