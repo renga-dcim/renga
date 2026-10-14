@@ -1035,4 +1035,26 @@ mod tests {
         assert!(!daemon.cancelled());
         assert!(failure.is_cancelled());
     }
+
+    #[test]
+    fn operation_deadline_during_backoff_prevents_the_next_attempt() {
+        let operation =
+            Cancellation::with_deadline(std::time::Instant::now() + Duration::from_millis(10));
+        let mut calls = 0;
+
+        let failure = retry::<()>(
+            3,
+            Duration::ZERO,
+            || {
+                calls += 1;
+                Err(error(true))
+            },
+            thread::sleep,
+            || operation.cancelled(),
+        )
+        .unwrap_err();
+
+        assert_eq!(calls, 1);
+        assert!(failure.is_cancelled());
+    }
 }

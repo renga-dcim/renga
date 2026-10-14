@@ -255,7 +255,9 @@ impl<'a, A: JobApi> Worker<'a, A> {
             .timeout()
             .min(Duration::from_millis(job.timeout_ms.max(1)));
         let deadline = Instant::now() + timeout;
-        let cancellation = Cancellation::default();
+        // Capabilities observe the deadline themselves, even while this
+        // supervisor is blocked renewing the lease.
+        let cancellation = Cancellation::with_deadline(deadline);
         let (sender, receiver) = mpsc::channel();
         let runner = self
             .policy_generation

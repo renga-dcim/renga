@@ -656,10 +656,17 @@ fn reload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use renga_agent::{
+        jobs::{inventory_collect::InventoryCollect, worker::JobApi},
+        payload::{JobReport, LeasedJob, ReportAck, ReportType},
+        transport::TransportError,
+    };
+    use serde_json::json;
     use std::{
         cell::RefCell,
         io::{self, BufRead, BufReader, Read, Write},
         net::TcpListener,
+        sync::mpsc,
     };
 
     /// Answers observation posts with `statuses` in order and returns each request body.
@@ -717,6 +724,35 @@ mod tests {
             max_retry_attempts: 1,
             labels: BTreeMap::new(),
             jobs: Default::default(),
+        }
+    }
+
+    struct SlowHeartbeatApi {
+        lease: Mutex<Option<LeasedJob>>,
+        reports: Mutex<Vec<ReportType>>,
+        progress_started: Mutex<Option<mpsc::Sender<()>>>,
+    }
+
+    impl JobApi for SlowHeartbeatApi {
+        fn lease(&self, _: &[String], _: u32) -> Result<Vec<LeasedJob>, TransportError> {
+            Ok(self.lease.lock().unwrap().take().into_iter().collect())
+        }
+
+        fn report(
+            &self,
+            _: uuid::Uuid,
+            report: &JobReport<'_>,
+        ) -> Result<ReportAck, TransportError> {
+            self.reports.lock().unwrap().push(report.kind);
+            if report.kind == ReportType::Progress {
+                if let Some(started) = self.progress_started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Ok(ReportAck {
+                cancel_requested: false,
+            })
         }
     }
 
@@ -781,6 +817,79 @@ mod tests {
         assert!(error.contains("cancelled"));
         drop(held);
         worker.join().unwrap();
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn job_deadline_stops_queue_wait_while_heartbeat_is_blocked() {
+        let state = std::env::temp_dir().join(format!("renga-deadline-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let held = lock(&queue);
+        let client = stub_client("http://127.0.0.1:9");
+        let observation_id = uuid::Uuid::new_v4();
+        let capability_queue = Arc::clone(&queue);
+        let capability_client = client.clone();
+        let capability = InventoryCollect::new(Box::new(move |cancellation| {
+            deliver_observation(
+                &capability_client,
+                cancellation,
+                &capability_queue,
+                observation_id,
+                br#"{"observation_id":"must-not-be-queued"}"#,
+            )
+            .map_err(|error| error.to_string())
+        }));
+        let catalog = Catalog::new(vec![Arc::new(capability)]);
+        let (progress_started, progress) = mpsc::channel();
+        let api = SlowHeartbeatApi {
+            lease: Mutex::new(Some(LeasedJob {
+                id: uuid::Uuid::new_v4(),
+                capability: "inventory.collect@1".into(),
+                parameters: json!({}),
+                attempt: 1,
+                lease_token: "token".into(),
+                lease_expires_at: chrono::Utc::now(),
+                timeout_ms: 60,
+                output_limit_bytes: 65_536,
+            })),
+            reports: Mutex::new(Vec::new()),
+            progress_started: Mutex::new(Some(progress_started)),
+        };
+        let stopped = Cancellation::default();
+        let policy = JobPolicy::default();
+        let generation = PolicyGeneration::default();
+
+        thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let mut worker = Worker::new(
+                    &api,
+                    &catalog,
+                    &policy,
+                    &state,
+                    &stopped,
+                    &generation,
+                    generation.current(),
+                );
+                worker.heartbeat = Duration::from_millis(10);
+                worker.run_pass().unwrap();
+            });
+            progress
+                .recv_timeout(Duration::from_secs(1))
+                .expect("worker should begin its heartbeat while inventory waits");
+            thread::sleep(Duration::from_millis(70));
+            drop(held);
+            worker.join().unwrap();
+        });
+
+        assert_eq!(
+            *api.reports.lock().unwrap(),
+            [
+                ReportType::Started,
+                ReportType::Progress,
+                ReportType::Failed
+            ]
+        );
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
     }
