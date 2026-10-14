@@ -3,7 +3,10 @@
 use crate::{
     cancellation::Cancellation,
     config::{Config, DELIVERY_BUDGET},
-    payload::{CheckIn, Observation, MAX_OBSERVATION_BYTES},
+    payload::{
+        CheckIn, CheckInAck, JobReport, LeaseRequest, LeaseResponse, LeasedJob, Observation,
+        ReportAck, MAX_OBSERVATION_BYTES,
+    },
 };
 use reqwest::{
     blocking::{Client, Response},
@@ -11,14 +14,18 @@ use reqwest::{
     redirect::Policy,
     StatusCode, Url,
 };
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use std::{fmt, io::Read, sync::Arc, thread, time::Duration};
 
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
+const JOB_LEASE_PATH: &str = "/api/v1/agent/jobs/lease";
 const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
 const BACKOFF_SLICE: Duration = Duration::from_millis(25);
+/// Ten leased jobs with their parameters fit well inside this; anything
+/// larger is not a response this agent understands.
+const MAX_RESPONSE_BODY: u64 = 1024 * 1024;
 
 /// How a failed delivery should be treated by whoever holds the payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,11 +44,21 @@ pub enum FailureKind {
 pub struct TransportError {
     message: String,
     kind: FailureKind,
+    status: Option<StatusCode>,
 }
 
 impl TransportError {
     pub(crate) fn new(message: String, kind: FailureKind) -> Self {
-        Self { message, kind }
+        Self {
+            message,
+            kind,
+            status: None,
+        }
+    }
+
+    /// The HTTP status of a response the server sent, if it sent one.
+    pub fn status(&self) -> Option<StatusCode> {
+        self.status
     }
 
     fn cancelled() -> Self {
@@ -72,8 +89,10 @@ impl std::error::Error for TransportError {}
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
+    base_url: Url,
     checkin_url: Url,
     observation_url: Url,
+    lease_url: Url,
     authorization: HeaderValue,
     installation_id: HeaderValue,
     attempts: u32,
@@ -115,6 +134,7 @@ impl HttpClient {
         }
         let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
+        let lease_url = endpoint_url(&base_url, JOB_LEASE_PATH)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.intake_api_key))
             .map_err(|_| {
                 TransportError::new("invalid intake API key".into(), FailureKind::Permanent)
@@ -153,8 +173,10 @@ impl HttpClient {
             })?;
         Ok(Self {
             client,
+            base_url,
             checkin_url,
             observation_url,
+            lease_url,
             authorization,
             installation_id,
             attempts: config.max_retry_attempts,
@@ -162,8 +184,39 @@ impl HttpClient {
             cancellation,
         })
     }
-    pub fn post_checkin(&self, value: &CheckIn) -> Result<(), TransportError> {
-        self.post(self.checkin_url.clone(), value)
+    /// Posts a check-in. A body the agent cannot read still means the
+    /// check-in was accepted, so it yields an empty acknowledgement.
+    pub fn post_checkin(&self, value: &CheckIn) -> Result<CheckInAck, TransportError> {
+        let body = self.post_reading(self.checkin_url.clone(), value)?;
+        Ok(serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    /// Leases up to `limit` queued jobs for the given `name@version` keys.
+    pub fn lease_jobs(
+        &self,
+        capabilities: &[String],
+        limit: u32,
+    ) -> Result<Vec<LeasedJob>, TransportError> {
+        let request = LeaseRequest {
+            capabilities,
+            limit,
+        };
+        let response: LeaseResponse = self.post_json(self.lease_url.clone(), &request)?;
+        Ok(response.jobs)
+    }
+
+    /// Posts one numbered report on a leased job. Retries resend the same
+    /// sequence, which Renga records once.
+    pub fn post_job_report(
+        &self,
+        job_id: uuid::Uuid,
+        report: &JobReport<'_>,
+    ) -> Result<ReportAck, TransportError> {
+        let url = endpoint_url(
+            &self.base_url,
+            &format!("/api/v1/agent/jobs/{job_id}/events"),
+        )?;
+        self.post_json(url, report)
     }
     pub fn post_observation(&self, value: &Observation) -> Result<(), TransportError> {
         self.post_encoded_observation(&encode_observation(value)?)
@@ -191,7 +244,22 @@ impl HttpClient {
             &self.cancellation,
         )
     }
-    fn post<T: Serialize>(&self, url: Url, value: &T) -> Result<(), TransportError> {
+    fn post_json<T: Serialize, R: DeserializeOwned>(
+        &self,
+        url: Url,
+        value: &T,
+    ) -> Result<R, TransportError> {
+        let body = self.post_reading(url, value)?;
+        serde_json::from_slice(&body).map_err(|error| {
+            TransportError::new(
+                format!("cannot parse server response: {error}"),
+                FailureKind::Permanent,
+            )
+        })
+    }
+
+    /// Posts JSON and returns the successful response's body.
+    fn post_reading<T: Serialize>(&self, url: Url, value: &T) -> Result<Vec<u8>, TransportError> {
         retry(
             self.attempts,
             self.request_timeout,
@@ -204,7 +272,7 @@ impl HttpClient {
                     .json(value)
                     .send()
                     .map_err(request_error)?;
-                response_result(response)
+                response_body(response)
             },
             thread::sleep,
             &self.cancellation,
@@ -255,11 +323,46 @@ fn response_result(mut response: Response) -> Result<(), TransportError> {
     if status.is_success() {
         return Ok(());
     }
-    let excerpt = bounded_error_excerpt(&mut response);
-    Err(TransportError::new(
-        format!("server returned {status}; response excerpt: {excerpt:?}"),
-        failure_kind(status, &excerpt),
-    ))
+    Err(status_error(status, &mut response))
+}
+
+fn response_body(mut response: Response) -> Result<Vec<u8>, TransportError> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_error(status, &mut response));
+    }
+    read_bounded(&mut response, MAX_RESPONSE_BODY)
+}
+
+fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, TransportError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            TransportError::new(
+                format!("cannot read server response: {error}"),
+                FailureKind::Transient,
+            )
+        })?;
+    if bytes.len() as u64 > limit {
+        return Err(TransportError::new(
+            format!("server response exceeds {limit} bytes"),
+            FailureKind::Permanent,
+        ));
+    }
+    Ok(bytes)
+}
+
+fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
+    let excerpt = bounded_error_excerpt(response);
+    TransportError {
+        status: Some(status),
+        ..TransportError::new(
+            format!("server returned {status}; response excerpt: {excerpt:?}"),
+            failure_kind(status, &excerpt),
+        )
+    }
 }
 
 fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
@@ -447,6 +550,121 @@ mod tests {
     fn uses_the_server_api_routes() {
         assert_eq!(CHECKIN_PATH, "/api/v1/agent/checkins");
         assert_eq!(OBSERVATION_PATH, "/api/v1/observations");
+        assert_eq!(JOB_LEASE_PATH, "/api/v1/agent/jobs/lease");
+    }
+
+    #[test]
+    fn response_bodies_are_bounded() {
+        let mut fits = std::io::Cursor::new(vec![b'x'; 8]);
+        assert_eq!(read_bounded(&mut fits, 8).unwrap().len(), 8);
+
+        let mut oversized = std::io::Cursor::new(vec![b'x'; 9]);
+        let error = read_bounded(&mut oversized, 8).unwrap_err();
+        assert_eq!(error.kind(), FailureKind::Permanent);
+    }
+
+    /// Answers one request with `status` and `body`, returning the request.
+    fn answer_once(status: u16, body: &'static str) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some((head, rest)) = text.split_once("\r\n\r\n") {
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if rest.len() >= length {
+                        break;
+                    }
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (origin, server)
+    }
+
+    fn insecure_client(origin: &str) -> HttpClient {
+        let mut config = config(origin, "token");
+        config.allow_insecure_http = true;
+        config.request_timeout = Duration::from_secs(5);
+        HttpClient::new(&config, Cancellation::default()).unwrap()
+    }
+
+    #[test]
+    fn checkin_returns_the_jobs_waiting_hint_and_tolerates_older_servers() {
+        let (origin, server) = answer_once(202, r#"{"status":"accepted","jobs_waiting":true}"#);
+        let ack = insecure_client(&origin)
+            .post_checkin(&CheckIn::new(vec!["inventory.collect@1".into()], None))
+            .unwrap();
+        assert_eq!(ack.jobs_waiting, Some(true));
+        assert!(server.join().unwrap().contains("inventory.collect@1"));
+
+        let (origin, server) = answer_once(202, "");
+        let ack = insecure_client(&origin)
+            .post_checkin(&CheckIn::new(vec![], None))
+            .unwrap();
+        assert_eq!(ack.jobs_waiting, None);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn leases_jobs_and_posts_reports_to_the_job_routes() {
+        let (origin, server) = answer_once(
+            200,
+            r#"{"jobs":[{"id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"inventory.collect@1","parameters":{},"attempt":1,"lease_token":"t","lease_expires_at":"2026-10-14T12:00:00Z","not_after":null,"timeout_ms":1000,"output_limit_bytes":65536}]}"#,
+        );
+        let jobs = insecure_client(&origin)
+            .lease_jobs(&["inventory.collect@1".into()], 1)
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /api/v1/agent/jobs/lease "));
+        assert!(request.contains(r#"{"capabilities":["inventory.collect@1"],"limit":1}"#));
+
+        let payload = json!({});
+        let report = JobReport {
+            lease_token: "t",
+            sequence: 1,
+            kind: crate::payload::ReportType::Started,
+            payload: &payload,
+        };
+        let (origin, server) = answer_once(200, r#"{"status":"accepted","cancel_requested":true}"#);
+        let ack = insecure_client(&origin)
+            .post_job_report(jobs[0].id, &report)
+            .unwrap();
+        assert!(ack.cancel_requested);
+        assert!(server
+            .join()
+            .unwrap()
+            .starts_with("POST /api/v1/agent/jobs/67e55044-10b1-426f-9247-bb680e5fe0c8/events "));
+
+        // A conflict tells the worker to stop reporting on the job.
+        let (origin, server) = answer_once(
+            409,
+            r#"{"status":"rejected","errors":[{"path":"lease_token","message":"does not hold the job's lease"}]}"#,
+        );
+        let error = insecure_client(&origin)
+            .post_job_report(jobs[0].id, &report)
+            .unwrap_err();
+        assert_eq!(error.status(), Some(StatusCode::CONFLICT));
+        server.join().unwrap();
     }
 
     #[test]
@@ -601,7 +819,7 @@ mod tests {
         config.allow_insecure_http = true;
         let client = HttpClient::new(&config, Cancellation::default()).unwrap();
         let error = client
-            .post(client.checkin_url.clone(), &serde_json::json!({}))
+            .post_reading(client.checkin_url.clone(), &serde_json::json!({}))
             .unwrap_err();
 
         assert!(error.to_string().contains("302 Found"));

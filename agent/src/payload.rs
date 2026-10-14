@@ -2,9 +2,9 @@
 
 use crate::queue::QueueHealth;
 use chrono::{DateTime, Utc};
-use serde::{ser::SerializeMap, Serialize, Serializer};
+use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use serde_json::Value;
-use std::{collections::BTreeMap, time::SystemTime};
+use std::{collections::BTreeMap, fmt, time::SystemTime};
 use uuid::Uuid;
 
 /// Phoenix's configured maximum encoded request-body size for observations.
@@ -205,6 +205,97 @@ impl QueueReport {
     }
 }
 
+/// What a check-in response tells the agent beyond acceptance. Missing fields
+/// mean an older server, so every field is optional.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckInAck {
+    /// `true` when Renga holds queued jobs for this installation (RFD 9).
+    #[serde(default)]
+    pub jobs_waiting: Option<bool>,
+}
+
+/// Asks Renga to lease queued jobs for the capabilities the agent runs now.
+#[derive(Debug, Serialize)]
+pub struct LeaseRequest<'a> {
+    pub capabilities: &'a [String],
+    pub limit: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LeaseResponse {
+    pub jobs: Vec<LeasedJob>,
+}
+
+/// A job Renga leased to this agent. Matches `RengaWeb.Api.V1.JobController`.
+#[derive(Clone, Deserialize)]
+pub struct LeasedJob {
+    pub id: Uuid,
+    /// The `name@version` key of the capability to run.
+    pub capability: String,
+    #[serde(default)]
+    pub parameters: Value,
+    /// Counts leases of this job, so a redelivery has a higher attempt.
+    pub attempt: u32,
+    /// Proves this agent holds the lease on every report.
+    pub lease_token: String,
+    pub lease_expires_at: DateTime<Utc>,
+    pub timeout_ms: u64,
+    pub output_limit_bytes: u64,
+}
+
+impl fmt::Debug for LeasedJob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LeasedJob")
+            .field("id", &self.id)
+            .field("capability", &self.capability)
+            .field("attempt", &self.attempt)
+            .field("lease_token", &"[REDACTED]")
+            .field("lease_expires_at", &self.lease_expires_at)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("output_limit_bytes", &self.output_limit_bytes)
+            .finish()
+    }
+}
+
+/// A report type the agent may post on a job it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportType {
+    Started,
+    Progress,
+    Output,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl ReportType {
+    /// Whether the report ends the job, releasing its lease.
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// One numbered report on a leased job. A retried post carries the same
+/// sequence, so Renga records it once.
+#[derive(Serialize)]
+pub struct JobReport<'a> {
+    pub lease_token: &'a str,
+    pub sequence: u64,
+    #[serde(rename = "type")]
+    pub kind: ReportType,
+    pub payload: &'a Value,
+}
+
+/// Renga's answer to an accepted report.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReportAck {
+    /// `true` once someone asked to cancel the job; the agent stops and
+    /// reports `cancelled`.
+    #[serde(default)]
+    pub cancel_requested: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +420,44 @@ mod tests {
         };
         let value = serde_json::to_value(QueueReport::new(&empty, queued_at)).unwrap();
         assert_eq!(value["oldest_age_seconds"], Value::Null);
+    }
+
+    #[test]
+    fn job_contract_round_trips_and_redacts_the_lease_token() {
+        let leased: LeaseResponse = serde_json::from_value(serde_json::json!({
+            "jobs": [{
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "capability": "inventory.collect@1",
+                "parameters": {},
+                "attempt": 2,
+                "lease_token": "secret-token",
+                "lease_expires_at": "2026-10-14T12:00:00.000Z",
+                "not_after": "2026-10-14T13:00:00.000Z",
+                "timeout_ms": 300000,
+                "output_limit_bytes": 65536
+            }]
+        }))
+        .unwrap();
+        let job = &leased.jobs[0];
+        assert_eq!(job.capability, "inventory.collect@1");
+        assert_eq!(job.attempt, 2);
+        assert!(!format!("{job:?}").contains("secret-token"));
+
+        let payload = serde_json::json!({"result": {"observation_id": "x"}});
+        let report = serde_json::to_value(JobReport {
+            lease_token: &job.lease_token,
+            sequence: 3,
+            kind: ReportType::Succeeded,
+            payload: &payload,
+        })
+        .unwrap();
+        assert_eq!(report["type"], "succeeded");
+        assert_eq!(report["sequence"], 3);
+
+        let ack: CheckInAck = serde_json::from_str(r#"{"status":"accepted"}"#).unwrap();
+        assert_eq!(ack.jobs_waiting, None);
+        let ack: ReportAck =
+            serde_json::from_str(r#"{"status":"accepted","cancel_requested":true}"#).unwrap();
+        assert!(ack.cancel_requested);
     }
 }
