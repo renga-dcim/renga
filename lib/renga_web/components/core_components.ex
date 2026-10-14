@@ -613,6 +613,7 @@ defmodule RengaWeb.CoreComponents do
               still get the 44px minimum. --%>
         <.link
           :if={index == 0 && @row_navigate}
+          id={row_link_id(@row_id, @row)}
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
@@ -672,6 +673,15 @@ defmodule RengaWeb.CoreComponents do
   defp row_command(nil, nil, _row), do: nil
   defp row_command(row_click, nil, row), do: row_click.(row)
   defp row_command(_row_click, row_navigate, row), do: JS.navigate(row_navigate.(row))
+
+  defp row_link_id(nil, _row), do: nil
+
+  defp row_link_id(row_id, row) do
+    case row_id.(row) do
+      nil -> nil
+      id -> "#{id}-link"
+    end
+  end
 
   @doc """
   Renders a [Heroicon](https://heroicons.com).

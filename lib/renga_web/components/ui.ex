@@ -495,6 +495,11 @@ defmodule RengaWeb.UI do
   attr :description, :string, default: nil
   attr :show, :boolean, default: false
   attr :on_cancel, JS, default: %JS{}
+
+  attr :return_focus, :string,
+    default: nil,
+    doc: "selector to focus after a route-driven panel closes"
+
   slot :inner_block, required: true
   slot :footer
 
@@ -508,6 +513,7 @@ defmodule RengaWeb.UI do
       data-show={overlay_show(@id)}
       data-hide={overlay_hide(@id)}
       data-cancel={@on_cancel}
+      data-return-focus={@return_focus}
       class="relative z-50 hidden"
     >
       <div id={"#{@id}-backdrop"} class="fixed inset-0 hidden bg-fg/25" aria-hidden="true" />

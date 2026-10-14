@@ -86,6 +86,28 @@ defmodule RengaWeb.Browser.JobsTest do
     )
   end
 
+  test "the job panel opens from the keyboard and restores focus when closed", %{
+    conn: conn,
+    job: job
+  } do
+    link = "#jobs-#{job.id}-link"
+
+    conn
+    |> visit("/activity/jobs")
+    |> assert_has("body .phx-connected")
+    |> evaluate("document.querySelector(#{Jason.encode!(link)}).focus()")
+    |> assert_has("#{link}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#job-panel [role=dialog]")
+    |> evaluate(
+      "document.querySelector('#job-panel [role=dialog]').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> press("#job-panel [role=dialog]", "Escape")
+    |> refute_has("#job-panel [role=dialog]")
+    |> assert_has("#{link}:focus")
+  end
+
   test "a resource's collection banner fits a phone", %{conn: conn, resource: resource} do
     conn
     |> visit("/inventory/#{resource.id}")

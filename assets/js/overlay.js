@@ -5,11 +5,16 @@ export const Overlay = {
   mounted() {
     this.onOpen = () => {
       if (openOverlays.includes(this)) return
-      this.opener = document.activeElement
+      this.opener = document.querySelector(this.el.dataset.returnFocus) || document.activeElement
+      this.openerId = this.opener?.id
       openOverlays.push(this)
       this.el.inert = false
       this.liveSocket.execJS(this.el, this.el.dataset.show)
       document.body.classList.add("overflow-hidden")
+    }
+    this.restoreOpener = () => {
+      const opener = this.openerId ? document.getElementById(this.openerId) : this.opener
+      if (opener?.isConnected) opener.focus()
     }
     this.onClose = () => {
       const index = openOverlays.indexOf(this)
@@ -19,7 +24,9 @@ export const Overlay = {
       this.el.inert = true
       this.liveSocket.execJS(this.el, this.el.dataset.hide)
       if (openOverlays.length === 0) document.body.classList.remove("overflow-hidden")
-      if (active && this.opener?.isConnected) this.opener.focus()
+      if (active) {
+        this.restoreOpener()
+      }
     }
     this.onCancel = () => {
       if (openOverlays.at(-1) !== this) return
@@ -46,6 +53,9 @@ export const Overlay = {
 
   destroyed() {
     this.onClose()
+    // A route-driven panel can be removed by the same patch that replaces its
+    // opener. Wait until that DOM update ends, then focus the keyed replacement.
+    window.requestAnimationFrame(this.restoreOpener)
     this.el.removeEventListener("renga:overlay-open", this.onOpen)
     this.el.removeEventListener("renga:overlay-close", this.onClose)
     this.el.removeEventListener("renga:overlay-cancel", this.onCancel)

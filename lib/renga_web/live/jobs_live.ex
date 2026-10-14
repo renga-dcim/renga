@@ -327,6 +327,7 @@ defmodule RengaWeb.JobsLive do
       title={Jobs.title(@job)}
       show
       on_cancel={@close}
+      return_focus={"#jobs-#{@job.id}-link"}
     >
       <div class="space-y-6">
         <p :if={@job.resource} id="job-panel-target" class="-mt-2 text-sm text-fg-muted">
