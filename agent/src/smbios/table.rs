@@ -48,6 +48,9 @@ const POWER_SUPPLY: u8 = 39;
 const END_OF_TABLE: u8 = 127;
 /// The fixed part of a type 39 record ends before its optional probe handles.
 const POWER_SUPPLY_MIN_LENGTH: usize = 0x10;
+/// Agent strings are accepted by the API up to 255 characters. A byte limit is
+/// deliberately stricter for UTF-8 and also bounds copies from firmware tables.
+const MAX_STRING_BYTES: usize = 255;
 
 /// Reads the SMBIOS version from a 2.x (`_SM_`), 3.x (`_SM3_`), or legacy (`_DMI_`)
 /// entry point.
@@ -58,9 +61,17 @@ pub fn parse_version(entry_point: &[u8]) -> Option<Version> {
             minor: *entry_point.get(0x08)?,
         })
     } else if entry_point.starts_with(b"_SM_") {
-        Some(Version {
+        let version = Version {
             major: *entry_point.get(0x06)?,
             minor: *entry_point.get(0x07)?,
+        };
+        // Match Linux's dmi_scan fixups for firmware versions known to be
+        // encoded incorrectly. The kernel exports the raw entry point before
+        // applying these corrections, so consumers must repeat them.
+        Some(match (version.major, version.minor) {
+            (0x02, 0x1F | 0x21) => Version { major: 2, minor: 3 },
+            (0x02, 0x33) => Version { major: 2, minor: 6 },
+            _ => version,
         })
     } else if entry_point.starts_with(b"_DMI_") {
         let bcd = *entry_point.get(0x0E)?;
@@ -114,8 +125,11 @@ impl Record<'_> {
     fn string(&self, offset: usize) -> Option<String> {
         let index = usize::from(self.byte(offset)?);
         let raw = self.strings.get(index.checked_sub(1)?)?;
-        let text = String::from_utf8_lossy(raw);
-        crate::collectors::normalize_value(&text)
+        if raw.len() > MAX_STRING_BYTES {
+            return None;
+        }
+        let text = std::str::from_utf8(raw).ok()?;
+        crate::collectors::normalize_value(text)
     }
 }
 
@@ -300,6 +314,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn applies_the_kernel_smbios_version_fixups() {
+        for (reported_minor, corrected_minor) in [(0x1F, 3), (0x21, 3), (0x33, 6)] {
+            let mut entry = b"_SM_".to_vec();
+            entry.extend_from_slice(&[0x00, 0x1F, 0x02, reported_minor]);
+            assert_eq!(
+                parse_version(&entry),
+                Some(Version {
+                    major: 2,
+                    minor: corrected_minor
+                })
+            );
+        }
+    }
+
+    #[test]
     fn formats_the_system_uuid_like_the_kernel_for_each_version() {
         let table = [system_record(UUID_BYTES, "SN-1"), end()].concat();
         let modern = parse(&entry_point_3(0), &table).system.unwrap();
@@ -323,12 +352,60 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn kernel_version_fixups_control_uuid_byte_order() {
+        let table = [system_record(UUID_BYTES, "SN-1"), end()].concat();
+        for (reported_minor, expected) in [
+            (0x1F, "33221100-5544-7766-8899-aabbccddeeff"),
+            (0x21, "33221100-5544-7766-8899-aabbccddeeff"),
+            (0x33, "00112233-4455-6677-8899-aabbccddeeff"),
+        ] {
+            let mut entry = b"_SM_".to_vec();
+            entry.extend_from_slice(&[0x00, 0x1F, 0x02, reported_minor]);
+            assert_eq!(
+                parse(&entry, &table).system.unwrap().uuid.as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn treats_unset_uuids_and_placeholder_serials_as_absent() {
         for uuid in [[0x00; 16], [0xFF; 16]] {
             let table = [system_record(uuid, "Default string"), end()].concat();
             let system = parse(&entry_point_3(0), &table).system.unwrap();
             assert_eq!(system, SystemInformation::default());
         }
+    }
+
+    #[test]
+    fn omits_invalid_or_oversized_firmware_strings() {
+        fn system_with_serial(serial: &[u8]) -> Vec<u8> {
+            let mut bytes = vec![1, 0x19, 0x00, 0x01, 0, 0, 0, 1];
+            bytes.extend_from_slice(&UUID_BYTES);
+            bytes.push(0x06);
+            bytes.extend_from_slice(serial);
+            bytes.extend_from_slice(&[0, 0]);
+            bytes
+        }
+
+        for serial in [b"SN-\x80".as_slice(), b"SN-\x81".as_slice()] {
+            let system = parse(&entry_point_3(0), &system_with_serial(serial))
+                .system
+                .unwrap();
+            assert_eq!(system.serial_number, None);
+        }
+        let system = parse(&entry_point_3(0), &system_with_serial(&vec![b'x'; 256]))
+            .system
+            .unwrap();
+        assert_eq!(system.serial_number, None);
+
+        let valid = parse(
+            &entry_point_3(0),
+            &system_with_serial("Sérial-1".as_bytes()),
+        )
+        .system
+        .unwrap();
+        assert_eq!(valid.serial_number.as_deref(), Some("Sérial-1"));
     }
 
     #[test]

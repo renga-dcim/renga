@@ -26,6 +26,10 @@ use tracing::info;
 const MAX_DISK_COMPONENTS: usize = 128;
 const MAX_FILESYSTEM_COMPONENTS: usize = 512;
 const MAX_POWER_SUPPLY_COMPONENTS: usize = 32;
+/// Optional SMBIOS supplies get one quarter of the API's 256 kB observation
+/// budget. The encoded-byte cap catches JSON escaping and repeated references
+/// that a record-count cap alone cannot bound.
+const MAX_POWER_SUPPLY_COMPONENT_BYTES: usize = 64_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum VirtDetection {
@@ -339,32 +343,66 @@ fn smbios_tables(root: &Path) -> Tables {
 }
 
 fn collect_power_supplies(supplies: &[PowerSupply]) -> Vec<Component> {
-    bounded_components(
-        "smbios_power_supplies",
-        MAX_POWER_SUPPLY_COMPONENTS,
-        supplies.len(),
-        supplies.iter().map(|supply| {
-            component(
-                "power_supply",
+    let mut emitted = Vec::new();
+    for supply in supplies.iter().take(MAX_POWER_SUPPLY_COMPONENTS) {
+        emitted.push(power_supply_component(supply));
+        if encoded_components_len(&emitted) > MAX_POWER_SUPPLY_COMPONENT_BYTES {
+            emitted.pop();
+            break;
+        }
+    }
+
+    if emitted.len() < supplies.len() {
+        // Reserve room for the status inside the same byte budget. It is compact,
+        // but removing a final supply here keeps the limit exact for every input.
+        loop {
+            let status = component(
+                "collection_status",
                 [
-                    ("source", json!("smbios")),
-                    ("name", json!(supply.name)),
-                    ("location", json!(supply.location)),
-                    ("group", json!(supply.group)),
-                    ("manufacturer", json!(supply.manufacturer)),
-                    ("model", json!(supply.model)),
-                    ("serial_number", json!(supply.serial_number)),
-                    ("asset_tag", json!(supply.asset_tag)),
-                    ("revision", json!(supply.revision)),
-                    ("max_power_watts", json!(supply.max_power_watts)),
-                    ("hot_replaceable", json!(supply.hot_replaceable)),
-                    ("present", json!(supply.present)),
-                    ("unplugged", json!(supply.unplugged)),
-                    ("status", json!(supply.status)),
+                    ("collector", json!("smbios_power_supplies")),
+                    ("discovered_count", json!(supplies.len())),
+                    ("emitted_count", json!(emitted.len())),
+                    ("truncated", json!(true)),
                 ],
-            )
-        }),
+            );
+            emitted.push(status);
+            if encoded_components_len(&emitted) <= MAX_POWER_SUPPLY_COMPONENT_BYTES {
+                break;
+            }
+            emitted.pop();
+            // The fixed status fits by itself, so this must eventually terminate.
+            emitted.pop();
+        }
+    }
+    emitted
+}
+
+fn power_supply_component(supply: &PowerSupply) -> Component {
+    component(
+        "power_supply",
+        [
+            ("source", json!("smbios")),
+            ("name", json!(supply.name)),
+            ("location", json!(supply.location)),
+            ("group", json!(supply.group)),
+            ("manufacturer", json!(supply.manufacturer)),
+            ("model", json!(supply.model)),
+            ("serial_number", json!(supply.serial_number)),
+            ("asset_tag", json!(supply.asset_tag)),
+            ("revision", json!(supply.revision)),
+            ("max_power_watts", json!(supply.max_power_watts)),
+            ("hot_replaceable", json!(supply.hot_replaceable)),
+            ("present", json!(supply.present)),
+            ("unplugged", json!(supply.unplugged)),
+            ("status", json!(supply.status)),
+        ],
     )
+}
+
+fn encoded_components_len(components: &[Component]) -> usize {
+    serde_json::to_vec(components)
+        .expect("component values are JSON-serializable")
+        .len()
 }
 
 fn bounded_components(
@@ -709,6 +747,35 @@ mod tests {
         let components = collect_power_supplies(&vec![supply; MAX_POWER_SUPPLY_COMPONENTS + 1]);
         assert_eq!(components.len(), MAX_POWER_SUPPLY_COMPONENTS + 1);
         assert_eq!(components.last().unwrap().kind, "collection_status");
+    }
+
+    #[test]
+    fn bounds_power_supply_components_by_encoded_bytes() {
+        // Control characters are valid UTF-8 but expand to six-byte JSON escapes.
+        // Referencing one such firmware string from every field exercises encoded
+        // size rather than merely the number or source length of records.
+        let escaped = "\u{1}".repeat(255);
+        let supply = table::PowerSupply {
+            location: Some(escaped.clone()),
+            name: Some(escaped.clone()),
+            manufacturer: Some(escaped.clone()),
+            serial_number: Some(escaped.clone()),
+            asset_tag: Some(escaped.clone()),
+            model: Some(escaped.clone()),
+            revision: Some(escaped),
+            ..Default::default()
+        };
+        let components = collect_power_supplies(&vec![supply; MAX_POWER_SUPPLY_COMPONENTS]);
+        assert!(components.len() < MAX_POWER_SUPPLY_COMPONENTS);
+        assert_eq!(components.last().unwrap().kind, "collection_status");
+        assert!(encoded_components_len(&components) <= MAX_POWER_SUPPLY_COMPONENT_BYTES);
+
+        let root = fixture();
+        let mut resource = collect_from_with_ip(&root, Ok("")).unwrap();
+        resource.components = components;
+        let observation = crate::payload::Observation::new(resource);
+        assert!(crate::transport::encode_observation(&observation).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
