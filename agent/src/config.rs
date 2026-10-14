@@ -1,6 +1,9 @@
 //! Configuration loading without transport-specific policy.
 
-use crate::identity;
+use crate::{
+    identity,
+    jobs::{JobPolicy, Selector},
+};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -24,6 +27,8 @@ pub const DELIVERY_BUDGET: Duration = Duration::from_secs(25);
 const LABELS_MAX: usize = 32;
 const LABEL_KEY_MAX: usize = 63;
 const LABEL_VALUE_MAX: usize = 255;
+// Must match the lease endpoint's limit on advertised capabilities.
+const JOBS_ENABLED_MAX: usize = 64;
 
 /// Validated runtime configuration. The token is intentionally redacted from Debug.
 #[derive(Clone)]
@@ -41,6 +46,8 @@ pub struct Config {
     /// Operator-chosen key/value labels sent with every observation, so
     /// Renga's triage rules can match them (for example `team = "storage"`).
     pub labels: BTreeMap<String, String>,
+    /// Which compiled-in job capabilities the operator lets Renga request.
+    pub jobs: JobPolicy,
 }
 
 impl fmt::Debug for Config {
@@ -57,6 +64,7 @@ impl fmt::Debug for Config {
             .field("request_timeout", &self.request_timeout)
             .field("max_retry_attempts", &self.max_retry_attempts)
             .field("labels", &self.labels)
+            .field("jobs", &self.jobs)
             .finish()
     }
 }
@@ -84,6 +92,13 @@ struct RawConfig {
     request_timeout_seconds: Option<u64>,
     max_retry_attempts: Option<u32>,
     labels: Option<BTreeMap<String, String>>,
+    jobs: Option<RawJobs>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawJobs {
+    enabled: Option<Vec<String>>,
 }
 
 impl Config {
@@ -219,6 +234,7 @@ impl Config {
             )));
         }
         let labels = validate_labels(raw.labels.unwrap_or_default())?;
+        let jobs = job_policy(raw.jobs.unwrap_or_default())?;
         Ok(Self {
             config_path,
             renga_url,
@@ -239,6 +255,7 @@ impl Config {
             request_timeout,
             max_retry_attempts,
             labels,
+            jobs,
         })
     }
 }
@@ -264,6 +281,32 @@ fn validate_labels(
         }
     }
     Ok(labels)
+}
+
+/// Unknown capability names are accepted, so a configuration shared across
+/// agent versions does not stop older agents; they simply enable nothing.
+fn job_policy(raw: RawJobs) -> Result<JobPolicy, ConfigError> {
+    let Some(entries) = raw.enabled else {
+        return Ok(JobPolicy::default());
+    };
+    if entries.len() > JOBS_ENABLED_MAX {
+        return Err(ConfigError(format!(
+            "jobs.enabled must have at most {JOBS_ENABLED_MAX} entries"
+        )));
+    }
+    let selectors = entries
+        .iter()
+        .map(|entry| {
+            Selector::parse(entry).ok_or_else(|| {
+                ConfigError(format!(
+                    "jobs.enabled entry {entry:?} must be a capability name such as \"inventory.collect\" or a name@version key such as \"inventory.collect@1\""
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(JobPolicy {
+        enabled: Some(selectors),
+    })
 }
 
 fn valid_label_key(key: &str) -> bool {
@@ -330,6 +373,51 @@ mod tests {
                 .collect(),
         );
         assert!(from_raw(r).is_err());
+    }
+    #[test]
+    fn jobs_policy_defaults_to_unset_and_validates_entries() {
+        assert_eq!(from_raw(raw()).unwrap().jobs, JobPolicy::default());
+
+        let mut r: RawConfig = toml::from_str(
+            "renga_url='https://renga.test'\nintake_api_key='y'\n[jobs]\nenabled=['inventory.collect', 'service.restart@2']\n",
+        )
+        .unwrap();
+        r.installation_id = raw().installation_id;
+        let jobs = from_raw(r).unwrap().jobs;
+        assert_eq!(
+            jobs.enabled.unwrap(),
+            [
+                Selector::parse("inventory.collect").unwrap(),
+                Selector::parse("service.restart@2").unwrap()
+            ]
+        );
+
+        let mut r: RawConfig = toml::from_str("[jobs]\nenabled=[]\n").unwrap();
+        r.renga_url = raw().renga_url;
+        r.intake_api_key = raw().intake_api_key;
+        r.installation_id = raw().installation_id;
+        assert_eq!(from_raw(r).unwrap().jobs.enabled, Some(vec![]));
+
+        for entry in [
+            "host.inventory@0",
+            "inventory",
+            "rm -rf /",
+            "inventory.collect@x",
+        ] {
+            let mut r = raw();
+            r.jobs = Some(RawJobs {
+                enabled: Some(vec![entry.into()]),
+            });
+            assert!(from_raw(r).is_err(), "{entry:?} should be rejected");
+        }
+
+        let mut r = raw();
+        r.jobs = Some(RawJobs {
+            enabled: Some(vec!["inventory.collect".into(); 65]),
+        });
+        assert!(from_raw(r).is_err());
+
+        assert!(toml::from_str::<RawConfig>("[jobs]\ndisabled=['inventory.collect']\n").is_err());
     }
     #[test]
     fn defaults_are_sane_and_secret_is_redacted() {

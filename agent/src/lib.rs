@@ -5,6 +5,7 @@ pub mod collectors;
 pub mod command;
 pub mod config;
 pub mod identity;
+pub mod jobs;
 pub mod payload;
 pub mod queue;
 pub mod scheduler;

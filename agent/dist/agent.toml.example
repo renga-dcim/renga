@@ -26,3 +26,12 @@ max_retry_attempts = 5
 # [labels]
 # team = "storage"
 # environment = "production"
+
+# Optional job policy: which compiled-in capabilities Renga may ask this agent
+# to run on demand. Without this table, every "observe" capability (one that
+# only reads the host) is enabled. An explicit list, even an empty one, enables
+# exactly what it names: a capability name enables every version, a
+# "name@version" key enables one. Capabilities that change the host are never
+# enabled by default, and Renga cannot enable them remotely.
+# [jobs]
+# enabled = ["inventory.collect"]

@@ -3,7 +3,12 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
-    payload::{CheckIn, Observation, QueueReport},
+    jobs::{
+        inventory_collect::InventoryCollect,
+        worker::{PolicyGeneration, Worker},
+        Catalog, JobPolicy,
+    },
+    payload::{CheckIn, CheckInAck, Observation, QueueReport},
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
     transport::{encode_observation, FailureKind, HttpClient},
@@ -11,8 +16,8 @@ use renga_agent::{
 use std::{
     collections::BTreeMap,
     error::Error,
-    path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -23,6 +28,8 @@ use tracing_subscriber::EnvFilter;
 const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 /// How long an inventory waits for a queue flush already using the delivery worker.
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
+/// Queue ownership is polled so a cancelled job never waits behind a long flush.
+const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
 
 /// Queue failure degrades durability, not lease renewal or direct delivery. Only delivery
 /// work retries opening it, so filesystem recovery cannot hold up periodic check-ins.
@@ -180,13 +187,34 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             client: &client,
             stopped: &stopped,
             labels: &config.labels,
+            // A single run never leases, so it advertises no job capabilities
+            // that would leave jobs waiting for an agent that is not coming back.
+            capabilities: job_capabilities(&Catalog::default(), &config.jobs),
             queue: &queue,
             monitor: &monitor,
         };
         return aggregated_result(deliver_startup(&operations));
     }
-    if let Err(failure) = send_checkin(&client, &monitor) {
+    let checkin = send_checkin(
+        &client,
+        &monitor,
+        advertised_capabilities(&config, &client, &queue),
+    );
+    if let Err(failure) = &checkin {
         warn!(error = %failure, "startup delivery failed: check-in");
+    }
+    let mut job_worker = None;
+    let policy_generation = PolicyGeneration::default();
+    if leases_now(&checkin) {
+        spawn_job_pass(
+            &mut job_worker,
+            &client,
+            &stopped,
+            &config,
+            &queue,
+            &args.state_directory,
+            &policy_generation,
+        );
     }
     if stopped.cancelled() {
         return Ok(());
@@ -210,8 +238,24 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         for job in scheduler.due_until_cancelled(now, &stopped) {
             match job {
                 Job::CheckIn => {
-                    if let Err(failure) = send_checkin(&client, &monitor) {
+                    let checkin = send_checkin(
+                        &client,
+                        &monitor,
+                        advertised_capabilities(&config, &client, &queue),
+                    );
+                    if let Err(failure) = &checkin {
                         warn!(error = %failure, "check-in failed");
+                    }
+                    if leases_now(&checkin) {
+                        spawn_job_pass(
+                            &mut job_worker,
+                            &client,
+                            &stopped,
+                            &config,
+                            &queue,
+                            &args.state_directory,
+                            &policy_generation,
+                        );
                     }
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
                 }
@@ -259,6 +303,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         Ok((new_config, new_client)) => {
                             config = new_config;
                             client = new_client;
+                            policy_generation.advance();
                             scheduler.refresh_intervals(
                                 Instant::now(),
                                 old_checkin_interval,
@@ -288,17 +333,112 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     if let Some(worker) = delivery_worker {
         let _ = worker.handle.join();
     }
+    if let Some(worker) = job_worker {
+        let _ = worker.join();
+    }
     info!("daemon stopped");
     Ok(())
 }
 
-fn send_checkin(client: &HttpClient, monitor: &QueueMonitor) -> Result<(), Box<dyn Error>> {
+/// The job capabilities compiled into this build, bound to the current
+/// client and labels so a reload reaches the next job.
+fn job_catalog(
+    client: &HttpClient,
+    labels: &BTreeMap<String, String>,
+    queue: &Arc<Mutex<DeliveryQueue>>,
+) -> Catalog {
+    let client = client.clone();
+    let labels = labels.clone();
+    let queue = Arc::clone(queue);
+    // The collection runs through the ordinary queue, so a job's observation
+    // is delivered and deduplicated exactly like a scheduled one.
+    let collect = move |cancellation: &Cancellation| {
+        send_inventory(&client, cancellation, &labels, &queue).map_err(|error| error.to_string())
+    };
+    Catalog::new(vec![Arc::new(InventoryCollect::new(Box::new(collect)))])
+}
+
+/// What the agent reports, plus the job capabilities its policy enables. Policy
+/// is read on every check-in, so a reload withdraws a capability at once.
+fn advertised_capabilities(
+    config: &Config,
+    client: &HttpClient,
+    queue: &Arc<Mutex<DeliveryQueue>>,
+) -> Vec<String> {
+    job_capabilities(&job_catalog(client, &config.labels, queue), &config.jobs)
+}
+
+fn job_capabilities(catalog: &Catalog, policy: &JobPolicy) -> Vec<String> {
+    collectors::capabilities()
+        .into_iter()
+        .map(String::from)
+        .chain(catalog.enabled_keys(policy))
+        .collect()
+}
+
+fn send_checkin(
+    client: &HttpClient,
+    monitor: &QueueMonitor,
+    capabilities: Vec<String>,
+) -> Result<CheckInAck, Box<dyn Error>> {
     let queue = monitor
         .latest()
         .map(|health| QueueReport::new(&health, SystemTime::now()));
-    client.post_checkin(&CheckIn::new(collectors::capabilities(), queue))?;
+    let ack = client.post_checkin(&CheckIn::new(capabilities, queue))?;
     info!("check-in posted");
-    Ok(())
+    Ok(ack)
+}
+
+/// Leases when Renga says jobs are waiting. Without that answer (a failed
+/// check-in or an older server) the agent still tries once per check-in
+/// interval, so jobs never depend on the hint.
+fn leases_now(checkin: &Result<CheckInAck, Box<dyn Error>>) -> bool {
+    match checkin {
+        Ok(ack) => ack.jobs_waiting != Some(false),
+        Err(_) => true,
+    }
+}
+
+/// Starts a job pass on its own thread unless one is still running, so jobs
+/// never delay check-ins or scheduled inventory.
+fn spawn_job_pass(
+    worker: &mut Option<thread::JoinHandle<()>>,
+    client: &HttpClient,
+    stopped: &Cancellation,
+    config: &Config,
+    queue: &Arc<Mutex<DeliveryQueue>>,
+    state_directory: &Path,
+    policy_generation: &PolicyGeneration,
+) {
+    if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
+        return;
+    }
+    if let Some(previous) = worker.take() {
+        let _ = previous.join();
+    }
+    let client = client.clone();
+    let stopped = stopped.clone();
+    let policy = config.jobs.clone();
+    let catalog = job_catalog(&client, &config.labels, queue);
+    let state_directory = state_directory.to_path_buf();
+    let expected_generation = policy_generation.current();
+    let policy_generation = policy_generation.clone();
+    *worker = Some(thread::spawn(move || {
+        let worker = Worker::new(
+            &client,
+            &catalog,
+            &policy,
+            &state_directory,
+            &stopped,
+            &policy_generation,
+            expected_generation,
+        );
+        match worker.run_pass() {
+            Ok(0) => {}
+            Ok(handled) => info!(handled, "job pass finished"),
+            Err(error) => warn!(%error, "job pass failed"),
+        }
+    }));
 }
 
 fn spawn_inventory(
@@ -326,28 +466,49 @@ fn send_inventory(
     stopped: &Cancellation,
     labels: &BTreeMap<String, String>,
     queue: &Mutex<DeliveryQueue>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<uuid::Uuid, Box<dyn Error>> {
     let observation = Observation::new(collectors::collect(stopped)?).with_labels(labels);
     let observation_id = observation.observation_id;
     let body = encode_observation(&observation)?;
-    let mut delivery = lock(queue);
+    if stopped.cancelled() {
+        return Err("observation delivery cancelled".into());
+    }
+    deliver_observation(client, stopped, queue, observation_id, &body)
+}
+
+fn deliver_observation(
+    client: &HttpClient,
+    cancellation: &Cancellation,
+    queue: &Mutex<DeliveryQueue>,
+    observation_id: uuid::Uuid,
+    body: &[u8],
+) -> Result<uuid::Uuid, Box<dyn Error>> {
+    let Some(mut delivery) = lock_until_cancelled(queue, cancellation) else {
+        return Err("observation delivery cancelled".into());
+    };
+    if cancellation.cancelled() {
+        return Err("observation delivery cancelled".into());
+    }
     if let Err(failure) = delivery
         .ready()
-        .and_then(|queue| queue.enqueue(observation_id, &body, SystemTime::now()))
+        .and_then(|queue| queue.enqueue(observation_id, body, SystemTime::now()))
     {
         // Delivering without durability still beats losing this observation outright. The
         // server keeps its newest observation current, so overtaking older entries is safe.
         warn!(error = %failure, %observation_id, "cannot queue observation; delivering it directly");
-        client.post_encoded_observation(&body)?;
+        if cancellation.cancelled() {
+            return Err("observation delivery cancelled".into());
+        }
+        client.post_encoded_observation_with_cancellation(body, cancellation)?;
         info!(%observation_id, "observation posted");
-        return Ok(());
+        return Ok(observation_id);
     }
 
     let queue = delivery.ready()?;
     let mut outcome = None;
-    let drained = queue.drain(SystemTime::now(), stopped, |entry| {
-        let result = client.post_encoded_observation(entry);
-        if entry == body.as_slice() {
+    let drained = queue.drain(SystemTime::now(), cancellation, |entry| {
+        let result = client.post_encoded_observation_with_cancellation(entry, cancellation);
+        if entry == body {
             outcome = Some(result.clone());
         }
         result
@@ -356,7 +517,7 @@ fn send_inventory(
     match outcome {
         Some(Ok(())) => {
             info!(%observation_id, "observation posted");
-            Ok(())
+            Ok(observation_id)
         }
         Some(Err(error)) if error.kind() == FailureKind::PayloadRejected => Err(error.into()),
         Some(Err(error)) => {
@@ -425,6 +586,22 @@ fn lock(queue: &Mutex<DeliveryQueue>) -> MutexGuard<'_, DeliveryQueue> {
     queue.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn lock_until_cancelled<'a>(
+    queue: &'a Mutex<DeliveryQueue>,
+    cancellation: &Cancellation,
+) -> Option<MutexGuard<'a, DeliveryQueue>> {
+    loop {
+        if cancellation.cancelled() {
+            return None;
+        }
+        match queue.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => thread::sleep(QUEUE_LOCK_POLL),
+        }
+    }
+}
+
 trait Operations {
     fn checkin(&self) -> Result<(), Box<dyn Error>>;
     fn inventory(&self) -> Result<(), Box<dyn Error>>;
@@ -434,16 +611,17 @@ struct RuntimeOperations<'a> {
     client: &'a HttpClient,
     stopped: &'a Cancellation,
     labels: &'a BTreeMap<String, String>,
+    capabilities: Vec<String>,
     queue: &'a Mutex<DeliveryQueue>,
     monitor: &'a QueueMonitor,
 }
 
 impl Operations for RuntimeOperations<'_> {
     fn checkin(&self) -> Result<(), Box<dyn Error>> {
-        send_checkin(self.client, self.monitor)
+        send_checkin(self.client, self.monitor, self.capabilities.clone()).map(|_| ())
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
-        send_inventory(self.client, self.stopped, self.labels, self.queue)
+        send_inventory(self.client, self.stopped, self.labels, self.queue).map(|_| ())
     }
 }
 
@@ -478,10 +656,17 @@ fn reload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use renga_agent::{
+        jobs::{inventory_collect::InventoryCollect, worker::JobApi},
+        payload::{JobReport, LeasedJob, ReportAck, ReportType},
+        transport::TransportError,
+    };
+    use serde_json::json;
     use std::{
         cell::RefCell,
         io::{self, BufRead, BufReader, Read, Write},
         net::TcpListener,
+        sync::mpsc,
     };
 
     /// Answers observation posts with `statuses` in order and returns each request body.
@@ -522,7 +707,11 @@ mod tests {
     }
 
     fn stub_client(origin: &str) -> HttpClient {
-        let config = Config {
+        HttpClient::new(&stub_config(origin), Cancellation::default()).unwrap()
+    }
+
+    fn stub_config(origin: &str) -> Config {
+        Config {
             config_path: PathBuf::from("agent.toml"),
             renga_url: origin.into(),
             allow_insecure_http: true,
@@ -534,8 +723,37 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retry_attempts: 1,
             labels: BTreeMap::new(),
-        };
-        HttpClient::new(&config, Cancellation::default()).unwrap()
+            jobs: Default::default(),
+        }
+    }
+
+    struct SlowHeartbeatApi {
+        lease: Mutex<Option<LeasedJob>>,
+        reports: Mutex<Vec<ReportType>>,
+        progress_started: Mutex<Option<mpsc::Sender<()>>>,
+    }
+
+    impl JobApi for SlowHeartbeatApi {
+        fn lease(&self, _: &[String], _: u32) -> Result<Vec<LeasedJob>, TransportError> {
+            Ok(self.lease.lock().unwrap().take().into_iter().collect())
+        }
+
+        fn report(
+            &self,
+            _: uuid::Uuid,
+            report: &JobReport<'_>,
+        ) -> Result<ReportAck, TransportError> {
+            self.reports.lock().unwrap().push(report.kind);
+            if report.kind == ReportType::Progress {
+                if let Some(started) = self.progress_started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Ok(ReportAck {
+                cancel_requested: false,
+            })
+        }
     }
 
     #[test]
@@ -564,6 +782,114 @@ mod tests {
         let (origin, server) = stub_server(vec![200]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(server.join().unwrap(), [br#"{"n":2}"#.to_vec()]);
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn cancellation_while_the_queue_is_busy_exits_without_enqueuing_or_posting() {
+        let state = std::env::temp_dir().join(format!("renga-busy-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let held = lock(&queue);
+        let operation = Cancellation::default();
+        let worker_operation = operation.clone();
+        let worker_queue = Arc::clone(&queue);
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let outcome = deliver_observation(
+                &stub_client("http://127.0.0.1:9"),
+                &worker_operation,
+                &worker_queue,
+                uuid::Uuid::new_v4(),
+                br#"{"observation_id":"not-posted"}"#,
+            )
+            .map_err(|error| error.to_string());
+            finished.send(outcome).unwrap();
+        });
+        thread::sleep(Duration::from_millis(50));
+
+        operation.cancel();
+        let error = result
+            .recv_timeout(Duration::from_millis(500))
+            .expect("cancelled inventory should not wait for queue ownership")
+            .unwrap_err();
+
+        assert!(error.contains("cancelled"));
+        drop(held);
+        worker.join().unwrap();
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn job_deadline_stops_queue_wait_while_heartbeat_is_blocked() {
+        let state = std::env::temp_dir().join(format!("renga-deadline-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let held = lock(&queue);
+        let client = stub_client("http://127.0.0.1:9");
+        let observation_id = uuid::Uuid::new_v4();
+        let capability_queue = Arc::clone(&queue);
+        let capability_client = client.clone();
+        let capability = InventoryCollect::new(Box::new(move |cancellation| {
+            deliver_observation(
+                &capability_client,
+                cancellation,
+                &capability_queue,
+                observation_id,
+                br#"{"observation_id":"must-not-be-queued"}"#,
+            )
+            .map_err(|error| error.to_string())
+        }));
+        let catalog = Catalog::new(vec![Arc::new(capability)]);
+        let (progress_started, progress) = mpsc::channel();
+        let api = SlowHeartbeatApi {
+            lease: Mutex::new(Some(LeasedJob {
+                id: uuid::Uuid::new_v4(),
+                capability: "inventory.collect@1".into(),
+                parameters: json!({}),
+                attempt: 1,
+                lease_token: "token".into(),
+                lease_expires_at: chrono::Utc::now(),
+                timeout_ms: 60,
+                output_limit_bytes: 65_536,
+            })),
+            reports: Mutex::new(Vec::new()),
+            progress_started: Mutex::new(Some(progress_started)),
+        };
+        let stopped = Cancellation::default();
+        let policy = JobPolicy::default();
+        let generation = PolicyGeneration::default();
+
+        thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let mut worker = Worker::new(
+                    &api,
+                    &catalog,
+                    &policy,
+                    &state,
+                    &stopped,
+                    &generation,
+                    generation.current(),
+                );
+                worker.heartbeat = Duration::from_millis(10);
+                worker.run_pass().unwrap();
+            });
+            progress
+                .recv_timeout(Duration::from_secs(1))
+                .expect("worker should begin its heartbeat while inventory waits");
+            thread::sleep(Duration::from_millis(70));
+            drop(held);
+            worker.join().unwrap();
+        });
+
+        assert_eq!(
+            *api.reports.lock().unwrap(),
+            [
+                ReportType::Started,
+                ReportType::Progress,
+                ReportType::Failed
+            ]
+        );
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
     }
@@ -652,6 +978,33 @@ mod tests {
             checkin_fails,
             inventory_fails,
         }
+    }
+
+    #[test]
+    fn leases_unless_renga_says_nothing_is_waiting() {
+        let ack = |jobs_waiting| Ok(CheckInAck { jobs_waiting });
+        assert!(leases_now(&ack(Some(true))));
+        assert!(!leases_now(&ack(Some(false))));
+        assert!(leases_now(&ack(None)), "an older server gives no hint");
+        assert!(leases_now(&Err(io::Error::other("offline").into())));
+    }
+
+    #[test]
+    fn advertises_inventory_collect_unless_policy_disables_it() {
+        let state = std::env::temp_dir().join(format!("renga-advertise-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let client = stub_client("http://127.0.0.1:9");
+        let mut config = stub_config("http://127.0.0.1:9");
+        assert!(advertised_capabilities(&config, &client, &queue)
+            .contains(&"inventory.collect@1".to_string()));
+
+        config.jobs = JobPolicy {
+            enabled: Some(vec![]),
+        };
+        assert!(!advertised_capabilities(&config, &client, &queue)
+            .iter()
+            .any(|capability| capability.contains('@')));
+        let _ = std::fs::remove_dir_all(state);
     }
 
     #[test]
