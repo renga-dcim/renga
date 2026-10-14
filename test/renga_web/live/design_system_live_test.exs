@@ -6,10 +6,11 @@ defmodule RengaWeb.DesignSystemLiveTest do
   test "renders every section of the design system without signing in", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/dev/design-system")
 
-    for section <- ~w(colors typography density shape status components icons) do
+    for section <- ~w(brand colors typography density shape status components icons) do
       assert has_element?(view, "##{section}")
     end
 
+    assert has_element?(view, "#brand-wordmark[aria-label=Renga]")
     assert has_element?(view, "#swatch-accent")
     assert has_element?(view, "#status-attention [data-signal='drift']")
     assert has_element?(view, "#sample-nodes [data-list-group]")
