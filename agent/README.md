@@ -189,9 +189,10 @@ deadline. It takes no arguments, reads only the two files in
 `/sys/firmware/dmi/tables` without following links, and publishes a copy that
 only root and the `renga-agent` group can read under the root-owned
 `/run/renga/smbios`. The agent ignores a snapshot that is incomplete or from an
-earlier boot. If the helper fails or times out, the service still starts and
-those optional facts are omitted. Do not run the agent itself as root or weaken
-the sandbox to obtain them.
+earlier boot. If the helper fails or times out, the service still starts; the
+last complete snapshot from this boot remains usable, or those optional facts
+are omitted when none exists. Do not run the agent itself as root or weaken the
+sandbox to obtain them.
 The example unit allows 40 seconds for shutdown, above the maximum 20-second
 request timeout so an in-flight request can finish before systemd forcibly stops
 the service.

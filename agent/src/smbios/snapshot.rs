@@ -413,6 +413,48 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn failed_refresh_keeps_the_last_complete_same_boot_generation() {
+        let host = host("failed-refresh", b"_SM3_", b"complete table");
+        let generation = host.publisher.publish().unwrap();
+        fs::remove_file(host.publisher.source.join(ENTRY_POINT)).unwrap();
+
+        assert_eq!(
+            host.publisher.publish().unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            fs::read_link(host.publisher.destination.join(CURRENT)).unwrap(),
+            Path::new(&generation)
+        );
+        assert_eq!(load_from(&host).unwrap().table, b"complete table");
+        fs::remove_dir_all(&host.root).unwrap();
+    }
+
+    #[test]
+    fn interruption_after_atomic_publish_exposes_only_the_complete_generation() {
+        let host = host("publish-boundary", b"_SM3_", b"first table");
+        let first = host.publisher.publish().unwrap();
+        let generation = "11111111-2222-3333-4444-555555555555";
+        let staging = host
+            .publisher
+            .destination
+            .join(format!("{STAGING_PREFIX}{generation}"));
+        let boot_id = read_boot_id(&host.publisher.boot_id).unwrap();
+        host.publisher
+            .write_generation(&staging, generation, &boot_id, b"second table", b"_SM3_")
+            .unwrap();
+        fs::rename(&staging, host.publisher.destination.join(generation)).unwrap();
+        let link = host.publisher.destination.join("interrupted.link");
+        std::os::unix::fs::symlink(generation, &link).unwrap();
+        fs::rename(&link, host.publisher.destination.join(CURRENT)).unwrap();
+        // Simulate termination before the destination sync and pruning steps.
+
+        assert_eq!(load_from(&host).unwrap().table, b"second table");
+        assert!(host.publisher.destination.join(first).is_dir());
+        fs::remove_dir_all(&host.root).unwrap();
+    }
+
+    #[test]
     fn never_follows_links_at_the_source() {
         let host = host("source-link", b"_SM3_", b"table");
         let secret = host.root.join("secret");
