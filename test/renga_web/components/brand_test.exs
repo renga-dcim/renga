@@ -27,6 +27,13 @@ defmodule RengaWeb.BrandTest do
 
       assert count(inverted, "svg rect") > count(primary, "svg rect")
     end
+
+    test "clips the inverted wall to the rounded tile with its own clip path" do
+      html = render_component(&Brand.mark/1, %{variant: :tile, clip_id: "login-tile"})
+
+      assert html |> query("clipPath") |> LazyHTML.attribute("id") == ["login-tile"]
+      assert html |> query("svg > g") |> LazyHTML.attribute("clip-path") == ["url(#login-tile)"]
+    end
   end
 
   describe "wordmark/1" do
@@ -58,6 +65,7 @@ defmodule RengaWeb.BrandTest do
       {:ok, view, _html} = live(conn, ~p"/users/log-in")
 
       assert has_element?(view, "header a[aria-label='Renga home'] svg[aria-label=Renga]")
+      assert has_element?(view, "#login svg g[clip-path]")
       refute has_element?(view, ".hero-server-stack-solid")
     end
 

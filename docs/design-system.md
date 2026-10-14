@@ -227,11 +227,11 @@ place.
 | Component | Use | Smallest |
 |---|---|---|
 | `<Brand.wordmark />` | The name wherever it appears in the app: sidebar, headers. The R takes the accent and "enga" takes the text color. `caps` sets "ENGA" for label-like uses; `tone={:one}` drops the accent | 18px tall |
-| `<Brand.mark />` | The R on its own, beside other text or in the sign-in card | 20px |
+| `<Brand.mark />` | The R on its own, beside other text | 20px |
 | `<Brand.mark variant={:inverted} />` | The R left as a gap in a brick wall, for larger standalone uses | 24px |
+| `<Brand.mark variant={:tile} />` | The inverted wall trimmed to a rounded square: the app icon. The sign-in card, and the favicon (`priv/static/favicon.svg`) | 16px |
 
-Below 20px, such as in the favicon, use the inverted wall clipped to a rounded
-tile (`priv/static/favicon.svg`). Size the SVG with a height class and let the
+Below 20px use the tile. Size the SVG with a height class and let the
 width follow; never stretch it or re-space the bricks. Keep one course (about a
 fifth of the mark's height) clear around it, and don't color single bricks or
 use a status color on them.

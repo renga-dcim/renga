@@ -134,11 +134,29 @@ defmodule RengaWeb.Brand do
 
   `:primary` is the bricks themselves, for use beside the name and anywhere
   20px or larger. `:inverted` leaves the R as a gap in a wall, for larger
-  standalone uses such as the sign-in card; keep it at 24px or larger.
+  standalone uses; keep it at 24px or larger. `:tile` trims that wall to the
+  app's rounded square: the app icon, used for the favicon and the sign-in card.
+
+  The tile clips with an SVG `clipPath`, whose id must be unique on the page;
+  pass `clip_id` when a page shows more than one tile.
   """
-  attr :variant, :atom, default: :primary, values: [:primary, :inverted]
+  attr :variant, :atom, default: :primary, values: [:primary, :inverted, :tile]
   attr :class, :any, default: "size-6 text-accent"
+  attr :clip_id, :string, default: "renga-tile-clip"
   attr :rest, :global
+
+  def mark(%{variant: :tile} = assigns) do
+    assigns = assign(assigns, :bricks, @inverted)
+
+    ~H"""
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class={@class} {@rest}>
+      <clipPath id={@clip_id}><rect x="1" y="1" width="22" height="22" rx="5" /></clipPath>
+      <g clip-path={"url(##{@clip_id})"}>
+        <rect :for={{x, y, w, h, r} <- @bricks} x={x} y={y} width={w} height={h} rx={r} />
+      </g>
+    </svg>
+    """
+  end
 
   def mark(assigns) do
     assigns =

@@ -767,9 +767,7 @@ defmodule RengaWeb.UI do
     ~H"""
     <div id={@id} class="mx-auto flex w-full max-w-sm flex-col gap-5 py-6 sm:py-12">
       <div class="space-y-3 text-center">
-        <span class="mx-auto grid size-10 place-items-center rounded-lg border border-edge bg-surface text-accent">
-          <RengaWeb.Brand.mark class="size-6" />
-        </span>
+        <RengaWeb.Brand.mark variant={:tile} class="mx-auto size-12 text-accent" />
         <h1 class="text-xl font-semibold tracking-tight text-fg">{@title}</h1>
         <p :if={@subtitle != []} class="text-sm text-fg-muted">{render_slot(@subtitle)}</p>
       </div>

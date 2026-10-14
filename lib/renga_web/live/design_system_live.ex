@@ -239,6 +239,7 @@ defmodule RengaWeb.DesignSystemLive do
             <div class="flex items-end gap-5">
               <Brand.mark id="brand-mark" class="size-12 text-accent" />
               <Brand.mark id="brand-mark-inverted" variant={:inverted} class="size-12 text-accent" />
+              <Brand.mark id="brand-mark-tile" variant={:tile} class="size-12 text-accent" />
             </div>
             <div class="flex flex-wrap items-end gap-x-8 gap-y-4 text-fg">
               <Brand.wordmark id="brand-wordmark" class="h-10 w-auto" />
