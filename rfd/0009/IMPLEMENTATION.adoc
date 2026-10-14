@@ -40,9 +40,9 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 == Phase 4: Interface
 
-* [ ] Add "Collect now" for owners and admins where the agent advertises it.
-* [ ] Add the Jobs view with event history, and job entries in activity.
-* [ ] Show advertised job capabilities on the Collectors page.
+* [x] Add "Collect now" for owners and admins where the agent advertises it.
+* [x] Add the Jobs tab in Activity with event history, and job entries in activity.
+* [x] Show advertised job capabilities on the Collectors page.
 
 == Phase 5: Channels notification
 

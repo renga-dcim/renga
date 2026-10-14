@@ -249,9 +249,9 @@ is a prerequisite of RFDs 13 and 14 and is out of scope here.
 == User interaction
 
 * A resource whose agent advertises `inventory.collect@1` offers "Collect now"
-  to owners and admins. The result links to the observation it produced.
-* A Jobs view in the Operations area lists jobs by state, capability, target,
-  and requester, with each job's event history.
+  to owners and admins. The result names the observation it produced.
+* A Jobs tab in the Activity area, beside Changes, lists jobs by state,
+  capability, target, and requester, with each job's event history.
 * Job requests, outcomes, and cancellations appear in the resource's Activity
   tab and the organization activity feed.
 * The Collectors page shows each agent's advertised job capabilities next to its
