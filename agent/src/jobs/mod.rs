@@ -6,6 +6,7 @@
 //! configuration. Renga cannot widen that set remotely.
 
 pub mod record;
+pub mod worker;
 
 use crate::cancellation::Cancellation;
 use serde::{Deserialize, Serialize};

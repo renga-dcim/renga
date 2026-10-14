@@ -56,6 +56,13 @@ impl TransportError {
         }
     }
 
+    pub(crate) fn with_status(self, status: StatusCode) -> Self {
+        Self {
+            status: Some(status),
+            ..self
+        }
+    }
+
     /// The HTTP status of a response the server sent, if it sent one.
     pub fn status(&self) -> Option<StatusCode> {
         self.status
@@ -356,13 +363,11 @@ fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, Transport
 
 fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
     let excerpt = bounded_error_excerpt(response);
-    TransportError {
-        status: Some(status),
-        ..TransportError::new(
-            format!("server returned {status}; response excerpt: {excerpt:?}"),
-            failure_kind(status, &excerpt),
-        )
-    }
+    TransportError::new(
+        format!("server returned {status}; response excerpt: {excerpt:?}"),
+        failure_kind(status, &excerpt),
+    )
+    .with_status(status)
 }
 
 fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
