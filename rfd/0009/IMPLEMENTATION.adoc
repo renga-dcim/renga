@@ -4,18 +4,18 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 == Phase 1: Jobs and events
 
-* [ ] Add organization-scoped `jobs` and append-only `job_events` with
+* [x] Add organization-scoped `jobs` and append-only `job_events` with
   composite tenant keys and a trigger rejecting event updates and deletes.
-* [ ] Add the `Renga.Jobs.Capability` behaviour and a registry keyed by
+* [x] Add the `Renga.Jobs.Capability` behaviour and a registry keyed by
   `name@version`.
-* [ ] Add the job context: create with capability parameter validation and
+* [x] Add the job context: create with capability parameter validation and
   idempotency, cancel, and the transitions, writing each event with its
   projection in one transaction.
-* [ ] Sweep lapsed leases back to `queued`, `expired`, or `uncertain` with
+* [x] Sweep lapsed leases back to `queued`, `expired`, or `uncertain` with
   events, re-queuing a started job only when its retry class allows it.
-* [ ] Resolve `uncertain` jobs by an operator or reconciliation, with a
+* [x] Resolve `uncertain` jobs by an operator or reconciliation, with a
   `resolved` event.
-* [ ] Default new organizations to allowing every `observe` capability, keep
+* [x] Default new organizations to allowing every `observe` capability, keep
   job history for a configurable 90 days, and rate-limit job creation per
   organization.
 
