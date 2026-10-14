@@ -3,6 +3,7 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
+    jobs::{Catalog, JobPolicy},
     payload::{CheckIn, Observation, QueueReport},
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
@@ -169,6 +170,7 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config, &args.state_directory)?;
     let mut client = HttpClient::new(&config, stopped.clone())?;
+    let catalog = job_catalog();
     let queue = DeliveryQueue::new(args.state_directory.clone());
     let monitor = queue.monitor.clone();
     let queue = Arc::new(Mutex::new(queue));
@@ -180,12 +182,17 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             client: &client,
             stopped: &stopped,
             labels: &config.labels,
+            capabilities: advertised_capabilities(&catalog, &config.jobs),
             queue: &queue,
             monitor: &monitor,
         };
         return aggregated_result(deliver_startup(&operations));
     }
-    if let Err(failure) = send_checkin(&client, &monitor) {
+    if let Err(failure) = send_checkin(
+        &client,
+        &monitor,
+        advertised_capabilities(&catalog, &config.jobs),
+    ) {
         warn!(error = %failure, "startup delivery failed: check-in");
     }
     if stopped.cancelled() {
@@ -210,7 +217,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         for job in scheduler.due_until_cancelled(now, &stopped) {
             match job {
                 Job::CheckIn => {
-                    if let Err(failure) = send_checkin(&client, &monitor) {
+                    if let Err(failure) = send_checkin(
+                        &client,
+                        &monitor,
+                        advertised_capabilities(&catalog, &config.jobs),
+                    ) {
                         warn!(error = %failure, "check-in failed");
                     }
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
@@ -292,11 +303,30 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn send_checkin(client: &HttpClient, monitor: &QueueMonitor) -> Result<(), Box<dyn Error>> {
+/// The job capabilities compiled into this build.
+fn job_catalog() -> Catalog {
+    Catalog::default()
+}
+
+/// What the agent reports, plus the job capabilities its policy enables. Policy
+/// is read on every check-in, so a reload withdraws a capability at once.
+fn advertised_capabilities(catalog: &Catalog, policy: &JobPolicy) -> Vec<String> {
+    collectors::capabilities()
+        .into_iter()
+        .map(String::from)
+        .chain(catalog.enabled_keys(policy))
+        .collect()
+}
+
+fn send_checkin(
+    client: &HttpClient,
+    monitor: &QueueMonitor,
+    capabilities: Vec<String>,
+) -> Result<(), Box<dyn Error>> {
     let queue = monitor
         .latest()
         .map(|health| QueueReport::new(&health, SystemTime::now()));
-    client.post_checkin(&CheckIn::new(collectors::capabilities(), queue))?;
+    client.post_checkin(&CheckIn::new(capabilities, queue))?;
     info!("check-in posted");
     Ok(())
 }
@@ -434,13 +464,14 @@ struct RuntimeOperations<'a> {
     client: &'a HttpClient,
     stopped: &'a Cancellation,
     labels: &'a BTreeMap<String, String>,
+    capabilities: Vec<String>,
     queue: &'a Mutex<DeliveryQueue>,
     monitor: &'a QueueMonitor,
 }
 
 impl Operations for RuntimeOperations<'_> {
     fn checkin(&self) -> Result<(), Box<dyn Error>> {
-        send_checkin(self.client, self.monitor)
+        send_checkin(self.client, self.monitor, self.capabilities.clone())
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
         send_inventory(self.client, self.stopped, self.labels, self.queue)
@@ -534,6 +565,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retry_attempts: 1,
             labels: BTreeMap::new(),
+            jobs: Default::default(),
         };
         HttpClient::new(&config, Cancellation::default()).unwrap()
     }

@@ -365,6 +365,7 @@ mod tests {
             request_timeout: Duration::from_secs(30),
             max_retry_attempts: 1,
             labels: BTreeMap::new(),
+            jobs: Default::default(),
         }
     }
 

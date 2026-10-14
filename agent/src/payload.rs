@@ -151,7 +151,9 @@ impl Serialize for Component {
 
 #[derive(Debug, Serialize)]
 pub struct CheckIn {
-    pub capabilities: Vec<&'static str>,
+    /// Unversioned entries describe what the agent reports; `name@version`
+    /// entries are job capabilities it will run on request (RFD 9).
+    pub capabilities: Vec<String>,
     pub metadata: AgentMetadata,
 }
 
@@ -163,7 +165,7 @@ pub struct AgentMetadata {
 }
 
 impl CheckIn {
-    pub fn new(capabilities: Vec<&'static str>, observation_queue: Option<QueueReport>) -> Self {
+    pub fn new(capabilities: Vec<String>, observation_queue: Option<QueueReport>) -> Self {
         Self {
             capabilities,
             metadata: AgentMetadata {
@@ -275,7 +277,8 @@ mod tests {
     }
     #[test]
     fn checkin_has_capability_and_identity() {
-        let value = serde_json::to_value(CheckIn::new(vec!["host.inventory"], None)).unwrap();
+        let value =
+            serde_json::to_value(CheckIn::new(vec!["host.inventory".into()], None)).unwrap();
         assert_eq!(value["capabilities"][0], "host.inventory");
         assert_eq!(
             value["metadata"]["agent_version"],
