@@ -703,6 +703,7 @@ fn reload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
     use renga_agent::{
         jobs::{inventory_collect::InventoryCollect, worker::JobApi},
         payload::{JobReport, LeasedJob, ReportAck, ReportType},
@@ -977,6 +978,100 @@ mod tests {
         (origin, received, server)
     }
 
+    fn reload_notice_server(
+        stopped: Cancellation,
+    ) -> (
+        String,
+        mpsc::Receiver<String>,
+        mpsc::Receiver<usize>,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let checkins = Arc::new(AtomicUsize::new(0));
+        let checkin_result = Arc::clone(&checkins);
+        let sockets = Arc::new(AtomicUsize::new(0));
+        let (protocols, received_protocols) = mpsc::channel();
+        let (closed, received_closed) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let checkins = Arc::clone(&checkins);
+                        let sockets = Arc::clone(&sockets);
+                        let protocols = protocols.clone();
+                        let closed = closed.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                let socket_number = sockets.fetch_add(1, Ordering::SeqCst) + 1;
+                                let mut reader = BufReader::new(stream);
+                                let mut protocol = String::new();
+                                loop {
+                                    let mut line = String::new();
+                                    reader.read_line(&mut line).unwrap();
+                                    if line == "\r\n" {
+                                        break;
+                                    }
+                                    if let Some((name, value)) = line.split_once(':') {
+                                        if name.eq_ignore_ascii_case("sec-websocket-protocol") {
+                                            protocol = value.trim().to_string();
+                                        }
+                                    }
+                                }
+                                protocols.send(protocol).unwrap();
+                                let response =
+                                    b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n";
+                                for byte in response.iter().cycle() {
+                                    if reader.get_mut().write_all(&[*byte]).is_err() {
+                                        break;
+                                    }
+                                    let _ = reader.get_mut().flush();
+                                    thread::sleep(Duration::from_millis(25));
+                                }
+                                closed.send(socket_number).unwrap();
+                                return;
+                            }
+
+                            let (request, mut reader) = read_http_request(stream);
+                            if request.contains("/api/v1/agent/checkins") {
+                                checkins.fetch_add(1, Ordering::SeqCst);
+                                answer(
+                                    &mut reader,
+                                    202,
+                                    r#"{"status":"accepted","jobs_waiting":false}"#,
+                                );
+                            } else if request.contains("/api/v1/observations") {
+                                answer(&mut reader, 202, "{}");
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("reload notice server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        (
+            origin,
+            received_protocols,
+            received_closed,
+            checkin_result,
+            server,
+        )
+    }
+
     fn stub_client(origin: &str) -> HttpClient {
         HttpClient::new(&stub_config(origin), Cancellation::default()).unwrap()
     }
@@ -1100,6 +1195,68 @@ mod tests {
 
         leased.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(started.elapsed() >= Duration::from_millis(800));
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn reload_interrupts_slow_upgrade_and_replaces_credentials_and_policy() {
+        let state = std::env::temp_dir().join(format!("renga-reload-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (origin, protocols, closed, checkins, server) = reload_notice_server(stopped.clone());
+        let config = state.join("agent.toml");
+        std::fs::create_dir_all(&state).unwrap();
+        let write_config = |token: &str, jobs_enabled: bool| {
+            let jobs = if jobs_enabled {
+                String::new()
+            } else {
+                "[jobs]\nenabled = []\n".into()
+            };
+            let next = config.with_extension("next");
+            std::fs::write(
+                &next,
+                format!(
+                    "renga_url = {origin:?}\nallow_insecure_http = true\nintake_api_key = {token:?}\ncheckin_interval_seconds = 1\nconfig_refresh_interval_seconds = 1\nrequest_timeout_seconds = 5\nmax_retry_attempts = 1\n{jobs}"
+                ),
+            )
+            .unwrap();
+            std::fs::rename(next, &config).unwrap();
+        };
+        write_config("old-token", true);
+        let daemon_stop = stopped.clone();
+        let daemon_state = state.clone();
+        let daemon_config = config.clone();
+        let daemon = thread::spawn(move || {
+            run_configured(
+                Args {
+                    config: daemon_config,
+                    state_directory: daemon_state,
+                    once: false,
+                    dry_run: false,
+                    command: None,
+                },
+                daemon_stop,
+            )
+            .map_err(|error| error.to_string())
+        });
+
+        let old = protocols.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(old.contains(&STANDARD_NO_PAD.encode("old-token")));
+        write_config("new-token", true);
+        assert_eq!(closed.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
+        let new = protocols.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(new.contains(&STANDARD_NO_PAD.encode("new-token")));
+
+        write_config("new-token", false);
+        assert_eq!(closed.recv_timeout(Duration::from_secs(3)).unwrap(), 2);
+        assert_eq!(
+            protocols.recv_timeout(Duration::from_millis(1_200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert!(checkins.load(Ordering::SeqCst) >= 2);
 
         stopped.cancel();
         daemon.join().unwrap().unwrap();

@@ -11,6 +11,7 @@ use crate::{cancellation::Cancellation, transport::NoticeEndpoint};
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use rustls::{pki_types::ServerName, ClientConnection, StreamOwned};
 use serde_json::{json, Value};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     fmt,
     io::{self, Read, Write},
@@ -193,6 +194,9 @@ fn listen_with_timing(
 ) -> Result<(), ListenError> {
     let topic = format!("installation:{}", endpoint.installation_id);
     let mut socket = connect(endpoint, cancelled)?;
+    socket
+        .get_mut()
+        .set_deadline(Some(Instant::now() + endpoint.timeout));
     send(&mut socket, JOIN_REF, &topic, "phx_join")?;
     let reply = await_join(&mut socket, &topic, endpoint.timeout, cancelled)?;
     if reply["status"] != "ok" {
@@ -204,13 +208,14 @@ fn listen_with_timing(
     if reply["response"]["jobs_waiting"] == true {
         notices.raise();
     }
-    socket.get_mut().set_read_timeout(Some(timing.poll))?;
-
     let mut next_ref = 2_u64;
     let mut next_heartbeat = Instant::now() + timing.heartbeat;
     let mut last_heard = Instant::now();
     loop {
         if cancelled() {
+            socket
+                .get_mut()
+                .set_deadline(Some(Instant::now() + timing.poll));
             let _ = socket.close(None);
             let _ = socket.flush();
             return Ok(());
@@ -225,6 +230,9 @@ fn listen_with_timing(
             next_ref += 1;
             next_heartbeat = now + timing.heartbeat;
         }
+        socket
+            .get_mut()
+            .set_deadline(Some(Instant::now() + timing.poll));
         match socket.read() {
             Ok(message) => {
                 last_heard = Instant::now();
@@ -254,14 +262,16 @@ fn listen_with_timing(
 }
 
 fn await_join(
-    socket: &mut WebSocket<Stream>,
+    socket: &mut WebSocket<Stream<'_>>,
     topic: &str,
     timeout: Duration,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Value, ListenError> {
     let deadline = Instant::now() + timeout;
-    socket.get_mut().set_read_timeout(Some(POLL))?;
     while Instant::now() < deadline && !cancelled() {
+        socket
+            .get_mut()
+            .set_deadline(Some(deadline.min(Instant::now() + POLL)));
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let frame = Frame::parse(text.as_str());
@@ -302,21 +312,22 @@ impl Frame {
 }
 
 fn send(
-    socket: &mut WebSocket<Stream>,
+    socket: &mut WebSocket<Stream<'_>>,
     reference: &str,
     topic: &str,
     event: &str,
 ) -> Result<(), ListenError> {
+    socket.get_mut().set_deadline(Some(Instant::now() + POLL));
     let join_ref = (event == "phx_join").then_some(JOIN_REF);
     let frame = json!([join_ref, reference, topic, event, {}]).to_string();
     socket.send(Message::text(frame))?;
     Ok(())
 }
 
-fn connect(
+fn connect<'a>(
     endpoint: &NoticeEndpoint,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<WebSocket<Stream>, ListenError> {
+    cancelled: &'a dyn Fn() -> bool,
+) -> Result<WebSocket<Stream<'a>>, ListenError> {
     let base = &endpoint.base_url;
     let host = base
         .host()
@@ -326,9 +337,9 @@ fn connect(
         .ok_or_else(|| ListenError::new("server URL has no port"))?;
     let deadline = Instant::now() + endpoint.timeout;
     let addresses = resolve(host.clone(), port, deadline, cancelled)?;
-    let tcp = connect_tcp(&addresses, deadline, cancelled)?;
-    tcp.set_read_timeout(Some(POLL))?;
-    tcp.set_write_timeout(Some(POLL))?;
+    let tcp = InterruptibleTcp::new(connect_tcp(&addresses, deadline, cancelled)?, cancelled);
+    let mut tcp = tcp;
+    tcp.set_deadline(Some(deadline));
     let secure = base.scheme() == "https";
     let stream = if secure {
         let name = server_name(host.clone())?;
@@ -386,10 +397,10 @@ type Resolution = (String, u16, mpsc::Sender<io::Result<Vec<SocketAddr>>>);
 
 /// Name resolution has no cancellable std API, so one process-wide worker
 /// contains a stuck system resolver without accumulating detached listeners.
-fn resolver() -> &'static mpsc::Sender<Resolution> {
-    static RESOLVER: OnceLock<mpsc::Sender<Resolution>> = OnceLock::new();
+fn resolver() -> &'static mpsc::SyncSender<Resolution> {
+    static RESOLVER: OnceLock<mpsc::SyncSender<Resolution>> = OnceLock::new();
     RESOLVER.get_or_init(|| {
-        let (requests, work) = mpsc::channel::<Resolution>();
+        let (requests, work) = mpsc::sync_channel::<Resolution>(1);
         thread::Builder::new()
             .name("renga-notice-dns".into())
             .spawn(move || {
@@ -417,8 +428,15 @@ fn resolve(
         Host::Domain(host) => {
             let (reply, result) = mpsc::channel();
             resolver()
-                .send((host.to_string(), port, reply))
-                .map_err(|_| ListenError::new("server name resolver stopped"))?;
+                .try_send((host.to_string(), port, reply))
+                .map_err(|error| match error {
+                    mpsc::TrySendError::Full(_) => {
+                        ListenError::new("server name resolver is still busy")
+                    }
+                    mpsc::TrySendError::Disconnected(_) => {
+                        ListenError::new("server name resolver stopped")
+                    }
+                })?;
             loop {
                 remaining(deadline, cancelled)?;
                 match result.recv_timeout(wait_slice(deadline)) {
@@ -443,13 +461,12 @@ fn connect_tcp(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TcpStream, ListenError> {
     let mut last = None;
-    while Instant::now() < deadline {
-        for address in addresses {
-            remaining(deadline, cancelled)?;
-            match TcpStream::connect_timeout(address, wait_slice(deadline)) {
-                Ok(stream) => return Ok(stream),
-                Err(error) => last = Some(error),
-            }
+    for address in addresses {
+        remaining(deadline, cancelled)?;
+        match connect_address(*address, deadline, cancelled) {
+            Ok(stream) => return Ok(stream),
+            Err(ConnectError::Failed(error)) => last = Some(error),
+            Err(ConnectError::Stopped(error)) => return Err(error),
         }
     }
     Err(match last {
@@ -458,14 +475,64 @@ fn connect_tcp(
     })
 }
 
-fn finish_handshake(
-    first: Result<
-        (WebSocket<Stream>, tungstenite::handshake::client::Response),
-        tungstenite::HandshakeError<tungstenite::handshake::client::ClientHandshake<Stream>>,
-    >,
+enum ConnectError {
+    Failed(io::Error),
+    Stopped(ListenError),
+}
+
+fn connect_address(
+    address: SocketAddr,
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
-) -> Result<WebSocket<Stream>, ListenError> {
+) -> Result<TcpStream, ConnectError> {
+    let socket = Socket::new(
+        Domain::for_address(address),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )
+    .map_err(ConnectError::Failed)?;
+    socket.set_nonblocking(true).map_err(ConnectError::Failed)?;
+    match socket.connect(&SockAddr::from(address)) {
+        Ok(()) => {}
+        Err(error) if connection_in_progress(&error) => loop {
+            remaining(deadline, cancelled).map_err(ConnectError::Stopped)?;
+            if let Some(error) = socket.take_error().map_err(ConnectError::Failed)? {
+                return Err(ConnectError::Failed(error));
+            }
+            if socket.peer_addr().is_ok() {
+                break;
+            }
+            thread::sleep(wait_slice(deadline).min(Duration::from_millis(10)));
+        },
+        Err(error) => return Err(ConnectError::Failed(error)),
+    }
+    socket
+        .set_nonblocking(false)
+        .map_err(ConnectError::Failed)?;
+    Ok(socket.into())
+}
+
+fn connection_in_progress(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(unix)]
+    return error.raw_os_error() == Some(libc::EINPROGRESS);
+    #[cfg(not(unix))]
+    false
+}
+
+fn finish_handshake<'a>(
+    first: Result<
+        (
+            WebSocket<Stream<'a>>,
+            tungstenite::handshake::client::Response,
+        ),
+        tungstenite::HandshakeError<tungstenite::handshake::client::ClientHandshake<Stream<'a>>>,
+    >,
+    deadline: Instant,
+    cancelled: &'a dyn Fn() -> bool,
+) -> Result<WebSocket<Stream<'a>>, ListenError> {
     let mut handshake = match first {
         Ok((socket, _response)) => return Ok(socket),
         Err(tungstenite::HandshakeError::Failure(error)) => return Err(error.into()),
@@ -527,23 +594,86 @@ fn sleep_unless(cancelled: &dyn Fn() -> bool, duration: Duration) {
     }
 }
 
-/// A plain or TLS connection, so the socket can use the HTTP client's
-/// pinned roots and provider.
-pub enum Stream {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+/// Applies cancellation and one high-level operation deadline beneath TLS, so
+/// partial wire progress cannot hold Rustls or Tungstenite in an inner loop.
+pub struct InterruptibleTcp<'a> {
+    stream: TcpStream,
+    cancelled: &'a dyn Fn() -> bool,
+    deadline: Option<Instant>,
 }
 
-impl Stream {
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        match self {
-            Stream::Plain(stream) => stream.set_read_timeout(timeout),
-            Stream::Tls(stream) => stream.sock.set_read_timeout(timeout),
+impl<'a> InterruptibleTcp<'a> {
+    fn new(stream: TcpStream, cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            stream,
+            cancelled,
+            deadline: None,
+        }
+    }
+
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+
+    fn timeout(&self) -> io::Result<Duration> {
+        if (self.cancelled)() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "socket operation cancelled",
+            ));
+        }
+        let remaining = self
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(POLL)
+            .min(POLL);
+        if remaining.is_zero() {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "socket operation timed out",
+            ))
+        } else {
+            Ok(remaining)
         }
     }
 }
 
-impl Read for Stream {
+impl Read for InterruptibleTcp<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.timeout()?))?;
+        self.stream.read(buf)
+    }
+}
+
+impl Write for InterruptibleTcp<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.timeout()?))?;
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.set_write_timeout(Some(self.timeout()?))?;
+        self.stream.flush()
+    }
+}
+
+/// A plain or TLS connection, so the socket can use the HTTP client's
+/// pinned roots and provider.
+pub enum Stream<'a> {
+    Plain(InterruptibleTcp<'a>),
+    Tls(Box<StreamOwned<ClientConnection, InterruptibleTcp<'a>>>),
+}
+
+impl Stream<'_> {
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        match self {
+            Stream::Plain(stream) => stream.set_deadline(deadline),
+            Stream::Tls(stream) => stream.sock.set_deadline(deadline),
+        }
+    }
+}
+
+impl Read for Stream<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Stream::Plain(stream) => stream.read(buf),
@@ -552,7 +682,7 @@ impl Read for Stream {
     }
 }
 
-impl Write for Stream {
+impl Write for Stream<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Stream::Plain(stream) => stream.write(buf),
@@ -892,7 +1022,52 @@ mod tests {
     }
 
     #[test]
-    fn multiple_addresses_share_one_connection_deadline() {
+    fn stopping_interrupts_slowly_progressing_upgrade_and_tls_reads() {
+        for (scheme, response) in [
+            (
+                "http",
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n".as_slice(),
+            ),
+            ("https", &[22, 3, 3, 0, 100, 1, 0, 0, 96]),
+        ] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("{scheme}://{}", server.local_addr().unwrap());
+            let (progress, observed) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                let mut incoming = [0; 1024];
+                let _ = stream.read(&mut incoming);
+                for (index, byte) in response.iter().enumerate() {
+                    if stream.write_all(&[*byte]).is_err() {
+                        break;
+                    }
+                    let _ = stream.flush();
+                    if index == 0 {
+                        progress.send(()).unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+            });
+            let listener = Listener::spawn(
+                endpoint(&origin),
+                Notices::default(),
+                Cancellation::default(),
+            );
+            observed.recv_timeout(Duration::from_secs(1)).unwrap();
+            thread::sleep(Duration::from_millis(75));
+
+            let started = Instant::now();
+            listener.stop();
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "slowly progressing {scheme} handshake blocked listener stop"
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn refused_addresses_return_without_spinning_until_the_deadline() {
         let listeners: Vec<_> = (0..3)
             .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
             .collect();
@@ -902,10 +1077,31 @@ mod tests {
             .collect();
         drop(listeners);
         let started = Instant::now();
-        let deadline = started + Duration::from_millis(100);
+        let deadline = started + Duration::from_secs(5);
 
         assert!(connect_tcp(&addresses, deadline, &|| false).is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_refused_address_falls_through_to_the_next_address() {
+        let refused = TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused_address = refused.local_addr().unwrap();
+        drop(refused);
+        let accepting = TcpListener::bind("127.0.0.1:0").unwrap();
+        let accepting_address = accepting.local_addr().unwrap();
+        let accepted = thread::spawn(move || accepting.accept().unwrap());
+
+        let stream = connect_tcp(
+            &[refused_address, accepting_address],
+            Instant::now() + Duration::from_secs(2),
+            &|| false,
+        )
+        .unwrap();
+
+        assert_eq!(stream.peer_addr().unwrap(), accepting_address);
+        drop(stream);
+        accepted.join().unwrap();
     }
 
     #[test]
