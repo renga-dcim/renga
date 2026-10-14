@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }
@@ -20,6 +21,7 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 webpki-roots = "1"
 

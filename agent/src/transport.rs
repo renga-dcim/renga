@@ -102,6 +102,7 @@ pub struct HttpClient {
     lease_url: Url,
     authorization: HeaderValue,
     installation_id: HeaderValue,
+    notices: NoticeEndpoint,
     attempts: u32,
     request_timeout: Duration,
     cancellation: Cancellation,
@@ -167,6 +168,14 @@ impl HttpClient {
             webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
         ))
         .with_no_client_auth();
+        // The notice socket shares the same pinned TLS settings and credentials.
+        let notices = NoticeEndpoint {
+            base_url: base_url.clone(),
+            intake_api_key: config.intake_api_key.clone(),
+            installation_id: config.installation_id.to_string(),
+            tls: Arc::new(tls.clone()),
+            timeout: config.request_timeout,
+        };
         let client = Client::builder()
             .tls_backend_preconfigured(tls)
             .timeout(config.request_timeout)
@@ -186,11 +195,17 @@ impl HttpClient {
             lease_url,
             authorization,
             installation_id,
+            notices,
             attempts: config.max_retry_attempts,
             request_timeout: config.request_timeout,
             cancellation,
         })
     }
+    /// Where and how to open the job notice socket (see `crate::notices`).
+    pub fn notice_endpoint(&self) -> NoticeEndpoint {
+        self.notices.clone()
+    }
+
     /// Posts a check-in. A body the agent cannot read still means the
     /// check-in was accepted, so it yields an empty acknowledgement.
     pub fn post_checkin(&self, value: &CheckIn) -> Result<CheckInAck, TransportError> {
@@ -304,6 +319,27 @@ impl HttpClient {
             thread::sleep,
             || self.cancellation.cancelled(),
         )
+    }
+}
+
+/// The server origin, credentials and TLS settings the notice socket uses.
+#[derive(Clone)]
+pub struct NoticeEndpoint {
+    pub base_url: Url,
+    pub intake_api_key: String,
+    pub installation_id: String,
+    pub tls: Arc<rustls::ClientConfig>,
+    /// Bounds connecting and the opening handshake.
+    pub timeout: Duration,
+}
+
+impl fmt::Debug for NoticeEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NoticeEndpoint")
+            .field("base_url", &self.base_url.as_str())
+            .field("intake_api_key", &"[REDACTED]")
+            .field("installation_id", &self.installation_id)
+            .finish()
     }
 }
 
