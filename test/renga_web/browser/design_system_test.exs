@@ -115,6 +115,68 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> assert_has("#open-sample-dialog:focus")
   end
 
+  @tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 600))
+  """
+
+  defp hover(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      assert {:ok, _} = PlaywrightEx.Frame.hover(frame_id, selector: selector, timeout: 2000)
+    end)
+  end
+
+  test "only cut-off values show their full text, and +N opens the whole list", %{conn: conn} do
+    long = "#sample-overflow tr:nth-child(2) td:first-child [data-clip]"
+    short = "#sample-overflow tr:nth-child(1) td:nth-child(2) [data-clip]"
+
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "[...document.querySelectorAll('#sample-overflow tr')].map(row => row.getBoundingClientRect().height)",
+      &assert(&1 == [36, 36])
+    )
+    |> hover(long)
+    |> evaluate(
+      @tooltip,
+      &assert(&1 =~ "Billing analytics warehouse replica (us-east, cold standby)")
+    )
+    |> hover(short)
+    |> evaluate(@tooltip, &assert(&1 == nil))
+    |> click("#sample-chips-2-more")
+    |> evaluate(
+      "document.getElementById('sample-chips-2-list').matches(':popover-open')",
+      &assert(&1 == true)
+    )
+    |> press("#sample-chips-2-more", "Escape")
+    |> evaluate(
+      "document.getElementById('sample-chips-2-list').matches(':popover-open')",
+      &assert(&1 == false)
+    )
+  end
+
+  @tag browser_context_opts: [viewport: %{width: 390, height: 844}]
+  test "narrow tables drop low-priority columns instead of scrolling", %{conn: conn} do
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const scroller = document.getElementById("sample-overflow").closest("div")
+        const shown = [...scroller.querySelectorAll("thead th")]
+          .filter(th => getComputedStyle(th).display !== "none")
+          .map(th => th.textContent.trim())
+        return {shown, scrolls: scroller.scrollWidth > scroller.clientWidth}
+      })()
+      """,
+      &assert(&1 == %{"shown" => ["Target", "State"], "scrolls" => false})
+    )
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,

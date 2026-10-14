@@ -100,6 +100,33 @@ defmodule RengaWeb.DesignSystemLive do
     %{id: 4, group: "Lisbon", name: "storage-01", kind: "Storage", address: "10.8.1.40"}
   ]
 
+  @jobs [
+    %{key: "inventory.collect@1", risk: "observe"},
+    %{key: "query.disk_usage@1", risk: "observe"},
+    %{key: "vm.power@1", risk: "operate"}
+  ]
+
+  @overflow_rows [
+    %{
+      id: 1,
+      name: "Primary compute node",
+      host: "compute-01",
+      state: "Succeeded",
+      dot: "bg-ok",
+      detail: "Observation 7f3c91e2",
+      jobs: Enum.take(@jobs, 1)
+    },
+    %{
+      id: 2,
+      name: "Billing analytics warehouse replica (us-east, cold standby)",
+      host: "billing-dwh-replica-03",
+      state: "Failed",
+      dot: "bg-crit",
+      detail: "Refused: inventory.collect is disabled in the agent's [jobs] policy on this host",
+      jobs: @jobs
+    }
+  ]
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -115,6 +142,7 @@ defmodule RengaWeb.DesignSystemLive do
      |> assign(:density, @density)
      |> assign(:icons, @icons)
      |> assign(:selected_node, 1)
+     |> assign(:overflow_rows, @overflow_rows)
      |> assign(:sample_form, sample_form())
      |> stream(:nodes, with_group_headers(@nodes))}
   end
@@ -389,6 +417,37 @@ defmodule RengaWeb.DesignSystemLive do
               <:col :let={{_id, node}} label="Kind">{node[:kind]}</:col>
               <:col :let={{_id, node}} label="Address" class="font-mono">{node[:address]}</:col>
               <:empty>No resources match these filters.</:empty>
+            </.table>
+          </.ds_card>
+
+          <.ds_card id="component-overflow" title="Overflow">
+            <p class="text-xs text-fg-muted">
+              Rows stay on one line. Hover or focus a cut-off value to read it, open +N for
+              the whole list, and narrow the window to watch Detail and Agent drop out.
+            </p>
+            <.table id="sample-overflow" rows={@overflow_rows} overflow="clip">
+              <:col :let={row} label="Target">
+                <span class="font-medium">{row.name}</span>
+                <span class="font-mono text-xs text-fg-muted">{row.host}</span>
+              </:col>
+              <:col :let={row} label="State" class="w-32">
+                <span class="inline-flex items-center gap-1.5">
+                  <span class={["inline-block size-2 rounded-full", row.dot]} aria-hidden="true" />
+                  {row.state}
+                </span>
+              </:col>
+              <:col :let={row} label="Detail" class="text-xs text-fg-muted" hide_below="3xl">
+                {row.detail}
+              </:col>
+              <:col :let={row} label="Agent" class="w-48" hide_below="xl">
+                <.chip_list id={"sample-chips-#{row.id}"} label="Accepts jobs" items={row.jobs}>
+                  <:chip :let={job}>{job.key}</:chip>
+                  <:detail :let={job}>
+                    <span class="min-w-0 truncate font-mono">{job.key}</span>
+                    <span class="text-fg-muted">{job.risk}</span>
+                  </:detail>
+                </.chip_list>
+              </:col>
             </.table>
           </.ds_card>
 
