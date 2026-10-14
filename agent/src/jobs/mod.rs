@@ -5,7 +5,10 @@
 //! capability only when it is compiled in and enabled by its own
 //! configuration. Renga cannot widen that set remotely.
 
+pub mod record;
+
 use crate::cancellation::Cancellation;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -23,7 +26,8 @@ pub enum RiskClass {
 
 /// What running a job twice means, fixed by its definition. Decides what
 /// the agent does with a redelivered job it started but never finished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RetryClass {
     Idempotent,
     Convergent,
