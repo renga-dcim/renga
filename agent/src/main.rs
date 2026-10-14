@@ -1249,14 +1249,17 @@ mod tests {
         assert_eq!(closed.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
         let new = protocols.recv_timeout(Duration::from_secs(3)).unwrap();
         assert!(new.contains(&STANDARD_NO_PAD.encode("new-token")));
+        let checkins_after_replacement = checkins.load(Ordering::SeqCst);
 
         write_config("new-token", false);
         assert_eq!(closed.recv_timeout(Duration::from_secs(3)).unwrap(), 2);
+        assert!(checkins.load(Ordering::SeqCst) > checkins_after_replacement);
+        let checkins_after_disabling = checkins.load(Ordering::SeqCst);
         assert_eq!(
             protocols.recv_timeout(Duration::from_millis(1_200)),
             Err(mpsc::RecvTimeoutError::Timeout)
         );
-        assert!(checkins.load(Ordering::SeqCst) >= 2);
+        assert!(checkins.load(Ordering::SeqCst) > checkins_after_disabling);
 
         stopped.cancel();
         daemon.join().unwrap().unwrap();

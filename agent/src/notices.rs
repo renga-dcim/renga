@@ -39,6 +39,8 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 const SILENCE_LIMIT: Duration = Duration::from_secs(75);
 /// How long one read waits, so the loop can heartbeat and notice shutdown.
 const POLL: Duration = Duration::from_millis(250);
+const CONNECT_STAGGER: Duration = Duration::from_millis(250);
+const CONNECT_POLL: Duration = Duration::from_millis(10);
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(300);
 const JOIN_REF: &str = "1";
@@ -460,56 +462,77 @@ fn connect_tcp(
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TcpStream, ListenError> {
-    let mut last = None;
-    for address in addresses {
-        remaining(deadline, cancelled)?;
-        match connect_address(*address, deadline, cancelled) {
-            Ok(stream) => return Ok(stream),
-            Err(ConnectError::Failed(error)) => last = Some(error),
-            Err(ConnectError::Stopped(error)) => return Err(error),
-        }
+    if addresses.is_empty() {
+        return Err(ListenError::new("server host did not resolve"));
     }
-    Err(match last {
-        Some(error) => error.into(),
-        None => ListenError::new("server host did not resolve"),
-    })
+    let mut last = None;
+    let mut next_address = 0;
+    let mut next_start = Instant::now();
+    let mut pending = Vec::new();
+    loop {
+        remaining(deadline, cancelled)?;
+        let now = Instant::now();
+        if next_address < addresses.len() && now >= next_start {
+            match start_connection(addresses[next_address]) {
+                Ok(socket) => pending.push(socket),
+                Err(error) => last = Some(error),
+            }
+            next_address += 1;
+            next_start = if pending.is_empty() {
+                now
+            } else {
+                now + CONNECT_STAGGER
+            };
+        }
+
+        let mut index = 0;
+        while index < pending.len() {
+            match connection_ready(&pending[index]) {
+                Ok(true) => {
+                    let socket = pending.swap_remove(index);
+                    socket.set_nonblocking(false)?;
+                    return Ok(socket.into());
+                }
+                Ok(false) => index += 1,
+                Err(error) => {
+                    pending.swap_remove(index);
+                    last = Some(error);
+                    if pending.is_empty() {
+                        next_start = Instant::now();
+                    }
+                }
+            }
+        }
+
+        if pending.is_empty() && next_address == addresses.len() {
+            return Err(last
+                .map(ListenError::from)
+                .unwrap_or_else(|| ListenError::new("server host did not resolve")));
+        }
+        let until_next = next_start.saturating_duration_since(Instant::now());
+        thread::sleep(wait_slice(deadline).min(until_next).min(CONNECT_POLL));
+    }
 }
 
-enum ConnectError {
-    Failed(io::Error),
-    Stopped(ListenError),
-}
-
-fn connect_address(
-    address: SocketAddr,
-    deadline: Instant,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<TcpStream, ConnectError> {
+fn start_connection(address: SocketAddr) -> io::Result<Socket> {
     let socket = Socket::new(
         Domain::for_address(address),
         Type::STREAM,
         Some(Protocol::TCP),
-    )
-    .map_err(ConnectError::Failed)?;
-    socket.set_nonblocking(true).map_err(ConnectError::Failed)?;
+    )?;
+    socket.set_nonblocking(true)?;
     match socket.connect(&SockAddr::from(address)) {
-        Ok(()) => {}
-        Err(error) if connection_in_progress(&error) => loop {
-            remaining(deadline, cancelled).map_err(ConnectError::Stopped)?;
-            if let Some(error) = socket.take_error().map_err(ConnectError::Failed)? {
-                return Err(ConnectError::Failed(error));
-            }
-            if socket.peer_addr().is_ok() {
-                break;
-            }
-            thread::sleep(wait_slice(deadline).min(Duration::from_millis(10)));
-        },
-        Err(error) => return Err(ConnectError::Failed(error)),
+        Ok(()) => Ok(socket),
+        Err(error) if connection_in_progress(&error) => Ok(socket),
+        Err(error) => Err(error),
     }
-    socket
-        .set_nonblocking(false)
-        .map_err(ConnectError::Failed)?;
-    Ok(socket.into())
+}
+
+fn connection_ready(socket: &Socket) -> io::Result<bool> {
+    if let Some(error) = socket.take_error()? {
+        return Err(error);
+    }
+    Ok(socket.peer_addr().is_ok())
 }
 
 fn connection_in_progress(error: &io::Error) -> bool {
@@ -618,7 +641,7 @@ impl<'a> InterruptibleTcp<'a> {
     fn timeout(&self) -> io::Result<Duration> {
         if (self.cancelled)() {
             return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
+                io::ErrorKind::ConnectionAborted,
                 "socket operation cancelled",
             ));
         }
@@ -831,6 +854,35 @@ mod tests {
     /// Keeps the server end open until the client hangs up.
     fn hold(socket: &mut WebSocket<TcpStream>) {
         while socket.read().is_ok() {}
+    }
+
+    fn saturated_listener() -> (Socket, Vec<Socket>, SocketAddr) {
+        let listener = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        listener
+            .bind(&SockAddr::from(
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            ))
+            .unwrap();
+        listener.listen(1).unwrap();
+        let address = listener.local_addr().unwrap().as_socket().unwrap();
+        let mut fillers = Vec::new();
+        loop {
+            let candidate = start_connection(address).unwrap();
+            let settle = Instant::now() + Duration::from_millis(100);
+            let mut ready = false;
+            while Instant::now() < settle {
+                if connection_ready(&candidate).unwrap() {
+                    ready = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            fillers.push(candidate);
+            if !ready {
+                return (listener, fillers, address);
+            }
+            assert!(fillers.len() < 16, "loopback listen queue did not saturate");
+        }
     }
 
     #[test]
@@ -1105,6 +1157,48 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_first_address_does_not_block_a_reachable_second_address() {
+        let (_saturated, _fillers, pending_address) = saturated_listener();
+        let accepting = TcpListener::bind("127.0.0.1:0").unwrap();
+        let accepting_address = accepting.local_addr().unwrap();
+        let accepted = thread::spawn(move || accepting.accept().unwrap());
+        let started = Instant::now();
+
+        let stream = connect_tcp(
+            &[pending_address, accepting_address],
+            started + Duration::from_secs(2),
+            &|| false,
+        )
+        .unwrap();
+
+        assert!(started.elapsed() >= CONNECT_STAGGER);
+        assert_eq!(stream.peer_addr().unwrap(), accepting_address);
+        drop(stream);
+        accepted.join().unwrap();
+    }
+
+    #[test]
+    fn a_pending_connection_can_complete_after_more_than_one_poll_slice() {
+        let (listener, fillers, address) = saturated_listener();
+        let accepted = thread::spawn(move || {
+            thread::sleep(POLL + Duration::from_millis(100));
+            let mut connections = Vec::new();
+            for _ in 0..=fillers.len() {
+                connections.push(listener.accept().unwrap().0);
+            }
+            drop(fillers);
+            connections
+        });
+        let started = Instant::now();
+
+        let stream = connect_tcp(&[address], started + Duration::from_secs(2), &|| false).unwrap();
+
+        assert!(started.elapsed() > POLL);
+        drop(stream);
+        drop(accepted.join().unwrap());
+    }
+
+    #[test]
     fn connects_to_a_wss_ipv6_literal() {
         use rcgen::{generate_simple_self_signed, CertifiedKey};
         use rustls::{
@@ -1166,6 +1260,187 @@ mod tests {
         received.recv_timeout(Duration::from_secs(5)).unwrap();
         listener.stop();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn cancellation_replaces_an_established_wss_partial_tls_record() {
+        use rcgen::{generate_simple_self_signed, CertifiedKey};
+        use rustls::{
+            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+            ServerConfig, ServerConnection,
+        };
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let certificate = cert.der().clone();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let server_config = Arc::new(
+            ServerConfig::builder_with_provider(Arc::clone(&provider))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![certificate.clone()],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der())),
+                )
+                .unwrap(),
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("https://{}", server.local_addr().unwrap());
+        let (progress, observed) = mpsc::channel();
+        let (replacement_protocol, received_protocol) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (tcp, _) = server.accept().unwrap();
+            let tls = StreamOwned::new(
+                ServerConnection::new(Arc::clone(&server_config)).unwrap(),
+                tcp,
+            );
+            let mut socket =
+                tungstenite::accept_hdr(tls, |_request: &Request, mut response: Response| {
+                    response
+                        .headers_mut()
+                        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("phoenix"));
+                    Ok(response)
+                })
+                .unwrap();
+            let join: Value =
+                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            let topic = join[2].clone();
+            socket
+                .send(Message::text(
+                    json!([JOIN_REF, JOIN_REF, topic, "phx_reply", joined(false)]).to_string(),
+                ))
+                .unwrap();
+            let record = [23, 3, 3, 0, 100]
+                .into_iter()
+                .chain(std::iter::repeat_n(0, 100));
+            for (index, byte) in record.enumerate() {
+                if socket.get_mut().sock.write_all(&[byte]).is_err() {
+                    break;
+                }
+                let _ = socket.get_mut().sock.flush();
+                if index == 0 {
+                    progress.send(()).unwrap();
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+
+            let (tcp, _) = server.accept().unwrap();
+            let tls = StreamOwned::new(ServerConnection::new(server_config).unwrap(), tcp);
+            let mut seen_protocol = String::new();
+            let mut socket =
+                tungstenite::accept_hdr(tls, |request: &Request, mut response: Response| {
+                    seen_protocol = request
+                        .headers()
+                        .get(SEC_WEBSOCKET_PROTOCOL)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+                    response
+                        .headers_mut()
+                        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("phoenix"));
+                    Ok(response)
+                })
+                .unwrap();
+            let join: Value =
+                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            let topic = join[2].clone();
+            socket
+                .send(Message::text(
+                    json!([JOIN_REF, JOIN_REF, topic, "phx_reply", joined(false)]).to_string(),
+                ))
+                .unwrap();
+            replacement_protocol.send(seen_protocol).unwrap();
+            while socket.read().is_ok() {}
+        });
+        let mut endpoint = endpoint(&origin);
+        endpoint.tls = Arc::new(client_config);
+        let listener = Listener::spawn(
+            endpoint.clone(),
+            Notices::default(),
+            Cancellation::default(),
+        );
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(75));
+        let (finished, result) = mpsc::channel();
+        let stopper = thread::spawn(move || {
+            listener.stop();
+            finished.send(()).unwrap();
+        });
+
+        result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("established WSS cancellation must leave the Rustls read loop");
+        stopper.join().unwrap();
+
+        endpoint.intake_api_key = "replacement-token".into();
+        let replacement = Listener::spawn(endpoint, Notices::default(), Cancellation::default());
+        let protocol = received_protocol
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replacement WSS listener did not connect");
+        assert!(protocol.contains(&STANDARD_NO_PAD.encode("replacement-token")));
+        replacement.stop();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn partial_handshakes_expire_without_cancellation() {
+        for (scheme, response) in [
+            (
+                "http",
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n".as_slice(),
+            ),
+            ("https", &[22, 3, 3, 0, 100, 1, 0, 0, 96]),
+        ] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("{scheme}://{}", server.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                let mut incoming = [0; 1024];
+                let _ = stream.read(&mut incoming);
+                for byte in response.iter().cycle() {
+                    if stream.write_all(&[*byte]).is_err() {
+                        break;
+                    }
+                    let _ = stream.flush();
+                    thread::sleep(Duration::from_millis(25));
+                }
+            });
+            let mut endpoint = endpoint(&origin);
+            endpoint.timeout = Duration::from_millis(100);
+            let cancelled = Cancellation::default();
+            let worker_cancelled = cancelled.clone();
+            let (finished, result) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                let started = Instant::now();
+                let error = match connect(&endpoint, &|| worker_cancelled.cancelled()) {
+                    Ok(_) => panic!("partial handshake unexpectedly completed"),
+                    Err(error) => error,
+                };
+                finished.send((started.elapsed(), error.message)).unwrap();
+            });
+
+            let (elapsed, message) =
+                result
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap_or_else(|_| {
+                        cancelled.cancel();
+                        panic!("slowly progressing {scheme} handshake ignored its deadline")
+                    });
+            assert!(elapsed >= Duration::from_millis(80));
+            assert!(message.contains("timed out"));
+            worker.join().unwrap();
+            server.join().unwrap();
+        }
     }
 
     #[test]
