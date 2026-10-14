@@ -763,13 +763,9 @@ defmodule Renga.Jobs do
   def update_settings(%Scope{} = scope, attrs) do
     with {:ok, _actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
-        authorize_member!(scope, ["owner"])
-
-        Organization
-        |> where([organization], organization.id == ^scope.organization_id)
-        |> lock("FOR UPDATE")
-        |> Repo.one!()
-        |> put_settings!(attrs)
+        organization = lock_active_organization!(scope.organization_id, :update)
+        authorize_membership!(scope, ["owner"])
+        put_settings!(organization, attrs)
       end)
     end
   end
@@ -841,11 +837,19 @@ defmodule Renga.Jobs do
     end
   end
 
-  defp lock_active_organization!(organization_id) do
-    Organization
-    |> where([organization], organization.id == ^organization_id)
-    |> where([organization], organization.status == "active")
-    |> lock("FOR SHARE")
+  defp lock_active_organization!(organization_id, lock \\ :share) do
+    query =
+      Organization
+      |> where([organization], organization.id == ^organization_id)
+      |> where([organization], organization.status == "active")
+
+    query =
+      case lock do
+        :share -> lock(query, "FOR SHARE")
+        :update -> lock(query, "FOR UPDATE")
+      end
+
+    query
     |> Repo.one()
     |> case do
       %Organization{} = organization -> organization
@@ -858,14 +862,26 @@ defmodule Renga.Jobs do
   defp authorize_member!(
          %Scope{
            membership_id: membership_id,
+           organization_id: organization_id
+         } = scope,
+         roles
+       )
+       when not is_nil(membership_id) do
+    lock_active_organization!(organization_id)
+    authorize_membership!(scope, roles)
+  end
+
+  defp authorize_member!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
+
+  defp authorize_membership!(
+         %Scope{
+           membership_id: membership_id,
            user: %{id: user_id},
            organization_id: organization_id
          },
          roles
        )
        when not is_nil(membership_id) do
-    lock_active_organization!(organization_id)
-
     member? =
       OrganizationMembership
       |> where([membership], membership.id == ^membership_id)
@@ -878,7 +894,7 @@ defmodule Renga.Jobs do
     unless member?, do: Repo.rollback(:forbidden)
   end
 
-  defp authorize_member!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
+  defp authorize_membership!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
 
   # Stores parameters, results, and payloads exactly as they read back from
   # JSONB, so comparisons (idempotency) and size accounting see one shape.
