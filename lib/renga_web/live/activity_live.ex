@@ -92,8 +92,13 @@ defmodule RengaWeb.ActivityLive do
           </:subtitle>
         </.header>
 
-        <.table id="activity-events" rows={@streams.events} row_item={fn {_id, event} -> event end}>
-          <:col :let={event} label="When" class="whitespace-nowrap text-fg-muted">
+        <.table
+          id="activity-events"
+          rows={@streams.events}
+          row_item={fn {_id, event} -> event end}
+          overflow="clip"
+        >
+          <:col :let={event} label="When" class="w-44 text-fg-muted" hide_below="xl">
             <time datetime={DateTime.to_iso8601(event.occurred_at)}>
               {Calendar.strftime(event.occurred_at, "%Y-%m-%d %H:%M UTC")}
             </time>
@@ -105,7 +110,7 @@ defmodule RengaWeb.ActivityLive do
               {ChangeDescription.describe(event)}
             <% end %>
           </:col>
-          <:col :let={event} label="Resource">
+          <:col :let={event} label="Resource" class="w-40">
             <.link
               :if={event.resource}
               navigate={~p"/inventory/#{event.resource}"}
@@ -115,7 +120,7 @@ defmodule RengaWeb.ActivityLive do
             </.link>
             <span :if={is_nil(event.resource)} class="text-fg-subtle">—</span>
           </:col>
-          <:col :let={event} label="By" class="text-fg-muted">
+          <:col :let={event} label="By" class="w-56 text-fg-muted" hide_below="3xl">
             <span data-actor={event.actor_user && "person"}>{actor(event)}</span>
           </:col>
           <:empty>
