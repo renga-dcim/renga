@@ -15,6 +15,7 @@ defmodule RengaWeb.DesignSystemLive do
   use RengaWeb, :live_view
 
   alias Renga.Accounts.Appearance
+  alias RengaWeb.Brand
 
   @path "/dev/design-system"
 
@@ -228,6 +229,25 @@ defmodule RengaWeb.DesignSystemLive do
           />
           <p class="text-xs text-fg-subtle sm:ml-auto">Preview only; nothing is saved.</p>
         </div>
+
+        <.ds_section
+          id="brand"
+          title="Brand"
+          description="RengaWeb.Brand: the mark and the wordmark. The mark takes the accent; in the wordmark only the R does."
+        >
+          <div class="grid gap-4 rounded-lg border border-edge bg-surface p-5 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+            <div class="flex items-end gap-5">
+              <Brand.mark id="brand-mark" class="size-12 text-accent" />
+              <Brand.mark id="brand-mark-inverted" variant={:inverted} class="size-12 text-accent" />
+              <Brand.mark id="brand-mark-tile" variant={:tile} class="size-12 text-accent" />
+            </div>
+            <div class="flex flex-wrap items-end gap-x-8 gap-y-4 text-fg">
+              <Brand.wordmark id="brand-wordmark" class="h-10 w-auto" />
+              <Brand.wordmark id="brand-wordmark-caps" caps class="h-7 w-auto" />
+              <Brand.wordmark id="brand-wordmark-one-tone" tone={:one} class="h-6 w-auto" />
+            </div>
+          </div>
+        </.ds_section>
 
         <.ds_section
           id="colors"

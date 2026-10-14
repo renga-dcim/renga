@@ -87,6 +87,47 @@ defmodule RengaWeb.Browser.AppearanceTest do
     assert Renga.Accounts.get_user!(user.id).theme == "light"
   end
 
+  test "the desktop sidebar wordmark is visible and contained", %{conn: conn} do
+    conn
+    |> visit("/inbox")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const sidebar = document.getElementById("app-sidebar")
+        const link = sidebar.querySelector("a[aria-label='Renga home']")
+        const wordmark = link.querySelector("svg")
+        const sidebarBox = sidebar.getBoundingClientRect()
+        const linkBox = link.getBoundingClientRect()
+        const wordmarkBox = wordmark.getBoundingClientRect()
+        const contained = box => box.left >= sidebarBox.left && box.right <= sidebarBox.right &&
+          box.top >= sidebarBox.top && box.bottom <= sidebarBox.bottom
+
+        return {
+          sidebar_visible: sidebar.checkVisibility(),
+          link_visible: link.checkVisibility(),
+          wordmark_visible: wordmark.checkVisibility(),
+          link_contained: contained(linkBox),
+          wordmark_contained: contained(wordmarkBox),
+          wordmark_width: wordmarkBox.width,
+          wordmark_height: wordmarkBox.height,
+          page_fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+        }
+      })()
+      """,
+      fn rendering ->
+        assert rendering["sidebar_visible"] == true
+        assert rendering["link_visible"] == true
+        assert rendering["wordmark_visible"] == true
+        assert rendering["link_contained"] == true
+        assert rendering["wordmark_contained"] == true
+        assert_in_delta rendering["wordmark_height"], 24, 0.1
+        assert_in_delta rendering["wordmark_width"] / 24, 113 / 33.2, 0.02
+        assert rendering["page_fits"] == true
+      end
+    )
+  end
+
   test "live navigation applies freshly stored preferences without replacing the document", %{
     conn: conn,
     user: user

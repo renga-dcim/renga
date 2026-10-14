@@ -30,6 +30,44 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     end
   end
 
+  test "sign-in branding is visible, tappable, and contained at phone width", %{conn: conn} do
+    conn
+    |> visit("/users/log-in")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const link = document.querySelector("header a[aria-label='Renga home']")
+        const wordmark = link.querySelector("svg")
+        const tile = document.querySelector("#login > div:first-child svg")
+        const linkBox = link.getBoundingClientRect()
+        const wordmarkBox = wordmark.getBoundingClientRect()
+        const tileBox = tile.getBoundingClientRect()
+        const inside = box => box.left >= 0 && box.right <= document.documentElement.clientWidth
+
+        return {
+          link_height: linkBox.height,
+          wordmark_height: wordmarkBox.height,
+          tile_width: tileBox.width,
+          tile_height: tileBox.height,
+          visible: link.checkVisibility() && wordmark.checkVisibility() && tile.checkVisibility(),
+          inside: [linkBox, wordmarkBox, tileBox].every(inside),
+          fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+        }
+      })()
+      """,
+      fn rendering ->
+        assert round(rendering["link_height"]) >= 44
+        assert_in_delta rendering["wordmark_height"], 24, 0.1
+        assert_in_delta rendering["tile_width"], 48, 0.1
+        assert_in_delta rendering["tile_height"], 48, 0.1
+        assert rendering["visible"] == true
+        assert rendering["inside"] == true
+        assert rendering["fits"] == true
+      end
+    )
+  end
+
   test "settings pages fit a phone", %{conn: conn} do
     organization = organization_fixture()
     user = user_fixture()

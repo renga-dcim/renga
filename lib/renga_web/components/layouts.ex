@@ -5,6 +5,7 @@ defmodule RengaWeb.Layouts do
   """
   use RengaWeb, :html
 
+  alias RengaWeb.Brand
   alias RengaWeb.Navigation
 
   # Embed all files in layouts/* within this module.
@@ -243,10 +244,10 @@ defmodule RengaWeb.Layouts do
         <div class="mx-auto flex min-h-16 max-w-screen-xl items-center px-4 sm:px-6 lg:px-8">
           <.link
             navigate={if(@current_scope, do: ~p"/organizations", else: ~p"/")}
-            class="flex items-center gap-2.5 font-semibold tracking-tight text-fg"
+            class="flex min-h-tap items-center rounded-sm text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+            aria-label="Renga home"
           >
-            <span class="text-accent"><.icon name="hero-server-stack-solid" class="size-6" /></span>
-            <span>Renga</span>
+            <Brand.wordmark class="h-6 w-auto" />
           </.link>
           <div class="ml-auto flex items-center gap-1">
             <.theme_toggle
@@ -284,11 +285,13 @@ defmodule RengaWeb.Layouts do
     ~H"""
     <.link
       navigate={~p"/inbox"}
-      class={["flex items-center gap-2.5 px-2 text-sm font-semibold tracking-tight text-fg", @class]}
+      class={[
+        "flex min-h-tap items-center rounded-sm px-2 text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
+        @class
+      ]}
       aria-label="Renga home"
     >
-      <.icon name="hero-server-stack-solid" class="size-6 text-accent" />
-      <span class="text-base">Renga</span>
+      <Brand.wordmark class="h-6 w-auto text-fg" />
     </.link>
     """
   end
