@@ -14,10 +14,10 @@ use serde_json::{json, Value};
 use std::{
     fmt,
     io::{self, Read, Write},
-    net::{TcpStream, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc, Arc, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -28,6 +28,7 @@ use tungstenite::{
     http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderValue},
     Message, WebSocket,
 };
+use url::Host;
 
 const SOCKET_PATH: &str = "/api/v1/agent/socket/websocket";
 /// Phoenix's channel heartbeat; the server drops a socket silent for 60s.
@@ -101,6 +102,7 @@ fn run(
     while !cancelled() {
         match listen(endpoint, notices, cancelled) {
             Ok(()) => return,
+            Err(_failure) if cancelled() => return,
             Err(failure) => {
                 if failure.joined {
                     retry = first_retry;
@@ -168,7 +170,7 @@ fn listen(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), ListenError> {
     let topic = format!("installation:{}", endpoint.installation_id);
-    let mut socket = connect(endpoint)?;
+    let mut socket = connect(endpoint, cancelled)?;
     send(&mut socket, JOIN_REF, &topic, "phx_join")?;
     let reply = await_join(&mut socket, &topic, endpoint.timeout, cancelled)?;
     if reply["status"] != "ok" {
@@ -289,21 +291,25 @@ fn send(
     Ok(())
 }
 
-fn connect(endpoint: &NoticeEndpoint) -> Result<WebSocket<Stream>, ListenError> {
+fn connect(
+    endpoint: &NoticeEndpoint,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<WebSocket<Stream>, ListenError> {
     let base = &endpoint.base_url;
     let host = base
-        .host_str()
+        .host()
         .ok_or_else(|| ListenError::new("server URL has no host"))?;
     let port = base
         .port_or_known_default()
         .ok_or_else(|| ListenError::new("server URL has no port"))?;
-    let tcp = connect_tcp(host, port, endpoint.timeout)?;
-    tcp.set_read_timeout(Some(endpoint.timeout))?;
-    tcp.set_write_timeout(Some(endpoint.timeout))?;
+    let deadline = Instant::now() + endpoint.timeout;
+    let addresses = resolve(host.clone(), port, deadline, cancelled)?;
+    let tcp = connect_tcp(&addresses, deadline, cancelled)?;
+    tcp.set_read_timeout(Some(POLL))?;
+    tcp.set_write_timeout(Some(POLL))?;
     let secure = base.scheme() == "https";
     let stream = if secure {
-        let name = ServerName::try_from(host.to_string())
-            .map_err(|_| ListenError::new("server host is not a valid TLS name"))?;
+        let name = server_name(host.clone())?;
         let connection = ClientConnection::new(Arc::clone(&endpoint.tls), name)
             .map_err(|error| ListenError::new(format!("cannot start TLS: {error}")))?;
         Stream::Tls(Box::new(StreamOwned::new(connection, tcp)))
@@ -312,6 +318,7 @@ fn connect(endpoint: &NoticeEndpoint) -> Result<WebSocket<Stream>, ListenError> 
     };
 
     let scheme = if secure { "wss" } else { "ws" };
+    let host = base.host_str().expect("host was checked above");
     let authority = match base.port() {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
@@ -337,28 +344,133 @@ fn connect(endpoint: &NoticeEndpoint) -> Result<WebSocket<Stream>, ListenError> 
         "user-agent",
         HeaderValue::from_static(concat!("renga-agent/", env!("CARGO_PKG_VERSION"))),
     );
-    let (socket, _response) =
-        tungstenite::client::client(request, stream).map_err(|error| match error {
-            tungstenite::HandshakeError::Failure(error) => ListenError::from(error),
-            tungstenite::HandshakeError::Interrupted(_) => {
-                ListenError::new("socket handshake timed out")
-            }
-        })?;
-    Ok(socket)
+    finish_handshake(
+        tungstenite::client::client(request, stream),
+        deadline,
+        cancelled,
+    )
 }
 
-fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, ListenError> {
+fn server_name(host: Host<&str>) -> Result<ServerName<'static>, ListenError> {
+    match host {
+        Host::Domain(name) => ServerName::try_from(name.to_string())
+            .map_err(|_| ListenError::new("server host is not a valid TLS name")),
+        Host::Ipv4(address) => Ok(ServerName::IpAddress(IpAddr::V4(address).into())),
+        Host::Ipv6(address) => Ok(ServerName::IpAddress(IpAddr::V6(address).into())),
+    }
+}
+
+type Resolution = (String, u16, mpsc::Sender<io::Result<Vec<SocketAddr>>>);
+
+/// Name resolution has no cancellable std API, so one process-wide worker
+/// contains a stuck system resolver without accumulating detached listeners.
+fn resolver() -> &'static mpsc::Sender<Resolution> {
+    static RESOLVER: OnceLock<mpsc::Sender<Resolution>> = OnceLock::new();
+    RESOLVER.get_or_init(|| {
+        let (requests, work) = mpsc::channel::<Resolution>();
+        thread::Builder::new()
+            .name("renga-notice-dns".into())
+            .spawn(move || {
+                while let Ok((host, port, reply)) = work.recv() {
+                    let result = (host.as_str(), port)
+                        .to_socket_addrs()
+                        .map(|addresses| addresses.collect());
+                    let _ = reply.send(result);
+                }
+            })
+            .expect("cannot start notice DNS worker");
+        requests
+    })
+}
+
+fn resolve(
+    host: Host<&str>,
+    port: u16,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<SocketAddr>, ListenError> {
+    match host {
+        Host::Ipv4(address) => Ok(vec![SocketAddr::new(IpAddr::V4(address), port)]),
+        Host::Ipv6(address) => Ok(vec![SocketAddr::new(IpAddr::V6(address), port)]),
+        Host::Domain(host) => {
+            let (reply, result) = mpsc::channel();
+            resolver()
+                .send((host.to_string(), port, reply))
+                .map_err(|_| ListenError::new("server name resolver stopped"))?;
+            loop {
+                remaining(deadline, cancelled)?;
+                match result.recv_timeout(wait_slice(deadline)) {
+                    Ok(Ok(addresses)) if addresses.is_empty() => {
+                        return Err(ListenError::new("server host did not resolve"));
+                    }
+                    Ok(Ok(addresses)) => return Ok(addresses),
+                    Ok(Err(error)) => return Err(error.into()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(ListenError::new("server name resolver stopped"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn connect_tcp(
+    addresses: &[SocketAddr],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<TcpStream, ListenError> {
     let mut last = None;
-    for address in (host, port).to_socket_addrs()? {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last = Some(error),
+    while Instant::now() < deadline {
+        for address in addresses {
+            remaining(deadline, cancelled)?;
+            match TcpStream::connect_timeout(address, wait_slice(deadline)) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last = Some(error),
+            }
         }
     }
     Err(match last {
         Some(error) => error.into(),
         None => ListenError::new("server host did not resolve"),
     })
+}
+
+fn finish_handshake(
+    first: Result<
+        (WebSocket<Stream>, tungstenite::handshake::client::Response),
+        tungstenite::HandshakeError<tungstenite::handshake::client::ClientHandshake<Stream>>,
+    >,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<WebSocket<Stream>, ListenError> {
+    let mut handshake = match first {
+        Ok((socket, _response)) => return Ok(socket),
+        Err(tungstenite::HandshakeError::Failure(error)) => return Err(error.into()),
+        Err(tungstenite::HandshakeError::Interrupted(handshake)) => handshake,
+    };
+    loop {
+        remaining(deadline, cancelled)?;
+        match handshake.handshake() {
+            Ok((socket, _response)) => return Ok(socket),
+            Err(tungstenite::HandshakeError::Failure(error)) => return Err(error.into()),
+            Err(tungstenite::HandshakeError::Interrupted(next)) => handshake = next,
+        }
+    }
+}
+
+fn remaining(deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<(), ListenError> {
+    if cancelled() {
+        Err(ListenError::new("socket connection cancelled"))
+    } else if Instant::now() >= deadline {
+        Err(ListenError::new("socket connection timed out"))
+    } else {
+        Ok(())
+    }
+}
+
+fn wait_slice(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).min(POLL)
 }
 
 impl From<io::Error> for ListenError {
@@ -629,9 +741,9 @@ mod tests {
     }
 
     #[test]
-    fn reconnects_after_a_refused_join_or_a_closed_channel() {
+    fn reconnects_after_a_refused_join() {
         let refused = json!({"status": "error", "response": {"reason": "agent_not_registered"}});
-        let (origin, seen) = phoenix(3, refused, |socket| push(socket, "phx_close"));
+        let (origin, seen) = phoenix(3, refused, hold);
         let listener = Listener::spawn_with_retry(
             endpoint(&origin),
             Notices::default(),
@@ -640,6 +752,22 @@ mod tests {
         );
 
         for _ in 0..3 {
+            seen.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        listener.stop();
+    }
+
+    #[test]
+    fn reconnects_after_a_joined_channel_closes() {
+        let (origin, seen) = phoenix(2, joined(false), |socket| push(socket, "phx_close"));
+        let listener = Listener::spawn_with_retry(
+            endpoint(&origin),
+            Notices::default(),
+            Cancellation::default(),
+            Duration::from_millis(20),
+        );
+
+        for _ in 0..2 {
             seen.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         listener.stop();
@@ -670,6 +798,113 @@ mod tests {
         let started = Instant::now();
         listener.stop();
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn stopping_does_not_wait_for_a_stalled_upgrade_or_tls_handshake() {
+        for scheme in ["http", "https"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("{scheme}://{}", listener.local_addr().unwrap());
+            let accepted = thread::spawn(move || {
+                let (_stream, _) = listener.accept().unwrap();
+                thread::sleep(Duration::from_secs(2));
+            });
+            let listener = Listener::spawn(
+                endpoint(&origin),
+                Notices::default(),
+                Cancellation::default(),
+            );
+            thread::sleep(Duration::from_millis(100));
+
+            let started = Instant::now();
+            listener.stop();
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "stalled {scheme} handshake blocked listener stop"
+            );
+            accepted.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn multiple_addresses_share_one_connection_deadline() {
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let addresses: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        drop(listeners);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(100);
+
+        assert!(connect_tcp(&addresses, deadline, &|| false).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn connects_to_a_wss_ipv6_literal() {
+        use rcgen::{generate_simple_self_signed, CertifiedKey};
+        use rustls::{
+            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+            ServerConfig, ServerConnection,
+        };
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["::1".into()]).unwrap();
+        let certificate = cert.der().clone();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let server_config = ServerConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der())),
+            )
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let server = TcpListener::bind("[::1]:0").unwrap();
+        let origin = format!("https://[::1]:{}", server.local_addr().unwrap().port());
+        let (joined_tx, received) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (tcp, _) = server.accept().unwrap();
+            let tls =
+                StreamOwned::new(ServerConnection::new(Arc::new(server_config)).unwrap(), tcp);
+            let mut socket =
+                tungstenite::accept_hdr(tls, |_request: &Request, mut response: Response| {
+                    response
+                        .headers_mut()
+                        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("phoenix"));
+                    Ok(response)
+                })
+                .unwrap();
+            let join: Value =
+                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            let topic = join[2].clone();
+            socket
+                .send(Message::text(
+                    json!([JOIN_REF, JOIN_REF, topic, "phx_reply", joined(false)]).to_string(),
+                ))
+                .unwrap();
+            joined_tx.send(()).unwrap();
+            while socket.read().is_ok() {}
+        });
+        let mut endpoint = endpoint(&origin);
+        endpoint.tls = Arc::new(client_config);
+        let listener = Listener::spawn(endpoint, Notices::default(), Cancellation::default());
+
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+        listener.stop();
+        server.join().unwrap();
     }
 
     #[test]
