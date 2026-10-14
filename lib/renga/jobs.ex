@@ -331,6 +331,9 @@ defmodule Renga.Jobs do
 
   ## Leasing and reporting (agent side)
 
+  @doc "The report types an agent may post on a job it holds."
+  def report_types, do: @agent_report_types
+
   @doc """
   Leases up to `limit` queued jobs for `agent` among the capability keys the
   agent will run now, oldest first.
@@ -340,8 +343,16 @@ defmodule Renga.Jobs do
   seconds unless a report extends it. `SKIP LOCKED` lets concurrent lease
   requests share the queue without waiting on each other. A queued job whose
   capability the organization no longer allows fails here instead of running.
+
+  ## Options
+
+    * `:risk_classes` - lease only jobs of these risk classes. Callers that
+      authenticate the agent with a shared organization credential pass
+      `["observe"]` (RFD 9, "Trust boundary").
   """
-  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit)
+  def lease_jobs(scope, agent, keys, limit, opts \\ [])
+
+  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit, opts)
       when is_list(keys) and is_integer(limit) and limit > 0 do
     if agent.organization_id != organization_id do
       {:error, :forbidden}
@@ -353,6 +364,9 @@ defmodule Renga.Jobs do
 
         organization_id
         |> leasable_jobs(agent, keys, limit, now)
+        |> where_risk_class(Keyword.get(opts, :risk_classes))
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.all()
         |> Enum.flat_map(&lease_or_refuse!(&1, agent, allowed, now))
       end)
     end
@@ -373,9 +387,12 @@ defmodule Renga.Jobs do
     )
     |> order_by([job], asc: job.inserted_at, asc: job.id)
     |> limit(^limit)
-    |> lock("FOR UPDATE SKIP LOCKED")
-    |> Repo.all()
   end
+
+  defp where_risk_class(query, nil), do: query
+
+  defp where_risk_class(query, risk_classes) when is_list(risk_classes),
+    do: where(query, [job], job.risk_class in ^risk_classes)
 
   defp lease_or_refuse!(%Job{} = job, agent, allowed, now) do
     if Job.capability_key(job) in allowed do

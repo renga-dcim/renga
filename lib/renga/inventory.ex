@@ -587,6 +587,21 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Fetches the agent an intake-authenticated installation registered as, or
+  `nil` before its first accepted check-in.
+
+  The installation identity is the one `RengaWeb.IntakeAuth` verified for
+  the request, so this is how agent-facing APIs other than check-in find who
+  is calling.
+  """
+  def get_installation_agent(%Scope{organization_id: organization_id}, installation_id) do
+    Agent
+    |> where([agent], agent.organization_id == ^organization_id)
+    |> where([agent], agent.installation_id == ^installation_id)
+    |> Repo.one()
+  end
+
+  @doc """
   Fetches a registered agent through the caller's organization scope.
   """
   def get_agent!(%Scope{organization_id: organization_id}, id) do
