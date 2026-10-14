@@ -3,6 +3,7 @@
 use super::{
     filesystem_facts::{FilesystemFactsSource, ProcfsSource},
     network_facts::{AddressFamily, GetifsSource, NetworkFactsSource, NetworkInterface},
+    normalize_value,
     system_facts::{DiskFacts, DiskMedium, SysinfoSource, SystemFactsSource},
     CollectError,
 };
@@ -69,27 +70,6 @@ fn read(root: &Path, path: &str) -> Option<String> {
     fs::read_to_string(root.join(path.trim_start_matches('/')))
         .ok()
         .and_then(|v| normalize_value(&v))
-}
-
-/// Removes firmware placeholders which are common on generic/cloud DMI tables.
-pub fn normalize_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    let lower = value.to_ascii_lowercase();
-    if value.is_empty()
-        || matches!(
-            lower.as_str(),
-            "none"
-                | "unknown"
-                | "not specified"
-                | "not applicable"
-                | "to be filled by o.e.m."
-                | "default string"
-        )
-    {
-        None
-    } else {
-        Some(value.into())
-    }
 }
 
 fn collect_from_with_cancellation(

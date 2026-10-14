@@ -23,6 +23,27 @@ impl fmt::Display for CollectError {
 
 impl std::error::Error for CollectError {}
 
+/// Removes firmware placeholders which are common on generic/cloud DMI tables.
+pub fn normalize_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    if value.is_empty()
+        || matches!(
+            lower.as_str(),
+            "none"
+                | "unknown"
+                | "not specified"
+                | "not applicable"
+                | "to be filled by o.e.m."
+                | "default string"
+        )
+    {
+        None
+    } else {
+        Some(value.into())
+    }
+}
+
 /// Capabilities are selected by the active backend so future platforms can
 /// advertise a smaller supported inventory surface without changing transport.
 pub fn capabilities() -> Vec<&'static str> {
