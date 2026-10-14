@@ -232,6 +232,26 @@ impl HttpClient {
     /// Posts an observation exactly as encoded, so a queued payload replays byte for byte and
     /// the server can recognize a repeat by its observation ID.
     pub fn post_encoded_observation(&self, body: &[u8]) -> Result<(), TransportError> {
+        self.post_encoded_observation_while(body, || self.cancellation.cancelled())
+    }
+
+    /// Posts an observation while both the daemon and the operation that produced it remain
+    /// active. Jobs use this so cancellation also interrupts retry backoff.
+    pub fn post_encoded_observation_with_cancellation(
+        &self,
+        body: &[u8],
+        cancellation: &Cancellation,
+    ) -> Result<(), TransportError> {
+        self.post_encoded_observation_while(body, || {
+            self.cancellation.cancelled() || cancellation.cancelled()
+        })
+    }
+
+    fn post_encoded_observation_while(
+        &self,
+        body: &[u8],
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), TransportError> {
         retry(
             self.attempts,
             self.request_timeout,
@@ -248,7 +268,7 @@ impl HttpClient {
                 response_result(response)
             },
             thread::sleep,
-            &self.cancellation,
+            cancelled,
         )
     }
     fn post_json<T: Serialize, R: DeserializeOwned>(
@@ -282,7 +302,7 @@ impl HttpClient {
                 response_body(response)
             },
             thread::sleep,
-            &self.cancellation,
+            || self.cancellation.cancelled(),
         )
     }
 }
@@ -408,12 +428,12 @@ fn retry<T>(
     request_timeout: Duration,
     mut operation: impl FnMut() -> Result<T, TransportError>,
     mut sleep: impl FnMut(Duration),
-    cancellation: &Cancellation,
+    cancelled: impl Fn() -> bool,
 ) -> Result<T, TransportError> {
     let started = std::time::Instant::now();
     let mut delay = Duration::from_millis(250);
     for attempt in 1..=attempts {
-        if cancellation.cancelled() {
+        if cancelled() {
             return Err(TransportError::cancelled());
         }
         match operation() {
@@ -432,7 +452,7 @@ fn retry<T>(
                 }
                 let mut remaining = delay;
                 while !remaining.is_zero() {
-                    if cancellation.cancelled() {
+                    if cancelled() {
                         return Err(TransportError::cancelled());
                     }
                     let slice = remaining.min(BACKOFF_SLICE);
@@ -804,6 +824,30 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_observation_operation_makes_no_network_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut config = config(
+            &format!("http://{}", listener.local_addr().unwrap()),
+            "valid-token",
+        );
+        config.allow_insecure_http = true;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let operation = Cancellation::default();
+        operation.cancel();
+
+        let error = client
+            .post_encoded_observation_with_cancellation(b"{}", &operation)
+            .unwrap_err();
+
+        assert!(error.is_cancelled());
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    }
+
+    #[test]
     fn does_not_follow_redirects_and_treats_them_as_permanent() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -885,7 +929,7 @@ mod tests {
                 }
             },
             |d| sleeps.push(d),
-            &cancellation,
+            || cancellation.cancelled(),
         );
         assert_eq!(result.unwrap(), 7);
         assert_eq!(sleeps, vec![Duration::from_millis(25); 30]);
@@ -902,7 +946,7 @@ mod tests {
                 Err(error(false))
             },
             |_| {},
-            &cancellation
+            || cancellation.cancelled()
         )
         .is_err());
         assert_eq!(calls, 1);
@@ -919,7 +963,7 @@ mod tests {
                 Err(error(true))
             },
             |_| {},
-            &cancellation
+            || cancellation.cancelled()
         )
         .is_err());
         assert_eq!(calls, 3);
@@ -938,7 +982,7 @@ mod tests {
                 Err(error(true))
             },
             |_| {},
-            &cancellation
+            || cancellation.cancelled()
         )
         .is_err());
         assert_eq!(calls, 1);
@@ -957,7 +1001,7 @@ mod tests {
                 Ok(())
             },
             |_| panic!("cancelled delivery must not back off"),
-            &cancellation,
+            || cancellation.cancelled(),
         )
         .unwrap_err();
         assert_eq!(calls, 0);
@@ -967,8 +1011,9 @@ mod tests {
 
     #[test]
     fn cancellation_during_backoff_prevents_the_next_attempt() {
-        let cancellation = Cancellation::default();
-        let from_sleep = cancellation.clone();
+        let daemon = Cancellation::default();
+        let operation = Cancellation::default();
+        let from_sleep = operation.clone();
         let mut calls = 0;
         let mut sleeps = 0;
         let failure = retry::<()>(
@@ -982,11 +1027,12 @@ mod tests {
                 sleeps += 1;
                 from_sleep.cancel();
             },
-            &cancellation,
+            || daemon.cancelled() || operation.cancelled(),
         )
         .unwrap_err();
         assert_eq!(calls, 1);
         assert_eq!(sleeps, 1);
+        assert!(!daemon.cancelled());
         assert!(failure.is_cancelled());
     }
 }

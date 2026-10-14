@@ -17,7 +17,7 @@ use std::{
     collections::BTreeMap,
     error::Error,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -28,6 +28,8 @@ use tracing_subscriber::EnvFilter;
 const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 /// How long an inventory waits for a queue flush already using the delivery worker.
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
+/// Queue ownership is polled so a cancelled job never waits behind a long flush.
+const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
 
 /// Queue failure degrades durability, not lease renewal or direct delivery. Only delivery
 /// work retries opening it, so filesystem recovery cannot hold up periodic check-ins.
@@ -468,24 +470,45 @@ fn send_inventory(
     let observation = Observation::new(collectors::collect(stopped)?).with_labels(labels);
     let observation_id = observation.observation_id;
     let body = encode_observation(&observation)?;
-    let mut delivery = lock(queue);
+    if stopped.cancelled() {
+        return Err("observation delivery cancelled".into());
+    }
+    deliver_observation(client, stopped, queue, observation_id, &body)
+}
+
+fn deliver_observation(
+    client: &HttpClient,
+    cancellation: &Cancellation,
+    queue: &Mutex<DeliveryQueue>,
+    observation_id: uuid::Uuid,
+    body: &[u8],
+) -> Result<uuid::Uuid, Box<dyn Error>> {
+    let Some(mut delivery) = lock_until_cancelled(queue, cancellation) else {
+        return Err("observation delivery cancelled".into());
+    };
+    if cancellation.cancelled() {
+        return Err("observation delivery cancelled".into());
+    }
     if let Err(failure) = delivery
         .ready()
-        .and_then(|queue| queue.enqueue(observation_id, &body, SystemTime::now()))
+        .and_then(|queue| queue.enqueue(observation_id, body, SystemTime::now()))
     {
         // Delivering without durability still beats losing this observation outright. The
         // server keeps its newest observation current, so overtaking older entries is safe.
         warn!(error = %failure, %observation_id, "cannot queue observation; delivering it directly");
-        client.post_encoded_observation(&body)?;
+        if cancellation.cancelled() {
+            return Err("observation delivery cancelled".into());
+        }
+        client.post_encoded_observation_with_cancellation(body, cancellation)?;
         info!(%observation_id, "observation posted");
         return Ok(observation_id);
     }
 
     let queue = delivery.ready()?;
     let mut outcome = None;
-    let drained = queue.drain(SystemTime::now(), stopped, |entry| {
-        let result = client.post_encoded_observation(entry);
-        if entry == body.as_slice() {
+    let drained = queue.drain(SystemTime::now(), cancellation, |entry| {
+        let result = client.post_encoded_observation_with_cancellation(entry, cancellation);
+        if entry == body {
             outcome = Some(result.clone());
         }
         result
@@ -561,6 +584,22 @@ fn report_queue(queue: &ObservationQueue, drained: &Drained) {
 /// is a single file operation.
 fn lock(queue: &Mutex<DeliveryQueue>) -> MutexGuard<'_, DeliveryQueue> {
     queue.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock_until_cancelled<'a>(
+    queue: &'a Mutex<DeliveryQueue>,
+    cancellation: &Cancellation,
+) -> Option<MutexGuard<'a, DeliveryQueue>> {
+    loop {
+        if cancellation.cancelled() {
+            return None;
+        }
+        match queue.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => thread::sleep(QUEUE_LOCK_POLL),
+        }
+    }
 }
 
 trait Operations {
@@ -707,6 +746,41 @@ mod tests {
         let (origin, server) = stub_server(vec![200]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(server.join().unwrap(), [br#"{"n":2}"#.to_vec()]);
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn cancellation_while_the_queue_is_busy_exits_without_enqueuing_or_posting() {
+        let state = std::env::temp_dir().join(format!("renga-busy-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let held = lock(&queue);
+        let operation = Cancellation::default();
+        let worker_operation = operation.clone();
+        let worker_queue = Arc::clone(&queue);
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let outcome = deliver_observation(
+                &stub_client("http://127.0.0.1:9"),
+                &worker_operation,
+                &worker_queue,
+                uuid::Uuid::new_v4(),
+                br#"{"observation_id":"not-posted"}"#,
+            )
+            .map_err(|error| error.to_string());
+            finished.send(outcome).unwrap();
+        });
+        thread::sleep(Duration::from_millis(50));
+
+        operation.cancel();
+        let error = result
+            .recv_timeout(Duration::from_millis(500))
+            .expect("cancelled inventory should not wait for queue ownership")
+            .unwrap_err();
+
+        assert!(error.contains("cancelled"));
+        drop(held);
+        worker.join().unwrap();
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
     }
