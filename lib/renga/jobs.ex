@@ -663,6 +663,83 @@ defmodule Renga.Jobs do
 
   defp note_payload(_note), do: %{}
 
+  ## Retention and settings
+
+  @purge_batch 1000
+
+  @doc """
+  Deletes finished jobs older than their organization's retention period
+  (90 days unless an owner changed it), with their events. Jobs still open or
+  `uncertain` are never purged. Deletes at most #{@purge_batch} jobs per
+  call and returns how many it deleted.
+
+  The event trigger allows these deletes only because the job row goes
+  first; nothing else can remove history.
+  """
+  def purge_history(now \\ Renga.Time.utc_now_ms()) do
+    %{num_rows: deleted} =
+      Repo.query!(
+        """
+        DELETE FROM jobs
+        WHERE id IN (
+          SELECT job.id
+          FROM jobs AS job
+          JOIN organizations AS organization ON organization.id = job.organization_id
+          WHERE job.finished_at IS NOT NULL
+            AND job.finished_at < $1::timestamp - make_interval(days => GREATEST(1,
+              CASE
+                WHEN jsonb_typeof(organization.settings -> 'jobs' -> 'retention_days') = 'number'
+                THEN floor((organization.settings -> 'jobs' ->> 'retention_days')::numeric)::integer
+                ELSE $2::integer
+              END))
+          LIMIT $3
+        )
+        """,
+        [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch]
+      )
+
+    deleted
+  end
+
+  @doc "The organization's job settings: allowed capabilities and retention."
+  def get_settings(%Organization{} = organization) do
+    %{
+      allowed_capabilities: Settings.allowed_capabilities(organization),
+      retention_days: Settings.retention_days(organization)
+    }
+  end
+
+  @doc """
+  Changes which capabilities may be targeted in the organization and how
+  long job history is kept. Only an owner may. Allowing a capability does
+  not let anyone request it: roles and, for `operate` and `interactive`
+  capabilities, grants still apply.
+  """
+  def update_settings(%Scope{} = scope, attrs) do
+    with {:ok, _actor} <- requesting_user(scope) do
+      Repo.transaction(fn ->
+        authorize_member!(scope, ["owner"])
+
+        organization =
+          Organization
+          |> where([organization], organization.id == ^scope.organization_id)
+          |> lock("FOR UPDATE")
+          |> Repo.one!()
+
+        with {:ok, settings} <-
+               organization |> Settings.changeset(attrs) |> Changeset.apply_action(:update),
+             {:ok, organization} <-
+               organization
+               |> Changeset.change(settings: Settings.put(organization, settings))
+               |> Repo.update() do
+          get_settings(organization)
+        else
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+    end
+  end
+
   ## Writing
 
   # The only writer of jobs and their events: applies `changes` to a locked
