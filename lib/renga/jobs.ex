@@ -240,11 +240,10 @@ defmodule Renga.Jobs do
   def create_job(%Scope{} = scope, agent_id, capability_key, parameters, opts \\ []) do
     with {:ok, capability} <- Registry.fetch(capability_key),
          {:ok, actor} <- requesting_user(scope) do
-      Repo.transaction(fn ->
+      create_announced(scope.organization_id, fn ->
         authorize_request!(scope, capability)
         do_create!(scope.organization_id, actor, agent_id, capability, parameters, opts, scope)
       end)
-      |> Changes.broadcast(scope.organization_id)
     end
   end
 
@@ -255,13 +254,22 @@ defmodule Renga.Jobs do
   """
   def create_system_job(organization_id, agent_id, capability_key, parameters, opts \\ []) do
     with {:ok, capability} <- Registry.fetch(capability_key) do
-      Repo.transaction(fn ->
+      create_announced(organization_id, fn ->
         lock_active_organization!(organization_id)
         scope = %Scope{organization_id: organization_id}
         do_create!(organization_id, :system, agent_id, capability, parameters, opts, scope)
       end)
-      |> Changes.broadcast(organization_id)
     end
+  end
+
+  # Creates in one transaction and announces the change, and the queued job
+  # to its agent, only once it commits.
+  defp create_announced(organization_id, create) do
+    Changes.after_commit(fn ->
+      create
+      |> Repo.transaction()
+      |> Changes.broadcast(organization_id)
+    end)
   end
 
   defp requesting_user(%Scope{user: %{id: user_id}, membership_id: membership_id})
@@ -912,13 +920,15 @@ defmodule Renga.Jobs do
   end
 
   defp sweep_one(job_id, now, kind) do
-    Repo.transaction(fn ->
-      Job
-      |> where([job], job.id == ^job_id)
-      |> sweep_condition(kind, now)
-      |> lock("FOR UPDATE SKIP LOCKED")
-      |> Repo.one()
-      |> move!(kind, now)
+    Changes.after_commit(fn ->
+      Repo.transaction(fn ->
+        Job
+        |> where([job], job.id == ^job_id)
+        |> sweep_condition(kind, now)
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.one()
+        |> move!(kind, now)
+      end)
     end)
     |> case do
       {:ok, %Job{organization_id: organization_id}} = result ->
@@ -1152,6 +1162,8 @@ defmodule Renga.Jobs do
 
     {_count, nil} = Repo.insert_all(JobEvent, entries)
     record_activity!(updated, job.state, events, now)
+    # A created or re-queued job wakes its agent, if it is listening.
+    if updated.state == "queued", do: Changes.job_queued(updated)
     updated
   end
 
