@@ -143,6 +143,7 @@ defmodule RengaWeb.DesignSystemLive do
      |> assign(:icons, @icons)
      |> assign(:selected_node, 1)
      |> assign(:overflow_rows, @overflow_rows)
+     |> assign(:overflow_sample_long?, false)
      |> assign(:sample_form, sample_form())
      |> stream(:nodes, with_group_headers(@nodes))}
   end
@@ -179,6 +180,10 @@ defmodule RengaWeb.DesignSystemLive do
 
   def handle_event("confirm", _params, socket) do
     {:noreply, put_flash(socket, :info, "Confirmed.")}
+  end
+
+  def handle_event("toggle_overflow_sample", _params, socket) do
+    {:noreply, update(socket, :overflow_sample_long?, &(!&1))}
   end
 
   @impl true
@@ -425,10 +430,19 @@ defmodule RengaWeb.DesignSystemLive do
               Rows stay on one line. Hover or focus a cut-off value to read it, open +N for
               the whole list, and narrow the window to watch Detail and Agent drop out.
             </p>
-            <div class="w-48">
-              <.clip id="sample-standalone-clip" class="text-xs text-fg-muted">
-                Standalone values reveal their full text on focus or touch when space is tight.
-              </.clip>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="w-48">
+                <.clip id="sample-standalone-clip" class="text-xs text-fg-muted">
+                  <%= if @overflow_sample_long? do %>
+                    Standalone values reveal their full text on focus or touch when space is tight.
+                  <% else %>
+                    Short value
+                  <% end %>
+                </.clip>
+              </div>
+              <.button id="toggle-overflow-sample" size="sm" phx-click="toggle_overflow_sample">
+                {if @overflow_sample_long?, do: "Use short value", else: "Use long value"}
+              </.button>
             </div>
             <.table
               id="sample-overflow"

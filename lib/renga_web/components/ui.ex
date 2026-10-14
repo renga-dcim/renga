@@ -328,7 +328,6 @@ defmodule RengaWeb.UI do
       data-clip
       data-clip-focus
       tabindex="-1"
-      phx-click={%JS{}}
       class={[
         "block min-w-0 truncate rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
         @class

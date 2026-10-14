@@ -128,6 +128,20 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     end)
   end
 
+  defp touch(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      for type <- ~w(pointerdown pointerup) do
+        assert {:ok, _} =
+                 PlaywrightEx.Frame.dispatch_event(frame_id,
+                   selector: selector,
+                   type: type,
+                   event_init: %{pointerType: "touch", bubbles: true},
+                   timeout: 2000
+                 )
+      end
+    end)
+  end
+
   defp tab_until(session, selector) do
     Enum.reduce_while(1..80, session, fn _, session ->
       session = press(session, "body", "Tab")
@@ -160,11 +174,28 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     )
     |> hover(short)
     |> evaluate(@tooltip, &assert(&1 == nil))
+    |> click("#sample-overflow tr:nth-child(1) td:nth-child(2)")
+    |> assert_path("/dev/design-system", query_params: %{"overflow" => "1"})
+    |> visit("/dev/design-system")
+    |> click("#sample-overflow tr:nth-child(2) td:nth-child(3) [data-clip]")
+    |> evaluate("window.location.search", &assert(&1 == ""))
+    |> evaluate(@tooltip, &assert(&1 =~ "Refused: inventory.collect is disabled"))
+    |> press(":focus", "Escape")
     |> click("#sample-chips-2-more")
     |> evaluate("window.location.search", &assert(&1 == ""))
     |> evaluate(
       "document.getElementById('sample-chips-2-list').matches(':popover-open')",
       &assert(&1 == true)
+    )
+    |> evaluate(
+      """
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const anchor = document.getElementById('sample-chips-2-more').getBoundingClientRect()
+        const popover = document.getElementById('sample-chips-2-list').getBoundingClientRect()
+        resolve({below: popover.top >= anchor.bottom, inside: popover.right <= innerWidth})
+      })))
+      """,
+      &assert(&1 == %{"below" => true, "inside" => true})
     )
     |> click("#sample-chips-2-list li:nth-child(2)")
     |> evaluate("window.location.search", &assert(&1 == ""))
@@ -182,6 +213,9 @@ defmodule RengaWeb.Browser.DesignSystemTest do
       conn
       |> visit("/dev/design-system")
       |> assert_has("body .phx-connected")
+      |> assert_has("#sample-standalone-clip[tabindex='-1']", "Short value")
+      |> click("#toggle-overflow-sample")
+      |> assert_has("#sample-standalone-clip[tabindex='0']")
       |> tab_until("#sample-standalone-clip")
 
     session
@@ -191,6 +225,16 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> tab_until(detail)
     |> assert_has("#{detail}:focus")
     |> evaluate(@tooltip, &assert(&1 =~ "Refused: inventory.collect is disabled"))
+
+    session
+    |> press(":focus", "Escape")
+    |> click("#toggle-overflow-sample")
+    |> assert_has("#sample-standalone-clip[tabindex='-1']", "Short value")
+    |> press("#toggle-overflow-sample", "Shift+Tab")
+    |> evaluate(
+      "document.activeElement.id",
+      &refute(&1 == "sample-standalone-clip")
+    )
   end
 
   @tag browser_context_opts: [viewport: %{width: 390, height: 844}]
@@ -198,7 +242,8 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     conn
     |> visit("/dev/design-system")
     |> assert_has("body .phx-connected")
-    |> click("#sample-standalone-clip")
+    |> click("#toggle-overflow-sample")
+    |> touch("#sample-standalone-clip")
     |> evaluate(@tooltip, &assert(&1 =~ "Standalone values reveal their full text"))
     |> evaluate(
       """

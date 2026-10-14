@@ -42,13 +42,21 @@ export function installFloating(doc = document, win = window) {
 
   const clipAt = node => (node instanceof win.Element ? node.closest("[data-clip]") : null)
 
+  const focusedClip = () => {
+    const active = doc.activeElement
+    if (!(active instanceof win.Element) || active === doc.body) return null
+    return clipAt(active) || active.querySelector?.("[data-clip]")
+  }
+
+  const focusOwner = target =>
+    target.parentElement?.closest(
+      "a, button, input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"
+    )
+
   const syncClipFocus = target => {
     if (!target.matches("[data-clip-focus]")) return
 
-    const focusOwner = target.parentElement?.closest(
-      "a, button, input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"
-    )
-    target.tabIndex = !focusOwner && clipped(target) ? 0 : -1
+    target.tabIndex = !focusOwner(target) && clipped(target) ? 0 : -1
   }
 
   const resizeObserver =
@@ -82,9 +90,8 @@ export function installFloating(doc = document, win = window) {
     win.addEventListener("resize", () => observeClips(doc))
   }
 
-  // LiveView may restore server-rendered attributes on connect without
-  // changing an element's size, so refresh after every completed patch too.
-  win.addEventListener("phx:page-loading-stop", () => observeClips(doc))
+  // A fixed-width value may change without triggering ResizeObserver.
+  doc.addEventListener("phx:update", () => observeClips(doc))
 
   const ensureTooltip = () => {
     if (tooltip?.isConnected) return tooltip
@@ -122,6 +129,7 @@ export function installFloating(doc = document, win = window) {
   }
 
   doc.addEventListener("pointerover", event => {
+    if (focusedClip()) return
     const target = clipAt(event.target)
     if (target === pending) return
     hide()
@@ -133,6 +141,7 @@ export function installFloating(doc = document, win = window) {
   })
 
   doc.addEventListener("pointerout", event => {
+    if (focusedClip()) return
     if (clipAt(event.relatedTarget) !== pending) hide()
   })
 
@@ -142,7 +151,10 @@ export function installFloating(doc = document, win = window) {
     const target = clipAt(event.target) || event.target.querySelector?.("[data-clip]")
     if (!target) return
     pending = target
-    show(target)
+    win.requestAnimationFrame(() => {
+      const active = doc.activeElement
+      if (pending === target && (active === target || active?.contains(target))) show(target)
+    })
   })
 
   doc.addEventListener("focusout", hide)
@@ -150,7 +162,18 @@ export function installFloating(doc = document, win = window) {
 
   const activateClip = event => {
     const target = clipAt(event.target)
-    if (!target?.matches("[data-clip-focus]") || !clipped(target)) return
+    if (
+      !target?.matches("[data-clip-focus]") ||
+      focusOwner(target) ||
+      !clipped(target)
+    ) {
+      return
+    }
+
+    // The row keeps its ordinary click behavior while text fits. A clipped
+    // value owns this click instead so touch reveals it rather than navigating.
+    if (event.type === "click") event.stopPropagation()
+
     target.focus({preventScroll: true})
     show(target)
   }
@@ -178,8 +201,10 @@ export function installFloating(doc = document, win = window) {
     event => {
       if (tooltip?.matches(":popover-open")) tooltip.hidePopover()
 
-      const active = doc.activeElement
-      if (pending && (active === pending || active?.contains(pending))) show(pending)
+      if (pending && focusedClip() === pending) {
+        const target = pending
+        win.requestAnimationFrame(() => pending === target && show(target))
+      }
 
       for (const el of doc.querySelectorAll("[data-anchor]:popover-open")) {
         if (!el.contains(event.target)) el.hidePopover()

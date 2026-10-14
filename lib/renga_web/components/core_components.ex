@@ -642,7 +642,6 @@ defmodule RengaWeb.CoreComponents do
       data-clip
       data-clip-focus={@reveal && ""}
       tabindex={@reveal && "-1"}
-      phx-click={@reveal && %JS{}}
       class={[
         "block min-w-0 truncate",
         @reveal &&
