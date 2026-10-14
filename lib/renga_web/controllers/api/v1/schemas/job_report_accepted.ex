@@ -18,7 +18,11 @@ defmodule RengaWeb.Api.V1.Schemas.JobReportAccepted do
             id: uuid(),
             state: %{type: :string, enum: Job.states()},
             lease_expires_at:
-              timestamp("The extended lease, or null once the job finished.") |> nullable()
+              timestamp(
+                "When the lease expires: extended by a newly recorded report, unchanged " <>
+                  "by a replayed one, and null once the job finished."
+              )
+              |> nullable()
           },
           required: [:id, :state, :lease_expires_at],
           additionalProperties: false

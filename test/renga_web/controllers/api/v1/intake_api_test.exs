@@ -163,6 +163,43 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     assert Inventory.list_agents(scope) == []
   end
 
+  # The agent's contract test (agent/tests/openapi_contract.rs) checks these
+  # same bodies against priv/openapi/v1.json with a standards-compliant
+  # validator. This test proves the API accepts them, so together they keep
+  # the spec from being stricter than the API in ways JSV shares with Elixir,
+  # such as counting characters as grapheme clusters.
+  test "the API accepts the edge-case requests the agent's contract test checks", %{
+    token: token
+  } do
+    for body <- accepted_fixture("check_ins") do
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/agent/checkins", body)
+
+      assert %{"status" => "accepted"} = valid_api_response(conn, 202)
+    end
+
+    for body <- accepted_fixture("observations") do
+      conn =
+        build_conn()
+        |> authorize(token, @first_installation_id)
+        |> post_json(~p"/api/v1/observations", body)
+
+      assert %{"status" => "accepted", "duplicate" => false} = valid_api_response(conn, 202)
+    end
+  end
+
+  defp accepted_fixture(name) do
+    "test/fixtures/openapi/accepted_#{name}.json" |> File.read!() |> Jason.decode!()
+  end
+
+  defp post_json(conn, path, body) do
+    conn
+    |> put_req_header("content-type", "application/json")
+    |> post(path, Jason.encode!(body))
+  end
+
   defp authorize(conn, token, installation_id) do
     conn
     |> put_req_header("authorization", "Bearer #{token}")

@@ -8,7 +8,7 @@ defmodule RengaWeb.Api.V1.Schemas.JobLease do
       title: "JobLease",
       description:
         "Jobs leased to the calling installation, possibly none. Each lease lasts until " <>
-          "`lease_expires_at`; every accepted report extends it.",
+          "`lease_expires_at`; every newly recorded report extends it.",
       type: :object,
       properties: %{
         jobs: %{
@@ -26,13 +26,14 @@ defmodule RengaWeb.Api.V1.Schemas.JobLease do
               },
               lease_expires_at: timestamp(),
               not_after:
-                timestamp("The job expires if it has not finished by then.") |> nullable(),
+                timestamp("After this time the job is no longer leased or retried.")
+                |> nullable(),
               timeout_ms: nullable(%{type: :integer}),
               output_limit_bytes:
                 nullable(%{
                   type: :integer,
                   minimum: 0,
-                  description: "Budget for all report payloads in this attempt."
+                  description: "Budget for all report payloads, across every attempt."
                 })
             },
             required: [

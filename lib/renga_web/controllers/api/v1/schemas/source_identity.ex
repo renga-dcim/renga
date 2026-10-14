@@ -9,8 +9,8 @@ defmodule RengaWeb.Api.V1.Schemas.SourceIdentity do
           "and installation ID already identify the source, and any value given must match it.",
       type: :object,
       properties: %{
-        kind: %{type: :string, enum: ["host_agent"]},
-        source_id: %{type: :string, description: "The source's ID or name."}
+        kind: %{type: [:string, :null], enum: ["host_agent", nil]},
+        source_id: %{type: [:string, :null], description: "The source's ID or name."}
       }
     }
   end

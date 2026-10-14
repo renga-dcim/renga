@@ -1,0 +1,17 @@
+[
+  {
+    "source": null,
+    "capabilities": null,
+    "metadata": null
+  },
+  {
+    "source": {
+      "kind": null,
+      "source_id": null
+    },
+    "capabilities": [],
+    "metadata": {
+      "agent_version": null
+    }
+  }
+]

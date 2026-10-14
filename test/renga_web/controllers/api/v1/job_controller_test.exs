@@ -162,7 +162,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       conn =
         JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "leaseAgentJobs")
+
       assert %{state: "queued"} = Jobs.get_job!(context.scope, job.id)
     end
 
@@ -175,7 +177,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       conn =
         JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "leaseAgentJobs")
+
       assert %{state: "queued"} = Repo.get!(Renga.Jobs.Job, job.id)
     end
   end
@@ -203,7 +207,12 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
 
     test "records a retried post once and replays a lost final response", context do
       {job, token} = leased(context)
-      valid_api_response(report(context, job.id, token, 1, "started"), 200)
+
+      # Work reports carry opaque payloads, even keys that mean something on
+      # final reports, and a retry is matched by sequence, not payload.
+      for payload <- [%{"result" => 1, "reason" => nil}, %{"result" => [], "reason" => false}] do
+        valid_api_response(report(context, job.id, token, 1, "started", payload), 200)
+      end
 
       for _ <- 1..2 do
         assert %{"job" => %{"state" => "failed"}} =
@@ -332,7 +341,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
           "payload" => %{}
         })
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               valid_api_response(conn, 401, "reportAgentJob")
+
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
       assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
     end
@@ -350,7 +361,9 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
           "payload" => %{}
         })
 
-      assert %{"errors" => [%{"path" => "installation_id"}]} = json_response(conn, 403)
+      assert %{"errors" => [%{"path" => "installation_id"}]} =
+               valid_api_response(conn, 403, "reportAgentJob")
+
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
       assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
     end

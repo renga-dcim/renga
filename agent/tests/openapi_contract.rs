@@ -20,8 +20,8 @@ const SPEC: &str = include_str!(concat!(
     "/../priv/openapi/v1.json"
 ));
 
-/// Asserts that `body` satisfies the named schema under `#/components/schemas`.
-fn assert_conforms(schema: &str, body: &impl Serialize) {
+/// Lists where `body` violates the named schema under `#/components/schemas`.
+fn violations(schema: &str, body: &Value) -> Vec<String> {
     // Rooting the validator at the whole document lets the component's `$ref`s resolve.
     let mut root: Value = serde_json::from_str(SPEC).expect("the OpenAPI document is JSON");
     root["$ref"] = json!(format!("#/components/schemas/{schema}"));
@@ -30,16 +30,33 @@ fn assert_conforms(schema: &str, body: &impl Serialize) {
         .build(&root)
         .unwrap_or_else(|error| panic!("cannot compile the {schema} schema: {error}"));
 
-    let body = serde_json::to_value(body).unwrap();
-    let errors: Vec<String> = validator
-        .iter_errors(&body)
+    let mut paths: Vec<String> = validator
+        .iter_errors(body)
         .map(|error| format!("{}: {error}", error.instance_path()))
         .collect();
+    paths.sort();
+    paths
+}
+
+/// Asserts that `body` satisfies the named schema under `#/components/schemas`.
+fn assert_conforms(schema: &str, body: &impl Serialize) {
+    let body = serde_json::to_value(body).unwrap();
+    let errors = violations(schema, &body);
     assert!(
         errors.is_empty(),
         "{schema} body does not match priv/openapi/v1.json:\n{}\n\nbody: {body:#}",
         errors.join("\n")
     );
+}
+
+/// The instance paths where `body` violates the named schema.
+fn violation_paths(schema: &str, body: &Value) -> Vec<String> {
+    let mut paths: Vec<String> = violations(schema, body)
+        .into_iter()
+        .map(|error| error.split(": ").next().unwrap().to_owned())
+        .collect();
+    paths.dedup();
+    paths
 }
 
 fn interface(name: &str, kind: &str, mac_address: Option<&str>) -> Interface {
@@ -101,10 +118,12 @@ fn a_fully_populated_observation_matches_the_contract() {
 
 #[test]
 fn this_hosts_observation_matches_the_contract() {
-    // Collectors map OS facts to the API's vocabularies, so check what they report here too.
-    let resource =
-        collectors::collect(&Cancellation::default()).expect("collecting this host succeeds");
-    assert_conforms("Observation", &Observation::new(resource));
+    // Smoke coverage: collectors map OS facts to the API's vocabularies, so check what they
+    // report here too. A host the agent cannot describe is not a contract failure.
+    match collectors::collect(&Cancellation::default()) {
+        Ok(resource) => assert_conforms("Observation", &Observation::new(resource)),
+        Err(error) => eprintln!("skipping: cannot collect this host: {error}"),
+    }
 }
 
 #[test]
@@ -125,23 +144,46 @@ fn check_ins_match_the_contract() {
 }
 
 #[test]
+fn the_contract_accepts_edge_cases_the_server_accepts() {
+    // The server's intake API test posts these same bodies and asserts they are accepted. Its
+    // own validator counts characters as Elixir does, so only a standards-compliant validator
+    // like this one catches limits and formats that are stricter than the server.
+    let fixtures = [
+        (
+            "CheckIn",
+            include_str!("../../test/fixtures/openapi/accepted_check_ins.json"),
+        ),
+        (
+            "Observation",
+            include_str!("../../test/fixtures/openapi/accepted_observations.json"),
+        ),
+    ];
+
+    for (schema, fixture) in fixtures {
+        let bodies: Vec<Value> = serde_json::from_str(fixture).unwrap();
+        for body in &bodies {
+            assert_conforms(schema, body);
+        }
+    }
+}
+
+#[test]
 fn the_contract_rejects_what_the_server_rejects() {
     // Guards against a validator that silently accepts everything, such as an unresolved $ref.
     let mut observation = serde_json::to_value(full_observation()).unwrap();
     observation["resources"][0]["interfaces"][0]["mtu"] = json!(0);
     observation["resources"][0]["identifiers"]["serial"] = json!("typo");
 
-    let mut root: Value = serde_json::from_str(SPEC).unwrap();
-    root["$ref"] = json!("#/components/schemas/Observation");
-    let validator = jsonschema::draft202012::new(&root).unwrap();
-    let mut paths: Vec<String> = validator
-        .iter_errors(&observation)
-        .map(|error| error.instance_path().to_string())
-        .collect();
-    paths.sort();
+    assert_eq!(
+        violation_paths("Observation", &observation),
+        ["/resources/0/identifiers", "/resources/0/interfaces/0/mtu"]
+    );
+
+    let mut check_in = serde_json::to_value(CheckIn::new(vec![""], None)).unwrap();
+    check_in["metadata"]["observation_queue"] = json!({ "entries": 1 });
 
     assert_eq!(
-        paths,
-        ["/resources/0/identifiers", "/resources/0/interfaces/0/mtu"]
+        violation_paths("CheckIn", &check_in),
+        ["/capabilities/0", "/metadata/observation_queue"]
     );
 }

@@ -44,10 +44,11 @@ defmodule RengaWeb.ConnCase do
   documented response in `RengaWeb.ApiSpec`, and returns the decoded body.
 
   Use it for every machine API response, so the published spec cannot drift
-  from what the controllers send.
+  from what the controllers send. Pass the operation ID when a test calls a
+  controller action directly, since there is then no route to look it up by.
   """
-  def valid_api_response(conn, status) do
-    operation_id = api_operation_id!(conn)
+  def valid_api_response(conn, status, operation_id \\ nil) do
+    operation_id = operation_id || api_operation_id!(conn)
     if status in 200..299, do: assert_documented_request!(conn, operation_id)
 
     conn

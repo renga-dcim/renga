@@ -14,28 +14,43 @@
           "capabilities": {
             "description": "Capabilities the collector can run now.",
             "items": {
-              "maxLength": 255,
+              "description": "Must not be blank. At most 255 characters.",
               "minLength": 1,
-              "pattern": "\\S",
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "metadata": {
             "description": "Agent metadata, stored with the source. Must encode to at most 16000 bytes of JSON.",
             "properties": {
               "agent_version": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observation_queue": {
                 "$ref": "#/components/schemas/ObservationQueue"
               }
             },
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "source": {
-            "$ref": "#/components/schemas/SourceIdentity"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -114,39 +129,55 @@
         "description": "The host as the agent sees it. Fields the server assigns, such as `id`, are rejected.",
         "properties": {
           "components": {
-            "description": "Hardware components. Each is an object with a `kind` discriminator; its other fields depend on the kind.",
-            "items": {
-              "type": "object"
-            },
-            "type": "array"
+            "description": "Hardware components, stored as reported. The agent sends objects with a `kind` discriminator whose other fields depend on the kind.",
+            "items": true,
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "attributes": {
             "description": "Descriptive host fields. `hostname` and `fqdn` must match the identifiers of the same name, ignoring case and surrounding whitespace.",
             "properties": {
               "asset_tag": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "fqdn": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "hostname": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "id": false,
               "model": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "organization_id": false,
               "resource_id": false,
               "source_id": false,
               "sync_run_id": false,
               "vendor": {
-                "maxLength": 255,
-                "type": "string"
+                "description": "At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "type": "object"
@@ -186,16 +217,14 @@
               "bmc_address": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -205,16 +234,14 @@
               "dmi_uuid": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -222,30 +249,26 @@
                 ]
               },
               "fqdn": {
-                "maxLength": 255,
+                "description": "Must not be blank. At most 255 characters.",
                 "minLength": 1,
-                "pattern": "\\S",
                 "type": "string"
               },
               "hostname": {
-                "maxLength": 255,
+                "description": "Must not be blank. At most 255 characters.",
                 "minLength": 1,
-                "pattern": "\\S",
                 "type": "string"
               },
               "mac_address": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -255,16 +278,14 @@
               "machine_id": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -274,16 +295,14 @@
               "provider_instance_id": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -293,16 +312,14 @@
               "serial_number": {
                 "anyOf": [
                   {
-                    "maxLength": 255,
+                    "description": "Must not be blank. At most 255 characters.",
                     "minLength": 1,
-                    "pattern": "\\S",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "maxLength": 255,
+                      "description": "Must not be blank. At most 255 characters.",
                       "minLength": 1,
-                      "pattern": "\\S",
                       "type": "string"
                     },
                     "type": "array"
@@ -317,14 +334,17 @@
             "items": {
               "$ref": "#/components/schemas/Interface"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "kind": {
             "const": "server"
           },
           "labels": {
             "additionalProperties": {
-              "maxLength": 255,
+              "description": "At most 255 characters.",
               "type": "string"
             },
             "description": "Operator-configured labels from the agent configuration.",
@@ -370,11 +390,17 @@
                       "type": "string"
                     },
                     "metadata": {
-                      "type": "object"
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     },
                     "scope": {
-                      "maxLength": 255,
-                      "type": "string"
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -384,7 +410,10 @@
                 }
               ]
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "kind": {
             "enum": [
@@ -400,20 +429,28 @@
           },
           "mac_address": {
             "description": "A MAC address in any common notation.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "metadata": {
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "mtu": {
             "maximum": 2147483647,
             "minimum": 1,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
-            "maxLength": 255,
+            "description": "Must not be blank. At most 255 characters.",
             "minLength": 1,
-            "pattern": "\\S",
             "type": "string"
           },
           "neighbors": {
@@ -431,10 +468,9 @@
                   "type": "string"
                 },
                 "remote_chassis_id": {
-                  "description": "Must be a MAC or network address when its kind says so.",
+                  "description": "Must be a MAC or network address when its kind says so. Must not be blank.",
                   "maxLength": 255,
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 },
                 "remote_chassis_id_kind": {
@@ -447,16 +483,15 @@
                   "type": "string"
                 },
                 "remote_port_description": {
+                  "description": "Must not be blank.",
                   "maxLength": 255,
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 },
                 "remote_port_id": {
-                  "description": "Must be a MAC address when its kind says so.",
+                  "description": "Must be a MAC address when its kind says so. Must not be blank.",
                   "maxLength": 255,
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 },
                 "remote_port_id_kind": {
@@ -468,9 +503,9 @@
                   "type": "string"
                 },
                 "remote_system_name": {
+                  "description": "Must not be blank.",
                   "maxLength": 255,
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 },
                 "ttl_seconds": {
@@ -510,10 +545,8 @@
                   "type": "object"
                 },
                 "target": {
-                  "description": "The name of the related interface.",
-                  "maxLength": 255,
+                  "description": "The name of the related interface. Must not be blank. At most 255 characters.",
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 }
               },
@@ -529,17 +562,23 @@
             "description": "The source-local routing domain (VRF) this interface belongs to. Null withdraws an earlier claim; omitting it says nothing.",
             "properties": {
               "key": {
+                "description": "Must not be blank.",
                 "maxLength": 255,
                 "minLength": 1,
-                "pattern": "\\S",
                 "type": "string"
               },
               "metadata": {
-                "type": "object"
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "route_distinguisher": {
                 "description": "At most 255 bytes.",
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -553,7 +592,10 @@
           "speed_mbps": {
             "maximum": 2147483647,
             "minimum": 1,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "status": {
             "enum": [
@@ -578,17 +620,17 @@
             "items": {
               "properties": {
                 "key": {
-                  "description": "Source-local VLAN identity, at most 2000 bytes. Defaults to the scope and VID.",
-                  "pattern": "\\S",
+                  "description": "Source-local VLAN identity, at most 2000 bytes and not blank. Defaults to the scope and VID.",
+                  "minLength": 1,
                   "type": "string"
                 },
                 "metadata": {
                   "type": "object"
                 },
                 "scope": {
+                  "description": "Must not be blank.",
                   "maxLength": 255,
                   "minLength": 1,
-                  "pattern": "\\S",
                   "type": "string"
                 },
                 "tagging_mode": {
@@ -621,7 +663,7 @@
       "JobLease": {
         "title": "JobLease",
         "additionalProperties": false,
-        "description": "Jobs leased to the calling installation, possibly none. Each lease lasts until `lease_expires_at`; every accepted report extends it.",
+        "description": "Jobs leased to the calling installation, possibly none. Each lease lasts until `lease_expires_at`; every newly recorded report extends it.",
         "properties": {
           "jobs": {
             "items": {
@@ -648,7 +690,7 @@
                   "type": "string"
                 },
                 "not_after": {
-                  "description": "The job expires if it has not finished by then.",
+                  "description": "After this time the job is no longer leased or retried.",
                   "format": "date-time",
                   "type": [
                     "string",
@@ -656,7 +698,7 @@
                   ]
                 },
                 "output_limit_bytes": {
-                  "description": "Budget for all report payloads in this attempt.",
+                  "description": "Budget for all report payloads, across every attempt.",
                   "minimum": 0,
                   "type": [
                     "integer",
@@ -731,15 +773,7 @@
           },
           "payload": {
             "default": {},
-            "description": "Counts toward the job's output limit. `succeeded` carries `result`, an object checked against the capability; `failed` carries a non-empty `reason`.",
-            "properties": {
-              "reason": {
-                "type": "string"
-              },
-              "result": {
-                "type": "object"
-              }
-            },
+            "description": "Opaque for `started`, `progress`, and `output`. A `succeeded` report carries `result`, an object checked against the capability; a `failed` report carries a non-empty string `reason`. Counts toward the job's output limit.",
             "type": "object"
           },
           "sequence": {
@@ -784,7 +818,7 @@
                 "type": "string"
               },
               "lease_expires_at": {
-                "description": "The extended lease, or null once the job finished.",
+                "description": "When the lease expires: extended by a newly recorded report, unchanged by a replayed one, and null once the job finished.",
                 "format": "date-time",
                 "type": [
                   "string",
@@ -828,15 +862,12 @@
         "description": "One point-in-time report about the collector's host. The encoded body must be at most 256000 bytes. Unknown top-level fields are stored with the observation but not interpreted.",
         "properties": {
           "observation_id": {
-            "description": "Idempotency key chosen by the agent. Resending the same payload under the same key is a duplicate; a different payload under it is a conflict.",
-            "maxLength": 255,
+            "description": "Idempotency key chosen by the agent. Resending the same payload under the same key is a duplicate; a different payload under it is a conflict. Must not be blank; at most 255 characters.",
             "minLength": 1,
-            "pattern": "\\S",
             "type": "string"
           },
           "observed_at": {
-            "description": "When the agent collected the data. At most 300 seconds in the future.",
-            "format": "date-time",
+            "description": "When the agent collected the data. At most 300 seconds in the future. An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",
             "type": "string"
           },
           "resources": {
@@ -871,7 +902,14 @@
             "type": "object"
           },
           "source": {
-            "$ref": "#/components/schemas/SourceIdentity"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1059,13 +1097,20 @@
         "properties": {
           "kind": {
             "enum": [
-              "host_agent"
+              "host_agent",
+              null
             ],
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "source_id": {
             "description": "The source's ID or name.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -1330,7 +1375,7 @@
             "description": "The report is invalid."
           }
         },
-        "description": "Records a numbered report on a job the installation holds and extends its lease. The response says whether cancellation was requested.",
+        "description": "Records a numbered report on a job the installation holds and extends its lease. Resending a recorded sequence replays it without recording or extending anything. The response says whether cancellation was requested.",
         "operationId": "reportAgentJob",
         "parameters": [
           {

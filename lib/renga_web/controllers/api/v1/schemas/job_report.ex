@@ -26,12 +26,9 @@ defmodule RengaWeb.Api.V1.Schemas.JobReport do
           type: :object,
           default: %{},
           description:
-            "Counts toward the job's output limit. `succeeded` carries `result`, an object " <>
-              "checked against the capability; `failed` carries a non-empty `reason`.",
-          properties: %{
-            result: %{type: :object},
-            reason: %{type: :string}
-          }
+            "Opaque for `started`, `progress`, and `output`. A `succeeded` report carries " <>
+              "`result`, an object checked against the capability; a `failed` report " <>
+              "carries a non-empty string `reason`. Counts toward the job's output limit."
         }
       },
       required: [:lease_token, :sequence, :type]

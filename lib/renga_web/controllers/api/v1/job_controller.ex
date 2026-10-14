@@ -69,6 +69,7 @@ defmodule RengaWeb.Api.V1.JobController do
     summary: "Report on a leased job",
     description:
       "Records a numbered report on a job the installation holds and extends its lease. " <>
+        "Resending a recorded sequence replays it without recording or extending anything. " <>
         "The response says whether cancellation was requested.",
     security: Schemas.intake_security(),
     parameters: [

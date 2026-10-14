@@ -14,12 +14,15 @@ defmodule RengaWeb.Api.V1.Schemas.Interface do
         name: non_blank_string(),
         kind: %{type: :string, enum: contract.interface_kinds},
         status: %{type: :string, enum: contract.interface_statuses},
-        mac_address: %{type: :string, description: "A MAC address in any common notation."},
-        mtu: positive_int32,
-        speed_mbps: positive_int32,
-        metadata: free_object(),
+        mac_address: %{
+          type: [:string, :null],
+          description: "A MAC address in any common notation."
+        },
+        mtu: nullable(positive_int32),
+        speed_mbps: nullable(positive_int32),
+        metadata: nullable(free_object()),
         addresses: %{
-          type: :array,
+          type: [:array, :null],
           items: %{anyOf: [%{type: :string, description: "An IP address or CIDR."}, address()]}
         },
         routing_domain: routing_domain(),
@@ -52,8 +55,8 @@ defmodule RengaWeb.Api.V1.Schemas.Interface do
       properties: %{
         address: %{type: :string, description: "An IP address or CIDR."},
         kind: %{type: :string, enum: contract().address_kinds},
-        scope: string(),
-        metadata: free_object()
+        scope: nullable(string()),
+        metadata: nullable(free_object())
       },
       required: [:address]
     }
@@ -66,9 +69,9 @@ defmodule RengaWeb.Api.V1.Schemas.Interface do
         "The source-local routing domain (VRF) this interface belongs to. Null withdraws " <>
           "an earlier claim; omitting it says nothing.",
       properties: %{
-        key: non_blank_string(),
-        route_distinguisher: %{type: :string, description: "At most 255 bytes."},
-        metadata: free_object()
+        key: code_point_bounded_string(),
+        route_distinguisher: %{type: [:string, :null], description: "At most 255 bytes."},
+        metadata: nullable(free_object())
       },
       required: [:key]
     }
@@ -81,12 +84,12 @@ defmodule RengaWeb.Api.V1.Schemas.Interface do
         vid: %{type: :integer, minimum: 1, maximum: 4094},
         key: %{
           type: :string,
-          pattern: "\\S",
+          minLength: 1,
           description:
             "Source-local VLAN identity, at most #{contract.max_source_local_vlan_key_bytes} " <>
-              "bytes. Defaults to the scope and VID."
+              "bytes and not blank. Defaults to the scope and VID."
         },
-        scope: non_blank_string(),
+        scope: code_point_bounded_string(),
         tagging_mode: %{type: :string, enum: contract.vlan_tagging_modes},
         metadata: free_object()
       },
@@ -100,12 +103,12 @@ defmodule RengaWeb.Api.V1.Schemas.Interface do
       properties: %{
         protocol: %{type: :string, enum: contract.neighbor_protocols},
         remote_chassis_id:
-          non_blank_string("Must be a MAC or network address when its kind says so."),
+          code_point_bounded_string("Must be a MAC or network address when its kind says so."),
         remote_chassis_id_kind: %{type: :string, enum: contract.neighbor_chassis_id_kinds},
-        remote_system_name: non_blank_string(),
-        remote_port_id: non_blank_string("Must be a MAC address when its kind says so."),
+        remote_system_name: code_point_bounded_string(),
+        remote_port_id: code_point_bounded_string("Must be a MAC address when its kind says so."),
         remote_port_id_kind: %{type: :string, enum: contract.neighbor_port_id_kinds},
-        remote_port_description: non_blank_string(),
+        remote_port_description: code_point_bounded_string(),
         ttl_seconds: %{type: :integer, minimum: 1, maximum: 65_535},
         metadata: free_object()
       },

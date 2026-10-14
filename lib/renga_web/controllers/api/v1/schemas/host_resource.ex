@@ -21,16 +21,16 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
           "identifiers" => identifiers(contract),
           "attributes" => attributes(contract),
           "interfaces" => %{
-            type: :array,
+            type: [:array, :null],
             items: Interface,
             description: "Network interfaces. Names must be unique after trimming."
           },
           "components" => %{
-            type: :array,
-            items: free_object(),
+            type: [:array, :null],
+            items: true,
             description:
-              "Hardware components. Each is an object with a `kind` discriminator; its " <>
-                "other fields depend on the kind."
+              "Hardware components, stored as reported. The agent sends objects with a " <>
+                "`kind` discriminator whose other fields depend on the kind."
           },
           "labels" => labels(contract)
         }),
@@ -68,7 +68,7 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
       properties:
         contract.prohibited_resource_keys
         |> forbidden()
-        |> Map.merge(Map.new(contract.host_projection_fields, &{&1, string()}))
+        |> Map.merge(Map.new(contract.host_projection_fields, &{&1, nullable(string())}))
     }
   end
 
@@ -81,7 +81,10 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
         maxLength: contract.max_label_key_length,
         pattern: json_pattern(contract.label_key_pattern)
       },
-      additionalProperties: %{type: :string, maxLength: contract.max_label_value_length}
+      additionalProperties: %{
+        type: :string,
+        description: "At most #{contract.max_label_value_length} characters."
+      }
     }
   end
 

@@ -17,22 +17,20 @@ defmodule RengaWeb.Api.V1.Schemas.Observation do
           "stored with the observation but not interpreted.",
       type: :object,
       properties: %{
-        observation_id:
-          %{
-            non_blank_string()
-            | maxLength: contract.max_observation_id_length
-          }
-          |> Map.put(
-            :description,
+        observation_id: %{
+          type: :string,
+          minLength: 1,
+          description:
             "Idempotency key chosen by the agent. Resending the same payload under the " <>
-              "same key is a duplicate; a different payload under it is a conflict."
-          ),
+              "same key is a duplicate; a different payload under it is a conflict. Must " <>
+              "not be blank; at most #{contract.max_observation_id_length} characters."
+        },
         observed_at:
-          timestamp(
+          iso8601_timestamp(
             "When the agent collected the data. At most " <>
               "#{contract.max_future_observation_skew_seconds} seconds in the future."
           ),
-        source: SourceIdentity,
+        source: nullable(SourceIdentity),
         resources: %{
           type: :array,
           items: HostResource,
