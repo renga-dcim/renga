@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::{
     fmt,
     path::Path,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, PoisonError, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -33,6 +33,32 @@ const MAX_JOBS_PER_PASS: usize = 10;
 const HEARTBEAT: Duration = Duration::from_secs(20);
 /// How often the worker looks at agent shutdown while a job runs.
 const POLL: Duration = Duration::from_millis(250);
+
+/// Identifies the configuration a pass was built from. Reload takes the write
+/// lock; capability startup holds a read lock through thread creation, so a
+/// successful reload and the start of new work have one unambiguous order.
+#[derive(Clone, Default)]
+pub struct PolicyGeneration(Arc<RwLock<u64>>);
+
+impl PolicyGeneration {
+    pub fn current(&self) -> u64 {
+        *self.0.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn advance(&self) {
+        let mut generation = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        *generation += 1;
+    }
+
+    fn still_current(&self, expected: u64) -> bool {
+        self.current() == expected
+    }
+
+    fn if_current<T>(&self, expected: u64, operation: impl FnOnce() -> T) -> Option<T> {
+        let generation = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        (*generation == expected).then(operation)
+    }
+}
 
 /// The part of Renga's API the worker uses, so tests can script it.
 pub trait JobApi {
@@ -74,6 +100,8 @@ pub struct Worker<'a, A: JobApi> {
     pub state_directory: &'a Path,
     /// Agent shutdown.
     pub stopped: &'a Cancellation,
+    pub policy_generation: &'a PolicyGeneration,
+    pub expected_generation: u64,
     pub heartbeat: Duration,
 }
 
@@ -84,6 +112,8 @@ impl<'a, A: JobApi> Worker<'a, A> {
         policy: &'a JobPolicy,
         state_directory: &'a Path,
         stopped: &'a Cancellation,
+        policy_generation: &'a PolicyGeneration,
+        expected_generation: u64,
     ) -> Self {
         Self {
             api,
@@ -91,6 +121,8 @@ impl<'a, A: JobApi> Worker<'a, A> {
             policy,
             state_directory,
             stopped,
+            policy_generation,
+            expected_generation,
             heartbeat: HEARTBEAT,
         }
     }
@@ -98,6 +130,9 @@ impl<'a, A: JobApi> Worker<'a, A> {
     /// Leases and runs jobs one at a time until none are waiting. Returns
     /// how many jobs it handled.
     pub fn run_pass(&self) -> Result<usize, PassError> {
+        if !self.policy_current() {
+            return Ok(0);
+        }
         let keys = self.catalog.enabled_keys(self.policy);
         if keys.is_empty() {
             return Ok(0);
@@ -106,8 +141,11 @@ impl<'a, A: JobApi> Worker<'a, A> {
         // leases nothing until the state directory is usable again.
         let mut records = JobRecords::open(self.state_directory).map_err(PassError::Record)?;
         let mut handled = 0;
-        while handled < MAX_JOBS_PER_PASS && !self.stopped.cancelled() {
+        while handled < MAX_JOBS_PER_PASS && !self.stopped.cancelled() && self.policy_current() {
             let jobs = self.api.lease(&keys, 1).map_err(PassError::Lease)?;
+            if !self.policy_current() {
+                break;
+            }
             if jobs.is_empty() {
                 break;
             }
@@ -120,6 +158,9 @@ impl<'a, A: JobApi> Worker<'a, A> {
     }
 
     fn handle(&self, job: LeasedJob, records: &mut JobRecords) {
+        if !self.policy_current() {
+            return;
+        }
         let mut reporter = Reporter::new(self.api, &job);
 
         let Some(capability) = self.catalog.enabled(&job.capability, self.policy) else {
@@ -168,11 +209,17 @@ impl<'a, A: JobApi> Worker<'a, A> {
             return;
         }
 
+        if !self.policy_current() {
+            return;
+        }
         let Some(ack) = reporter.send(ReportType::Started, &json!({})) else {
             // Without a confirmed lease the job is not run; the record lets a
             // redelivery decide by its retry class.
             return;
         };
+        if !self.policy_current() {
+            return;
+        }
         let cancel_requested = ack.cancel_requested;
 
         info!(job_id = %job.id, capability = %job.capability, attempt = job.attempt, "running job");
@@ -190,6 +237,11 @@ impl<'a, A: JobApi> Worker<'a, A> {
         }
     }
 
+    fn policy_current(&self) -> bool {
+        self.policy_generation
+            .still_current(self.expected_generation)
+    }
+
     /// Runs the capability on its own thread, posting heartbeats so the lease
     /// stays held. Returns `None` when the job stopped unfinished because the
     /// agent is shutting down or the lease is gone.
@@ -205,13 +257,15 @@ impl<'a, A: JobApi> Worker<'a, A> {
         let deadline = Instant::now() + timeout;
         let cancellation = Cancellation::default();
         let (sender, receiver) = mpsc::channel();
-        let runner = {
-            let cancellation = cancellation.clone();
-            let parameters = job.parameters.clone();
-            thread::spawn(move || {
-                let _ = sender.send(capability.run(&parameters, &cancellation));
-            })
-        };
+        let runner = self
+            .policy_generation
+            .if_current(self.expected_generation, || {
+                let cancellation = cancellation.clone();
+                let parameters = job.parameters.clone();
+                thread::spawn(move || {
+                    let _ = sender.send(capability.run(&parameters, &cancellation));
+                })
+            })?;
 
         let mut next_heartbeat = Instant::now() + self.heartbeat;
         let mut cancel_requested = false;
@@ -366,7 +420,13 @@ mod tests {
         jobs::{RiskClass, Selector},
         transport::FailureKind,
     };
-    use std::{cell::RefCell, collections::VecDeque, fs, path::PathBuf, sync::Mutex};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+        fs,
+        path::PathBuf,
+        sync::Mutex,
+    };
 
     /// Scripted Renga: hands out queued leases and answers reports in order.
     #[derive(Default)]
@@ -374,6 +434,8 @@ mod tests {
         leases: RefCell<VecDeque<Vec<LeasedJob>>>,
         answers: RefCell<VecDeque<Result<ReportAck, TransportError>>>,
         reports: RefCell<Vec<(Uuid, u64, ReportType, Value)>>,
+        lease_calls: Cell<usize>,
+        reload_on_lease: RefCell<Option<(usize, PolicyGeneration)>>,
     }
 
     impl FakeApi {
@@ -387,6 +449,14 @@ mod tests {
             self.answers.borrow_mut().push_back(answer);
         }
 
+        fn lease_next(&self, job: LeasedJob) {
+            self.leases.borrow_mut().push_back(vec![job]);
+        }
+
+        fn reload_on_lease(&self, call: usize, generation: PolicyGeneration) {
+            *self.reload_on_lease.borrow_mut() = Some((call, generation));
+        }
+
         fn kinds(&self) -> Vec<ReportType> {
             self.reports.borrow().iter().map(|r| r.2).collect()
         }
@@ -398,6 +468,16 @@ mod tests {
 
     impl JobApi for FakeApi {
         fn lease(&self, _: &[String], _: u32) -> Result<Vec<LeasedJob>, TransportError> {
+            let call = self.lease_calls.get() + 1;
+            self.lease_calls.set(call);
+            if self
+                .reload_on_lease
+                .borrow()
+                .as_ref()
+                .is_some_and(|(reload_on, _)| *reload_on == call)
+            {
+                self.reload_on_lease.borrow().as_ref().unwrap().1.advance();
+            }
             Ok(self.leases.borrow_mut().pop_front().unwrap_or_default())
         }
 
@@ -493,6 +573,7 @@ mod tests {
         catalog: Catalog,
         policy: JobPolicy,
         stopped: Cancellation,
+        policy_generation: PolicyGeneration,
     }
 
     impl Fixture {
@@ -504,12 +585,20 @@ mod tests {
                 catalog: Catalog::new(vec![capability]),
                 policy: JobPolicy::default(),
                 stopped: Cancellation::default(),
+                policy_generation: PolicyGeneration::default(),
             }
         }
 
         fn pass(&self, api: &FakeApi) -> usize {
-            let mut worker =
-                Worker::new(api, &self.catalog, &self.policy, &self.state, &self.stopped);
+            let mut worker = Worker::new(
+                api,
+                &self.catalog,
+                &self.policy,
+                &self.state,
+                &self.stopped,
+                &self.policy_generation,
+                self.policy_generation.current(),
+            );
             worker.heartbeat = Duration::from_millis(20);
             worker.run_pass().unwrap()
         }
@@ -631,6 +720,31 @@ mod tests {
         fixture.pass(&api);
         assert_eq!(api.kinds(), [ReportType::Failed]);
         assert_eq!(*capability.runs.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn reload_while_leasing_prevents_the_returned_job_from_starting() {
+        let capability = fake(RetryClass::Idempotent, succeeds());
+        let fixture = Fixture::new(capability.clone());
+        let api = FakeApi::lease_once(leased(Uuid::new_v4()));
+        api.reload_on_lease(1, fixture.policy_generation.clone());
+
+        assert_eq!(fixture.pass(&api), 0);
+        assert_eq!(*capability.runs.lock().unwrap(), 0);
+        assert!(api.reports.borrow().is_empty());
+    }
+
+    #[test]
+    fn reload_between_jobs_retires_the_existing_pass() {
+        let capability = fake(RetryClass::Idempotent, succeeds());
+        let fixture = Fixture::new(capability.clone());
+        let api = FakeApi::lease_once(leased(Uuid::new_v4()));
+        api.lease_next(leased(Uuid::new_v4()));
+        api.reload_on_lease(2, fixture.policy_generation.clone());
+
+        assert_eq!(fixture.pass(&api), 1);
+        assert_eq!(*capability.runs.lock().unwrap(), 1);
+        assert_eq!(api.kinds(), [ReportType::Started, ReportType::Succeeded]);
     }
 
     #[test]

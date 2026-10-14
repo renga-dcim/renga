@@ -3,7 +3,11 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
-    jobs::{inventory_collect::InventoryCollect, worker::Worker, Catalog, JobPolicy},
+    jobs::{
+        inventory_collect::InventoryCollect,
+        worker::{PolicyGeneration, Worker},
+        Catalog, JobPolicy,
+    },
     payload::{CheckIn, CheckInAck, Observation, QueueReport},
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
@@ -198,6 +202,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         warn!(error = %failure, "startup delivery failed: check-in");
     }
     let mut job_worker = None;
+    let policy_generation = PolicyGeneration::default();
     if leases_now(&checkin) {
         spawn_job_pass(
             &mut job_worker,
@@ -206,6 +211,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             &config,
             &queue,
             &args.state_directory,
+            &policy_generation,
         );
     }
     if stopped.cancelled() {
@@ -246,6 +252,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                             &config,
                             &queue,
                             &args.state_directory,
+                            &policy_generation,
                         );
                     }
                     scheduler.reschedule(job, Instant::now(), config.checkin_interval);
@@ -294,6 +301,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         Ok((new_config, new_client)) => {
                             config = new_config;
                             client = new_client;
+                            policy_generation.advance();
                             scheduler.refresh_intervals(
                                 Instant::now(),
                                 old_checkin_interval,
@@ -398,6 +406,7 @@ fn spawn_job_pass(
     config: &Config,
     queue: &Arc<Mutex<DeliveryQueue>>,
     state_directory: &Path,
+    policy_generation: &PolicyGeneration,
 ) {
     if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
         return;
@@ -410,8 +419,18 @@ fn spawn_job_pass(
     let policy = config.jobs.clone();
     let catalog = job_catalog(&client, &config.labels, queue);
     let state_directory = state_directory.to_path_buf();
+    let expected_generation = policy_generation.current();
+    let policy_generation = policy_generation.clone();
     *worker = Some(thread::spawn(move || {
-        let worker = Worker::new(&client, &catalog, &policy, &state_directory, &stopped);
+        let worker = Worker::new(
+            &client,
+            &catalog,
+            &policy,
+            &state_directory,
+            &stopped,
+            &policy_generation,
+            expected_generation,
+        );
         match worker.run_pass() {
             Ok(0) => {}
             Ok(handled) => info!(handled, "job pass finished"),
