@@ -226,7 +226,7 @@ defmodule RengaWeb.JobsLive do
           id="jobs-list"
           rows={@streams.jobs}
           row_item={fn {_id, job} -> job end}
-          row_navigate={fn {_id, job} -> job_path(job, @group) end}
+          row_patch={fn {_id, job} -> job_path(job, @group) end}
           row_selected={fn {_id, job} -> @job && job.id == @job.id end}
           overflow="clip"
         >

@@ -61,10 +61,17 @@ defmodule RengaWeb.Browser.JobsTest do
     )
   end
 
-  test "loads an older page on a phone", %{conn: conn, job: oldest, scope: scope, agent: agent} do
+  test "an older job keeps loaded rows and focus through both panel close paths", %{
+    conn: conn,
+    job: oldest,
+    scope: scope,
+    agent: agent
+  } do
     for _ <- 1..50 do
       {:ok, _job} = Jobs.create_job(scope, agent.id, "inventory.collect@1", %{})
     end
+
+    link = "#jobs-#{oldest.id}-link"
 
     conn
     |> visit("/activity/jobs")
@@ -73,6 +80,19 @@ defmodule RengaWeb.Browser.JobsTest do
     |> PhoenixTest.Playwright.click("#jobs-load-older")
     |> assert_has("#job-#{oldest.id}-state")
     |> refute_has("#jobs-load-older")
+    |> evaluate("document.querySelector(#{Jason.encode!(link)}).focus()")
+    |> press(":focus", "Enter")
+    |> assert_has("#job-panel [role=dialog]")
+    |> press("#job-panel [role=dialog]", "Escape")
+    |> refute_has("#job-panel [role=dialog]")
+    |> assert_has("#job-#{oldest.id}-state")
+    |> assert_has("#{link}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#job-panel [role=dialog]")
+    |> PhoenixTest.Playwright.click("#job-close")
+    |> refute_has("#job-panel [role=dialog]")
+    |> assert_has("#job-#{oldest.id}-state")
+    |> assert_has("#{link}:focus")
   end
 
   test "the job panel fits a phone and its buttons are tappable", %{conn: conn, job: job} do
