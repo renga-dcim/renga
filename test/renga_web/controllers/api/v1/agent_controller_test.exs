@@ -60,7 +60,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
     test "requires a valid organization intake key", %{conn: conn} do
       conn = post(conn, ~p"/api/v1/agent/checkins", %{})
 
-      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(conn, 401)
     end
 
     test "requires a valid installation identity with the intake key" do
@@ -76,7 +76,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
 
         conn = post(conn, ~p"/api/v1/agent/checkins", %{})
 
-        assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+        assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(conn, 401)
       end
     end
 
@@ -103,7 +103,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                  "id" => agent_id,
                  "lease_expires_at" => lease_expires_at
                }
-             } = json_response(conn, 202)
+             } = valid_api_response(conn, 202)
 
       assert source_id == source.id
       assert {:ok, _timestamp, 0} = DateTime.from_iso8601(last_seen_at)
@@ -129,7 +129,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
           "capabilities" => ["host.inventory"]
         })
 
-      assert %{"status" => "accepted"} = json_response(conn, 202)
+      assert %{"status" => "accepted"} = valid_api_response(conn, 202)
     end
 
     test "rejects non-string agent versions without crashing", %{conn: conn} do
@@ -148,7 +148,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                  "errors" => [
                    %{"path" => "metadata.agent_version", "message" => "must be a string"}
                  ]
-               } = json_response(conn, 422)
+               } = valid_api_response(conn, 422)
       end
     end
 
@@ -170,7 +170,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                    "message" => "must be at most 255 characters"
                  }
                ]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "stores the observation queue health the agent reports", %{conn: conn} do
@@ -190,7 +190,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       conn =
         check_in_json(conn, token, %{"agent_version" => "0.2.0", "observation_queue" => queue})
 
-      %{"agent" => %{"id" => agent_id}} = json_response(conn, 202)
+      %{"agent" => %{"id" => agent_id}} = valid_api_response(conn, 202)
       agent = Inventory.get_agent!(scope, agent_id)
 
       assert %{entries: 3, bytes: 12_000, oldest_age_seconds: 5_400, dropped: 3} =
@@ -199,7 +199,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       # An empty queue has no oldest entry, and each check-in replaces the last report.
       empty = %{queue | "entries" => 0, "bytes" => 0, "oldest_age_seconds" => nil}
       conn = check_in_json(build_conn(), token, %{"observation_queue" => empty})
-      assert json_response(conn, 202)
+      assert valid_api_response(conn, 202)
 
       assert %{entries: 0, oldest_age_seconds: nil} =
                scope
@@ -209,7 +209,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       max = 9_007_199_254_740_991
       boundary = %{queue | "entries" => max, "bytes" => max, "oldest_age_seconds" => max}
       conn = check_in_json(build_conn(), token, %{"observation_queue" => boundary})
-      assert json_response(conn, 202)
+      assert valid_api_response(conn, 202)
 
       assert %{entries: ^max, bytes: ^max, oldest_age_seconds: ^max} =
                scope
@@ -252,7 +252,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
         conn = check_in_json(conn, token, %{"observation_queue" => queue})
 
         assert %{"errors" => [%{"path" => ^path, "message" => ^message}]} =
-                 json_response(conn, 422)
+                 valid_api_response(conn, 422)
       end
     end
 
@@ -273,7 +273,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                "errors" => [
                  %{"path" => "metadata", "message" => "must encode to at most 16000 bytes"}
                ]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "rejects capabilities longer than the storage limit", %{conn: conn} do
@@ -291,7 +291,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
                "errors" => [
                  %{"path" => "capabilities", "message" => "must be at most 255 characters"}
                ]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "returns validation errors when agent registration fails", %{conn: conn} do
@@ -310,7 +310,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "agent.name", "message" => "can't be blank"}]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
 
     test "rejects payloads that claim a different source", %{conn: conn} do
@@ -326,7 +326,7 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       assert %{
                "status" => "rejected",
                "errors" => [%{"path" => "source.source_id"}]
-             } = json_response(conn, 422)
+             } = valid_api_response(conn, 422)
     end
   end
 end

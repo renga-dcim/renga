@@ -51,6 +51,12 @@ defmodule RengaWeb.Router do
       live_dashboard "/dashboard", metrics: RengaWeb.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
+
+    # Machine API reference: the live OpenAPI document and a Redoc page for it.
+    scope "/dev/api" do
+      get "/openapi.json", Oaskit.SpecController, spec: RengaWeb.ApiSpec
+      get "/", Oaskit.SpecController, redoc: "/dev/api/openapi.json"
+    end
   end
 
   # The living design system (docs/design-system.md). It shows sample data

@@ -62,6 +62,7 @@ defmodule Renga.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      {:oaskit, "~> 0.17.1"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
@@ -87,6 +88,8 @@ defmodule Renga.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       "ecto.migration": ["ecto.migrate", "ecto.dump"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      # Regenerates the committed OpenAPI document; a test fails when it is stale.
+      "api.spec": ["openapi.dump RengaWeb.ApiSpec --pretty -o priv/openapi/v1.json"],
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",

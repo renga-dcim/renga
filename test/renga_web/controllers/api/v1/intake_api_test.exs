@@ -30,10 +30,10 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     second = build_conn() |> authorize(token, @second_installation_id) |> post_check_in()
 
     assert %{"status" => "accepted", "source" => %{"id" => first_source_id}} =
-             json_response(first, 202)
+             valid_api_response(first, 202)
 
     assert %{"status" => "accepted", "source" => %{"id" => second_source_id}} =
-             json_response(second, 202)
+             valid_api_response(second, 202)
 
     refute first_source_id == second_source_id
 
@@ -52,10 +52,10 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     second = build_conn() |> authorize(token, @first_installation_id) |> post_check_in()
 
     assert %{"source" => %{"id" => source_id}, "agent" => %{"id" => agent_id}} =
-             json_response(first, 202)
+             valid_api_response(first, 202)
 
     assert %{"source" => %{"id" => ^source_id}, "agent" => %{"id" => ^agent_id}} =
-             json_response(second, 202)
+             valid_api_response(second, 202)
 
     assert length(Inventory.list_sources(scope)) == 1
     assert length(Inventory.list_agents(scope)) == 1
@@ -76,7 +76,7 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     assert %{
              "status" => "accepted",
              "observation" => %{"id" => observation_id, "source_id" => source_id}
-           } = json_response(conn, 202)
+           } = valid_api_response(conn, 202)
 
     [agent] = Inventory.list_agents(scope)
     assert agent.installation_id == @first_installation_id
@@ -101,8 +101,8 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     first = conn |> authorize(token, @first_installation_id) |> post_check_in()
     other = build_conn() |> authorize(other_token, @first_installation_id) |> post_check_in()
 
-    assert %{"source" => %{"id" => first_source_id}} = json_response(first, 202)
-    assert %{"source" => %{"id" => other_source_id}} = json_response(other, 202)
+    assert %{"source" => %{"id" => first_source_id}} = valid_api_response(first, 202)
+    assert %{"source" => %{"id" => other_source_id}} = valid_api_response(other, 202)
     refute first_source_id == other_source_id
     assert [%{installation_id: @first_installation_id}] = Inventory.list_agents(scope)
     assert [%{installation_id: @first_installation_id}] = Inventory.list_agents(other_scope)
@@ -115,11 +115,11 @@ defmodule RengaWeb.Api.V1.IntakeApiTest do
     token: token
   } do
     accepted = conn |> authorize(token, @first_installation_id) |> post_check_in()
-    assert %{"status" => "accepted"} = json_response(accepted, 202)
+    assert %{"status" => "accepted"} = valid_api_response(accepted, 202)
     assert {:ok, _key} = Inventory.revoke_intake_api_key(scope, key.id)
 
     rejected = build_conn() |> authorize(token, @first_installation_id) |> post_check_in()
-    assert %{"errors" => [%{"path" => "authorization"}]} = json_response(rejected, 401)
+    assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(rejected, 401)
     assert length(Inventory.list_agents(scope)) == 1
     assert length(Inventory.list_sources(scope)) == 1
   end
