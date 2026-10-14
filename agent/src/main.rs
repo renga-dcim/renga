@@ -8,6 +8,7 @@ use renga_agent::{
         worker::{PolicyGeneration, Worker},
         Catalog, JobPolicy,
     },
+    notices::{Listener, Notices},
     payload::{CheckIn, CheckInAck, Observation, QueueReport},
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
@@ -205,6 +206,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     }
     let mut job_worker = None;
     let policy_generation = PolicyGeneration::default();
+    let notices = Notices::default();
+    let mut listener = start_listener(&client, &config, &queue, &notices, &stopped);
     if leases_now(&checkin) {
         spawn_job_pass(
             &mut job_worker,
@@ -304,6 +307,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                             config = new_config;
                             client = new_client;
                             policy_generation.advance();
+                            // The socket carries the old credentials and policy.
+                            if let Some(previous) = listener.take() {
+                                previous.stop();
+                            }
+                            listener = start_listener(&client, &config, &queue, &notices, &stopped);
                             scheduler.refresh_intervals(
                                 Instant::now(),
                                 old_checkin_interval,
@@ -325,10 +333,26 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                 }
             }
         }
+        // A notice that arrives while a pass runs stays raised, so the next
+        // pass starts as soon as this one ends.
+        if !job_pass_running(&job_worker) && notices.take() {
+            spawn_job_pass(
+                &mut job_worker,
+                &client,
+                &stopped,
+                &config,
+                &queue,
+                &args.state_directory,
+                &policy_generation,
+            );
+        }
         let wait = scheduler
             .wait(Instant::now())
             .min(Duration::from_millis(250));
         thread::sleep(wait);
+    }
+    if let Some(listener) = listener {
+        listener.stop();
     }
     if let Some(worker) = delivery_worker {
         let _ = worker.handle.join();
@@ -399,6 +423,30 @@ fn leases_now(checkin: &Result<CheckInAck, Box<dyn Error>>) -> bool {
     }
 }
 
+/// Opens the job notice socket when the policy enables a job capability, so
+/// an agent that runs no jobs never connects.
+fn start_listener(
+    client: &HttpClient,
+    config: &Config,
+    queue: &Arc<Mutex<DeliveryQueue>>,
+    notices: &Notices,
+    stopped: &Cancellation,
+) -> Option<Listener> {
+    let catalog = job_catalog(client, &config.labels, queue);
+    if catalog.enabled_keys(&config.jobs).is_empty() {
+        return None;
+    }
+    Some(Listener::spawn(
+        client.notice_endpoint(),
+        notices.clone(),
+        stopped.clone(),
+    ))
+}
+
+fn job_pass_running(worker: &Option<thread::JoinHandle<()>>) -> bool {
+    worker.as_ref().is_some_and(|handle| !handle.is_finished())
+}
+
 /// Starts a job pass on its own thread unless one is still running, so jobs
 /// never delay check-ins or scheduled inventory.
 fn spawn_job_pass(
@@ -410,7 +458,7 @@ fn spawn_job_pass(
     state_directory: &Path,
     policy_generation: &PolicyGeneration,
 ) {
-    if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
+    if job_pass_running(worker) {
         return;
     }
     if let Some(previous) = worker.take() {
