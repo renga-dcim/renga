@@ -21,11 +21,11 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 == Phase 2: Delivery
 
-* [ ] Add `POST /api/v1/agent/jobs/lease` with `SKIP LOCKED` leasing and lease
+* [x] Add `POST /api/v1/agent/jobs/lease` with `SKIP LOCKED` leasing and lease
   tokens.
-* [ ] Add `POST /api/v1/agent/jobs/:id/events` with token checks, lease
+* [x] Add `POST /api/v1/agent/jobs/:id/events` with token checks, lease
   extension, per-sequence idempotency, and cancellation in the response.
-* [ ] Add the `jobs_waiting` hint to check-in responses.
+* [x] Add the `jobs_waiting` hint to check-in responses.
 
 == Phase 3: Agent
 
