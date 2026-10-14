@@ -25,6 +25,14 @@ defmodule RengaWeb.Endpoint do
     websocket: [connect_info: [:user_agent, session: @session_options]],
     longpoll: [connect_info: [:user_agent, session: @session_options]]
 
+  # Agents listen here for job notices (RFD 9). The intake key travels as the
+  # auth token, never in the URL; long polling is off because agents only
+  # speak WebSocket.
+  socket "/api/v1/agent/socket", RengaWeb.AgentSocket,
+    auth_token: true,
+    websocket: [connect_info: [:x_headers]],
+    longpoll: false
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),
