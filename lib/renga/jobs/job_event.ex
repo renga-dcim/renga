@@ -20,6 +20,8 @@ defmodule Renga.Jobs.JobEvent do
 
   schema "job_events" do
     field :sequence, :integer
+    # The agent's own number for the report within an attempt; see report/7.
+    field :report_sequence, :integer
     field :attempt, :integer
     field :type, :string
     field :actor_type, :string
