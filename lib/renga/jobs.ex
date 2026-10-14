@@ -43,9 +43,8 @@ defmodule Renga.Jobs do
 
   @doc "Fetches a job in the scope's organization, or nil."
   def get_job(%Scope{organization_id: organization_id}, id) do
-    with {:ok, id} <- Ecto.UUID.cast(id) do
-      Repo.get_by(Job, id: id, organization_id: organization_id)
-    else
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> Repo.get_by(Job, id: id, organization_id: organization_id)
       :error -> nil
     end
   end
@@ -203,13 +202,15 @@ defmodule Renga.Jobs do
 
   defp fetch_requestable_agent!(organization_id, agent_id, key) do
     agent =
-      with {:ok, agent_id} <- Ecto.UUID.cast(agent_id) do
-        Agent
-        |> where([agent], agent.organization_id == ^organization_id and agent.id == ^agent_id)
-        |> lock("FOR SHARE")
-        |> Repo.one()
-      else
-        :error -> nil
+      case Ecto.UUID.cast(agent_id) do
+        {:ok, agent_id} ->
+          Agent
+          |> where([agent], agent.organization_id == ^organization_id and agent.id == ^agent_id)
+          |> lock("FOR SHARE")
+          |> Repo.one()
+
+        :error ->
+          nil
       end
 
     cond do
@@ -303,24 +304,26 @@ defmodule Renga.Jobs do
     with {:ok, actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
         authorize_member!(scope, ["owner", "admin"])
-        job = lock_job!(scope.organization_id, job_id)
-        now = Renga.Time.utc_now_ms()
 
-        cond do
-          job.state == "queued" ->
-            apply!(job, %{state: "cancelled", finished_at: now}, [{"cancelled", actor, %{}}], now)
-
-          job.state in Job.leased_states() and is_nil(job.cancel_requested_at) ->
-            apply!(job, %{cancel_requested_at: now}, [{"cancel_requested", actor, %{}}], now)
-
-          job.state in Job.leased_states() ->
-            job
-
-          true ->
-            Repo.rollback(:not_cancellable)
-        end
+        scope.organization_id
+        |> lock_job!(job_id)
+        |> cancel!(actor, Renga.Time.utc_now_ms())
       end)
     end
+  end
+
+  defp cancel!(%Job{state: "queued"} = job, actor, now),
+    do: apply!(job, %{state: "cancelled", finished_at: now}, [{"cancelled", actor, %{}}], now)
+
+  defp cancel!(%Job{cancel_requested_at: nil} = job, actor, now) do
+    if job.state in Job.leased_states(),
+      do: apply!(job, %{cancel_requested_at: now}, [{"cancel_requested", actor, %{}}], now),
+      else: Repo.rollback(:not_cancellable)
+  end
+
+  # Already requested: asking again records nothing new.
+  defp cancel!(%Job{} = job, _actor, _now) do
+    if job.state in Job.leased_states(), do: job, else: Repo.rollback(:not_cancellable)
   end
 
   ## Leasing and reporting (agent side)
@@ -345,31 +348,38 @@ defmodule Renga.Jobs do
         allowed = Settings.allowed_capabilities(organization)
         now = Renga.Time.utc_now_ms()
 
-        Job
-        |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
-        |> where([job], job.state == "queued" and job.not_after > ^now)
-        |> where(
-          [job],
-          fragment(
-            "(? || '@' || ?::text) = ANY(?)",
-            job.capability,
-            job.capability_version,
-            type(^keys, {:array, :string})
-          )
-        )
-        |> order_by([job], asc: job.inserted_at, asc: job.id)
-        |> limit(^limit)
-        |> lock("FOR UPDATE SKIP LOCKED")
-        |> Repo.all()
-        |> Enum.flat_map(fn job ->
-          if Job.capability_key(job) in allowed do
-            [lease!(job, agent, now)]
-          else
-            refuse!(job, "capability_not_allowed", now)
-            []
-          end
-        end)
+        organization_id
+        |> leasable_jobs(agent, keys, limit, now)
+        |> Enum.flat_map(&lease_or_refuse!(&1, agent, allowed, now))
       end)
+    end
+  end
+
+  defp leasable_jobs(organization_id, agent, keys, limit, now) do
+    Job
+    |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
+    |> where([job], job.state == "queued" and job.not_after > ^now)
+    |> where(
+      [job],
+      fragment(
+        "(? || '@' || ?::text) = ANY(?)",
+        job.capability,
+        job.capability_version,
+        type(^keys, {:array, :string})
+      )
+    )
+    |> order_by([job], asc: job.inserted_at, asc: job.id)
+    |> limit(^limit)
+    |> lock("FOR UPDATE SKIP LOCKED")
+    |> Repo.all()
+  end
+
+  defp lease_or_refuse!(%Job{} = job, agent, allowed, now) do
+    if Job.capability_key(job) in allowed do
+      [lease!(job, agent, now)]
+    else
+      refuse!(job, "capability_not_allowed", now)
+      []
     end
   end
 
@@ -557,17 +567,22 @@ defmodule Renga.Jobs do
         |> sweep_condition(kind, now)
         |> lock("FOR UPDATE SKIP LOCKED")
         |> Repo.one()
-        |> case do
-          nil ->
-            false
-
-          %Job{} = job ->
-            if kind == :lease, do: lapse_lease(job, now), else: expire!(job, now)
-            true
-        end
+        |> move!(kind, now)
       end)
 
     moved?
+  end
+
+  defp move!(nil, _kind, _now), do: false
+
+  defp move!(%Job{} = job, :lease, now) do
+    lapse_lease(job, now)
+    true
+  end
+
+  defp move!(%Job{} = job, :deadline, now) do
+    expire!(job, now)
+    true
   end
 
   defp sweep_condition(query, :lease, now),
@@ -720,23 +735,25 @@ defmodule Renga.Jobs do
       Repo.transaction(fn ->
         authorize_member!(scope, ["owner"])
 
-        organization =
-          Organization
-          |> where([organization], organization.id == ^scope.organization_id)
-          |> lock("FOR UPDATE")
-          |> Repo.one!()
-
-        with {:ok, settings} <-
-               organization |> Settings.changeset(attrs) |> Changeset.apply_action(:update),
-             {:ok, organization} <-
-               organization
-               |> Changeset.change(settings: Settings.put(organization, settings))
-               |> Repo.update() do
-          get_settings(organization)
-        else
-          {:error, changeset} -> Repo.rollback(changeset)
-        end
+        Organization
+        |> where([organization], organization.id == ^scope.organization_id)
+        |> lock("FOR UPDATE")
+        |> Repo.one!()
+        |> put_settings!(attrs)
       end)
+    end
+  end
+
+  defp put_settings!(%Organization{} = organization, attrs) do
+    with {:ok, settings} <-
+           organization |> Settings.changeset(attrs) |> Changeset.apply_action(:update),
+         {:ok, organization} <-
+           organization
+           |> Changeset.change(settings: Settings.put(organization, settings))
+           |> Repo.update() do
+      get_settings(organization)
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
     end
   end
 
