@@ -61,6 +61,11 @@ config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test
 
 # Tests invoke deterministic expiry sweeps directly under the SQL sandbox.
 config :renga, :neighbor_expiry_worker_enabled, false
+config :renga, :job_sweeper_enabled, false
+
+# Tests add an imperative capability to exercise retry classes.
+config :renga, Renga.Jobs.Registry,
+  capabilities: [Renga.Jobs.Capabilities.InventoryCollect, Renga.Jobs.TestCapabilities.Restart]
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false

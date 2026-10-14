@@ -41,6 +41,8 @@ is out of date: fix the guide in the same change.
    never use the accent to mean status.
 5. Every interactive element keeps `min-h-tap` (44px on touch screens), shows
    `focus-visible:ring-4 focus-visible:ring-ring`, and has an accessible name.
+6. Table rows stay on one line at the row height. Long values end in an
+   ellipsis instead of wrapping; see [Overflow](#overflow).
 
 ## Color
 
@@ -160,7 +162,7 @@ Surfaces are separated by borders, not shadows. A card is
 `rounded-lg border border-edge bg-surface`; a list inside one adds
 `divide-y divide-line`. Shadows are reserved for things that float:
 `shadow-sm` for the sign-in card, `shadow-lg` for flashes and dropdown
-menus, `shadow-xl` for the mobile navigation menu, and `shadow-2xl` for
+menus, tooltips and popovers, `shadow-xl` for the mobile navigation menu, and `shadow-2xl` for
 dialogs and side panels.
 
 ## Interaction
@@ -177,6 +179,36 @@ dialogs and side panels.
   (`RengaWeb.UI.show_overlay/2`, `hide_overlay/2`).
 - Create and edit happen in a side panel or dialog, never in an always-open
   form on the page. Destructive actions confirm with a `danger` dialog.
+
+## Overflow
+
+Rows never wrap, and never stack a second line of metadata under a value:
+mixed one- and two-line rows make a list hard to scan. When text does not fit,
+it is cut, and the full value stays one hover, focus, or touch away.
+
+- **Long text** ends in an ellipsis. While it is actually cut off, hovering it
+  for 400ms, focusing it, or touching it shows the whole value in a tooltip
+  (`rounded-md border border-edge bg-surface text-xs shadow-lg`). Text that
+  fits shows no tooltip. Use `<.clip>` for a single value; tables do this for
+  every cell with `overflow="clip"`. The full text stays in the markup, so
+  screen readers never need the tooltip.
+- **Secondary values** (a hostname after a name, a version after an agent) sit
+  inline after the primary value in `font-mono text-xs text-fg-muted`, so they
+  are the first thing to be cut.
+- **Several tags** in one cell collapse to the first and a `+N` chip
+  (`<.chip_list>`). The chip is a button that opens every item in a popover,
+  where each item can carry more detail, such as a capability's risk class.
+- **Narrow tables** drop columns instead of squeezing every column or
+  scrolling sideways. Mark the columns that can go with `hide_below`, in the
+  order they should go: details and reasons first, then durations and people.
+  The name or target and the state never hide. Sizes are container sizes
+  (`@xl` is 576px, `@3xl` is 768px), so a table in a side panel drops columns
+  as early as one on a phone.
+
+Tooltips and popovers use the native popover layer
+(`assets/js/floating.js`), so a table's scroll container or a side panel
+never clips them. They close on Escape, on scroll, and (popovers) on a click
+outside.
 
 ## Icons
 
@@ -195,7 +227,9 @@ and examples in its `@doc`.
 |---|---|
 | Button or button-styled link | `<.button>` with `variant` `primary`, `secondary` (default), `ghost`, or `danger`, and `size` `md` or `sm` |
 | Form field | `<.input>` (text, select, checkbox, textarea, ...) |
-| Any collection | `<.table>`: density, sticky header, row navigation, selection, grouping, empty state |
+| Any collection | `<.table>`: density, sticky header, row navigation, selection, grouping, empty state; `overflow="clip"` for one-line rows and hideable columns |
+| One value that may not fit | `<.clip>`: ellipsis with the full text in a tooltip |
+| Several short tags in a row | `<.chip_list>`: the first chips plus a `+N` popover |
 | Page title with actions | `<.header>` |
 | A resource's page | `<.object_page>` with tabs, status, and a `<.properties>` aside |
 | Lifecycle, freshness, agent, drift | `<.status_strip>` (`row` or `header` size) |
@@ -217,9 +251,13 @@ needs it.
 
 RFD 8 lists the tasks that must be fully usable at 390px; they are covered by
 browser tests in `test/renga_web/browser`. Every other screen stays readable:
-wide tables scroll inside their own container, tab strips scroll sideways
-instead of wrapping, and settings sections stack. Tablets use the desktop
-layout with 44px touch targets.
+narrow tables drop columns or scroll inside their own container, tab strips
+scroll sideways instead of wrapping, and settings sections stack. Tablets use
+the desktop layout with 44px touch targets.
+
+New lists use `<.table overflow="clip">`, which drops low-priority columns
+as space runs out (see [Overflow](#overflow)). Older tables still scroll
+sideways; move them over when you touch them.
 
 ## Accessibility
 

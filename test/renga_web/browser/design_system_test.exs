@@ -115,6 +115,168 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> assert_has("#open-sample-dialog:focus")
   end
 
+  @tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 600))
+  """
+
+  defp hover(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      assert {:ok, _} = PlaywrightEx.Frame.hover(frame_id, selector: selector, timeout: 2000)
+    end)
+  end
+
+  defp touch(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      for type <- ~w(pointerdown pointerup) do
+        assert {:ok, _} =
+                 PlaywrightEx.Frame.dispatch_event(frame_id,
+                   selector: selector,
+                   type: type,
+                   event_init: %{pointerType: "touch", bubbles: true},
+                   timeout: 2000
+                 )
+      end
+    end)
+  end
+
+  defp tab_until(session, selector) do
+    Enum.reduce_while(1..80, session, fn _, session ->
+      session = press(session, "body", "Tab")
+
+      session
+      |> evaluate("document.activeElement.matches(#{Jason.encode!(selector)})", fn reached? ->
+        send(self(), {:focus_reached, reached?})
+      end)
+
+      reached? = receive do: ({:focus_reached, reached?} -> reached?)
+      if reached?, do: {:halt, session}, else: {:cont, session}
+    end)
+  end
+
+  test "only cut-off values show their full text, and +N opens the whole list", %{conn: conn} do
+    long = "#sample-overflow tr:nth-child(2) td:first-child [data-clip]"
+    short = "#sample-overflow tr:nth-child(1) td:nth-child(2) [data-clip]"
+
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "[...document.querySelectorAll('#sample-overflow tr')].map(row => row.getBoundingClientRect().height)",
+      &assert(&1 == [36, 36])
+    )
+    |> hover(long)
+    |> evaluate(
+      @tooltip,
+      &assert(&1 =~ "Billing analytics warehouse replica (us-east, cold standby)")
+    )
+    |> hover(short)
+    |> evaluate(@tooltip, &assert(&1 == nil))
+    |> click("#sample-overflow tr:nth-child(1) td:nth-child(2)")
+    |> assert_path("/dev/design-system", query_params: %{"overflow" => "1"})
+    |> visit("/dev/design-system")
+    |> click("#sample-overflow tr:nth-child(2) td:nth-child(3) [data-clip]")
+    |> evaluate("window.location.search", &assert(&1 == ""))
+    |> evaluate(@tooltip, &assert(&1 =~ "Refused: inventory.collect is disabled"))
+    |> press(":focus", "Escape")
+    |> hover(long)
+    |> evaluate(
+      @tooltip,
+      &assert(&1 =~ "Billing analytics warehouse replica (us-east, cold standby)")
+    )
+    |> evaluate(
+      """
+      (() => {
+        const clip = document.getElementById('sample-clipped-action').closest('[data-clip]')
+        return clip.scrollWidth > clip.clientWidth
+      })()
+      """,
+      &assert(&1 == true)
+    )
+    |> click("#sample-clipped-action")
+    |> assert_has("#sample-clipped-action", "Inspected")
+    |> assert_has("#sample-clipped-action:focus")
+    |> evaluate("window.location.search", &assert(&1 == ""))
+    |> click("#sample-chips-2-more")
+    |> evaluate("window.location.search", &assert(&1 == ""))
+    |> evaluate(
+      "document.getElementById('sample-chips-2-list').matches(':popover-open')",
+      &assert(&1 == true)
+    )
+    |> evaluate(
+      """
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const anchor = document.getElementById('sample-chips-2-more').getBoundingClientRect()
+        const popover = document.getElementById('sample-chips-2-list').getBoundingClientRect()
+        resolve({below: popover.top >= anchor.bottom, inside: popover.right <= innerWidth})
+      })))
+      """,
+      &assert(&1 == %{"below" => true, "inside" => true})
+    )
+    |> click("#sample-chips-2-list li:nth-child(2)")
+    |> evaluate("window.location.search", &assert(&1 == ""))
+    |> press("#sample-chips-2-more", "Escape")
+    |> evaluate(
+      "document.getElementById('sample-chips-2-list').matches(':popover-open')",
+      &assert(&1 == false)
+    )
+  end
+
+  test "plain clipped values are reachable in the real tab order", %{conn: conn} do
+    detail = "#sample-overflow tr:nth-child(2) td:nth-child(3) [data-clip]"
+
+    session =
+      conn
+      |> visit("/dev/design-system")
+      |> assert_has("body .phx-connected")
+      |> assert_has("#sample-standalone-clip[tabindex='-1']", "Short value")
+      |> click("#toggle-overflow-sample")
+      |> assert_has("#sample-standalone-clip[tabindex='0']")
+      |> tab_until("#sample-standalone-clip")
+
+    session
+    |> assert_has("#sample-standalone-clip:focus")
+    |> evaluate(@tooltip, &assert(&1 =~ "Standalone values reveal their full text"))
+    |> press(":focus", "Escape")
+    |> tab_until(detail)
+    |> assert_has("#{detail}:focus")
+    |> evaluate(@tooltip, &assert(&1 =~ "Refused: inventory.collect is disabled"))
+
+    session
+    |> press(":focus", "Escape")
+    |> click("#toggle-overflow-sample")
+    |> assert_has("#sample-standalone-clip[tabindex='-1']", "Short value")
+    |> press("#toggle-overflow-sample", "Shift+Tab")
+    |> evaluate(
+      "document.activeElement.id",
+      &refute(&1 == "sample-standalone-clip")
+    )
+  end
+
+  @tag browser_context_opts: [viewport: %{width: 390, height: 844}]
+  test "narrow tables drop low-priority columns instead of scrolling", %{conn: conn} do
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> click("#toggle-overflow-sample")
+    |> touch("#sample-standalone-clip")
+    |> evaluate(@tooltip, &assert(&1 =~ "Standalone values reveal their full text"))
+    |> evaluate(
+      """
+      (() => {
+        const scroller = document.getElementById("sample-overflow").closest("div")
+        const shown = [...scroller.querySelectorAll("thead th")]
+          .filter(th => getComputedStyle(th).display !== "none")
+          .map(th => th.textContent.trim())
+        return {shown, scrolls: scroller.scrollWidth > scroller.clientWidth}
+      })()
+      """,
+      &assert(&1 == %{"shown" => ["Target", "State"], "scrolls" => false})
+    )
+  end
+
   @tag browser_context_opts: [
          has_touch: true,
          is_mobile: true,

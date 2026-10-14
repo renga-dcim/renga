@@ -201,3 +201,6 @@ jobs:
 
       - name: Test rack drag geometry
         run: node --test assets/js/rack_drag.test.mjs
+
+      - name: Test floating placement
+        run: node --test assets/js/floating.test.mjs

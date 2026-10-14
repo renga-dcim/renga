@@ -17,6 +17,7 @@ defmodule Renga.Application do
         {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Renga.PubSub},
         neighbor_expiry_worker(),
+        job_sweeper(),
         # Keep the endpoint last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint
       ]
@@ -35,5 +36,9 @@ defmodule Renga.Application do
   defp neighbor_expiry_worker do
     if Application.get_env(:renga, :neighbor_expiry_worker_enabled, true),
       do: Renga.Topology.NeighborExpiryWorker
+  end
+
+  defp job_sweeper do
+    if Application.get_env(:renga, :job_sweeper_enabled, true), do: Renga.Jobs.Sweeper
   end
 end
