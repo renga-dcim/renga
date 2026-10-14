@@ -7,6 +7,7 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
   alias Renga.Inventory
   alias Renga.Jobs
   alias Renga.Repo
+  alias RengaWeb.Api.V1.JobController
 
   @collect "inventory.collect@1"
   @restart "test.restart@1"
@@ -26,7 +27,12 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
         %{capabilities: [@collect, @restart]}
       )
 
-    Map.merge(context, %{agent: agent, token: token, installation_id: installation_id})
+    Map.merge(context, %{
+      agent: agent,
+      intake_api_key: key,
+      token: token,
+      installation_id: installation_id
+    })
   end
 
   defp post_json(context, path, body) do
@@ -35,6 +41,13 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
     |> put_req_header("x-renga-installation-id", context.installation_id)
     |> put_req_header("content-type", "application/json")
     |> post(path, Jason.encode!(body))
+  end
+
+  defp authenticated_conn(context) do
+    build_conn()
+    |> Plug.Conn.assign(:current_scope, context.system_scope)
+    |> Plug.Conn.assign(:current_intake_api_key, context.intake_api_key)
+    |> Plug.Conn.assign(:current_installation_id, context.installation_id)
   end
 
   defp lease(context, body \\ %{"capabilities" => [@collect]}),
@@ -136,6 +149,30 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
     test "requires intake authentication" do
       conn = post(build_conn(), ~p"/api/v1/agent/jobs/lease", %{})
       assert json_response(conn, 401)
+    end
+
+    test "rejects a key revoked after authentication without leasing", context do
+      job = queue_job(context)
+      {:ok, _key} = Inventory.revoke_intake_api_key(context.scope, context.intake_api_key.id)
+
+      conn =
+        JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
+
+      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{state: "queued"} = Jobs.get_job!(context.scope, job.id)
+    end
+
+    test "rejects an organization disabled after authentication without leasing", context do
+      job = queue_job(context)
+
+      {:ok, _organization} =
+        Accounts.update_organization(context.organization, %{status: "disabled"})
+
+      conn =
+        JobController.lease(authenticated_conn(context), %{"capabilities" => [@collect]})
+
+      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{state: "queued"} = Repo.get!(Renga.Jobs.Job, job.id)
     end
   end
 
@@ -276,6 +313,42 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                )
 
       assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
+    end
+
+    test "rejects a key revoked after authentication without recording a report", context do
+      {job, token} = leased(context)
+      {:ok, _key} = Inventory.revoke_intake_api_key(context.scope, context.intake_api_key.id)
+
+      conn =
+        JobController.create_event(authenticated_conn(context), %{
+          "id" => job.id,
+          "lease_token" => token,
+          "sequence" => 1,
+          "type" => "started",
+          "payload" => %{}
+        })
+
+      assert %{"errors" => [%{"path" => "authorization"}]} = json_response(conn, 401)
+      assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
+      assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
+    end
+
+    test "rejects an agent disabled after authentication without recording a report", context do
+      {job, token} = leased(context)
+      context.agent |> Ecto.Changeset.change(status: "disabled") |> Repo.update!()
+
+      conn =
+        JobController.create_event(authenticated_conn(context), %{
+          "id" => job.id,
+          "lease_token" => token,
+          "sequence" => 1,
+          "type" => "started",
+          "payload" => %{}
+        })
+
+      assert %{"errors" => [%{"path" => "installation_id"}]} = json_response(conn, 403)
+      assert %{state: "leased"} = Jobs.get_job!(context.scope, job.id)
+      assert context.scope |> Jobs.list_events(job) |> Enum.map(& &1.type) == ~w(created leased)
     end
   end
 

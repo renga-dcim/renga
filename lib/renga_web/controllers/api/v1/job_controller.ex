@@ -12,7 +12,6 @@ defmodule RengaWeb.Api.V1.JobController do
   use RengaWeb, :controller
 
   alias Renga.Inventory
-  alias Renga.Inventory.Agent
   alias Renga.Jobs
   alias Renga.Jobs.Job
 
@@ -21,11 +20,13 @@ defmodule RengaWeb.Api.V1.JobController do
   @max_capability_length 128
 
   def lease(conn, params) do
-    scope = conn.assigns.current_scope
-
-    with {:ok, agent} <- calling_agent(conn),
-         {:ok, keys, limit} <- validate_lease(params),
-         {:ok, leased} <- Jobs.lease_jobs(scope, agent, keys, limit, risk_classes: ["observe"]) do
+    with {:ok, keys, limit} <- validate_lease(params),
+         {:ok, leased} <-
+           with_calling_agent(conn, fn agent ->
+             Jobs.lease_jobs(conn.assigns.current_scope, agent, keys, limit,
+               risk_classes: ["observe"]
+             )
+           end) do
       json(conn, %{jobs: Enum.map(leased, &leased_job/1)})
     else
       error -> rejected(conn, error)
@@ -33,20 +34,19 @@ defmodule RengaWeb.Api.V1.JobController do
   end
 
   def create_event(conn, %{"id" => job_id} = params) do
-    scope = conn.assigns.current_scope
-
-    with {:ok, agent} <- calling_agent(conn),
-         {:ok, report} <- validate_report(params),
+    with {:ok, report} <- validate_report(params),
          {:ok, job} <-
-           Jobs.report(
-             scope,
-             agent,
-             job_id,
-             report.lease_token,
-             report.type,
-             report.payload,
-             sequence: report.sequence
-           ) do
+           with_calling_agent(conn, fn agent ->
+             Jobs.report(
+               conn.assigns.current_scope,
+               agent,
+               job_id,
+               report.lease_token,
+               report.type,
+               report.payload,
+               sequence: report.sequence
+             )
+           end) do
       json(conn, %{
         status: "accepted",
         job: %{id: job.id, state: job.state, lease_expires_at: iso8601(job.lease_expires_at)},
@@ -57,15 +57,13 @@ defmodule RengaWeb.Api.V1.JobController do
     end
   end
 
-  defp calling_agent(conn) do
-    case Inventory.get_installation_agent(
-           conn.assigns.current_scope,
-           conn.assigns.current_installation_id
-         ) do
-      %Agent{status: "active"} = agent -> {:ok, agent}
-      %Agent{} -> {:error, :agent_disabled}
-      nil -> {:error, :agent_not_registered}
-    end
+  defp with_calling_agent(conn, operation) do
+    Inventory.with_intake_agent(
+      conn.assigns.current_scope,
+      conn.assigns.current_intake_api_key,
+      conn.assigns.current_installation_id,
+      operation
+    )
   end
 
   defp validate_lease(params) do
@@ -157,6 +155,9 @@ defmodule RengaWeb.Api.V1.JobController do
 
   defp rejection(:agent_disabled),
     do: {:forbidden, "installation_id", "belongs to a disabled agent"}
+
+  defp rejection(:intake_credential_changed),
+    do: {:unauthorized, "authorization", "is invalid"}
 
   defp rejection(:forbidden), do: {:forbidden, "authorization", "is not allowed"}
   defp rejection(:not_found), do: {:not_found, "id", "does not match a job"}
