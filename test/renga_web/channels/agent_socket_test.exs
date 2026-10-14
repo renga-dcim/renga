@@ -16,12 +16,14 @@ defmodule RengaWeb.AgentSocketTest do
   end
 
   # Sends the upgrade request a Phoenix client makes and returns the status.
-  defp handshake(headers) do
+  defp handshake(headers), do: handshake_path("/api/v1/agent/socket/websocket?vsn=2.0.0", headers)
+
+  defp handshake_path(path, headers) do
     {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port(), [:binary, active: false])
 
     request =
       [
-        "GET /api/v1/agent/socket/websocket?vsn=2.0.0 HTTP/1.1",
+        "GET #{path} HTTP/1.1",
         "host: 127.0.0.1",
         "connection: Upgrade",
         "upgrade: websocket",
@@ -68,8 +70,12 @@ defmodule RengaWeb.AgentSocketTest do
     assert {403, _response} = handshake([auth_protocol(context.token)])
   end
 
-  test "does not accept the key in the URL" do
-    assert {status, _response} = handshake([])
+  test "does not accept the key in the URL", context do
+    token = URI.encode_www_form(context.token)
+
+    assert {status, _response} =
+             handshake_path("/api/v1/agent/socket/websocket?vsn=2.0.0&auth_token=#{token}", [])
+
     assert status == 403
   end
 end

@@ -42,6 +42,19 @@ const FIRST_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(300);
 const JOIN_REF: &str = "1";
 
+#[derive(Clone, Copy)]
+struct Timing {
+    heartbeat: Duration,
+    silence_limit: Duration,
+    poll: Duration,
+}
+
+const TIMING: Timing = Timing {
+    heartbeat: HEARTBEAT,
+    silence_limit: SILENCE_LIMIT,
+    poll: POLL,
+};
+
 /// Set when Renga says jobs are waiting, until the agent starts a lease pass.
 #[derive(Clone, Default)]
 pub struct Notices(Arc<AtomicBool>);
@@ -169,6 +182,15 @@ fn listen(
     notices: &Notices,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), ListenError> {
+    listen_with_timing(endpoint, notices, cancelled, TIMING)
+}
+
+fn listen_with_timing(
+    endpoint: &NoticeEndpoint,
+    notices: &Notices,
+    cancelled: &dyn Fn() -> bool,
+    timing: Timing,
+) -> Result<(), ListenError> {
     let topic = format!("installation:{}", endpoint.installation_id);
     let mut socket = connect(endpoint, cancelled)?;
     send(&mut socket, JOIN_REF, &topic, "phx_join")?;
@@ -182,10 +204,10 @@ fn listen(
     if reply["response"]["jobs_waiting"] == true {
         notices.raise();
     }
-    socket.get_mut().set_read_timeout(Some(POLL))?;
+    socket.get_mut().set_read_timeout(Some(timing.poll))?;
 
     let mut next_ref = 2_u64;
-    let mut next_heartbeat = Instant::now() + HEARTBEAT;
+    let mut next_heartbeat = Instant::now() + timing.heartbeat;
     let mut last_heard = Instant::now();
     loop {
         if cancelled() {
@@ -194,14 +216,14 @@ fn listen(
             return Ok(());
         }
         let now = Instant::now();
-        if now.duration_since(last_heard) > SILENCE_LIMIT {
+        if now.duration_since(last_heard) > timing.silence_limit {
             return Err(ListenError::new("socket went silent").after_join());
         }
         if now >= next_heartbeat {
             send(&mut socket, &next_ref.to_string(), "phoenix", "heartbeat")
                 .map_err(ListenError::after_join)?;
             next_ref += 1;
-            next_heartbeat = now + HEARTBEAT;
+            next_heartbeat = now + timing.heartbeat;
         }
         match socket.read() {
             Ok(message) => {
@@ -786,6 +808,34 @@ mod tests {
             seen.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         listener.stop();
+    }
+
+    #[test]
+    fn heartbeats_and_reconnects_when_a_joined_socket_goes_silent() {
+        let (heartbeat, received) = mpsc::channel();
+        let (origin, _seen) = phoenix(1, joined(false), move |socket| {
+            let frame: Value =
+                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            heartbeat.send(frame).unwrap();
+            hold(socket);
+        });
+        let error = listen_with_timing(
+            &endpoint(&origin),
+            &Notices::default(),
+            &|| false,
+            Timing {
+                heartbeat: Duration::from_millis(20),
+                silence_limit: Duration::from_millis(80),
+                poll: Duration::from_millis(10),
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.joined);
+        assert_eq!(error.message, "socket went silent");
+        let heartbeat = received.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(heartbeat[2], "phoenix");
+        assert_eq!(heartbeat[3], "heartbeat");
     }
 
     #[test]

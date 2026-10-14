@@ -712,8 +712,16 @@ mod tests {
     use std::{
         cell::RefCell,
         io::{self, BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        sync::mpsc,
+        net::{TcpListener, TcpStream},
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
+        },
+    };
+    use tungstenite::{
+        handshake::server::{Request, Response},
+        http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderValue},
+        Message,
     };
 
     /// Answers observation posts with `statuses` in order and returns each request body.
@@ -751,6 +759,222 @@ mod tests {
                 .collect()
         });
         (origin, server)
+    }
+
+    fn read_http_request(stream: TcpStream) -> (String, BufReader<TcpStream>) {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).unwrap();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        (request_line, reader)
+    }
+
+    fn answer(reader: &mut BufReader<TcpStream>, status: u16, body: &str) {
+        write!(
+            reader.get_mut(),
+            "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    }
+
+    /// Runs enough of the agent API and Phoenix protocol to exercise the
+    /// daemon's listener-to-worker path with real sockets and HTTP requests.
+    #[allow(clippy::result_large_err)]
+    fn notice_daemon_server(
+        stopped: Cancellation,
+    ) -> (
+        String,
+        mpsc::Receiver<usize>,
+        Arc<AtomicBool>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let first_lease_started = Arc::new(AtomicBool::new(false));
+        let overlapping_leases = Arc::new(AtomicBool::new(false));
+        let active_leases = Arc::new(AtomicUsize::new(0));
+        let lease_count = Arc::new(AtomicUsize::new(0));
+        let (leases, received) = mpsc::channel();
+        let overlap_result = Arc::clone(&overlapping_leases);
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let first_lease_started = Arc::clone(&first_lease_started);
+                        let overlapping_leases = Arc::clone(&overlapping_leases);
+                        let active_leases = Arc::clone(&active_leases);
+                        let lease_count = Arc::clone(&lease_count);
+                        let leases = leases.clone();
+                        let stopped = stopped.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                let mut socket = tungstenite::accept_hdr(
+                                    stream,
+                                    |_request: &Request, mut response: Response| {
+                                        response.headers_mut().insert(
+                                            SEC_WEBSOCKET_PROTOCOL,
+                                            HeaderValue::from_static("phoenix"),
+                                        );
+                                        Ok(response)
+                                    },
+                                )
+                                .unwrap();
+                                let join: serde_json::Value =
+                                    serde_json::from_str(socket.read().unwrap().to_text().unwrap())
+                                        .unwrap();
+                                let topic = join[2].clone();
+                                socket
+                                    .send(Message::text(
+                                        json!(["1", "1", topic, "phx_reply", {
+                                            "status": "ok",
+                                            "response": {"jobs_waiting": false}
+                                        }])
+                                        .to_string(),
+                                    ))
+                                    .unwrap();
+                                socket
+                                    .send(Message::text(
+                                        json!([null, null, join[2], "jobs_waiting", {}])
+                                            .to_string(),
+                                    ))
+                                    .unwrap();
+                                while !first_lease_started.load(Ordering::SeqCst) {
+                                    thread::sleep(Duration::from_millis(5));
+                                }
+                                socket
+                                    .send(Message::text(
+                                        json!([null, null, join[2], "jobs_waiting", {}])
+                                            .to_string(),
+                                    ))
+                                    .unwrap();
+                                while socket.read().is_ok() {}
+                                return;
+                            }
+
+                            let (request, mut reader) = read_http_request(stream);
+                            if request.contains("/api/v1/agent/checkins") {
+                                answer(
+                                    &mut reader,
+                                    202,
+                                    r#"{"status":"accepted","jobs_waiting":false}"#,
+                                );
+                            } else if request.contains("/api/v1/observations") {
+                                answer(&mut reader, 202, "{}");
+                            } else if request.contains("/api/v1/agent/jobs/lease") {
+                                let active = active_leases.fetch_add(1, Ordering::SeqCst) + 1;
+                                if active > 1 {
+                                    overlapping_leases.store(true, Ordering::SeqCst);
+                                }
+                                let lease = lease_count.fetch_add(1, Ordering::SeqCst) + 1;
+                                leases.send(lease).unwrap();
+                                if lease == 1 {
+                                    first_lease_started.store(true, Ordering::SeqCst);
+                                    thread::sleep(Duration::from_millis(300));
+                                }
+                                answer(&mut reader, 200, r#"{"jobs":[]}"#);
+                                active_leases.fetch_sub(1, Ordering::SeqCst);
+                                if lease == 2 {
+                                    stopped.cancel();
+                                }
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("notice daemon server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        (origin, received, overlap_result, server)
+    }
+
+    fn refused_notice_server(
+        stopped: Cancellation,
+    ) -> (String, mpsc::Receiver<()>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let checkins = Arc::new(AtomicUsize::new(0));
+        let (leased, received) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let checkins = Arc::clone(&checkins);
+                        let leased = leased.clone();
+                        let stopped = stopped.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                let mut stream = stream;
+                                write!(
+                                    stream,
+                                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                )
+                                .unwrap();
+                                return;
+                            }
+
+                            let (request, mut reader) = read_http_request(stream);
+                            if request.contains("/api/v1/agent/checkins") {
+                                let checkin = checkins.fetch_add(1, Ordering::SeqCst);
+                                let body = if checkin == 0 {
+                                    r#"{"status":"accepted","jobs_waiting":false}"#
+                                } else {
+                                    r#"{"status":"accepted"}"#
+                                };
+                                answer(&mut reader, 202, body);
+                            } else if request.contains("/api/v1/observations") {
+                                answer(&mut reader, 202, "{}");
+                            } else if request.contains("/api/v1/agent/jobs/lease") {
+                                answer(&mut reader, 200, r#"{"jobs":[]}"#);
+                                leased.send(()).unwrap();
+                                stopped.cancel();
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("refused notice server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        (origin, received, server)
     }
 
     fn stub_client(origin: &str) -> HttpClient {
@@ -801,6 +1025,86 @@ mod tests {
                 cancel_requested: false,
             })
         }
+    }
+
+    #[test]
+    fn socket_notices_start_serial_lease_passes_before_the_next_checkin() {
+        let state = std::env::temp_dir().join(format!("renga-notices-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (origin, leases, overlapping, server) = notice_daemon_server(stopped.clone());
+        let config = state.join("agent.toml");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "renga_url = {origin:?}\nallow_insecure_http = true\nintake_api_key = \"test-token\"\ncheckin_interval_seconds = 60\nrequest_timeout_seconds = 2\nmax_retry_attempts = 1\n"
+            ),
+        )
+        .unwrap();
+        let daemon_stop = stopped.clone();
+        let daemon_state = state.clone();
+        let daemon = thread::spawn(move || {
+            run_configured(
+                Args {
+                    config,
+                    state_directory: daemon_state,
+                    once: false,
+                    dry_run: false,
+                    command: None,
+                },
+                daemon_stop,
+            )
+            .map_err(|error| error.to_string())
+        });
+
+        assert_eq!(leases.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(leases.recv_timeout(Duration::from_secs(5)).unwrap(), 2);
+        assert!(!overlapping.load(Ordering::SeqCst));
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn refused_notice_socket_does_not_block_checkin_polling() {
+        let state = std::env::temp_dir().join(format!("renga-fallback-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (origin, leased, server) = refused_notice_server(stopped.clone());
+        let config = state.join("agent.toml");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "renga_url = {origin:?}\nallow_insecure_http = true\nintake_api_key = \"test-token\"\ncheckin_interval_seconds = 1\nrequest_timeout_seconds = 2\nmax_retry_attempts = 1\n"
+            ),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let daemon_stop = stopped.clone();
+        let daemon_state = state.clone();
+        let daemon = thread::spawn(move || {
+            run_configured(
+                Args {
+                    config,
+                    state_directory: daemon_state,
+                    once: false,
+                    dry_run: false,
+                    command: None,
+                },
+                daemon_stop,
+            )
+            .map_err(|error| error.to_string())
+        });
+
+        leased.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(800));
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     #[test]

@@ -191,8 +191,10 @@ is reported as failed.
 When the policy enables any job capability, the agent also holds a WebSocket
 open to `/api/v1/agent/socket` and joins its installation's channel. Renga
 pushes an empty `jobs_waiting` message when it queues a job for the agent, and
-the agent starts a lease pass within a quarter of a second instead of waiting
-for its next check-in. The socket authenticates with the same intake key and
+the agent checks for it between scheduled operations, at least every quarter
+second while otherwise idle, instead of waiting for its next check-in. An
+HTTP request already in flight can delay that check. The socket authenticates
+with the same intake key and
 installation ID as the HTTPS API (the key travels in the
 `Sec-WebSocket-Protocol` header, never the URL), uses the same TLS roots, and
 never carries a job, so leasing still happens over HTTPS. If the socket cannot
