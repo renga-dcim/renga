@@ -425,7 +425,17 @@ defmodule RengaWeb.DesignSystemLive do
               Rows stay on one line. Hover or focus a cut-off value to read it, open +N for
               the whole list, and narrow the window to watch Detail and Agent drop out.
             </p>
-            <.table id="sample-overflow" rows={@overflow_rows} overflow="clip">
+            <div class="w-48">
+              <.clip id="sample-standalone-clip" class="text-xs text-fg-muted">
+                Standalone values reveal their full text on focus or touch when space is tight.
+              </.clip>
+            </div>
+            <.table
+              id="sample-overflow"
+              rows={@overflow_rows}
+              overflow="clip"
+              row_navigate={fn row -> ~p"/dev/design-system?overflow=#{row.id}" end}
+            >
               <:col :let={row} label="Target">
                 <span class="font-medium">{row.name}</span>
                 <span class="font-mono text-xs text-fg-muted">{row.host}</span>

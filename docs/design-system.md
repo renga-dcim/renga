@@ -184,10 +184,10 @@ dialogs and side panels.
 
 Rows never wrap, and never stack a second line of metadata under a value:
 mixed one- and two-line rows make a list hard to scan. When text does not fit,
-it is cut, and the full value stays one hover or focus away.
+it is cut, and the full value stays one hover, focus, or touch away.
 
 - **Long text** ends in an ellipsis. While it is actually cut off, hovering it
-  for 400ms or focusing it shows the whole value in a tooltip
+  for 400ms, focusing it, or touching it shows the whole value in a tooltip
   (`rounded-md border border-edge bg-surface text-xs shadow-lg`). Text that
   fits shows no tooltip. Use `<.clip>` for a single value; tables do this for
   every cell with `overflow="clip"`. The full text stays in the markup, so

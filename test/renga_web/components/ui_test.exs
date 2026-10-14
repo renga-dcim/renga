@@ -147,6 +147,9 @@ defmodule RengaWeb.UITest do
       assert present?(html, "div.\\@container > table.table-fixed")
       assert text(html, "#item-1 td:first-child a [data-clip]") == "compute-01"
       assert text(html, "#item-1 td:nth-child(2) [data-clip]") == "Observation 7f3c91e2"
+      refute present?(html, "#item-1 td:first-child a [data-clip-focus]")
+      assert attr_of(html, "#item-1 td:nth-child(2) [data-clip-focus]", "tabindex") == ["-1"]
+      assert attr_of(html, "#item-1 td:nth-child(2) [data-clip-focus]", "phx-click") == ["[]"]
       assert attr_of(html, "#item-1 td:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       assert attr_of(html, "thead th:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       refute attr_of(html, "thead th:first-child", "class") |> hd() =~ "hidden"
@@ -159,6 +162,8 @@ defmodule RengaWeb.UITest do
       html = rendered_to_string(~H|<.clip id="name" class="font-medium">compute-01</.clip>|)
 
       assert text(html, "#name[data-clip].truncate.font-medium") == "compute-01"
+      assert attr_of(html, "#name[data-clip-focus]", "tabindex") == ["-1"]
+      assert attr_of(html, "#name[data-clip-focus]", "phx-click") == ["[]"]
     end
   end
 
@@ -188,6 +193,7 @@ defmodule RengaWeb.UITest do
       assert attr_of(html, "#jobs-more", "popovertarget") == ["jobs-list"]
       assert attr_of(html, "#jobs-more", "aria-label") == ["2 more in Accepts jobs"]
       assert attr_of(html, "#jobs-list", "data-anchor") == ["jobs-more"]
+      assert attr_of(html, "#jobs", "phx-click") == ["[]"]
       assert present?(html, "#jobs-list[popover]")
 
       assert html |> query("#jobs-list li") |> Enum.map(&squish(LazyHTML.text(&1))) ==

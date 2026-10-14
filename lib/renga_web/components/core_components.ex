@@ -615,10 +615,10 @@ defmodule RengaWeb.CoreComponents do
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          <.cell overflow={@overflow}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
         </.link>
         <%= if !(index == 0 && @row_navigate) do %>
-          <.cell overflow={@overflow}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} reveal>{render_slot(col, @row_item.(@row))}</.cell>
         <% end %>
       </td>
       <td :if={@action != []} class="w-0 px-cell font-medium">
@@ -633,11 +633,24 @@ defmodule RengaWeb.CoreComponents do
   end
 
   attr :overflow, :string, required: true
+  attr :reveal, :boolean, required: true
   slot :inner_block, required: true
 
   defp cell(%{overflow: "clip"} = assigns) do
     ~H"""
-    <span data-clip class="block min-w-0 truncate">{render_slot(@inner_block)}</span>
+    <span
+      data-clip
+      data-clip-focus={@reveal && ""}
+      tabindex={@reveal && "-1"}
+      phx-click={@reveal && %JS{}}
+      class={[
+        "block min-w-0 truncate",
+        @reveal &&
+          "rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+      ]}
+    >
+      {render_slot(@inner_block)}
+    </span>
     """
   end
 

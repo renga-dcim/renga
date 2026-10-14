@@ -42,6 +42,50 @@ export function installFloating(doc = document, win = window) {
 
   const clipAt = node => (node instanceof win.Element ? node.closest("[data-clip]") : null)
 
+  const syncClipFocus = target => {
+    if (!target.matches("[data-clip-focus]")) return
+
+    const focusOwner = target.parentElement?.closest(
+      "a, button, input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"
+    )
+    target.tabIndex = !focusOwner && clipped(target) ? 0 : -1
+  }
+
+  const resizeObserver =
+    typeof win.ResizeObserver === "function"
+      ? new win.ResizeObserver(entries => entries.forEach(({target}) => syncClipFocus(target)))
+      : null
+
+  const observeClips = root => {
+    const clips = []
+    if (root instanceof win.Element && root.matches("[data-clip-focus]")) clips.push(root)
+    clips.push(...(root.querySelectorAll?.("[data-clip-focus]") || []))
+
+    for (const target of clips) {
+      syncClipFocus(target)
+      resizeObserver?.observe(target)
+    }
+  }
+
+  observeClips(doc)
+
+  if (typeof win.MutationObserver === "function") {
+    const mutations = new win.MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) observeClips(node)
+      }
+    })
+    mutations.observe(doc.documentElement, {childList: true, subtree: true})
+  }
+
+  if (!resizeObserver) {
+    win.addEventListener("resize", () => observeClips(doc))
+  }
+
+  // LiveView may restore server-rendered attributes on connect without
+  // changing an element's size, so refresh after every completed patch too.
+  win.addEventListener("phx:page-loading-stop", () => observeClips(doc))
+
   const ensureTooltip = () => {
     if (tooltip?.isConnected) return tooltip
     tooltip = doc.createElement("div")
@@ -104,6 +148,18 @@ export function installFloating(doc = document, win = window) {
   doc.addEventListener("focusout", hide)
   doc.addEventListener("keydown", event => event.key === "Escape" && hide())
 
+  const activateClip = event => {
+    const target = clipAt(event.target)
+    if (!target?.matches("[data-clip-focus]") || !clipped(target)) return
+    target.focus({preventScroll: true})
+    show(target)
+  }
+
+  // pointerup runs before LiveView handles the no-op phx-click that keeps a
+  // clipped cell from triggering its row. click also covers keyboard input.
+  doc.addEventListener("pointerup", activateClip)
+  doc.addEventListener("click", activateClip)
+
   doc.addEventListener(
     "toggle",
     event => {
@@ -121,6 +177,10 @@ export function installFloating(doc = document, win = window) {
     "scroll",
     event => {
       if (tooltip?.matches(":popover-open")) tooltip.hidePopover()
+
+      const active = doc.activeElement
+      if (pending && (active === pending || active?.contains(pending))) show(pending)
+
       for (const el of doc.querySelectorAll("[data-anchor]:popover-open")) {
         if (!el.contains(event.target)) el.hidePopover()
       }

@@ -309,9 +309,10 @@ defmodule RengaWeb.UI do
 
   @doc """
   Renders text that stays on one line and ends in an ellipsis when it does
-  not fit. While it is cut off, hovering or focusing it shows the full text
-  in a tooltip (`assets/js/floating.js`); the full text stays in the markup
-  for screen readers. Tables get this from `<.table overflow="clip">`.
+  not fit. While it is cut off, hovering, focusing, or touching it shows the
+  full text in a tooltip (`assets/js/floating.js`); the full text stays in the
+  markup for screen readers. Tables get this from
+  `<.table overflow="clip">`.
 
   ## Examples
 
@@ -323,7 +324,17 @@ defmodule RengaWeb.UI do
 
   def clip(assigns) do
     ~H"""
-    <span data-clip class={["block min-w-0 truncate", @class]} {@rest}>
+    <span
+      data-clip
+      data-clip-focus
+      tabindex="-1"
+      phx-click={%JS{}}
+      class={[
+        "block min-w-0 truncate rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
+        @class
+      ]}
+      {@rest}
+    >
       {render_slot(@inner_block)}
     </span>
     """
@@ -362,7 +373,11 @@ defmodule RengaWeb.UI do
       |> assign(:more, max(length(assigns.items) - assigns.max, 0))
 
     ~H"""
-    <span id={@id} class={["inline-flex max-w-full items-center gap-1 align-middle", @class]}>
+    <span
+      id={@id}
+      phx-click={%JS{}}
+      class={["inline-flex max-w-full items-center gap-1 align-middle", @class]}
+    >
       <span
         :for={item <- @shown}
         class="min-w-0 truncate rounded-sm border border-edge bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-fg-muted"
