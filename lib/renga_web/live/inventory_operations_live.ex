@@ -301,12 +301,13 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <th scope="col" class="px-cell font-medium">Resource</th>
                   <th scope="col" class="px-cell font-medium">Installation</th>
                   <th scope="col" class="px-cell font-medium">Inventory</th>
+                  <th scope="col" class="px-cell font-medium">Accepts jobs</th>
                   <th scope="col" class="px-cell font-medium">Delivery queue</th>
                 </tr>
               </thead>
               <tbody id="collectors" phx-update="stream">
                 <tr id="collectors-empty" class="hidden only:table-row">
-                  <td colspan="6" class="px-cell py-8 text-center text-sm text-fg-muted">
+                  <td colspan="7" class="px-cell py-8 text-center text-sm text-fg-muted">
                     No discovered collectors match this view.
                   </td>
                 </tr>
@@ -349,6 +350,12 @@ defmodule RengaWeb.InventoryOperationsLive do
                   </td>
                   <td id={"collector-inventory-#{source.id}"} class="px-cell py-2">
                     <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
+                  </td>
+                  <td id={"collector-jobs-#{source.id}"} class="px-cell py-2">
+                    <.collector_jobs
+                      id={"collector-jobs-#{source.id}-list"}
+                      agent={collector_agent(source)}
+                    />
                   </td>
                   <td id={"collector-queue-#{source.id}"} class="whitespace-nowrap px-cell py-2">
                     <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
@@ -407,6 +414,34 @@ defmodule RengaWeb.InventoryOperationsLive do
       <span class="text-xs text-fg-subtle">No inventory yet</span>
     <% end %>
     """
+  end
+
+  attr :id, :string, required: true
+  attr :agent, Agent, required: true
+
+  # The job capabilities the agent advertised at its last check-in: those it
+  # has compiled in and its own [jobs] policy enables (RFD 9). Unversioned
+  # entries such as host.inventory say what it reports, not jobs it runs.
+  defp collector_jobs(assigns) do
+    assigns =
+      assign(assigns, :keys, Enum.filter(assigns.agent.capabilities, &String.contains?(&1, "@")))
+
+    ~H"""
+    <span :if={@keys == []} class="text-xs text-fg-subtle">None enabled</span>
+    <.chip_list :if={@keys != []} id={@id} label="Accepts jobs" items={@keys}>
+      <:detail :let={key}>
+        <span class="font-mono">{key}</span>
+        <span class="text-fg-muted">{job_capability_summary(key)}</span>
+      </:detail>
+    </.chip_list>
+    """
+  end
+
+  defp job_capability_summary(key) do
+    case Renga.Jobs.Registry.fetch(key) do
+      {:ok, capability} -> "#{capability.title()} · #{capability.risk_class()}"
+      {:error, _unknown} -> "Unknown to Renga"
+    end
   end
 
   attr :queue, :map, required: true
