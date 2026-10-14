@@ -3,7 +3,7 @@ members = ["cargo:."]
 packages = ["renga-agent"]
 
 [dist]
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.0"
 ci = []
 targets = [
     "x86_64-unknown-linux-musl",
