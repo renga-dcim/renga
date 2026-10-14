@@ -20,10 +20,12 @@ Implements link:README.adoc[RFD 1: Renga DCIM architecture].
 * [X] Preserve distinct latest-contact, accepted-inventory,
   successfully-reconciled-inventory, and lease clocks in collection and UI
   projections.
-* [ ] Define power inventory and topology in a dedicated RFD.
+* [X] Define power inventory and topology in a dedicated RFD:
+  link:../0010/README.adoc[RFD 10].
 * [ ] Add durable jobs and explicit agent capabilities with polling as the
   correctness path.
 * [ ] Add optional Phoenix Channels control acceleration.
 * [ ] Add read-only switch and virtualization provider collectors.
-* [ ] Design privileged live query, terminal, and VM lifecycle operations as
-  separate RFDs before implementation.
+* [X] Design privileged live query, terminal, and VM lifecycle operations as
+  separate RFDs before implementation: link:../0012/README.adoc[RFD 12],
+  link:../0013/README.adoc[RFD 13], and link:../0014/README.adoc[RFD 14].
