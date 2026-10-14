@@ -25,7 +25,15 @@ defmodule RengaWeb.DesignSystemLiveTest do
 
     view |> element("#preview-accent-petrol") |> render_click()
 
-    assert_patch(view, "/dev/design-system?accent=petrol&density=comfortable&theme=system")
+    patched = assert_patch(view)
+    assert %URI{path: "/dev/design-system", query: query} = URI.parse(patched)
+
+    assert URI.decode_query(query) == %{
+             "accent" => "petrol",
+             "density" => "comfortable",
+             "theme" => "system"
+           }
+
     assert_push_event(view, "appearance", %{accent: "petrol"})
     assert has_element?(view, "#preview-accent-petrol[aria-current]")
     refute has_element?(view, "#preview-accent-copper[aria-current]")

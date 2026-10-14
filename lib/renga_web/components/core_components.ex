@@ -104,6 +104,7 @@ defmodule RengaWeb.CoreComponents do
   attr :class, :any, default: nil, doc: "extra classes added to the variant's classes"
   attr :variant, :string, default: "secondary", values: ~w(primary secondary ghost danger)
   attr :size, :string, default: "md", values: ~w(sm md)
+  attr :type, :string, default: nil, values: [nil, "button", "submit", "reset"]
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
@@ -118,7 +119,7 @@ defmodule RengaWeb.CoreComponents do
       """
     else
       ~H"""
-      <button class={@class} {@rest}>
+      <button type={@type} class={@class} {@rest}>
         {render_slot(@inner_block)}
       </button>
       """
