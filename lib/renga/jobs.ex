@@ -1,0 +1,611 @@
+defmodule Renga.Jobs do
+  @moduledoc """
+  Durable jobs that agents lease over HTTPS (RFD 9).
+
+  A job asks one agent to run one capability. Its row in `jobs` is a
+  projection of its append-only `job_events`, and this module is the only
+  writer of either: every change to a job is made together with the event
+  that records it, in one transaction, through `apply!/4`.
+
+  Nothing here knows about a particular capability. Parameters, results,
+  limits, and classes come from the `Renga.Jobs.Capability` module registered
+  for the job's `name@version`, and the retry and risk classes are copied onto
+  the row when the job is created so later transitions never depend on the
+  module.
+
+  Running a job is at least once. A lease can lapse after the agent acted but
+  before its final report arrived, so what happens next follows the
+  capability's retry class rather than pretending the job ran exactly once.
+  """
+
+  import Ecto.Query, warn: false
+
+  alias Ecto.Changeset
+  alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.Scope
+  alias Renga.Inventory.Agent
+  alias Renga.Jobs.Capability
+  alias Renga.Jobs.Job
+  alias Renga.Jobs.JobEvent
+  alias Renga.Jobs.Registry
+  alias Renga.Jobs.Settings
+  alias Renga.Repo
+
+  @lease_seconds 60
+  @default_deadline_seconds 3600
+  @max_deadline_seconds 7 * 24 * 3600
+  @default_max_attempts 3
+  @max_failure_reason_length 255
+  @agent_report_types ~w(started progress output succeeded failed cancelled)
+
+  ## Reading
+
+  @doc "Fetches a job in the scope's organization, or nil."
+  def get_job(%Scope{organization_id: organization_id}, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id) do
+      Repo.get_by(Job, id: id, organization_id: organization_id)
+    else
+      :error -> nil
+    end
+  end
+
+  @doc "Fetches a job in the scope's organization."
+  def get_job!(%Scope{organization_id: organization_id}, id) do
+    Repo.get_by!(Job, id: id, organization_id: organization_id)
+  end
+
+  @doc """
+  Lists the organization's jobs, newest first. Filters by `:state`,
+  `:agent_id`, and `:batch_id`, and returns at most `:limit` (default 50).
+  """
+  def list_jobs(%Scope{organization_id: organization_id}, opts \\ []) do
+    Job
+    |> where([job], job.organization_id == ^organization_id)
+    |> filter_jobs(opts)
+    |> order_by([job], desc: job.inserted_at, desc: job.id)
+    |> limit(^Keyword.get(opts, :limit, 50))
+    |> Repo.all()
+  end
+
+  defp filter_jobs(query, opts) do
+    Enum.reduce(opts, query, fn
+      {:state, state}, query -> where(query, [job], job.state == ^state)
+      {:agent_id, agent_id}, query -> where(query, [job], job.agent_id == ^agent_id)
+      {:batch_id, batch_id}, query -> where(query, [job], job.batch_id == ^batch_id)
+      _other, query -> query
+    end)
+  end
+
+  @doc "A job's history in the order it happened."
+  def list_events(%Scope{organization_id: organization_id}, %Job{id: job_id}) do
+    JobEvent
+    |> where([event], event.organization_id == ^organization_id and event.job_id == ^job_id)
+    |> order_by([event], asc: event.sequence)
+    |> Repo.all()
+  end
+
+  ## Requesting
+
+  @doc """
+  Requests a capability of one agent, as the scope's user.
+
+  The organization must allow the capability, the user's role must permit its
+  risk class, the agent must be active and advertise it, and the capability's
+  own `authorize/3` hook may refuse further. Parameters are validated against
+  the capability before anything is stored.
+
+  Options:
+
+    * `:idempotency_key` - a retried request with the same key returns the job
+      it created instead of a second one; reusing the key for a different
+      request is `{:error, :idempotency_conflict}`.
+    * `:not_after` - the deadline for an agent to lease the job, at most seven
+      days away (default one hour).
+    * `:batch_id` - groups jobs that one request fanned out to many agents.
+  """
+  def create_job(%Scope{} = scope, agent_id, capability_key, parameters, opts \\ []) do
+    with {:ok, capability} <- Registry.fetch(capability_key),
+         {:ok, actor} <- requesting_user(scope) do
+      Repo.transaction(fn ->
+        authorize_request!(scope, capability)
+        do_create!(scope.organization_id, actor, agent_id, capability, parameters, opts, scope)
+      end)
+    end
+  end
+
+  @doc """
+  Requests a capability on the system's behalf, for scheduled work and
+  workflow steps. There is no user role to check, but the organization and
+  agent checks still apply.
+  """
+  def create_system_job(organization_id, agent_id, capability_key, parameters, opts \\ []) do
+    with {:ok, capability} <- Registry.fetch(capability_key) do
+      Repo.transaction(fn ->
+        lock_active_organization!(organization_id)
+        scope = %Scope{organization_id: organization_id}
+        do_create!(organization_id, :system, agent_id, capability, parameters, opts, scope)
+      end)
+    end
+  end
+
+  defp requesting_user(%Scope{user: %{id: user_id}, membership_id: membership_id})
+       when not is_nil(membership_id),
+       do: {:ok, {:user, user_id}}
+
+  defp requesting_user(_scope), do: {:error, :forbidden}
+
+  # Owners and admins may request `observe` jobs. `operate` and `interactive`
+  # jobs need grants RFDs 13 and 14 define, so nobody may request them yet.
+  defp authorize_request!(%Scope{} = scope, capability) do
+    case capability.risk_class() do
+      :observe -> authorize_member!(scope, ["owner", "admin"])
+      _operate_or_interactive -> Repo.rollback(:forbidden)
+    end
+  end
+
+  defp do_create!(organization_id, actor, agent_id, capability, parameters, opts, scope) do
+    key = Capability.key(capability)
+    organization = Repo.get!(Organization, organization_id)
+    now = Renga.Time.utc_now_ms()
+
+    unless key in Settings.allowed_capabilities(organization),
+      do: Repo.rollback(:capability_not_allowed)
+
+    agent = fetch_requestable_agent!(organization_id, agent_id, key)
+    parameters = cast_parameters!(capability, parameters)
+    not_after = deadline!(opts, now)
+
+    case capability.authorize(scope, agent, parameters) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+
+    # Serializes creation per organization so idempotency and the rate limit
+    # see every concurrent request.
+    lock_job_creation!(organization_id)
+
+    case find_idempotent!(organization_id, opts[:idempotency_key]) do
+      nil ->
+        enforce_rate_limit!(organization_id, now)
+
+        job =
+          Repo.insert!(%Job{
+            organization_id: organization_id,
+            agent_id: agent.id,
+            batch_id: opts[:batch_id],
+            capability: capability.name(),
+            capability_version: capability.version(),
+            risk_class: Atom.to_string(capability.risk_class()),
+            retry_class: Atom.to_string(capability.retry_class()),
+            parameters: parameters,
+            requested_by_type: if(actor == :system, do: "system", else: "user"),
+            requested_by_user_id: actor_user_id(actor),
+            idempotency_key: opts[:idempotency_key],
+            state: "queued",
+            max_attempts: Keyword.get(opts, :max_attempts, @default_max_attempts),
+            not_after: not_after,
+            output_limit_bytes: capability.output_limit_bytes(),
+            timeout_ms: capability.timeout_ms()
+          })
+
+        apply!(job, %{}, [{"created", actor, %{"capability" => key}}], now)
+
+      %Job{} = existing ->
+        if same_request?(existing, agent.id, capability, parameters),
+          do: existing,
+          else: Repo.rollback(:idempotency_conflict)
+    end
+  end
+
+  defp actor_user_id({:user, user_id}), do: user_id
+  defp actor_user_id(_actor), do: nil
+
+  defp fetch_requestable_agent!(organization_id, agent_id, key) do
+    agent =
+      with {:ok, agent_id} <- Ecto.UUID.cast(agent_id) do
+        Agent
+        |> where([agent], agent.organization_id == ^organization_id and agent.id == ^agent_id)
+        |> lock("FOR SHARE")
+        |> Repo.one()
+      else
+        :error -> nil
+      end
+
+    cond do
+      is_nil(agent) -> Repo.rollback(:agent_not_found)
+      agent.status != "active" -> Repo.rollback(:agent_disabled)
+      key not in agent.capabilities -> Repo.rollback(:capability_not_advertised)
+      true -> agent
+    end
+  end
+
+  defp cast_parameters!(capability, parameters) do
+    parameters
+    |> stringify()
+    |> capability.parameters_changeset()
+    |> Changeset.apply_action(:validate)
+    |> case do
+      {:ok, parameters} -> stringify(parameters)
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp deadline!(opts, now) do
+    case Keyword.get(opts, :not_after) do
+      nil ->
+        DateTime.add(now, @default_deadline_seconds)
+
+      %DateTime{} = not_after ->
+        not_after = Renga.Time.floor_to_millisecond(not_after)
+        seconds = DateTime.diff(not_after, now)
+
+        if seconds > 0 and seconds <= @max_deadline_seconds,
+          do: not_after,
+          else: Repo.rollback(:invalid_deadline)
+
+      _other ->
+        Repo.rollback(:invalid_deadline)
+    end
+  end
+
+  defp lock_job_creation!(organization_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext('renga.jobs.create'), hashtext($1))", [
+      organization_id
+    ])
+  end
+
+  defp find_idempotent!(_organization_id, nil), do: nil
+
+  defp find_idempotent!(organization_id, key) when is_binary(key) and key != "" do
+    Repo.get_by(Job, organization_id: organization_id, idempotency_key: key)
+  end
+
+  defp find_idempotent!(_organization_id, _key), do: Repo.rollback(:invalid_idempotency_key)
+
+  defp same_request?(%Job{} = job, agent_id, capability, parameters) do
+    job.agent_id == agent_id and job.capability == capability.name() and
+      job.capability_version == capability.version() and job.parameters == parameters
+  end
+
+  # Job creation is bounded per organization rather than per batch, so a large
+  # fan-out spreads over time instead of arriving at once.
+  defp enforce_rate_limit!(organization_id, now) do
+    limit = creation_rate_per_minute()
+    since = DateTime.add(now, -60)
+
+    recent =
+      Job
+      |> where([job], job.organization_id == ^organization_id and job.inserted_at > ^since)
+      |> limit(^limit)
+      |> select([job], job.id)
+      |> subquery()
+      |> select([recent], count(recent.id))
+      |> Repo.one!()
+
+    if recent >= limit, do: Repo.rollback(:rate_limited)
+  end
+
+  defp creation_rate_per_minute do
+    :renga
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:creation_rate_per_minute, 10_000)
+  end
+
+  ## Cancelling
+
+  @doc """
+  Cancels a job as an owner or admin. A queued job is cancelled at once; a
+  leased or running one records the request, which the agent sees on its next
+  report and acknowledges with a `cancelled` report.
+  """
+  def cancel_job(%Scope{} = scope, job_id) do
+    with {:ok, actor} <- requesting_user(scope) do
+      Repo.transaction(fn ->
+        authorize_member!(scope, ["owner", "admin"])
+        job = lock_job!(scope.organization_id, job_id)
+        now = Renga.Time.utc_now_ms()
+
+        cond do
+          job.state == "queued" ->
+            apply!(job, %{state: "cancelled", finished_at: now}, [{"cancelled", actor, %{}}], now)
+
+          job.state in Job.leased_states() and is_nil(job.cancel_requested_at) ->
+            apply!(job, %{cancel_requested_at: now}, [{"cancel_requested", actor, %{}}], now)
+
+          job.state in Job.leased_states() ->
+            job
+
+          true ->
+            Repo.rollback(:not_cancellable)
+        end
+      end)
+    end
+  end
+
+  ## Leasing and reporting (agent side)
+
+  @doc """
+  Leases up to `limit` queued jobs for `agent` among the capability keys the
+  agent will run now, oldest first.
+
+  Each leased job gets a fresh random lease token, returned once alongside the
+  job and stored only as a hash, and a lease that lapses after #{@lease_seconds}
+  seconds unless a report extends it. `SKIP LOCKED` lets concurrent lease
+  requests share the queue without waiting on each other. A queued job whose
+  capability the organization no longer allows fails here instead of running.
+  """
+  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit)
+      when is_list(keys) and is_integer(limit) and limit > 0 do
+    if agent.organization_id != organization_id do
+      {:error, :forbidden}
+    else
+      Repo.transaction(fn ->
+        organization = lock_active_organization!(organization_id)
+        allowed = Settings.allowed_capabilities(organization)
+        now = Renga.Time.utc_now_ms()
+
+        Job
+        |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
+        |> where([job], job.state == "queued" and job.not_after > ^now)
+        |> where(
+          [job],
+          fragment(
+            "(? || '@' || ?::text) = ANY(?)",
+            job.capability,
+            job.capability_version,
+            type(^keys, {:array, :string})
+          )
+        )
+        |> order_by([job], asc: job.inserted_at, asc: job.id)
+        |> limit(^limit)
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.all()
+        |> Enum.flat_map(fn job ->
+          if Job.capability_key(job) in allowed do
+            [lease!(job, agent, now)]
+          else
+            refuse!(job, "capability_not_allowed", now)
+            []
+          end
+        end)
+      end)
+    end
+  end
+
+  defp lease!(%Job{} = job, %Agent{} = agent, now) do
+    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+    job =
+      apply!(
+        job,
+        %{
+          state: "leased",
+          attempts: job.attempts + 1,
+          lease_token_hash: hash_token(token),
+          leased_at: now,
+          lease_expires_at: lease_expiry(now),
+          started_at: nil
+        },
+        [{"leased", {:agent, agent.id}, %{}}],
+        now
+      )
+
+    {job, token}
+  end
+
+  defp refuse!(%Job{} = job, reason, now) do
+    apply!(
+      job,
+      %{state: "failed", failure_reason: reason, finished_at: now},
+      [{"failed", :system, %{"reason" => reason}}],
+      now
+    )
+  end
+
+  @doc """
+  Records an agent's report on a job it holds, proven by the lease token.
+
+  `type` is one of #{Enum.map_join(@agent_report_types, ", ", &"`#{&1}`")}.
+  Every accepted report extends the lease. The returned job's
+  `cancel_requested_at` tells the agent whether to stop.
+
+  `succeeded` payloads are `%{"result" => result}`, checked against the
+  capability; `failed` payloads carry a `"reason"`; `cancelled` is accepted
+  only after cancellation was requested. Agent-supplied payloads count toward
+  the job's output limit.
+  """
+  def report(
+        %Scope{organization_id: organization_id},
+        %Agent{} = agent,
+        job_id,
+        token,
+        type,
+        payload
+      )
+      when type in @agent_report_types and is_map(payload) do
+    Repo.transaction(fn ->
+      job = lock_job!(organization_id, job_id)
+      now = Renga.Time.utc_now_ms()
+
+      unless lease_held?(job, agent, token, now), do: Repo.rollback(:lease_not_held)
+
+      payload = stringify(payload)
+      output_bytes = job.output_bytes + payload_bytes(payload)
+
+      if output_bytes > job.output_limit_bytes, do: Repo.rollback(:output_limit_exceeded)
+
+      {changes, payload} = report_changes!(job, type, payload, now)
+
+      changes =
+        changes
+        |> Map.put(:output_bytes, output_bytes)
+        |> Map.put_new(:lease_expires_at, lease_expiry(now))
+
+      apply!(job, changes, [{type, {:agent, agent.id}, payload}], now)
+    end)
+  end
+
+  def report(_scope, _agent, _job_id, _token, _type, _payload), do: {:error, :invalid_report}
+
+  defp lease_held?(%Job{} = job, %Agent{} = agent, token, now) do
+    job.state in Job.leased_states() and job.agent_id == agent.id and is_binary(token) and
+      DateTime.compare(job.lease_expires_at, now) == :gt and
+      Plug.Crypto.secure_compare(hash_token(token), job.lease_token_hash)
+  end
+
+  defp report_changes!(%Job{state: "leased"}, "started", payload, now),
+    do: {%{state: "running", started_at: now}, payload}
+
+  defp report_changes!(%Job{}, type, payload, _now) when type in ~w(progress output),
+    do: {%{}, payload}
+
+  defp report_changes!(%Job{} = job, "succeeded", payload, now) do
+    {:ok, capability} = Registry.fetch(Job.capability_key(job))
+
+    result =
+      payload
+      |> Map.get("result", %{})
+      |> case do
+        %{} = result -> result
+        _other -> Repo.rollback(:invalid_result)
+      end
+      |> capability.result_changeset()
+      |> Changeset.apply_action(:validate)
+      |> case do
+        {:ok, result} -> stringify(result)
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+    {finish(%{state: "succeeded", result: result}, now), %{"result" => result}}
+  end
+
+  defp report_changes!(%Job{}, "failed", payload, now) do
+    case Map.get(payload, "reason") do
+      reason when is_binary(reason) and reason != "" ->
+        reason = String.slice(reason, 0, @max_failure_reason_length)
+        {finish(%{state: "failed", failure_reason: reason}, now), payload}
+
+      _missing ->
+        Repo.rollback(:invalid_failure)
+    end
+  end
+
+  defp report_changes!(%Job{cancel_requested_at: %DateTime{}}, "cancelled", payload, now),
+    do: {finish(%{state: "cancelled"}, now), payload}
+
+  defp report_changes!(%Job{}, _type, _payload, _now), do: Repo.rollback(:invalid_transition)
+
+  defp finish(changes, now) do
+    Map.merge(changes, %{
+      finished_at: now,
+      lease_token_hash: nil,
+      leased_at: nil,
+      lease_expires_at: nil
+    })
+  end
+
+  defp lease_expiry(now), do: DateTime.add(now, @lease_seconds)
+
+  defp hash_token(token), do: :crypto.hash(:sha256, token)
+
+  defp payload_bytes(payload) when payload == %{}, do: 0
+  defp payload_bytes(payload), do: payload |> Renga.JSON.encode!() |> byte_size()
+
+  ## Writing
+
+  # The only writer of jobs and their events: applies `changes` to a locked
+  # job and appends `events` after its last sequence, in the caller's
+  # transaction.
+  defp apply!(%Job{} = job, changes, events, now) do
+    attempt = Map.get(changes, :attempts, job.attempts)
+
+    entries =
+      events
+      |> Enum.with_index(job.last_sequence + 1)
+      |> Enum.map(fn {{type, actor, payload}, sequence} ->
+        {actor_type, actor_id} = actor_columns(actor)
+
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: job.organization_id,
+          job_id: job.id,
+          sequence: sequence,
+          attempt: attempt,
+          type: type,
+          actor_type: actor_type,
+          actor_id: actor_id,
+          payload: payload,
+          inserted_at: now
+        }
+      end)
+
+    job =
+      job
+      |> Changeset.change(Map.put(changes, :last_sequence, job.last_sequence + length(entries)))
+      |> Repo.update!()
+
+    {_count, nil} = Repo.insert_all(JobEvent, entries)
+    job
+  end
+
+  defp actor_columns({:user, user_id}), do: {"user", user_id}
+  defp actor_columns({:agent, agent_id}), do: {"agent", agent_id}
+  defp actor_columns(:system), do: {"system", nil}
+
+  defp lock_job!(organization_id, job_id) do
+    with {:ok, job_id} <- Ecto.UUID.cast(job_id),
+         %Job{} = job <-
+           Job
+           |> where([job], job.organization_id == ^organization_id and job.id == ^job_id)
+           |> lock("FOR UPDATE")
+           |> Repo.one() do
+      job
+    else
+      _missing -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_active_organization!(organization_id) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> where([organization], organization.status == "active")
+    |> lock("FOR SHARE")
+    |> Repo.one()
+    |> case do
+      %Organization{} = organization -> organization
+      nil -> Repo.rollback(:forbidden)
+    end
+  end
+
+  # Rechecks the scope's membership inside the transaction so a stale browser
+  # scope cannot act after its role was changed.
+  defp authorize_member!(
+         %Scope{
+           membership_id: membership_id,
+           user: %{id: user_id},
+           organization_id: organization_id
+         },
+         roles
+       )
+       when not is_nil(membership_id) do
+    lock_active_organization!(organization_id)
+
+    member? =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^organization_id)
+      |> where([membership], membership.status == "active" and membership.role in ^roles)
+      |> lock("FOR SHARE")
+      |> Repo.exists?()
+
+    unless member?, do: Repo.rollback(:forbidden)
+  end
+
+  defp authorize_member!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
+
+  # Stores parameters, results, and payloads exactly as they read back from
+  # JSONB, so comparisons (idempotency) and size accounting see one shape.
+  defp stringify(value), do: value |> Renga.JSON.encode!() |> Renga.JSON.decode!()
+end
