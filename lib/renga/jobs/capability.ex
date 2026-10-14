@@ -27,6 +27,12 @@ defmodule Renga.Jobs.Capability do
 
   @doc "What people call a run of it, such as \"Collect inventory\"."
   @callback title() :: String.t()
+
+  @doc """
+  The run as the subject of a sentence in activity, such as "Inventory
+  collection" ("Inventory collection failed").
+  """
+  @callback noun() :: String.t()
   @callback version() :: pos_integer()
   @callback risk_class() :: risk_class()
   @callback retry_class() :: retry_class()
@@ -56,7 +62,7 @@ defmodule Renga.Jobs.Capability do
   @doc "A one-line description of a successful result for people."
   @callback describe_result(result :: map()) :: String.t()
 
-  @optional_callbacks title: 0, authorize: 3, sensitive_output?: 0, describe_result: 1
+  @optional_callbacks title: 0, noun: 0, authorize: 3, sensitive_output?: 0, describe_result: 1
 
   # Initial bound from RFD 9 so a job can never become an unbounded log sink.
   @default_output_limit_bytes 64 * 1024
@@ -67,6 +73,9 @@ defmodule Renga.Jobs.Capability do
 
       @impl Renga.Jobs.Capability
       def title, do: Renga.Jobs.Capability.default_title(name())
+
+      @impl Renga.Jobs.Capability
+      def noun, do: "#{title()} job"
 
       @impl Renga.Jobs.Capability
       def output_limit_bytes, do: unquote(@default_output_limit_bytes)
@@ -81,6 +90,7 @@ defmodule Renga.Jobs.Capability do
       def describe_result(_result), do: "Completed"
 
       defoverridable title: 0,
+                     noun: 0,
                      output_limit_bytes: 0,
                      sensitive_output?: 0,
                      authorize: 3,

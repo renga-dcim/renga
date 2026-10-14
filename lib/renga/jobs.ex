@@ -144,6 +144,14 @@ defmodule Renga.Jobs do
     end
   end
 
+  @doc "The job as the subject of an activity sentence, such as \"Inventory collection\"."
+  def noun(%Job{} = job) do
+    case Registry.fetch(Job.capability_key(job)) do
+      {:ok, capability} -> capability.noun()
+      {:error, _unknown} -> "#{title(job)} job"
+    end
+  end
+
   @doc "A job's history in the order it happened."
   def list_events(%Scope{organization_id: organization_id}, %Job{id: job_id}) do
     JobEvent
@@ -1107,6 +1115,7 @@ defmodule Renga.Jobs do
     %{
       "job_id" => job.id,
       "title" => title(job),
+      "noun" => noun(job),
       "state" => job.state,
       "failure_reason" => job.failure_reason,
       "observation_id" => job.result && job.result["observation_id"]

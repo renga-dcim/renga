@@ -68,21 +68,18 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "rule_applied", new_value: value} = event),
     do: "Owner set to #{value["name"]} by #{rule_label(event)}"
 
-  # Job events name the capability by what people call it ("Collect
-  # inventory"); the job itself keeps the full history.
+  # Job events read as "Inventory collection failed"; the job itself keeps
+  # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
-    do: "#{job_title(metadata)} requested"
+    do: "#{job_noun(metadata)} requested"
 
   def describe(%{kind: "job_outcome", metadata: %{"state" => state} = metadata}) do
-    title = job_title(metadata)
+    noun = job_noun(metadata)
 
     case state do
-      "succeeded" -> "#{title} succeeded"
-      "failed" -> "#{title} failed"
-      "cancelled" -> "#{title} cancelled"
-      "expired" -> "#{title} expired"
-      "uncertain" -> "#{title} needs review"
-      _other -> "#{title} ended"
+      "uncertain" -> "#{noun} needs review"
+      state when state in ~w(succeeded failed cancelled expired) -> "#{noun} #{state}"
+      _other -> "#{noun} ended"
     end
   end
 
@@ -127,8 +124,8 @@ defmodule RengaWeb.ChangeDescription do
     end
   end
 
-  defp job_title(%{"title" => title}) when is_binary(title), do: title
-  defp job_title(_metadata), do: "Job"
+  defp job_noun(%{"noun" => noun}) when is_binary(noun), do: noun
+  defp job_noun(_metadata), do: "Job"
 
   defp rule_label(%{metadata: %{"rule_name" => name}}), do: "the rule #{name}"
   defp rule_label(_event), do: "a triage rule"

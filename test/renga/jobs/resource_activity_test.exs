@@ -47,6 +47,7 @@ defmodule Renga.Jobs.ResourceActivityTest do
     assert requested.metadata == %{
              "job_id" => job.id,
              "title" => "Collect inventory",
+             "noun" => "Inventory collection",
              "state" => "queued"
            }
 
@@ -62,8 +63,8 @@ defmodule Renga.Jobs.ResourceActivityTest do
     assert [%{kind: "job_outcome"}, %{kind: "job_requested"}] =
              scope |> Inventory.list_activity() |> Enum.filter(&(&1.resource_id == resource.id))
 
-    assert RengaWeb.ChangeDescription.describe(outcome) == "Collect inventory succeeded"
-    assert RengaWeb.ChangeDescription.describe(requested) == "Collect inventory requested"
+    assert RengaWeb.ChangeDescription.describe(outcome) == "Inventory collection succeeded"
+    assert RengaWeb.ChangeDescription.describe(requested) == "Inventory collection requested"
   end
 
   test "progress stays in the job's history and failures carry their reason", context do
