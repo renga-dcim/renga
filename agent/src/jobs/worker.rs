@@ -135,7 +135,9 @@ impl<'a, A: JobApi> Worker<'a, A> {
         if let Some(record) = records.get(job.id) {
             if let Some(outcome) = record.outcome.clone() {
                 info!(job_id = %job.id, "job delivered again; re-sending its recorded outcome");
-                reporter.send(outcome.kind, &outcome.payload);
+                if reporter.send(outcome.kind, &outcome.payload).is_some() {
+                    confirm(records, job.id);
+                }
                 return;
             }
             if capability.retry_class() == RetryClass::Imperative {
@@ -288,6 +290,7 @@ impl<'a, A: JobApi> Worker<'a, A> {
             return;
         }
         if reporter.send(outcome.kind, &outcome.payload).is_some() {
+            confirm(records, job.id);
             info!(job_id = %job.id, outcome = ?outcome.kind, "job finished");
         }
     }
@@ -347,6 +350,12 @@ fn cancelled() -> Outcome {
     Outcome {
         kind: ReportType::Cancelled,
         payload: json!({}),
+    }
+}
+
+fn confirm(records: &mut JobRecords, job_id: Uuid) {
+    if let Err(error) = records.confirm(job_id, Utc::now()) {
+        warn!(%job_id, %error, "cannot mark job outcome acknowledged");
     }
 }
 

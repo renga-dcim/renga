@@ -21,9 +21,8 @@ use uuid::Uuid;
 
 const RECORD_FILE: &str = "jobs.json";
 const TEMPORARY_PREFIX: &str = ".jobs.json.";
-/// Bounds the file the agent rewrites on every change. A job's lease and
-/// retries end within its seven-day deadline, so the oldest records here are
-/// long past redelivery.
+/// Bounds the file the agent rewrites on every change. Unresolved records are
+/// protected through the retry horizon; acknowledged outcomes make room first.
 const MAX_RECORDS: usize = 128;
 const RETENTION: chrono::TimeDelta = chrono::TimeDelta::days(8);
 
@@ -58,6 +57,10 @@ pub struct JobRecord {
     pub started_at: DateTime<Utc>,
     /// `None` while running, or when the agent stopped mid-run.
     pub outcome: Option<Outcome>,
+    /// True only after Renga acknowledged the terminal report. Older record
+    /// files predate this field and must remain protected until age retention.
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 pub struct JobRecords {
@@ -99,6 +102,20 @@ impl JobRecords {
         retry_class: RetryClass,
         now: DateTime<Utc>,
     ) -> Result<(), RecordError> {
+        self.remove_expired(now);
+        let replacing = self.records.iter().any(|record| record.job_id == job_id);
+        if !replacing && self.records.len() >= MAX_RECORDS {
+            match self.records.iter().position(|record| record.confirmed) {
+                Some(index) => {
+                    self.records.remove(index);
+                }
+                None => {
+                    return Err(RecordError(format!(
+                        "job record is full with {MAX_RECORDS} unresolved jobs"
+                    )))
+                }
+            }
+        }
         self.records.retain(|record| record.job_id != job_id);
         self.records.push(JobRecord {
             job_id,
@@ -106,6 +123,7 @@ impl JobRecords {
             retry_class,
             started_at: now,
             outcome: None,
+            confirmed: false,
         });
         self.persist(now)
     }
@@ -122,17 +140,45 @@ impl JobRecords {
             .iter_mut()
             .find(|record| record.job_id == job_id)
         {
-            Some(record) => record.outcome = Some(outcome),
+            Some(record) => {
+                record.outcome = Some(outcome);
+                record.confirmed = false;
+            }
+            None => return Err(RecordError(format!("job {job_id} was never started"))),
+        }
+        self.persist(now)
+    }
+
+    /// Marks an outcome as accepted by Renga, making this record eligible for
+    /// count-based eviction. Age retention remains the final bound for every
+    /// record, including unresolved work whose server-side deadline has passed.
+    pub fn confirm(&mut self, job_id: Uuid, now: DateTime<Utc>) -> Result<(), RecordError> {
+        match self
+            .records
+            .iter_mut()
+            .find(|record| record.job_id == job_id)
+        {
+            Some(record) if record.outcome.is_some() => record.confirmed = true,
+            Some(_) => return Err(RecordError(format!("job {job_id} has no outcome"))),
             None => return Err(RecordError(format!("job {job_id} was never started"))),
         }
         self.persist(now)
     }
 
     fn persist(&mut self, now: DateTime<Utc>) -> Result<(), RecordError> {
-        self.records
-            .retain(|record| now.signed_duration_since(record.started_at) < RETENTION);
-        let excess = self.records.len().saturating_sub(MAX_RECORDS);
-        self.records.drain(..excess);
+        self.remove_expired(now);
+        while self.records.len() > MAX_RECORDS {
+            match self.records.iter().position(|record| record.confirmed) {
+                Some(index) => {
+                    self.records.remove(index);
+                }
+                None => {
+                    return Err(RecordError(format!(
+                        "job record is full with more than {MAX_RECORDS} unresolved jobs"
+                    )))
+                }
+            }
+        }
 
         let body = serde_json::to_vec(&self.records)
             .map_err(|error| RecordError(format!("cannot encode job record: {error}")))?;
@@ -153,6 +199,11 @@ impl JobRecords {
             let _ = fs::remove_file(&temporary);
         }
         result
+    }
+
+    fn remove_expired(&mut self, now: DateTime<Utc>) {
+        self.records
+            .retain(|record| now.signed_duration_since(record.started_at) < RETENTION);
     }
 }
 
@@ -245,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn the_record_stays_bounded_by_count_and_age() {
+    fn acknowledged_outcomes_make_room_without_evicting_unresolved_work() {
         let state = state();
         let now = Utc::now();
         let mut records = JobRecords::open(&state).unwrap();
@@ -257,15 +308,51 @@ mod tests {
         records
             .start(first, "a.b@1", RetryClass::Idempotent, now)
             .unwrap();
+        records.finish(first, succeeded(), now).unwrap();
         assert!(records.get(old).is_none(), "expired records are dropped");
 
         for _ in 0..MAX_RECORDS {
+            let id = Uuid::new_v4();
+            records
+                .start(id, "a.b@1", RetryClass::Idempotent, now)
+                .unwrap();
+            records.finish(id, succeeded(), now).unwrap();
+            records.confirm(id, now).unwrap();
+        }
+        let reopened = JobRecords::open(&state).unwrap();
+        assert_eq!(reopened.records.len(), MAX_RECORDS);
+        assert_eq!(
+            reopened.get(first).unwrap().outcome,
+            Some(succeeded()),
+            "the unacknowledged outcome remains available for redelivery"
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn unresolved_records_apply_backpressure_at_capacity() {
+        let state = state();
+        let now = Utc::now();
+        let mut records = JobRecords::open(&state).unwrap();
+        let first = Uuid::new_v4();
+
+        records
+            .start(first, "a.b@1", RetryClass::Idempotent, now)
+            .unwrap();
+        records.finish(first, succeeded(), now).unwrap();
+        for _ in 1..MAX_RECORDS {
             records
                 .start(Uuid::new_v4(), "a.b@1", RetryClass::Idempotent, now)
                 .unwrap();
         }
-        assert!(records.get(first).is_none(), "the oldest record goes first");
+
+        assert!(records
+            .start(Uuid::new_v4(), "a.b@1", RetryClass::Idempotent, now)
+            .unwrap_err()
+            .to_string()
+            .contains("unresolved"));
         assert_eq!(JobRecords::open(&state).unwrap().records.len(), MAX_RECORDS);
+        assert_eq!(records.get(first).unwrap().outcome, Some(succeeded()));
         fs::remove_dir_all(state).unwrap();
     }
 
