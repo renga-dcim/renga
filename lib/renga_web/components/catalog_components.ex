@@ -45,14 +45,14 @@ defmodule RengaWeb.CatalogComponents do
           role="switch"
           aria-checked={to_string(@auto_move)}
           phx-click="toggle_auto_move"
-          class="ml-auto inline-flex min-h-tap cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-fg transition-colors hover:bg-sunken"
+          class="ml-auto inline-flex min-h-tap cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-fg transition-colors hover:bg-sunken focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
           <span class={[
             "relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors",
             if(@auto_move, do: "bg-accent", else: "bg-edge")
           ]}>
             <span class={[
-              "absolute top-0.5 size-4 rounded-full bg-surface shadow transition-all",
+              "absolute top-0.5 size-4 rounded-full bg-surface transition-all",
               if(@auto_move, do: "left-4.5", else: "left-0.5")
             ]} />
           </span>

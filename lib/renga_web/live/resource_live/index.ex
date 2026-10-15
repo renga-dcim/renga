@@ -707,7 +707,7 @@ defmodule RengaWeb.ResourceLive.Index do
       id="bulk-bar"
       role="region"
       aria-label="Selected resources"
-      class="fixed inset-x-4 bottom-4 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-edge bg-surface px-3 py-2 shadow-xl sm:inset-x-0"
+      class="fixed inset-x-4 bottom-4 z-30 mx-auto flex max-w-xl flex-wrap items-center gap-2 rounded-xl border border-edge bg-surface px-3 py-2 shadow-lg sm:inset-x-0"
     >
       <span id="bulk-count" class="px-1 text-sm font-medium text-fg">
         {count_label(@count)} selected
