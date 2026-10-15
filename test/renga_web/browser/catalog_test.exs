@@ -12,6 +12,13 @@ defmodule RengaWeb.Browser.CatalogTest do
 
   @moduletag :playwright
 
+  @tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 600))
+  """
+
   setup %{conn: conn} do
     organization = organization_fixture()
     user = user_fixture()
@@ -37,6 +44,11 @@ defmodule RengaWeb.Browser.CatalogTest do
         }
       )
 
+    long_part_number = String.duplicate("LONG-PART-NUMBER-", 12)
+
+    {:ok, _revision} =
+      Catalog.create_module_type_revision(scope, module_type, %{part_number: long_part_number})
+
     conn =
       add_session_cookie(
         conn,
@@ -49,7 +61,7 @@ defmodule RengaWeb.Browser.CatalogTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, module_type: module_type, scope: scope}
+    %{conn: conn, long_part_number: long_part_number, module_type: module_type, scope: scope}
   end
 
   test "manufacturer creation stays open on errors and closes after success", context do
@@ -85,10 +97,21 @@ defmodule RengaWeb.Browser.CatalogTest do
     assert_has(session, "#manufacturer-#{created.id}", text: "Browser Vendor")
   end
 
-  test "module revisions open from a side panel", context do
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "module revisions reveal long part numbers and open from a side panel", context do
     context.conn
     |> visit("/catalog/module-types/#{context.module_type.id}")
     |> assert_has("body .phx-connected")
+    |> evaluate(
+      "(() => { const el = document.getElementById('revision-1-part-number'); return el.scrollWidth > el.clientWidth })()",
+      &assert(&1 == true)
+    )
+    |> click("#revision-1-part-number")
+    |> evaluate(@tooltip, &assert(&1 == context.long_part_number))
     |> click("#new-revision")
     |> assert_has("#new-revision-panel [role=dialog]", text: "Publish a revision")
     |> assert_has("#new-revision-form")

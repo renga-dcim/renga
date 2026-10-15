@@ -764,8 +764,10 @@ defmodule RengaWeb.CatalogLive do
               <span class="shrink-0 rounded-sm border border-edge bg-sunken px-1.5 font-mono text-[11px] text-fg-muted">
                 Revision {revision.revision}
               </span>
-              <h3 class="truncate font-mono text-sm font-semibold text-fg">
-                {revision.part_number || "Part number not specified"}
+              <h3 class="min-w-0 font-mono text-sm font-semibold text-fg">
+                <.clip id={"revision-#{revision.revision}-part-number"}>
+                  {revision.part_number || "Part number not specified"}
+                </.clip>
               </h3>
             </div>
             <p class="text-xs text-fg-subtle">Immutable revision pin</p>
