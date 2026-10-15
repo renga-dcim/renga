@@ -175,7 +175,7 @@ const CommandPalette = {
   highlightActiveItem() {
     this.items.forEach((item, index) => {
       const control = item.matches("a, button") ? item : item.querySelector("a, button")
-      control?.classList.toggle("bg-base-content/[0.06]", index === this.activeIndex)
+      control?.classList.toggle("bg-sunken", index === this.activeIndex)
     })
     const active = this.items[this.activeIndex]
     this.activeKey = active && (active.id || active.getAttribute("href") || active.dataset.commandAction)

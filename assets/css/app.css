@@ -55,30 +55,6 @@
   --spacing-tap: var(--rg-tap-min);
   --spacing-rack-u: var(--rg-rack-u);
   --text-table: var(--rg-table-text);
-
-  /*
-    Transitional aliases for the former daisyUI color names that existing
-    screens still use (bg-base-100, text-base-content/60, ...). Screens move
-    to the token names as later RFD 8 phases rebuild them; remove these then.
-  */
-  --color-base-100: var(--rg-canvas);
-  --color-base-200: var(--rg-sunken);
-  --color-base-300: var(--rg-edge);
-  --color-base-content: var(--rg-fg);
-  --color-primary: var(--rg-accent);
-  --color-primary-content: var(--rg-accent-fg);
-  --color-secondary: var(--rg-fg-muted);
-  --color-secondary-content: var(--rg-surface);
-  --color-neutral: var(--rg-fg-muted);
-  --color-neutral-content: var(--rg-surface);
-  --color-accent-content: var(--rg-accent-fg);
-  --color-info-content: var(--rg-surface);
-  --color-success: var(--rg-ok);
-  --color-success-content: var(--rg-surface);
-  --color-warning: var(--rg-warn);
-  --color-warning-content: var(--rg-fg);
-  --color-error: var(--rg-crit);
-  --color-error-content: var(--rg-surface);
 }
 
 /* Add variants based on LiveView classes */

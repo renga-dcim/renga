@@ -301,9 +301,7 @@ sideways; move them over when you touch them.
   only with tokens, gets a LiveViewTest in `test/renga_web/components`, and
   a sample on the design system page.
   Browser-only behavior (layout, focus, touch targets) gets a Playwright test.
-- **The guard** lists screens written before the tokens under `@legacy` with
-  their remaining violation counts. Counts may only go down; when you touch a
-  legacy screen, move what you touch onto tokens and lower its count. New files
-  never join the list. Deliberate exceptions go in `@allowed` with a reason.
-- The transitional daisyUI aliases at the end of `app.css`'s `@theme` exist
-  only for the legacy screens and are removed once the list is empty.
+- **The guard** rejects raw colors and off-scale values in every file under
+  `lib/renga_web`. Its `@legacy` list, for screens written before the tokens,
+  is empty and stays that way. Deliberate exceptions go in `@allowed` with a
+  reason.
