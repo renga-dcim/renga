@@ -267,12 +267,19 @@ defmodule RengaWeb.InventoryOperationsLive do
                 size="sm"
                 variant="ghost"
                 class="text-crit"
-                phx-click="revoke_intake_key"
-                phx-value-id={key.id}
-                data-confirm="Revoke this shared key? Every collector still using it will be rejected."
+                phx-click={show_overlay("revoke-intake-key-#{key.id}-dialog")}
               >
                 Revoke
               </.button>
+              <.confirm_dialog
+                :if={key.status == "active" && Inventory.collector_manager?(@current_scope)}
+                id={"revoke-intake-key-#{key.id}-dialog"}
+                title="Revoke this shared key?"
+                confirm_label="Revoke key"
+                on_confirm={JS.push("revoke_intake_key", value: %{id: key.id})}
+              >
+                Every collector still using it will be rejected.
+              </.confirm_dialog>
             </div>
           </div>
         </section>

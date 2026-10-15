@@ -268,7 +268,8 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     agent: agent
   } do
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
-    view |> element("#revoke-intake-key-#{key.id}") |> render_click()
+    assert has_element?(view, "#revoke-intake-key-#{key.id}-dialog [role='alertdialog']")
+    view |> element("#revoke-intake-key-#{key.id}-dialog-confirm") |> render_click()
 
     assert has_element?(view, "#intake-key-#{key.id}", "Revoked")
     refute has_element?(view, "#revoke-intake-key-#{key.id}")

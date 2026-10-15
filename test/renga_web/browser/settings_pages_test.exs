@@ -100,7 +100,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: "owner"})
     scope = Renga.Accounts.scope_for_user(user, organization.id)
-    {:ok, {_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
+    {:ok, {_created_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
     {:ok, key} = Renga.Inventory.authenticate_intake_api_key(token)
 
     {:ok, {agent, _}} =
@@ -163,6 +163,10 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       """,
       &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
     )
+    |> click_button("#revoke-intake-key-#{key.id}", "Revoke")
+    |> assert_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
+    |> click_button("#revoke-intake-key-#{key.id}-dialog-cancel", "Cancel")
+    |> refute_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
     |> click_button("#new-intake-key-button", "Create intake key")
     |> assert_has("#new-intake-key-form")
     |> evaluate(
