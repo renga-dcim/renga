@@ -490,6 +490,8 @@ defmodule RengaWeb.CoreComponents do
     doc: """
     the function returning whether a row shows its `:expanded` slot in a full
     width row beneath it. The row link then announces `aria-expanded`.
+    Expansion requires list rows; LiveView streams track only one DOM child per
+    item and cannot own the adjacent details row.
     """
 
   attr :class, :any, default: nil, doc: "classes for the scroll container"
@@ -514,6 +516,12 @@ defmodule RengaWeb.CoreComponents do
     doc: "details for a row that `row_expanded` opens; its id is the row id plus `-details`"
 
   def table(assigns) do
+    if is_struct(assigns.rows, Phoenix.LiveView.LiveStream) and
+         (assigns.row_expanded || assigns.expanded != []) do
+      raise ArgumentError,
+            "table expansion does not support LiveStream rows; pass a list so each details row is removed with its parent"
+    end
+
     assigns = assign(assigns, :checkbox_class, @checkbox_class)
 
     assigns =

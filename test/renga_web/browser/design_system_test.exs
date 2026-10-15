@@ -195,6 +195,43 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> assert_has("#open-sample-dialog:focus")
   end
 
+  test "expandable rows expose their state and focus treatments stay visible", %{conn: conn} do
+    conn
+    |> visit("/dev/design-system")
+    |> assert_has("body .phx-connected")
+    |> assert_has(
+      "#sample-port-1-link[aria-expanded='false'][aria-controls='sample-port-1-details']"
+    )
+    |> click("#sample-port-1-link")
+    |> assert_has("#sample-port-1-link[aria-expanded='true']")
+    |> assert_has("#sample-port-1-details", text: "Observed VLAN 30 is not desired")
+    |> press("body", "Tab")
+    |> evaluate(
+      """
+      (() => {
+        const fallback = document.querySelector('#component-overlays a')
+        const owned = document.querySelector('#component-buttons button')
+        fallback.focus()
+        const fallbackStyle = getComputedStyle(fallback)
+        const fallbackOutline = fallbackStyle.outlineStyle
+        const fallbackWidth = parseFloat(fallbackStyle.outlineWidth)
+        owned.focus()
+        const ownedStyle = getComputedStyle(owned)
+        return {
+          fallback_outline: fallbackOutline,
+          fallback_width: fallbackWidth,
+          owned_ring: ownedStyle.boxShadow !== 'none'
+        }
+      })()
+      """,
+      fn styles ->
+        assert styles["fallback_outline"] == "solid"
+        assert styles["fallback_width"] == 4
+        assert styles["owned_ring"] == true
+      end
+    )
+  end
+
   @tooltip """
   new Promise(resolve => setTimeout(() => {
     const tooltip = document.getElementById("clip-tooltip")
