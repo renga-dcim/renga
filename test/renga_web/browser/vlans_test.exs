@@ -37,7 +37,37 @@ defmodule RengaWeb.Browser.VlansTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, group: group, users: users, swp2: ports["swp2"].id}
+    %{conn: conn, group: group, scope: scope, users: users, swp2: ports["swp2"].id}
+  end
+
+  test "an admin creates a VLAN group from a panel", context do
+    session =
+      context.conn
+      |> visit("/network/vlan-groups")
+      |> assert_has("body .phx-connected")
+      |> click("#new-vlan-group")
+      |> assert_has("#vlan-group-panel [role=dialog]", text: "New VLAN group")
+      |> press("#vlan-group-panel [role=dialog]", "Escape")
+      |> refute_has("#vlan-group-panel [role=dialog]")
+      |> assert_has("#new-vlan-group:focus")
+      |> click("#new-vlan-group")
+      |> fill_in("#vlan-group-form input[name='vlan_group[name]']", "Name",
+        with: "Browser campus"
+      )
+      |> fill_in("#vlan-group-form input[name='vlan_group[start_vid]']", "First VID", with: "300")
+      |> fill_in("#vlan-group-form input[name='vlan_group[end_vid]']", "Last VID", with: "100")
+      |> click("#create-vlan-group")
+      |> assert_has("#flash-error", text: "start at or below end")
+      |> assert_has("#vlan-group-panel [role=dialog]")
+      |> fill_in("#vlan-group-form input[name='vlan_group[end_vid]']", "Last VID", with: "399")
+      |> click("#create-vlan-group")
+      |> assert_has("#flash-info", text: "browser-campus created")
+      |> refute_has("#vlan-group-panel [role=dialog]")
+
+    [created] =
+      Enum.filter(Renga.Topology.list_vlan_groups(context.scope), &(&1.slug == "browser-campus"))
+
+    assert_has(session, "#vlan-group-#{created.id}", text: "Browser campus")
   end
 
   test "the last VLAN remains visibly inside a full-size group's strip", context do

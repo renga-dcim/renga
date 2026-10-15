@@ -55,7 +55,7 @@ defmodule RengaWeb.VlanGroupLive do
       current_scope={@current_scope}
       active_nav={:vlan_groups}
     >
-      <main id="vlan-groups" class="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+      <main id="vlan-groups" class="mx-auto max-w-6xl space-y-6">
         <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
@@ -67,6 +67,14 @@ defmodule RengaWeb.VlanGroupLive do
               identity; it never assigns interface membership.
             </p>
           </div>
+          <.button
+            :if={@can_manage?}
+            id="new-vlan-group"
+            variant="primary"
+            phx-click={show_overlay("vlan-group-panel")}
+          >
+            New VLAN group
+          </.button>
         </header>
 
         <section class="grid gap-3 sm:grid-cols-3">
@@ -79,26 +87,19 @@ defmodule RengaWeb.VlanGroupLive do
           />
         </section>
 
-        <.form
+        <.side_panel
           :if={@can_manage?}
-          for={@group_form}
-          id="vlan-group-form"
-          phx-submit="create_vlan_group"
-          phx-change="validate_group"
-          class="rounded-lg border border-edge bg-surface px-5 py-4"
+          id="vlan-group-panel"
+          title="New VLAN group"
+          description="Create a VLAN-ID namespace and its allocatable range."
         >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="text-base font-semibold text-fg">New VLAN group</h2>
-              <p class="mt-1 text-xs text-fg-muted">
-                Creating a namespace changes shared VLAN identity, so only owners and admins may submit it.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-sunken px-2 py-0.5 text-[11px] font-medium text-fg-muted">
-              Owner/Admin
-            </span>
-          </div>
-          <div class="mt-4 grid gap-x-4 sm:grid-cols-2 xl:grid-cols-3">
+          <.form
+            for={@group_form}
+            id="vlan-group-form"
+            phx-submit="create_vlan_group"
+            phx-change="validate_group"
+            class="space-y-1"
+          >
             <.input field={@group_form[:name]} type="text" label="Name" />
             <.input
               field={@group_form[:slug]}
@@ -131,18 +132,20 @@ defmodule RengaWeb.VlanGroupLive do
               type="text"
               label="Description (optional)"
             />
-          </div>
-          <div class="mt-2 flex justify-end">
+          </.form>
+          <:footer>
+            <.button type="button" phx-click={hide_overlay("vlan-group-panel")}>Cancel</.button>
             <.button
               id="create-vlan-group"
               type="submit"
+              form="vlan-group-form"
               variant="primary"
               phx-disable-with="Creating…"
             >
               Create group
             </.button>
-          </div>
-        </.form>
+          </:footer>
+        </.side_panel>
 
         <section id="vlan-groups-list" phx-update="stream" class="grid gap-3 xl:grid-cols-2">
           <div
@@ -250,6 +253,7 @@ defmodule RengaWeb.VlanGroupLive do
         |> put_flash(:info, "VLAN group #{group.slug} created")
         |> assign(:group_form, group_form())
         |> load_groups()
+        |> close_overlay("vlan-group-panel")
 
       {:error, :forbidden} ->
         put_flash(socket, :error, "You are not allowed to manage VLAN namespaces")
