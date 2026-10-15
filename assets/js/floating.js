@@ -15,8 +15,8 @@ const GAP = 4
 const MARGIN = 8
 
 const TOOLTIP_CLASS =
-  "pointer-events-none fixed inset-auto m-0 max-w-sm rounded-md border border-edge bg-surface " +
-  "px-2.5 py-1.5 text-xs text-fg shadow-lg"
+  "pointer-events-none fixed inset-auto m-0 max-w-[calc(100vw-1rem)] break-all rounded-md " +
+  "border border-edge bg-surface px-2.5 py-1.5 text-xs text-fg shadow-lg sm:max-w-sm"
 
 const FOCUS_OWNER_SELECTOR =
   "a, button, input, select, textarea, summary, label, [contenteditable='true'], " +

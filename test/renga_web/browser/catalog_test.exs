@@ -44,7 +44,7 @@ defmodule RengaWeb.Browser.CatalogTest do
         }
       )
 
-    long_part_number = String.duplicate("LONG-PART-NUMBER-", 12)
+    long_part_number = String.duplicate("X", 255)
 
     {:ok, _revision} =
       Catalog.create_module_type_revision(scope, module_type, %{part_number: long_part_number})
@@ -112,6 +112,19 @@ defmodule RengaWeb.Browser.CatalogTest do
     )
     |> click("#revision-1-part-number")
     |> evaluate(@tooltip, &assert(&1 == context.long_part_number))
+    |> evaluate(
+      """
+      (() => {
+        const tooltip = document.getElementById('clip-tooltip')
+        const box = tooltip.getBoundingClientRect()
+        return {
+          fits_content: tooltip.scrollWidth <= tooltip.clientWidth,
+          inside_viewport: box.left >= 8 && box.right <= innerWidth - 8
+        }
+      })()
+      """,
+      &assert(&1 == %{"fits_content" => true, "inside_viewport" => true})
+    )
     |> click("#new-revision")
     |> assert_has("#new-revision-panel [role=dialog]", text: "Publish a revision")
     |> assert_has("#new-revision-form")
