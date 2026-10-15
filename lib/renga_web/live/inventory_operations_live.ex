@@ -15,7 +15,6 @@ defmodule RengaWeb.InventoryOperationsLive do
     {:ok,
      socket
      |> assign(:page_title, "Collectors")
-     |> assign(:show_new_key?, false)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())
      |> stream_configure(:sources, dom_id: &"collector-#{&1.id}")
@@ -47,7 +46,6 @@ defmodule RengaWeb.InventoryOperationsLive do
   def handle_event("new_intake_key", _params, socket) do
     {:noreply,
      socket
-     |> assign(:show_new_key?, true)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())}
   end
@@ -55,7 +53,6 @@ defmodule RengaWeb.InventoryOperationsLive do
   def handle_event("cancel_intake_key", _params, socket) do
     {:noreply,
      socket
-     |> assign(:show_new_key?, false)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())}
   end
@@ -119,7 +116,7 @@ defmodule RengaWeb.InventoryOperationsLive do
             :if={Inventory.collector_manager?(@current_scope)}
             id="new-intake-key-button"
             variant="primary"
-            phx-click="new_intake_key"
+            phx-click={JS.push("new_intake_key") |> show_overlay("new-intake-key-panel")}
           >
             <.icon name="hero-key-mini" class="size-4" /> Create intake key
           </.button>
@@ -135,36 +132,18 @@ defmodule RengaWeb.InventoryOperationsLive do
             </p>
           </div>
 
-          <div
-            :if={@show_new_key?}
+          <.side_panel
             id="new-intake-key-panel"
-            class="rounded-lg border border-edge bg-surface"
+            title="Create an intake API key"
+            description="One key can be deployed to every collector in this organization."
+            on_cancel={JS.push("cancel_intake_key")}
           >
-            <div class="flex items-start justify-between gap-4 border-b border-edge px-4 py-3">
-              <div>
-                <h3 class="text-sm font-medium text-fg">Create an intake API key</h3>
-                <p class="mt-0.5 text-xs text-fg-muted">
-                  One key can be deployed to every collector in this organization.
-                </p>
-              </div>
-              <button
-                id="cancel-intake-key"
-                type="button"
-                phx-click="cancel_intake_key"
-                aria-label="Close intake key setup"
-                class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
-              >
-                <.icon name="hero-x-mark" class="size-4" />
-              </button>
-            </div>
-
-            <div :if={is_nil(@issued_token)} class="p-4">
+            <div :if={is_nil(@issued_token)}>
               <.form
                 for={@key_form}
                 id="new-intake-key-form"
                 phx-change="validate_intake_key"
                 phx-submit="create_intake_key"
-                class="max-w-md"
               >
                 <.input
                   field={@key_form[:name]}
@@ -179,7 +158,7 @@ defmodule RengaWeb.InventoryOperationsLive do
               </.form>
             </div>
 
-            <div :if={@issued_token} id="intake-key-credentials" class="space-y-4 p-4">
+            <div :if={@issued_token} id="intake-key-credentials" class="space-y-4">
               <div class="flex gap-2.5 rounded-md bg-sunken px-3 py-2">
                 <.icon name="hero-check-circle-mini" class="mt-0.5 size-4 shrink-0 text-ok" />
                 <div>
@@ -225,11 +204,14 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <span class="block">intake_api_key = "{@issued_token}"</span>
                 </code>
               </div>
-              <.button id="finish-intake-key-setup" phx-click="cancel_intake_key">
+              <.button
+                id="finish-intake-key-setup"
+                phx-click={JS.push("cancel_intake_key") |> hide_overlay("new-intake-key-panel")}
+              >
                 I saved this key
               </.button>
             </div>
-          </div>
+          </.side_panel>
 
           <div
             id="intake-api-keys"

@@ -168,19 +168,25 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> click_button("#revoke-intake-key-#{key.id}-dialog-cancel", "Cancel")
     |> refute_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
     |> click_button("#new-intake-key-button", "Create intake key")
+    |> assert_has("#new-intake-key-panel [role=dialog]", text: "Create an intake API key")
+    |> press("#new-intake-key-panel [role=dialog]", "Escape")
+    |> refute_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#new-intake-key-button:focus")
+    |> click_button("#new-intake-key-button", "Create intake key")
     |> assert_has("#new-intake-key-form")
-    |> evaluate(
-      "(() => { const r = document.getElementById('cancel-intake-key').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
-      &assert(&1 == true)
-    )
     |> fill_in("#new-intake-key-form input[name='intake_api_key[name]']", "Key name",
       with: "Phone fleet"
     )
     |> click_button("#create-intake-key-button", "Create key")
+    |> assert_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#intake-key-credentials", text: "Intake key created")
     |> assert_has("#copy-intake-key")
     |> evaluate(
       "(() => { const r = document.getElementById('copy-intake-key').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
       &assert(&1 == true)
     )
+    |> click_button("#finish-intake-key-setup", "I saved this key")
+    |> refute_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#new-intake-key-button:focus")
   end
 end
