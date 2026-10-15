@@ -78,9 +78,16 @@ defmodule RengaWeb.ResourcePortsLiveTest do
     assert has_element?(view, "#port-#{swp1}", "Trunk")
     assert has_element?(view, "#port-#{swp1}", "20, 30")
     assert has_element?(view, "#port-#{swp1}", "A-17")
+    assert has_element?(view, "table.table-fixed")
 
     key = Links.key(swp1, s.host_ports["eth0"].id)
-    assert has_element?(view, "#port-#{swp1} a[href='/network/topology?link=#{key}']", "eth0")
+
+    assert has_element?(
+             view,
+             "#port-#{swp1} a[data-clip][href='/network/topology?link=#{key}']",
+             "eth0"
+           )
+
     assert has_element?(view, "#port-#{swp1}-drift", "VLAN drift")
     refute has_element?(view, "#port-#{s.ports["swp2"].id}-drift")
   end
