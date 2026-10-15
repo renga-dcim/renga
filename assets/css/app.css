@@ -93,3 +93,18 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+/*
+  Focus fallback (docs/design-system.md, "Interaction"). Components draw
+  their own ring with focus-visible:ring-4 focus-visible:ring-ring; this
+  gives every other link, button, and summary the same 4px ring color as an
+  outline, so a keyboard user never lands on an element with no visible focus.
+  It sits in the base layer, so any element's own focus-visible utilities
+  (including outline-none plus a ring) still win.
+*/
+@layer base {
+  :where(a[href], button, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 4px solid var(--color-ring);
+    outline-offset: 0;
+  }
+}

@@ -171,6 +171,9 @@ dialogs and side panels.
   `hover:bg-accent-hover` on accent fills. Animate with `transition-colors`.
 - Focus: `focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring`;
   inputs also take `focus:border-accent`.
+  `app.css` gives any link, button, or `summary` without its own focus style
+  the same 4px ring color as an outline, so nothing is ever unmarked; shared
+  components still set the ring explicitly.
 - Disabled: `disabled:opacity-50 disabled:cursor-not-allowed`. An unavailable
   action stays visible and says why (RFD 8, "Actions").
 - Loading: `phx-submit-loading:opacity-70` on submit buttons, plus the
