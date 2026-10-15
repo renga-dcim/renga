@@ -145,15 +145,25 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
   @tag browser_context_opts: [
          has_touch: false,
          is_mobile: false,
-         viewport: %{width: 1280, height: 800}
+         viewport: %{width: 1600, height: 900}
        ]
   test "collector job details remain readable when their column is present", %{conn: conn} do
-    %{agent: agent, conn: conn} = collector_context(conn)
+    %{agent: agent, conn: conn, long_capability: long_capability, resource: resource} =
+      collector_context(conn)
 
     conn
     |> visit("/settings/collectors")
     |> assert_has("body .phx-connected")
+    |> evaluate(
+      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(2, 4).every(cell => getComputedStyle(cell).display !== 'none')",
+      &assert(&1 == true)
+    )
+    |> assert_has(
+      "#collector-#{agent.source_id} a[href='/inventory/#{resource.id}']",
+      text: resource.display_name
+    )
     |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
+    |> assert_has("#collector-jobs-#{agent.source_id}-list-list", text: long_capability)
     |> evaluate(
       """
       (() => {
@@ -176,6 +186,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     scope = Renga.Accounts.scope_for_user(user, organization.id)
     {:ok, {_created_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
     {:ok, key} = Renga.Inventory.authenticate_intake_api_key(token)
+    long_capability = String.duplicate("vendor-long-capability-", 8) <> "@1"
 
     {:ok, {agent, _}} =
       Renga.Inventory.record_intake_agent_check_in(
@@ -183,16 +194,44 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         key,
         "67e55044-10b1-426f-9247-bb680e5fe0c8",
         %{
-          capabilities: ["host.inventory", "inventory.collect@1", "query.disk_usage@1"]
+          capabilities: ["host.inventory", "inventory.collect@1", long_capability]
         }
       )
 
-    {:ok, _} =
+    {:ok, observation} =
       Renga.Inventory.create_observation(scope, agent.source_id, %{
         idempotency_key: "collector-details",
         observed_at: ~U[2026-10-09 12:34:00.000Z],
         payload: %{"resources" => []}
       })
+
+    {:ok, resource} =
+      Renga.Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "reported-collector-resource",
+        display_name: "Reported collector resource",
+        lifecycle_state: "active"
+      })
+
+    {:ok, identifier} =
+      Renga.Inventory.create_resource_identifier(scope, resource.id, %{
+        kind: "serial_number",
+        value: "COLLECTOR-BROWSER-RESOURCE"
+      })
+
+    {:ok, _claim} =
+      Renga.Inventory.create_resource_identifier_claim(
+        scope,
+        agent.source_id,
+        observation.id,
+        %{
+          resource_id: resource.id,
+          resource_identifier_id: identifier.id,
+          kind: "serial_number",
+          value: "COLLECTOR-BROWSER-RESOURCE",
+          confidence: 100
+        }
+      )
 
     conn =
       add_session_cookie(
@@ -206,6 +245,12 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{agent: agent, conn: conn, key: key}
+    %{
+      agent: agent,
+      conn: conn,
+      key: key,
+      long_capability: long_capability,
+      resource: resource
+    }
   end
 end

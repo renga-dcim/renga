@@ -408,7 +408,7 @@ defmodule RengaWeb.UI do
             {@label}
           </p>
           <ul class="space-y-1.5">
-            <li :for={item <- @items} class="flex items-center justify-between gap-2">
+            <li :for={item <- @items} class="flex min-w-0 items-center justify-between gap-2">
               <%= if @detail != [] do %>
                 {render_slot(@detail, item)}
               <% else %>

@@ -109,7 +109,7 @@ defmodule RengaWeb.InventoryOperationsLive do
         id="collector-operations"
         title="Collectors"
         description="Installations appear here once they authenticate with an organization intake key."
-        class="max-w-5xl"
+        class="max-w-6xl"
       >
         <:actions>
           <.button
@@ -420,8 +420,8 @@ defmodule RengaWeb.InventoryOperationsLive do
     <span :if={@keys == []} class="text-xs text-fg-subtle">None enabled</span>
     <.chip_list :if={@keys != []} id={@id} label="Accepts jobs" items={@keys}>
       <:detail :let={key}>
-        <span class="font-mono">{key}</span>
-        <span class="text-fg-muted">{job_capability_summary(key)}</span>
+        <span class="min-w-0 break-all font-mono">{key}</span>
+        <span class="shrink-0 text-fg-muted">{job_capability_summary(key)}</span>
       </:detail>
     </.chip_list>
     """
