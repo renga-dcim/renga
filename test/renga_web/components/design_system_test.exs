@@ -12,9 +12,7 @@ defmodule RengaWeb.DesignSystemTest do
   """
   use ExUnit.Case, async: true
 
-  @legacy %{
-    "lib/renga_web/live/catalog_live.ex" => 125,
-  }
+  @legacy %{}
 
   # Deliberate exceptions, with the reason each one is not a token.
   @allowed %{

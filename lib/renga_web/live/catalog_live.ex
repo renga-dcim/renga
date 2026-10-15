@@ -315,19 +315,41 @@ defmodule RengaWeb.CatalogLive do
       current_scope={@current_scope}
       active_nav={catalog_nav(@live_action)}
     >
-      <main id="catalog-browser" class="space-y-8">
-        <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 sm:flex-row sm:items-end sm:justify-between">
+      <section id="catalog-browser" class="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+        <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
               DCIM catalog
             </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight text-base-content">
-              {@page_title}
-            </h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/60">
+            <h1 class="mt-1 text-xl font-semibold tracking-tight text-fg">{@page_title}</h1>
+            <p class="mt-1 max-w-2xl text-sm text-fg-muted">
               Organization-scoped, revision-pinned definitions for physical infrastructure.
             </p>
           </div>
+          <.button
+            :if={@can_author_catalog? and @live_action == :manufacturers}
+            id="new-manufacturer"
+            variant="primary"
+            phx-click={show_overlay("new-manufacturer-panel")}
+          >
+            New manufacturer
+          </.button>
+          <.button
+            :if={@can_author_catalog? and @live_action == :hardware_types}
+            id="new-hardware-type"
+            variant="primary"
+            phx-click={show_overlay("new-hardware-type-panel")}
+          >
+            New hardware type
+          </.button>
+          <.button
+            :if={@can_author_catalog? and @live_action == :module_types}
+            id="new-module-type"
+            variant="primary"
+            phx-click={show_overlay("new-module-type-panel")}
+          >
+            New module type
+          </.button>
         </header>
 
         <%= case @live_action do %>
@@ -341,9 +363,10 @@ defmodule RengaWeb.CatalogLive do
             <.catalog_type_form
               :if={@can_author_catalog?}
               id="new-hardware-type-form"
+              panel_id="new-hardware-type-panel"
               form={@hardware_type_form}
               event="create_hardware_type"
-              title="Add hardware type"
+              title="New hardware type"
               class_label="Device class"
               class_field={:device_class}
               class_options={@device_class_options}
@@ -381,9 +404,10 @@ defmodule RengaWeb.CatalogLive do
             <.catalog_type_form
               :if={@can_author_catalog?}
               id="new-module-type-form"
+              panel_id="new-module-type-panel"
               form={@module_type_form}
               event="create_module_type"
-              title="Add module type"
+              title="New module type"
               class_label="Module class"
               class_field={:module_class}
               class_options={@module_class_options}
@@ -407,45 +431,44 @@ defmodule RengaWeb.CatalogLive do
               component_kind_options={@component_kind_options}
             />
         <% end %>
-      </main>
+      </section>
     </Layouts.app>
     """
   end
 
   attr :form, :map, required: true
 
+  # Creating happens in a side panel (docs/design-system.md, "Interaction");
+  # a successful create navigates away, so the panel never needs closing here.
   defp manufacturer_form(assigns) do
     ~H"""
-    <section class="rounded-2xl border border-orange-500/20 bg-orange-500/[0.04] p-6">
-      <div>
-        <h2 class="font-semibold">Add manufacturer</h2>
-        <p class="mt-1 text-sm text-base-content/55">
-          Create the normalized identity used by hardware and module definitions.
-        </p>
-      </div>
-      <.form
-        for={@form}
-        id="new-manufacturer-form"
-        phx-submit="create_manufacturer"
-        class="mt-5 grid gap-4 lg:grid-cols-3"
-      >
+    <.side_panel
+      id="new-manufacturer-panel"
+      title="New manufacturer"
+      description="The normalized identity used by hardware and module definitions."
+    >
+      <.form for={@form} id="new-manufacturer-form" phx-submit="create_manufacturer" class="space-y-1">
         <.input field={@form[:name]} type="text" label="Name" required />
         <.input field={@form[:slug]} type="text" label="Slug" required />
         <.input field={@form[:description]} type="text" label="Description" />
-        <button
+      </.form>
+      <:footer>
+        <.button
           id="create-manufacturer"
           type="submit"
+          variant="primary"
+          form="new-manufacturer-form"
           phx-disable-with="Creating…"
-          class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 lg:col-start-3"
         >
           Create manufacturer
-        </button>
-      </.form>
-    </section>
+        </.button>
+      </:footer>
+    </.side_panel>
     """
   end
 
   attr :id, :string, required: true
+  attr :panel_id, :string, required: true
   attr :form, :map, required: true
   attr :event, :string, required: true
   attr :title, :string, required: true
@@ -456,19 +479,12 @@ defmodule RengaWeb.CatalogLive do
 
   defp catalog_type_form(assigns) do
     ~H"""
-    <section class="rounded-2xl border border-orange-500/20 bg-orange-500/[0.04] p-6">
-      <div>
-        <h2 class="font-semibold">{@title}</h2>
-        <p class="mt-1 text-sm text-base-content/55">
-          Define the catalog identity first; immutable revisions are published from its detail page.
-        </p>
-      </div>
-      <.form
-        for={@form}
-        id={@id}
-        phx-submit={@event}
-        class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4"
-      >
+    <.side_panel
+      id={@panel_id}
+      title={@title}
+      description="Define the catalog identity first; immutable revisions are published from its detail page."
+    >
+      <.form for={@form} id={@id} phx-submit={@event} class="space-y-1">
         <.input
           field={@form[:manufacturer_id]}
           type="select"
@@ -487,16 +503,19 @@ defmodule RengaWeb.CatalogLive do
           required
         />
         <.input field={@form[:description]} type="text" label="Description" />
-        <button
+      </.form>
+      <:footer>
+        <.button
           id={"#{@id}-submit"}
           type="submit"
+          variant="primary"
+          form={@id}
           phx-disable-with="Creating…"
-          class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 xl:col-start-4"
         >
           Create type
-        </button>
-      </.form>
-    </section>
+        </.button>
+      </:footer>
+    </.side_panel>
     """
   end
 
@@ -505,45 +524,34 @@ defmodule RengaWeb.CatalogLive do
 
   defp manufacturer_catalog(assigns) do
     ~H"""
-    <section
+    <.table
       id="manufacturers-list"
-      phx-update="stream"
-      class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+      rows={@manufacturers}
+      overflow="clip"
+      class="rounded-lg border border-edge bg-surface"
     >
-      <div
-        :if={@empty?}
-        id="manufacturers-empty"
-        class="md:col-span-2 xl:col-span-3 rounded-2xl border border-dashed border-base-content/20 bg-base-100 px-6 py-16 text-center"
-      >
-        <.icon name="hero-building-storefront" class="mx-auto size-8 text-base-content/35" />
-        <h2 class="mt-4 font-semibold">No manufacturers yet</h2>
-        <p class="mt-1 text-sm text-base-content/55">Catalog manufacturers will appear here.</p>
-      </div>
-      <article
-        :for={{dom_id, manufacturer} <- @manufacturers}
-        id={dom_id}
-        class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-orange-500/30 hover:shadow-md"
-      >
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-semibold tracking-tight">{manufacturer.resource.name}</h2>
-            <p class="mt-1 font-mono text-xs text-base-content/45">{manufacturer.slug}</p>
-          </div>
-          <span class="rounded-full bg-orange-500/10 px-2.5 py-1 text-xs font-medium text-orange-700">
-            Manufacturer
-          </span>
-        </div>
-        <p class="mt-5 text-sm leading-6 text-base-content/60">
-          {manufacturer.description || "No manufacturer description provided."}
-        </p>
-        <.link
-          navigate={~p"/catalog/hardware-types"}
-          class="mt-5 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
-        >
-          Browse hardware types <.icon name="hero-arrow-right" class="size-4" />
-        </.link>
-      </article>
-    </section>
+      <:col :let={{_id, manufacturer}} label="Name" class="w-1/3">
+        <span class="font-medium text-fg">{manufacturer.resource.name}</span>
+      </:col>
+      <:col :let={{_id, manufacturer}} label="Slug" class="w-1/4" hide_below="xl">
+        <span class="font-mono text-xs text-fg-muted">{manufacturer.slug}</span>
+      </:col>
+      <:col :let={{_id, manufacturer}} label="Description" hide_below="3xl">
+        <span :if={manufacturer.description} class="text-fg-muted">
+          {manufacturer.description}
+        </span>
+        <span :if={!manufacturer.description} class="text-fg-subtle">No description</span>
+      </:col>
+      <:empty>
+        <.catalog_empty
+          :if={@empty?}
+          id="manufacturers-empty"
+          icon="hero-building-storefront"
+          title="No manufacturers yet"
+          detail="Catalog manufacturers will appear here."
+        />
+      </:empty>
+    </.table>
     """
   end
 
@@ -552,42 +560,32 @@ defmodule RengaWeb.CatalogLive do
 
   defp hardware_type_catalog(assigns) do
     ~H"""
-    <section
+    <.table
       id="hardware-types-list"
-      phx-update="stream"
-      class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+      rows={@hardware_types}
+      row_navigate={fn {_id, type} -> ~p"/catalog/hardware-types/#{type.id}" end}
+      overflow="clip"
+      class="rounded-lg border border-edge bg-surface"
     >
-      <div
-        :if={@empty?}
-        id="hardware-types-empty"
-        class="md:col-span-2 xl:col-span-3 rounded-2xl border border-dashed border-base-content/20 bg-base-100 px-6 py-16 text-center"
-      >
-        <.icon name="hero-server-stack" class="mx-auto size-8 text-base-content/35" />
-        <h2 class="mt-4 font-semibold">No hardware types yet</h2>
-        <p class="mt-1 text-sm text-base-content/55">
-          Versioned hardware definitions will appear here.
-        </p>
-      </div>
-      <article
-        :for={{dom_id, type} <- @hardware_types}
-        id={dom_id}
-        class="group rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-orange-500/30 hover:shadow-md"
-      >
-        <p class="text-xs font-semibold uppercase tracking-wider text-orange-600">
-          {humanize(type.device_class)}
-        </p>
-        <h2 class="mt-2 text-lg font-semibold tracking-tight">
-          {type.manufacturer.resource.name} {type.model}
-        </h2>
-        <p class="mt-2 text-sm text-base-content/55">{type.description || type.resource.name}</p>
-        <.link
-          navigate={~p"/catalog/hardware-types/#{type.id}"}
-          class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 group-hover:text-orange-700"
-        >
-          View revisions <.icon name="hero-arrow-right" class="size-4" />
-        </.link>
-      </article>
-    </section>
+      <:col :let={{_id, type}} label="Type" class="w-2/5">
+        <span class="font-medium text-fg">{type.manufacturer.resource.name} {type.model}</span>
+      </:col>
+      <:col :let={{_id, type}} label="Device class" class="w-36">
+        <span class="text-fg-muted">{humanize(type.device_class)}</span>
+      </:col>
+      <:col :let={{_id, type}} label="Description" hide_below="3xl">
+        <span class="text-fg-muted">{type.description || type.resource.name}</span>
+      </:col>
+      <:empty>
+        <.catalog_empty
+          :if={@empty?}
+          id="hardware-types-empty"
+          icon="hero-server-stack"
+          title="No hardware types yet"
+          detail="Versioned hardware definitions will appear here."
+        />
+      </:empty>
+    </.table>
     """
   end
 
@@ -596,42 +594,47 @@ defmodule RengaWeb.CatalogLive do
 
   defp module_type_catalog(assigns) do
     ~H"""
-    <section
+    <.table
       id="module-types-list"
-      phx-update="stream"
-      class="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+      rows={@module_types}
+      row_navigate={fn {_id, type} -> ~p"/catalog/module-types/#{type.id}" end}
+      overflow="clip"
+      class="rounded-lg border border-edge bg-surface"
     >
-      <div
-        :if={@empty?}
-        id="module-types-empty"
-        class="md:col-span-2 xl:col-span-3 rounded-2xl border border-dashed border-base-content/20 bg-base-100 px-6 py-16 text-center"
-      >
-        <.icon name="hero-puzzle-piece" class="mx-auto size-8 text-base-content/35" />
-        <h2 class="mt-4 font-semibold">No module types yet</h2>
-        <p class="mt-1 text-sm text-base-content/55">
-          Versioned installable module definitions will appear here.
-        </p>
-      </div>
-      <article
-        :for={{dom_id, type} <- @module_types}
-        id={dom_id}
-        class="group rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-orange-500/30 hover:shadow-md"
-      >
-        <p class="text-xs font-semibold uppercase tracking-wider text-orange-600">
-          {humanize(type.module_class)}
-        </p>
-        <h2 class="mt-2 text-lg font-semibold tracking-tight">
-          {type.manufacturer.resource.name} {type.model}
-        </h2>
-        <p class="mt-2 text-sm text-base-content/55">{type.description || type.resource.name}</p>
-        <.link
-          navigate={~p"/catalog/module-types/#{type.id}"}
-          class="mt-6 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 group-hover:text-orange-700"
-        >
-          View revisions <.icon name="hero-arrow-right" class="size-4" />
-        </.link>
-      </article>
-    </section>
+      <:col :let={{_id, type}} label="Type" class="w-2/5">
+        <span class="font-medium text-fg">{type.manufacturer.resource.name} {type.model}</span>
+      </:col>
+      <:col :let={{_id, type}} label="Module class" class="w-36">
+        <span class="text-fg-muted">{humanize(type.module_class)}</span>
+      </:col>
+      <:col :let={{_id, type}} label="Description" hide_below="3xl">
+        <span class="text-fg-muted">{type.description || type.resource.name}</span>
+      </:col>
+      <:empty>
+        <.catalog_empty
+          :if={@empty?}
+          id="module-types-empty"
+          icon="hero-puzzle-piece"
+          title="No module types yet"
+          detail="Versioned installable module definitions will appear here."
+        />
+      </:empty>
+    </.table>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  attr :title, :string, required: true
+  attr :detail, :string, required: true
+
+  defp catalog_empty(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-1">
+      <.icon name={@icon} class="mx-auto size-6 text-fg-subtle" />
+      <p class="text-sm font-medium text-fg">{@title}</p>
+      <p class="text-xs text-fg-muted">{@detail}</p>
+    </div>
     """
   end
 
@@ -651,27 +654,25 @@ defmodule RengaWeb.CatalogLive do
 
   defp catalog_type_detail(assigns) do
     ~H"""
-    <article id={"#{@prefix}-detail-#{@catalog_type.id}"} class="space-y-8">
+    <article id={"#{@prefix}-detail-#{@catalog_type.id}"} class="space-y-6">
       <section
         id={"#{@prefix}-identity"}
-        class="overflow-hidden rounded-2xl border border-base-content/10 bg-base-100 shadow-sm"
+        class="grid gap-4 rounded-lg border border-edge bg-surface px-5 py-4 sm:grid-cols-[1fr_auto]"
       >
-        <div class="grid gap-6 p-6 sm:grid-cols-[1fr_auto] sm:p-8">
-          <div>
-            <p class="text-sm font-medium text-orange-600">
-              {@catalog_type.manufacturer.resource.name}
-            </p>
-            <h2 class="mt-1 text-2xl font-semibold tracking-tight">{@catalog_type.model}</h2>
-            <p class="mt-3 max-w-3xl text-sm leading-6 text-base-content/60">
-              {@catalog_type.description || "No type description provided."}
-            </p>
-          </div>
-          <div class="sm:text-right">
-            <p class="text-xs uppercase tracking-wider text-base-content/45">{@class_label}</p>
-            <p id={@class_id} class="mt-1 font-semibold">
-              {humanize(@class_value)}
-            </p>
-          </div>
+        <div class="min-w-0">
+          <p class="text-xs font-medium text-fg-muted">
+            {@catalog_type.manufacturer.resource.name}
+          </p>
+          <h2 class="mt-0.5 text-base font-semibold text-fg">{@catalog_type.model}</h2>
+          <p class="mt-1 max-w-3xl text-sm text-fg-muted">
+            {@catalog_type.description || "No type description provided."}
+          </p>
+        </div>
+        <div class="sm:text-right">
+          <p class="text-xs text-fg-muted">{@class_label}</p>
+          <p id={@class_id} class="mt-0.5 text-sm font-medium text-fg">
+            {humanize(@class_value)}
+          </p>
         </div>
       </section>
 
@@ -714,39 +715,45 @@ defmodule RengaWeb.CatalogLive do
 
       {render_slot(@inner_block)}
 
-      <section id={"#{@prefix}-revisions"} class="space-y-5">
+      <section
+        id={"#{@prefix}-revisions"}
+        aria-labelledby={"#{@prefix}-revisions-title"}
+        class="space-y-3"
+      >
         <div>
-          <h2 class="text-xl font-semibold tracking-tight">Pinned revisions</h2>
-          <p class="mt-1 text-sm text-base-content/55">
+          <h2 id={"#{@prefix}-revisions-title"} class="text-base font-semibold text-fg">
+            Pinned revisions
+          </h2>
+          <p class="text-xs text-fg-muted">
             Inventory records retain the exact immutable revision they reference.
           </p>
         </div>
         <div
           :if={@catalog_type.revisions == []}
           id={"#{@prefix}-revisions-empty"}
-          class="rounded-2xl border border-dashed border-base-content/20 px-6 py-12 text-center text-sm text-base-content/55"
+          class="rounded-lg border border-dashed border-edge px-4 py-8 text-center text-sm text-fg-muted"
         >
           No finalized revisions are available for this catalog type.
         </div>
         <section
           :for={revision <- @catalog_type.revisions}
           id={"revision-#{revision.revision}"}
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm sm:p-8"
+          class="rounded-lg border border-edge bg-surface"
         >
-          <div class="flex flex-col gap-4 border-b border-base-content/10 pb-6 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <span class="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="shrink-0 rounded-sm border border-edge bg-sunken px-1.5 font-mono text-[11px] text-fg-muted">
                 Revision {revision.revision}
               </span>
-              <h3 class="mt-3 text-lg font-semibold">
+              <h3 class="truncate font-mono text-sm font-semibold text-fg">
                 {revision.part_number || "Part number not specified"}
               </h3>
             </div>
-            <p class="text-xs text-base-content/45">Immutable revision pin</p>
+            <p class="text-xs text-fg-subtle">Immutable revision pin</p>
           </div>
           <dl
             id={"revision-#{revision.revision}-dimensions"}
-            class="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6"
+            class="grid grid-cols-2 gap-4 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6"
           >
             <.datum label="Rack height" value={format_measure(revision.height_units, "U")} />
             <.datum label="Width" value={format_measure(revision.width_mm, "mm")} />
@@ -758,7 +765,7 @@ defmodule RengaWeb.CatalogLive do
               value={if(revision.finalized_at, do: "Finalized", else: "Recorded")}
             />
           </dl>
-          <div class="mt-8 grid gap-8 lg:grid-cols-2">
+          <div class="grid gap-6 border-t border-line px-5 py-4 lg:grid-cols-2">
             <.key_values
               id={"revision-#{revision.revision}-specifications"}
               title="Specifications"
@@ -777,23 +784,22 @@ defmodule RengaWeb.CatalogLive do
   attr :airflow_options, :list, required: true
   attr :component_kind_options, :list, required: true
 
+  # Module types still publish in one step, so this form stays on the page
+  # beside the revisions it adds to; hardware types moved to drafts.
   defp revision_authoring_form(assigns) do
     ~H"""
-    <section
-      id="revision-authoring"
-      class="rounded-2xl border border-orange-500/20 bg-orange-500/[0.04] p-6 shadow-sm sm:p-8"
-    >
+    <section id="revision-authoring" class="rounded-lg border border-edge bg-surface px-5 py-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">
+          <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
             Immutable release
           </p>
-          <h2 class="mt-2 text-xl font-semibold tracking-tight">Publish a revision</h2>
-          <p class="mt-1 max-w-2xl text-sm leading-6 text-base-content/55">
+          <h2 class="mt-1 text-base font-semibold text-fg">Publish a revision</h2>
+          <p class="mt-0.5 max-w-2xl text-sm text-fg-muted">
             Capture dimensions, vendor specifications, and the component blueprint. Published revisions cannot be edited.
           </p>
         </div>
-        <span class="w-fit rounded-full bg-base-content/5 px-3 py-1 text-xs font-medium text-base-content/55">
+        <span class="w-fit rounded-full bg-sunken px-2.5 py-0.5 text-xs font-medium text-fg-muted">
           Next revision
         </span>
       </div>
@@ -805,17 +811,17 @@ defmodule RengaWeb.CatalogLive do
         phx-submit="publish_revision"
         aria-invalid={if(base_error_messages(@form) == [], do: nil, else: "true")}
         aria-describedby={if(base_error_messages(@form) == [], do: nil, else: "revision-form-errors")}
-        class="mt-7 space-y-7"
+        class="mt-5 space-y-5"
       >
         <div
           :if={base_error_messages(@form) != []}
           id="revision-form-errors"
           role="alert"
-          class="rounded-lg border border-error/20 bg-error/5 px-4 py-3 text-sm text-error"
+          class="rounded-md border border-crit-line bg-crit-fill px-4 py-3 text-sm text-crit"
         >
           <p :for={error <- base_error_messages(@form)}>{error}</p>
         </div>
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="grid gap-x-4 sm:grid-cols-2 lg:grid-cols-4">
           <.input field={@form[:part_number]} type="text" label="Part number" />
           <.input
             field={@form[:height_units]}
@@ -855,35 +861,37 @@ defmodule RengaWeb.CatalogLive do
             prompt="Not specified"
             options={@airflow_options}
           />
-          <.input
-            field={@form[:specifications]}
-            type="textarea"
-            label="Specifications (JSON)"
-            rows="3"
-            spellcheck="false"
-            class="min-h-24 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 font-mono text-xs outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/15 sm:col-span-2"
-          />
+          <div class="sm:col-span-2">
+            <.input
+              field={@form[:specifications]}
+              type="textarea"
+              label="Specifications (JSON)"
+              rows="3"
+              spellcheck="false"
+              class={json_control_class("min-h-24")}
+            />
+          </div>
         </div>
 
-        <div class="border-t border-base-content/10 pt-7">
+        <div class="border-t border-line pt-5">
           <div class="flex items-center justify-between gap-4">
             <div>
-              <h3 class="font-semibold">Component templates</h3>
-              <p class="mt-1 text-sm text-base-content/50">
+              <h3 class="text-sm font-semibold text-fg">Component templates</h3>
+              <p class="mt-0.5 text-xs text-fg-muted">
                 Define expected ports, bays, processors, memory, disks, and power connections.
               </p>
             </div>
-            <button
+            <.button
               id="add-component-template"
               type="button"
+              size="sm"
               phx-click="add_component_template"
-              class="inline-flex items-center gap-1.5 rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-sm font-semibold transition hover:border-orange-500/40 hover:text-orange-600"
             >
-              <.icon name="hero-plus" class="size-4" /> Add component
-            </button>
+              <.icon name="hero-plus-mini" class="size-4" /> Add component
+            </.button>
           </div>
 
-          <div id="component-template-fields" class="mt-5 space-y-4">
+          <div id="component-template-fields" class="mt-4 space-y-3">
             <.inputs_for
               :let={template_form}
               field={@form[:templates]}
@@ -901,32 +909,34 @@ defmodule RengaWeb.CatalogLive do
                     do: "component-template-field-#{template_form.params["_persistent_id"]}-errors"
                   )
                 }
-                class="relative rounded-xl border border-base-content/10 bg-base-100 p-4"
+                class="relative rounded-lg border border-edge p-4"
               >
-                <legend class="px-1 text-sm font-semibold">
+                <legend class="px-1 text-sm font-medium text-fg">
                   Component {template_form.index + 1}
                 </legend>
-                <button
+                <.button
                   id={"remove-component-template-#{template_form.params["_persistent_id"]}"}
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   phx-click="remove_component_template"
                   phx-value-id={template_form.params["_persistent_id"]}
-                  class="absolute right-4 top-3 rounded-md p-1.5 text-base-content/40 transition hover:bg-red-500/10 hover:text-red-600"
+                  class="absolute right-3 top-2 min-w-tap"
                   aria-label={"Remove component #{template_form.index + 1}"}
                 >
-                  <.icon name="hero-trash" class="size-4" />
-                </button>
+                  <.icon name="hero-trash-mini" class="size-4" />
+                </.button>
                 <div
                   :if={Map.has_key?(@template_errors, template_form.params["_persistent_id"])}
                   id={"component-template-field-#{template_form.params["_persistent_id"]}-errors"}
                   role="alert"
-                  class="mt-2 space-y-1 text-sm text-error"
+                  class="mt-2 space-y-1 text-sm text-crit"
                 >
                   <p :for={error <- template_error_messages(template_form, @template_errors)}>
                     Component {template_form.index + 1}: {error}
                   </p>
                 </div>
-                <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div class="mt-3 grid gap-x-4 sm:grid-cols-2 lg:grid-cols-4">
                   <.input
                     field={template_field(template_form, :kind, @template_errors)}
                     type="select"
@@ -949,19 +959,20 @@ defmodule RengaWeb.CatalogLive do
                     type="text"
                     label="Position"
                   />
-                  <.input
-                    field={template_field(template_form, :description, @template_errors)}
-                    type="text"
-                    label="Description"
-                    class="w-full rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-sm outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/15 sm:col-span-2"
-                  />
+                  <div class="sm:col-span-2">
+                    <.input
+                      field={template_field(template_form, :description, @template_errors)}
+                      type="text"
+                      label="Description"
+                    />
+                  </div>
                   <.input
                     field={template_field(template_form, :attributes, @template_errors)}
                     type="textarea"
                     label="Attributes (JSON)"
                     rows="2"
                     spellcheck="false"
-                    class="min-h-20 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 font-mono text-xs outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/15"
+                    class={json_control_class("min-h-20")}
                   />
                   <.input
                     field={template_field(template_form, :required, @template_errors)}
@@ -974,19 +985,33 @@ defmodule RengaWeb.CatalogLive do
           </div>
         </div>
 
-        <div class="flex justify-end border-t border-base-content/10 pt-5">
-          <button
+        <div class="flex justify-end border-t border-line pt-4">
+          <.button
             id="publish-revision"
             type="submit"
+            variant="primary"
             phx-disable-with="Publishing…"
-            class="inline-flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-orange-600 hover:shadow-md disabled:cursor-wait disabled:opacity-70"
           >
-            <.icon name="hero-lock-closed" class="size-4" /> Publish immutable revision
-          </button>
+            <.icon name="hero-lock-closed-mini" class="size-4" /> Publish immutable revision
+          </.button>
         </div>
       </.form>
     </section>
     """
+  end
+
+  # `<.input class=...>` replaces the default control classes, so JSON
+  # textareas restate them with a monospace face for the machine values.
+  defp json_control_class(min_height) do
+    Enum.join(
+      [
+        "block w-full rounded-md border border-edge bg-surface px-3 py-2 font-mono text-xs text-fg",
+        "placeholder:text-fg-subtle transition-colors focus:border-accent focus:outline-none",
+        "focus:ring-4 focus:ring-ring",
+        min_height
+      ],
+      " "
+    )
   end
 
   attr :label, :string, required: true
@@ -995,8 +1020,8 @@ defmodule RengaWeb.CatalogLive do
   defp datum(assigns) do
     ~H"""
     <div>
-      <dt class="text-xs text-base-content/45">{@label}</dt>
-      <dd class="mt-1 text-sm font-semibold">{@value}</dd>
+      <dt class="text-xs text-fg-muted">{@label}</dt>
+      <dd class="mt-0.5 text-sm font-medium tabular-nums text-fg">{@value}</dd>
     </div>
     """
   end
@@ -1008,18 +1033,18 @@ defmodule RengaWeb.CatalogLive do
   defp key_values(assigns) do
     ~H"""
     <section id={@id}>
-      <h4 class="text-sm font-semibold">{@title}</h4>
-      <p :if={map_size(@values) == 0} class="mt-3 text-sm text-base-content/45">None specified</p>
+      <h4 class="text-xs font-medium text-fg-muted">{@title}</h4>
+      <p :if={map_size(@values) == 0} class="mt-2 text-sm text-fg-subtle">None specified</p>
       <dl
         :if={map_size(@values) > 0}
-        class="mt-3 divide-y divide-base-content/10 rounded-xl bg-base-content/[0.03] px-4"
+        class="mt-2 divide-y divide-line rounded-lg border border-edge bg-sunken px-3"
       >
         <div
           :for={{key, value} <- sorted_pairs(@values)}
-          class="flex items-start justify-between gap-4 py-3 text-sm"
+          class="flex items-start justify-between gap-4 py-2"
         >
-          <dt class="font-mono text-xs text-base-content/55">{to_string(key)}</dt>
-          <dd class="break-all text-right font-mono text-xs font-medium">
+          <dt class="font-mono text-xs text-fg-muted">{to_string(key)}</dt>
+          <dd class="break-all text-right font-mono text-xs font-medium text-fg">
             {display_value(value)}
           </dd>
         </div>
@@ -1036,38 +1061,38 @@ defmodule RengaWeb.CatalogLive do
 
     ~H"""
     <section id={"revision-#{@revision.revision}-templates"}>
-      <h4 class="text-sm font-semibold">Component templates</h4>
-      <p :if={map_size(@groups) == 0} class="mt-3 text-sm text-base-content/45">
+      <h4 class="text-xs font-medium text-fg-muted">Component templates</h4>
+      <p :if={map_size(@groups) == 0} class="mt-2 text-sm text-fg-subtle">
         No component templates
       </p>
-      <div class="mt-3 space-y-4">
+      <div class="mt-2 space-y-3">
         <section
           :for={{kind, templates} <- sorted_pairs(@groups)}
           id={"revision-#{@revision.revision}-templates-#{kind}"}
-          class="rounded-xl border border-base-content/10 p-4"
+          class="rounded-lg border border-edge px-4 py-3"
         >
-          <h5 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          <h5 class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
             {humanize(kind)}
           </h5>
-          <ul class="mt-3 space-y-3">
+          <ul class="mt-2 divide-y divide-line">
             <li
               :for={template <- templates}
               id={"component-template-#{template.id}"}
-              class="grid gap-3 text-sm sm:grid-cols-[1fr_auto]"
+              class="grid gap-x-3 gap-y-2 py-2 sm:grid-cols-[1fr_auto]"
             >
-              <div>
-                <p class="font-mono text-xs font-semibold">{template.name}</p>
-                <p :if={template.label} class="mt-1 text-sm font-medium">
+              <div class="min-w-0">
+                <p class="font-mono text-xs font-semibold text-fg">{template.name}</p>
+                <p :if={template.label} class="mt-0.5 text-sm font-medium text-fg">
                   Display label: {template.label}
                 </p>
-                <p :if={template.position} class="mt-1 text-xs text-base-content/45">
+                <p :if={template.position} class="mt-0.5 text-xs text-fg-muted">
                   Position: {template.position}
                 </p>
-                <p :if={template.description} class="mt-2 text-xs text-base-content/60">
+                <p :if={template.description} class="mt-1 text-xs text-fg-muted">
                   {template.description}
                 </p>
               </div>
-              <span class="text-xs text-base-content/50">
+              <span class="text-xs text-fg-muted">
                 {if(template.required, do: "Required", else: "Optional")}
               </span>
               <.key_values
