@@ -22,6 +22,9 @@ const FOCUS_OWNER_SELECTOR =
   "a, button, input, select, textarea, summary, label, [contenteditable='true'], " +
   "[tabindex]:not([tabindex='-1'])"
 
+const NATIVE_CONTROL_SELECTOR =
+  "a[href], button, input, select, textarea, summary, [contenteditable='true']"
+
 const INTERACTIVE_DESCENDANT_SELECTOR = `${FOCUS_OWNER_SELECTOR}, [phx-click]`
 
 // Places a floating box below its anchor, flipping above when there is no
@@ -71,7 +74,7 @@ export function installFloating(doc = document, win = window) {
     // Native controls keep their ordinary tab stop even when their label
     // fits. Passive clipped text joins the tab order only when it needs a
     // reveal interaction.
-    target.tabIndex = target.matches(FOCUS_OWNER_SELECTOR) || (!focusOwner(target) && clipped(target)) ? 0 : -1
+    target.tabIndex = target.matches(NATIVE_CONTROL_SELECTOR) || (!focusOwner(target) && clipped(target)) ? 0 : -1
   }
 
   const resizeObserver =
@@ -207,7 +210,7 @@ export function installFloating(doc = document, win = window) {
 
     // A passive clipped value owns the click instead of its row. Native
     // controls must keep bubbling so LiveView can perform live navigation.
-    if (event.type === "click" && !target.matches(FOCUS_OWNER_SELECTOR)) event.stopPropagation()
+    if (event.type === "click" && !target.matches(NATIVE_CONTROL_SELECTOR)) event.stopPropagation()
 
     target.focus({preventScroll: true})
     show(target)
