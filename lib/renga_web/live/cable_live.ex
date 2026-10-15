@@ -59,7 +59,8 @@ defmodule RengaWeb.CableLive do
          socket
          |> put_flash(:info, "Current cable confirmed")
          |> assign(:assert_form, assert_form())
-         |> load_cables()}
+         |> load_cables()
+         |> close_overlay("assert-cable-panel")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, mutation_error(reason))}
@@ -99,7 +100,8 @@ defmodule RengaWeb.CableLive do
          socket
          |> put_flash(:info, "Cable plan recorded")
          |> assign(:plan_form, plan_form())
-         |> load_cables()}
+         |> load_cables()
+         |> close_overlay("plan-cable-panel")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, mutation_error(reason))}
@@ -140,19 +142,36 @@ defmodule RengaWeb.CableLive do
               Neighbor evidence can propose a claim but never creates cabling.
             </p>
           </div>
-          <div :if={@interface} class="flex flex-wrap items-center gap-2">
-            <span class="inline-flex h-control items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-xs text-fg">
-              <.icon name="hero-funnel-mini" class="size-3.5 text-fg-subtle" />
-              <span class="font-mono font-medium">{@interface.name}</span>
-              <span class="text-fg-muted">· {@interface_resource.name}</span>
-            </span>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <div :if={@interface} class="flex flex-wrap items-center gap-2">
+              <span class="inline-flex h-control items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-xs text-fg">
+                <.icon name="hero-funnel-mini" class="size-3.5 text-fg-subtle" />
+                <span class="font-mono font-medium">{@interface.name}</span>
+                <span class="text-fg-muted">· {@interface_resource.name}</span>
+              </span>
+              <.button
+                id="cables-clear-interface"
+                variant="ghost"
+                size="sm"
+                navigate={~p"/network/cables"}
+              >
+                <.icon name="hero-x-mark-mini" class="size-3.5" /> Clear interface filter
+              </.button>
+            </div>
             <.button
-              id="cables-clear-interface"
-              variant="ghost"
-              size="sm"
-              navigate={~p"/network/cables"}
+              :if={@can_manage?}
+              id="new-cable-plan"
+              phx-click={show_overlay("plan-cable-panel")}
             >
-              <.icon name="hero-x-mark-mini" class="size-3.5" /> Clear interface filter
+              Plan cable
+            </.button>
+            <.button
+              :if={@can_manage?}
+              id="new-current-cable"
+              variant="primary"
+              phx-click={show_overlay("assert-cable-panel")}
+            >
+              Confirm cable
             </.button>
           </div>
         </header>
@@ -218,13 +237,19 @@ defmodule RengaWeb.CableLive do
                 id={"retract-cable-#{cable.id}"}
                 type="button"
                 size="sm"
-                phx-click="retract_cable"
-                phx-value-id={cable.id}
-                data-confirm="Retract this cable and release its endpoints?"
+                phx-click={show_overlay("retract-cable-#{cable.id}-dialog")}
                 aria-label={"Retract cable #{cable.interface_a.name} to #{cable.interface_b.name}"}
               >
                 Retract
               </.button>
+              <.confirm_dialog
+                id={"retract-cable-#{cable.id}-dialog"}
+                title="Retract this cable?"
+                confirm_label="Retract cable"
+                on_confirm={JS.push("retract_cable", value: %{id: cable.id})}
+              >
+                Its endpoints are released. The attributed claim remains in history.
+              </.confirm_dialog>
             </:action>
             <:empty>No current cable is confirmed in this view.</:empty>
           </.table>
@@ -265,40 +290,23 @@ defmodule RengaWeb.CableLive do
                 id={"delete-plan-#{plan.id}"}
                 type="button"
                 size="sm"
-                phx-click="delete_plan"
-                phx-value-id={plan.id}
-                data-confirm="Remove this cable plan?"
+                phx-click={show_overlay("delete-plan-#{plan.id}-dialog")}
                 aria-label={"Remove cable plan #{plan.interface_a.name} to #{plan.interface_b.name}"}
               >
                 Remove
               </.button>
+              <.confirm_dialog
+                id={"delete-plan-#{plan.id}-dialog"}
+                title="Remove this cable plan?"
+                confirm_label="Remove plan"
+                on_confirm={JS.push("delete_plan", value: %{id: plan.id})}
+              >
+                Desired connectivity for these endpoints is removed.
+              </.confirm_dialog>
             </:action>
             <:empty>No cable plan recorded in this view.</:empty>
           </.table>
         </section>
-
-        <div :if={@can_manage?} class="grid gap-4 xl:grid-cols-2">
-          <.action_form
-            id="assert-cable-form"
-            title="Confirm current cable"
-            subtitle="Records an operator assertion that becomes authoritative cabling for these endpoints."
-            button_id="assert-cable"
-            button_label="Confirm cable"
-            form={@assert_form}
-            event="assert_cable"
-            interface_options={@interface_options}
-          />
-          <.action_form
-            id="plan-cable-form"
-            title="Plan desired cable"
-            subtitle="Records desired connectivity without reserving endpoints or replacing current cabling."
-            button_id="plan-cable"
-            button_label="Save plan"
-            form={@plan_form}
-            event="plan_cable"
-            interface_options={@interface_options}
-          />
-        </div>
 
         <section id="cable-claims" class="space-y-2">
           <.section_heading
@@ -337,6 +345,31 @@ defmodule RengaWeb.CableLive do
             <:empty>No cable claim recorded in this view.</:empty>
           </.table>
         </section>
+
+        <.action_form
+          :if={@can_manage?}
+          id="assert-cable-form"
+          panel_id="assert-cable-panel"
+          title="Confirm current cable"
+          subtitle="Records an operator assertion that becomes authoritative cabling for these endpoints."
+          button_id="assert-cable"
+          button_label="Confirm cable"
+          form={@assert_form}
+          event="assert_cable"
+          interface_options={@interface_options}
+        />
+        <.action_form
+          :if={@can_manage?}
+          id="plan-cable-form"
+          panel_id="plan-cable-panel"
+          title="Plan desired cable"
+          subtitle="Records desired connectivity without reserving endpoints or replacing current cabling."
+          button_id="plan-cable"
+          button_label="Save plan"
+          form={@plan_form}
+          event="plan_cable"
+          interface_options={@interface_options}
+        />
       </main>
     </Layouts.app>
     """
@@ -445,6 +478,7 @@ defmodule RengaWeb.CableLive do
   end
 
   attr :id, :string, required: true
+  attr :panel_id, :string, required: true
   attr :title, :string, required: true
   attr :subtitle, :string, required: true
   attr :button_id, :string, required: true
@@ -455,41 +489,32 @@ defmodule RengaWeb.CableLive do
 
   defp action_form(assigns) do
     ~H"""
-    <.form
-      for={@form}
-      id={@id}
-      phx-submit={@event}
-      phx-change="validate_cable"
-      class="rounded-lg border border-edge bg-surface px-5 py-4"
+    <.side_panel
+      id={@panel_id}
+      title={@title}
+      description={@subtitle}
     >
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h2 class="text-sm font-semibold text-fg">{@title}</h2>
-          <p class="mt-0.5 text-xs text-fg-muted">{@subtitle}</p>
-        </div>
-        <span class="shrink-0 rounded-sm border border-edge bg-sunken px-1.5 text-[11px] font-medium text-fg-muted">
-          Owner/Admin
-        </span>
-      </div>
-      <div class="mt-4 grid gap-x-4 sm:grid-cols-2">
+      <.form
+        for={@form}
+        id={@id}
+        phx-submit={@event}
+        phx-change="validate_cable"
+        class="space-y-1"
+      >
         <%!-- Endpoints carry the meaningful interface identity, so each select gets the
         full form width instead of a half column that clips the placeholder and options. --%>
-        <div class="sm:col-span-2">
-          <.input
-            field={@form[:interface_a_id]}
-            type="select"
-            label="First endpoint"
-            options={@interface_options}
-          />
-        </div>
-        <div class="sm:col-span-2">
-          <.input
-            field={@form[:interface_b_id]}
-            type="select"
-            label="Second endpoint"
-            options={@interface_options}
-          />
-        </div>
+        <.input
+          field={@form[:interface_a_id]}
+          type="select"
+          label="First endpoint"
+          options={@interface_options}
+        />
+        <.input
+          field={@form[:interface_b_id]}
+          type="select"
+          label="Second endpoint"
+          options={@interface_options}
+        />
         <.input
           field={@form[:cable_type]}
           type="text"
@@ -497,13 +522,20 @@ defmodule RengaWeb.CableLive do
           placeholder="cat6a"
         />
         <.input field={@form[:label]} type="text" label="Label (optional)" />
-      </div>
-      <div class="mt-2 flex justify-end">
-        <.button id={@button_id} type="submit" variant="primary" phx-disable-with="Saving…">
+      </.form>
+      <:footer>
+        <.button type="button" phx-click={hide_overlay(@panel_id)}>Cancel</.button>
+        <.button
+          id={@button_id}
+          type="submit"
+          form={@id}
+          variant="primary"
+          phx-disable-with="Saving…"
+        >
           {@button_label}
         </.button>
-      </div>
-    </.form>
+      </:footer>
+    </.side_panel>
     """
   end
 
