@@ -450,7 +450,7 @@ defmodule RengaWeb.CableLive do
       data-clip-focus
       tabindex="-1"
       aria-label={"Status: #{@status}"}
-      class="flex size-5 shrink-0 items-center overflow-hidden whitespace-nowrap rounded-sm text-xs capitalize text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring @xl:hidden"
+      class="flex size-5 min-h-tap min-w-tap shrink-0 items-center overflow-hidden whitespace-nowrap rounded-sm text-xs capitalize text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring @xl:hidden"
     >
       <span class={state_mark(@status)} aria-hidden="true" />
       <span class="ml-1">{@status}</span>

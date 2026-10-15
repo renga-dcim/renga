@@ -201,6 +201,8 @@ defmodule RengaWeb.Browser.CablesTest do
         "#cable-#{context.cable.id}-compact-status[aria-label='Status: decommissioning']"
       )
       |> assert_has("#plan-#{context.plan.id}-compact-status[aria-label='Status: connected']")
+      |> assert_minimum_tap_target("#cable-#{context.cable.id}-compact-status")
+      |> assert_minimum_tap_target("#plan-#{context.plan.id}-compact-status")
       |> assert_table_contained("#cables-list")
       |> assert_table_contained("#plans-list")
       |> touch("#cable-#{context.cable.id}-compact-status")
@@ -307,6 +309,19 @@ defmodule RengaWeb.Browser.CablesTest do
       })()
       """,
       &assert(&1 == %{"action" => true, "headers" => true, "wrapper" => true})
+    )
+  end
+
+  defp assert_minimum_tap_target(session, selector) do
+    evaluate(
+      session,
+      """
+      (() => {
+        const bounds = document.querySelector(#{Jason.encode!(selector)}).getBoundingClientRect()
+        return bounds.width >= 44 && bounds.height >= 44
+      })()
+      """,
+      &assert(&1 == true)
     )
   end
 
