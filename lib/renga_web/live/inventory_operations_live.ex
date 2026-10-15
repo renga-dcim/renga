@@ -298,7 +298,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 {collector_version(source)}
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Connection" class="w-40 @2xl:w-64">
+            <:col :let={{_id, source}} label="Connection" class="w-40">
               <span id={"collector-connection-#{source.id}"}>
                 <.collector_state_pill source={source} />
                 <span class="ml-1.5 font-mono text-xs text-fg-muted">
@@ -308,7 +308,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 </span>
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Resource" class="w-40" hide_below="5xl">
+            <:col :let={{_id, source}} label="Resource" class="w-32" hide_below="5xl">
               <.link
                 :if={Map.get(@resource_by_source, source.id)}
                 navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
@@ -327,17 +327,17 @@ defmodule RengaWeb.InventoryOperationsLive do
             <:col
               :let={{_id, source}}
               label="Installation"
-              class="w-32 font-mono text-xs text-fg-muted"
+              class="w-28 font-mono text-xs text-fg-muted"
               hide_below="5xl"
             >
               {short_installation_id(collector_agent(source).installation_id)}
             </:col>
-            <:col :let={{_id, source}} label="Inventory" class="w-64" hide_below="xl">
+            <:col :let={{_id, source}} label="Inventory" class="w-48" hide_below="xl">
               <span id={"collector-inventory-#{source.id}"}>
                 <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Accepts jobs" class="w-32" hide_below="4xl">
+            <:col :let={{_id, source}} label="Accepts jobs" class="w-28" hide_below="4xl">
               <span id={"collector-jobs-#{source.id}"}>
                 <.collector_jobs
                   id={"collector-jobs-#{source.id}-list"}
@@ -345,7 +345,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Delivery queue" class="w-36" hide_below="2xl">
+            <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
                 <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
               </span>

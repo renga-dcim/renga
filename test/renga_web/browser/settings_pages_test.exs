@@ -162,6 +162,29 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       "#collector-#{agent.source_id} a[href='/inventory/#{resource.id}']",
       text: resource.display_name
     )
+    |> evaluate(
+      """
+      new Promise(resolve => {
+        const wrapper = document.querySelector('#collectors').closest('table').parentElement
+        wrapper.style.width = '1040px'
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const cells = document.querySelectorAll('#collector-#{agent.source_id} td')
+          resolve({
+            fits: wrapper.scrollWidth <= wrapper.clientWidth,
+            collector_width: cells[0].clientWidth,
+            resource_visible: getComputedStyle(cells[2]).display !== 'none',
+            installation_visible: getComputedStyle(cells[3]).display !== 'none'
+          })
+        }))
+      })
+      """,
+      fn layout ->
+        assert layout["fits"] == true
+        assert layout["collector_width"] >= 160
+        assert layout["resource_visible"] == true
+        assert layout["installation_visible"] == true
+      end
+    )
     |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
     |> assert_has("#collector-jobs-#{agent.source_id}-list-list", text: long_capability)
     |> evaluate(
