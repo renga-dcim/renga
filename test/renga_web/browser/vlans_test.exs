@@ -12,6 +12,13 @@ defmodule RengaWeb.Browser.VlansTest do
 
   @moduletag :playwright
 
+  @tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 100))
+  """
+
   setup %{conn: conn} do
     organization = organization_fixture()
     user = user_fixture()
@@ -25,6 +32,16 @@ defmodule RengaWeb.Browser.VlansTest do
     desire_vlans(scope, ports["swp2"], "access", users)
     report_vlans(scope, leaf, group, %{"swp1" => {"access", [{4094, "untagged"}]}})
 
+    long_group_name = String.duplicate("Long campus namespace ", 9)
+
+    {:ok, long_group} =
+      Renga.Topology.create_vlan_group(
+        scope,
+        %{name: long_group_name, lifecycle_state: "active"},
+        %{slug: "long-campus-namespace", scope_kind: "global", status: "active"},
+        [%{start_vid: 1, end_vid: 4094}]
+      )
+
     conn =
       add_session_cookie(
         conn,
@@ -37,7 +54,15 @@ defmodule RengaWeb.Browser.VlansTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, group: group, scope: scope, users: users, swp2: ports["swp2"].id}
+    %{
+      conn: conn,
+      group: group,
+      long_group: long_group,
+      long_group_name: long_group_name,
+      scope: scope,
+      users: users,
+      swp2: ports["swp2"].id
+    }
   end
 
   test "an admin creates a VLAN group from a panel", context do
@@ -112,6 +137,29 @@ defmodule RengaWeb.Browser.VlansTest do
       })()
       """,
       &assert(&1 == "Planned, not observed|true")
+    )
+  end
+
+  @tag browser_context_opts: [
+         has_touch: true,
+         is_mobile: true,
+         viewport: %{width: 390, height: 844}
+       ]
+  test "long VLAN group names remain fully available on a phone", context do
+    name = "#vlan-group-#{context.long_group.id}-name"
+
+    context.conn
+    |> visit("/network/vlan-groups")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "(() => { const el = document.querySelector(#{Jason.encode!(name)}); return el.scrollWidth > el.clientWidth })()",
+      &assert(&1 == true)
+    )
+    |> click(name)
+    |> evaluate(@tooltip, &assert(&1 == String.trim(context.long_group_name)))
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
     )
   end
 end

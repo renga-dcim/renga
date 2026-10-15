@@ -163,14 +163,14 @@ defmodule RengaWeb.VlanGroupLive do
             :for={{dom_id, group} <- @streams.vlan_groups}
             id={dom_id}
             data-scope-kind={group.scope_kind}
-            class="rounded-lg border border-edge bg-surface px-5 py-4"
+            class="min-w-0 rounded-lg border border-edge bg-surface px-5 py-4"
           >
             <div class="flex items-start justify-between gap-4">
-              <div class="min-w-0">
-                <h2 class="truncate text-base font-semibold text-fg">
-                  {group.resource.name}
+              <div class="min-w-0 flex-1">
+                <h2 class="min-w-0 text-base font-semibold text-fg">
+                  <.clip id={"#{dom_id}-name"}>{group.resource.name}</.clip>
                 </h2>
-                <p class="mt-0.5 font-mono text-xs text-fg-muted">{group.slug}</p>
+                <p class="mt-0.5 break-all font-mono text-xs text-fg-muted">{group.slug}</p>
               </div>
               <.group_status status={group.status} />
             </div>
