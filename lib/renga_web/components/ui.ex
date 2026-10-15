@@ -402,7 +402,7 @@ defmodule RengaWeb.UI do
           id={"#{@id}-list"}
           popover
           data-anchor={"#{@id}-more"}
-          class="fixed inset-auto m-0 w-56 space-y-1.5 rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+          class="fixed inset-auto m-0 w-56 space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
         >
           <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
             {@label}

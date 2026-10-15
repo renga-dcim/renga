@@ -108,7 +108,9 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         scope,
         key,
         "67e55044-10b1-426f-9247-bb680e5fe0c8",
-        %{capabilities: ["host.inventory"]}
+        %{
+          capabilities: ["host.inventory", "inventory.collect@1", "query.disk_usage@1"]
+        }
       )
 
     {:ok, _} =
@@ -147,6 +149,20 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       &assert(&1 == true)
     )
     |> evaluate(@fits, &assert(&1 == true))
+    |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
+    |> evaluate(
+      """
+      (() => {
+        const popover = document.getElementById('collector-jobs-#{agent.source_id}-list-list')
+        return {
+          open: popover.matches(':popover-open'),
+          white_space: getComputedStyle(popover).whiteSpace,
+          fits: popover.scrollWidth <= popover.clientWidth
+        }
+      })()
+      """,
+      &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
+    )
     |> click_button("#new-intake-key-button", "Create intake key")
     |> assert_has("#new-intake-key-form")
     |> evaluate(

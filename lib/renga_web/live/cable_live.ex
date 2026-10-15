@@ -433,15 +433,14 @@ defmodule RengaWeb.CableLive do
   # so the device is cut first when the cell is narrow.
   defp endpoint_link(assigns) do
     ~H"""
-    <span class="inline-flex min-w-0 max-w-full items-baseline gap-1.5">
-      <span class="truncate font-mono font-medium text-fg">{@interface.name}</span>
-      <.link
-        navigate={~p"/inventory/#{@interface.resource_id}"}
-        class="inline-flex min-h-tap min-w-0 items-center truncate rounded-sm text-xs text-fg-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
-      >
-        {@interface.resource.name}
-      </.link>
-    </span>
+    <.link
+      navigate={~p"/inventory/#{@interface.resource_id}"}
+      class="flex min-h-tap min-w-0 max-w-full items-center rounded-sm transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+    >
+      <.clip class="font-mono font-medium text-fg">
+        {@interface.name}<span class="font-sans text-xs font-normal text-fg-muted">{" · "}{@interface.resource.name}</span>
+      </.clip>
+    </.link>
     """
   end
 
