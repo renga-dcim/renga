@@ -412,6 +412,10 @@ defmodule RengaWeb.CoreComponents do
   options. For streams, reinsert affected rows (or reset the stream) when
   changing selection so their markup is refreshed.
 
+  With `row_expanded` and an `:expanded` slot, an open row shows its details in
+  a full-width row beneath it, as the switch ports list does. Pair it with
+  `row_patch` so the row link toggles the details and announces the state.
+
   ## Examples
 
       <.table id="users" rows={@users}>
@@ -481,6 +485,13 @@ defmodule RengaWeb.CoreComponents do
 
   attr :all_checked, :boolean, default: false
 
+  attr :row_expanded, :any,
+    default: nil,
+    doc: """
+    the function returning whether a row shows its `:expanded` slot in a full
+    width row beneath it. The row link then announces `aria-expanded`.
+    """
+
   attr :class, :any, default: nil, doc: "classes for the scroll container"
 
   attr :overflow, :string,
@@ -498,6 +509,9 @@ defmodule RengaWeb.CoreComponents do
 
   slot :action, doc: "the slot for showing user actions in the last table column"
   slot :empty, doc: "the content shown when there are no rows"
+
+  slot :expanded,
+    doc: "details for a row that `row_expanded` opens; its id is the row id plus `-details`"
 
   def table(assigns) do
     assigns = assign(assigns, :checkbox_class, @checkbox_class)
@@ -571,6 +585,15 @@ defmodule RengaWeb.CoreComponents do
                 </tr>
               <% _data_row -> %>
                 <.table_row {assigns} row={row} />
+                <tr
+                  :if={@expanded != [] && @row_expanded && @row_expanded.(row)}
+                  id={@row_id && "#{@row_id.(row)}-details"}
+                  class="border-b border-line bg-canvas"
+                >
+                  <td colspan={@column_count} class="px-cell py-4">
+                    {render_slot(@expanded, @row_item.(row))}
+                  </td>
+                </tr>
             <% end %>
           <% end %>
         </tbody>
@@ -623,6 +646,8 @@ defmodule RengaWeb.CoreComponents do
           :if={index == 0 && @row_patch}
           id={row_link_id(@row_id, @row)}
           patch={@row_patch.(@row)}
+          aria-expanded={@row_expanded && to_string(@row_expanded.(@row))}
+          aria-controls={@row_expanded && @row_id && "#{@row_id.(@row)}-details"}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
           <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>

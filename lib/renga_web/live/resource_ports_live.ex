@@ -122,41 +122,49 @@ defmodule RengaWeb.ResourcePortsLive do
 
           <.front_panel :if={@ports != []} ports={@ports} selected={@selected} resource={@resource} />
 
-          <%!-- relative keeps the sr-only header inside the scroll box, so a wide
-               expanded row scrolls the table rather than the page. --%>
-          <div
+          <.table
             :if={@ports != []}
-            class="relative overflow-x-auto rounded-lg border border-edge bg-surface"
+            id="ports"
+            rows={@ports}
+            row_id={&"port-#{&1.interface.id}"}
+            row_patch={&port_path(@resource, &1, @selected)}
+            row_selected={&(@selected == &1.interface.id)}
+            row_expanded={&(@selected == &1.interface.id)}
+            class="rounded-lg border border-edge bg-surface"
           >
-            <table id="ports" class="w-full text-left text-table text-fg">
-              <thead class="text-xs text-fg-muted">
-                <tr class="h-row border-b border-edge">
-                  <th scope="col" class="px-cell font-medium">Port</th>
-                  <th scope="col" class="hidden px-cell font-medium sm:table-cell">Speed</th>
-                  <th scope="col" class="px-cell font-medium">Neighbor</th>
-                  <th scope="col" class="hidden px-cell font-medium md:table-cell">Cable</th>
-                  <th scope="col" class="hidden px-cell font-medium sm:table-cell">Mode</th>
-                  <th scope="col" class="px-cell font-medium">Untagged</th>
-                  <th scope="col" class="hidden px-cell font-medium md:table-cell">Tagged</th>
-                  <th scope="col" class="px-cell"><span class="sr-only">Details</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                <%= for port <- @ports do %>
-                  <.port_row port={port} selected={@selected} resource={@resource} />
-                  <tr
-                    :if={@selected == port.interface.id}
-                    id={"port-#{port.interface.id}-details"}
-                    class="border-b border-line bg-canvas"
-                  >
-                    <td colspan="8" class="px-cell py-4">
-                      <.port_details port={port} />
-                    </td>
-                  </tr>
-                <% end %>
-              </tbody>
-            </table>
-          </div>
+            <:col :let={port} label="Port">
+              <span class="flex items-center gap-2">
+                <span class={["size-2 shrink-0 rounded-full", dot_class(port_status(port))]} />
+                <span class="font-mono text-sm">{port.interface.name}</span>
+              </span>
+            </:col>
+            <:col
+              :let={port}
+              label="Speed"
+              class="hidden font-mono text-xs text-fg-muted sm:table-cell"
+            >
+              {speed(port.interface.speed_mbps)}
+            </:col>
+            <:col :let={port} label="Neighbor"><.neighbor port={port} /></:col>
+            <:col :let={port} label="Cable" class="hidden md:table-cell">
+              <.cable port={port} />
+            </:col>
+            <:col :let={port} label="Mode" class="hidden text-xs sm:table-cell">
+              <.mode port={port} />
+            </:col>
+            <:col :let={port} label="Untagged" class="font-mono text-xs">
+              <.vlan_side port={port} pick={:untagged} />
+            </:col>
+            <:col :let={port} label="Tagged" class="hidden font-mono text-xs md:table-cell">
+              <.vlan_side port={port} pick={:tagged} />
+            </:col>
+            <:action :let={port}>
+              <.drift_toggle port={port} selected={@selected} resource={@resource} />
+            </:action>
+            <:expanded :let={port}>
+              <.port_details port={port} />
+            </:expanded>
+          </.table>
         </div>
       </.resource_frame>
     </Layouts.app>
@@ -188,7 +196,7 @@ defmodule RengaWeb.ResourcePortsLive do
               id={"panel-port-#{port.interface.id}"}
               phx-click={
                 JS.patch(port_path(@resource, port, @selected))
-                |> JS.focus(to: "#port-#{port.interface.id}-open")
+                |> JS.focus(to: "#port-#{port.interface.id}-link")
               }
               data-status={port_status(port)}
               data-drift={to_string(Ports.drift?(port))}
@@ -197,10 +205,9 @@ defmodule RengaWeb.ResourcePortsLive do
               title={"#{port.interface.name} · #{status_label(port)}"}
               class={[
                 "relative grid h-7 w-8 cursor-pointer place-items-center rounded-sm border font-mono text-[10px] transition-colors",
-                "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
                 port_class(port_status(port)),
-                @selected == port.interface.id &&
-                  "ring-2 ring-accent ring-offset-1 ring-offset-sunken"
+                @selected == port.interface.id && "outline-2 outline-offset-1 outline-accent"
               ]}
             >
               {port_number(port)}
@@ -230,58 +237,22 @@ defmodule RengaWeb.ResourcePortsLive do
   attr :selected, :string, default: nil
   attr :resource, :any, required: true
 
-  defp port_row(assigns) do
+  defp drift_toggle(assigns) do
     assigns = assign(assigns, :id, assigns.port.interface.id)
 
     ~H"""
-    <tr
-      id={"port-#{@id}"}
-      data-drift={to_string(Ports.drift?(@port))}
-      aria-current={@selected == @id && "true"}
-      class={[
-        "h-row border-b border-line transition-colors",
-        if(@selected == @id, do: "bg-accent-tint", else: "hover:bg-sunken/60")
-      ]}
+    <.link
+      :if={Ports.drift?(@port)}
+      id={"port-#{@id}-drift"}
+      patch={port_path(@resource, @port, @selected)}
+      class="inline-flex min-h-tap items-center gap-1 whitespace-nowrap rounded border border-warn-line bg-warn-fill px-1.5 py-0.5 text-[11px] font-medium text-warn-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
     >
-      <td class="px-cell">
-        <.link
-          id={"port-#{@id}-open"}
-          patch={port_path(@resource, @port, @selected)}
-          aria-expanded={to_string(@selected == @id)}
-          aria-controls={"port-#{@id}-details"}
-          class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
-        >
-          <span class={["size-2 shrink-0 rounded-full", dot_class(port_status(@port))]} />
-          <span class="font-mono text-sm">{@port.interface.name}</span>
-        </.link>
-      </td>
-      <td class="hidden px-cell font-mono text-xs text-fg-muted sm:table-cell">
-        {speed(@port.interface.speed_mbps)}
-      </td>
-      <td class="px-cell"><.neighbor port={@port} /></td>
-      <td class="hidden px-cell md:table-cell"><.cable port={@port} /></td>
-      <td class="hidden px-cell text-xs sm:table-cell"><.mode port={@port} /></td>
-      <td class="px-cell font-mono text-xs">
-        <.vlan_side port={@port} pick={:untagged} />
-      </td>
-      <td class="hidden px-cell font-mono text-xs md:table-cell">
-        <.vlan_side port={@port} pick={:tagged} />
-      </td>
-      <td class="w-0 px-cell">
-        <.link
-          :if={Ports.drift?(@port)}
-          id={"port-#{@id}-drift"}
-          patch={port_path(@resource, @port, @selected)}
-          class="inline-flex items-center gap-1 whitespace-nowrap rounded border border-warn-line bg-warn-fill px-1.5 py-0.5 text-[11px] font-medium text-warn-text"
-        >
-          VLAN drift
-          <.icon
-            name={if(@selected == @id, do: "hero-chevron-up-mini", else: "hero-chevron-down-mini")}
-            class="size-3.5"
-          />
-        </.link>
-      </td>
-    </tr>
+      VLAN drift
+      <.icon
+        name={if(@selected == @id, do: "hero-chevron-up-mini", else: "hero-chevron-down-mini")}
+        class="size-3.5"
+      />
+    </.link>
     """
   end
 

@@ -50,7 +50,7 @@ defmodule RengaWeb.Browser.PortsTest do
     |> assert_has("#panel-port-#{context.swp40}[data-drift='true']")
     |> click_button("#panel-port-#{context.swp40}", "40")
     |> assert_has("#port-#{context.swp40}-details")
-    |> assert_has("#port-#{context.swp40}-open:focus")
+    |> assert_has("#port-#{context.swp40}-link:focus")
     |> evaluate(in_view_js("#port-#{context.swp40}"), &assert(&1 == true))
   end
 
@@ -91,7 +91,7 @@ defmodule RengaWeb.Browser.PortsTest do
 
   defp open_heights_js do
     """
-    Array.from(document.querySelectorAll('#ports a[id$="-open"]'))
+    Array.from(document.querySelectorAll('#ports a[id$="-link"]'))
       .map((element) => element.getBoundingClientRect().height)
     """
   end

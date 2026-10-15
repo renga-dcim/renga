@@ -68,7 +68,8 @@ defmodule RengaWeb.ResourcePortsLiveTest do
     assert has_element?(view, "#panel-port-#{s.ports["swp2"].id}[data-status='down']")
     assert has_element?(view, "#panel-port-#{s.ports["swp10"].id}[data-status='unknown']")
 
-    rows = view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query("#ports tbody tr")
+    rows =
+      view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query("#ports tr[data-list-row]")
 
     assert Enum.map(rows, &(&1 |> LazyHTML.attribute("id") |> hd())) ==
              Enum.map(~w(swp1 swp2 swp10), &"port-#{s.ports[&1].id}")
@@ -105,7 +106,7 @@ defmodule RengaWeb.ResourcePortsLiveTest do
     assert has_element?(view, "#port-#{swp1}-details a[href*='interface_id=#{swp1}']")
 
     # Selecting it again closes it.
-    view |> element("#port-#{swp1}-open") |> render_click()
+    view |> element("#port-#{swp1}-link") |> render_click()
     assert_patch(view, ~p"/inventory/#{s.leaf}/ports")
     refute has_element?(view, "#port-#{swp1}-details")
   end
