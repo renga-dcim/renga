@@ -412,6 +412,10 @@ defmodule RengaWeb.CoreComponents do
   options. For streams, reinsert affected rows (or reset the stream) when
   changing selection so their markup is refreshed.
 
+  With `row_expanded` and an `:expanded` slot, an open row shows its details in
+  a full-width row beneath it, as the switch ports list does. Pair it with
+  `row_patch` so the row link toggles the details and announces the state.
+
   ## Examples
 
       <.table id="users" rows={@users}>
@@ -481,6 +485,15 @@ defmodule RengaWeb.CoreComponents do
 
   attr :all_checked, :boolean, default: false
 
+  attr :row_expanded, :any,
+    default: nil,
+    doc: """
+    the function returning whether a row shows its `:expanded` slot in a full
+    width row beneath it. The row link then announces `aria-expanded`.
+    Expansion requires list rows; LiveView streams track only one DOM child per
+    item and cannot own the adjacent details row.
+    """
+
   attr :class, :any, default: nil, doc: "classes for the scroll container"
 
   attr :overflow, :string,
@@ -492,6 +505,8 @@ defmodule RengaWeb.CoreComponents do
     attr :label, :string
     attr :class, :any
 
+    attr :clip, :boolean, doc: "set false when the slot owns its clipping and reveal controls"
+
     attr :hide_below, :string,
       doc: "with overflow=\"clip\", hide the column below this container size (sm to 5xl)"
   end
@@ -499,7 +514,16 @@ defmodule RengaWeb.CoreComponents do
   slot :action, doc: "the slot for showing user actions in the last table column"
   slot :empty, doc: "the content shown when there are no rows"
 
+  slot :expanded,
+    doc: "details for a row that `row_expanded` opens; its id is the row id plus `-details`"
+
   def table(assigns) do
+    if is_struct(assigns.rows, Phoenix.LiveView.LiveStream) and
+         (assigns.row_expanded || assigns.expanded != []) do
+      raise ArgumentError,
+            "table expansion does not support LiveStream rows; pass a list so each details row is removed with its parent"
+    end
+
     assigns = assign(assigns, :checkbox_class, @checkbox_class)
 
     assigns =
@@ -539,7 +563,11 @@ defmodule RengaWeb.CoreComponents do
               scope="col"
               class={[
                 "px-cell font-medium",
-                @overflow == "clip" && ["truncate", hide_below(col[:hide_below])],
+                @overflow == "clip" &&
+                  [
+                    col[:clip] != false && "truncate",
+                    hide_below(col[:hide_below])
+                  ],
                 col[:class]
               ]}
             >
@@ -571,6 +599,15 @@ defmodule RengaWeb.CoreComponents do
                 </tr>
               <% _data_row -> %>
                 <.table_row {assigns} row={row} />
+                <tr
+                  :if={@expanded != [] && @row_expanded && @row_expanded.(row)}
+                  id={@row_id && "#{@row_id.(row)}-details"}
+                  class="border-b border-line bg-canvas"
+                >
+                  <td colspan={@column_count} class="px-cell py-4">
+                    {render_slot(@expanded, @row_item.(row))}
+                  </td>
+                </tr>
             <% end %>
           <% end %>
         </tbody>
@@ -623,9 +660,13 @@ defmodule RengaWeb.CoreComponents do
           :if={index == 0 && @row_patch}
           id={row_link_id(@row_id, @row)}
           patch={@row_patch.(@row)}
+          aria-expanded={@row_expanded && to_string(@row_expanded.(@row))}
+          aria-controls={@row_expanded && @row_id && "#{@row_id.(@row)}-details"}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal={false}>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         </.link>
         <.link
           :if={index == 0 && @row_navigate && !@row_patch}
@@ -633,10 +674,14 @@ defmodule RengaWeb.CoreComponents do
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal={false}>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         </.link>
         <%= if !(index == 0 && (@row_navigate || @row_patch)) do %>
-          <.cell overflow={@overflow} reveal>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         <% end %>
       </td>
       <td :if={@action != []} class="w-0 px-cell font-medium">
@@ -651,10 +696,11 @@ defmodule RengaWeb.CoreComponents do
   end
 
   attr :overflow, :string, required: true
+  attr :clip, :boolean, required: true
   attr :reveal, :boolean, required: true
   slot :inner_block, required: true
 
-  defp cell(%{overflow: "clip"} = assigns) do
+  defp cell(%{overflow: "clip", clip: true} = assigns) do
     ~H"""
     <span
       data-clip

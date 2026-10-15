@@ -15,12 +15,15 @@ const GAP = 4
 const MARGIN = 8
 
 const TOOLTIP_CLASS =
-  "pointer-events-none fixed inset-auto m-0 max-w-sm rounded-md border border-edge bg-surface " +
-  "px-2.5 py-1.5 text-xs text-fg shadow-lg"
+  "pointer-events-none fixed inset-auto m-0 max-w-[calc(100vw-1rem)] break-all rounded-md " +
+  "border border-edge bg-surface px-2.5 py-1.5 text-xs text-fg shadow-lg sm:max-w-sm"
 
 const FOCUS_OWNER_SELECTOR =
   "a, button, input, select, textarea, summary, label, [contenteditable='true'], " +
   "[tabindex]:not([tabindex='-1'])"
+
+const NATIVE_CONTROL_SELECTOR =
+  "a[href], button, input, select, textarea, summary, [contenteditable='true']"
 
 const INTERACTIVE_DESCENDANT_SELECTOR = `${FOCUS_OWNER_SELECTOR}, [phx-click]`
 
@@ -45,6 +48,8 @@ export function installFloating(doc = document, win = window) {
   let tooltip = null
   let pending = null
   let timer = null
+  let touchRevealed = null
+  let suppressedTouchClick = null
 
   const clipAt = node => (node instanceof win.Element ? node.closest("[data-clip]") : null)
 
@@ -66,7 +71,10 @@ export function installFloating(doc = document, win = window) {
   const syncClipFocus = target => {
     if (!target.matches("[data-clip-focus]")) return
 
-    target.tabIndex = !focusOwner(target) && clipped(target) ? 0 : -1
+    // Native controls keep their ordinary tab stop even when their label
+    // fits. Passive clipped text joins the tab order only when it needs a
+    // reveal interaction.
+    target.tabIndex = target.matches(NATIVE_CONTROL_SELECTOR) || (!focusOwner(target) && clipped(target)) ? 0 : -1
   }
 
   const resizeObserver =
@@ -172,6 +180,16 @@ export function installFloating(doc = document, win = window) {
 
   const activateClip = event => {
     const target = clipAt(event.target)
+
+    // The first touch on a clipped link reveals its full label without
+    // navigating; a second touch keeps the link's normal behavior.
+    if (event.type === "click" && target && target === suppressedTouchClick) {
+      suppressedTouchClick = null
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+
     if (
       !target?.matches("[data-clip-focus]") ||
       focusOwner(target) ||
@@ -181,9 +199,18 @@ export function installFloating(doc = document, win = window) {
       return
     }
 
-    // The row keeps its ordinary click behavior while text fits. A clipped
-    // value owns this click instead so touch reveals it rather than navigating.
-    if (event.type === "click") event.stopPropagation()
+    if (event.type === "pointerup" && event.pointerType === "touch" && target.matches("a[href]")) {
+      if (touchRevealed === target) {
+        touchRevealed = null
+      } else {
+        touchRevealed = target
+        suppressedTouchClick = target
+      }
+    }
+
+    // A passive clipped value owns the click instead of its row. Native
+    // controls must keep bubbling so LiveView can perform live navigation.
+    if (event.type === "click" && !target.matches(NATIVE_CONTROL_SELECTOR)) event.stopPropagation()
 
     target.focus({preventScroll: true})
     show(target)

@@ -94,29 +94,167 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     end
   end
 
-  test "collector details remain readable by scrolling and key controls are 44px in both dimensions",
+  test "collectors fit the screen without scrolling and key controls are 44px in both dimensions",
        %{conn: conn} do
+    %{agent: agent, conn: conn, key: key} = collector_context(conn)
+
+    conn
+    |> visit("/settings/collectors")
+    # The collector rows are in the static render; the create button is not
+    # wired until the socket connects.
+    |> assert_has("body .phx-connected")
+    |> assert_has("#collector-#{agent.source_id}", text: "Connected")
+    # At phone width the table drops its detail columns instead of scrolling
+    # (docs/design-system.md, "Overflow"); the name and connection stay.
+    |> evaluate(
+      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(0, 2).every(c => getComputedStyle(c).display !== 'none')",
+      &assert(&1 == true)
+    )
+    |> evaluate(
+      "(() => { const wrapper = document.querySelector('#collectors').closest('table').parentElement; return wrapper.scrollWidth <= wrapper.clientWidth; })()",
+      &assert(&1 == true)
+    )
+    |> evaluate(@fits, &assert(&1 == true))
+    |> click_button("#revoke-intake-key-#{key.id}", "Revoke")
+    |> assert_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
+    |> click_button("#revoke-intake-key-#{key.id}-dialog-cancel", "Cancel")
+    |> refute_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
+    |> click_button("#new-intake-key-button", "Create intake key")
+    |> assert_has("#new-intake-key-panel [role=dialog]", text: "Create an intake API key")
+    |> press("#new-intake-key-panel [role=dialog]", "Escape")
+    |> refute_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#new-intake-key-button:focus")
+    |> click_button("#new-intake-key-button", "Create intake key")
+    |> assert_has("#new-intake-key-form")
+    |> fill_in("#new-intake-key-form input[name='intake_api_key[name]']", "Key name",
+      with: "Phone fleet"
+    )
+    |> click_button("#create-intake-key-button", "Create key")
+    |> assert_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#intake-key-credentials", text: "Intake key created")
+    |> assert_has("#copy-intake-key")
+    |> evaluate(
+      "(() => { const r = document.getElementById('copy-intake-key').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
+      &assert(&1 == true)
+    )
+    |> click_button("#finish-intake-key-setup", "I saved this key")
+    |> refute_has("#new-intake-key-panel [role=dialog]")
+    |> assert_has("#new-intake-key-button:focus")
+  end
+
+  @tag browser_context_opts: [
+         has_touch: false,
+         is_mobile: false,
+         viewport: %{width: 1600, height: 900}
+       ]
+  test "collector job details remain readable when their column is present", %{conn: conn} do
+    %{agent: agent, conn: conn, long_capability: long_capability, resource: resource} =
+      collector_context(conn)
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(2, 4).every(cell => getComputedStyle(cell).display !== 'none')",
+      &assert(&1 == true)
+    )
+    |> assert_has(
+      "#collector-#{agent.source_id} a[href='/inventory/#{resource.id}']",
+      text: resource.display_name
+    )
+    |> evaluate(
+      """
+      new Promise(resolve => {
+        const wrapper = document.querySelector('#collectors').closest('table').parentElement
+        wrapper.style.width = '1040px'
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const cells = document.querySelectorAll('#collector-#{agent.source_id} td')
+          resolve({
+            fits: wrapper.scrollWidth <= wrapper.clientWidth,
+            collector_width: cells[0].clientWidth,
+            resource_visible: getComputedStyle(cells[2]).display !== 'none',
+            installation_visible: getComputedStyle(cells[3]).display !== 'none'
+          })
+        }))
+      })
+      """,
+      fn layout ->
+        assert layout["fits"] == true
+        assert layout["collector_width"] >= 160
+        assert layout["resource_visible"] == true
+        assert layout["installation_visible"] == true
+      end
+    )
+    |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
+    |> assert_has("#collector-jobs-#{agent.source_id}-list-list", text: long_capability)
+    |> evaluate(
+      """
+      (() => {
+        const popover = document.getElementById('collector-jobs-#{agent.source_id}-list-list')
+        return {
+          open: popover.matches(':popover-open'),
+          white_space: getComputedStyle(popover).whiteSpace,
+          fits: popover.scrollWidth <= popover.clientWidth
+        }
+      })()
+      """,
+      &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
+    )
+  end
+
+  defp collector_context(conn) do
     organization = organization_fixture()
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: "owner"})
     scope = Renga.Accounts.scope_for_user(user, organization.id)
-    {:ok, {_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
+    {:ok, {_created_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
     {:ok, key} = Renga.Inventory.authenticate_intake_api_key(token)
+    long_capability = String.duplicate("vendor-long-capability-", 8) <> "@1"
 
     {:ok, {agent, _}} =
       Renga.Inventory.record_intake_agent_check_in(
         scope,
         key,
         "67e55044-10b1-426f-9247-bb680e5fe0c8",
-        %{capabilities: ["host.inventory"]}
+        %{
+          capabilities: ["host.inventory", "inventory.collect@1", long_capability]
+        }
       )
 
-    {:ok, _} =
+    {:ok, observation} =
       Renga.Inventory.create_observation(scope, agent.source_id, %{
-        idempotency_key: "phone-details",
+        idempotency_key: "collector-details",
         observed_at: ~U[2026-10-09 12:34:00.000Z],
         payload: %{"resources" => []}
       })
+
+    {:ok, resource} =
+      Renga.Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "reported-collector-resource",
+        display_name: "Reported collector resource",
+        lifecycle_state: "active"
+      })
+
+    {:ok, identifier} =
+      Renga.Inventory.create_resource_identifier(scope, resource.id, %{
+        kind: "serial_number",
+        value: "COLLECTOR-BROWSER-RESOURCE"
+      })
+
+    {:ok, _claim} =
+      Renga.Inventory.create_resource_identifier_claim(
+        scope,
+        agent.source_id,
+        observation.id,
+        %{
+          resource_id: resource.id,
+          resource_identifier_id: identifier.id,
+          kind: "serial_number",
+          value: "COLLECTOR-BROWSER-RESOURCE",
+          confidence: 100
+        }
+      )
 
     conn =
       add_session_cookie(
@@ -130,36 +268,12 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    conn
-    |> visit("/settings/collectors")
-    # The collector rows are in the static render; the create button is not
-    # wired until the socket connects.
-    |> assert_has("body .phx-connected")
-    |> assert_has("#collector-#{agent.source_id}", text: "67e55044…e0c8")
-    |> assert_has("#collector-inventory-#{agent.source_id}", text: "accepted")
-    |> evaluate(
-      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].every(c => getComputedStyle(c).display !== 'none')",
-      &assert(&1 == true)
-    )
-    |> evaluate(
-      "(() => { const table = document.querySelector('#collectors').closest('table'); const wrapper = table.parentElement; wrapper.scrollLeft = wrapper.scrollWidth; return table.querySelector('tbody tr:not(#collectors-empty) td:last-child').getBoundingClientRect().right <= wrapper.getBoundingClientRect().right; })()",
-      &assert(&1 == true)
-    )
-    |> evaluate(@fits, &assert(&1 == true))
-    |> click_button("#new-intake-key-button", "Create intake key")
-    |> assert_has("#new-intake-key-form")
-    |> evaluate(
-      "(() => { const r = document.getElementById('cancel-intake-key').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
-      &assert(&1 == true)
-    )
-    |> fill_in("#new-intake-key-form input[name='intake_api_key[name]']", "Key name",
-      with: "Phone fleet"
-    )
-    |> click_button("#create-intake-key-button", "Create key")
-    |> assert_has("#copy-intake-key")
-    |> evaluate(
-      "(() => { const r = document.getElementById('copy-intake-key').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
-      &assert(&1 == true)
-    )
+    %{
+      agent: agent,
+      conn: conn,
+      key: key,
+      long_capability: long_capability,
+      resource: resource
+    }
   end
 end

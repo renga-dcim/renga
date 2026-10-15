@@ -14,7 +14,13 @@ test("only the open overlay cancels; repeated close preserves focus and scroll",
   const commands = []
   function mount(id) {
     const el = Object.assign(new EventTarget(), {
-      id, dataset: {show: `${id}:show`, hide: `${id}:hide`, cancel: `${id}:cancel`},
+      id,
+      dataset: {
+        show: `${id}:show`,
+        restore: `${id}:restore`,
+        hide: `${id}:hide`,
+        cancel: `${id}:cancel`,
+      },
     })
     const hook = {...Overlay, el, liveSocket: {execJS: (_el, command) => {
       commands.push(command)
@@ -34,13 +40,18 @@ test("only the open overlay cancels; repeated close preserves focus and scroll",
   sibling.onClose()
   assert.deepEqual(commands, ["panel:show"])
   assert(classes.has("overflow-hidden"))
+  const focusedInput = {isConnected: true, focus() {}}
+  document.activeElement = focusedInput
+  panel.updated()
+  assert.deepEqual(commands, ["panel:show", "panel:restore"])
+  assert.equal(document.activeElement, focusedInput)
   escape()
-  assert.deepEqual(commands, ["panel:show", "panel:hide", "panel:cancel"])
+  assert.deepEqual(commands, ["panel:show", "panel:restore", "panel:hide", "panel:cancel"])
   assert.equal(document.activeElement, opener)
   assert(!classes.has("overflow-hidden"))
   panel.onClose()
   escape()
-  assert.equal(commands.length, 3)
+  assert.equal(commands.length, 4)
 
   panel.onOpen()
   panel.onClick({target: "inside"})
@@ -51,5 +62,5 @@ test("only the open overlay cancels; repeated close preserves focus and scroll",
   panel.destroyed()
   sibling.destroyed()
   escape()
-  assert.equal(commands.length, 6)
+  assert.equal(commands.length, 7)
 })

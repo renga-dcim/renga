@@ -135,6 +135,41 @@ defmodule RengaWeb.UITest do
       assert click =~ "/inventory/1"
     end
 
+    test "expands list rows with linked ARIA state and matching details ids" do
+      assigns = %{
+        rows: [%{id: 1, name: "swp1"}, %{id: 2, name: "swp2"}],
+        expanded: 2
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.table
+          id="items"
+          rows={@rows}
+          row_id={&"item-#{&1.id}"}
+          row_patch={&"/ports?port=#{&1.id}"}
+          row_expanded={&(&1.id == @expanded)}
+        >
+          <:col :let={item} label="Name">{item.name}</:col>
+          <:expanded :let={item}>Details for {item.name}</:expanded>
+        </.table>
+        """)
+
+      assert attr_of(html, "#item-1-link", "aria-expanded") == ["false"]
+      assert attr_of(html, "#item-1-link", "aria-controls") == ["item-1-details"]
+      assert attr_of(html, "#item-2-link", "aria-expanded") == ["true"]
+      assert attr_of(html, "#item-2-link", "aria-controls") == ["item-2-details"]
+      refute present?(html, "#item-1-details")
+      assert text(html, "#item-2-details") == "Details for swp2"
+      assert attr_of(html, "#item-2-details td", "colspan") == ["1"]
+    end
+
+    test "rejects expansion for streamed rows before rendering orphan details", %{conn: conn} do
+      assert_raise ArgumentError, ~r/table expansion does not support LiveStream rows/, fn ->
+        live_isolated(conn, RengaWeb.UIReviewLive, session: %{"stream_expansion" => true})
+      end
+    end
+
     test "scrolls by default and leaves cell content unwrapped" do
       assigns = %{rows: [%{id: 1, name: "compute-01"}]}
 
@@ -164,6 +199,7 @@ defmodule RengaWeb.UITest do
         >
           <:col :let={item} label="Name">{item.name}</:col>
           <:col :let={item} label="Detail" class="w-40" hide_below="3xl">{item.detail}</:col>
+          <:col :let={item} label="Custom" clip={false}><span data-custom>{item.name}</span></:col>
         </.table>
         """)
 
@@ -173,6 +209,8 @@ defmodule RengaWeb.UITest do
       refute present?(html, "#item-1 td:first-child a [data-clip-focus]")
       assert attr_of(html, "#item-1 td:nth-child(2) [data-clip-focus]", "tabindex") == ["-1"]
       refute present?(html, "#item-1 td:nth-child(2) [data-clip-focus][phx-click]")
+      assert present?(html, "#item-1 td:nth-child(3) [data-custom]")
+      refute present?(html, "#item-1 td:nth-child(3) > [data-clip]")
       assert attr_of(html, "#item-1 td:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       assert attr_of(html, "thead th:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       refute attr_of(html, "thead th:first-child", "class") |> hd() =~ "hidden"

@@ -122,41 +122,51 @@ defmodule RengaWeb.ResourcePortsLive do
 
           <.front_panel :if={@ports != []} ports={@ports} selected={@selected} resource={@resource} />
 
-          <%!-- relative keeps the sr-only header inside the scroll box, so a wide
-               expanded row scrolls the table rather than the page. --%>
-          <div
+          <.table
             :if={@ports != []}
-            class="relative overflow-x-auto rounded-lg border border-edge bg-surface"
+            id="ports"
+            rows={@ports}
+            row_id={&"port-#{&1.interface.id}"}
+            row_patch={&port_path(@resource, &1, @selected)}
+            row_selected={&(@selected == &1.interface.id)}
+            row_expanded={&(@selected == &1.interface.id)}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
           >
-            <table id="ports" class="w-full text-left text-table text-fg">
-              <thead class="text-xs text-fg-muted">
-                <tr class="h-row border-b border-edge">
-                  <th scope="col" class="px-cell font-medium">Port</th>
-                  <th scope="col" class="hidden px-cell font-medium sm:table-cell">Speed</th>
-                  <th scope="col" class="px-cell font-medium">Neighbor</th>
-                  <th scope="col" class="hidden px-cell font-medium md:table-cell">Cable</th>
-                  <th scope="col" class="hidden px-cell font-medium sm:table-cell">Mode</th>
-                  <th scope="col" class="px-cell font-medium">Untagged</th>
-                  <th scope="col" class="hidden px-cell font-medium md:table-cell">Tagged</th>
-                  <th scope="col" class="px-cell"><span class="sr-only">Details</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                <%= for port <- @ports do %>
-                  <.port_row port={port} selected={@selected} resource={@resource} />
-                  <tr
-                    :if={@selected == port.interface.id}
-                    id={"port-#{port.interface.id}-details"}
-                    class="border-b border-line bg-canvas"
-                  >
-                    <td colspan="8" class="px-cell py-4">
-                      <.port_details port={port} />
-                    </td>
-                  </tr>
-                <% end %>
-              </tbody>
-            </table>
-          </div>
+            <:col :let={port} label="Port">
+              <span class="flex items-center gap-2">
+                <span class={["size-2 shrink-0 rounded-full", dot_class(port_status(port))]} />
+                <span class="font-mono text-sm">{port.interface.name}</span>
+              </span>
+            </:col>
+            <:col
+              :let={port}
+              label="Speed"
+              class="w-20 font-mono text-xs text-fg-muted"
+              hide_below="xl"
+            >
+              {speed(port.interface.speed_mbps)}
+            </:col>
+            <:col :let={port} label="Neighbor" clip={false}><.neighbor port={port} /></:col>
+            <:col :let={port} label="Cable" clip={false} hide_below="4xl">
+              <.cable port={port} />
+            </:col>
+            <:col :let={port} label="Mode" class="w-24 text-xs" hide_below="2xl">
+              <.mode port={port} />
+            </:col>
+            <:col :let={port} label="Untagged" class="w-24 font-mono text-xs">
+              <.vlan_side port={port} pick={:untagged} />
+            </:col>
+            <:col :let={port} label="Tagged" class="w-36 font-mono text-xs" hide_below="3xl">
+              <.vlan_side port={port} pick={:tagged} />
+            </:col>
+            <:action :let={port}>
+              <.drift_toggle port={port} selected={@selected} resource={@resource} />
+            </:action>
+            <:expanded :let={port}>
+              <.port_details port={port} />
+            </:expanded>
+          </.table>
         </div>
       </.resource_frame>
     </Layouts.app>
@@ -188,7 +198,7 @@ defmodule RengaWeb.ResourcePortsLive do
               id={"panel-port-#{port.interface.id}"}
               phx-click={
                 JS.patch(port_path(@resource, port, @selected))
-                |> JS.focus(to: "#port-#{port.interface.id}-open")
+                |> JS.focus(to: "#port-#{port.interface.id}-link")
               }
               data-status={port_status(port)}
               data-drift={to_string(Ports.drift?(port))}
@@ -197,10 +207,9 @@ defmodule RengaWeb.ResourcePortsLive do
               title={"#{port.interface.name} · #{status_label(port)}"}
               class={[
                 "relative grid h-7 w-8 cursor-pointer place-items-center rounded-sm border font-mono text-[10px] transition-colors",
-                "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring",
                 port_class(port_status(port)),
-                @selected == port.interface.id &&
-                  "ring-2 ring-accent ring-offset-1 ring-offset-sunken"
+                @selected == port.interface.id && "outline-2 outline-offset-1 outline-accent"
               ]}
             >
               {port_number(port)}
@@ -230,58 +239,23 @@ defmodule RengaWeb.ResourcePortsLive do
   attr :selected, :string, default: nil
   attr :resource, :any, required: true
 
-  defp port_row(assigns) do
+  defp drift_toggle(assigns) do
     assigns = assign(assigns, :id, assigns.port.interface.id)
 
     ~H"""
-    <tr
-      id={"port-#{@id}"}
-      data-drift={to_string(Ports.drift?(@port))}
-      aria-current={@selected == @id && "true"}
-      class={[
-        "h-row border-b border-line transition-colors",
-        if(@selected == @id, do: "bg-accent-tint", else: "hover:bg-sunken/60")
-      ]}
+    <.link
+      :if={Ports.drift?(@port)}
+      id={"port-#{@id}-drift"}
+      patch={port_path(@resource, @port, @selected)}
+      aria-label="Toggle VLAN drift details"
+      class="inline-flex min-h-tap min-w-tap items-center justify-center gap-1 whitespace-nowrap rounded border border-warn-line bg-warn-fill px-1.5 py-0.5 text-[11px] font-medium text-warn-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
     >
-      <td class="px-cell">
-        <.link
-          id={"port-#{@id}-open"}
-          patch={port_path(@resource, @port, @selected)}
-          aria-expanded={to_string(@selected == @id)}
-          aria-controls={"port-#{@id}-details"}
-          class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
-        >
-          <span class={["size-2 shrink-0 rounded-full", dot_class(port_status(@port))]} />
-          <span class="font-mono text-sm">{@port.interface.name}</span>
-        </.link>
-      </td>
-      <td class="hidden px-cell font-mono text-xs text-fg-muted sm:table-cell">
-        {speed(@port.interface.speed_mbps)}
-      </td>
-      <td class="px-cell"><.neighbor port={@port} /></td>
-      <td class="hidden px-cell md:table-cell"><.cable port={@port} /></td>
-      <td class="hidden px-cell text-xs sm:table-cell"><.mode port={@port} /></td>
-      <td class="px-cell font-mono text-xs">
-        <.vlan_side port={@port} pick={:untagged} />
-      </td>
-      <td class="hidden px-cell font-mono text-xs md:table-cell">
-        <.vlan_side port={@port} pick={:tagged} />
-      </td>
-      <td class="w-0 px-cell">
-        <.link
-          :if={Ports.drift?(@port)}
-          id={"port-#{@id}-drift"}
-          patch={port_path(@resource, @port, @selected)}
-          class="inline-flex items-center gap-1 whitespace-nowrap rounded border border-warn-line bg-warn-fill px-1.5 py-0.5 text-[11px] font-medium text-warn-text"
-        >
-          VLAN drift
-          <.icon
-            name={if(@selected == @id, do: "hero-chevron-up-mini", else: "hero-chevron-down-mini")}
-            class="size-3.5"
-          />
-        </.link>
-      </td>
-    </tr>
+      <span class="hidden @xl:inline">VLAN drift</span>
+      <.icon
+        name={if(@selected == @id, do: "hero-chevron-up-mini", else: "hero-chevron-down-mini")}
+        class="size-3.5"
+      />
+    </.link>
     """
   end
 
@@ -293,15 +267,14 @@ defmodule RengaWeb.ResourcePortsLive do
       <% @port.neighbor -> %>
         <.far_link port={@port} link={@port.neighbor} />
       <% @port.unresolved != [] -> %>
-        <span
-          class="inline-flex items-center gap-1.5 text-xs text-fg-muted"
+        <.clip
+          id={"port-#{@port.interface.id}-unresolved-neighbor"}
+          class="text-xs text-fg-muted"
           title="Not matched to inventory"
         >
           <.icon name="hero-question-mark-circle-mini" class="size-3.5 shrink-0" />
-          <span class="font-mono">
-            {hd(@port.unresolved).remote_chassis_id}:{hd(@port.unresolved).remote_port_id}
-          </span>
-        </span>
+          <span class="font-mono">{hd(@port.unresolved).remote_chassis_id}:{hd(@port.unresolved).remote_port_id}</span>
+        </.clip>
       <% true -> %>
         <span class="text-fg-subtle">—</span>
     <% end %>
@@ -334,12 +307,14 @@ defmodule RengaWeb.ResourcePortsLive do
     <.link
       navigate={~p"/network/topology?#{[link: @link.key]}"}
       title={state_label(@link.state)}
-      class="group inline-flex min-w-0 items-center gap-1.5 text-xs"
+      data-clip
+      data-clip-focus
+      class="group flex min-h-tap min-w-0 max-w-full items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-sm text-xs focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
     >
-      <.line_sample state={@link.state} class="w-5" />
+      <.line_sample state={@link.state} class="w-5 shrink-0" />
       <span class="font-mono text-fg group-hover:underline">{@far.name}</span>
-      <span class="truncate text-fg-muted">{@far.resource.name}</span>
-      <span :if={@label} class="truncate text-fg-subtle">{@label}</span>
+      <span class="text-fg-muted">{@far.resource.name}</span>
+      <span :if={@label} class="text-fg-subtle">{@label}</span>
     </.link>
     """
   end
@@ -392,7 +367,7 @@ defmodule RengaWeb.ResourcePortsLive do
   defp port_details(assigns) do
     ~H"""
     <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]">
-      <div class="space-y-3">
+      <div class="min-w-0 space-y-3">
         <div id={"port-#{@port.interface.id}-membership"} class="grid gap-3 sm:grid-cols-2">
           <.membership
             title="Desired"
@@ -430,7 +405,7 @@ defmodule RengaWeb.ResourcePortsLive do
         </.link>
       </div>
 
-      <dl class="space-y-2 text-xs">
+      <dl class="min-w-0 space-y-2 text-xs">
         <div class="flex gap-2">
           <dt class="w-16 shrink-0 text-fg-muted">Status</dt>
           <dd>{status_label(@port)}</dd>
@@ -463,7 +438,7 @@ defmodule RengaWeb.ResourcePortsLive do
       assign(assigns, :flagged_ids, MapSet.new(assigns.flagged, &{&1.tagging, &1.vlan.id}))
 
     ~H"""
-    <section class="space-y-2 rounded-md border border-edge bg-surface p-3">
+    <section class="min-w-0 space-y-2 rounded-md border border-edge bg-surface p-3">
       <h3 class="text-xs font-medium text-fg-muted">{@title}</h3>
       <p :if={!@side} class="text-xs text-fg-subtle">{@empty}</p>
       <dl :if={@side} class="space-y-1.5 text-xs">

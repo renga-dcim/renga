@@ -50,19 +50,23 @@ defmodule RengaWeb.CableLiveTest do
     assert has_element?(view, "#cable-plans")
     assert has_element?(view, "#cable-claims")
 
-    assert has_element?(view, "#cable-#{cable.id}[data-cable-type='cat6a']")
+    assert has_element?(view, "#cable-#{cable.id} [data-cable-type='cat6a']")
     assert has_element?(view, "#cable-#{cable.id}", "uplink")
     assert has_element?(view, "#cable-#{cable.id}", "connected")
 
-    assert has_element?(view, "#plan-#{plan.id}[data-plan-status='planned']")
-    assert has_element?(view, "#claim-#{assertion.id}[data-claim-kind='operator']")
-    assert has_element?(view, "#claim-#{assertion.id}[data-claim-action='assert']")
+    assert has_element?(view, "#plan-#{plan.id} [data-plan-status='planned']")
+    assert has_element?(view, "#claim-#{assertion.id} [data-claim-kind='operator']")
+    assert has_element?(view, "#claim-#{assertion.id} [data-claim-action='assert']")
 
     # Manager controls are offered, but the context remains the authorization boundary.
     assert has_element?(view, "#assert-cable-form")
     assert has_element?(view, "#plan-cable-form")
+    assert has_element?(view, "#new-current-cable")
+    assert has_element?(view, "#new-cable-plan")
     assert has_element?(view, "#retract-cable-#{cable.id}")
+    assert has_element?(view, "#retract-cable-#{cable.id}-dialog [role='alertdialog']")
     assert has_element?(view, "#delete-plan-#{plan.id}")
+    assert has_element?(view, "#delete-plan-#{plan.id}-dialog [role='alertdialog']")
   end
 
   test "endpoint selects offer each physical interface with its resource identity", %{
@@ -114,7 +118,7 @@ defmodule RengaWeb.CableLiveTest do
     assert [cable] = Topology.list_cables(scope)
     assert has_element?(view, "#cable-#{cable.id}", "ui-uplink")
 
-    view |> element("#retract-cable-#{cable.id}") |> render_click()
+    view |> element("#retract-cable-#{cable.id}-dialog-confirm") |> render_click()
 
     assert has_element?(view, "#flash-info", "endpoints are released")
     assert Topology.list_cables(scope) == []
@@ -144,7 +148,7 @@ defmodule RengaWeb.CableLiveTest do
     assert [plan] = Topology.list_cable_plans(scope)
     assert has_element?(view, "#plan-#{plan.id}", "planned")
 
-    view |> element("#delete-plan-#{plan.id}") |> render_click()
+    view |> element("#delete-plan-#{plan.id}-dialog-confirm") |> render_click()
 
     assert has_element?(view, "#flash-info", "Cable plan removed")
     assert Topology.list_cable_plans(scope) == []
@@ -174,6 +178,8 @@ defmodule RengaWeb.CableLiveTest do
     assert has_element?(view, "#cable-#{cable.id}")
     refute has_element?(view, "#assert-cable-form")
     refute has_element?(view, "#plan-cable-form")
+    refute has_element?(view, "#new-current-cable")
+    refute has_element?(view, "#new-cable-plan")
     refute has_element?(view, "#retract-cable-#{cable.id}")
   end
 

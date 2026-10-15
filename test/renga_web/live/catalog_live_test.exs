@@ -292,6 +292,8 @@ defmodule RengaWeb.CatalogLiveTest do
     {:ok, manufacturer} = manufacturer_fixture(scope, "Revision Vendor", "revision-vendor")
     {:ok, module_type} = module_type_fixture(scope, manufacturer, "REV-1", "line_card")
     {:ok, view, _html} = live(conn, "/catalog/module-types/#{module_type.id}")
+    assert has_element?(view, "#new-revision")
+    assert has_element?(view, "#new-revision-panel #new-revision-form")
     view |> element("#add-component-template") |> render_click()
 
     redirect =

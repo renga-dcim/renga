@@ -402,13 +402,13 @@ defmodule RengaWeb.UI do
           id={"#{@id}-list"}
           popover
           data-anchor={"#{@id}-more"}
-          class="fixed inset-auto m-0 w-56 space-y-1.5 rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+          class="fixed inset-auto m-0 w-56 space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
         >
           <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
             {@label}
           </p>
           <ul class="space-y-1.5">
-            <li :for={item <- @items} class="flex items-center justify-between gap-2">
+            <li :for={item <- @items} class="flex min-w-0 items-center justify-between gap-2">
               <%= if @detail != [] do %>
                 {render_slot(@detail, item)}
               <% else %>
@@ -511,6 +511,7 @@ defmodule RengaWeb.UI do
       phx-remove={hide_overlay(@id)}
       data-initial-show={to_string(@show)}
       data-show={overlay_show(@id)}
+      data-restore={overlay_visible(@id)}
       data-hide={overlay_hide(@id)}
       data-cancel={@on_cancel}
       data-return-focus={@return_focus}
@@ -585,6 +586,7 @@ defmodule RengaWeb.UI do
       phx-remove={hide_overlay(@id)}
       data-initial-show={to_string(@show)}
       data-show={overlay_show(@id)}
+      data-restore={overlay_visible(@id)}
       data-hide={overlay_hide(@id)}
       data-cancel={@on_cancel}
       class="relative z-50 hidden"
@@ -669,6 +671,12 @@ defmodule RengaWeb.UI do
   end
 
   defp overlay_show(id) do
+    id
+    |> overlay_visible()
+    |> JS.focus_first(to: "##{id}-container")
+  end
+
+  defp overlay_visible(id) do
     %JS{}
     |> JS.show(to: "##{id}")
     |> JS.show(
@@ -684,7 +692,6 @@ defmodule RengaWeb.UI do
         {"transition-all ease-out duration-200", "opacity-0 translate-y-2 sm:translate-y-0",
          "opacity-100 translate-y-0"}
     )
-    |> JS.focus_first(to: "##{id}-container")
   end
 
   defp overlay_hide(id) do

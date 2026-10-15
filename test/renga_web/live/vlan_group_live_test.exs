@@ -44,7 +44,8 @@ defmodule RengaWeb.VlanGroupLiveTest do
              "#vlan-group-#{group.id} a[href='/network/vlans?group_id=#{group.id}']"
            )
 
-    assert has_element?(view, "#vlan-group-form")
+    assert has_element?(view, "#new-vlan-group")
+    assert has_element?(view, "#vlan-group-panel #vlan-group-form")
   end
 
   test "keeps another organization's VLAN groups invisible", %{conn: conn, scope: scope} do
@@ -102,6 +103,7 @@ defmodule RengaWeb.VlanGroupLiveTest do
     {:ok, member_view, _html} = live(member_conn, ~p"/network/vlan-groups")
 
     assert has_element?(member_view, "#vlan-group-#{group.id}", "Campus")
+    refute has_element?(member_view, "#new-vlan-group")
     refute has_element?(member_view, "#vlan-group-form")
   end
 

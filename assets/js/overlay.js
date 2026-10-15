@@ -52,6 +52,12 @@ export const Overlay = {
     if (this.el.dataset.initialShow === "true") this.onOpen()
   },
 
+  updated() {
+    // LiveView patches restore the server-rendered hidden classes. Keep an
+    // already-open overlay visible without replaying initial focus placement.
+    if (openOverlays.includes(this)) this.liveSocket.execJS(this.el, this.el.dataset.restore)
+  },
+
   destroyed() {
     this.onClose()
     // A route-driven panel can be removed by the same patch that replaces its

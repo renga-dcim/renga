@@ -2,12 +2,13 @@ defmodule RengaWeb.UIReviewLive do
   @moduledoc false
   use RengaWeb, :live_view
 
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     {:ok,
      socket
      |> assign(:current_scope, nil)
      |> assign(:cancelled, "none")
      |> assign(:confirmed, 0)
+     |> assign(:stream_expansion?, session["stream_expansion"] == true)
      |> stream(:items, [%{id: 1, name: "Compute node"}])}
   end
 
@@ -23,10 +24,16 @@ defmodule RengaWeb.UIReviewLive do
         </div>
         <p id="cancelled">{@cancelled}</p>
         <p id="confirmed">{@confirmed}</p>
-        <.table id="items" rows={@streams.items} row_navigate={fn {_id, _item} -> "/users/log-in" end}>
+        <.table
+          id="items"
+          rows={@streams.items}
+          row_navigate={fn {_id, _item} -> "/users/log-in" end}
+          row_expanded={@stream_expansion? && fn {_id, item} -> item.id == 1 end}
+        >
           <:col :let={{_id, item}} label="Name">{item.name}</:col>
           <:col :let={{_id, item}} label="ID">{item.id}</:col>
           <:empty>No nodes.</:empty>
+          <:expanded :let={item} :if={@stream_expansion?}>Details for {item.name}</:expanded>
         </.table>
         <.button id="add" phx-click="add">Add row</.button>
         <.button id="delete" phx-click="delete">Delete row</.button>

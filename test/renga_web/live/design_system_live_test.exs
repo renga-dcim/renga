@@ -14,6 +14,7 @@ defmodule RengaWeb.DesignSystemLiveTest do
     assert has_element?(view, "#swatch-accent")
     assert has_element?(view, "#status-attention [data-signal='drift']")
     assert has_element?(view, "#sample-nodes [data-list-group]")
+    assert has_element?(view, "#sample-expandable #sample-port-1-link[aria-expanded='false']")
     assert has_element?(view, "#sample-object")
     refute has_element?(view, "#theme-toggle-header")
   end
@@ -53,5 +54,20 @@ defmodule RengaWeb.DesignSystemLiveTest do
     view |> element("#show-error-flash") |> render_click()
 
     assert has_element?(view, "#flash-error")
+  end
+
+  test "the expandable table sample patches its linked details row", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/dev/design-system")
+
+    refute has_element?(view, "#sample-port-1-details")
+    view |> element("#sample-port-1-link") |> render_click()
+
+    patched = assert_patch(view)
+    assert URI.decode_query(URI.parse(patched).query)["row"] == "1"
+    assert has_element?(view, "#sample-port-1-link[aria-expanded='true']")
+    assert has_element?(view, "#sample-port-1-details", "Observed VLAN 30 is not desired")
+
+    view |> element("#sample-port-1-link") |> render_click()
+    refute has_element?(view, "#sample-port-1-details")
   end
 end

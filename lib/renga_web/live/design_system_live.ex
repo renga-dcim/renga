@@ -128,6 +128,10 @@ defmodule RengaWeb.DesignSystemLive do
     }
   ]
 
+  @expandable_rows [
+    %{id: 1, name: "swp40", state: "Up", detail: "Observed VLAN 30 is not desired."}
+  ]
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -144,6 +148,7 @@ defmodule RengaWeb.DesignSystemLive do
      |> assign(:icons, @icons)
      |> assign(:selected_node, 1)
      |> assign(:overflow_rows, @overflow_rows)
+     |> assign(:expandable_rows, @expandable_rows)
      |> assign(:overflow_sample_long?, false)
      |> assign(:overflow_action_clicked?, false)
      |> assign(:sample_form, sample_form())
@@ -160,7 +165,10 @@ defmodule RengaWeb.DesignSystemLive do
       density: pick(params["density"], Appearance.densities(), defaults.density)
     }
 
-    socket = assign(socket, :preview, preview)
+    socket =
+      socket
+      |> assign(:preview, preview)
+      |> assign(:sample_expanded?, params["row"] == "1")
 
     socket = if connected?(socket), do: push_event(socket, "appearance", preview), else: socket
 
@@ -448,6 +456,26 @@ defmodule RengaWeb.DesignSystemLive do
               <:col :let={{_id, node}} label="Address" class="font-mono">{node[:address]}</:col>
               <:empty>No resources match these filters.</:empty>
             </.table>
+            <.table
+              id="sample-expandable"
+              rows={@expandable_rows}
+              row_id={&"sample-port-#{&1.id}"}
+              row_patch={
+                fn row ->
+                  preview_path(@preview, %{row: if(@sample_expanded?, do: nil, else: row.id)})
+                end
+              }
+              row_expanded={&(@sample_expanded? && &1.id == 1)}
+              class="rounded-lg border border-edge bg-surface"
+            >
+              <:col :let={row} label="Expandable row" class="font-mono font-medium">
+                {row.name}
+              </:col>
+              <:col :let={row} label="State">{row.state}</:col>
+              <:expanded :let={row}>
+                <p class="text-sm text-fg-muted">{row.detail}</p>
+              </:expanded>
+            </.table>
           </.ds_card>
 
           <.ds_card id="component-overflow" title="Overflow">
@@ -595,6 +623,38 @@ defmodule RengaWeb.DesignSystemLive do
               </.object_page>
             </div>
           </.ds_card>
+
+          <.ds_card id="component-settings" title="Settings and sign-in pages">
+            <div class="grid gap-6 lg:grid-cols-2">
+              <.settings_page id="sample-settings-page" title="Appearance" class="max-w-none">
+                <:actions><.button size="sm">Reset</.button></:actions>
+                <.settings_section
+                  id="sample-settings-section"
+                  title="Density"
+                  description="Row height and spacing in lists."
+                >
+                  <.segmented id="sample-settings-density" label="Density">
+                    <:option id="sample-comfortable" patch={preview_path(@preview, %{})} active>
+                      Comfortable
+                    </:option>
+                    <:option id="sample-compact" patch={preview_path(@preview, %{})} active={false}>
+                      Compact
+                    </:option>
+                  </.segmented>
+                </.settings_section>
+              </.settings_page>
+              <div class="rounded-lg border border-edge bg-canvas">
+                <.auth_card id="sample-auth-card" title="Log in to Renga">
+                  <:subtitle>Use the account your organization invited.</:subtitle>
+                  <.input id="sample-auth-email" name="sample_email" value="" label="Email" />
+                  <.button variant="primary" class="w-full">Log in</.button>
+                  <.divider label="or" />
+                  <.button class="w-full">Email me a link</.button>
+                  <:footer>New here? Ask an owner for an invite.</:footer>
+                </.auth_card>
+              </div>
+            </div>
+          </.ds_card>
         </.ds_section>
 
         <.ds_section
@@ -720,7 +780,12 @@ defmodule RengaWeb.DesignSystemLive do
   end
 
   defp preview_path(preview, changes) do
-    @path <> "?" <> URI.encode_query(Map.merge(preview, changes))
+    query =
+      preview
+      |> Map.merge(changes)
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    @path <> "?" <> URI.encode_query(query)
   end
 
   defp density_heading(preview, density) do

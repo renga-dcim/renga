@@ -15,7 +15,6 @@ defmodule RengaWeb.InventoryOperationsLive do
     {:ok,
      socket
      |> assign(:page_title, "Collectors")
-     |> assign(:show_new_key?, false)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())
      |> stream_configure(:sources, dom_id: &"collector-#{&1.id}")
@@ -47,7 +46,6 @@ defmodule RengaWeb.InventoryOperationsLive do
   def handle_event("new_intake_key", _params, socket) do
     {:noreply,
      socket
-     |> assign(:show_new_key?, true)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())}
   end
@@ -55,7 +53,6 @@ defmodule RengaWeb.InventoryOperationsLive do
   def handle_event("cancel_intake_key", _params, socket) do
     {:noreply,
      socket
-     |> assign(:show_new_key?, false)
      |> assign(:issued_token, nil)
      |> assign(:key_form, key_form())}
   end
@@ -112,14 +109,14 @@ defmodule RengaWeb.InventoryOperationsLive do
         id="collector-operations"
         title="Collectors"
         description="Installations appear here once they authenticate with an organization intake key."
-        class="max-w-5xl"
+        class="max-w-6xl"
       >
         <:actions>
           <.button
             :if={Inventory.collector_manager?(@current_scope)}
             id="new-intake-key-button"
             variant="primary"
-            phx-click="new_intake_key"
+            phx-click={JS.push("new_intake_key") |> show_overlay("new-intake-key-panel")}
           >
             <.icon name="hero-key-mini" class="size-4" /> Create intake key
           </.button>
@@ -135,36 +132,18 @@ defmodule RengaWeb.InventoryOperationsLive do
             </p>
           </div>
 
-          <div
-            :if={@show_new_key?}
+          <.side_panel
             id="new-intake-key-panel"
-            class="rounded-lg border border-edge bg-surface"
+            title="Create an intake API key"
+            description="One key can be deployed to every collector in this organization."
+            on_cancel={JS.push("cancel_intake_key")}
           >
-            <div class="flex items-start justify-between gap-4 border-b border-edge px-4 py-3">
-              <div>
-                <h3 class="text-sm font-medium text-fg">Create an intake API key</h3>
-                <p class="mt-0.5 text-xs text-fg-muted">
-                  One key can be deployed to every collector in this organization.
-                </p>
-              </div>
-              <button
-                id="cancel-intake-key"
-                type="button"
-                phx-click="cancel_intake_key"
-                aria-label="Close intake key setup"
-                class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
-              >
-                <.icon name="hero-x-mark" class="size-4" />
-              </button>
-            </div>
-
-            <div :if={is_nil(@issued_token)} class="p-4">
+            <div :if={is_nil(@issued_token)}>
               <.form
                 for={@key_form}
                 id="new-intake-key-form"
                 phx-change="validate_intake_key"
                 phx-submit="create_intake_key"
-                class="max-w-md"
               >
                 <.input
                   field={@key_form[:name]}
@@ -179,7 +158,7 @@ defmodule RengaWeb.InventoryOperationsLive do
               </.form>
             </div>
 
-            <div :if={@issued_token} id="intake-key-credentials" class="space-y-4 p-4">
+            <div :if={@issued_token} id="intake-key-credentials" class="space-y-4">
               <div class="flex gap-2.5 rounded-md bg-sunken px-3 py-2">
                 <.icon name="hero-check-circle-mini" class="mt-0.5 size-4 shrink-0 text-ok" />
                 <div>
@@ -225,11 +204,14 @@ defmodule RengaWeb.InventoryOperationsLive do
                   <span class="block">intake_api_key = "{@issued_token}"</span>
                 </code>
               </div>
-              <.button id="finish-intake-key-setup" phx-click="cancel_intake_key">
+              <.button
+                id="finish-intake-key-setup"
+                phx-click={JS.push("cancel_intake_key") |> hide_overlay("new-intake-key-panel")}
+              >
                 I saved this key
               </.button>
             </div>
-          </div>
+          </.side_panel>
 
           <div
             id="intake-api-keys"
@@ -267,12 +249,19 @@ defmodule RengaWeb.InventoryOperationsLive do
                 size="sm"
                 variant="ghost"
                 class="text-crit"
-                phx-click="revoke_intake_key"
-                phx-value-id={key.id}
-                data-confirm="Revoke this shared key? Every collector still using it will be rejected."
+                phx-click={show_overlay("revoke-intake-key-#{key.id}-dialog")}
               >
                 Revoke
               </.button>
+              <.confirm_dialog
+                :if={key.status == "active" && Inventory.collector_manager?(@current_scope)}
+                id={"revoke-intake-key-#{key.id}-dialog"}
+                title="Revoke this shared key?"
+                confirm_label="Revoke key"
+                on_confirm={JS.push("revoke_intake_key", value: %{id: key.id})}
+              >
+                Every collector still using it will be rejected.
+              </.confirm_dialog>
             </div>
           </div>
         </section>
@@ -292,78 +281,77 @@ defmodule RengaWeb.InventoryOperationsLive do
             </.form>
           </div>
 
-          <div class="overflow-x-auto rounded-lg border border-edge bg-surface">
-            <table class="w-full text-left text-table text-fg">
-              <thead class="text-xs text-fg-muted">
-                <tr class="h-row border-b border-edge">
-                  <th scope="col" class="px-cell font-medium">Collector</th>
-                  <th scope="col" class="px-cell font-medium">Connection</th>
-                  <th scope="col" class="px-cell font-medium">Resource</th>
-                  <th scope="col" class="px-cell font-medium">Installation</th>
-                  <th scope="col" class="px-cell font-medium">Inventory</th>
-                  <th scope="col" class="px-cell font-medium">Accepts jobs</th>
-                  <th scope="col" class="px-cell font-medium">Delivery queue</th>
-                </tr>
-              </thead>
-              <tbody id="collectors" phx-update="stream">
-                <tr id="collectors-empty" class="hidden only:table-row">
-                  <td colspan="7" class="px-cell py-8 text-center text-sm text-fg-muted">
-                    No discovered collectors match this view.
-                  </td>
-                </tr>
-                <tr
-                  :for={{id, source} <- @streams.sources}
-                  id={id}
-                  class="border-b border-line transition-colors last:border-0 hover:bg-sunken/60"
-                >
-                  <td class="px-cell py-2">
-                    <p class="font-medium">{source.name}</p>
-                    <p class="font-mono text-xs text-fg-muted">{collector_version(source)}</p>
-                  </td>
-                  <td id={"collector-connection-#{source.id}"} class="px-cell py-2">
-                    <.collector_state_pill source={source} />
-                    <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
-                      {collector_lease_expiry(source)}
-                    </p>
-                    <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
-                      contact {format_time(collector_agent(source).last_contacted_at)}
-                    </p>
-                  </td>
-                  <td class="px-cell py-2">
-                    <.link
-                      :if={Map.get(@resource_by_source, source.id)}
-                      navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
-                      class="text-link hover:underline"
-                    >
-                      {Map.fetch!(@resource_by_source, source.id).display_name ||
-                        Map.fetch!(@resource_by_source, source.id).name}
-                    </.link>
-                    <span
-                      :if={is_nil(Map.get(@resource_by_source, source.id))}
-                      class="text-xs text-fg-subtle"
-                    >
-                      No resource reported
-                    </span>
-                  </td>
-                  <td class="px-cell py-2 font-mono text-xs text-fg-muted">
-                    {short_installation_id(collector_agent(source).installation_id)}
-                  </td>
-                  <td id={"collector-inventory-#{source.id}"} class="px-cell py-2">
-                    <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
-                  </td>
-                  <td id={"collector-jobs-#{source.id}"} class="px-cell py-2">
-                    <.collector_jobs
-                      id={"collector-jobs-#{source.id}-list"}
-                      agent={collector_agent(source)}
-                    />
-                  </td>
-                  <td id={"collector-queue-#{source.id}"} class="whitespace-nowrap px-cell py-2">
-                    <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <%!-- One line per collector, with times and counts inline after each
+                state (docs/design-system.md, "Overflow"). As the table narrows
+                it drops the installation id (already in the name), then the
+                resource, jobs, queue and inventory; the name and connection
+                always stay. --%>
+          <.table
+            id="collectors"
+            rows={@streams.sources}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={{_id, source}} label="Collector">
+              <span class="font-medium">{source.name}</span>
+              <span class="ml-1.5 font-mono text-xs text-fg-muted">
+                {collector_version(source)}
+              </span>
+            </:col>
+            <:col :let={{_id, source}} label="Connection" class="w-40">
+              <span id={"collector-connection-#{source.id}"}>
+                <.collector_state_pill source={source} />
+                <span class="ml-1.5 font-mono text-xs text-fg-muted">
+                  contact {format_time(collector_agent(source).last_contacted_at)} · {collector_lease_expiry(
+                    source
+                  )}
+                </span>
+              </span>
+            </:col>
+            <:col :let={{_id, source}} label="Resource" class="w-32" hide_below="5xl">
+              <.link
+                :if={Map.get(@resource_by_source, source.id)}
+                navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
+                class="rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+              >
+                {Map.fetch!(@resource_by_source, source.id).display_name ||
+                  Map.fetch!(@resource_by_source, source.id).name}
+              </.link>
+              <span
+                :if={is_nil(Map.get(@resource_by_source, source.id))}
+                class="text-xs text-fg-subtle"
+              >
+                No resource reported
+              </span>
+            </:col>
+            <:col
+              :let={{_id, source}}
+              label="Installation"
+              class="w-28 font-mono text-xs text-fg-muted"
+              hide_below="5xl"
+            >
+              {short_installation_id(collector_agent(source).installation_id)}
+            </:col>
+            <:col :let={{_id, source}} label="Inventory" class="w-48" hide_below="xl">
+              <span id={"collector-inventory-#{source.id}"}>
+                <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
+              </span>
+            </:col>
+            <:col :let={{_id, source}} label="Accepts jobs" class="w-28" hide_below="4xl">
+              <span id={"collector-jobs-#{source.id}"}>
+                <.collector_jobs
+                  id={"collector-jobs-#{source.id}-list"}
+                  agent={collector_agent(source)}
+                />
+              </span>
+            </:col>
+            <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
+              <span id={"collector-queue-#{source.id}"}>
+                <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
+              </span>
+            </:col>
+            <:empty>No discovered collectors match this view.</:empty>
+          </.table>
         </section>
       </.settings_page>
     </Layouts.app>
@@ -398,18 +386,20 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp collector_inventory(assigns) do
     ~H"""
     <%= if @clocks do %>
-      <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
-        accepted {format_time(@clocks.accepted_at)}
-      </p>
-      <p class="whitespace-nowrap font-mono text-[11px] text-fg-muted">
-        reconciled {format_time(@clocks.reconciled_observed_at)}
-      </p>
-      <p :if={@clocks.latest_outcome == "failed"} class="text-[11px] font-medium text-crit">
+      <span :if={@clocks.latest_outcome == "failed"} class="mr-1.5 text-xs font-medium text-crit">
         Latest report failed to reconcile
-      </p>
-      <p :if={@clocks.latest_outcome in [nil, "pending", "running"]} class="text-[11px] text-fg-muted">
+      </span>
+      <span
+        :if={@clocks.latest_outcome in [nil, "pending", "running"]}
+        class="mr-1.5 text-xs text-fg-muted"
+      >
         Latest report not reconciled yet
-      </p>
+      </span>
+      <span class="font-mono text-xs text-fg-muted">
+        accepted {format_time(@clocks.accepted_at)} · reconciled {format_time(
+          @clocks.reconciled_observed_at
+        )}
+      </span>
     <% else %>
       <span class="text-xs text-fg-subtle">No inventory yet</span>
     <% end %>
@@ -430,8 +420,8 @@ defmodule RengaWeb.InventoryOperationsLive do
     <span :if={@keys == []} class="text-xs text-fg-subtle">None enabled</span>
     <.chip_list :if={@keys != []} id={@id} label="Accepts jobs" items={@keys}>
       <:detail :let={key}>
-        <span class="font-mono">{key}</span>
-        <span class="text-fg-muted">{job_capability_summary(key)}</span>
+        <span class="min-w-0 break-all font-mono">{key}</span>
+        <span class="shrink-0 text-fg-muted">{job_capability_summary(key)}</span>
       </:detail>
     </.chip_list>
     """
@@ -457,18 +447,18 @@ defmodule RengaWeb.InventoryOperationsLive do
       <% @queue.entries == 0 -> %>
         <span class="text-xs text-fg-muted">Empty</span>
       <% true -> %>
-        <p class="text-xs font-medium text-warn-text">{@queue.entries} undelivered</p>
-        <p class="font-mono text-[11px] text-fg-muted">
+        <span class="text-xs font-medium text-warn-text">{@queue.entries} undelivered</span>
+        <span class="ml-1.5 font-mono text-xs text-fg-muted">
           oldest {format_age(@queue.oldest_age_seconds)} · {format_bytes(@queue.bytes)}
-        </p>
+        </span>
     <% end %>
-    <p
+    <span
       :if={@queue && @queue.dropped > 0}
-      class="text-[11px] font-medium text-crit"
+      class="ml-1.5 text-xs font-medium text-crit"
       title={dropped_breakdown(@queue)}
     >
       {@queue.dropped} dropped since restart
-    </p>
+    </span>
     """
   end
 
