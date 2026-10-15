@@ -203,7 +203,19 @@ defmodule RengaWeb.CableLive do
               <.endpoint id={"cable-#{cable.id}-first-endpoint"} interface={cable.interface_a} />
             </:col>
             <:col :let={cable} label="Second endpoint" clip={false}>
-              <.endpoint id={"cable-#{cable.id}-second-endpoint"} interface={cable.interface_b} />
+              <div class="flex min-w-0 items-center gap-1.5">
+                <div class="min-w-0 flex-1">
+                  <.endpoint
+                    id={"cable-#{cable.id}-second-endpoint"}
+                    interface={cable.interface_b}
+                  />
+                </div>
+                <.compact_status
+                  id={"cable-#{cable.id}-compact-status"}
+                  status={cable.status}
+                  default="connected"
+                />
+              </div>
             </:col>
             <:col :let={cable} label="Type" class="w-28 text-fg-muted" hide_below="xl">
               <span data-cable-type={cable.cable_type}>{cable.cable_type || "—"}</span>
@@ -272,7 +284,19 @@ defmodule RengaWeb.CableLive do
               <.endpoint id={"plan-#{plan.id}-first-endpoint"} interface={plan.interface_a} />
             </:col>
             <:col :let={plan} label="Second endpoint" clip={false}>
-              <.endpoint id={"plan-#{plan.id}-second-endpoint"} interface={plan.interface_b} />
+              <div class="flex min-w-0 items-center gap-1.5">
+                <div class="min-w-0 flex-1">
+                  <.endpoint
+                    id={"plan-#{plan.id}-second-endpoint"}
+                    interface={plan.interface_b}
+                  />
+                </div>
+                <.compact_status
+                  id={"plan-#{plan.id}-compact-status"}
+                  status={plan.status}
+                  default="planned"
+                />
+              </div>
             </:col>
             <:col :let={plan} label="Type" class="w-28 text-fg-muted" hide_below="xl">
               {plan.cable_type || "—"}
@@ -409,6 +433,30 @@ defmodule RengaWeb.CableLive do
   defp state_mark("connected"), do: "size-2 shrink-0 rounded-full bg-ok"
   defp state_mark("planned"), do: "size-2 shrink-0 rounded-full border-[1.5px] border-info"
   defp state_mark(_status), do: "size-2 shrink-0 rounded-full border-[1.5px] border-unknown"
+
+  attr :id, :string, required: true
+  attr :status, :string, required: true
+  attr :default, :string, required: true
+
+  # Narrow tables omit the dedicated status column. Preserve exceptional
+  # lifecycle state as a compact overflow control instead of making it look
+  # like the section's default state.
+  defp compact_status(assigns) do
+    ~H"""
+    <span
+      :if={@status != @default}
+      id={@id}
+      data-clip
+      data-clip-focus
+      tabindex="-1"
+      aria-label={"Status: #{@status}"}
+      class="flex size-5 shrink-0 items-center overflow-hidden whitespace-nowrap rounded-sm text-xs capitalize text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring @xl:hidden"
+    >
+      <span class={state_mark(@status)} aria-hidden="true" />
+      <span class="ml-1">{@status}</span>
+    </span>
+    """
+  end
 
   defp load_cables(socket) do
     scope = socket.assigns.current_scope

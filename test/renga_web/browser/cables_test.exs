@@ -49,7 +49,8 @@ defmodule RengaWeb.Browser.CablesTest do
       Topology.assert_cable(scope, %{
         interface_a_id: first.id,
         interface_b_id: second.id,
-        cable_type: "fiber"
+        cable_type: "fiber",
+        status: "decommissioning"
       })
 
     [cable] = Topology.list_cables(scope)
@@ -64,6 +65,13 @@ defmodule RengaWeb.Browser.CablesTest do
       })
 
     short_cable = Enum.find(Topology.list_cables(scope), &(&1.id != cable.id))
+
+    {:ok, plan} =
+      Topology.put_cable_plan(scope, %{
+        interface_a_id: first.id,
+        interface_b_id: third.id,
+        status: "connected"
+      })
 
     conn =
       add_session_cookie(
@@ -82,6 +90,7 @@ defmodule RengaWeb.Browser.CablesTest do
       cable: cable,
       first: first,
       first_resource: first_resource,
+      plan: plan,
       scope: scope,
       short_cable: short_cable,
       short_first: short_first,
@@ -188,7 +197,18 @@ defmodule RengaWeb.Browser.CablesTest do
       context.conn
       |> visit("/network/cables")
       |> assert_has("body .phx-connected")
+      |> assert_has(
+        "#cable-#{context.cable.id}-compact-status[aria-label='Status: decommissioning']"
+      )
+      |> assert_has("#plan-#{context.plan.id}-compact-status[aria-label='Status: connected']")
       |> assert_table_contained("#cables-list")
+      |> assert_table_contained("#plans-list")
+      |> touch("#cable-#{context.cable.id}-compact-status")
+      |> evaluate(@tooltip, &assert(&1 =~ "decommissioning"))
+      |> press(":focus", "Escape")
+      |> touch("#plan-#{context.plan.id}-compact-status")
+      |> evaluate(@tooltip, &assert(&1 =~ "connected"))
+      |> press(":focus", "Escape")
       |> click("#new-current-cable")
       |> assert_has("#assert-cable-panel [role=dialog]", text: "Confirm current cable")
       |> press("#assert-cable-panel [role=dialog]", "Escape")
