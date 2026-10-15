@@ -229,7 +229,7 @@ defmodule RengaWeb.CableLive do
             >
               {format_time(cable.last_asserted_at)}
             </:col>
-            <:col :let={cable} label="Status" class="w-32">
+            <:col :let={cable} label="Status" class="w-32" hide_below="xl">
               <.state_label status={cable.status} />
             </:col>
             <:action :let={cable} :if={@can_manage?}>
@@ -280,7 +280,7 @@ defmodule RengaWeb.CableLive do
             <:col :let={plan} label="Label" class="text-fg-muted" hide_below="3xl">
               {plan.label || "—"}
             </:col>
-            <:col :let={plan} label="Status" class="w-32">
+            <:col :let={plan} label="Status" class="w-32" hide_below="xl">
               <span data-plan-status={plan.status}>
                 <.state_label status={plan.status} />
               </span>

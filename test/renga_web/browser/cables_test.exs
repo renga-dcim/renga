@@ -188,6 +188,7 @@ defmodule RengaWeb.Browser.CablesTest do
       context.conn
       |> visit("/network/cables")
       |> assert_has("body .phx-connected")
+      |> assert_table_contained("#cables-list")
       |> click("#new-current-cable")
       |> assert_has("#assert-cable-panel [role=dialog]", text: "Confirm current cable")
       |> press("#assert-cable-panel [role=dialog]", "Escape")
@@ -218,6 +219,7 @@ defmodule RengaWeb.Browser.CablesTest do
       |> click("#plan-cable")
       |> assert_has("#flash-info", text: "Cable plan recorded")
       |> refute_has("#plan-cable-panel [role=dialog]")
+      |> assert_table_contained("#plans-list")
 
     [plan] = Topology.list_cable_plans(context.scope)
 
@@ -261,6 +263,31 @@ defmodule RengaWeb.Browser.CablesTest do
                  timeout: 2000
                )
     end)
+  end
+
+  defp assert_table_contained(session, body_selector) do
+    evaluate(
+      session,
+      """
+      (() => {
+        const body = document.querySelector(#{Jason.encode!(body_selector)})
+        const table = body.closest("table")
+        const wrapper = table.parentElement
+        const headers = [...table.querySelectorAll("thead th")].slice(0, 2)
+        const actionCell = body.querySelector("tr[data-list-row] td:last-child")
+        const action = actionCell.querySelector("button")
+        const cellBounds = actionCell.getBoundingClientRect()
+        const actionBounds = action.getBoundingClientRect()
+
+        return {
+          wrapper: wrapper.scrollWidth <= wrapper.clientWidth,
+          headers: headers.every(header => header.scrollWidth <= header.clientWidth),
+          action: actionBounds.left >= cellBounds.left && actionBounds.right <= cellBounds.right
+        }
+      })()
+      """,
+      &assert(&1 == %{"action" => true, "headers" => true, "wrapper" => true})
+    )
   end
 
   defp tab_until(session, selector) do
