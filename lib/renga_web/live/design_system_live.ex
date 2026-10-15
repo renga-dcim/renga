@@ -595,6 +595,38 @@ defmodule RengaWeb.DesignSystemLive do
               </.object_page>
             </div>
           </.ds_card>
+
+          <.ds_card id="component-settings" title="Settings and sign-in pages">
+            <div class="grid gap-6 lg:grid-cols-2">
+              <.settings_page id="sample-settings-page" title="Appearance" class="max-w-none">
+                <:actions><.button size="sm">Reset</.button></:actions>
+                <.settings_section
+                  id="sample-settings-section"
+                  title="Density"
+                  description="Row height and spacing in lists."
+                >
+                  <.segmented id="sample-settings-density" label="Density">
+                    <:option id="sample-comfortable" patch={preview_path(@preview, %{})} active>
+                      Comfortable
+                    </:option>
+                    <:option id="sample-compact" patch={preview_path(@preview, %{})} active={false}>
+                      Compact
+                    </:option>
+                  </.segmented>
+                </.settings_section>
+              </.settings_page>
+              <div class="rounded-lg border border-edge bg-canvas">
+                <.auth_card id="sample-auth-card" title="Log in to Renga">
+                  <:subtitle>Use the account your organization invited.</:subtitle>
+                  <.input id="sample-auth-email" name="sample_email" value="" label="Email" />
+                  <.button variant="primary" class="w-full">Log in</.button>
+                  <.divider label="or" />
+                  <.button class="w-full">Email me a link</.button>
+                  <:footer>New here? Ask an owner for an invite.</:footer>
+                </.auth_card>
+              </div>
+            </div>
+          </.ds_card>
         </.ds_section>
 
         <.ds_section
