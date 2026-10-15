@@ -96,41 +96,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
 
   test "collectors fit the screen without scrolling and key controls are 44px in both dimensions",
        %{conn: conn} do
-    organization = organization_fixture()
-    user = user_fixture()
-    organization_membership_fixture(user, organization, %{role: "owner"})
-    scope = Renga.Accounts.scope_for_user(user, organization.id)
-    {:ok, {_created_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
-    {:ok, key} = Renga.Inventory.authenticate_intake_api_key(token)
-
-    {:ok, {agent, _}} =
-      Renga.Inventory.record_intake_agent_check_in(
-        scope,
-        key,
-        "67e55044-10b1-426f-9247-bb680e5fe0c8",
-        %{
-          capabilities: ["host.inventory", "inventory.collect@1", "query.disk_usage@1"]
-        }
-      )
-
-    {:ok, _} =
-      Renga.Inventory.create_observation(scope, agent.source_id, %{
-        idempotency_key: "phone-details",
-        observed_at: ~U[2026-10-09 12:34:00.000Z],
-        payload: %{"resources" => []}
-      })
-
-    conn =
-      add_session_cookie(
-        conn,
-        [
-          value: %{
-            user_token: Renga.Accounts.generate_user_session_token(user),
-            current_organization_id: organization.id
-          }
-        ],
-        RengaWeb.Endpoint.session_options()
-      )
+    %{agent: agent, conn: conn, key: key} = collector_context(conn)
 
     conn
     |> visit("/settings/collectors")
@@ -149,20 +115,6 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       &assert(&1 == true)
     )
     |> evaluate(@fits, &assert(&1 == true))
-    |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
-    |> evaluate(
-      """
-      (() => {
-        const popover = document.getElementById('collector-jobs-#{agent.source_id}-list-list')
-        return {
-          open: popover.matches(':popover-open'),
-          white_space: getComputedStyle(popover).whiteSpace,
-          fits: popover.scrollWidth <= popover.clientWidth
-        }
-      })()
-      """,
-      &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
-    )
     |> click_button("#revoke-intake-key-#{key.id}", "Revoke")
     |> assert_has("#revoke-intake-key-#{key.id}-dialog [role=alertdialog]")
     |> click_button("#revoke-intake-key-#{key.id}-dialog-cancel", "Cancel")
@@ -188,5 +140,72 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> click_button("#finish-intake-key-setup", "I saved this key")
     |> refute_has("#new-intake-key-panel [role=dialog]")
     |> assert_has("#new-intake-key-button:focus")
+  end
+
+  @tag browser_context_opts: [
+         has_touch: false,
+         is_mobile: false,
+         viewport: %{width: 1280, height: 800}
+       ]
+  test "collector job details remain readable when their column is present", %{conn: conn} do
+    %{agent: agent, conn: conn} = collector_context(conn)
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
+    |> evaluate(
+      """
+      (() => {
+        const popover = document.getElementById('collector-jobs-#{agent.source_id}-list-list')
+        return {
+          open: popover.matches(':popover-open'),
+          white_space: getComputedStyle(popover).whiteSpace,
+          fits: popover.scrollWidth <= popover.clientWidth
+        }
+      })()
+      """,
+      &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
+    )
+  end
+
+  defp collector_context(conn) do
+    organization = organization_fixture()
+    user = user_fixture()
+    organization_membership_fixture(user, organization, %{role: "owner"})
+    scope = Renga.Accounts.scope_for_user(user, organization.id)
+    {:ok, {_created_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "Fleet"})
+    {:ok, key} = Renga.Inventory.authenticate_intake_api_key(token)
+
+    {:ok, {agent, _}} =
+      Renga.Inventory.record_intake_agent_check_in(
+        scope,
+        key,
+        "67e55044-10b1-426f-9247-bb680e5fe0c8",
+        %{
+          capabilities: ["host.inventory", "inventory.collect@1", "query.disk_usage@1"]
+        }
+      )
+
+    {:ok, _} =
+      Renga.Inventory.create_observation(scope, agent.source_id, %{
+        idempotency_key: "collector-details",
+        observed_at: ~U[2026-10-09 12:34:00.000Z],
+        payload: %{"resources" => []}
+      })
+
+    conn =
+      add_session_cookie(
+        conn,
+        [
+          value: %{
+            user_token: Renga.Accounts.generate_user_session_token(user),
+            current_organization_id: organization.id
+          }
+        ],
+        RengaWeb.Endpoint.session_options()
+      )
+
+    %{agent: agent, conn: conn, key: key}
   end
 end
