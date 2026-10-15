@@ -14,7 +14,6 @@ defmodule RengaWeb.DesignSystemTest do
 
   @legacy %{
     "lib/renga_web/live/catalog_live.ex" => 125,
-    "lib/renga_web/live/vlan_group_live.ex" => 48
   }
 
   # Deliberate exceptions, with the reason each one is not a token.

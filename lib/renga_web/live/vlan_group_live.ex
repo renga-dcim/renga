@@ -55,14 +55,14 @@ defmodule RengaWeb.VlanGroupLive do
       current_scope={@current_scope}
       active_nav={:vlan_groups}
     >
-      <main id="vlan-groups" class="space-y-7">
-        <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
+      <main id="vlan-groups" class="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+        <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
               Layer 2 inventory
             </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight">VLAN groups</h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/55">
+            <h1 class="mt-1 text-xl font-semibold tracking-tight text-fg">VLAN groups</h1>
+            <p class="mt-1 max-w-2xl text-sm text-fg-muted">
               VLAN-ID namespaces with their allocatable VID ranges. A group scopes VLAN
               identity; it never assigns interface membership.
             </p>
@@ -70,9 +70,13 @@ defmodule RengaWeb.VlanGroupLive do
         </header>
 
         <section class="grid gap-3 sm:grid-cols-3">
-          <.summary_card label="Groups" value={@group_count} icon="hero-rectangle-group" />
-          <.summary_card label="VLANs" value={@vlan_count} icon="hero-tag" />
-          <.summary_card label="Addressable VIDs" value={@vid_capacity} icon="hero-hashtag" />
+          <.summary_card label="Groups" value={@group_count} icon="hero-rectangle-group-mini" />
+          <.summary_card label="VLANs" value={@vlan_count} icon="hero-tag-mini" />
+          <.summary_card
+            label="Addressable VIDs"
+            value={@vid_capacity}
+            icon="hero-hashtag-mini"
+          />
         </section>
 
         <.form
@@ -81,34 +85,32 @@ defmodule RengaWeb.VlanGroupLive do
           id="vlan-group-form"
           phx-submit="create_vlan_group"
           phx-change="validate_group"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
+          class="rounded-lg border border-edge bg-surface px-5 py-4"
         >
           <div class="flex items-start justify-between gap-4">
             <div>
-              <h2 class="font-semibold tracking-tight">New VLAN group</h2>
-              <p class="mt-1 text-xs text-base-content/55">
+              <h2 class="text-base font-semibold text-fg">New VLAN group</h2>
+              <p class="mt-1 text-xs text-fg-muted">
                 Creating a namespace changes shared VLAN identity, so only owners and admins may submit it.
               </p>
             </div>
-            <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
+            <span class="shrink-0 rounded-full bg-sunken px-2 py-0.5 text-[11px] font-medium text-fg-muted">
               Owner/Admin
             </span>
           </div>
-          <div class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <.input field={@group_form[:name]} type="text" label="Name" class={input_class()} />
+          <div class="mt-4 grid gap-x-4 sm:grid-cols-2 xl:grid-cols-3">
+            <.input field={@group_form[:name]} type="text" label="Name" />
             <.input
               field={@group_form[:slug]}
               type="text"
               label="Slug (optional)"
               placeholder="derived-from-name"
-              class={input_class()}
             />
             <.input
               field={@group_form[:scope]}
               type="select"
               label="Scope"
               options={@scope_options}
-              class={input_class()}
             />
             <.input
               field={@group_form[:start_vid]}
@@ -116,7 +118,6 @@ defmodule RengaWeb.VlanGroupLive do
               label="First VID"
               min="1"
               max="4094"
-              class={input_class()}
             />
             <.input
               field={@group_form[:end_vid]}
@@ -124,35 +125,33 @@ defmodule RengaWeb.VlanGroupLive do
               label="Last VID"
               min="1"
               max="4094"
-              class={input_class()}
             />
             <.input
               field={@group_form[:description]}
               type="text"
               label="Description (optional)"
-              class={input_class()}
             />
           </div>
-          <div class="mt-5 flex justify-end">
-            <button
+          <div class="mt-2 flex justify-end">
+            <.button
               id="create-vlan-group"
               type="submit"
+              variant="primary"
               phx-disable-with="Creating…"
-              class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
             >
               Create group
-            </button>
+            </.button>
           </div>
         </.form>
 
-        <section id="vlan-groups-list" phx-update="stream" class="grid gap-4 xl:grid-cols-2">
+        <section id="vlan-groups-list" phx-update="stream" class="grid gap-3 xl:grid-cols-2">
           <div
             id="vlan-groups-empty"
-            class="hidden rounded-2xl border border-dashed border-base-content/15 bg-base-100 px-6 py-16 text-center only:block xl:col-span-2"
+            class="hidden rounded-lg border border-dashed border-edge bg-surface px-6 py-12 text-center only:block xl:col-span-2"
           >
-            <.icon name="hero-tag" class="mx-auto size-9 text-base-content/25" />
-            <h2 class="mt-4 font-semibold">No VLAN groups yet</h2>
-            <p class="mt-1 text-sm text-base-content/50">
+            <.icon name="hero-tag" class="mx-auto size-8 text-fg-subtle" />
+            <h2 class="mt-3 text-sm font-semibold text-fg">No VLAN groups yet</h2>
+            <p class="mt-1 text-sm text-fg-muted">
               Create a namespace to bound where VLAN IDs are valid in this organization.
             </p>
           </div>
@@ -161,47 +160,54 @@ defmodule RengaWeb.VlanGroupLive do
             :for={{dom_id, group} <- @streams.vlan_groups}
             id={dom_id}
             data-scope-kind={group.scope_kind}
-            class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm transition hover:border-orange-500/25 hover:shadow-md"
+            class="rounded-lg border border-edge bg-surface px-5 py-4"
           >
             <div class="flex items-start justify-between gap-4">
               <div class="min-w-0">
-                <h2 class="truncate text-lg font-semibold tracking-tight">
+                <h2 class="truncate text-base font-semibold text-fg">
                   {group.resource.name}
                 </h2>
-                <p class="mt-1 font-mono text-xs text-base-content/55">{group.slug}</p>
+                <p class="mt-0.5 font-mono text-xs text-fg-muted">{group.slug}</p>
               </div>
-              <span class={status_class(group.status)}>{group.status}</span>
+              <.group_status status={group.status} />
             </div>
 
-            <div class="mt-4 flex flex-wrap items-center gap-2">
-              <span class="inline-flex items-center gap-1.5 rounded-full bg-base-200 px-2.5 py-1 text-xs font-medium text-base-content/60">
-                <.icon name="hero-globe-alt" class="size-3.5" /> {scope_label(group)}
+            <div class="mt-3 flex flex-wrap items-center gap-1.5">
+              <span class="inline-flex items-center gap-1 rounded-sm bg-sunken px-1.5 py-0.5 text-[11px] font-medium text-fg-muted">
+                <.icon name="hero-globe-alt-mini" class="size-3.5 text-fg-subtle" />
+                {scope_label(group)}
               </span>
               <span
                 :for={range <- group.vid_ranges}
                 data-vid-range={range.id}
-                class="rounded-lg bg-base-200 px-2 py-1 font-mono text-xs text-base-content/60"
+                class="rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-fg-muted"
               >
                 {range.start_vid}–{range.end_vid}
               </span>
             </div>
 
-            <p :if={group.description} class="mt-4 text-sm text-base-content/55">
+            <p :if={group.description} class="mt-3 text-sm text-fg-muted">
               {group.description}
             </p>
 
             <% utilization = Map.fetch!(@utilization, group.id) %>
-            <div class="mt-5 border-t border-base-content/10 pt-4">
-              <div class="flex items-center justify-between text-xs text-base-content/55">
+            <div class="mt-4 border-t border-line pt-3">
+              <div class="flex items-center justify-between text-xs text-fg-muted">
                 <span>{utilization.used} of {utilization.capacity} VIDs assigned</span>
-                <span class="font-mono">{utilization.percent}%</span>
+                <span class="font-mono tabular-nums">{utilization.percent}%</span>
               </div>
-              <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-base-content/10">
+              <div
+                class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sunken"
+                role="progressbar"
+                aria-label={"#{group.resource.name} VID usage"}
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={utilization.percent}
+              >
                 <div
                   class={[
                     "h-full rounded-full",
-                    utilization.percent >= 90 && "bg-rose-500",
-                    utilization.percent < 90 && "bg-orange-500"
+                    if(utilization.percent >= 90, do: "bg-warn", else: "bg-accent")
                   ]}
                   style={"width: #{utilization.percent}%"}
                 />
@@ -209,9 +215,9 @@ defmodule RengaWeb.VlanGroupLive do
               <.link
                 id={"vlan-group-#{group.id}-vlans"}
                 navigate={~p"/network/vlans?group_id=#{group.id}"}
-                class="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-orange-600 hover:text-orange-700"
+                class="mt-3 inline-flex min-h-tap items-center gap-1 rounded-sm text-sm font-medium text-link transition-colors hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
               >
-                View VLANs <.icon name="hero-arrow-right" class="size-3.5" />
+                View VLANs <.icon name="hero-arrow-right-mini" class="size-3.5" />
               </.link>
             </div>
           </article>
@@ -339,12 +345,26 @@ defmodule RengaWeb.VlanGroupLive do
     |> String.trim("-")
   end
 
-  defp status_class("active") do
-    "shrink-0 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"
-  end
+  # Lifecycle is health-like state, so it takes a status color paired with a
+  # shape (filled dot for active, ring otherwise) so it reads in grayscale.
+  attr :status, :string, required: true
 
-  defp status_class(_status) do
-    "shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold capitalize text-base-content/55"
+  defp group_status(assigns) do
+    ~H"""
+    <span class="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium capitalize text-fg-muted">
+      <span
+        aria-hidden="true"
+        class={[
+          "size-2 rounded-full",
+          if(@status == "active",
+            do: "bg-ok",
+            else: "border-[1.5px] border-unknown"
+          )
+        ]}
+      />
+      {@status}
+    </span>
+    """
   end
 
   attr :label, :string, required: true
@@ -353,18 +373,16 @@ defmodule RengaWeb.VlanGroupLive do
 
   defp summary_card(assigns) do
     ~H"""
-    <div class="rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm">
-      <div class="flex items-center gap-2 text-base-content/45">
+    <div class="rounded-lg border border-edge bg-surface px-5 py-4">
+      <div class="flex items-center gap-1.5 text-fg-subtle">
         <.icon name={@icon} class="size-4" />
-        <p class="text-xs font-semibold uppercase tracking-wider">{@label}</p>
+        <p class="text-xs font-medium text-fg-muted">{@label}</p>
       </div>
-      <p class="mt-3 text-2xl font-semibold tracking-tight">{@value}</p>
+      <p class="mt-2 font-mono text-xl font-semibold tabular-nums tracking-tight text-fg">
+        {@value}
+      </p>
     </div>
     """
-  end
-
-  defp input_class do
-    "h-10 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm font-medium outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
   end
 
   defp blank_to_nil(value) when value in [nil, ""], do: nil
