@@ -315,7 +315,7 @@ defmodule RengaWeb.CatalogLive do
       current_scope={@current_scope}
       active_nav={catalog_nav(@live_action)}
     >
-      <section id="catalog-browser" class="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+      <section id="catalog-browser" class="mx-auto max-w-6xl space-y-6">
         <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
@@ -705,13 +705,32 @@ defmodule RengaWeb.CatalogLive do
         </.button>
       </section>
 
-      <.revision_authoring_form
-        :if={@can_author_catalog and @authoring == :form}
-        form={@revision_form}
-        template_errors={@template_errors}
-        airflow_options={@airflow_options}
-        component_kind_options={@component_kind_options}
-      />
+      <%= if @can_author_catalog and @authoring == :form do %>
+        <section
+          id="revision-entry"
+          class="flex flex-wrap items-center gap-4 rounded-lg border border-edge bg-surface p-4"
+        >
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-fg">Publish an immutable revision</p>
+            <p class="text-xs text-fg-muted">
+              Capture dimensions, vendor specifications, and the component blueprint.
+            </p>
+          </div>
+          <.button
+            id="new-revision"
+            variant="primary"
+            phx-click={show_overlay("new-revision-panel")}
+          >
+            New revision
+          </.button>
+        </section>
+        <.revision_authoring_form
+          form={@revision_form}
+          template_errors={@template_errors}
+          airflow_options={@airflow_options}
+          component_kind_options={@component_kind_options}
+        />
+      <% end %>
 
       {render_slot(@inner_block)}
 
@@ -784,26 +803,15 @@ defmodule RengaWeb.CatalogLive do
   attr :airflow_options, :list, required: true
   attr :component_kind_options, :list, required: true
 
-  # Module types still publish in one step, so this form stays on the page
-  # beside the revisions it adds to; hardware types moved to drafts.
+  # Module types still publish in one step, but authoring belongs in a panel;
+  # hardware types use the longer-lived draft workflow instead.
   defp revision_authoring_form(assigns) do
     ~H"""
-    <section id="revision-authoring" class="rounded-lg border border-edge bg-surface px-5 py-4">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
-            Immutable release
-          </p>
-          <h2 class="mt-1 text-base font-semibold text-fg">Publish a revision</h2>
-          <p class="mt-0.5 max-w-2xl text-sm text-fg-muted">
-            Capture dimensions, vendor specifications, and the component blueprint. Published revisions cannot be edited.
-          </p>
-        </div>
-        <span class="w-fit rounded-full bg-sunken px-2.5 py-0.5 text-xs font-medium text-fg-muted">
-          Next revision
-        </span>
-      </div>
-
+    <.side_panel
+      id="new-revision-panel"
+      title="Publish a revision"
+      description="Published revisions are immutable and do not move existing resources automatically."
+    >
       <.form
         for={@form}
         id="new-revision-form"
@@ -811,7 +819,7 @@ defmodule RengaWeb.CatalogLive do
         phx-submit="publish_revision"
         aria-invalid={if(base_error_messages(@form) == [], do: nil, else: "true")}
         aria-describedby={if(base_error_messages(@form) == [], do: nil, else: "revision-form-errors")}
-        class="mt-5 space-y-5"
+        class="space-y-5"
       >
         <div
           :if={base_error_messages(@form) != []}
@@ -996,7 +1004,7 @@ defmodule RengaWeb.CatalogLive do
           </.button>
         </div>
       </.form>
-    </section>
+    </.side_panel>
     """
   end
 
