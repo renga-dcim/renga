@@ -75,6 +75,7 @@ defmodule RengaWeb.Browser.JobsTest do
 
     conn
     |> visit("/activity/jobs")
+    |> assert_has("body .phx-connected")
     |> assert_has("#jobs-load-older", text: "Load older jobs")
     |> refute_has("#job-#{oldest.id}-state")
     |> PhoenixTest.Playwright.click("#jobs-load-older")

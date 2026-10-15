@@ -1,6 +1,7 @@
 defmodule RengaWeb.IntakeAuth do
   @moduledoc """
-  Authenticates organization intake keys for the agent JSON API.
+  Authenticates organization intake keys for the agent JSON API and the
+  agent socket.
   """
 
   import Phoenix.Controller
@@ -15,14 +16,10 @@ defmodule RengaWeb.IntakeAuth do
 
   def call(conn, _opts) do
     with {:ok, token} <- bearer_token(conn),
-         {:ok, installation_id} <- installation_id(conn),
-         {:ok, %IntakeApiKey{organization: %Organization{} = organization} = key} <-
-           Inventory.authenticate_intake_api_key(token) do
-      # Before the payload is judged, so a rejected report still counts.
-      :ok = Inventory.record_intake_contact(key, installation_id)
-
+         {:ok, scope, installation_id, key} <-
+           authenticate(token, get_req_header(conn, "x-renga-installation-id")) do
       conn
-      |> assign(:current_scope, Accounts.scope_for(organization))
+      |> assign(:current_scope, scope)
       |> assign(:current_installation_id, installation_id)
       |> assign(:current_intake_api_key, key)
     else
@@ -34,6 +31,26 @@ defmodule RengaWeb.IntakeAuth do
     end
   end
 
+  @doc """
+  Checks an intake key and the installation ID an agent claims, given as the
+  values of its `x-renga-installation-id` header, and records the contact.
+  Every agent entry point authenticates through here, so they agree on what
+  a valid caller is.
+  """
+  def authenticate(token, installation_header) when is_binary(token) do
+    with {:ok, installation_id} <- installation_id(installation_header),
+         {:ok, %IntakeApiKey{organization: %Organization{} = organization} = key} <-
+           Inventory.authenticate_intake_api_key(token) do
+      # Before the payload is judged, so a rejected report still counts.
+      :ok = Inventory.record_intake_contact(key, installation_id)
+      {:ok, Accounts.scope_for(organization), installation_id, key}
+    else
+      _invalid -> :error
+    end
+  end
+
+  def authenticate(_token, _installation_header), do: :error
+
   defp bearer_token(conn) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] when token != "" -> {:ok, token}
@@ -41,12 +58,6 @@ defmodule RengaWeb.IntakeAuth do
     end
   end
 
-  defp installation_id(conn) do
-    with [installation_id] <- get_req_header(conn, "x-renga-installation-id"),
-         {:ok, normalized} <- Ecto.UUID.cast(installation_id) do
-      {:ok, normalized}
-    else
-      _missing_or_invalid -> :error
-    end
-  end
+  defp installation_id([installation_id]), do: Ecto.UUID.cast(installation_id)
+  defp installation_id(_missing_or_repeated), do: :error
 end

@@ -7,11 +7,17 @@ defmodule Renga.Jobs.Changes do
   changed; subscribers re-read through `Renga.Jobs`, which applies the usual
   scoping. Broadcasts happen after the change commits. Progress reports can
   arrive often, so subscribers should debounce.
+
+  It also tells a connected agent that work is waiting for it (RFD 9,
+  "Phoenix Channels notification"). That notice carries no job content: the
+  agent still leases over HTTPS, so a lost notice only delays the job until
+  the agent's next check-in.
   """
 
   alias Renga.Accounts.Scope
+  alias Renga.Jobs.Job
 
-  @deferred_key {__MODULE__, :deferred_organizations}
+  @deferred_key {__MODULE__, :deferred_notices}
 
   @doc "Subscribes the caller to its organization's job changes."
   def subscribe(%Scope{organization_id: organization_id}) when is_binary(organization_id) do
@@ -19,24 +25,38 @@ defmodule Renga.Jobs.Changes do
   end
 
   @doc """
+  Subscribes the caller to notices that jobs were queued for one agent. The
+  caller receives `{:jobs_waiting, agent_id}`.
+  """
+  def subscribe_waiting(organization_id, agent_id)
+      when is_binary(organization_id) and is_binary(agent_id) do
+    Phoenix.PubSub.subscribe(Renga.PubSub, waiting_topic(organization_id, agent_id))
+  end
+
+  @doc """
   Defers job notifications raised by `operation` until it returns a successful
   result. The outermost caller owns publication, so nested job transactions
-  cannot announce work that a surrounding transaction later rolls back.
+  cannot announce work that a surrounding transaction later rolls back. When
+  called from an otherwise-unwrapped transaction, notifications are suppressed;
+  callers that need them must wrap the outer transaction in `after_commit/1`.
   """
   def after_commit(operation) when is_function(operation, 0) do
-    case Process.get(@deferred_key) do
-      %MapSet{} ->
+    case {Process.get(@deferred_key), Renga.Repo.in_transaction?()} do
+      {%MapSet{}, _in_transaction?} ->
         operation.()
 
-      nil ->
+      {nil, true} ->
+        operation.()
+
+      {nil, false} ->
         Process.put(@deferred_key, MapSet.new())
 
         try do
           result = operation.()
-          organizations = Process.get(@deferred_key)
+          notices = Process.get(@deferred_key)
           Process.delete(@deferred_key)
 
-          if success?(result), do: Enum.each(organizations, &publish/1)
+          if success?(result), do: Enum.each(notices, &publish/1)
           result
         after
           Process.delete(@deferred_key)
@@ -53,22 +73,34 @@ defmodule Renga.Jobs.Changes do
 
   def broadcast(result, organization_id)
       when is_tuple(result) and elem(result, 0) == :ok and is_binary(organization_id) do
-    case Process.get(@deferred_key) do
-      %MapSet{} = organizations ->
-        Process.put(@deferred_key, MapSet.put(organizations, organization_id))
-
-      nil ->
-        unless Renga.Repo.in_transaction?(), do: publish(organization_id)
-    end
-
+    notify({:changed, organization_id})
     result
   end
 
   def broadcast(result, _organization_id), do: result
 
+  @doc """
+  Tells `job`'s agent that the job is waiting to be leased. Call it where a
+  job enters `queued`, inside an `after_commit/1` scope: the notice goes out
+  only once the surrounding operation succeeds, and is dropped inside a bare
+  transaction rather than announcing work that might roll back.
+  """
+  def job_queued(%Job{state: "queued", organization_id: organization_id, agent_id: agent_id}) do
+    notify({:waiting, organization_id, agent_id})
+  end
+
+  defp notify(notice) do
+    case Process.get(@deferred_key) do
+      %MapSet{} = notices -> Process.put(@deferred_key, MapSet.put(notices, notice))
+      nil -> unless Renga.Repo.in_transaction?(), do: publish(notice)
+    end
+
+    :ok
+  end
+
   defp success?(result), do: is_tuple(result) and elem(result, 0) == :ok
 
-  defp publish(organization_id) do
+  defp publish({:changed, organization_id}) do
     Phoenix.PubSub.broadcast(
       Renga.PubSub,
       topic(organization_id),
@@ -76,5 +108,16 @@ defmodule Renga.Jobs.Changes do
     )
   end
 
+  defp publish({:waiting, organization_id, agent_id}) do
+    Phoenix.PubSub.broadcast(
+      Renga.PubSub,
+      waiting_topic(organization_id, agent_id),
+      {:jobs_waiting, agent_id}
+    )
+  end
+
   defp topic(organization_id), do: "jobs:#{organization_id}"
+
+  defp waiting_topic(organization_id, agent_id),
+    do: "jobs_waiting:#{organization_id}:#{agent_id}"
 end

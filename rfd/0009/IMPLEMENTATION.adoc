@@ -46,6 +46,6 @@ Implements link:README.adoc[RFD 9: Durable jobs and agent capabilities].
 
 == Phase 5: Channels notification
 
-* [ ] Add an authenticated per-installation channel that pushes `jobs_waiting`
+* [x] Add an authenticated per-installation channel that pushes `jobs_waiting`
   and never carries job content.
-* [ ] Teach the agent to lease on notification and fall back to polling.
+* [x] Teach the agent to lease on notification and fall back to polling.
