@@ -54,8 +54,8 @@ export const Overlay = {
 
   updated() {
     // LiveView patches restore the server-rendered hidden classes. Keep an
-    // already-open overlay visible so validation errors remain actionable.
-    if (openOverlays.includes(this)) this.liveSocket.execJS(this.el, this.el.dataset.show)
+    // already-open overlay visible without replaying initial focus placement.
+    if (openOverlays.includes(this)) this.liveSocket.execJS(this.el, this.el.dataset.restore)
   },
 
   destroyed() {

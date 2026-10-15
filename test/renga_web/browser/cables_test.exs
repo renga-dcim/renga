@@ -99,6 +99,7 @@ defmodule RengaWeb.Browser.CablesTest do
   test "cable forms use panels and destructive actions use dialogs", context do
     first_option = "#{context.first_resource.name} / #{context.first.name}"
     third_option = "#{context.third_resource.name} / #{context.third.name}"
+    label_input = "#plan-cable-form input[name='plan[label]']"
 
     session =
       context.conn
@@ -116,9 +117,21 @@ defmodule RengaWeb.Browser.CablesTest do
       |> assert_has("#plan-cable-panel [role=dialog]")
       |> select_option("#plan_interface_a_id", first_option)
       |> select_option("#plan_interface_b_id", third_option)
-      |> fill_in("#plan-cable-form input[name='plan[label]']", "Label (optional)",
-        with: "browser-plan"
-      )
+      |> click(label_input)
+      |> press(":focus", "b")
+      |> assert_has("#{label_input}:focus[value='b']")
+      |> press(":focus", "r")
+      |> press(":focus", "o")
+      |> press(":focus", "w")
+      |> press(":focus", "s")
+      |> press(":focus", "e")
+      |> press(":focus", "r")
+      |> assert_has("#{label_input}:focus")
+      |> press(":focus", "End")
+      |> press(":focus", "-")
+      |> press(":focus", "p")
+      |> assert_has("#{label_input}:focus[value='browser-p']")
+      |> fill_in(label_input, "Label (optional)", with: "browser-plan")
       |> click("#plan-cable")
       |> assert_has("#flash-info", text: "Cable plan recorded")
       |> refute_has("#plan-cable-panel [role=dialog]")
