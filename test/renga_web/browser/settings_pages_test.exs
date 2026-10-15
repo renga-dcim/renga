@@ -94,7 +94,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     end
   end
 
-  test "collector details remain readable by scrolling and key controls are 44px in both dimensions",
+  test "collectors fit the screen without scrolling and key controls are 44px in both dimensions",
        %{conn: conn} do
     organization = organization_fixture()
     user = user_fixture()
@@ -135,14 +135,15 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     # The collector rows are in the static render; the create button is not
     # wired until the socket connects.
     |> assert_has("body .phx-connected")
-    |> assert_has("#collector-#{agent.source_id}", text: "67e55044…e0c8")
-    |> assert_has("#collector-inventory-#{agent.source_id}", text: "accepted")
+    |> assert_has("#collector-#{agent.source_id}", text: "Connected")
+    # At phone width the table drops its detail columns instead of scrolling
+    # (docs/design-system.md, "Overflow"); the name and connection stay.
     |> evaluate(
-      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].every(c => getComputedStyle(c).display !== 'none')",
+      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(0, 2).every(c => getComputedStyle(c).display !== 'none')",
       &assert(&1 == true)
     )
     |> evaluate(
-      "(() => { const table = document.querySelector('#collectors').closest('table'); const wrapper = table.parentElement; wrapper.scrollLeft = wrapper.scrollWidth; return table.querySelector('tbody tr:not(#collectors-empty) td:last-child').getBoundingClientRect().right <= wrapper.getBoundingClientRect().right; })()",
+      "(() => { const wrapper = document.querySelector('#collectors').closest('table').parentElement; return wrapper.scrollWidth <= wrapper.clientWidth; })()",
       &assert(&1 == true)
     )
     |> evaluate(@fits, &assert(&1 == true))

@@ -293,13 +293,15 @@ defmodule RengaWeb.InventoryOperationsLive do
           </div>
 
           <%!-- One line per collector, with times and counts inline after each
-                state. The table scrolls sideways instead of dropping columns:
-                there is no detail view, so a phone must still reach every
-                clock and the queue. --%>
+                state (docs/design-system.md, "Overflow"). As the table narrows
+                it drops the installation id (already in the name), then the
+                resource, jobs, queue and inventory; the name and connection
+                always stay. --%>
           <.table
             id="collectors"
             rows={@streams.sources}
-            class="rounded-lg border border-edge bg-surface [&_td]:whitespace-nowrap"
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
           >
             <:col :let={{_id, source}} label="Collector">
               <span class="font-medium">{source.name}</span>
@@ -307,17 +309,17 @@ defmodule RengaWeb.InventoryOperationsLive do
                 {collector_version(source)}
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Connection">
+            <:col :let={{_id, source}} label="Connection" class="w-40 @2xl:w-64">
               <span id={"collector-connection-#{source.id}"}>
                 <.collector_state_pill source={source} />
                 <span class="ml-1.5 font-mono text-xs text-fg-muted">
-                  {collector_lease_expiry(source)} · contact {format_time(
-                    collector_agent(source).last_contacted_at
+                  contact {format_time(collector_agent(source).last_contacted_at)} · {collector_lease_expiry(
+                    source
                   )}
                 </span>
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Resource">
+            <:col :let={{_id, source}} label="Resource" class="w-40" hide_below="5xl">
               <.link
                 :if={Map.get(@resource_by_source, source.id)}
                 navigate={~p"/inventory/#{Map.fetch!(@resource_by_source, source.id).id}"}
@@ -336,16 +338,17 @@ defmodule RengaWeb.InventoryOperationsLive do
             <:col
               :let={{_id, source}}
               label="Installation"
-              class="font-mono text-xs text-fg-muted"
+              class="w-32 font-mono text-xs text-fg-muted"
+              hide_below="5xl"
             >
               {short_installation_id(collector_agent(source).installation_id)}
             </:col>
-            <:col :let={{_id, source}} label="Inventory">
+            <:col :let={{_id, source}} label="Inventory" class="w-64" hide_below="xl">
               <span id={"collector-inventory-#{source.id}"}>
                 <.collector_inventory clocks={Map.get(@clocks_by_source, source.id)} />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Accepts jobs">
+            <:col :let={{_id, source}} label="Accepts jobs" class="w-32" hide_below="4xl">
               <span id={"collector-jobs-#{source.id}"}>
                 <.collector_jobs
                   id={"collector-jobs-#{source.id}-list"}
@@ -353,7 +356,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Delivery queue">
+            <:col :let={{_id, source}} label="Delivery queue" class="w-36" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
                 <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
               </span>
