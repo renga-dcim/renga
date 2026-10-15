@@ -131,7 +131,7 @@ defmodule RengaWeb.CableLive do
       current_scope={@current_scope}
       active_nav={:cables}
     >
-      <main id="cables" class="mx-auto max-w-6xl space-y-6">
+      <main id="cables" class="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
         <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 class="text-xl font-semibold tracking-tight text-fg">Cables</h1>
