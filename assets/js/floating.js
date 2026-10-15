@@ -68,7 +68,10 @@ export function installFloating(doc = document, win = window) {
   const syncClipFocus = target => {
     if (!target.matches("[data-clip-focus]")) return
 
-    target.tabIndex = !focusOwner(target) && clipped(target) ? 0 : -1
+    // Native controls keep their ordinary tab stop even when their label
+    // fits. Passive clipped text joins the tab order only when it needs a
+    // reveal interaction.
+    target.tabIndex = target.matches(FOCUS_OWNER_SELECTOR) || (!focusOwner(target) && clipped(target)) ? 0 : -1
   }
 
   const resizeObserver =
@@ -202,9 +205,9 @@ export function installFloating(doc = document, win = window) {
       }
     }
 
-    // The row keeps its ordinary click behavior while text fits. A clipped
-    // value owns this click instead so touch reveals it rather than navigating.
-    if (event.type === "click") event.stopPropagation()
+    // A passive clipped value owns the click instead of its row. Native
+    // controls must keep bubbling so LiveView can perform live navigation.
+    if (event.type === "click" && !target.matches(FOCUS_OWNER_SELECTOR)) event.stopPropagation()
 
     target.focus({preventScroll: true})
     show(target)

@@ -54,6 +54,17 @@ defmodule RengaWeb.Browser.CablesTest do
 
     [cable] = Topology.list_cables(scope)
 
+    {_short_resource, short_first} = interface_fixture(scope, "a", "b")
+    {_short_second_resource, short_second} = interface_fixture(scope, "c", "d")
+
+    {:ok, _assertion} =
+      Topology.assert_cable(scope, %{
+        interface_a_id: short_first.id,
+        interface_b_id: short_second.id
+      })
+
+    short_cable = Enum.find(Topology.list_cables(scope), &(&1.id != cable.id))
+
     conn =
       add_session_cookie(
         conn,
@@ -72,13 +83,22 @@ defmodule RengaWeb.Browser.CablesTest do
       first: first,
       first_resource: first_resource,
       scope: scope,
+      short_cable: short_cable,
+      short_first: short_first,
       third: third,
       third_resource: third_resource
     }
   end
 
   test "a clipped endpoint reveals its full identity and keeps resource navigation", context do
-    endpoint = "#cable-#{context.cable.id}-first-endpoint"
+    endpoint_side =
+      if context.cable.interface_a.id == context.first.id, do: "first", else: "second"
+
+    short_endpoint_side =
+      if context.short_cable.interface_a.id == context.short_first.id, do: "first", else: "second"
+
+    endpoint = "#cable-#{context.cable.id}-#{endpoint_side}-endpoint"
+    short_endpoint = "#cable-#{context.short_cable.id}-#{short_endpoint_side}-endpoint"
 
     session =
       context.conn
@@ -91,6 +111,37 @@ defmodule RengaWeb.Browser.CablesTest do
       |> evaluate(
         "new Promise(resolve => setTimeout(() => resolve(document.querySelector(#{Jason.encode!(endpoint)}).tabIndex), 500))",
         &assert(&1 == 0)
+      )
+      |> evaluate(
+        """
+        (() => {
+          const el = document.querySelector(#{Jason.encode!(short_endpoint)})
+          return {fits: el.scrollWidth === el.clientWidth, tab_index: el.tabIndex}
+        })()
+        """,
+        &assert(&1 == %{"fits" => true, "tab_index" => 0})
+      )
+      |> evaluate(
+        """
+        new Promise(resolve => {
+          const el = document.querySelector(#{Jason.encode!(short_endpoint)})
+          el.style.width = '1px'
+          el.style.maxWidth = '1px'
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve({clipped: el.scrollWidth > el.clientWidth, tab_index: el.tabIndex})))
+        })
+        """,
+        &assert(&1 == %{"clipped" => true, "tab_index" => 0})
+      )
+      |> evaluate(
+        """
+        new Promise(resolve => {
+          const el = document.querySelector(#{Jason.encode!(short_endpoint)})
+          el.style.width = ''
+          el.style.maxWidth = ''
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve({fits: el.scrollWidth === el.clientWidth, tab_index: el.tabIndex})))
+        })
+        """,
+        &assert(&1 == %{"fits" => true, "tab_index" => 0})
       )
       |> hover(endpoint)
       |> evaluate(
@@ -118,12 +169,14 @@ defmodule RengaWeb.Browser.CablesTest do
         """,
         &assert(&1["clipped_ancestor"] == false && &1["ring"] != "none")
       )
+      |> evaluate("window.__cableLiveNavigation = 'kept'")
 
     session
     |> touch(endpoint)
     |> click(endpoint)
     |> assert_path("/inventory/#{context.first_resource.id}")
     |> assert_has("body .phx-connected")
+    |> evaluate("window.__cableLiveNavigation", &assert(&1 == "kept"))
   end
 
   test "cable forms use panels and destructive actions use dialogs", context do
