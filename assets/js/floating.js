@@ -45,6 +45,8 @@ export function installFloating(doc = document, win = window) {
   let tooltip = null
   let pending = null
   let timer = null
+  let touchRevealed = null
+  let suppressedTouchClick = null
 
   const clipAt = node => (node instanceof win.Element ? node.closest("[data-clip]") : null)
 
@@ -172,6 +174,16 @@ export function installFloating(doc = document, win = window) {
 
   const activateClip = event => {
     const target = clipAt(event.target)
+
+    // The first touch on a clipped link reveals its full label without
+    // navigating; a second touch keeps the link's normal behavior.
+    if (event.type === "click" && target && target === suppressedTouchClick) {
+      suppressedTouchClick = null
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+
     if (
       !target?.matches("[data-clip-focus]") ||
       focusOwner(target) ||
@@ -179,6 +191,15 @@ export function installFloating(doc = document, win = window) {
       !clipped(target)
     ) {
       return
+    }
+
+    if (event.type === "pointerup" && event.pointerType === "touch" && target.matches("a[href]")) {
+      if (touchRevealed === target) {
+        touchRevealed = null
+      } else {
+        touchRevealed = target
+        suppressedTouchClick = target
+      }
     }
 
     // The row keeps its ordinary click behavior while text fits. A clipped

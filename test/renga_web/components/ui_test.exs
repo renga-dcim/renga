@@ -199,6 +199,7 @@ defmodule RengaWeb.UITest do
         >
           <:col :let={item} label="Name">{item.name}</:col>
           <:col :let={item} label="Detail" class="w-40" hide_below="3xl">{item.detail}</:col>
+          <:col :let={item} label="Custom" clip={false}><span data-custom>{item.name}</span></:col>
         </.table>
         """)
 
@@ -208,6 +209,8 @@ defmodule RengaWeb.UITest do
       refute present?(html, "#item-1 td:first-child a [data-clip-focus]")
       assert attr_of(html, "#item-1 td:nth-child(2) [data-clip-focus]", "tabindex") == ["-1"]
       refute present?(html, "#item-1 td:nth-child(2) [data-clip-focus][phx-click]")
+      assert present?(html, "#item-1 td:nth-child(3) [data-custom]")
+      refute present?(html, "#item-1 td:nth-child(3) > [data-clip]")
       assert attr_of(html, "#item-1 td:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       assert attr_of(html, "thead th:nth-child(2)", "class") |> hd() =~ "hidden @3xl:table-cell"
       refute attr_of(html, "thead th:first-child", "class") |> hd() =~ "hidden"

@@ -505,6 +505,8 @@ defmodule RengaWeb.CoreComponents do
     attr :label, :string
     attr :class, :any
 
+    attr :clip, :boolean, doc: "set false when the slot owns its clipping and reveal controls"
+
     attr :hide_below, :string,
       doc: "with overflow=\"clip\", hide the column below this container size (sm to 5xl)"
   end
@@ -561,7 +563,11 @@ defmodule RengaWeb.CoreComponents do
               scope="col"
               class={[
                 "px-cell font-medium",
-                @overflow == "clip" && ["truncate", hide_below(col[:hide_below])],
+                @overflow == "clip" &&
+                  [
+                    col[:clip] != false && "truncate",
+                    hide_below(col[:hide_below])
+                  ],
                 col[:class]
               ]}
             >
@@ -658,7 +664,9 @@ defmodule RengaWeb.CoreComponents do
           aria-controls={@row_expanded && @row_id && "#{@row_id.(@row)}-details"}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal={false}>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         </.link>
         <.link
           :if={index == 0 && @row_navigate && !@row_patch}
@@ -666,10 +674,14 @@ defmodule RengaWeb.CoreComponents do
           navigate={@row_navigate.(@row)}
           class="flex min-h-[max(var(--rg-row-h)-1px,var(--rg-tap-min))] items-center rounded-sm focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
         >
-          <.cell overflow={@overflow} reveal={false}>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal={false}>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         </.link>
         <%= if !(index == 0 && (@row_navigate || @row_patch)) do %>
-          <.cell overflow={@overflow} reveal>{render_slot(col, @row_item.(@row))}</.cell>
+          <.cell overflow={@overflow} clip={col[:clip] != false} reveal>
+            {render_slot(col, @row_item.(@row))}
+          </.cell>
         <% end %>
       </td>
       <td :if={@action != []} class="w-0 px-cell font-medium">
@@ -684,10 +696,11 @@ defmodule RengaWeb.CoreComponents do
   end
 
   attr :overflow, :string, required: true
+  attr :clip, :boolean, required: true
   attr :reveal, :boolean, required: true
   slot :inner_block, required: true
 
-  defp cell(%{overflow: "clip"} = assigns) do
+  defp cell(%{overflow: "clip", clip: true} = assigns) do
     ~H"""
     <span
       data-clip

@@ -199,11 +199,11 @@ defmodule RengaWeb.CableLive do
             overflow="clip"
             class="rounded-lg border border-edge bg-surface"
           >
-            <:col :let={cable} label="First endpoint">
-              <.endpoint_link interface={cable.interface_a} />
+            <:col :let={cable} label="First endpoint" clip={false}>
+              <.endpoint id={"cable-#{cable.id}-first-endpoint"} interface={cable.interface_a} />
             </:col>
-            <:col :let={cable} label="Second endpoint">
-              <.endpoint_link interface={cable.interface_b} />
+            <:col :let={cable} label="Second endpoint" clip={false}>
+              <.endpoint id={"cable-#{cable.id}-second-endpoint"} interface={cable.interface_b} />
             </:col>
             <:col :let={cable} label="Type" class="w-28 text-fg-muted" hide_below="xl">
               <span data-cable-type={cable.cable_type}>{cable.cable_type || "—"}</span>
@@ -268,11 +268,11 @@ defmodule RengaWeb.CableLive do
             overflow="clip"
             class="rounded-lg border border-edge bg-surface"
           >
-            <:col :let={plan} label="First endpoint">
-              <.endpoint_link interface={plan.interface_a} />
+            <:col :let={plan} label="First endpoint" clip={false}>
+              <.endpoint id={"plan-#{plan.id}-first-endpoint"} interface={plan.interface_a} />
             </:col>
-            <:col :let={plan} label="Second endpoint">
-              <.endpoint_link interface={plan.interface_b} />
+            <:col :let={plan} label="Second endpoint" clip={false}>
+              <.endpoint id={"plan-#{plan.id}-second-endpoint"} interface={plan.interface_b} />
             </:col>
             <:col :let={plan} label="Type" class="w-28 text-fg-muted" hide_below="xl">
               {plan.cable_type || "—"}
@@ -460,19 +460,21 @@ defmodule RengaWeb.CableLive do
 
   defp claim_mark(_assertion), do: "size-2 shrink-0 rounded-full bg-ok"
 
+  attr :id, :string, required: true
   attr :interface, :any, required: true
 
   # The interface name is the primary value and the device a secondary one,
   # so the device is cut first when the cell is narrow.
-  defp endpoint_link(assigns) do
+  defp endpoint(assigns) do
     ~H"""
     <.link
+      id={@id}
       navigate={~p"/inventory/#{@interface.resource_id}"}
-      class="flex min-h-tap min-w-0 max-w-full items-center rounded-sm transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+      data-clip
+      data-clip-focus
+      class="block min-h-tap min-w-0 max-w-full content-center truncate rounded-sm font-mono font-medium text-fg transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
     >
-      <.clip class="font-mono font-medium text-fg">
-        {@interface.name}<span class="font-sans text-xs font-normal text-fg-muted">{" · "}{@interface.resource.name}</span>
-      </.clip>
+      {@interface.name}<span class="font-sans text-xs font-normal text-fg-muted">{" · "}{@interface.resource.name}</span>
     </.link>
     """
   end

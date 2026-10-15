@@ -13,7 +13,11 @@ defmodule RengaWeb.Browser.CablesTest do
   alias Renga.Topology
 
   @moduletag :playwright
-  @moduletag browser_context_opts: [viewport: %{width: 390, height: 844}]
+  @moduletag browser_context_opts: [
+               has_touch: true,
+               is_mobile: true,
+               viewport: %{width: 390, height: 844}
+             ]
 
   @tooltip """
   new Promise(resolve => setTimeout(() => {
@@ -74,26 +78,52 @@ defmodule RengaWeb.Browser.CablesTest do
   end
 
   test "a clipped endpoint reveals its full identity and keeps resource navigation", context do
-    endpoint =
-      "#cable-#{context.cable.id} a[href='/inventory/#{context.first_resource.id}'] [data-clip]"
+    endpoint = "#cable-#{context.cable.id}-first-endpoint"
 
-    context.conn
-    |> visit("/network/cables")
-    |> assert_has("body .phx-connected")
-    |> evaluate(
-      "document.querySelector(#{Jason.encode!(endpoint)}).scrollWidth > document.querySelector(#{Jason.encode!(endpoint)}).clientWidth",
-      &assert(&1 == true)
-    )
-    |> hover(endpoint)
-    |> evaluate(
-      @tooltip,
-      &assert(
-        &1 =~
-          "forty-gigabit-ethernet-0/0/48 · core-distribution-switch-building-a-floor-twenty-two"
+    session =
+      context.conn
+      |> visit("/network/cables")
+      |> assert_has("body .phx-connected")
+      |> evaluate(
+        "document.querySelector(#{Jason.encode!(endpoint)}).scrollWidth > document.querySelector(#{Jason.encode!(endpoint)}).clientWidth",
+        &assert(&1 == true)
       )
-    )
+      |> evaluate(
+        "new Promise(resolve => setTimeout(() => resolve(document.querySelector(#{Jason.encode!(endpoint)}).tabIndex), 500))",
+        &assert(&1 == 0)
+      )
+      |> hover(endpoint)
+      |> evaluate(
+        @tooltip,
+        &assert(
+          &1 =~
+            "forty-gigabit-ethernet-0/0/48 · core-distribution-switch-building-a-floor-twenty-two"
+        )
+      )
+      |> tab_until(endpoint)
+      |> assert_has("#{endpoint}:focus")
+      |> evaluate(@tooltip, &assert(&1 =~ "forty-gigabit-ethernet-0/0/48"))
+      |> press(":focus", "Escape")
+      |> touch(endpoint)
+      |> evaluate(@tooltip, &assert(&1 =~ "core-distribution-switch-building-a-floor-twenty-two"))
+      |> dispatch_click(endpoint)
+      |> assert_path("/network/cables")
+      |> assert_has("#{endpoint}:focus")
+      |> evaluate(
+        """
+        (() => {
+          const link = document.querySelector(#{Jason.encode!(endpoint)})
+          return {clipped_ancestor: Boolean(link.parentElement.closest('[data-clip]')), ring: getComputedStyle(link).boxShadow}
+        })()
+        """,
+        &assert(&1["clipped_ancestor"] == false && &1["ring"] != "none")
+      )
+
+    session
+    |> touch(endpoint)
     |> click(endpoint)
     |> assert_path("/inventory/#{context.first_resource.id}")
+    |> assert_has("body .phx-connected")
   end
 
   test "cable forms use panels and destructive actions use dialogs", context do
@@ -151,6 +181,46 @@ defmodule RengaWeb.Browser.CablesTest do
   defp hover(conn, selector) do
     unwrap(conn, fn %{frame_id: frame_id} ->
       assert {:ok, _} = PlaywrightEx.Frame.hover(frame_id, selector: selector, timeout: 2000)
+    end)
+  end
+
+  defp touch(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      for type <- ~w(pointerdown pointerup) do
+        assert {:ok, _} =
+                 PlaywrightEx.Frame.dispatch_event(frame_id,
+                   selector: selector,
+                   type: type,
+                   event_init: %{pointerType: "touch", bubbles: true},
+                   timeout: 2000
+                 )
+      end
+    end)
+  end
+
+  defp dispatch_click(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      assert {:ok, _} =
+               PlaywrightEx.Frame.dispatch_event(frame_id,
+                 selector: selector,
+                 type: "click",
+                 event_init: %{bubbles: true},
+                 timeout: 2000
+               )
+    end)
+  end
+
+  defp tab_until(session, selector) do
+    Enum.reduce_while(1..80, session, fn _, session ->
+      session = press(session, "body", "Tab")
+
+      session
+      |> evaluate("document.activeElement.matches(#{Jason.encode!(selector)})", fn reached? ->
+        send(self(), {:focus_reached, reached?})
+      end)
+
+      reached? = receive do: ({:focus_reached, reached?} -> reached?)
+      if reached?, do: {:halt, session}, else: {:cont, session}
     end)
   end
 
