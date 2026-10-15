@@ -50,13 +50,13 @@ defmodule RengaWeb.CableLiveTest do
     assert has_element?(view, "#cable-plans")
     assert has_element?(view, "#cable-claims")
 
-    assert has_element?(view, "#cable-#{cable.id}[data-cable-type='cat6a']")
+    assert has_element?(view, "#cable-#{cable.id} [data-cable-type='cat6a']")
     assert has_element?(view, "#cable-#{cable.id}", "uplink")
     assert has_element?(view, "#cable-#{cable.id}", "connected")
 
-    assert has_element?(view, "#plan-#{plan.id}[data-plan-status='planned']")
-    assert has_element?(view, "#claim-#{assertion.id}[data-claim-kind='operator']")
-    assert has_element?(view, "#claim-#{assertion.id}[data-claim-action='assert']")
+    assert has_element?(view, "#plan-#{plan.id} [data-plan-status='planned']")
+    assert has_element?(view, "#claim-#{assertion.id} [data-claim-kind='operator']")
+    assert has_element?(view, "#claim-#{assertion.id} [data-claim-action='assert']")
 
     # Manager controls are offered, but the context remains the authorization boundary.
     assert has_element?(view, "#assert-cable-form")

@@ -131,168 +131,150 @@ defmodule RengaWeb.CableLive do
       current_scope={@current_scope}
       active_nav={:cables}
     >
-      <main id="cables" class="space-y-7">
-        <header class="flex flex-col gap-5 border-b border-base-content/10 pb-7 lg:flex-row lg:items-end lg:justify-between">
+      <main id="cables" class="mx-auto max-w-6xl space-y-6">
+        <header class="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
-              Layer 2 inventory
-            </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-tight">Cables</h1>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/55">
+            <h1 class="text-xl font-semibold tracking-tight text-fg">Cables</h1>
+            <p class="mt-1 max-w-2xl text-sm text-fg-muted">
               Desired plans, attributed claims, and the reconciled current cable stay separate.
               Neighbor evidence can propose a claim but never creates cabling.
             </p>
           </div>
-          <div :if={@interface} class="flex flex-col items-start gap-2 lg:items-end">
-            <span class="inline-flex items-center gap-2 rounded-lg border border-base-content/15 bg-base-100 px-3 py-2 text-xs font-medium">
-              <.icon name="hero-funnel" class="size-3.5 text-base-content/55" />
-              <span class="font-mono">{@interface.name}</span>
-              <span class="text-base-content/55">· {@interface_resource.name}</span>
+          <div :if={@interface} class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex h-control items-center gap-1.5 rounded-md border border-edge bg-surface px-2.5 text-xs text-fg">
+              <.icon name="hero-funnel-mini" class="size-3.5 text-fg-subtle" />
+              <span class="font-mono font-medium">{@interface.name}</span>
+              <span class="text-fg-muted">· {@interface_resource.name}</span>
             </span>
-            <.link
+            <.button
               id="cables-clear-interface"
+              variant="ghost"
+              size="sm"
               navigate={~p"/network/cables"}
-              class="inline-flex items-center gap-1 text-xs font-medium text-base-content/55 transition hover:text-orange-600"
             >
-              <.icon name="hero-x-mark" class="size-3.5" /> Clear interface filter
-            </.link>
+              <.icon name="hero-x-mark-mini" class="size-3.5" /> Clear interface filter
+            </.button>
           </div>
         </header>
 
         <section class="grid gap-3 sm:grid-cols-3">
-          <.summary_card label="Current cables" value={@cable_count} icon="hero-link" />
-          <.summary_card label="Planned cables" value={@plan_count} icon="hero-map" />
-          <.summary_card label="Claims" value={@assertion_count} icon="hero-document-check" />
+          <.summary_card label="Current cables" value={@cable_count} icon="hero-link-mini" />
+          <.summary_card label="Planned cables" value={@plan_count} icon="hero-map-mini" />
+          <.summary_card
+            label="Claims"
+            value={@assertion_count}
+            icon="hero-document-check-mini"
+          />
         </section>
 
-        <section
-          id="current-cables"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="font-semibold tracking-tight">Current cables</h2>
-              <p class="mt-1 text-xs text-base-content/55">
-                Reconciled from confirmed claims. Each endpoint carries at most one current cable.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-              Confirmed
-            </span>
-          </div>
-
-          <ul id="cables-list" phx-update="stream" class="mt-5 space-y-3">
-            <li
-              id="cables-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
+        <section id="current-cables" class="space-y-2">
+          <.section_heading
+            title="Current cables"
+            tag="Confirmed"
+            description="Reconciled from confirmed claims. Each endpoint carries at most one current cable."
+          />
+          <.table
+            id="cables-list"
+            rows={@streams.cables}
+            row_item={fn {_id, cable} -> cable end}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={cable} label="First endpoint">
+              <.endpoint_link interface={cable.interface_a} />
+            </:col>
+            <:col :let={cable} label="Second endpoint">
+              <.endpoint_link interface={cable.interface_b} />
+            </:col>
+            <:col :let={cable} label="Type" class="w-28 text-fg-muted" hide_below="xl">
+              <span data-cable-type={cable.cable_type}>{cable.cable_type || "—"}</span>
+            </:col>
+            <:col :let={cable} label="Details" class="text-xs text-fg-muted" hide_below="3xl">
+              <span :if={cable.color} class="mr-2 inline-flex items-center gap-1.5">
+                <span
+                  class="inline-block size-3 rounded-full border border-edge"
+                  style={"background-color: #{cable.color}"}
+                />
+                {cable.color}
+              </span>
+              <span :if={cable.length_value} class="mr-2">
+                {format_length(cable.length_value, cable.length_unit)}
+              </span>
+              <span :if={cable.label}>“{cable.label}”</span>
+            </:col>
+            <:col
+              :let={cable}
+              label="Asserted"
+              class="w-40 font-mono text-xs text-fg-muted"
+              hide_below="4xl"
             >
-              No current cable is confirmed in this view.
-            </li>
-            <li
-              :for={{dom_id, cable} <- @streams.cables}
-              id={dom_id}
-              data-cable-type={cable.cable_type}
-              class="rounded-xl bg-base-200/60 px-4 py-4"
-            >
-              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div class="min-w-0 space-y-2">
-                  <p class="flex flex-wrap items-center gap-2 text-sm">
-                    <.endpoint_link interface={cable.interface_a} />
-                    <.icon name="hero-link" class="size-3.5 shrink-0 text-base-content/50" />
-                    <.endpoint_link interface={cable.interface_b} />
-                  </p>
-                  <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/55">
-                    <span :if={cable.color} class="inline-flex items-center gap-1.5">
-                      <span
-                        class="inline-block size-3 rounded-full border border-base-content/15"
-                        style={"background-color: #{cable.color}"}
-                      />
-                      {cable.color}
-                    </span>
-                    <span :if={cable.cable_type}>{cable.cable_type}</span>
-                    <span :if={cable.length_value}>
-                      {format_length(cable.length_value, cable.length_unit)}
-                    </span>
-                    <span :if={cable.label}>“{cable.label}”</span>
-                    <span>asserted {format_time(cable.last_asserted_at)}</span>
-                  </p>
-                </div>
-                <div class="flex shrink-0 items-center gap-2 self-start">
-                  <span class={status_class(cable.status)}>{cable.status}</span>
-                  <button
-                    :if={@can_manage?}
-                    id={"retract-cable-#{cable.id}"}
-                    type="button"
-                    phx-click="retract_cable"
-                    phx-value-id={cable.id}
-                    data-confirm="Retract this cable and release its endpoints?"
-                    class="rounded-lg border border-rose-500/30 px-3 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-500/10"
-                  >
-                    Retract
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ul>
+              {format_time(cable.last_asserted_at)}
+            </:col>
+            <:col :let={cable} label="Status" class="w-32">
+              <.state_label status={cable.status} />
+            </:col>
+            <:action :let={cable} :if={@can_manage?}>
+              <.button
+                id={"retract-cable-#{cable.id}"}
+                type="button"
+                size="sm"
+                phx-click="retract_cable"
+                phx-value-id={cable.id}
+                data-confirm="Retract this cable and release its endpoints?"
+                aria-label={"Retract cable #{cable.interface_a.name} to #{cable.interface_b.name}"}
+              >
+                Retract
+              </.button>
+            </:action>
+            <:empty>No current cable is confirmed in this view.</:empty>
+          </.table>
         </section>
 
-        <section
-          id="cable-plans"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="font-semibold tracking-tight">Cable plans</h2>
-              <p class="mt-1 text-xs text-base-content/55">
-                Desired connectivity only. A plan never reserves an endpoint and can disagree
-                with current cabling without replacing it.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-700 dark:text-sky-400">
-              Desired
-            </span>
-          </div>
-
-          <ul id="plans-list" phx-update="stream" class="mt-5 space-y-3">
-            <li
-              id="plans-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
-            >
-              No cable plan recorded in this view.
-            </li>
-            <li
-              :for={{dom_id, plan} <- @streams.plans}
-              id={dom_id}
-              data-plan-status={plan.status}
-              class="flex flex-col gap-3 rounded-xl bg-base-200/60 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div class="min-w-0 space-y-2">
-                <p class="flex flex-wrap items-center gap-2 text-sm">
-                  <.endpoint_link interface={plan.interface_a} />
-                  <.icon name="hero-arrow-right" class="size-3.5 shrink-0 text-base-content/50" />
-                  <.endpoint_link interface={plan.interface_b} />
-                </p>
-                <p class="flex flex-wrap items-center gap-2 text-xs text-base-content/55">
-                  <span :if={plan.cable_type}>{plan.cable_type}</span>
-                  <span :if={plan.label}>“{plan.label}”</span>
-                </p>
-              </div>
-              <div class="flex shrink-0 items-center gap-2 self-start sm:self-auto">
-                <span class={status_class(plan.status)}>{plan.status}</span>
-                <button
-                  :if={@can_manage?}
-                  id={"delete-plan-#{plan.id}"}
-                  type="button"
-                  phx-click="delete_plan"
-                  phx-value-id={plan.id}
-                  data-confirm="Remove this cable plan?"
-                  class="rounded-lg border border-base-content/15 px-3 py-1.5 text-xs font-semibold text-base-content/60 transition hover:border-rose-500/40 hover:text-rose-600"
-                >
-                  Remove
-                </button>
-              </div>
-            </li>
-          </ul>
+        <section id="cable-plans" class="space-y-2">
+          <.section_heading
+            title="Cable plans"
+            tag="Desired"
+            description="Desired connectivity only. A plan never reserves an endpoint and can disagree with current cabling without replacing it."
+          />
+          <.table
+            id="plans-list"
+            rows={@streams.plans}
+            row_item={fn {_id, plan} -> plan end}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={plan} label="First endpoint">
+              <.endpoint_link interface={plan.interface_a} />
+            </:col>
+            <:col :let={plan} label="Second endpoint">
+              <.endpoint_link interface={plan.interface_b} />
+            </:col>
+            <:col :let={plan} label="Type" class="w-28 text-fg-muted" hide_below="xl">
+              {plan.cable_type || "—"}
+            </:col>
+            <:col :let={plan} label="Label" class="text-fg-muted" hide_below="3xl">
+              {plan.label || "—"}
+            </:col>
+            <:col :let={plan} label="Status" class="w-32">
+              <span data-plan-status={plan.status}>
+                <.state_label status={plan.status} />
+              </span>
+            </:col>
+            <:action :let={plan} :if={@can_manage?}>
+              <.button
+                id={"delete-plan-#{plan.id}"}
+                type="button"
+                size="sm"
+                phx-click="delete_plan"
+                phx-value-id={plan.id}
+                data-confirm="Remove this cable plan?"
+                aria-label={"Remove cable plan #{plan.interface_a.name} to #{plan.interface_b.name}"}
+              >
+                Remove
+              </.button>
+            </:action>
+            <:empty>No cable plan recorded in this view.</:empty>
+          </.table>
         </section>
 
         <div :if={@can_manage?} class="grid gap-4 xl:grid-cols-2">
@@ -318,53 +300,82 @@ defmodule RengaWeb.CableLive do
           />
         </div>
 
-        <section
-          id="cable-claims"
-          class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="font-semibold tracking-tight">Cable claims</h2>
-              <p class="mt-1 text-xs text-base-content/55">
-                Append-only attributed claims, newest first. Proposals from neighbor evidence are
-                listed here but never reconcile into current cabling.
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
-              History
-            </span>
-          </div>
-
-          <ul id="claims-list" phx-update="stream" class="mt-5 space-y-2">
-            <li
-              id="claims-empty"
-              class="hidden rounded-xl border border-dashed border-base-content/15 p-6 text-center text-sm text-base-content/55 only:block"
-            >
-              No cable claim recorded in this view.
-            </li>
-            <li
-              :for={{dom_id, assertion} <- @streams.assertions}
-              id={dom_id}
-              data-claim-kind={assertion.kind}
-              data-claim-action={assertion.action}
-              class="flex flex-col gap-2 rounded-xl bg-base-200/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div class="flex min-w-0 flex-wrap items-center gap-2 text-xs">
-                <span class={claim_class(assertion)}>{claim_label(assertion)}</span>
-                <span class="font-mono text-base-content/60">
-                  {endpoint_names(assertion)}
-                </span>
-              </div>
-              <span class="shrink-0 self-start font-mono text-xs text-base-content/55 sm:self-auto">
-                {format_time(assertion.asserted_at)}
+        <section id="cable-claims" class="space-y-2">
+          <.section_heading
+            title="Cable claims"
+            tag="History"
+            description="Append-only attributed claims, newest first. Proposals from neighbor evidence are listed here but never reconcile into current cabling."
+          />
+          <.table
+            id="claims-list"
+            rows={@streams.assertions}
+            row_item={fn {_id, assertion} -> assertion end}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={assertion} label="Claim" class="w-48">
+              <span
+                data-claim-kind={assertion.kind}
+                data-claim-action={assertion.action}
+                class="inline-flex items-center gap-1.5"
+              >
+                <span class={claim_mark(assertion)} aria-hidden="true" />
+                {claim_label(assertion)}
               </span>
-            </li>
-          </ul>
+            </:col>
+            <:col :let={assertion} label="Endpoints" class="font-mono text-fg-muted">
+              {endpoint_names(assertion)}
+            </:col>
+            <:col
+              :let={assertion}
+              label="Asserted"
+              class="w-40 font-mono text-xs text-fg-muted"
+              hide_below="xl"
+            >
+              {format_time(assertion.asserted_at)}
+            </:col>
+            <:empty>No cable claim recorded in this view.</:empty>
+          </.table>
         </section>
       </main>
     </Layouts.app>
     """
   end
+
+  attr :title, :string, required: true
+  attr :tag, :string, required: true
+  attr :description, :string, required: true
+
+  defp section_heading(assigns) do
+    ~H"""
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h2 class="text-sm font-semibold text-fg">{@title}</h2>
+        <p class="mt-0.5 max-w-3xl text-xs text-fg-muted">{@description}</p>
+      </div>
+      <span class="shrink-0 rounded-sm border border-edge bg-sunken px-1.5 text-[11px] font-medium text-fg-muted">
+        {@tag}
+      </span>
+    </div>
+    """
+  end
+
+  # Status pairs a color with a shape (docs/design-system.md, "Status"): a
+  # filled dot for a connected cable, a ring for planned or anything else.
+  attr :status, :string, required: true
+
+  defp state_label(assigns) do
+    ~H"""
+    <span class="inline-flex items-center gap-1.5 capitalize text-fg">
+      <span class={state_mark(@status)} aria-hidden="true" />
+      {@status}
+    </span>
+    """
+  end
+
+  defp state_mark("connected"), do: "size-2 shrink-0 rounded-full bg-ok"
+  defp state_mark("planned"), do: "size-2 shrink-0 rounded-full border-[1.5px] border-info"
+  defp state_mark(_status), do: "size-2 shrink-0 rounded-full border-[1.5px] border-unknown"
 
   defp load_cables(socket) do
     scope = socket.assigns.current_scope
@@ -406,27 +417,27 @@ defmodule RengaWeb.CableLive do
   defp claim_label(%{kind: "neighbor_evidence"}), do: "Neighbor proposal"
   defp claim_label(_assertion), do: "Cable claim"
 
-  defp claim_class(%{kind: "neighbor_evidence"}) do
-    "shrink-0 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
-  end
+  # A neighbor proposal is unconfirmed evidence that needs an operator's
+  # attention; a retraction ends a cable; everything else is a confirmed claim.
+  defp claim_mark(%{kind: "neighbor_evidence"}),
+    do: "size-2 shrink-0 rounded-full border-[1.5px] border-warn"
 
-  defp claim_class(%{action: "retract"}) do
-    "shrink-0 rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-700 dark:text-rose-400"
-  end
+  defp claim_mark(%{action: "retract"}),
+    do: "size-2 shrink-0 rounded-full border-[1.5px] border-unknown"
 
-  defp claim_class(_assertion) do
-    "shrink-0 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400"
-  end
+  defp claim_mark(_assertion), do: "size-2 shrink-0 rounded-full bg-ok"
 
   attr :interface, :any, required: true
 
+  # The interface name is the primary value and the device a secondary one,
+  # so the device is cut first when the cell is narrow.
   defp endpoint_link(assigns) do
     ~H"""
-    <span class="inline-flex min-w-0 items-center gap-1.5">
-      <span class="truncate font-mono text-sm font-medium">{@interface.name}</span>
+    <span class="inline-flex min-w-0 max-w-full items-baseline gap-1.5">
+      <span class="truncate font-mono font-medium text-fg">{@interface.name}</span>
       <.link
         navigate={~p"/inventory/#{@interface.resource_id}"}
-        class="truncate text-xs text-base-content/60 transition hover:text-orange-600"
+        class="inline-flex min-h-tap min-w-0 items-center truncate rounded-sm text-xs text-fg-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
       >
         {@interface.resource.name}
       </.link>
@@ -450,18 +461,18 @@ defmodule RengaWeb.CableLive do
       id={@id}
       phx-submit={@event}
       phx-change="validate_cable"
-      class="rounded-2xl border border-base-content/10 bg-base-100 p-6 shadow-sm"
+      class="rounded-lg border border-edge bg-surface px-5 py-4"
     >
       <div class="flex items-start justify-between gap-4">
         <div>
-          <h2 class="font-semibold tracking-tight">{@title}</h2>
-          <p class="mt-1 text-xs text-base-content/55">{@subtitle}</p>
+          <h2 class="text-sm font-semibold text-fg">{@title}</h2>
+          <p class="mt-0.5 text-xs text-fg-muted">{@subtitle}</p>
         </div>
-        <span class="shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold text-base-content/55">
+        <span class="shrink-0 rounded-sm border border-edge bg-sunken px-1.5 text-[11px] font-medium text-fg-muted">
           Owner/Admin
         </span>
       </div>
-      <div class="mt-6 grid gap-4 sm:grid-cols-2">
+      <div class="mt-4 grid gap-x-4 sm:grid-cols-2">
         <%!-- Endpoints carry the meaningful interface identity, so each select gets the
         full form width instead of a half column that clips the placeholder and options. --%>
         <div class="sm:col-span-2">
@@ -470,7 +481,6 @@ defmodule RengaWeb.CableLive do
             type="select"
             label="First endpoint"
             options={@interface_options}
-            class={input_class()}
           />
         </div>
         <div class="sm:col-span-2">
@@ -479,7 +489,6 @@ defmodule RengaWeb.CableLive do
             type="select"
             label="Second endpoint"
             options={@interface_options}
-            class={input_class()}
           />
         </div>
         <.input
@@ -487,24 +496,13 @@ defmodule RengaWeb.CableLive do
           type="text"
           label="Cable type (optional)"
           placeholder="cat6a"
-          class={input_class()}
         />
-        <.input
-          field={@form[:label]}
-          type="text"
-          label="Label (optional)"
-          class={input_class()}
-        />
+        <.input field={@form[:label]} type="text" label="Label (optional)" />
       </div>
-      <div class="mt-5 flex justify-end">
-        <button
-          id={@button_id}
-          type="submit"
-          phx-disable-with="Saving…"
-          class="h-10 rounded-lg bg-orange-500 px-4 text-sm font-semibold text-white transition hover:bg-orange-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500"
-        >
+      <div class="mt-2 flex justify-end">
+        <.button id={@button_id} type="submit" variant="primary" phx-disable-with="Saving…">
           {@button_label}
-        </button>
+        </.button>
       </div>
     </.form>
     """
@@ -520,36 +518,24 @@ defmodule RengaWeb.CableLive do
     )
   end
 
-  defp status_class("connected") do
-    "shrink-0 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold capitalize text-emerald-700 dark:text-emerald-400"
-  end
-
-  defp status_class(_status) do
-    "shrink-0 rounded-full bg-base-content/[0.07] px-2.5 py-1 text-xs font-semibold capitalize text-base-content/55"
-  end
-
   attr :label, :string, required: true
   attr :value, :any, required: true
   attr :icon, :string, required: true
 
   defp summary_card(assigns) do
     ~H"""
-    <div class="rounded-2xl border border-base-content/10 bg-base-100 p-5 shadow-sm">
-      <div class="flex items-center gap-2 text-base-content/45">
-        <.icon name={@icon} class="size-4" />
-        <p class="text-xs font-semibold uppercase tracking-wider">{@label}</p>
+    <div class="rounded-lg border border-edge bg-surface px-4 py-3">
+      <div class="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+        <.icon name={@icon} class="size-4 text-fg-subtle" />
+        <p>{@label}</p>
       </div>
-      <p class="mt-3 text-2xl font-semibold tracking-tight">{@value}</p>
+      <p class="mt-1 font-mono text-xl font-semibold tabular-nums text-fg">{@value}</p>
     </div>
     """
   end
 
   defp format_length(value, unit) do
     "#{Decimal.to_string(value)} #{unit}"
-  end
-
-  defp input_class do
-    "h-10 w-full rounded-lg border border-base-content/15 bg-base-100 px-3 text-sm font-medium outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
   end
 
   defp blank_to_nil(value) when value in [nil, ""], do: nil
