@@ -67,8 +67,10 @@ An operation requires all of these:
 * the hypervisor agent enables `vm.power` locally and has an approved
   installation key (RFD 13);
 * the organization enables VM operations;
-* the user holds a VM operator grant over a target set containing the VM, with
-  an expiry, created by an owner or admin. Owners and admins are not granted it
+* the user holds a VM operator grant over a target set containing the VM,
+  created by an owner or admin. Like a terminal grant, it may expire, within
+  the organization's maximum validity if it sets one
+  (link:../0020/README.adoc[RFD 20]). Owners and admins are not granted it
   implicitly.
 
 The RFD 13 trusted binding includes the VM resource ID, provider installation
