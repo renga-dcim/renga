@@ -9,10 +9,13 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   token validation, for `oidc` providers using `oidcc`.
 * [ ] Add the `github` provider as a `Req` adapter using verified primary
   emails.
-* [ ] Resolve first sign-in by linking verified emails, sign-up, or refusal;
-  test unverified emails, unconfirmed local accounts, and email changes.
+* [ ] Resolve first sign-in by sign-up or refusal, never by automatically
+  linking an email collision; test unverified emails, unconfirmed local
+  accounts, email changes, and different subjects with the same reassigned
+  verified address.
 * [ ] Add linking and unlinking in user settings under sudo mode, refusing to
-  remove the last sign-in method.
+  link a subject owned by another user or remove the last usable sign-in method
+  under the active policy.
 * [ ] Add claim-to-membership mapping that only manages memberships it granted.
 * [ ] Add provider session lifetimes, renewing with a refresh token or a
   `prompt=none` redirect on the next request and recomputing mapped

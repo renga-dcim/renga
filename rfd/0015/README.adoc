@@ -20,7 +20,9 @@ operator chooses as the only way in, is configuration.
 
 An operator configures zero or more providers at deploy time. Each has:
 
-* a stable `id`, used in callback URLs and stored on linked identities;
+* a stable `id`, used in callback URLs and stored on linked identities. The ID
+  permanently names that provider kind and, for OpenID Connect, its issuer;
+  changing either requires a new ID or an explicit identity migration;
 * a display name and icon for the sign-in page;
 * a kind: `oidc` (any OpenID Connect issuer, discovered from its issuer URL) or
   `github` (OAuth 2.0 with GitHub's user and email APIs, because GitHub is not an
@@ -56,7 +58,9 @@ existing session creation, so a provider sign-in produces the same session,
 == Identities and accounts
 
 A new `user_identities` table links a user to a provider subject:
-`(provider_id, subject)` is unique, and a user may have several identities.
+`(provider_id, subject)` is unique, and a user may have several identities. An
+OpenID Connect identity uses the token's `sub`; a GitHub identity uses the
+stable numeric user ID, never the mutable login name.
 
 Renga matches a returning sign-in by `(provider_id, subject)` only, never by
 email, because email addresses are reassigned and some providers let users
@@ -64,18 +68,21 @@ change them freely.
 
 The first sign-in through a provider is resolved in this order:
 
-. If a user with the same email exists, Renga links the identity only when the
-  provider asserts the email is verified (`email_verified` for OpenID Connect,
-  a verified primary address from GitHub's API) and the existing account has a
-  confirmed email. Otherwise it refuses and asks the person to sign in the
-  usual way and link the provider from settings.
+. If a user with the same email exists, Renga refuses to link automatically,
+  even when both sides verified the address. Email verification does not prove
+  the two accounts have the same owner because addresses can be reassigned.
+  The person must sign in to the existing Renga account and explicitly link the
+  provider under sudo mode.
 . If no user exists and the provider allows sign-up, Renga creates a confirmed
   user from the verified email. It creates no organization membership on its
   own; the person lands where a new password user does today.
 . Otherwise sign-in is refused.
 
 Signed-in users can link and unlink providers from their settings, which
-requires sudo mode. Renga refuses to unlink a user's last way to sign in.
+requires sudo mode. The linking callback is bound to the initiating user and
+refuses a provider subject already linked to another user. Renga refuses to
+unlink a user's last usable sign-in method under the current local sign-in and
+provider policy.
 
 == Organization membership from claims
 
