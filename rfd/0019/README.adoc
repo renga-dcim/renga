@@ -1,6 +1,6 @@
 :authors: Darwin D Wu <darwin67@users.noreply.github.com>
-:state: prediscussion
-:discussion:
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/171
 :labels: accounts, authentication, security, software
 
 = RFD 19 Passkeys and multi-factor authentication
