@@ -6,13 +6,18 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   and validate it at boot.
 * [ ] Add `user_identities` with a unique `(provider_id, subject)`.
 * [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
-  token validation, for `oidc` providers.
-* [ ] Add the `github` provider using verified primary emails.
+  token validation, for `oidc` providers using `oidcc`.
+* [ ] Add the `github` provider as a `Req` adapter using verified primary
+  emails.
 * [ ] Resolve first sign-in by linking verified emails, sign-up, or refusal;
   test unverified emails, unconfirmed local accounts, and email changes.
 * [ ] Add linking and unlinking in user settings under sudo mode, refusing to
   remove the last sign-in method.
 * [ ] Add claim-to-membership mapping that only manages memberships it granted.
+* [ ] Add provider session lifetimes, renewing with a refresh token or a
+  `prompt=none` redirect on the next request and recomputing mapped
+  memberships; test expired provider sessions, refusals, and that open
+  LiveViews are not disconnected.
 * [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
   with local sign-in disabled and no provider.
 * [ ] Re-authenticate provider-only users for sudo mode with `prompt=login`,

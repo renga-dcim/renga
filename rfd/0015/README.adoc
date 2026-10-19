@@ -33,10 +33,18 @@ Providers are configured through the environment and read in
 container image needs no rebuild to add one. Client secrets are never stored in
 the database or shown in the UI.
 
-Configuring providers in the UI at runtime is out of scope for this RFD; it
-needs secret storage and an audit trail that Renga does not have yet.
+Configuring providers in the UI at runtime is out of scope for this RFD (see
+future work).
 
 == Sign-in flow
+
+Renga uses `oidcc` for `oidc` providers. It is certified by the OpenID
+Foundation as a relying party, so the security-critical work (discovery, ID
+token validation, signing key caching and rotation, PKCE, `max_age`, and
+RP-initiated logout) comes from tested code rather than Renga's own reading of
+the specification. The `github` kind is a small adapter on `Req` for the code
+exchange and GitHub's user and email APIs, which no OpenID Connect library
+covers.
 
 Renga uses the authorization code flow with PKCE, a per-attempt `state`, and
 for OpenID Connect a `nonce`. It validates the ID token's signature against the
@@ -82,6 +90,34 @@ The mapping names organizations by slug and roles by Renga's role names
 (`owner`, `admin`, `member`, `viewer`). A claim value that names an unknown
 organization or role is ignored and logged, not created.
 
+== Provider session lifetime
+
+A session created through a provider carries a lifetime, 12 hours by default
+and configurable per provider. Renga's remember-me cookie would otherwise keep
+a person signed in for weeks after their identity provider removed them.
+
+When the lifetime has passed, Renga confirms the person with the provider again
+on their next request and recomputes claim-mapped memberships from the fresh
+claims:
+
+. With a refresh token, Renga renews in the background and the person sees
+  nothing.
+. Otherwise it redirects through the provider with `prompt=none`, which
+  returns the person to the page they asked for while their provider session
+  is still valid.
+. Only when the provider requires interaction, or refuses the person, does
+  Renga end the session and show the sign-in page.
+
+A connected LiveView makes no new requests, so Renga checks the lifetime when
+the person next navigates rather than cutting the socket, and nobody loses
+unsaved input. Membership changes take effect on that renewal and never sign
+anyone out by themselves.
+
+Renga does not sweep memberships on a schedule: OpenID Connect gives a relying
+party no standard way to ask about a person outside a sign-in, so a sweep could
+only guess from inactivity. GitHub identities carry no group claims; their
+renewal only confirms the account is still valid.
+
 == Local sign-in policy
 
 Two independent settings control local credentials:
@@ -116,12 +152,12 @@ Provider sign-in is for people in browsers. Agents keep RFD 3 intake keys and
 RFD 13 installation credentials; nothing in this RFD changes `/api`
 authentication.
 
-== Open questions
+== Future work
 
-* Library choice: `oidcc` is OpenID-certified and maintained under the Erlang
-  Ecosystem Foundation; `assent` covers GitHub and OpenID Connect behind one
-  interface. A GitHub adapter is small enough to write if `oidcc` is chosen.
-* Whether claim-mapped memberships should also be revoked on a schedule for
-  people who stop signing in, or only at their next sign-in.
+* SCIM provisioning, for removing people and memberships the moment an
+  identity provider does, without waiting for a renewal.
+* Configuring providers in the UI, once Renga has secret storage and an audit
+  trail for it.
+* OpenID Connect back-channel logout.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
