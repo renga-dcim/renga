@@ -2,7 +2,7 @@ defmodule RengaWeb.TokensTest do
   use ExUnit.Case, async: true
 
   test "primary button text meets WCAG AA in every explicit and system theme palette" do
-    css = File.read!("assets/css/tokens.css")
+    css = File.read!("ui/assets/css/tokens.css")
 
     pairs =
       Regex.scan(~r/--rg-accent: (#[0-9a-f]{6});\s*--rg-accent-fg: (#[0-9a-f]{6});/, css)

@@ -1,4 +1,4 @@
-defmodule RengaWeb.Brand do
+defmodule RengaUI.Brand do
   @moduledoc """
   Renga's logo: the mark and the wordmark, drawn inline so they take the
   person's accent and theme like any other token-styled element.

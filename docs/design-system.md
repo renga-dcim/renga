@@ -13,14 +13,18 @@ preview each accent, theme, and density without saving anything. Its source is
 [`RengaWeb.DesignSystemLive`](../lib/renga_web/live/design_system_live.ex);
 add a sample there when you add a token or a shared component.
 
+The tokens, Tailwind names, shared components, and their JS hooks live in the
+`renga_ui` package in [`ui/`](../ui), so other apps built on Renga's look can
+depend on it instead of copying it. Renga uses it as a path dependency.
+
 The system has four parts, and each has one home:
 
 | Part | Lives in | Owns |
 |---|---|---|
-| Tokens | [`assets/css/tokens.css`](../assets/css/tokens.css) | Every color, status color, and density value, per accent and theme |
-| Tailwind names | [`assets/css/app.css`](../assets/css/app.css) (`@theme inline`) | The class names screens use (`bg-surface`, `h-row`, `text-table`, ...) |
-| Components | [`RengaWeb.CoreComponents`](../lib/renga_web/components/core_components.ex), [`RengaWeb.UI`](../lib/renga_web/components/ui.ex), and the domain component modules | Markup and behavior that must look the same everywhere |
-| Guard | [`test/renga_web/components/design_system_test.exs`](../test/renga_web/components/design_system_test.exs) | Fails the build on raw colors and off-scale values |
+| Tokens | [`ui/assets/css/tokens.css`](../ui/assets/css/tokens.css) | Every color, status color, and density value, per accent and theme |
+| Tailwind names | [`ui/assets/css/renga_ui.css`](../ui/assets/css/renga_ui.css) (`@theme inline`) | The class names screens use (`bg-surface`, `h-row`, `text-table`, ...) |
+| Components | [`RengaUI.CoreComponents`](../ui/lib/renga_ui/core_components.ex), [`RengaUI.Components`](../ui/lib/renga_ui/components.ex), and Renga's domain component modules | Markup and behavior that must look the same everywhere |
+| Guard | [`RengaUI.DesignGuard`](../ui/lib/renga_ui/design_guard.ex), run by [`test/renga_web/components/design_system_test.exs`](../test/renga_web/components/design_system_test.exs) | Fails the build on raw colors and off-scale values |
 
 When this guide and a component disagree, the component wins and this guide
 is out of date: fix the guide in the same change.
@@ -28,8 +32,8 @@ is out of date: fix the guide in the same change.
 ## Rules of thumb
 
 1. Compose a shared component before writing markup. If two domains need the
-   same piece, it belongs in `RengaWeb.UI` (or a domain component module), not
-   in two LiveViews.
+   same piece, it belongs in `RengaUI.Components` (or a domain component
+   module), not in two LiveViews.
 2. Style only with token names. Never use Tailwind's palette (`bg-orange-500`,
    `text-gray-600`), `white`/`black`, hex values, or the former daisyUI names
    (`bg-base-100`, `text-base-content/60`, `btn-primary`). Those ignore the
@@ -92,7 +96,7 @@ and `-line` variants for a tinted badge or banner.
 | Unknown | `unknown` | No evidence, retired, inactive |
 
 Every status pairs a color with a shape so it reads in grayscale. The status
-strip (`RengaWeb.UI.status_strip/1`) is the reference:
+strip (`RengaUI.Components.status_strip/1`) is the reference:
 
 | Shape | Meaning |
 |---|---|
@@ -179,7 +183,7 @@ dialogs and side panels.
 - Loading: `phx-submit-loading:opacity-70` on submit buttons, plus the
   `phx-click-loading` and `phx-change-loading` variants defined in `app.css`.
 - Overlays open and close over 150ms with opacity transitions
-  (`RengaWeb.UI.show_overlay/2`, `hide_overlay/2`).
+  (`RengaUI.Components.show_overlay/2`, `hide_overlay/2`).
 - Create and edit happen in a side panel or dialog, never in an always-open
   form on the page. Destructive actions confirm with a `danger` dialog.
 
@@ -209,7 +213,7 @@ it is cut, and the full value stays one hover, focus, or touch away.
   as early as one on a phone.
 
 Tooltips and popovers use the native popover layer
-(`assets/js/floating.js`), so a table's scroll container or a side panel
+(`ui/assets/js/floating.js`), so a table's scroll container or a side panel
 never clips them. They close on Escape, on scroll, and (popovers) on a click
 outside.
 
@@ -223,7 +227,7 @@ needs an `aria-label`.
 
 ## Brand
 
-The logo lives in [`RengaWeb.Brand`](../lib/renga_web/components/brand.ex) and
+The logo lives in [`RengaUI.Brand`](../ui/lib/renga_ui/brand.ex) and
 draws inline, so it follows the accent and theme. Never use a Heroicon in its
 place.
 
@@ -266,8 +270,9 @@ Domain modules hold pieces shared within one area: `ElevationComponents`
 `PrefixComponents`, `VlanComponents`, `FindingComponents`,
 `RequestComponents`, `TriageComponents`, `InventoryComponents`,
 `JobComponents` (job states, the collection banner, job activity), and
-`CatalogComponents`. Promote a piece to `RengaWeb.UI` once a second area
-needs it.
+`CatalogComponents`. Promote a piece to `RengaUI.Components` once a second
+area needs it. Domain modules stay in Renga; only pieces with no Renga data
+behind them belong in `ui/`.
 
 ## Phone and tablet
 
@@ -296,12 +301,13 @@ sideways; move them over when you touch them.
 - **A new color token** needs a value in every palette block of `tokens.css`
   (five accents, light and dark, repeated under the system dark-mode media
   query) or, for status, in the three status blocks; then a Tailwind name in
-  `app.css`'s `@theme inline`. Document it in the tables above.
-- **A new component** goes in `RengaWeb.UI` with a `@doc` and example, styled
-  only with tokens, gets a LiveViewTest in `test/renga_web/components`, and
+  `renga_ui.css`'s `@theme inline`. Document it in the tables above.
+- **A new component** goes in `RengaUI.Components` with a `@doc` and
+  example, styled only with tokens, gets a LiveViewTest in `test/renga_web/components`, and
   a sample on the design system page.
   Browser-only behavior (layout, focus, touch targets) gets a Playwright test.
+  A hook it needs goes in `ui/assets/js` and is exported from `index.js`.
 - **The guard** rejects raw colors and off-scale values in every file under
-  `lib/renga_web`. Its `@legacy` list, for screens written before the tokens,
+  `lib/renga_web` and `ui/lib`. Its `@legacy` list, for screens written before the tokens,
   is empty and stays that way. Deliberate exceptions go in `@allowed` with a
   reason.

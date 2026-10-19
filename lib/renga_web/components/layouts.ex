@@ -5,7 +5,7 @@ defmodule RengaWeb.Layouts do
   """
   use RengaWeb, :html
 
-  alias RengaWeb.Brand
+  alias RengaUI.Brand
   alias RengaWeb.Navigation
 
   # Embed all files in layouts/* within this module.

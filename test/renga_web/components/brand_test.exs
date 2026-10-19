@@ -5,7 +5,7 @@ defmodule RengaWeb.BrandTest do
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
-  alias RengaWeb.Brand
+  alias RengaUI.Brand
 
   defp query(html, selector), do: html |> LazyHTML.from_fragment() |> LazyHTML.query(selector)
   defp count(html, selector), do: html |> query(selector) |> Enum.count()

@@ -1534,7 +1534,7 @@ defmodule RengaWeb.CatalogLive do
   defp base_error_messages(form) do
     form.errors
     |> Keyword.get_values(:base)
-    |> Enum.map(&RengaWeb.CoreComponents.translate_error/1)
+    |> Enum.map(&RengaUI.CoreComponents.translate_error/1)
   end
 
   defp first_submission_error(revision_errors, template_errors) do
@@ -1553,7 +1553,7 @@ defmodule RengaWeb.CatalogLive do
 
   defp format_field_error({field, error}) do
     label = if field == :attributes, do: "Component attributes", else: humanize(field)
-    "#{label} #{RengaWeb.CoreComponents.translate_error(error)}"
+    "#{label} #{RengaUI.CoreComponents.translate_error(error)}"
   end
 
   defp assign_manufacturer_options(socket, scope) do

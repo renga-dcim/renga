@@ -24,12 +24,10 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/renga"
 import topbar from "../vendor/topbar"
-import {Overlay} from "./overlay"
 import {ListKeys} from "./list_keys"
 import {RackDrag} from "./rack_drag"
 import {CenterScroll} from "./center_scroll"
-import {TabStrip} from "./tab_strip"
-import {installFloating} from "./floating"
+import {hooks as uiHooks, install as installUI} from "renga_ui"
 
 const CommandPalette = {
   mounted() {
@@ -225,19 +223,13 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, CenterScroll, CommandPalette, CopyToClipboard, Overlay, ListKeys, RackDrag, TabStrip},
+  hooks: {...colocatedHooks, ...uiHooks, CenterScroll, CommandPalette, CopyToClipboard, ListKeys, RackDrag},
 })
 
 // Show progress bar on live navigation and form submits
 topbar.config({barColors: {0: "#ea580c"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
-
-// Lets the server close a side panel or dialog once its action succeeded
-// (see RengaWeb.UI.close_overlay/2), keeping it open on validation errors.
-window.addEventListener("phx:close-overlay", ({detail}) => {
-  document.getElementById(detail.id)?.dispatchEvent(new Event("renga:overlay-close"))
-})
 
 // Applies appearance changes made during a session (RFD 8, "Visual design"):
 // the root layout renders the saved theme, accent and density onto <html>,
@@ -254,8 +246,8 @@ window.addEventListener("phx:appearance", ({detail}) => {
   }
 })
 
-// Tooltips for clipped text and anchored +N popovers.
-installFloating()
+// The design system's tooltips, popovers, and server-closed overlays.
+installUI()
 
 // connect if there are any LiveViews on the page
 liveSocket.connect()

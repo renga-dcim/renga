@@ -1,10 +1,10 @@
-defmodule RengaWeb.CoreComponentsTest do
+defmodule RengaUI.CoreComponentsTest do
   use RengaWeb.ConnCase, async: true
 
   import Phoenix.Component
   import Phoenix.LiveViewTest
 
-  alias RengaWeb.CoreComponents
+  alias RengaUI.CoreComponents
 
   test "field inputs preserve custom accessible error IDs" do
     form =

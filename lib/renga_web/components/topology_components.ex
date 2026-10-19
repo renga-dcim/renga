@@ -14,7 +14,7 @@ defmodule RengaWeb.TopologyComponents do
   use Phoenix.Component
   use Gettext, backend: RengaWeb.Gettext
 
-  import RengaWeb.CoreComponents, only: [icon: 1]
+  import RengaUI.CoreComponents, only: [icon: 1]
   import RengaWeb.InventoryComponents, only: [kind_icon: 1]
 
   alias Renga.Topology.Links

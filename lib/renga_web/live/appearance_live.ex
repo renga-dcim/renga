@@ -14,7 +14,7 @@ defmodule RengaWeb.AppearanceLive do
   alias Renga.Accounts.Appearance
   alias RengaWeb.AppearanceHook
 
-  # The light-theme accent colors from assets/css/tokens.css, so each swatch
+  # The light-theme accent colors from ui/assets/css/tokens.css, so each swatch
   # shows its own accent rather than the one currently applied.
   @swatches %{
     "copper" => "#b4531c",
