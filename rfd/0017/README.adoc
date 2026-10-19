@@ -359,12 +359,6 @@ over it. A refused action names the missing permission, not just "forbidden".
   grant a custom role or a conditioned one.
 * RFD 8 teams keep owning resources; this RFD adds their members.
 
-== Open questions
-
-. *Subject-relative conditions.* `$subject_teams` is the main reason for team
-  membership. The proposal includes it; the alternative is naming teams
-  explicitly in every assignment.
-
 == Future work
 
 * Resource groups for boundaries that cut across sites and teams (RFD 18).
