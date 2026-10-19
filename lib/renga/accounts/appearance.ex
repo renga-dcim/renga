@@ -7,7 +7,7 @@ defmodule Renga.Accounts.Appearance do
   devices. A person who has not chosen an accent sees their
   organization's default, which is Copper unless an owner changed it.
   The values map one-to-one to the `data-theme`, `data-accent`, and
-  `data-density` attributes `assets/css/tokens.css` reads.
+  `data-density` attributes `ui/assets/css/tokens.css` reads.
   """
   alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
