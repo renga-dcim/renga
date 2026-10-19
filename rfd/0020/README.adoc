@@ -1,0 +1,170 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: data, operations, organizations, software
+
+= RFD 20 Organization export and import
+
+== Goal
+
+Let an organization take all of its data out of Renga in a documented format,
+and bring it into another Renga deployment. Today the only way to move data is
+a PostgreSQL dump, which works for a deployment that serves one organization
+but not for one that serves many:
+
+* A dump contains every organization in the database. Cutting one out is
+  fragile: users are shared across organizations, and some sequences, such as
+  resource revisions, are global.
+* A dump restores only into the same schema version, so it cannot move data
+  between deployments running different Renga releases.
+* A dump carries secrets: password hashes, session tokens, and intake key
+  hashes.
+
+An organization export solves all three. It is also how an organization moves
+between a shared deployment and a deployment of its own, in either direction.
+
+Database backups are a separate concern and stay the operator's
+responsibility. An export is not a backup system: see <<backups>>.
+
+== The archive
+
+An export is one `.tar.zst` file containing:
+
+* `manifest.json`: the archive format version, the Renga version that wrote it,
+  the organization's ID, slug, and name, when the snapshot was taken, which
+  optional parts it includes, and a SHA-256 checksum and record count for every
+  other file;
+* one newline-delimited JSON file per record type, such as `resources.ndjson`,
+  `prefixes.ndjson`, or `cables.ndjson`, one record per line.
+
+Record types follow Renga's domain, not its table layout: a record carries the
+fields a person or agent can set or observe, with references to other records
+by ID. Each record type has a documented schema for each archive format
+version. A migration that changes an exported shape bumps the format version
+and adds a converter from the previous version, so a release can import
+archives from older releases. Importing an archive from a newer release than
+the target is refused.
+
+Every record keeps its UUID. References between records therefore need no
+translation, and links that people saved to a resource keep working after a
+move.
+
+=== Contents
+
+The export always includes the organization's current state:
+
+* inventory resources with their lifecycle, desired specification, identifiers,
+  identifier claims, overrides, owners, conditions, and relationships;
+* sources and the evidence that current reconciliation relies on, so field
+  ownership and staleness survive the move;
+* DCIM, IPAM, and topology records, including cables, plans, and import
+  contracts;
+* the catalog: types, revisions, templates, and expectations;
+* findings, finding workflows, and triage rules;
+* teams, saved views, and change requests;
+* agents and their installation IDs, without credentials;
+* members, as described below.
+
+Two optional parts can be added when exporting:
+
+* *History*: Activity (change events), resource revisions, job and job events,
+  and cable and module change events.
+* *Raw observations*: the observations still within retention. These can be
+  much larger than everything else together.
+
+=== Members
+
+Users are global in Renga; an organization only holds memberships. The export
+lists each member by email address and display name, with their base role,
+team memberships, and assignments. It never includes a credential: no password
+hash, passkey, authenticator secret, recovery code, session, or token.
+
+=== Excluded
+
+* Credentials of every kind: user credentials, intake key hashes, directory
+  connection tokens, and identity provider client secrets.
+* Deployment configuration: identity providers, local sign-in policy, and
+  anything else read from the environment.
+* Security state that must be re-established by people at the destination:
+  approved installation keys, trusted privileged bindings, and terminal or VM
+  grants (RFDs 13 and 14). The archive lists them for reference, and import
+  creates them as pending or disabled.
+
+== Exporting
+
+An owner exports from organization settings. Exporting requires the
+`organization.export` permission (RFD 17), which only the `owner` role holds
+among the built-in roles. An export covers the whole organization regardless
+of the exporter's own read scope, so it is not part of ordinary read access.
+
+The export runs in the background inside one repeatable-read transaction, so
+the archive is a consistent snapshot even while agents keep reporting. When it
+finishes, Renga notifies the exporter and offers the archive for download from
+a link that expires after seven days, after which the archive is deleted.
+Starting an export, downloading it, and its expiry are recorded in Activity.
+
+Operators can export any organization with a release command, `renga export
+--organization <slug> --output <file>`, which writes the same archive. It is
+for operators with access to the deployment, not for organization members.
+
+== Importing
+
+Import always targets an empty organization: one that has no resources,
+records, or members other than the person importing. Merging into an
+organization that already holds data is out of scope, because there is no
+correct general answer to two records describing the same device.
+
+Renga validates the whole archive before writing anything: checksums, the
+format version, every record against its schema, and every reference. It
+reports all problems at once. If the archive is valid, Renga applies it in the
+background and either the whole import lands or the organization stays empty.
+
+* *IDs*: if any record ID in the archive already exists anywhere in the target
+  deployment, Renga refuses the import unless the importer chooses to import a
+  copy. A copy gives every record a new ID and rewrites references; saved links
+  to the original do not carry over.
+* *Revisions*: resources get new revision numbers from the target deployment,
+  allocated in the archive's order. Imported history keeps its timestamps and
+  actors.
+* *Members*: each exported member becomes an invitation to their email
+  address, with the exported role, teams, and assignments applied when they
+  accept. A person who already has an account at the destination accepts by
+  signing in. Directory-managed memberships (RFD 16) return when the directory
+  connection is set up again.
+* *Agents*: agent records keep their installation IDs. After the organization
+  creates new intake keys and deploys them, each agent's reports continue its
+  existing record and history.
+* *Security state*: installation keys come back pending, privileged bindings
+  unapproved, and terminal and VM grants disabled, so someone at the
+  destination approves each again.
+
+Importing requires an organization's `owner`, or an operator through a matching
+`renga import` release command. The import, its source manifest, and its
+outcome are recorded in Activity.
+
+[[backups]]
+== Backups
+
+Operators back up the database with ordinary PostgreSQL tools or their
+database provider. In a deployment that serves several organizations,
+restoring one organization from a backup uses an export: restore the backup
+into a separate database, run `renga export` against it for that organization,
+and import the archive into an empty organization in the live deployment.
+
+A deployment that serves a single organization can also hand that organization
+a full database dump; that is ordinary PostgreSQL administration and not part
+of this RFD.
+
+== Open questions
+
+. *Raw observations by default.* The proposal leaves them out of the default
+  export because of their size, which means an imported organization loses the
+  raw evidence behind current facts until agents report again.
+
+== Future work
+
+* Scheduled exports to storage the organization controls.
+* Importing from other inventory systems, such as NetBox, through the same
+  record schemas.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

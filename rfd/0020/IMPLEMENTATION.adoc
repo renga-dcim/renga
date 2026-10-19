@@ -1,0 +1,23 @@
+= RFD 0020 implementation checklist
+
+Implements link:README.adoc[RFD 20: Organization export and import].
+
+* [ ] Define the archive format: `manifest.json` with checksums and counts, and
+  a documented schema per record type and format version.
+* [ ] Add the `organization.export` permission, held only by `owner`.
+* [ ] Export in the background from one repeatable-read transaction, with the
+  optional history and raw observation parts; test that concurrent intake does
+  not produce an inconsistent archive.
+* [ ] Serve the archive from an expiring download link, delete it after seven
+  days, and record start, download, and expiry in Activity.
+* [ ] Exclude every credential and deployment setting; test that no password
+  hash, passkey, token, or key hash appears in an archive.
+* [ ] Validate a whole archive before writing and report every problem at once.
+* [ ] Import atomically into an empty organization, preserving IDs, refusing
+  collisions unless importing a copy, and re-allocating revisions in order.
+* [ ] Turn members into invitations with their roles, teams, and assignments.
+* [ ] Import installation keys as pending, bindings unapproved, and terminal and
+  VM grants disabled.
+* [ ] Add `renga export` and `renga import` release commands.
+* [ ] Add converters from each previous archive format version, and refuse
+  archives from newer releases.
