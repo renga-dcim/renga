@@ -1,0 +1,320 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: accounts, authorization, security, software
+
+= RFD 17 Attribute-based authorization
+
+== Goal
+
+Let an organization decide who may do what to which part of its inventory.
+Today every member holds one of four fixed roles (`owner`, `admin`, `member`,
+`viewer`), and each context checks a hard-coded list of them. That cannot
+express common arrangements: a network team that edits switches but not
+power, facilities staff who place hardware at one site, or a contractor who may
+operate a few hosts for two weeks.
+
+This RFD replaces the role lists with one model. A role is a named combination
+of permissions. Attributes of the person decide which roles they hold, and
+attributes of the resource decide where each role applies. RFDs 12, 13, and 14
+already need scoped, expiring grants, and RFDs 15 and 16 grant access from an
+identity provider; all of them become instances of this model instead of
+separate grant tables.
+
+Authorization stays where it is today: in context functions, inside the
+transaction that performs the change. Hiding a control in the UI remains a hint,
+never the boundary.
+
+== Permissions
+
+A permission names one kind of action, such as `inventory.edit` or
+`topology.edit`. The catalogue is defined in code, not by organizations, and
+every public context function that changes data checks exactly one permission
+or is an explicit system path.
+
+The first release derives the catalogue from today's checks:
+
+[cols="2,4"]
+|===
+|Permission |Allows
+
+|`inventory.reconcile`
+|Reconciling observations into inventory, and accepting reconciliation results
+ for topology and catalog
+
+|`inventory.edit`
+|Changing lifecycle state, setting and clearing field overrides, and creating
+ or changing managed resource kinds
+
+|`findings.act`
+|Assigning, snoozing, and accepting exceptions on findings
+
+|`requests.create`
+|Proposing a change the person cannot make directly
+
+|`requests.decide`
+|Approving or rejecting proposals
+
+|`catalog.author`
+|Catalog types and drafts, modules, inventory items, and moves
+
+|`catalog.expectations`
+|Expected-component exceptions and automatic moves
+
+|`dcim.edit`
+|Sites, locations, racks, and placement
+
+|`ipam.edit`
+|VRFs, prefixes, addresses, plans, and source mappings
+
+|`topology.edit`
+|VLANs, cables, cable plans, and cable import contracts
+
+|`jobs.request`
+|Requesting, cancelling, and resolving `observe` jobs
+
+|`views.share`
+|Saving and changing shared views
+
+|`teams.manage`
+|Teams, team membership, and resource owners
+
+|`triage_rules.manage`
+|Triage rules
+
+|`intake_keys.manage`
+|Intake API keys
+
+|`members.manage`
+|Inviting and disabling members and changing their assignments
+
+|`roles.manage`
+|Defining custom roles
+
+|`organization.manage`
+|Organization settings, including job settings and appearance
+|===
+
+Every active member can read the whole organization in the first release, as
+today (see open questions). Relationship checks such as "only the person who
+made a request may withdraw it" and "a personal view belongs to its owner" stay
+in context code; they are not permissions.
+
+RFDs 12, 13, and 14 add `queries.run`, `queries.run_sensitive`,
+`terminal.open`, `vm.power`, and `vm.approve` when they are implemented. Those
+are _explicit_ permissions: no built-in role includes them, nobody holds them by
+default, including owners, and an assignment that grants one must expire. Each
+explicit permission declares its longest validity, such as RFD 13's 30 days.
+
+== Roles
+
+A role is a named set of permissions within an organization.
+
+The four built-in roles keep today's behavior exactly and cannot be edited:
+
+[cols="3,1,1,1,1"]
+|===
+|Permission |`owner` |`admin` |`member` |`viewer`
+
+|`inventory.reconcile`, `findings.act`, `catalog.author` |yes |yes |yes |
+|`requests.create` | | |yes |
+|`inventory.edit`, `requests.decide`, `catalog.expectations`, `dcim.edit`,
+ `ipam.edit`, `topology.edit`, `jobs.request`, `views.share`, `teams.manage`,
+ `triage_rules.manage`, `intake_keys.manage` |yes |yes | |
+|`members.manage` |yes |yes | |
+|`roles.manage`, `organization.manage` |yes | | |
+|===
+
+`members.manage` and `roles.manage` are new; Renga has no member management UI
+today. An admin may manage members but may not grant `owner` or any permission
+the admin does not hold (see <<administration>>).
+
+Owners and admins can define custom roles from any non-explicit permissions,
+for example a `network engineer` role with `inventory.reconcile`,
+`findings.act`, `ipam.edit`, and `topology.edit`. Explicit permissions live in
+their own roles, so a long-lived role never quietly carries terminal or power
+access.
+
+== Assignments
+
+An assignment gives one role to a subject, optionally limited by a condition
+and an expiry:
+
+* _role_: a built-in or custom role;
+* _subject_: one member, a team, a directory group (RFD 16), or a mapped
+  claim value (RFD 15);
+* _condition_: which resources it covers (below); none means the whole
+  organization;
+* _valid until_: optional, required for explicit permissions;
+* _source_: `manual`, a claim mapping, or a directory connection, with the
+  same source-bound validity rules RFDs 15 and 16 define;
+* who created it, when, and why.
+
+Each membership keeps one base role, as today, which acts as an assignment
+without a condition. Every further assignment adds access; the result is the
+union of everything a person holds. There are no deny rules, so the question
+"why can this person do this" always has a list of assignments as its answer.
+A manual assignment is never changed or removed by a claim mapping or directory
+connection; an externally sourced one is removed when its source no longer
+grants it.
+
+Teams gain members. A team is already the owner of resources (RFD 8); adding
+people to it lets one assignment say "people on a team may operate what their
+team owns". Team membership is managed with `teams.manage`, and a directory
+connection may manage the membership of teams it is mapped to.
+
+== Conditions
+
+A condition is a set of clauses over resource attributes. A resource matches
+when it satisfies every clause, and a clause is satisfied by any of its values:
+
+[source,json]
+----
+{
+  "site": ["<site id>"],
+  "kind": ["host", "switch"],
+  "owner_team": ["$subject_teams"]
+}
+----
+
+This reads as "hosts and switches at this site that are owned by one of the
+person's teams", and the UI renders it that way.
+
+The first release supports these attributes:
+
+* `resource`: explicit resource IDs;
+* `kind`: resource kinds;
+* `owner_team`: team IDs, or `$subject_teams` for the teams the person belongs
+  to;
+* `site`: site IDs, matched through the resource's current placement, or the
+  resource itself for sites, locations, and racks;
+* `label`: values of an organization's policy labels (below).
+
+Conditions are deliberately a small structured language rather than a general
+policy language such as Cedar or Rego. Lists, search, and bulk actions must find
+what a person may act on in the database, so every condition compiles to an SQL
+predicate over indexed columns. A richer language would either leak into
+per-row checks in Elixir or need its own partial evaluator.
+
+A permission is checked against the resource an action targets. An action whose
+target is organization-wide, such as defining a catalog type, a VRF, a site, a
+team, or a triage rule, requires the permission from an assignment without a
+condition. Placement, cables, and other actions that involve several resources
+must be covered for each of them.
+
+=== Policy labels
+
+Labels on resources today come from agents, which an organization configures
+but does not fully control; a compromised agent can report anything. Conditions
+therefore never read agent-reported data.
+
+An organization may declare policy label keys, such as `environment`. Values
+for a policy label are set only by people with `inventory.edit` over the
+resource; an agent reporting the same key is recorded as an observation and
+never changes the policy value. Policy labels appear beside reported labels on
+the resource page, marked as set by people.
+
+=== Trusted attributes
+
+Some attributes can be derived from observations: triage rules set owner teams
+from reported data, and placement may come from observed evidence. Inventory
+workflow permissions may match those derived values. Operational permissions,
+meaning `jobs.request` and the explicit permissions, only match values a person
+set or confirmed: explicit resource IDs, manually set or approved owner teams,
+confirmed placement, and policy labels. This preserves RFD 13's rule that
+grants authorize against trusted bindings.
+
+=== Changing attributes
+
+Changing an attribute that a condition reads (owner team, placement, or a policy
+label) requires the actor to cover the resource both before and after the
+change. Someone who may edit hosts at one site cannot move a host to another site
+they do not cover, and cannot move one into their own scope. Approving a request
+applies the same rule to the approver.
+
+== Enforcement
+
+`Renga.Authorization` becomes the only place that answers authorization:
+
+* `allowed?/3` takes a scope, a permission, and a target (or none for
+  organization-wide actions), for UI hints;
+* `authorize!/3` performs the same check inside a context transaction,
+  re-reading the membership and its assignments under lock as today's checks
+  re-read the membership row;
+* `filter/3` adds the predicate for a permission to an Ecto query, for lists of
+  actionable items and bulk actions. A bulk action refuses the whole batch if
+  any target is not covered, rather than silently skipping it.
+
+The scope carries the person's resolved assignments, loaded once per request or
+LiveView mount. Assignment and team changes broadcast on the organization's
+authorization topic so connected LiveViews refresh their scope, and expiring
+assignments schedule a refresh like RFD 15's provider deadline. The transaction
+check, not the cached scope, is authoritative.
+
+Machine scopes are unchanged in shape: agents, the reconcilers, and triage rule
+application run as fixed internal principals with fixed permission sets, which
+cannot be assigned to people.
+
+Some requirements stay outside the policy model as hard guards, checked after a
+permission is granted: an active organization, organization enablement such as
+allowed job capabilities, agent-local policy, step-up authentication (RFD 13),
+second-operator approval (RFD 14), where the approver needs the same permission
+over the target, and query sensitivity (RFD 12). Policy can only narrow who
+reaches these guards; no assignment bypasses them.
+
+[[administration]]
+== Administration
+
+* Members, custom roles, and assignments are managed in organization settings
+  under sudo mode.
+* An actor may create or assign a role only if the actor holds each of its
+  permissions over at least the assignment's condition. Admins cannot grant
+  `owner`, `roles.manage`, or `organization.manage`.
+* `owner` is never a custom role or conditioned. An organization always keeps at
+  least one active owner, which is its recovery path.
+* Owners and admins may grant explicit permissions to themselves, as RFD 13
+  allows for terminals; such assignments are audited like any other.
+* Every change to a role definition, assignment, team membership, or policy
+  label is recorded in Activity with its actor, before and after values, and
+  reason. Expiry and source-driven removal are recorded too.
+
+An access view answers both directions: on a member's page, what they can do
+and through which assignments; on a resource page, who holds each permission
+over it. A refused action names the missing permission, not just "forbidden".
+
+== Relationship to other RFDs
+
+* RFDs 12, 13, and 14 are published but not yet implemented. Their member
+  query policy, terminal grants, and VM operator grants become assignments of
+  explicit permissions. Their target sets (resources, a saved view, or an
+  owning team) become conditions; a saved view is not a condition because its
+  filters include observed data and its owner can edit it, so a grant from a
+  view resolves to that view's current resource IDs. Those RFDs are amended once
+  this one is published.
+* RFD 15 claim mappings and RFD 16 group mappings produce source-bound
+  assignments rather than setting a membership's role directly, so a mapping may
+  grant a custom role or a conditioned one.
+* RFD 8 teams keep owning resources; this RFD adds their members.
+
+== Open questions
+
+. *Read scoping.* Should conditions also limit what a person can see? The first
+  release proposes no: every member reads the whole organization, and
+  conditions limit changes and operations. Scoped reads touch every list,
+  search, count, graph, feed, and export, and leaking through any one of them
+  defeats the rest, so it deserves its own step with an audit of every read path.
+. *Policy labels in the first release.* They make conditions far more useful,
+  but add a new kind of attribute. The proposal includes them.
+. *Admins and roles.* The proposal lets admins manage members and assignments
+  but reserves custom role definitions for owners.
+. *Subject-relative conditions.* `$subject_teams` is the main reason for team
+  membership. The proposal includes it; the alternative is naming teams
+  explicitly in every assignment.
+
+== Future work
+
+* Read scoping, if deferred above.
+* Separation of duties beyond RFD 14's second-operator approval.
+* Scoped API tokens for people, using the same assignments.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

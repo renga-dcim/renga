@@ -1,0 +1,31 @@
+= RFD 0017 implementation checklist
+
+Implements link:README.adoc[RFD 17: Attribute-based authorization].
+
+* [ ] Add `Renga.Authorization` with the permission catalogue and built-in
+  roles, and a parity test covering every public mutation for each built-in
+  role and for machine scopes; it must pass before and after the next item.
+* [ ] Replace every hard-coded role list and `organization_manager?`-style
+  hint with permission checks, and turn unchecked public mutations into
+  explicit system paths. No behavior changes.
+* [ ] Add member management in organization settings under sudo mode: invite,
+  disable, change base role, with the last-owner rule and Activity entries.
+* [ ] Add team membership, managed with `teams.manage`.
+* [ ] Add custom roles and unconditioned assignments, refusing any role or
+  assignment carrying a permission the actor does not hold.
+* [ ] Add conditions on `resource`, `kind`, `owner_team` (including
+  `$subject_teams`), and `site`, compiled to SQL predicates, with `filter/3`
+  for lists and whole-batch refusal for bulk actions.
+* [ ] Enforce the before-and-after rule for owner team, placement, and policy
+  label changes, for direct edits and request approval.
+* [ ] Add policy label keys whose values only people set; test that agent
+  reports for those keys never change them.
+* [ ] Restrict operational permissions to trusted attributes; test owner teams
+  set by triage rules and unconfirmed placement against `jobs.request`.
+* [ ] Refresh connected LiveView scopes on assignment, team, and expiry
+  changes; test that a revoked assignment stops a LiveView mutation.
+* [ ] Add explicit permissions with required expiry and per-permission maximum
+  validity, ready for RFDs 12, 13, and 14.
+* [ ] Add the access views on member and resource pages, and name the missing
+  permission when an action is refused.
+* [ ] Amend RFDs 12, 13, 14, 15, and 16 to use assignments.

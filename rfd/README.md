@@ -22,6 +22,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [14: VM lifecycle operations](0014/README.adoc) | Idempotent VM power actions, desired power state and drift, grants, and two-operator approval |
 | [15: OpenID Connect sign-in](0015/README.adoc) | Provider configuration, identity linking, claim-mapped memberships, local sign-in policy, and re-authentication |
 | [16: SCIM provisioning](0016/README.adoc) | Per-organization SCIM connections, directory entries, group-to-role grants, and immediate deprovisioning |
+| [17: Attribute-based authorization](0017/README.adoc) | Permissions, roles as permission sets, attribute-scoped assignments, team membership, and access explanations |
 | [18: Resource groups](0018/README.adoc) | People-curated resource sets, exclusive group sets, container membership, and group conditions for authorization |
 
 ## Source format
