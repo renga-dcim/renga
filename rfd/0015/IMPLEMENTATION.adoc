@@ -1,0 +1,46 @@
+= RFD 0015 implementation checklist
+
+Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
+
+* [ ] Read provider configuration from the environment in `config/runtime.exs`
+  and validate it at boot.
+* [ ] Add `user_identities` with a unique `(provider_id, subject)`.
+* [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
+  token validation, using a pinned, reviewed `oidcc` version while keeping
+  Renga responsible for attempt binding and application-level claim checks.
+* [ ] Add the `github` provider as a `Req` adapter using verified primary
+  emails and stable numeric user IDs; permit linking but not sign-up.
+* [ ] Resolve first sign-in by sign-up or refusal, never by automatically
+  linking an email collision; test unverified emails, unconfirmed local
+  accounts, email changes, and different subjects with the same reassigned
+  verified address.
+* [ ] Add linking and unlinking in user settings under sudo mode, refusing to
+  link a subject owned by another user or remove the last method usable for
+  sign-in or sudo under the active policy.
+* [ ] Add source-bound, expiring claim-to-membership grants with manual
+  membership precedence and at most one provider mapping per organization;
+  test another sign-in method, source-provider revocation, identity unlinking,
+  and preservation of an independent manual membership.
+* [ ] Add provider session lifetimes and provider-specific renewal: validated
+  current ID-token or UserInfo claims and `prompt=none` for OpenID Connect, and
+  stable-user API validation or ordinary OAuth for GitHub. Test missing or
+  stale claims, refresh responses without an ID token, provider and network
+  failures, interaction requirements, identity changes, and refusals; none may
+  extend expired sessions or mapped grants.
+* [ ] Enforce provider expiry on connected LiveViews: after the deadline no
+  protected event, mutation, or organization update proceeds before successful
+  revalidation. Preserve unsaved browser input through reauthentication where
+  feasible and test both the authorization boundary and draft behavior.
+* [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
+  with local sign-in disabled and no provider, and test direct password and
+  magic-link endpoints plus previously issued links.
+* [ ] Keep session issuance, provider validity, and sudo evidence separate;
+  test that ordinary SSO, silent renewal, refresh, and session rotation never
+  manufacture a fresh sudo timestamp.
+* [ ] Re-authenticate OpenID Connect users for sudo mode with `prompt=login`
+  and `max_age`, binding the callback to its session, purpose, provider, and
+  subject. Validate missing, malformed, stale, and future `auth_time` values in
+  Renga and reject account switching.
+* [ ] Keep RFD 13 step-up on WebAuthn or a fresh password rather than accepting
+  provider `auth_time`; test the distinction from sudo mode.
+* [ ] Add optional RP-initiated logout.
