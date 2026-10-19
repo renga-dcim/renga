@@ -26,7 +26,9 @@ RUN mix local.hex --force && mix local.rebar --force
 
 ENV MIX_ENV="prod"
 
+# renga_ui (the design system) is a path dependency.
 COPY mix.exs mix.lock ./
+COPY ui ui
 RUN mix deps.get --only $MIX_ENV
 RUN mkdir config
 
