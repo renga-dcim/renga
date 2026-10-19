@@ -17,7 +17,8 @@ Implements link:README.adoc[RFD 13: Live terminal].
 == Phase 2: Access
 
 * [ ] Add organization enablement and expiring terminal grants over target sets.
-* [ ] Require WebAuthn or fresh-password step-up within five minutes.
+* [ ] Add the organization option to require step-up within five minutes: a
+  passkey or authenticator code (RFD 19), or a fresh password without either.
 
 == Phase 3: Sessions
 
