@@ -69,7 +69,36 @@ the authenticated **Collectors** screen without manual enrollment.
 Product and architecture decisions live in [Requests for Discussion](rfd/README.md).
 Run `make check-rfds` after changing an RFD or its implementation checklist.
 
-Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
+## Running in production
+
+The `Dockerfile` builds the Phoenix server as an OTP release. Configure its
+runtime server and database settings with environment variables:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | yes | `ecto://USER:PASS@HOST/DATABASE` |
+| `SECRET_KEY_BASE` | yes | Generate with `mix phx.gen.secret` |
+| `PHX_HOST` | yes | Public host name used in generated URLs |
+| `DATABASE_SSL` | no | `true` to require TLS, verifying the server certificate against the OS trust store and the URL's host name; any `ssl` query option in `DATABASE_URL` must also be `true` |
+| `POOL_SIZE` | no | Database connections per node (default 10) |
+| `ECTO_IPV6` | no | `true` to reach the database over IPv6 |
+| `DNS_CLUSTER_QUERY` | no | DNS name that resolves to every node, for clustering |
+| `PORT` | no | HTTP port (default 4000) |
+
+Run `/app/bin/migrate` once per deploy, before new nodes start, then run
+`/app/bin/server`. Put the server behind a TLS-terminating reverse proxy; the
+container listens for HTTP on `PORT`. `DATABASE_SSL` uses the image's public CA
+bundle, so install private or provider-specific roots in a derived image.
+
+Renga requires PostgreSQL 15 or newer. Its migrations enable the `btree_gist`
+and `citext` extensions; on managed services where the application role cannot
+create extensions, enable them first.
+
+Authentication also requires outbound email. Before deploying, replace the
+shipped `Swoosh.Adapters.Local` mailer with a production adapter and configure
+a valid sender address. Production disables the Local adapter's in-memory
+mailbox, so the default source configuration cannot deliver registration or
+sign-in links.
 
 ## Learn more
 
