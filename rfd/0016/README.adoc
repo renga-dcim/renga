@@ -22,8 +22,8 @@ means the identity provider, as in RFD 15.
 
 == Connections
 
-An organization owner creates a SCIM connection for their organization under
-sudo mode. A connection has:
+An organization owner creates a SCIM connection for their organization. A
+connection has:
 
 * the organization it manages; a connection never reaches another organization;
 * the ID of an RFD 15 `oidc` provider whose identities it describes. GitHub
@@ -91,8 +91,8 @@ claim equals the entry's `externalId`. If the person has no Renga account yet,
 the active directory entry permits RFD 15 provider sign-up for them even when
 the provider otherwise disallows sign-up. RFD 15's rules still hold: Renga
 never links by email, and an email collision with an existing account is
-refused until the person signs in to that account and links the provider under
-sudo mode, which then links the entry too.
+refused until the person signs in to that account and links the provider from
+their settings, which then links the entry too.
 
 Organization owners and admins can see directory entries in the organization's
 member list, including entries not yet linked to an account, so they can tell

@@ -2,9 +2,9 @@
 
 Implements link:README.adoc[RFD 16: SCIM provisioning].
 
-* [ ] Add SCIM connections per organization, created by owners under sudo
-  mode, naming an `oidc` provider and a correlation claim, and refusing an
-  organization that already has an RFD 15 claim mapping.
+* [ ] Add SCIM connections per organization, created by owners, naming an
+  `oidc` provider and a correlation claim, and refusing an organization that
+  already has an RFD 15 claim mapping.
 * [ ] Add connection bearer tokens stored as hashes, revealed once, with two
   active tokens for rotation and immediate revocation; test that tokens only
   reach `/scim/v2` and only their own organization.
