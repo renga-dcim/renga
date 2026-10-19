@@ -40,10 +40,10 @@ node --test assets/js/renga_ui.test.mjs
 
 test -f deps/renga_ui/ui/mix.exs
 test ! -f deps/renga_ui/mix.exs
-rg --quiet --fixed-strings '.bg-surface' priv/static/app.css
-rg --quiet --fixed-strings '.h-row' priv/static/app.css
-rg --quiet --fixed-strings '.hero-x-mark' priv/static/app.css
-rg --quiet --fixed-strings -- '--hero-x-mark:' priv/static/app.css
-rg --quiet --fixed-strings 'phx:close-overlay' priv/static/app.js
+grep --quiet --fixed-strings '.bg-surface' priv/static/app.css
+grep --quiet --fixed-strings '.h-row' priv/static/app.css
+grep --quiet --fixed-strings '.hero-x-mark' priv/static/app.css
+grep --quiet --fixed-strings -- '--hero-x-mark:' priv/static/app.css
+grep --quiet --fixed-strings 'phx:close-overlay' priv/static/app.js
 
 printf 'renga_ui sparse consumer passed at %s\n' "$source_ref"
