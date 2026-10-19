@@ -10,7 +10,7 @@ defmodule RengaWeb.JobComponents do
   """
   use Phoenix.Component
 
-  import RengaWeb.CoreComponents, only: [icon: 1]
+  import RengaUI.CoreComponents, only: [icon: 1]
 
   alias Renga.Jobs
   alias Renga.Jobs.Job

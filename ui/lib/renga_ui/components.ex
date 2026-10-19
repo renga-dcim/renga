@@ -1,4 +1,4 @@
-defmodule RengaWeb.UI do
+defmodule RengaUI.Components do
   @moduledoc """
   Shared building blocks for RFD 8's product experience.
 
@@ -7,12 +7,12 @@ defmodule RengaWeb.UI do
   across domains. Styling uses only the design tokens (see
   `assets/css/tokens.css`), so accent, theme, and density apply automatically.
 
-  Lists use `RengaWeb.CoreComponents.table/1`.
+  Lists use `RengaUI.CoreComponents.table/1`.
   """
   use Phoenix.Component
-  use Gettext, backend: RengaWeb.Gettext
+  use Gettext, backend: RengaUI.Gettext
 
-  import RengaWeb.CoreComponents, only: [icon: 1, button: 1]
+  import RengaUI.CoreComponents, only: [icon: 1, button: 1]
 
   alias Phoenix.LiveView.JS
 
@@ -785,7 +785,7 @@ defmodule RengaWeb.UI do
     ~H"""
     <div id={@id} class="mx-auto flex w-full max-w-sm flex-col gap-5 py-6 sm:py-12">
       <div class="space-y-3 text-center">
-        <RengaWeb.Brand.mark
+        <RengaUI.Brand.mark
           variant={:tile}
           clip_id={"#{@id}-brand-clip"}
           class="mx-auto size-12 text-accent"

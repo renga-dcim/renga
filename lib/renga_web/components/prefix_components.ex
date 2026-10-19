@@ -7,7 +7,7 @@ defmodule RengaWeb.PrefixComponents do
   """
   use Phoenix.Component
 
-  import RengaWeb.CoreComponents, only: [input: 1]
+  import RengaUI.CoreComponents, only: [input: 1]
 
   alias Renga.Inventory.Prefix
   alias Renga.IPAM.Cidr

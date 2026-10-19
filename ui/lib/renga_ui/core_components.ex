@@ -1,4 +1,4 @@
-defmodule RengaWeb.CoreComponents do
+defmodule RengaUI.CoreComponents do
   @moduledoc """
   Provides core UI components.
 
@@ -28,7 +28,7 @@ defmodule RengaWeb.CoreComponents do
 
   """
   use Phoenix.Component
-  use Gettext, backend: RengaWeb.Gettext
+  use Gettext, backend: RengaUI.Gettext
 
   alias Phoenix.LiveView.JS
 
@@ -814,9 +814,9 @@ defmodule RengaWeb.CoreComponents do
     # with our gettext backend as first argument. Translations are
     # available in the errors.po file (as we use the "errors" domain).
     if count = opts[:count] do
-      Gettext.dngettext(RengaWeb.Gettext, "errors", msg, msg, count, opts)
+      Gettext.dngettext(RengaUI.Gettext, "errors", msg, msg, count, opts)
     else
-      Gettext.dgettext(RengaWeb.Gettext, "errors", msg, opts)
+      Gettext.dgettext(RengaUI.Gettext, "errors", msg, opts)
     end
   end
 

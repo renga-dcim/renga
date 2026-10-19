@@ -3,8 +3,8 @@ defmodule RengaWeb.UITest do
 
   import Phoenix.Component
   import Phoenix.LiveViewTest
-  import RengaWeb.CoreComponents
-  import RengaWeb.UI
+  import RengaUI.CoreComponents
+  import RengaUI.Components
 
   alias Phoenix.HTML.Safe
   alias Phoenix.LiveView.JS

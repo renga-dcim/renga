@@ -15,7 +15,7 @@ defmodule RengaWeb.DesignSystemLive do
   use RengaWeb, :live_view
 
   alias Renga.Accounts.Appearance
-  alias RengaWeb.Brand
+  alias RengaUI.Brand
 
   @path "/dev/design-system"
 
@@ -241,7 +241,7 @@ defmodule RengaWeb.DesignSystemLive do
         <.ds_section
           id="brand"
           title="Brand"
-          description="RengaWeb.Brand: the mark and the wordmark. The mark takes the accent; in the wordmark only the R does."
+          description="RengaUI.Brand: the mark and the wordmark. The mark takes the accent; in the wordmark only the R does."
         >
           <div class="grid gap-4 rounded-lg border border-edge bg-surface p-5 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
             <div class="flex items-end gap-5">
