@@ -16,6 +16,16 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
 * [ ] Add conditions on `resource`, `kind`, `owner_team` (including
   `$subject_teams`), and `site`, compiled to SQL predicates, with `filter/3`
   for lists and whole-batch refusal for bulk actions.
+* [ ] Add the per-resource access row, updated in the same transaction as
+  placement, ownership, and policy label changes.
+* [ ] Filter every read path by `inventory.read`: lists, fetches (hidden reads
+  as not found), search, counts and badges, exports, Activity, shared views,
+  multi-resource records with hidden endpoints, and aggregates that show hidden
+  resources only as occupied. Declare each public read function's permission
+  and test that none is undeclared, with a scoped-member suite over all of them.
+* [ ] Make live updates carry IDs only and re-fetch through each subscriber's
+  scope; test that losing read access removes a resource from an open page.
+* [ ] Allow memberships with no base role.
 * [ ] Enforce the before-and-after rule for owner team, placement, and policy
   label changes, for direct edits and request approval.
 * [ ] Add policy label keys whose values only people set; test that agent

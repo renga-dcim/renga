@@ -7,12 +7,13 @@
 
 == Goal
 
-Let an organization decide who may do what to which part of its inventory.
+Let an organization decide who may see and do what in which part of its
+inventory.
 Today every member holds one of four fixed roles (`owner`, `admin`, `member`,
 `viewer`), and each context checks a hard-coded list of them. That cannot
 express common arrangements: a network team that edits switches but not
 power, facilities staff who place hardware at one site, or a contractor who may
-operate a few hosts for two weeks.
+only see and operate a few hosts for two weeks.
 
 This RFD replaces the role lists with one model. A role is a named combination
 of permissions. Attributes of the person decide which roles they hold, and
@@ -37,6 +38,9 @@ The first release derives the catalogue from today's checks:
 [cols="2,4"]
 |===
 |Permission |Allows
+
+|`inventory.read`
+|Seeing resources and everything that belongs to them (see <<reads>>)
 
 |`inventory.reconcile`
 |Reconciling observations into inventory, and accepting reconciliation results
@@ -95,8 +99,7 @@ The first release derives the catalogue from today's checks:
 |Organization settings, including job settings and appearance
 |===
 
-Every active member can read the whole organization in the first release, as
-today (see open questions). Relationship checks such as "only the person who
+Relationship checks such as "only the person who
 made a request may withdraw it" and "a personal view belongs to its owner" stay
 in context code; they are not permissions.
 
@@ -116,6 +119,7 @@ The four built-in roles keep today's behavior exactly and cannot be edited:
 |===
 |Permission |`owner` |`admin` |`member` |`viewer`
 
+|`inventory.read` |yes |yes |yes |yes
 |`inventory.reconcile`, `findings.act`, `catalog.author` |yes |yes |yes |
 |`requests.create` | | |yes |
 |`inventory.edit`, `requests.decide`, `catalog.expectations`, `dcim.edit`,
@@ -129,7 +133,7 @@ The four built-in roles keep today's behavior exactly and cannot be edited:
 today. An admin may manage members but may not grant `owner` or any permission
 the admin does not hold (see <<administration>>).
 
-Owners and admins can define custom roles from any non-explicit permissions,
+Owners can define custom roles from any non-explicit permissions,
 for example a `network engineer` role with `inventory.reconcile`,
 `findings.act`, `ipam.edit`, and `topology.edit`. Explicit permissions live in
 their own roles, so a long-lived role never quietly carries terminal or power
@@ -151,7 +155,8 @@ and an expiry:
 * who created it, when, and why.
 
 Each membership keeps one base role, as today, which acts as an assignment
-without a condition. Every further assignment adds access; the result is the
+without a condition. A membership may instead have no base role, so that it
+holds only what its other assignments grant (see <<reads>>). Every further assignment adds access; the result is the
 union of everything a person holds. There are no deny rules, so the question
 "why can this person do this" always has a list of assignments as its answer.
 A manual assignment is never changed or removed by a claim mapping or directory
@@ -232,6 +237,57 @@ change. Someone who may edit hosts at one site cannot move a host to another sit
 they do not cover, and cannot move one into their own scope. Approving a request
 applies the same rule to the approver.
 
+[[reads]]
+== Reads
+
+`inventory.read` is a permission like any other, and conditions limit it. A
+person sees a resource only when one of their assignments grants
+`inventory.read` with a condition the resource matches. Every built-in role
+includes it, so a member whose base role is built-in still reads the whole
+organization, as today. A contractor can instead be a member with no base role
+and a `viewer` assignment for hosts at one site, and sees nothing else.
+
+What a resource's visibility covers:
+
+* Everything that belongs to one resource follows it: its fields, observations
+  and evidence, interfaces, components and modules, assigned addresses,
+  placement, findings, requests, jobs, and Activity entries.
+* Sites, locations, and racks are resources and follow the same rule, except
+  that a person also sees the containers of every resource they can see, so its
+  placement can be shown.
+* Organization-wide definitions (catalog types, VRFs, prefixes, VLAN groups and
+  VLANs, and teams) are shared vocabulary, visible to anyone who holds
+  `inventory.read` anywhere.
+* Records that join several resources, such as cables, neighbor adjacency, and
+  power paths, show only the endpoints the person can see. A hidden endpoint
+  appears as not visible to them, without its name or ID.
+* Aggregates over a shared container, such as rack occupancy and prefix
+  utilization, count every resource so capacity stays correct, and show a hidden
+  resource only as occupied or used, never by name. This deliberately reveals
+  that space is taken, not by what.
+
+Every read path applies the same rule in its query:
+
+* Fetching a hidden resource by ID behaves exactly like a missing one, so a URL
+  or guessed ID never confirms that it exists.
+* Lists, search, filters, sorting, pagination counts, Inbox and navigation
+  badges, exports, and the Activity feed filter in the database before
+  counting or limiting. A shared saved view shows each viewer only what they can
+  read, as RFD 8 already requires.
+* Live updates carry IDs, never another resource's data; each LiveView
+  re-fetches through its own scope and drops what it can no longer see.
+* Deciding a request requires reading its resource as well as the permission
+  the change needs.
+* RFD 12 sensitivity still applies on top: reading a resource never by itself
+  reveals sensitive query results.
+
+Losing read access takes effect like any other assignment change: connected
+LiveViews refresh their scope and stop showing the resource, and an open page
+for it returns to the list.
+
+Machine scopes are not read-filtered; agents and reconcilers see what their
+organization-scoped work needs.
+
 == Enforcement
 
 `Renga.Authorization` becomes the only place that answers authorization:
@@ -241,9 +297,20 @@ applies the same rule to the approver.
 * `authorize!/3` performs the same check inside a context transaction,
   re-reading the membership and its assignments under lock as today's checks
   re-read the membership row;
-* `filter/3` adds the predicate for a permission to an Ecto query, for lists of
+* `filter/3` adds the predicate for a permission to an Ecto query: for
+  `inventory.read`, on every read path; for other permissions, on lists of
   actionable items and bulk actions. A bulk action refuses the whole batch if
   any target is not covered, rather than silently skipping it.
+
+So that every filter is a single indexed join, Renga keeps one access row per
+resource with the attributes conditions read: its kind, owner team and whether a
+person set it, current and confirmed site, and policy labels. The transaction
+that changes placement, ownership, or a policy label updates that row too.
+
+Every public context function that reads organization data declares the
+permission it filters by. A test enumerates the contexts' public functions and
+fails on any that declare none, and a scoped-member suite checks each list,
+fetch, search, count, and export with a member who can see one site.
 
 The scope carries the person's resolved assignments, loaded once per request or
 LiveView mount. Assignment and team changes broadcast on the organization's
@@ -298,11 +365,6 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 == Open questions
 
-. *Read scoping.* Should conditions also limit what a person can see? The first
-  release proposes no: every member reads the whole organization, and
-  conditions limit changes and operations. Scoped reads touch every list,
-  search, count, graph, feed, and export, and leaking through any one of them
-  defeats the rest, so it deserves its own step with an audit of every read path.
 . *Policy labels in the first release.* They make conditions far more useful,
   but add a new kind of attribute. The proposal includes them.
 . *Admins and roles.* The proposal lets admins manage members and assignments
@@ -313,7 +375,6 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 == Future work
 
-* Read scoping, if deferred above.
 * Separation of duties beyond RFD 14's second-operator approval.
 * Scoped API tokens for people, using the same assignments.
 
