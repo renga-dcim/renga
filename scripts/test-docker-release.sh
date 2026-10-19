@@ -88,23 +88,31 @@ start_postgres() {
 release_env() {
   local database_host=$1
   shift
-
-  docker run --rm --network "$network" \
-    --env "DATABASE_URL=ecto://renga:renga@${database_host}:5432/renga" \
-    --env DATABASE_SSL=true \
-    --env PHX_HOST=renga.example.com \
-    --env SECRET_KEY_BASE=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr \
+  local command=(
+    docker run --rm --network "$network"
+    --env "DATABASE_URL=ecto://renga:renga@${database_host}:5432/renga"
+    --env DATABASE_SSL=true
+    --env PHX_HOST=renga.example.com
+    --env SECRET_KEY_BASE=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
     "$trusted_image" "$@"
+  )
+
+  if [[ -n "${RELEASE_TIMEOUT:-}" ]]; then
+    timeout "$RELEASE_TIMEOUT" "${command[@]}"
+  else
+    "${command[@]}"
+  fi
 }
 
 expect_tls_failure() {
   local label=$1
   local database_host=$2
+  local expected_error=$3
   local log="$temp_dir/${label}.log"
   local status
 
   set +e
-  timeout 45s release_env "$database_host" /app/bin/migrate >"$log" 2>&1
+  RELEASE_TIMEOUT=45s release_env "$database_host" /app/bin/migrate >"$log" 2>&1
   status=$?
   set -e
 
@@ -114,8 +122,14 @@ expect_tls_failure() {
     return 1
   fi
 
-  if [[ "$status" -eq 124 ]]; then
-    printf '%s database connection timed out instead of rejecting TLS\n' "$label" >&2
+  if [[ "$status" -ne 1 ]]; then
+    printf '%s database connection exited with unexpected status %s\n' "$label" "$status" >&2
+    cat "$log" >&2
+    return 1
+  fi
+
+  if ! grep -Eqi "$expected_error" "$log"; then
+    printf '%s database connection did not report the expected TLS error\n' "$label" >&2
     cat "$log" >&2
     return 1
   fi
@@ -199,8 +213,8 @@ tls_connections="$({
 } | tr -d '[:space:]')"
 test "$tls_connections" = t
 
-expect_tls_failure untrusted-ca postgres-untrusted
-expect_tls_failure wrong-hostname postgres-wrong
-expect_tls_failure plaintext postgres-plaintext
+expect_tls_failure untrusted-ca postgres-untrusted 'unknown_ca|unknown ca'
+expect_tls_failure wrong-hostname postgres-wrong 'hostname_check_failed|hostname check failed'
+expect_tls_failure plaintext postgres-plaintext 'ssl not available'
 
 printf 'Docker release smoke test passed\n'
