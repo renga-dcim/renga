@@ -17,7 +17,7 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   `$subject_teams`), and `site`, compiled to SQL predicates, with `filter/3`
   for lists and whole-batch refusal for bulk actions.
 * [ ] Add the per-resource access row, updated in the same transaction as
-  placement, ownership, and policy label changes.
+  placement and ownership changes.
 * [ ] Filter every read path by `inventory.read`: lists, fetches (hidden reads
   as not found), search, counts and badges, exports, Activity, shared views,
   multi-resource records with hidden endpoints, and aggregates that show hidden
@@ -26,10 +26,8 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
 * [ ] Make live updates carry IDs only and re-fetch through each subscriber's
   scope; test that losing read access removes a resource from an open page.
 * [ ] Allow memberships with no base role.
-* [ ] Enforce the before-and-after rule for owner team, placement, and policy
-  label changes, for direct edits and request approval.
-* [ ] Add policy label keys whose values only people set; test that agent
-  reports for those keys never change them.
+* [ ] Enforce the before-and-after rule for owner team and placement changes,
+  for direct edits and request approval.
 * [ ] Restrict operational permissions to trusted attributes; test owner teams
   set by triage rules and unconfirmed placement against `jobs.request`.
 * [ ] Refresh connected LiveView scopes on assignment, team, and expiry

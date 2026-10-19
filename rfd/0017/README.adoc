@@ -192,8 +192,7 @@ The first release supports these attributes:
 * `owner_team`: team IDs, or `$subject_teams` for the teams the person belongs
   to;
 * `site`: site IDs, matched through the resource's current placement, or the
-  resource itself for sites, locations, and racks;
-* `label`: values of an organization's policy labels (below).
+  resource itself for sites, locations, and racks.
 
 Conditions are deliberately a small structured language rather than a general
 policy language such as Cedar or Rego. Lists, search, and bulk actions must find
@@ -207,17 +206,11 @@ team, or a triage rule, requires the permission from an assignment without a
 condition. Placement, cables, and other actions that involve several resources
 must be covered for each of them.
 
-=== Policy labels
-
-Labels on resources today come from agents, which an organization configures
-but does not fully control; a compromised agent can report anything. Conditions
-therefore never read agent-reported data.
-
-An organization may declare policy label keys, such as `environment`. Values
-for a policy label are set only by people with `inventory.edit` over the
-resource; an agent reporting the same key is recorded as an observation and
-never changes the policy value. Policy labels appear beside reported labels on
-the resource page, marked as set by people.
+Conditions never read agent-reported data such as resource labels. An
+organization configures its agents but does not fully control them, and anyone
+holding its intake key can report any label. Boundaries that cut across sites
+and teams, such as environment, customer, or compliance scope, are left to
+RFD 18's resource groups.
 
 === Trusted attributes
 
@@ -226,14 +219,13 @@ from reported data, and placement may come from observed evidence. Inventory
 workflow permissions may match those derived values. Operational permissions,
 meaning `jobs.request` and the explicit permissions, only match values a person
 set or confirmed: explicit resource IDs, manually set or approved owner teams,
-confirmed placement, and policy labels. This preserves RFD 13's rule that
+confirmed placement. This preserves RFD 13's rule that
 grants authorize against trusted bindings.
 
 === Changing attributes
 
-Changing an attribute that a condition reads (owner team, placement, or a policy
-label) requires the actor to cover the resource both before and after the
-change. Someone who may edit hosts at one site cannot move a host to another site
+Changing an attribute that a condition reads (owner team or placement) requires
+the actor to cover the resource both before and after the change. Someone who may edit hosts at one site cannot move a host to another site
 they do not cover, and cannot move one into their own scope. Approving a request
 applies the same rule to the approver.
 
@@ -304,8 +296,8 @@ organization-scoped work needs.
 
 So that every filter is a single indexed join, Renga keeps one access row per
 resource with the attributes conditions read: its kind, owner team and whether a
-person set it, current and confirmed site, and policy labels. The transaction
-that changes placement, ownership, or a policy label updates that row too.
+person set it, and current and confirmed site. The transaction that changes
+placement or ownership updates that row too.
 
 Every public context function that reads organization data declares the
 permission it filters by. A test enumerates the contexts' public functions and
@@ -341,9 +333,8 @@ reaches these guards; no assignment bypasses them.
   least one active owner, which is its recovery path.
 * Owners and admins may grant explicit permissions to themselves, as RFD 13
   allows for terminals; such assignments are audited like any other.
-* Every change to a role definition, assignment, team membership, or policy
-  label is recorded in Activity with its actor, before and after values, and
-  reason. Expiry and source-driven removal are recorded too.
+* Every change to a role definition, assignment, or team membership is
+  recorded in Activity with its actor, before and after values, and reason. Expiry and source-driven removal are recorded too.
 
 An access view answers both directions: on a member's page, what they can do
 and through which assignments; on a resource page, who holds each permission
@@ -365,8 +356,6 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 == Open questions
 
-. *Policy labels in the first release.* They make conditions far more useful,
-  but add a new kind of attribute. The proposal includes them.
 . *Admins and roles.* The proposal lets admins manage members and assignments
   but reserves custom role definitions for owners.
 . *Subject-relative conditions.* `$subject_teams` is the main reason for team
@@ -375,6 +364,7 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 == Future work
 
+* Resource groups for boundaries that cut across sites and teams (RFD 18).
 * Separation of duties beyond RFD 14's second-operator approval.
 * Scoped API tokens for people, using the same assignments.
 
