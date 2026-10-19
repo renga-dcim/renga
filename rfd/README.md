@@ -26,6 +26,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [18: Resource groups](0018/README.adoc) | People-curated resource sets, exclusive group sets, container membership, and group conditions for authorization |
 | [19: Passkeys, multi-factor authentication, and security settings](0019/README.adoc) | Passkeys, authenticator apps, recovery codes, a narrow account re-check in place of sudo mode, and every opt-in organization security setting with its default |
 | [20: Organization export and import](0020/README.adoc) | A versioned archive of one organization's data, imported into an empty organization, without credentials |
+| [21: Per-organization limits](0021/README.adoc) | Organization-scoped revision locks, intake and request rate limits, database timeouts, fair background work, and quotas |
 
 ## Source format
 

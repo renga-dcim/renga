@@ -1,0 +1,130 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: operations, organizations, performance, software
+
+= RFD 21 Per-organization limits
+
+== Goal
+
+Keep one organization from degrading Renga for the others in a deployment that
+serves several. Today nothing stops one organization's agents, people, or
+background work from taking the whole database:
+
+* Every resource write in every organization takes one global advisory lock
+  to allocate its revision (`Renga.Inventory.ResourceStore.next_revision!/0`).
+  A burst of intake from one organization queues every other organization's
+  writes behind it.
+* Intake runs synchronously in the request transaction with no
+  per-organization cap, so one organization's agents can hold most of the
+  database connection pool.
+* Background sweeps walk organizations one after another with no time budget,
+  so one large organization delays the rest.
+* The only per-organization limit is job creation, at 10,000 jobs a minute.
+
+A deployment that serves one organization keeps today's behavior: the default
+limits are generous, and the lock change helps it too.
+
+== Removing global contention
+
+=== Revision allocation
+
+Revision allocation holds a lock until commit so that anyone reading changes
+in revision order never skips a revision that is allocated but not yet
+visible. Every such reader is scoped to one organization, so the order only
+has to hold within an organization. The lock becomes per organization, keyed by
+the organization ID. The revision sequence stays global, so revisions remain
+unique and increase within each organization; they no longer say anything
+about order across organizations, which nothing relies on.
+
+=== Other locks
+
+Renga's other advisory locks are already keyed by organization, alone or
+together with an installation, a source, or the hierarchy being changed. New
+code follows the same rule: a lock that serializes work across organizations needs a reason in
+its RFD.
+
+== Request limits
+
+Each organization gets rate limits, applied before the request opens a
+transaction:
+
+* *Intake*: observations, check-ins, job leases, and job events, limited per
+  organization and per installation. An over-limit request gets `429` with
+  `Retry-After`. The agent already treats `429` as transient and keeps
+  undelivered observations in its queue; it starts honoring `Retry-After`
+  instead of its own backoff.
+* *Intake size*: the largest observation an organization may send.
+* *Concurrency*: at most a set number of intake transactions per organization
+  run at once on each node, a fraction of the connection pool by default. Extra
+  requests get `429` rather than waiting for a connection.
+* *People and API*: browser and API requests are limited per user and per
+  organization, high enough that nobody working normally meets them.
+
+Job creation keeps its existing limit, which becomes one of these settings.
+
+== Database time
+
+Every request transaction runs with a `statement_timeout`, and background work
+with a longer one, so a pathological query fails instead of holding a
+connection. Queries that can legitimately run long, such as an export (RFD 20),
+run in the background under their own timeout.
+
+== Background work
+
+Sweeps such as neighbor expiry and job history purge process each
+organization in bounded batches and move on to the next organization when a
+batch or its time budget is used, returning to unfinished organizations on the
+next pass. One organization's failure is already logged and skipped; with
+batches, one organization's size no longer delays the others either.
+
+Future background work that runs per organization uses the same pattern, or a
+queue that schedules organizations fairly, rather than draining one
+organization before starting the next.
+
+== Quotas
+
+An organization has quotas on what it stores:
+
+* resources;
+* agents and installations;
+* intake keys;
+* terminal recording storage (RFD 13);
+* export archives kept for download (RFD 20).
+
+At 80% of a quota Renga opens a finding for the organization's owners. At the
+quota, Renga refuses to create more of that thing and says which quota stopped
+it. It never deletes data or stops updates to existing records. For resources
+created by intake, Renga keeps the observation but defers creating the new
+resource, and the finding lists what is waiting, so nothing an agent reported
+is lost and it is reconciled once there is room.
+
+== Configuration
+
+Every limit and quota has a default, which an operator sets for the deployment
+through the environment. An operator can override them for one organization
+with a release command, such as `renga limits set --organization <slug>
+--intake-rate 600`. Organization owners see their usage against each limit and
+quota on a read-only page in organization settings; they cannot change them.
+
+Renga emits telemetry for intake requests, intake bytes, database time, and
+rejected requests, tagged with the organization ID, so an operator can see which
+organization is using what before it reaches a limit.
+
+An organization that needs more than a shared deployment can give it can move
+to a deployment of its own with an export and import (RFD 20).
+
+== Open questions
+
+. *Default values.* The proposal leaves the defaults to the implementation,
+  measured against realistic intake from a large organization.
+. *Deferred resources.* Deferring resource creation at the quota keeps
+  observations but leaves inventory incomplete. Accepting the resources and
+  only warning would keep inventory complete but make the quota advisory.
+
+== Future work
+
+* Usage-based limits on stored history and raw observations.
+* Limits on saved-view and query cost once RFD 12 queries exist.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

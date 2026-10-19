@@ -1,0 +1,23 @@
+= RFD 0021 implementation checklist
+
+Implements link:README.adoc[RFD 21: Per-organization limits].
+
+* [ ] Key the resource revision lock by organization; test that writes in two
+  organizations do not wait on each other and that revision order holds within
+  each organization.
+* [ ] Add per-organization and per-installation intake rate limits answering
+  `429` with `Retry-After` before a transaction opens.
+* [ ] Teach the agent to honor `Retry-After`.
+* [ ] Add an intake size limit and a per-organization intake concurrency cap on
+  each node.
+* [ ] Add per-user and per-organization browser and API rate limits, and move
+  the job creation limit into the same settings.
+* [ ] Set `statement_timeout` for request and background transactions.
+* [ ] Batch the neighbor expiry sweep and job history purge per organization
+  with a time budget.
+* [ ] Add quotas with 80% findings, refusal at the limit, and deferred
+  resource creation from intake.
+* [ ] Read defaults from the environment, add `renga limits set` for
+  per-organization overrides, and show usage to owners read-only.
+* [ ] Emit per-organization telemetry for intake, database time, and rejected
+  requests.
