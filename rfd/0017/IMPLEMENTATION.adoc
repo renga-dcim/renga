@@ -8,8 +8,8 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
 * [ ] Replace every hard-coded role list and `organization_manager?`-style
   hint with permission checks, and turn unchecked public mutations into
   explicit system paths. No behavior changes.
-* [ ] Add member management in organization settings under sudo mode: invite,
-  disable, change base role, with the last-owner rule and Activity entries.
+* [ ] Add member management in organization settings: invite, disable, change
+  base role, with the last-owner rule and Activity entries.
 * [ ] Add team membership, managed with `teams.manage`.
 * [ ] Add custom roles and unconditioned assignments, refusing any role or
   assignment carrying a permission the actor does not hold.

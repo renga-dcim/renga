@@ -324,8 +324,9 @@ reaches these guards; no assignment bypasses them.
 [[administration]]
 == Administration
 
-* Members, custom roles, and assignments are managed in organization settings
-  under sudo mode.
+* Members, custom roles, and assignments are managed in organization settings.
+  Like every other change, they rely on the actor's permissions and the
+  Activity record rather than asking the actor to sign in again.
 * An actor may create, change, or delete a role only if the actor holds each
   of its permissions without a condition, both before and after the change, so
   an admin cannot edit a role that carries `organization.manage`. An actor may
