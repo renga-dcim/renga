@@ -18,7 +18,7 @@ only see and operate a few hosts for two weeks.
 This RFD replaces the role lists with one model. A role is a named combination
 of permissions. Attributes of the person decide which roles they hold, and
 attributes of the resource decide where each role applies. RFDs 12, 13, and 14
-already need scoped, expiring grants, and RFDs 15 and 16 grant access from an
+already need scoped grants that can expire, and RFDs 15 and 16 grant access from an
 identity provider; all of them become instances of this model instead of
 separate grant tables.
 
@@ -105,9 +105,10 @@ in context code; they are not permissions.
 
 RFDs 12, 13, and 14 add `queries.run`, `queries.run_sensitive`,
 `terminal.open`, `vm.power`, and `vm.approve` when they are implemented. Those
-are _explicit_ permissions: no built-in role includes them, nobody holds them by
-default, including owners, and an assignment that grants one must expire. Each
-explicit permission declares its longest validity, such as RFD 13's 30 days.
+are _explicit_ permissions: no built-in role includes them and nobody holds them
+by default, including owners. An assignment that grants one may expire, and
+must when the organization sets a maximum validity for explicit grants
+(link:../0019/README.adoc[RFD 19]).
 
 == Roles
 
@@ -149,7 +150,8 @@ and an expiry:
   claim value (RFD 15);
 * _condition_: which resources it covers (below); none means the whole
   organization;
-* _valid until_: optional, required for explicit permissions;
+* _valid until_: optional, and required for explicit permissions when the
+  organization sets a maximum validity;
 * _source_: `manual`, a claim mapping, or a directory connection, with the
   same source-bound validity rules RFDs 15 and 16 define;
 * who created it, when, and why.

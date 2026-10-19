@@ -32,8 +32,8 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   set by triage rules and unconfirmed placement against `jobs.request`.
 * [ ] Refresh connected LiveView scopes on assignment, team, and expiry
   changes; test that a revoked assignment stops a LiveView mutation.
-* [ ] Add explicit permissions with required expiry and per-permission maximum
-  validity, ready for RFDs 12, 13, and 14.
+* [ ] Add explicit permissions with optional expiry, enforcing the RFD 19
+  organization maximum validity, ready for RFDs 12, 13, and 14.
 * [ ] Add the access views on member and resource pages, and name the missing
   permission when an action is refused.
 * [ ] Amend RFDs 12, 13, 14, 15, and 16 to use assignments.
