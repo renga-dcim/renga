@@ -37,6 +37,10 @@ check-rfds:
 	@./scripts/check-rfd-status.sh
 	@./scripts/check-rfd-status-test.sh
 
+.PHONY: check-ui-package
+check-ui-package:
+	@./scripts/check-ui-package.sh
+
 .PHONY: ex-lint
 ex-lint:
 	mix credo

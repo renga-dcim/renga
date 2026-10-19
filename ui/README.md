@@ -8,16 +8,32 @@ Renga depends on it by path. Another Phoenix app can depend on it by git:
 {:renga_ui, github: "renga-dcim/renga", sparse: "ui", ref: "<commit>"}
 ```
 
-The guide is [`docs/design-system.md`](../docs/design-system.md). Change
-the system here first, then bump the commit in the apps that use it.
+The [design-system guide](https://github.com/renga-dcim/renga/blob/main/docs/design-system.md)
+defines the shared visual language. Change the system here first, then bump the
+commit in the apps that use it.
 
 ## Wiring an app
 
-CSS, after `@import "tailwindcss"` and the heroicons plugin. It brings the
-tokens, the `@theme inline` names, the variants, and the `@source` lines for
-the components' classes:
+The package expects Tailwind CSS 4 and the Phoenix-generated Heroicons plugin.
+Keep `assets/vendor/heroicons.js` in the host app and its Mix dependency:
+
+```elixir
+{:heroicons,
+ github: "tailwindlabs/heroicons",
+ tag: "v2.2.0",
+ sparse: "optimized",
+ app: false,
+ compile: false,
+ depth: 1}
+```
+
+Import the host's Heroicons plugin before `renga_ui.css`. The package stylesheet
+brings the tokens, `@theme inline` names, variants, and `@source` lines for the
+components' classes:
 
 ```css
+@import "tailwindcss" source(none);
+@plugin "../vendor/heroicons";
 @import "../../deps/renga_ui/ui/assets/css/renga_ui.css";
 ```
 
@@ -37,5 +53,12 @@ import RengaUI.CoreComponents
 import RengaUI.Components
 ```
 
+Component-owned strings and validation errors use `RengaUI.Gettext`. Set its
+locale separately from the host backend and put shared translations in the
+package's `errors` domain.
+
 `RengaUI.DesignGuard` holds the rules that reject raw colors and off-scale
 values; run `RengaUI.DesignGuard.scan/1` over the app's templates in a test.
+
+Run `make check-ui-package` in the Renga repository to install the current
+commit through the documented sparse Git dependency and smoke-test this wiring.

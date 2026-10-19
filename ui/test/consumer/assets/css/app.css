@@ -1,0 +1,5 @@
+@import "tailwindcss" source(none);
+@source "../../lib";
+
+@plugin "../vendor/heroicons";
+@import "../../deps/renga_ui/ui/assets/css/renga_ui.css";

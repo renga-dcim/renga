@@ -156,6 +156,9 @@ jobs:
           cache: npm
           cache-dependency-path: assets/package-lock.json
 
+      - name: Check renga_ui consumer
+        run: ./scripts/check-ui-package.sh
+
       - name: Install Playwright
         run: npm ci --prefix assets --no-audit --no-fund
 
