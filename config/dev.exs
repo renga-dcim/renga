@@ -25,6 +25,7 @@ config :renga, RengaWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4401")],
   check_origin: false,
   code_reloader: true,
+  reloadable_apps: [:renga, :renga_ui],
   debug_errors: true,
   secret_key_base: "IaKH07wRP9zNFWkmqvnc/8+XwsTawyCtexzXJAUfhw2BdeCOyKViPxveIr06P7fA",
   watchers: [
@@ -62,7 +63,8 @@ config :renga, RengaWeb.Endpoint,
     patterns: [
       ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
       ~r"priv/gettext/.*(po)$",
-      ~r"lib/renga_web/(?:controllers|live|components|router)/?.*\.(ex|heex)$"
+      ~r"lib/renga_web/(?:controllers|live|components|router)/?.*\.(ex|heex)$",
+      ~r"ui/lib/.*\.(ex|heex)$"
     ]
   ]
 
