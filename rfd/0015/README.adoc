@@ -87,11 +87,24 @@ provider policy.
 == Organization membership from claims
 
 An operator may map a provider claim (for example `groups`, or a custom
-claim) to organization memberships and roles. On each sign-in through that
-provider, Renga grants and updates the mapped memberships and revokes ones it
-previously granted from that mapping when the claim no longer lists them.
-Memberships granted by hand are never changed by a mapping. Without a mapping,
-provider sign-in never touches memberships.
+claim) to organization memberships and roles. Renga records each mapped grant
+with the provider identity and mapping that issued it and a `valid_until` time;
+it does not flatten provider authority into an indefinite user membership.
+Authorization treats a mapped grant as a membership only while that source is
+valid.
+
+On each successful validation with the issuing provider, Renga grants, updates,
+and renews the mapped grants present in the fresh claims and revokes ones that
+are no longer present. Signing in through a password, GitHub, or another OpenID
+Connect provider never extends them. Once a grant expires it provides no access
+until its own provider is successfully validated again. Unlinking its identity
+or removing its provider or mapping immediately invalidates its grants.
+
+The first release permits at most one provider mapping to manage an
+organization, avoiding conflicting external authorities. A membership granted
+by hand takes precedence over a mapped grant for the same user and organization
+and is never changed or revoked by a mapping. Without a mapping, provider
+sign-in never touches memberships.
 
 The mapping names organizations by slug and roles by Renga's role names
 (`owner`, `admin`, `member`, `viewer`). A claim value that names an unknown

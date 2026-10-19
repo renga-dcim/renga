@@ -16,7 +16,10 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add linking and unlinking in user settings under sudo mode, refusing to
   link a subject owned by another user or remove the last usable sign-in method
   under the active policy.
-* [ ] Add claim-to-membership mapping that only manages memberships it granted.
+* [ ] Add source-bound, expiring claim-to-membership grants with manual
+  membership precedence and at most one provider mapping per organization;
+  test another sign-in method, source-provider revocation, identity unlinking,
+  and preservation of an independent manual membership.
 * [ ] Add provider session lifetimes, renewing with a refresh token or a
   `prompt=none` redirect on the next request and recomputing mapped
   memberships; test expired provider sessions, refusals, and that open
