@@ -13,8 +13,12 @@ only learns about a person when they sign in, so an offboarded person keeps
 access until their provider session lifetime runs out, and an administrator
 cannot see who the provider has assigned to Renga before each of them signs in.
 
-Renga acts as a SCIM 2.0 service provider (RFC 7643 and RFC 7644). The identity
-provider is the SCIM client and pushes changes; Renga never polls it.
+Renga accepts provisioning requests from the identity provider: it exposes a
+SCIM 2.0 API (RFC 7643 and RFC 7644), and the identity provider calls it
+whenever someone is assigned, changed, or removed. Renga never polls the
+identity provider. In SCIM's own terms Renga is the _service provider_ and the
+identity provider is the _client_. Everywhere else in this RFD, "provider"
+means the identity provider, as in RFD 15.
 
 == Connections
 
