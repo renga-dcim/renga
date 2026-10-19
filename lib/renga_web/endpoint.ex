@@ -44,6 +44,12 @@ defmodule RengaWeb.Endpoint do
     gzip: not code_reloading?,
     only: RengaWeb.static_paths()
 
+  # The design system's bundled fonts (ui/README.md, "Wiring an app").
+  plug Plug.Static,
+    at: "/",
+    from: {:renga_ui, "priv/static"},
+    only: ~w(fonts)
+
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.
   if code_reloading? do
