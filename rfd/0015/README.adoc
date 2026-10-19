@@ -117,26 +117,39 @@ and configurable per provider. Renga's remember-me cookie would otherwise keep
 a person signed in for weeks after their identity provider removed them.
 
 When the lifetime has passed, Renga confirms the person with the provider again
-on their next request and recomputes claim-mapped memberships from the fresh
-claims:
+and recomputes claim-mapped memberships only from claims that provider defines
+as current. Renewal is provider-specific.
 
-. With a refresh token, Renga renews in the background and the person sees
-  nothing.
-. Otherwise it redirects through the provider with `prompt=none`, which
-  returns the person to the page they asked for while their provider session
-  is still valid.
-. Only when the provider requires interaction, or refuses the person, does
-  Renga end the session and show the sign-in page.
+For OpenID Connect, provider configuration identifies the authoritative source
+for every mapped claim: a freshly validated ID token or UserInfo. Renga may use
+a refresh token in the background only when the resulting ID token or UserInfo
+response satisfies that provider's freshness contract and contains every
+required claim. A successful token refresh alone is not revalidation and does
+not extend either the provider session or its mapped grants. Otherwise Renga
+starts authorization with `prompt=none`; if the provider does not support a
+silent result or requires interaction, Renga asks the person to sign in again.
+
+For GitHub, Renga revalidates the stable numeric user ID through the user API
+with a usable access token, refreshing an expiring token where the GitHub OAuth
+application supports it. If that fails, it repeats the ordinary GitHub OAuth
+flow; it does not send the OpenID Connect-only `prompt=none` behavior.
+
+Missing required claims, identity changes, expired or rejected credentials, and
+provider or network failures never silently extend expired authorization.
+Renga suspends the session and its mapped access until revalidation succeeds;
+a definitive refusal ends the session and shows the sign-in page.
 
 A connected LiveView makes no new requests, so Renga checks the lifetime when
 the person next navigates rather than cutting the socket, and nobody loses
 unsaved input. Membership changes take effect on that renewal and never sign
 anyone out by themselves.
 
-Renga does not sweep memberships on a schedule: OpenID Connect gives a relying
-party no standard way to ask about a person outside a sign-in, so a sweep could
-only guess from inactivity. GitHub identities carry no group claims; their
-renewal only confirms the account is still valid.
+Renga does not sweep memberships on a schedule. OpenID Connect UserInfo can
+refresh claims for a known subject while its access token is usable, but OpenID
+Connect has no standard provisioning feed that reports every offboarding or
+membership change. Request-driven revalidation provides the bounded lifetime;
+SCIM or back-channel events are future work. GitHub identities carry no group
+claims, so their renewal only confirms that the same account is still valid.
 
 == Local sign-in policy
 

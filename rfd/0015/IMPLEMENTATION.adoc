@@ -20,10 +20,12 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   membership precedence and at most one provider mapping per organization;
   test another sign-in method, source-provider revocation, identity unlinking,
   and preservation of an independent manual membership.
-* [ ] Add provider session lifetimes, renewing with a refresh token or a
-  `prompt=none` redirect on the next request and recomputing mapped
-  memberships; test expired provider sessions, refusals, and that open
-  LiveViews are not disconnected.
+* [ ] Add provider session lifetimes and provider-specific renewal: validated
+  current ID-token or UserInfo claims and `prompt=none` for OpenID Connect, and
+  stable-user API validation or ordinary OAuth for GitHub. Test missing or
+  stale claims, refresh responses without an ID token, provider and network
+  failures, interaction requirements, identity changes, and refusals; none may
+  extend expired sessions or mapped grants.
 * [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
   with local sign-in disabled and no provider.
 * [ ] Re-authenticate provider-only users for sudo mode with `prompt=login`,
