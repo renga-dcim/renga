@@ -139,10 +139,18 @@ provider or network failures never silently extend expired authorization.
 Renga suspends the session and its mapped access until revalidation succeeds;
 a definitive refusal ends the session and shows the sign-in page.
 
-A connected LiveView makes no new requests, so Renga checks the lifetime when
-the person next navigates rather than cutting the socket, and nobody loses
-unsaved input. Membership changes take effect on that renewal and never sign
-anyone out by themselves.
+Expiry is enforced on connected LiveViews as well as HTTP requests and
+navigations. Authenticated LiveViews schedule the provider deadline and recheck
+it before protected events and data delivery. Once it passes, the socket stops
+accepting mutations and receiving organization data until provider validation
+succeeds; keeping a page open never extends authorization.
+
+The browser preserves its rendered form and unsaved input through
+reauthentication where feasible, but preserving a draft is a user-experience
+goal, not an exception to the authorization boundary. Membership changes take
+effect as soon as renewal completes; losing access to the current organization
+returns the person to organization selection rather than resuming the old
+socket scope.
 
 Renga does not sweep memberships on a schedule. OpenID Connect UserInfo can
 refresh claims for a known subject while its access token is usable, but OpenID

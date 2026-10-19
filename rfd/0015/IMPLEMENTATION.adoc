@@ -26,6 +26,10 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   stale claims, refresh responses without an ID token, provider and network
   failures, interaction requirements, identity changes, and refusals; none may
   extend expired sessions or mapped grants.
+* [ ] Enforce provider expiry on connected LiveViews: after the deadline no
+  protected event, mutation, or organization update proceeds before successful
+  revalidation. Preserve unsaved browser input through reauthentication where
+  feasible and test both the authorization boundary and draft behavior.
 * [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
   with local sign-in disabled and no provider.
 * [ ] Re-authenticate provider-only users for sudo mode with `prompt=login`,
