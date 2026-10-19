@@ -1,0 +1,20 @@
+= RFD 0015 implementation checklist
+
+Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
+
+* [ ] Read provider configuration from the environment in `config/runtime.exs`
+  and validate it at boot.
+* [ ] Add `user_identities` with a unique `(provider_id, subject)`.
+* [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
+  token validation, for `oidc` providers.
+* [ ] Add the `github` provider using verified primary emails.
+* [ ] Resolve first sign-in by linking verified emails, sign-up, or refusal;
+  test unverified emails, unconfirmed local accounts, and email changes.
+* [ ] Add linking and unlinking in user settings under sudo mode, refusing to
+  remove the last sign-in method.
+* [ ] Add claim-to-membership mapping that only manages memberships it granted.
+* [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
+  with local sign-in disabled and no provider.
+* [ ] Re-authenticate provider-only users for sudo mode with `prompt=login`,
+  `max_age`, and `auth_time`.
+* [ ] Add optional RP-initiated logout.

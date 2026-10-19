@@ -1,0 +1,127 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: accounts, authentication, security, software
+
+= RFD 15 OpenID Connect sign-in
+
+== Goal
+
+Let people sign in to Renga with an identity provider their organization already
+runs, such as Google Workspace, Microsoft Entra ID, Okta, or Keycloak, and with
+GitHub. Today Renga only offers email with a password or a magic link, so every
+deployment keeps its own credentials and has to offboard people by hand.
+
+Renga is a relying party only. It never issues tokens for other applications,
+and no provider is special to it: every provider, including whichever one an
+operator chooses as the only way in, is configuration.
+
+== Providers
+
+An operator configures zero or more providers at deploy time. Each has:
+
+* a stable `id`, used in callback URLs and stored on linked identities;
+* a display name and icon for the sign-in page;
+* a kind: `oidc` (any OpenID Connect issuer, discovered from its issuer URL) or
+  `github` (OAuth 2.0 with GitHub's user and email APIs, because GitHub is not an
+  OpenID Connect provider);
+* a client ID and client secret;
+* optional extra scopes, and an optional allowlist of email domains.
+
+Providers are configured through the environment and read in
+`config/runtime.exs`, like the rest of Renga's deployment settings, so a
+container image needs no rebuild to add one. Client secrets are never stored in
+the database or shown in the UI.
+
+Configuring providers in the UI at runtime is out of scope for this RFD; it
+needs secret storage and an audit trail that Renga does not have yet.
+
+== Sign-in flow
+
+Renga uses the authorization code flow with PKCE, a per-attempt `state`, and
+for OpenID Connect a `nonce`. It validates the ID token's signature against the
+issuer's published keys, and its issuer, audience, expiry, and nonce, before
+trusting any claim. The callback runs in the browser pipeline and ends in the
+existing session creation, so a provider sign-in produces the same session,
+`current_scope`, and organization selection as a password sign-in.
+
+== Identities and accounts
+
+A new `user_identities` table links a user to a provider subject:
+`(provider_id, subject)` is unique, and a user may have several identities.
+
+Renga matches a returning sign-in by `(provider_id, subject)` only, never by
+email, because email addresses are reassigned and some providers let users
+change them freely.
+
+The first sign-in through a provider is resolved in this order:
+
+. If a user with the same email exists, Renga links the identity only when the
+  provider asserts the email is verified (`email_verified` for OpenID Connect,
+  a verified primary address from GitHub's API) and the existing account has a
+  confirmed email. Otherwise it refuses and asks the person to sign in the
+  usual way and link the provider from settings.
+. If no user exists and the provider allows sign-up, Renga creates a confirmed
+  user from the verified email. It creates no organization membership on its
+  own; the person lands where a new password user does today.
+. Otherwise sign-in is refused.
+
+Signed-in users can link and unlink providers from their settings, which
+requires sudo mode. Renga refuses to unlink a user's last way to sign in.
+
+== Organization membership from claims
+
+An operator may map a provider claim (for example `groups`, or a custom
+claim) to organization memberships and roles. On each sign-in through that
+provider, Renga grants and updates the mapped memberships and revokes ones it
+previously granted from that mapping when the claim no longer lists them.
+Memberships granted by hand are never changed by a mapping. Without a mapping,
+provider sign-in never touches memberships.
+
+The mapping names organizations by slug and roles by Renga's role names
+(`owner`, `admin`, `member`, `viewer`). A claim value that names an unknown
+organization or role is ignored and logged, not created.
+
+== Local sign-in policy
+
+Two independent settings control local credentials:
+
+* `registration`: `open` (today's behavior), or `closed`, which removes
+  `/users/register` and creates users only through provider sign-up or an
+  administrator.
+* `local_sign_in`: `enabled` (passwords and magic links), or `disabled`, which
+  leaves provider sign-in as the only way in.
+
+Disabling local sign-in requires at least one provider to be configured;
+Renga refuses to boot otherwise rather than locking everyone out.
+
+== Re-authentication and step-up
+
+Sudo mode and RFD 13's step-up authentication need proof that the person is
+present now. For a user without a password, Renga sends them back through their
+provider with `prompt=login` and `max_age` set, and accepts the result only
+when the ID token's `auth_time` is within the window. GitHub cannot assert
+`auth_time`, so a GitHub identity alone cannot satisfy step-up; such users need
+WebAuthn or a password for RFD 13 actions.
+
+== Sign-out
+
+Signing out ends the Renga session. When the provider publishes an
+`end_session_endpoint`, an operator may enable RP-initiated logout so Renga also
+redirects there. Back-channel logout is out of scope for the first release.
+
+== Machine access
+
+Provider sign-in is for people in browsers. Agents keep RFD 3 intake keys and
+RFD 13 installation credentials; nothing in this RFD changes `/api`
+authentication.
+
+== Open questions
+
+* Library choice: `oidcc` is OpenID-certified and maintained under the Erlang
+  Ecosystem Foundation; `assent` covers GitHub and OpenID Connect behind one
+  interface. A GitHub adapter is small enough to write if `oidcc` is chosen.
+* Whether claim-mapped memberships should also be revoked on a schedule for
+  people who stop signing in, or only at their next sign-in.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

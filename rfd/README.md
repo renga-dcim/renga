@@ -20,6 +20,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [12: Operational queries](0012/README.adoc) | Typed, read-only on-demand host queries on durable jobs, with sensitivity-based authorization |
 | [13: Live terminal](0013/README.adoc) | Installation credentials, terminal grants, step-up authentication, channel relay, and session recording |
 | [14: VM lifecycle operations](0014/README.adoc) | Idempotent VM power actions, desired power state and drift, grants, and two-operator approval |
+| [15: OpenID Connect sign-in](0015/README.adoc) | Provider configuration, identity linking, claim-mapped memberships, local sign-in policy, and re-authentication |
 
 ## Source format
 
