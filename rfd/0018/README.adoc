@@ -1,0 +1,124 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: authorization, inventory, security, software
+
+= RFD 18 Resource groups
+
+== Goal
+
+Let an organization draw access boundaries that cut across sites and teams,
+such as environment (production, staging, lab), customer, or compliance scope,
+and use them in RFD 17 conditions.
+
+RFD 17 scopes access by resource, kind, owner team, and site. Those cover where
+a resource is, what it is, and who owns it, but a resource has one owner team
+and one site, so they cannot express a second axis: staging and production
+hosts often share racks and a team, and a colocation customer's servers span
+several. RFD 17 also never reads agent-reported labels, because anyone holding an
+organization's intake key can report any label.
+
+A resource group is a named set of resources that people curate. It is the one
+new attribute this RFD adds; everything else about authorization stays in RFD
+17.
+
+Resource groups are unrelated to directory groups (RFD 16), which are groups of
+people.
+
+== Groups and sets
+
+A resource group has a name, a description, and its members. A resource may
+belong to any number of groups.
+
+Groups may belong to a group set, such as `Environment` with `Production`,
+`Staging`, and `Lab`, or `Customer` with one group per customer. A set may be
+exclusive, in which case a resource belongs to at most one of its groups, and
+moving a resource between two groups of the set is a single change. Exclusive
+sets give the guarantee a single label key would ("a host is not both
+production and staging") without trusting reported data. A tenant model like
+NetBox's is an exclusive `Customer` set.
+
+Groups and sets are organization-wide definitions, managed with a new
+`groups.manage` permission that the built-in `owner` and `admin` roles include.
+
+== Membership
+
+Only people change membership. Agents, reconcilers, and triage rules never add
+or remove a resource, so group membership is a trusted attribute in RFD 17's
+sense and operational permissions may match it.
+
+Adding a resource to a group, removing it, or moving it within an exclusive set
+requires `inventory.edit` over the resource. Group membership is an attribute
+that conditions read, so RFD 17's before-and-after rule applies: the actor must
+cover the resource both before and after the change. Someone who may edit
+staging hosts cannot add a production host to `Staging`, and cannot move a
+staging host into a group they do not cover.
+
+Membership can be changed from a resource page, from a group page, or in bulk
+from any list or saved view. A bulk change adds the resources the selection
+contains at that moment; a group never follows a query, because a saved view's
+filters can match observed data and its owner can edit it. A bulk change is
+refused as a whole if the actor does not cover every selected resource.
+
+=== Containers
+
+A site, location, or rack may itself be a member. Its membership extends to the
+resources placed in it, so adding a customer's cage to `Acme` covers every
+server racked in that cage, and a server that leaves the cage leaves the group
+with it. For operational permissions, only confirmed placement extends
+membership, matching RFD 17's trusted attributes. Each resource page shows
+whether a membership is direct or comes from a container.
+
+== Conditions
+
+RFD 17 conditions gain a `group` attribute, satisfied when the resource is a
+direct or contained member of any listed group:
+
+[source,json]
+----
+{
+  "group": ["<staging group id>"],
+  "kind": ["host"]
+}
+----
+
+This reads as "hosts in Staging". Like every RFD 17 condition it compiles to an
+SQL predicate: each resource's access row carries its effective group IDs, kept
+current in the transaction that changes membership or placement, with an index
+for containment queries. Adding a rack to a group therefore updates the rows of
+the resources placed in it in the same transaction.
+
+Deleting a group removes it from every condition that names it. A clause left
+with no values matches nothing, so access fails closed, and the assignment is
+flagged in the access view rather than silently widened.
+
+== Visibility
+
+A group's name can itself be sensitive, such as a customer's name. A person sees
+a group if they hold `groups.manage`, hold an assignment that names it, or can
+read at least one of its members; the resource page lists only the groups the
+viewer can see. Counts on a group page include only members the viewer can
+read.
+
+== Audit
+
+Creating, renaming, or deleting a group or set, and every membership change, is
+recorded in Activity on both the group and the resource, with its actor, before
+and after values, and reason.
+
+== Open questions
+
+. *Containers in the first release.* Container membership is what makes
+  customer cages and per-site environments practical, but it couples groups to
+  placement. The proposal includes it.
+. *Suggested membership.* Triage rules could propose group membership for a
+  person to accept in the Inbox, much as they propose owners. The proposal
+  leaves membership entirely manual at first.
+
+== Future work
+
+* Triage-rule suggestions for group membership.
+* Groups as the target of RFD 15 claim mappings and RFD 16 group mappings,
+  so an identity provider can grant access to a customer's group directly.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]
