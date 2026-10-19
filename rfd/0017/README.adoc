@@ -125,15 +125,15 @@ The four built-in roles keep today's behavior exactly and cannot be edited:
 |`inventory.edit`, `requests.decide`, `catalog.expectations`, `dcim.edit`,
  `ipam.edit`, `topology.edit`, `jobs.request`, `views.share`, `teams.manage`,
  `triage_rules.manage`, `intake_keys.manage` |yes |yes | |
-|`members.manage` |yes |yes | |
-|`roles.manage`, `organization.manage` |yes | | |
+|`members.manage`, `roles.manage` |yes |yes | |
+|`organization.manage` |yes | | |
 |===
 
 `members.manage` and `roles.manage` are new; Renga has no member management UI
-today. An admin may manage members but may not grant `owner` or any permission
-the admin does not hold (see <<administration>>).
+today. An admin may manage members and roles but may not grant `owner` or any
+permission the admin does not hold (see <<administration>>).
 
-Owners can define custom roles from any non-explicit permissions,
+Owners and admins can define custom roles from any non-explicit permissions,
 for example a `network engineer` role with `inventory.reconcile`,
 `findings.act`, `ipam.edit`, and `topology.edit`. Explicit permissions live in
 their own roles, so a long-lived role never quietly carries terminal or power
@@ -326,9 +326,14 @@ reaches these guards; no assignment bypasses them.
 
 * Members, custom roles, and assignments are managed in organization settings
   under sudo mode.
-* An actor may create or assign a role only if the actor holds each of its
-  permissions over at least the assignment's condition. Admins cannot grant
-  `owner`, `roles.manage`, or `organization.manage`.
+* An actor may create, change, or delete a role only if the actor holds each
+  of its permissions without a condition, both before and after the change, so
+  an admin cannot edit a role that carries `organization.manage`. An actor may
+  assign a role only if the actor holds each of its permissions over at least
+  the assignment's condition. Admins cannot grant `owner` or
+  `organization.manage`.
+* Changing a role changes access for everyone who holds it, so the role page
+  shows how many people and assignments it affects before a change is saved.
 * `owner` is never a custom role or conditioned. An organization always keeps at
   least one active owner, which is its recovery path.
 * Owners and admins may grant explicit permissions to themselves, as RFD 13
@@ -356,8 +361,6 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 == Open questions
 
-. *Admins and roles.* The proposal lets admins manage members and assignments
-  but reserves custom role definitions for owners.
 . *Subject-relative conditions.* `$subject_teams` is the main reason for team
   membership. The proposal includes it; the alternative is naming teams
   explicitly in every assignment.
