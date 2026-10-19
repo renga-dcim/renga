@@ -35,7 +35,23 @@ if config_env() == :prod do
   # protects against an impersonated database rather than only encrypting.
   database_ssl =
     if System.get_env("DATABASE_SSL") in ~w(true 1) do
-      database_host = database_url |> URI.parse() |> Map.fetch!(:host) |> String.to_charlist()
+      database_uri = URI.parse(database_url)
+
+      conflicting_ssl? =
+        database_uri.query
+        |> then(&(&1 || ""))
+        |> URI.query_decoder()
+        |> Enum.any?(fn
+          {"ssl", "true"} -> false
+          {"ssl", _value} -> true
+          _other -> false
+        end)
+
+      if conflicting_ssl? do
+        raise "DATABASE_SSL=true cannot be combined with a DATABASE_URL ssl option other than ssl=true"
+      end
+
+      database_host = database_uri |> Map.fetch!(:host) |> String.to_charlist()
 
       [
         verify: :verify_peer,
