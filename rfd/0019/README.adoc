@@ -3,7 +3,7 @@
 :discussion: https://github.com/renga-dcim/renga/pull/171
 :labels: accounts, authentication, security, software
 
-= RFD 19 Passkeys and multi-factor authentication
+= RFD 19 Passkeys, multi-factor authentication, and security settings
 
 == Goal
 
@@ -18,6 +18,12 @@ password typed again proves no more than the first time.
 This RFD adds passkeys, a time-based one-time password (TOTP) as a second
 factor, and recovery codes. It removes sudo mode, and keeps one narrow, fast
 check for the few changes that could take over an account.
+
+It also collects Renga's security settings in one place. Renga always enforces
+the protections that make a feature safe to exist at all. Anything beyond that
+is an organization setting that its owners choose to turn on, so nobody is
+asked to authenticate again, wait for a second person, or renew access unless
+their organization decided it should work that way.
 
 Sign-in through an identity provider (RFD 15) is unchanged: that provider is
 responsible for its own multi-factor authentication.
@@ -92,6 +98,7 @@ any other on this list within the next five minutes, and nothing else.
 
 RFD 15's references to sudo mode mean this re-check.
 
+[[terminal-step-up]]
 == Terminal step-up
 
 RFD 13 step-up before opening a terminal becomes an organization opt-in, off by
@@ -99,17 +106,122 @@ default. An organization that turns it on asks for a passkey or authenticator
 code within the last five minutes, or a fresh password from someone who has
 neither. Without it, terminals still require the organization and agent to
 enable them and a terminal grant, and record sessions unless the organization
-turns recording off (link:../0020/README.adoc[RFD 20]). The account re-check
+turns recording off (see <<security-settings>>). The account re-check
 never satisfies step-up, and step-up never satisfies the re-check.
 
-== Organization policy
+[[security-settings]]
+== Security settings
+
+=== Always on
+
+These are not settings, because without them a feature is unsafe or access
+cannot end:
+
+* Terminals and VM operations are disabled until both the agent enables them
+  locally and the organization enables them (RFDs 13 and 14).
+* Privileged jobs need an approved installation key and a trusted target
+  binding (RFD 13).
+* Explicit permissions such as `terminal.open` and `vm.power` are held only
+  through an assignment someone made; no role includes them by default (RFD
+  17).
+* The account re-check above.
+* Access granted by an identity provider lasts only as long as the provider
+  session, 12 hours by default and set per provider by the operator (RFD 15).
+  This is how claim-mapped access ends when someone leaves the identity
+  provider, unless the organization uses SCIM (RFD 16).
+* Every grant, setting change, terminal session, and VM operation is recorded
+  in Activity, and every replay of a recording is logged.
+
+=== Organization settings
+
+[cols="2,1,2"]
+|===
+|Setting |Default |Defined in
+
+|Require multi-factor authentication for members
+|off
+|<<mfa-requirement>>
+
+|Require step-up authentication before opening a terminal
+|off
+|<<terminal-step-up>>, link:../0013/README.adoc[RFD 13]
+
+|Maximum validity of explicit permission grants
+|none
+|<<grant-validity>>
+
+|Record terminal sessions
+|on
+|<<terminal-recording>>, RFD 13
+
+|Recording retention
+|one year
+|RFD 13
+
+|Require a second operator for VM `force_off` and `reset`
+|off
+|link:../0014/README.adoc[RFD 14]
+|===
+
+Terminals and VM operations themselves are also organization settings, off by
+default, as RFDs 13 and 14 define.
+
+[[mfa-requirement]]
+=== MFA requirement
 
 An organization owner may require MFA. Members who sign in with an email
 account without MFA are sent to enroll a passkey or authenticator app before
 they can open that organization; their other organizations are unaffected.
 Sign-in through an RFD 15 identity provider satisfies the requirement, because
-that provider enforces its own factors. Turning the requirement on never signs
-anyone out; it applies at their next request to the organization.
+that provider enforces its own factors.
+
+[[grant-validity]]
+=== Grant validity
+
+An assignment that grants an explicit permission may have an expiry or none,
+like any other assignment. An organization may set a maximum validity, for
+example 30 days. With a maximum set, every new or renewed grant of an explicit
+permission must expire within it, and Renga proposes the maximum as the expiry
+when someone creates one.
+
+Setting or lowering the maximum shortens existing grants that outlive it, so
+they end at the maximum measured from the moment the setting changed. It never
+ends a grant immediately, and running sessions continue until their own grant
+or lease ends.
+
+[[terminal-recording]]
+=== Terminal recording
+
+Recording is on by default, because a recording is the only record of what
+someone typed on a host. An organization that turns it off still records who
+opened each session, on which host, when, and for how long, and the session
+start still says whether the session is recorded. Turning recording off or on
+applies to sessions that start afterwards. Existing recordings keep their
+retention.
+
+=== Changing settings
+
+Changing a security setting requires the `organization.manage` permission (RFD
+17), which only owners hold among the built-in roles. Each change is recorded
+in Activity with the actor, the before and after values, and a reason. The
+settings page shows each setting's current value and who last changed it.
+
+A setting that adds a requirement applies at each member's next request to
+the organization; turning it on never signs anyone out or ends a running
+terminal session.
+
+=== Amendments
+
+* RFD 1: live terminal access is disabled by default and requires
+  authentication, authorization, agent-side policy, short per-session leases,
+  and target-level access rules. Step-up authentication and recording are
+  organization settings defined here.
+* RFD 13: step-up is an organization opt-in; terminal grants may expire, within
+  the organization's maximum if one is set; recording follows the
+  organization's setting.
+* RFD 14: VM operator grants follow the same validity rule as terminal grants.
+* RFD 17: an assignment that grants an explicit permission may expire, and must
+  when the organization sets a maximum validity.
 
 == Recovery
 
@@ -140,7 +252,8 @@ and an email change also notifies the old address.
 
 == Future work
 
-* Requiring MFA for the whole deployment, not just per organization.
+* Deployment-wide defaults that an operator can set or lock for every
+  organization, such as requiring MFA everywhere.
 * Checking `amr` from identity providers that send it.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]

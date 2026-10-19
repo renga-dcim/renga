@@ -1,6 +1,6 @@
 = RFD 0019 implementation checklist
 
-Implements link:README.adoc[RFD 19: Passkeys and multi-factor authentication].
+Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and security settings].
 
 * [ ] Add passkey registration and sign-in with a pinned, reviewed WebAuthn
   library, user verification required, no attestation, and browser autofill.
@@ -16,3 +16,14 @@ Implements link:README.adoc[RFD 19: Passkeys and multi-factor authentication].
 * [ ] Add the operator release command that removes a user's MFA.
 * [ ] Add the per-account security log and email notices for credential
   changes.
+* [ ] Add a security section to organization settings listing every setting
+  with its current value and who last changed it, editable with
+  `organization.manage`, and record each change in Activity.
+* [ ] Add the optional maximum validity for explicit permission grants;
+  propose it as the default expiry and reject grants beyond it.
+* [ ] Shorten existing grants that outlive a newly set or lowered maximum to
+  the maximum from the time of the change; test that no grant ends
+  immediately and running sessions continue.
+* [ ] Add the terminal recording setting, on by default, applying to sessions
+  that start afterwards; keep session metadata when recording is off and tell
+  the user at session start whether the session is recorded.
