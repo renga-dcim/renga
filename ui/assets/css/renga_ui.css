@@ -10,13 +10,16 @@
 /* Accent, theme, status and density tokens (RFD 8). */
 @import "./tokens.css";
 
+/* Bundled IBM Plex faces. */
+@import "./fonts.css";
+
 /*
   Tailwind names for the tokens. `inline` keeps the var() references so
   accent, theme and density switch at runtime without regenerating CSS.
 */
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
   --color-canvas: var(--rg-canvas);
   --color-surface: var(--rg-surface);

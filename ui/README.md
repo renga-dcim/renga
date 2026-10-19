@@ -37,6 +37,17 @@ components' classes:
 @import "../../deps/renga_ui/ui/assets/css/renga_ui.css";
 ```
 
+The stylesheet loads IBM Plex Sans and IBM Plex Mono from `/fonts`. Serve the
+package's bundled files there from the endpoint, next to the app's own
+`Plug.Static`:
+
+```elixir
+plug Plug.Static,
+  at: "/",
+  from: {:renga_ui, "priv/static"},
+  only: ~w(fonts)
+```
+
 JS, with an esbuild alias such as `--alias:renga_ui=../deps/renga_ui/ui/assets/js`:
 
 ```js

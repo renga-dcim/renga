@@ -110,9 +110,14 @@ Overlay scrims use `bg-fg/25`. The command palette's native `<dialog>` uses
 
 ## Typography
 
-Fonts are the system stacks in `app.css`: `font-sans` for everything and
-`font-mono` for machine values (identifiers, serials, IP addresses, MACs,
-counts, keyboard hints, and object-page subtitles).
+The faces are IBM Plex Sans (`font-sans`, for everything) and IBM Plex Mono
+(`font-mono`, for machine values: identifiers, serials, IP addresses, MACs,
+counts, keyboard hints, and object-page subtitles). Plex's squared curves
+match the brick wordmark, and the mono keeps 0/O and 1/l/I distinct at 12px.
+The `renga_ui` package bundles weights 400, 500 and 600 (Latin and Latin
+Extended) and apps serve them at `/fonts`, so installs without internet access
+look the same; the system stacks remain as fallbacks. Use only those three
+weights, since others would be synthesized.
 
 | Class | Role |
 |---|---|
