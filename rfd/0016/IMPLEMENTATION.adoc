@@ -1,0 +1,29 @@
+= RFD 0016 implementation checklist
+
+Implements link:README.adoc[RFD 16: SCIM provisioning].
+
+* [ ] Add SCIM connections per organization, created by owners under sudo
+  mode, naming an `oidc` provider and a correlation claim, and refusing an
+  organization that already has an RFD 15 claim mapping.
+* [ ] Add connection bearer tokens stored as hashes, revealed once, with two
+  active tokens for rotation and immediate revocation; test that tokens only
+  reach `/scim/v2` and only their own organization.
+* [ ] Serve `ServiceProviderConfig`, `ResourceTypes`, and `Schemas`.
+* [ ] Add `scim_users`, `scim_groups`, and group memberships with
+  per-connection uniqueness on `userName` and `externalId`.
+* [ ] Implement `Users` and `Groups` create, read, replace, patch, delete, and
+  list with `eq` filters and bounded pagination; return SCIM errors.
+* [ ] Accept Okta and Microsoft Entra ID PATCH variants and test them against
+  recorded request fixtures.
+* [ ] Link directory entries at provider sign-in and reauthentication by the
+  correlation claim; allow provider sign-up for active entries; keep RFD 15's
+  email collision refusal and test that SCIM never changes account email,
+  name, credentials, or other memberships.
+* [ ] Grant memberships from the default role and group mappings as
+  source-bound grants, with manual membership precedence.
+* [ ] Deprovision on `active` false, delete, group removal, and connection
+  deletion: revoke grants, expire the identity's provider sessions, and move
+  connected LiveViews to organization selection.
+* [ ] Show directory entries, linked or not, in the organization member list.
+* [ ] Bound request size and rate limit per connection.
+* [ ] Record audit entries for SCIM changes and connection administration.

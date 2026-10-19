@@ -1,0 +1,147 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: accounts, authentication, security, software
+
+= RFD 16 SCIM provisioning
+
+== Goal
+
+Let an organization's identity provider keep its Renga roster current: add
+people, change their roles, and remove them the moment the provider does. RFD 15
+only learns about a person when they sign in, so an offboarded person keeps
+access until their provider session lifetime runs out, and an administrator
+cannot see who the provider has assigned to Renga before each of them signs in.
+
+Renga acts as a SCIM 2.0 service provider (RFC 7643 and RFC 7644). The identity
+provider is the SCIM client and pushes changes; Renga never polls it.
+
+== Connections
+
+An organization owner creates a SCIM connection for their organization under
+sudo mode. A connection has:
+
+* the organization it manages; a connection never reaches another organization;
+* the ID of an RFD 15 `oidc` provider whose identities it describes. GitHub
+  identities cannot be provisioned because GitHub has no SCIM client;
+* the correlation claim, the ID token claim whose value the provider sends as
+  each user's SCIM `externalId` (`sub` by default; `oid` for Microsoft Entra ID,
+  whose `sub` is pairwise per application);
+* an optional default role for every active provisioned user, and a mapping
+  from SCIM groups to Renga roles;
+* up to two bearer tokens, so a token can be rotated without downtime.
+
+Tokens follow RFD 3 intake keys: Renga generates them, shows each once, and
+stores only a hash. The organization owner can revoke a token at any time.
+SCIM requests authenticate only with these tokens; a browser session never
+reaches the SCIM endpoints, and a SCIM token never reaches anything else.
+
+An organization has at most one external membership authority: either one RFD
+15 claim mapping or one SCIM connection. Two sources writing the same roster
+would fight, and the first release does not define a merge.
+
+== Endpoints
+
+The SCIM base URL is `/scim/v2`; the bearer token selects the connection and so
+the organization, so one URL serves every organization. Renga implements:
+
+* `ServiceProviderConfig`, `ResourceTypes`, and `Schemas`;
+* `Users`: create, read, replace, patch, delete, and list;
+* `Groups`: create, read, replace, patch (including member add and remove),
+  delete, and list.
+
+Listing supports `startIndex` and `count` pagination with a maximum page size,
+and filters of the form `attribute eq "value"` on `userName`, `externalId`,
+`displayName`, and `id`, which is what the major identity providers send.
+Bulk operations, sorting, ETags, password changes, and the `/Me` endpoint are
+not supported and are reported as such in `ServiceProviderConfig`.
+
+Requests are bounded in size and rate limited per connection. Errors use the
+SCIM error schema. A duplicate `userName` or `externalId` within one connection
+is a `409` with `scimType` `uniqueness`.
+
+Providers differ in small ways, such as PATCH operation names in different
+cases, booleans sent as strings, and value-filtered paths like
+`members[value eq "..."]`. Renga accepts these forms for the attributes it
+supports. Compatibility with Okta and Microsoft Entra ID is tested against
+recorded request fixtures.
+
+== Directory entries
+
+A provisioned SCIM user is a directory entry belonging to its connection, not a
+Renga account. A new `scim_users` table holds the connection, a Renga-assigned
+SCIM `id`, the `externalId`, `userName`, display name, primary email, `active`,
+the remaining attributes as received, and an optional link to a Renga user.
+`scim_groups` and their memberships hold groups the same way.
+
+Renga does not create accounts from SCIM. An organization's provider is
+authoritative for that organization, not for the account a person may also use
+in other organizations, so a SCIM request never sets or changes a Renga user's
+email, name, credentials, or other memberships. Not creating accounts also
+means a connection cannot reserve an email address for an account its owner
+never signs in to.
+
+A directory entry links to a Renga user when that user signs in or reauthenticates
+through the connection's provider and the validated ID token's correlation
+claim equals the entry's `externalId`. If the person has no Renga account yet,
+the active directory entry permits RFD 15 provider sign-up for them even when
+the provider otherwise disallows sign-up. RFD 15's rules still hold: Renga
+never links by email, and an email collision with an existing account is
+refused until the person signs in to that account and links the provider under
+sudo mode, which then links the entry too.
+
+Organization owners and admins can see directory entries in the organization's
+member list, including entries not yet linked to an account, so they can tell
+who the provider has assigned and who has not signed in yet.
+
+== Memberships
+
+A linked, active directory entry produces a membership grant for its
+organization. The role is the highest of the connection's default role and the
+roles mapped from the entry's SCIM groups; with neither, the entry grants
+nothing. Groups name organizations implicitly, because the connection belongs
+to exactly one organization, so the mapping only names roles (`owner`,
+`admin`, `member`, `viewer`).
+
+Like RFD 15 claim-mapped grants, SCIM grants record the connection that issued
+them and are valid only while that source is: the connection exists, the
+entry is active and linked, and the group mapping still produces the role. A
+membership granted by hand takes precedence over a SCIM grant for the same
+user and organization and is never changed or revoked by SCIM.
+
+Because the provider pushes every change, SCIM grants do not expire on a timer.
+RFD 15's provider session lifetime still applies to the sessions themselves.
+
+== Deprovisioning
+
+Setting `active` to false, deleting the user, removing them from every mapped
+group, or deleting the connection takes effect when the request completes:
+
+. Renga revokes the entry's grants for that organization.
+. Renga marks the provider sessions backed by the entry's linked identity as
+  expired, so the next request or LiveView event must revalidate with the
+  provider under RFD 15's rules, which an offboarded person fails.
+. Connected LiveViews scoped to the organization drop to organization
+  selection, the same way RFD 15 handles losing access during renewal.
+
+Deprovisioning never deletes the Renga account, which may still belong to other
+organizations or hold its own credentials. Deleting a directory entry removes
+the entry and its group memberships; its activity history stays attributed to
+the user.
+
+== Audit
+
+Every SCIM change records the connection, the token used, the request ID, the
+directory entry or group, and the resulting grant change. Token creation,
+rotation, and revocation and mapping changes record the owner who made them.
+These records are kept with the organization so an owner can review why a
+person gained or lost access.
+
+== Future work
+
+* Push-based account updates that are safe across organizations, if Renga later
+  supports organizations that own their members' accounts outright.
+* SCIM-managed organization creation, once an operator-level SCIM client is
+  needed.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]
