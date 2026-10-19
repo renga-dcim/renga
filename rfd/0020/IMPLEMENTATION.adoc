@@ -1,0 +1,17 @@
+= RFD 0020 implementation checklist
+
+Implements link:README.adoc[RFD 20: Organization security settings].
+
+* [ ] Add a security section to organization settings listing every setting
+  with its current value and who last changed it, editable with
+  `organization.manage`.
+* [ ] Record each setting change in Activity with its actor, before and after
+  values, and reason.
+* [ ] Add the optional maximum validity for explicit permission grants;
+  propose it as the default expiry and reject grants beyond it.
+* [ ] Shorten existing grants that outlive a newly set or lowered maximum to
+  the maximum from the time of the change; test that no grant ends
+  immediately and running sessions continue.
+* [ ] Add the terminal recording setting, on by default, applying to sessions
+  that start afterwards; keep session metadata when recording is off and tell
+  the user at session start whether the session is recorded.

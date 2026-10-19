@@ -22,6 +22,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [14: VM lifecycle operations](0014/README.adoc) | Idempotent VM power actions, desired power state and drift, grants, and two-operator approval |
 | [15: OpenID Connect sign-in](0015/README.adoc) | Provider configuration, identity linking, claim-mapped memberships, local sign-in policy, and re-authentication |
 | [19: Passkeys and multi-factor authentication](0019/README.adoc) | Passkeys, authenticator apps, recovery codes, organization MFA requirement, and replacing sudo mode with a narrow account re-check |
+| [20: Organization security settings](0020/README.adoc) | Every opt-in security setting and its default, optional grant expiry, and terminal recording as a setting |
 
 ## Source format
 

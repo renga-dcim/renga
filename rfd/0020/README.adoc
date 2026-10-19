@@ -1,0 +1,128 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: accounts, authentication, authorization, security, software
+
+= RFD 20 Organization security settings
+
+== Goal
+
+Keep Renga's security measures predictable for the people who use it. Renga
+always enforces the protections that make a feature safe to exist at all.
+Anything beyond that is an organization setting that its owners choose to turn
+on, so nobody is asked to authenticate again, wait for a second person, or
+renew access unless their organization decided it should work that way.
+
+Earlier RFDs made several such measures mandatory. This RFD lists every
+security setting in one place, with its default, and amends RFDs 1, 13, 14, and
+17 so that terminal and VM grants no longer have to expire and terminal
+recording becomes a setting.
+
+== Always on
+
+These are not settings, because without them a feature is unsafe or access
+cannot end:
+
+* Terminals and VM operations are disabled until both the agent enables them
+  locally and the organization enables them (RFDs 13 and 14).
+* Privileged jobs need an approved installation key and a trusted target
+  binding (RFD 13).
+* Explicit permissions such as `terminal.open` and `vm.power` are held only
+  through an assignment someone made; no role includes them by default (RFD
+  17).
+* Changing an email address, password, sign-in credential, or linked identity
+  provider asks for the account re-check (RFD 19). It guards against someone
+  with a stolen session keeping the account.
+* Access granted by an identity provider lasts only as long as the provider
+  session, 12 hours by default and set per provider by the operator (RFD 15).
+  This is how claim-mapped access ends when someone leaves the identity
+  provider, unless the organization uses SCIM (RFD 16).
+* Every grant, setting change, terminal session, and VM operation is recorded
+  in Activity, and every replay of a recording is logged.
+
+== Settings
+
+[cols="2,1,2"]
+|===
+|Setting |Default |Defined in
+
+|Require multi-factor authentication for members
+|off
+|link:../0019/README.adoc[RFD 19]
+
+|Require step-up authentication before opening a terminal
+|off
+|link:../0013/README.adoc[RFD 13], RFD 19
+
+|Maximum validity of explicit permission grants
+|none
+|this RFD
+
+|Record terminal sessions
+|on
+|this RFD, RFD 13
+
+|Recording retention
+|one year
+|RFD 13
+
+|Require a second operator for VM `force_off` and `reset`
+|off
+|link:../0014/README.adoc[RFD 14]
+|===
+
+Terminals and VM operations themselves are also organization settings, off by
+default, as RFDs 13 and 14 define.
+
+=== Grant validity
+
+An assignment that grants an explicit permission may have an expiry or none,
+like any other assignment. An organization may set a maximum validity, for
+example 30 days. With a maximum set, every new or renewed grant of an explicit
+permission must expire within it, and Renga proposes the maximum as the expiry
+when someone creates one.
+
+Setting or lowering the maximum shortens existing grants that outlive it, so
+they end at the maximum measured from the moment the setting changed. It never
+ends a grant immediately, and running sessions continue until their own grant
+or lease ends.
+
+=== Terminal recording
+
+Recording is on by default, because a recording is the only record of what
+someone typed on a host. An organization that turns it off still records who
+opened each session, on which host, when, and for how long, and the session
+start still says whether the session is recorded. Turning recording off or on
+applies to sessions that start afterwards. Existing recordings keep their
+retention.
+
+== Changing settings
+
+Security settings are organization settings, so changing them requires the
+`organization.manage` permission (RFD 17), which only owners hold among the
+built-in roles. Each change is recorded in Activity with the actor, the before
+and after values, and a reason. The settings page shows each setting's current
+value and who last changed it.
+
+A setting that adds a requirement applies at each member's next request to
+the organization; turning it on never signs anyone out or ends a running
+terminal session.
+
+== Amendments
+
+* RFD 1: live terminal access is disabled by default and requires
+  authentication, authorization, agent-side policy, short per-session leases,
+  and target-level access rules. Strong step-up authentication and recording
+  are organization settings defined here.
+* RFD 13: terminal grants may expire, within the organization's maximum if one
+  is set; recording follows the organization's setting.
+* RFD 14: VM operator grants follow the same validity rule as terminal grants.
+* RFD 17: an assignment that grants an explicit permission may expire, and must
+  when the organization sets a maximum validity.
+
+== Future work
+
+* Deployment-wide defaults that an operator can set or lock for every
+  organization, such as requiring MFA everywhere.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]
