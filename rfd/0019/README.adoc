@@ -98,7 +98,8 @@ RFD 13 step-up before opening a terminal becomes an organization opt-in, off by
 default. An organization that turns it on asks for a passkey or authenticator
 code within the last five minutes, or a fresh password from someone who has
 neither. Without it, terminals still require the organization and agent to
-enable them, an expiring terminal grant, and recording. The account re-check
+enable them and a terminal grant, and record sessions unless the organization
+turns recording off (link:../0020/README.adoc[RFD 20]). The account re-check
 never satisfies step-up, and step-up never satisfies the re-check.
 
 == Organization policy

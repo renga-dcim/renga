@@ -10,10 +10,10 @@
 Give authorized operators an interactive terminal on a host through Renga, when
 nothing else will do, with more control and a better record than handing out
 SSH access. RFD 1 requires live terminal access to be disabled by default and to
-need strong authentication, RBAC, agent-side allow/deny policy, short
-per-session leases, target-level access rules, and session recording. This RFD
-designs each, and the installation credentials that terminals and RFD 14's VM
-operations both need.
+need authentication, RBAC, agent-side allow/deny policy, short per-session
+leases, and target-level access rules, with step-up authentication and session
+recording as organization settings (RFD 19). This RFD designs each, and the
+installation credentials that terminals and RFD 14's VM operations both need.
 
 == Installation credentials
 
@@ -60,9 +60,10 @@ A terminal session requires all of these:
   `run_as` may not be root, and the agent refuses to start a session as UID 0.
 . The organization enables terminals.
 . The user holds a terminal grant covering the target. A grant names a target
-  set (resources, a saved view, or an owning team) and an expiry of at most 30
-  days. Owners and admins create grants; nobody holds one by default, including
-  owners.
+  set (resources, a saved view, or an owning team) and may expire, within the
+  organization's maximum validity if it sets one
+  (link:../0019/README.adoc[RFD 19]). Owners and admins create grants; nobody
+  holds one by default, including owners.
 . If the organization requires step-up authentication for terminals, the
   user has authenticated strongly within the last five minutes: a passkey
   assertion or authenticator code (link:../0019/README.adoc[RFD 19]), or a
@@ -137,11 +138,14 @@ stream could not be recorded, every host would need `sshd_config` changes, and
 
 == Recording
 
-Renga records every session's input and output as an asciicast stream, with
+Recording is an organization setting, on by default (RFD 19). When it is on,
+Renga records each session's input and output as an asciicast stream, with
 timestamps, bounded at 50 MiB per session and kept for one year by default.
 Command logging is not used as the record, because a shell can always hide a
-command from it. The user is told before a session starts that it is recorded.
-Owners and admins can replay sessions, and every replay is itself logged.
+command from it. The user is told before a session starts whether it is
+recorded. Owners and admins can replay sessions, and every replay is itself
+logged. With recording off, Renga still records who opened each session, on
+which host, when, and for how long.
 
 == Threats
 
@@ -154,7 +158,8 @@ Owners and admins can replay sessions, and every replay is itself logged.
 
 |Compromised Renga account
 |Needs a current grant, and step-up authentication where the organization
-requires it; the session is recorded.
+requires it; the session is recorded unless the organization turned recording
+off.
 
 |Malicious request to run as root
 |`run_as` is local agent configuration, never a request parameter; UID 0 is refused.
@@ -180,7 +185,10 @@ subsystems.
 * Step-up authentication is an organization opt-in, off by default. When
   required, it is a passkey assertion or authenticator code (RFD 19) when the
   user has one, otherwise a fresh password entry, within five minutes.
-* Recordings are kept for one year by default; organizations may change it.
+* Recording is an organization setting, on by default, and recordings are
+  kept for one year by default; organizations may change both (RFD 19).
+* Terminal grants may expire; an organization may set a maximum validity (RFD
+  20).
 * Operators may connect with their own SSH client through the `renga` CLI, using
   five-minute certificates from Renga's SSH CA and the agent's embedded SSH
   server, alongside the browser terminal.
@@ -188,7 +196,8 @@ subsystems.
   recovery from a lost or compromised key is a local `renga-agent
   reset-ssh-ca`, never a remote action.
 * Owners and admins may grant terminal access to themselves. Such a grant is
-  audited like any other, and every session it opens is recorded.
+  audited like any other, and every session it opens follows the
+  organization's recording setting.
 
 == Rollout
 
