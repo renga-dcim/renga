@@ -16,7 +16,8 @@ Implements link:README.adoc[RFD 13: Live terminal].
 
 == Phase 2: Access
 
-* [ ] Add organization enablement and expiring terminal grants over target sets.
+* [ ] Add organization enablement and terminal grants over target sets, with
+  optional expiry within the RFD 20 maximum validity.
 * [ ] Add the organization option to require step-up within five minutes: a
   passkey or authenticator code (RFD 19), or a fresh password without either.
 
@@ -29,7 +30,8 @@ Implements link:README.adoc[RFD 13: Live terminal].
 
 == Phase 4: Recording
 
-* [ ] Record bounded asciicast streams with retention, replay, and replay audit.
+* [ ] Record bounded asciicast streams with retention, replay, and replay
+  audit, following the RFD 20 recording setting.
 
 == Phase 5: Native SSH clients
 
