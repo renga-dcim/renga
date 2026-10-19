@@ -1,6 +1,8 @@
 defmodule Renga.RuntimeConfigTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   @runtime_config Path.expand("../../config/runtime.exs", __DIR__)
   @secret String.duplicate("s", 64)
 
@@ -12,16 +14,21 @@ defmodule Renga.RuntimeConfigTest do
 
   test "DATABASE_SSL keeps verified TLS after Ecto resolves the database URL" do
     for query <- [nil, "ssl=true", "ssl=true&ssl=true"] do
-      ssl =
-        query
-        |> database_url()
-        |> resolved_repo_config()
-        |> Keyword.fetch!(:ssl)
+      {repo_config, log} =
+        with_log(fn -> query |> database_url() |> resolved_repo_config() end)
+
+      ssl = Keyword.fetch!(repo_config, :ssl)
 
       assert ssl[:verify] == :verify_peer
       assert ssl[:server_name_indication] == ~c"database.example.com"
       assert is_list(ssl[:cacerts])
       assert is_function(ssl[:customize_hostname_check][:match_fun], 2)
+
+      if query do
+        assert log =~ "ignoring `ssl=true` parameter"
+      else
+        assert log == ""
+      end
     end
   end
 
