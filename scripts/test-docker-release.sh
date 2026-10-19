@@ -101,9 +101,21 @@ expect_tls_failure() {
   local label=$1
   local database_host=$2
   local log="$temp_dir/${label}.log"
+  local status
 
-  if timeout 45s release_env "$database_host" /app/bin/migrate >"$log" 2>&1; then
+  set +e
+  timeout 45s release_env "$database_host" /app/bin/migrate >"$log" 2>&1
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
     printf 'Expected %s database connection to fail\n' "$label" >&2
+    cat "$log" >&2
+    return 1
+  fi
+
+  if [[ "$status" -eq 124 ]]; then
+    printf '%s database connection timed out instead of rejecting TLS\n' "$label" >&2
     cat "$log" >&2
     return 1
   fi
