@@ -1,10 +1,9 @@
 # Builds the Renga server as a self-contained OTP release.
 #
-# The image is deployment-agnostic: configure it entirely through the
-# environment variables read by config/runtime.exs (DATABASE_URL,
-# SECRET_KEY_BASE, PHX_HOST, and optionally DATABASE_SSL, POOL_SIZE,
-# ECTO_IPV6, DNS_CLUSTER_QUERY). Run /app/bin/migrate once per deploy before
-# starting /app/bin/server.
+# Runtime server and database settings come from the environment variables
+# read by config/runtime.exs (DATABASE_URL, SECRET_KEY_BASE, PHX_HOST, and
+# optionally DATABASE_SSL, POOL_SIZE, ECTO_IPV6, DNS_CLUSTER_QUERY). Run
+# /app/bin/migrate once per deploy before starting /app/bin/server.
 #
 # Keep ELIXIR_VERSION and OTP_VERSION in step with .github/workflows/elixir.yml.
 ARG ELIXIR_VERSION=1.20.4

@@ -1,11 +1,15 @@
 # Only the Phoenix server goes into the image; keep build context small and
 # free of local state (databases, credentials, agent dev targets).
 .git
+.jj
 .github
 .direnv
 .nix
 .amp
 .agents
+.env
+.env.*
+erl_crash.dump
 _build
 deps
 cover
