@@ -90,9 +90,16 @@ through an OpenID Connect provider re-authenticates there with RFD 15's
 `prompt=login` and `max_age` rules. A passing check covers that one change and
 any other on this list within the next five minutes, and nothing else.
 
-RFD 15's references to sudo mode mean this re-check. It is separate from RFD 13
-step-up, which keeps its own five-minute rule for terminals and is satisfied by
-the same passkeys.
+RFD 15's references to sudo mode mean this re-check.
+
+== Terminal step-up
+
+RFD 13 step-up before opening a terminal becomes an organization opt-in, off by
+default. An organization that turns it on asks for a passkey or authenticator
+code within the last five minutes, or a fresh password from someone who has
+neither. Without it, terminals still require the organization and agent to
+enable them, an expiring terminal grant, and recording. The account re-check
+never satisfies step-up, and step-up never satisfies the re-check.
 
 == Organization policy
 

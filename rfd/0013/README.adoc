@@ -63,13 +63,15 @@ A terminal session requires all of these:
   set (resources, a saved view, or an owning team) and an expiry of at most 30
   days. Owners and admins create grants; nobody holds one by default, including
   owners.
-. The user has authenticated strongly within the last five minutes: a WebAuthn
-  assertion, or a fresh password entry where WebAuthn is not set up.
+. If the organization requires step-up authentication for terminals, the
+  user has authenticated strongly within the last five minutes: a passkey
+  assertion or authenticator code (link:../0019/README.adoc[RFD 19]), or a
+  fresh password entry when the user has neither. Step-up is off by default.
 
 == Session flow
 
-. The user opens a terminal from the resource page. Renga checks the grant and
-  step-up authentication, then creates an `interactive` job,
+. The user opens a terminal from the resource page. Renga checks the grant and,
+  where required, step-up authentication, then creates an `interactive` job,
   `terminal.session@1`, with a lease of at most 10 minutes that renews while the
   session is active and ends after 5 idle minutes.
 . The agent leases it with a signed request and opens a PTY as `run_as`.
@@ -94,8 +96,8 @@ Operators may use their own terminal and SSH client instead of the browser. A
 host behind NAT cannot accept a direct connection, and an agent-generated key
 would have to be shipped to the user as a secret, so neither is used. Instead:
 
-* A `renga` command-line tool signs in through the browser, where step-up
-  authentication happens, and serves as OpenSSH's `ProxyCommand`. It tunnels
+* A `renga` command-line tool signs in through the browser, where any required
+  step-up authentication happens, and serves as OpenSSH's `ProxyCommand`. It tunnels
   the SSH stream through the same session relay, so latency matches the browser
   path and hosts need no inbound port.
 * Renga runs an SSH certificate authority. After the same grant and step-up
@@ -151,7 +153,8 @@ Owners and admins can replay sessions, and every replay is itself logged.
 |Cannot sign leases; no approved installation key.
 
 |Compromised Renga account
-|Needs a current grant and step-up authentication; the session is recorded.
+|Needs a current grant, and step-up authentication where the organization
+requires it; the session is recorded.
 
 |Malicious request to run as root
 |`run_as` is local agent configuration, never a request parameter; UID 0 is refused.
@@ -174,8 +177,9 @@ subsystems.
 
 == Decisions from review
 
-* Step-up authentication is a WebAuthn assertion when the user has one
-  registered, otherwise a fresh password entry, within five minutes.
+* Step-up authentication is an organization opt-in, off by default. When
+  required, it is a passkey assertion or authenticator code (RFD 19) when the
+  user has one, otherwise a fresh password entry, within five minutes.
 * Recordings are kept for one year by default; organizations may change it.
 * Operators may connect with their own SSH client through the `renga` CLI, using
   five-minute certificates from Renga's SSH CA and the agent's embedded SSH
@@ -190,7 +194,8 @@ subsystems.
 
 . Add installation key pairs, approval, signed leases for privileged jobs, and
   key-change findings.
-. Add organization enablement, terminal grants, and step-up authentication.
+. Add organization enablement, terminal grants, and optional step-up
+  authentication.
 . Add the channel relay, the agent PTY session, and lifecycle enforcement.
 . Add recording, replay, and replay auditing.
 . Add the SSH CA, the `renga` CLI tunnel, and the agent's embedded SSH server.

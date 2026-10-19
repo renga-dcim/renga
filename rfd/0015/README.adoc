@@ -198,12 +198,13 @@ after its normal ID-token checks and its own validation that `auth_time` is
 present, well formed, not in the future, and within the re-check window.
 Ordinary SSO, silent renewal, and GitHub OAuth never count as a re-check.
 
-RFD 13 still requires WebAuthn when enrolled, otherwise a fresh password entry
-within five minutes. A recent `auth_time` alone says when authentication
+Where an organization requires RFD 13 step-up, it is a passkey or
+authenticator code when enrolled, otherwise a fresh password entry within five
+minutes. A recent `auth_time` alone says when authentication
 happened, not which factor or assurance level it used, so provider
 reauthentication does not satisfy terminal step-up. Supporting federated
 terminal step-up would require a later amendment that defines accepted `acr`
-and `amr` evidence per provider without weakening the enrolled-WebAuthn rule.
+and `amr` evidence per provider without weakening the enrolled-factor rule.
 
 == Sign-out
 

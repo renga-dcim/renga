@@ -41,6 +41,7 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   and `max_age`, binding the callback to its session, purpose, provider, and
   subject. Validate missing, malformed, stale, and future `auth_time` values in
   Renga and reject account switching.
-* [ ] Keep RFD 13 step-up on WebAuthn or a fresh password rather than accepting
-  provider `auth_time`; test the distinction from the account re-check.
+* [ ] Keep RFD 13 step-up on passkeys, authenticator codes, or a fresh password
+  rather than accepting provider `auth_time`; test the distinction from the
+  account re-check.
 * [ ] Add optional RP-initiated logout.
