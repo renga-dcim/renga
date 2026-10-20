@@ -32,8 +32,19 @@ Implements link:README.adoc[RFD 21: Per-organization limits].
   reconciliation; publish only after every batch completes and the evidence
   version still matches. Test restart, concurrent evidence, timeout, and that
   unvisited rows never cause deletion or finding resolution.
-* [ ] Add quotas with 80% findings, refusal at the limit, and deferred
-  resource creation from intake.
+* [ ] Add an organization quota ledger with atomic, idempotent reservation and
+  mutation across nodes. Implement the accounting table, 80% findings,
+  below-current-use behavior, and crash-safe expiry for byte reservations.
+* [ ] Reserve 50 MiB before authorizing a terminal session and the declared
+  maximum before starting an export. Convert reserved bytes to retained bytes
+  as they are written, release only unused capacity, and never start work whose
+  required audit or archive storage cannot be reserved.
+* [ ] On resource exhaustion, accept the immutable observation, record a
+  structured `quota_deferred` failed reconciliation, and enqueue one durable
+  retry item. Retry fairly after capacity changes and periodically across
+  restarts through the explicit retry path. Test fill, accept, restart, free,
+  and reconcile without agent retransmission, including a newer observation
+  arriving while the older one waits.
 * [ ] Read defaults from the environment, add `renga limits set` for
   per-organization overrides, and show usage to owners read-only.
 * [ ] Emit per-organization telemetry for intake, database time, and rejected

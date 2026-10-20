@@ -130,20 +130,67 @@ rather than draining one organization before starting the next.
 
 == Quotas
 
-An organization has quotas on what it stores:
+An organization has hard quotas with these accounting rules:
 
-* resources;
-* agents and installations;
-* intake keys;
-* terminal recording storage (RFD 13);
-* export archives kept for download (RFD 20).
+[cols="1,2,2"]
+|===
+|Quota |Capacity held |Capacity released
+
+|Resources
+|One unit for every persisted resource envelope, in every lifecycle state
+|When the envelope is physically deleted, not when it is retired or deletion is requested
+
+|Agents
+|One unit for every persisted agent, active or disabled
+|When the agent row is physically deleted
+
+|Installation identities (RFD 13)
+|One unit for every persisted pending, approved, or disabled identity
+|When the identity is physically deleted
+
+|Intake keys
+|One unit for every active key
+|When the key is revoked
+
+|Terminal recordings (RFD 13)
+|Stored bytes plus the unused part of each active session's 50 MiB reservation
+|When retained bytes are deleted, or unused reservation is released at session end
+
+|Export archives (future RFD 20)
+|Stored bytes plus each running export's declared maximum reservation
+|When an archive is deleted, or unused reservation is released when generation ends
+|===
+
+Every capacity acquisition uses a persisted organization quota ledger. The
+same database transaction locks the ledger, checks or creates an idempotent
+reservation, and performs the creation, so creators on different nodes cannot
+both take the last unit. Long-lived byte reservations survive process restarts,
+have an owner and expiry, and are reclaimed only after the owner is terminal.
+Writing bytes converts reserved capacity to used capacity without increasing
+the total. A terminal is not authorized or started unless its full recording
+reservation succeeds, preserving RFD 13's requirement to record every session.
+An export similarly does not start without its maximum reservation.
 
 At 80% of a quota Renga opens a finding for the organization's owners. At the
-quota, Renga refuses to create more of that thing and says which quota stopped
-it. It never deletes data or stops updates to existing records. For resources
-created by intake, Renga keeps the observation but defers creating the new
-resource, and the finding lists what is waiting, so nothing an agent reported
-is lost and it is reconciled once there is room.
+quota, Renga refuses an operation that needs more capacity and says which quota
+stopped it. It never deletes data automatically. Updates remain allowed only
+when they do not increase quota usage or when an existing reservation covers
+the increase. Lowering a limit below current usage opens the finding
+immediately and blocks new reservations, while existing reservations,
+non-growing updates, and deletions continue.
+
+When intake matches an existing resource, reconciliation continues because no
+new resource unit is needed. When it would create a resource without capacity,
+Renga stores the immutable observation and records a `failed` reconciliation
+whose structured error is `quota_deferred`, preserving the existing accepted
+response schema. In the same transaction it inserts one durable retry item per
+observation. A bounded worker schedules those items fairly by organization and
+uses the explicit reconciliation retry path, not `reconcile_once`, after a
+resource is deleted or the limit increases; a periodic pass covers missed
+wakeups and restarts. It removes an item only after a non-quota terminal result.
+Retries rerun normal identity matching, idempotency, and freshness ordering, so
+an older deferred observation cannot overwrite newer reconciled evidence. The
+quota finding lists the durable items waiting for capacity.
 
 == Configuration
 
@@ -164,9 +211,6 @@ to a deployment of its own with an export and import (RFD 20).
 
 . *Default values.* The proposal leaves the defaults to the implementation,
   measured against realistic intake from a large organization.
-. *Deferred resources.* Deferring resource creation at the quota keeps
-  observations but leaves inventory incomplete. Accepting the resources and
-  only warning would keep inventory complete but make the quota advisory.
 
 == Future work
 
