@@ -61,9 +61,9 @@ Groups and sets are organization-wide definitions, managed with a new
 
 == Membership
 
-Only people change membership. Agents, reconcilers, and triage rules never add
-or remove a resource, so group membership is a trusted attribute in RFD 17's
-sense and operational permissions may match it.
+Only people change direct membership. Agents, reconcilers, and triage rules
+never add or remove a direct member, so direct group membership is a trusted
+attribute in RFD 17's sense and operational permissions may match it.
 
 Adding a resource to a group, removing it, or moving it within an exclusive set
 requires `inventory.edit` over the resource. Group membership is an attribute
@@ -83,9 +83,22 @@ refused as a whole if the actor does not cover every selected resource.
 A site, location, or rack may itself be a member. Its membership extends to the
 resources placed in it, so adding a customer's cage to `Acme` covers every
 server racked in that cage, and a server that leaves the cage leaves the group
-with it. For operational permissions, only confirmed placement extends
-membership, matching RFD 17's trusted attributes. Each resource page shows
-whether a membership is direct or comes from a container.
+with it.
+
+Renga derives two effective-membership views. The inventory view contains
+direct memberships and memberships inherited through current placement. The
+trusted view contains direct memberships and memberships inherited only when
+every placement and containment edge from the resource to the member container
+was set or confirmed by a person. Inventory workflow permissions use the first;
+RFD 17's operational permissions (`jobs.request` and explicit permissions) use
+the second. Reconciliation may change current placement and therefore the
+inventory view, but never direct membership or the trusted view.
+
+Membership provenance retains every direct and inherited path. Removing one
+path does not remove an independent direct membership or another path to the
+same group; effective membership disappears only when its last path does. Each
+resource page shows whether a membership is direct or inherited and the
+container path that supplies it.
 
 The affected set of a membership change is every resource whose effective
 membership would change, including resources that inherit from a selected
@@ -117,10 +130,14 @@ direct or contained member of any listed group:
 ----
 
 This reads as "hosts in Staging". Like every RFD 17 condition it compiles to an
-SQL predicate: each resource's access row carries its effective group IDs, kept
-current in the transaction that changes membership or placement, with an index
-for containment queries. Adding a rack to a group therefore updates the rows of
-the resources placed in it in the same transaction.
+SQL predicate. Each resource's access row carries separate current and trusted
+effective group IDs, sourced from the materialized membership rows and indexed
+for containment queries. The permission class selects the matching view; an
+undifferentiated group list is never used for authorization. The transaction
+that changes direct membership, current or confirmed placement, or containment
+updates the affected effective-membership and access rows too. Adding a rack to
+a group therefore updates both views of every affected resource in that
+transaction, according to the provenance of each path.
 
 Deleting a group removes it from every condition that names it. A clause left
 with no values matches nothing, so access fails closed, and the assignment is
