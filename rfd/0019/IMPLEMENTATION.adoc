@@ -1,0 +1,55 @@
+= RFD 0019 implementation checklist
+
+Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and security settings].
+
+* [ ] Add passkey registration and sign-in with a pinned, reviewed WebAuthn
+  library, user verification required, no attestation, and browser autofill.
+* [ ] Add an authenticator app (TOTP) with rate limiting and replay
+  prevention.
+* [ ] Add recovery codes, stored hashed, shown once, and replaced as a set. A
+  code spent after primary authentication grants a five-minute, browser- and
+  session-bound authorization only to add one replacement factor; test
+  replacement after spending the final code.
+* [ ] Require a second step after a password or magic link for accounts with
+  MFA, bound to the browser and expiring after five minutes; test that a
+  password reset never bypasses it.
+* [ ] Remove sudo mode from user settings and add the in-place account
+  re-check for email, password, credential, and identity provider changes.
+  Accept provider reauthentication only from a deployment provider; test that
+  an organization provider cannot authorize a passkey that then opens another
+  organization.
+* [ ] Let an account with neither MFA nor a password use a fresh, five-minute,
+  purpose-, browser-, and session-bound email challenge only to set its first
+  password or add its first factor. Deliver it to the account's current email,
+  never accept a provider email claim for it, and test both bootstrap paths and
+  that email cannot replace an enrolled factor.
+* [ ] Add the organization MFA requirement, satisfied by Renga's own second
+  factor or by sign-in through a provider marked as enforcing MFA; ask
+  members whose session does not qualify for a passkey or authenticator code
+  in place.
+* [ ] Add the _enforces MFA_ mark to identity providers, settable by the
+  operator on deployment providers and by owners on organization providers,
+  never on `github` providers, and recorded in Activity.
+* [ ] Keep the provider ID, ownership kind, and owning organization in session
+  MFA evidence. Accept an organization provider's mark only for its owning
+  organization and an operator-marked deployment provider across
+  organizations; test that an organization A provider, with and without
+  `amr`, never satisfies organization B's requirement.
+* [ ] Reject a marked provider's sign-in for the requirement when its `amr`
+  claim is present without `mfa` or a provider-approved combination of
+  independent factors; test tokens with and without `amr`, including rejection
+  of `pwd` plus `kba`.
+* [ ] Add the operator release command that removes a user's MFA.
+* [ ] Add the per-account security log and email notices for credential
+  changes.
+* [ ] Add a security section to organization settings listing every setting
+  with its current value and who last changed it, editable with
+  `organization.manage`, and record each change in Activity.
+* [ ] Add the optional maximum validity for explicit permission grants;
+  propose it as the default expiry and reject grants beyond it.
+* [ ] Shorten existing grants that outlive a newly set or lowered maximum to
+  the maximum from the time of the change; test that no grant ends
+  immediately and running sessions continue.
+* [ ] Add the terminal recording setting, on by default, applying to sessions
+  that start afterwards; keep session metadata when recording is off and tell
+  the user at session start whether the session is recorded.

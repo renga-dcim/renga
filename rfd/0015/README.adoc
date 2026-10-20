@@ -62,10 +62,11 @@ trusting any claim. The callback runs in the browser pipeline and ends in the
 existing session creation, so a provider sign-in produces the same session,
 `current_scope`, and organization selection as a password sign-in.
 
-Local session issuance, provider validation, and sudo authentication are three
-separate records of evidence. An ordinary provider callback, silent
-authorization, token refresh, or local session rotation never creates or
-refreshes sudo evidence merely because it issued a new Renga session.
+Local session issuance, provider validation, and the account re-check
+(link:../0019/README.adoc[RFD 19]) are three separate records of evidence. An
+ordinary provider callback, silent authorization, token refresh, or local
+session rotation never creates or refreshes re-check evidence merely because it
+issued a new Renga session.
 
 == Identities and accounts
 
@@ -84,22 +85,23 @@ The first sign-in through a provider is resolved in this order:
   even when both sides verified the address. Email verification does not prove
   the two accounts have the same owner because addresses can be reassigned.
   The person must sign in to the existing Renga account and explicitly link the
-  provider under sudo mode.
+  provider, which requires the account re-check.
 . If no user exists and the provider allows sign-up, Renga creates a confirmed
   user from the verified email. It creates no organization membership on its
   own; the person lands where a new password user does today.
 . Otherwise sign-in is refused.
 
 Signed-in users can link and unlink providers from their settings, which
-requires sudo mode. The linking callback is bound to the initiating user and
+requires the account re-check. The linking callback is bound to the initiating user and
 refuses a provider subject already linked to another user. Renga refuses to
 unlink a user's last usable sign-in method under the current local sign-in and
-provider policy, or the last method capable of satisfying sudo mode.
+provider policy, or the last method capable of passing the account re-check.
 
-GitHub cannot provide the fresh authentication evidence required for sudo.
+GitHub cannot provide the fresh authentication evidence the re-check requires.
 The first release therefore does not allow GitHub to create a new user: a
-GitHub identity must be linked under sudo to an existing account that already
-has a password or a suitable OpenID Connect identity. A password remains usable
+GitHub identity must be linked, after a re-check, to an existing account that
+already has a passkey, an authenticator app, a password, or a suitable OpenID
+Connect identity. A password remains usable
 for reauthentication even when local password sign-in is disabled.
 
 == Organization membership from claims
@@ -192,21 +194,26 @@ Renga refuses to boot otherwise rather than locking everyone out.
 
 == Re-authentication and step-up
 
-Sudo mode and RFD 13 step-up are separate security levels. For sudo, a user
-without a password may reauthenticate through a linked OpenID Connect provider.
-Renga sends `prompt=login` and `max_age`, and binds the callback to the
-initiating local session, the sudo purpose, and the expected provider ID and
-subject; switching accounts fails the attempt. Renga accepts the result only
-after its normal ID-token checks and its own validation that `auth_time` is
-present, well formed, not in the future, and within the sudo window. Ordinary
-SSO, silent renewal, and GitHub OAuth never update the sudo timestamp.
+The account re-check (RFD 19) and RFD 13 step-up are separate security
+levels. For the re-check, a user without a passkey, authenticator app, or
+password may reauthenticate through a linked deployment OpenID Connect
+provider. An organization-owned provider never authorizes an account-wide
+credential or identity change; the user needs RFD 19's independent email
+bootstrap instead. Renga sends `prompt=login` and `max_age`, and binds the
+callback to the initiating local session, the re-check's purpose, and the
+expected provider ID and subject; switching accounts fails the attempt. Renga
+accepts the result only after its normal ID-token checks and its own validation
+that `auth_time` is present, well formed, not in the future, and within the
+re-check window. Ordinary SSO, silent renewal, and GitHub OAuth never count as
+a re-check.
 
-RFD 13 still requires WebAuthn when enrolled, otherwise a fresh password entry
-within five minutes. A recent `auth_time` alone says when authentication
+Where an organization requires RFD 13 step-up, it is a passkey or
+authenticator code when enrolled, otherwise a fresh password entry within five
+minutes. A recent `auth_time` alone says when authentication
 happened, not which factor or assurance level it used, so provider
 reauthentication does not satisfy terminal step-up. Supporting federated
 terminal step-up would require a later amendment that defines accepted `acr`
-and `amr` evidence per provider without weakening the enrolled-WebAuthn rule.
+and `amr` evidence per provider without weakening the enrolled-factor rule.
 
 == Sign-out
 

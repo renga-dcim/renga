@@ -14,9 +14,9 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   linking an email collision; test unverified emails, unconfirmed local
   accounts, email changes, and different subjects with the same reassigned
   verified address.
-* [ ] Add linking and unlinking in user settings under sudo mode, refusing to
-  link a subject owned by another user or remove the last method usable for
-  sign-in or sudo under the active policy.
+* [ ] Add linking and unlinking in user settings behind the RFD 19 account
+  re-check, refusing to link a subject owned by another user or remove the
+  last method usable for sign-in or the re-check under the active policy.
 * [ ] Add source-bound, expiring claim-to-membership grants with manual
   membership precedence and at most one provider mapping per organization;
   test another sign-in method, source-provider revocation, identity unlinking,
@@ -34,13 +34,16 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
   with local sign-in disabled and no provider, and test direct password and
   magic-link endpoints plus previously issued links.
-* [ ] Keep session issuance, provider validity, and sudo evidence separate;
-  test that ordinary SSO, silent renewal, refresh, and session rotation never
-  manufacture a fresh sudo timestamp.
-* [ ] Re-authenticate OpenID Connect users for sudo mode with `prompt=login`
+* [ ] Keep session issuance, provider validity, and re-check evidence
+  separate; test that ordinary SSO, silent renewal, refresh, and session
+  rotation never count as an account re-check.
+* [ ] Re-authenticate OpenID Connect users for the re-check with `prompt=login`
   and `max_age`, binding the callback to its session, purpose, provider, and
   subject. Validate missing, malformed, stale, and future `auth_time` values in
-  Renga and reject account switching.
-* [ ] Keep RFD 13 step-up on WebAuthn or a fresh password rather than accepting
-  provider `auth_time`; test the distinction from sudo mode.
+  Renga and reject account switching. Accept only deployment providers; test
+  that an organization provider cannot authorize account-wide credential or
+  identity changes and that RFD 19's independent email bootstrap still works.
+* [ ] Keep RFD 13 step-up on passkeys, authenticator codes, or a fresh password
+  rather than accepting provider `auth_time`; test the distinction from the
+  account re-check.
 * [ ] Add optional RP-initiated logout.

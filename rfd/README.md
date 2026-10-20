@@ -24,6 +24,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [16: SCIM provisioning](0016/README.adoc) | Per-organization SCIM connections, directory entries, group-to-role grants, and immediate deprovisioning |
 | [17: Attribute-based authorization](0017/README.adoc) | Permissions, roles as permission sets, attribute-scoped assignments and reads, team membership, and access explanations |
 | [18: Resource groups](0018/README.adoc) | People-curated resource sets, exclusive group sets, container membership, and group conditions for authorization |
+| [19: Passkeys, multi-factor authentication, and security settings](0019/README.adoc) | Passkeys, authenticator apps, recovery codes, a narrow account re-check in place of sudo mode, and every opt-in organization security setting with its default |
 
 ## Source format
 

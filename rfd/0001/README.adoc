@@ -152,9 +152,10 @@ later slices. They require capability advertisement, server and agent policy,
 bounded execution, cancellation, complete audit trails, and explicit operator
 authorization.
 
-Live terminal access is disabled by default and requires strong authentication,
-RBAC, agent-side allow/deny policy, short per-session leases, target-level access
-rules, and session recording or command logging. Operational queries are typed,
+Live terminal access is disabled by default and requires authentication, RBAC,
+agent-side allow/deny policy, short per-session leases, and target-level access
+rules. Step-up authentication and session recording are organization settings
+(link:../0019/README.adoc[RFD 19]). Operational queries are typed,
 read-only collector operations and never an alias for arbitrary shell execution.
 
 == Domain boundaries
