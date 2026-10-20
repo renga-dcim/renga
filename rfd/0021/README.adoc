@@ -157,7 +157,7 @@ An organization has hard quotas with these accounting rules:
 |When retained bytes are deleted, or unused reservation is released at session end
 
 |Export archives (future RFD 20)
-|Stored bytes plus each running export's declared maximum reservation
+|Stored bytes plus the unused part of each running export's declared maximum reservation
 |When an archive is deleted, or unused reservation is released when generation ends
 |===
 
