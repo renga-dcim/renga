@@ -2,8 +2,48 @@
 
 Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 
-* [ ] Read provider configuration from the environment in `config/runtime.exs`
-  and validate it at boot.
+* [ ] Store deployment and organization providers in the database, with
+  client secrets encrypted under rotatable key-encryption keys read from the
+  environment; never display a saved secret.
+* [ ] Give stored provider configuration an authoritative database revision.
+  Check freshness before sign-in initiation, callback completion, and renewal,
+  failing closed when it cannot be established; use PubSub only to accelerate
+  eviction. Test missed and delayed invalidation and commit-before-broadcast
+  failure on multiple nodes.
+* [ ] Keep authentication-affecting edits pending while the previous revision
+  remains active. Bind test sign-in to its actor, purpose, provider, and exact
+  revision, prevent it from creating normal authentication evidence, and
+  atomically activate only that tested revision. Test stale results, concurrent
+  edits, and a broken edit to the sole active provider.
+* [ ] Serialize activation, disable, and removal with the effective-policy
+  guard, including environment overrides, so no change leaves no usable
+  deployment sign-in method. Record pending changes and transitions in
+  Activity without secrets.
+* [ ] Add `renga providers` release commands, including a short-lived,
+  single-use bootstrap test URL and a time-limited local-sign-in recovery
+  override. In fail-closed recovery mode expose only health checks and the test
+  callback; test first-provider bootstrap, sole-provider repair, automatic
+  override expiry, and recovery with no existing browser session.
+* [ ] Keep environment-defined deployment providers loaded at boot and
+  read-only in the UI. Reject immutable-property collisions, and document and
+  test that repairing their configuration requires an environment change and
+  restart while the local recovery override can restore temporary access.
+* [ ] Add organization providers managed by owners, reached through the
+  organization sign-in link or a DNS-verified email domain claimed by one
+  organization at a time.
+* [ ] Apply an operator-controlled outbound policy to every organization
+  provider endpoint, redirect, and resolved destination. Deny loopback,
+  link-local and metadata addresses, and private deployment networks by
+  default; test discovered endpoints, redirects, mixed DNS answers, and DNS
+  changes, with internal providers requiring an explicit operator exception.
+* [ ] Make provider IDs globally unique and permanently bind kind, issuer,
+  provider scope, and owning organization. Reject cross-scope environment
+  overrides and ID reuse, and require migrations to preserve the authority of
+  existing identities, sessions, and grants.
+* [ ] Scope sessions, authentication evidence, claim mappings, and directory
+  connections from an organization provider to its organization. Test that it
+  cannot open another organization, accept its invitation, establish a global
+  login email, or change or link an account-wide credential.
 * [ ] Add `user_identities` with a unique `(provider_id, subject)`.
 * [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
   token validation, using a pinned, reviewed `oidcc` version while keeping
@@ -11,9 +51,16 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add the `github` provider as a `Req` adapter using verified primary
   emails and stable numeric user IDs; permit linking but not sign-up.
 * [ ] Resolve first sign-in by sign-up or refusal, never by automatically
-  linking an email collision; test unverified emails, unconfirmed local
-  accounts, email changes, and different subjects with the same reassigned
-  verified address.
+  linking an email collision. Keep organization-asserted email scoped until
+  independently verified; test unverified emails, unconfirmed local accounts,
+  global-email reservation, email changes, and different subjects with the
+  same reassigned verified address.
+* [ ] Let an organization-created account with no global email or local
+  credential initialize an empty global email through a five-minute challenge
+  bound to its account, purpose, browser, and session, then enter only RFD 19's
+  limited first-password or first-factor bootstrap. Test that provider claims
+  cannot satisfy it and that it cannot replace an email, claim another
+  account's address, auto-link accounts, or grant a general account re-check.
 * [ ] Add linking and unlinking in user settings behind the RFD 19 account
   re-check, refusing to link a subject owned by another user or remove the
   last method usable for sign-in or the re-check under the active policy.
@@ -31,9 +78,10 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   protected event, mutation, or organization update proceeds before successful
   revalidation. Preserve unsaved browser input through reauthentication where
   feasible and test both the authorization boundary and draft behavior.
-* [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
-  with local sign-in disabled and no provider, and test direct password and
-  magic-link endpoints plus previously issued links.
+* [ ] Add the `registration` and `local_sign_in` settings. With local sign-in
+  disabled and no active deployment provider, start in fail-closed recovery
+  mode; test direct password and magic-link endpoints, previously issued links,
+  the operator-only recovery override, and that it never opens registration.
 * [ ] Keep session issuance, provider validity, and re-check evidence
   separate; test that ordinary SSO, silent renewal, refresh, and session
   rotation never count as an account re-check.
@@ -41,8 +89,9 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   and `max_age`, binding the callback to its session, purpose, provider, and
   subject. Validate missing, malformed, stale, and future `auth_time` values in
   Renga and reject account switching. Accept only deployment providers; test
-  that an organization provider cannot authorize account-wide credential or
-  identity changes and that RFD 19's independent email bootstrap still works.
+  that an organization provider cannot establish an account-wide sign-in
+  method and then reach another organization, and that the email initialization
+  and limited RFD 19 bootstrap work without granting general re-check evidence.
 * [ ] Keep RFD 13 step-up on passkeys, authenticator codes, or a fresh password
   rather than accepting provider `auth_time`; test the distinction from the
   account re-check.

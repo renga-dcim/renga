@@ -14,29 +14,140 @@ deployment keeps its own credentials and has to offboard people by hand.
 
 Renga is a relying party only. It never issues tokens for other applications,
 and no provider is special to it: every provider, including whichever one an
-operator chooses as the only way in, is configuration.
+operator chooses as the only way in, is configuration. That configuration lives
+in Renga's database and takes effect without a restart.
 
 == Providers
 
-An operator configures zero or more providers at deploy time. Each has:
+Providers exist at two levels:
+
+* *Deployment providers* appear on the sign-in page for everyone. An operator
+  manages them.
+* *Organization providers* belong to one organization, such as that
+  organization's own Okta or Microsoft Entra ID tenant. Its owners manage them
+  in organization settings, and they are always `oidc` providers (see
+  <<organization-providers>>).
+
+Each provider has:
 
 * a stable `id`, used in callback URLs and stored on linked identities. The ID
-  permanently names that provider kind and, for OpenID Connect, its issuer;
-  changing either requires a new ID or an explicit identity migration;
+  is globally unique and permanently names that provider's kind, OpenID
+  Connect issuer, deployment-or-organization scope, and owning organization.
+  An ID is not reused after deletion. Changing any of those properties requires
+  a new ID or an explicit migration that cannot silently broaden existing
+  identities, sessions, or grants;
 * a display name and icon for the sign-in page;
 * a kind: `oidc` (any OpenID Connect issuer, discovered from its issuer URL) or
   `github` (OAuth 2.0 with GitHub's user and email APIs, because GitHub is not an
   OpenID Connect provider);
 * a client ID and client secret;
-* optional extra scopes, and an optional allowlist of email domains.
+* optional extra scopes, and an optional allowlist of email domains;
+* whether it is enabled.
 
-Providers are configured through the environment and read in
-`config/runtime.exs`, like the rest of Renga's deployment settings, so a
-container image needs no rebuild to add one. Client secrets are never stored in
-the database or shown in the UI.
+=== Storage and changes
 
-Configuring providers in the UI at runtime is out of scope for this RFD (see
-future work).
+Providers are stored in the database. Client secrets are encrypted at rest with
+AES-256-GCM under a key-encryption key that Renga reads from the environment at
+boot. Each key has an ID stored beside every ciphertext, so an operator rotates
+by adding a new key, letting Renga re-encrypt, and then retiring the old one. A
+saved secret is never shown again; the settings page only says that one is set
+and when it changed.
+
+Changes take effect without a restart. Each stored provider has an authoritative
+configuration revision in the database. Before a node initiates or completes a
+sign-in or renews a provider session, it verifies that its cached revision is
+still current; if it cannot establish freshness, it fails closed. PubSub
+invalidation evicts caches promptly but is only an acceleration, so a missed or
+delayed message cannot keep old configuration usable. Discovery documents and
+signing keys stay cached per provider and refresh as today.
+
+Creating or changing authentication-affecting settings produces a pending
+revision while the previous active revision remains in use. The person making
+the change runs a test sign-in against that exact pending revision. Its callback
+is bound to the actor, test purpose, provider, and revision and cannot create
+an ordinary session, link an identity, or satisfy the account re-check. A
+successful test and activation are one atomic transition; another edit
+invalidates the result.
+
+Renga serializes activation, disable, and removal with the guard that preserves
+at least one usable deployment sign-in method under the effective local policy,
+including environment overrides. Every pending change, activation, enable,
+disable, and removal is recorded in Activity with the actor and the fields that
+changed, never the secret.
+
+=== Operators
+
+Operators manage deployment providers with release commands, `renga providers
+list | add | update | test | enable | disable | recover-local`, which work even
+when nobody can sign in. `test` creates a short-lived, single-use URL for the
+exact pending revision. The browser callback is available in recovery mode and
+can only validate and atomically activate that revision; it never creates a
+user session or other authentication evidence. This is how an operator
+bootstraps the first provider without an existing sign-in method.
+
+`recover-local` creates a time-limited database override that enables existing
+local credentials even when the environment policy disables them. Only the
+release command can create or revoke the override; it does not open
+registration, it expires automatically, and every use and policy change is
+recorded in Activity. An operator can establish the override and disable a
+broken stored provider in one serialized operation, repair and test the
+provider, and then revoke the override.
+
+Operators who prefer declarative configuration can still define deployment
+providers in the environment, read in `config/runtime.exs`. Those providers
+are loaded at boot, shown read-only in the UI, and override a stored provider
+with the same ID only when it is also a deployment provider with the same
+immutable properties. Renga refuses to boot on an ID collision with an
+organization provider or any other immutable-property mismatch rather than
+shadowing it. A release command cannot change an environment-managed provider;
+repairing one requires changing the deployment environment and restarting, or
+using the temporary local recovery override while doing so.
+
+[[organization-providers]]
+=== Organization providers
+
+An organization owner can add an OpenID Connect provider for their
+organization. Members reach it from the organization's sign-in link,
+`/users/log-in?organization=<slug>`, or from the main sign-in page by entering
+an email address whose domain the organization has verified with a DNS TXT
+record. A domain can be verified by one organization at a time, and an
+unverified domain never routes anyone to an organization's provider.
+
+Because an organization owner does not control the deployment network, every
+server-side request for an organization provider follows an operator-controlled
+destination policy. It applies to discovery, token and UserInfo endpoints,
+signing keys, every redirect, and any future back-channel endpoint. By default
+Renga rejects loopback, link-local and metadata addresses, private deployment
+networks, and any other non-public destination. It resolves and checks the
+destination again for each connection and redirect so a DNS change cannot
+bypass the policy. An operator may explicitly allow the destinations of an
+internal enterprise provider; an organization owner cannot add an exception.
+
+An organization provider is trusted only for its own organization, because its
+owners control the identities it asserts:
+
+* A session that signed in through an organization provider can open only that
+  organization. Reaching another organization needs a different sign-in method.
+* Its claim mappings and SCIM connections (RFD 16) can manage only that
+  organization.
+* Sign-up through it creates a user only when the organization allows it. The
+  asserted email remains an organization-scoped profile attribute: it neither
+  populates nor confirms the account's global login email, reserves that email
+  against another account, nor accepts another organization's invitation. A
+  global login email must be proved through the independent initialization
+  flow below.
+* Its authentication evidence has organization scope. It can establish access
+  and satisfy policy only within its own organization, but cannot change a
+  global password or recovery email, link or unlink a global sign-in identity,
+  or perform another account-wide credential operation. Those operations use
+  RFD 19's account re-check with a local credential or deployment provider.
+
+These rules keep an organization's identity provider from reaching a person's
+access in other organizations, even when that person links the provider to an
+account they use elsewhere.
+
+Turning a GitHub organization into an organization provider is out of scope;
+GitHub stays a deployment provider.
 
 SAML 2.0 is out of scope. Every major workforce identity provider also offers
 OpenID Connect, and SAML would add XML signature validation, a frequent source
@@ -86,16 +197,30 @@ The first sign-in through a provider is resolved in this order:
   the two accounts have the same owner because addresses can be reassigned.
   The person must sign in to the existing Renga account and explicitly link the
   provider, which requires the account re-check.
-. If no user exists and the provider allows sign-up, Renga creates a confirmed
-  user from the verified email. It creates no organization membership on its
-  own; the person lands where a new password user does today.
+. If no user exists and the provider allows sign-up, a deployment provider
+  creates a confirmed user from the verified email. An organization provider
+  creates an account with no global login email; its asserted email and
+  authority remain scoped as described above. Provider sign-up creates no
+  organization membership on its own; the person lands where a new password
+  user does today.
 . Otherwise sign-in is refused.
 
+An organization-created account that still has no global login email may start
+RFD 19's first-password or first-factor bootstrap by entering an address and
+proving mailbox control. Renga binds the challenge to that account, purpose,
+browser, and session and expires it after five minutes; the provider's email
+claim neither chooses the address nor satisfies the challenge. Success may
+initialize only an empty global email and grants only RFD 19's limited bootstrap
+authorization, never a general account re-check. Renga refuses an address that
+belongs to another account and never uses this path to overwrite an existing
+global email or automatically link accounts.
+
 Signed-in users can link and unlink providers from their settings, which
-requires the account re-check. The linking callback is bound to the initiating user and
-refuses a provider subject already linked to another user. Renga refuses to
-unlink a user's last usable sign-in method under the current local sign-in and
-provider policy, or the last method capable of passing the account re-check.
+requires the account re-check. The linking callback is bound to the initiating
+user and refuses a provider subject already linked to another user.
+Renga refuses to unlink a user's last usable sign-in method under the current
+local sign-in and provider policy, or the last method capable of passing the
+account re-check.
 
 GitHub cannot provide the fresh authentication evidence the re-check requires.
 The first release therefore does not allow GitHub to create a new user: a
@@ -106,8 +231,10 @@ for reauthentication even when local password sign-in is disabled.
 
 == Organization membership from claims
 
-An operator may map a provider claim (for example `groups`, or a custom
-claim) to organization memberships and roles. Renga records each mapped grant
+A provider claim (for example `groups`, or a custom claim) can be mapped to
+organization memberships and roles. An operator sets the mapping for a
+deployment provider; an organization's owners set it for their own
+organization's provider. Renga records each mapped grant
 with the provider identity and mapping that issued it and a `valid_until` time;
 it does not flatten provider authority into an indefinite user membership.
 Authorization treats a mapped grant as a membership only while that source is
@@ -128,12 +255,14 @@ sign-in never touches memberships.
 
 The mapping names organizations by slug and roles by Renga's role names
 (`owner`, `admin`, `member`, `viewer`). A claim value that names an unknown
-organization or role is ignored and logged, not created.
+organization or role is ignored and logged, not created. An organization
+provider's mapping can name only its own organization.
 
 == Provider session lifetime
 
 A session created through a provider carries a lifetime, 12 hours by default
-and configurable per provider. Renga's remember-me cookie would otherwise keep
+and configurable per provider. An operator may set a longest allowed lifetime
+that organization providers cannot exceed. Renga's remember-me cookie would otherwise keep
 a person signed in for weeks after their identity provider removed them.
 
 When the lifetime has passed, Renga confirms the person with the provider again
@@ -189,8 +318,16 @@ Two independent settings control local credentials:
 * `local_sign_in`: `enabled` (passwords and magic links), or `disabled`, which
   leaves provider sign-in as the only way in.
 
-Disabling local sign-in requires at least one provider to be configured;
-Renga refuses to boot otherwise rather than locking everyone out.
+Both are deployment settings, read from the environment at boot. The only
+runtime exception is the time-limited, operator-only local recovery override
+described above; it does not change `registration`.
+
+If local sign-in is disabled and no deployment provider is active, a web node
+starts in fail-closed recovery mode instead of serving normal sign-in or
+protected routes. Health checks, release commands, and the short-lived provider
+test callback remain available so an operator can bootstrap or repair a
+provider. Leaving recovery mode requires atomically activating a tested
+deployment provider or establishing the temporary local recovery override.
 
 == Re-authentication and step-up
 
@@ -198,14 +335,14 @@ The account re-check (RFD 19) and RFD 13 step-up are separate security
 levels. For the re-check, a user without a passkey, authenticator app, or
 password may reauthenticate through a linked deployment OpenID Connect
 provider. An organization-owned provider never authorizes an account-wide
-credential or identity change; the user needs RFD 19's independent email
-bootstrap instead. Renga sends `prompt=login` and `max_age`, and binds the
-callback to the initiating local session, the re-check's purpose, and the
-expected provider ID and subject; switching accounts fails the attempt. Renga
-accepts the result only after its normal ID-token checks and its own validation
-that `auth_time` is present, well formed, not in the future, and within the
-re-check window. Ordinary SSO, silent renewal, and GitHub OAuth never count as
-a re-check.
+credential or identity change; an organization-created account with no other
+method first uses the email initialization and limited RFD 19 bootstrap above.
+Renga sends `prompt=login` and `max_age`, and binds the callback to the
+initiating local session, the re-check's purpose, and the expected provider ID
+and subject; switching accounts fails the attempt. Renga accepts the result
+only after its normal ID-token checks and its own validation that `auth_time`
+is present, well formed, not in the future, and within the re-check window.
+Ordinary SSO, silent renewal, and GitHub OAuth never count as a re-check.
 
 Where an organization requires RFD 13 step-up, it is a passkey or
 authenticator code when enrolled, otherwise a fresh password entry within five
@@ -231,8 +368,6 @@ authentication.
 
 * SCIM provisioning, for removing people and memberships the moment an
   identity provider does, without waiting for a renewal (link:../0016/README.adoc[RFD 16]).
-* Configuring providers in the UI, once Renga has secret storage and an audit
-  trail for it.
 * OpenID Connect back-channel logout.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
