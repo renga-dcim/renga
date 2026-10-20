@@ -1,7 +1,7 @@
 # Design system
 
 This is the working reference for building Renga screens. The decisions behind
-it are in [RFD 8, "Product experience"](../rfd/0008/README.adoc) (especially
+it are in [RFD 8, "Product experience"](https://github.com/renga-dcim/RFD/blob/main/rfd/0008/README.adoc) (especially
 "Shared patterns", "Visual design", and "Phone and tablet"); this guide turns
 them, and the conventions the shipped screens already follow, into rules a new
 screen can apply without reverse-engineering existing code.

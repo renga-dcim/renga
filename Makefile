@@ -32,11 +32,6 @@ changelog:
 .PHONY: lint
 lint: ex-lint rs-lint rs-fmt
 
-.PHONY: check-rfds
-check-rfds:
-	@./scripts/check-rfd-status.sh
-	@./scripts/check-rfd-status-test.sh
-
 .PHONY: check-ui-package
 check-ui-package:
 	@./scripts/check-ui-package.sh
