@@ -6,12 +6,19 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
   library, user verification required, no attestation, and browser autofill.
 * [ ] Add an authenticator app (TOTP) with rate limiting and replay
   prevention.
-* [ ] Add recovery codes, stored hashed, shown once, and replaced as a set.
+* [ ] Add recovery codes, stored hashed, shown once, and replaced as a set. A
+  code spent after primary authentication grants a five-minute, browser- and
+  session-bound authorization only to add one replacement factor; test
+  replacement after spending the final code.
 * [ ] Require a second step after a password or magic link for accounts with
   MFA, bound to the browser and expiring after five minutes; test that a
   password reset never bypasses it.
 * [ ] Remove sudo mode from user settings and add the in-place account
   re-check for email, password, credential, and identity provider changes.
+* [ ] Let an account with neither MFA nor a password use a fresh, five-minute,
+  purpose-, browser-, and session-bound email challenge only to set its first
+  password or add its first factor; test both bootstrap paths and that email
+  cannot replace an enrolled factor.
 * [ ] Add the organization MFA requirement, satisfied by Renga's own second
   factor or by sign-in through a provider marked as enforcing MFA; ask
   members whose session does not qualify for a passkey or authenticator code

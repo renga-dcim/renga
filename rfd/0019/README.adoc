@@ -98,6 +98,11 @@ through an OpenID Connect provider re-authenticates there with RFD 15's
 `prompt=login` and `max_age` rules. A passing check covers that one change and
 any other on this list within the next five minutes, and nothing else.
 
+An account with no enrolled MFA and no password uses a fresh email challenge
+to set its first password or add its first factor. The challenge is bound to
+that purpose, browser, and session, expires after five minutes, and authorizes
+no other account change. Email never substitutes for an enrolled factor.
+
 RFD 15's references to sudo mode mean this re-check.
 
 [[terminal-step-up]]
@@ -265,7 +270,12 @@ as set by the deployment, and owners cannot change it.
 
 A person who loses every passkey and their authenticator app signs in with a
 recovery code, which counts as the second step and is then spent. Renga prompts
-them to add a new factor.
+them to add a new factor. Completing primary authentication and spending the
+recovery code creates a five-minute recovery authorization bound to that
+browser and session. It permits only adding one replacement passkey or
+authenticator app, even when the spent code was the last one. After enrollment,
+the replacement factor supplies the ordinary re-check needed to remove lost
+factors or generate new recovery codes.
 
 A person with no factors and no codes left cannot recover the account through
 Renga's web interface. An operator can remove a user's MFA with a release
