@@ -46,7 +46,9 @@ authentication. Keys issued before the identifier was set, or without one,
 stay valid unchanged. Authentication never trusts the identifier: a key with
 a wrong or missing identifier still authenticates by its hash, and a key with
 the right identifier and a wrong secret still fails. The identifier exists so
-that a resolver can read it without ever seeing the secret.
+that a resolver can read it without ever seeing the secret. An agent whose
+key predates the identifier keeps talking to its deployment directly; rotating
+the key, as RFD 3 allows, gives it one.
 
 RFD 22's operator API and `renga` release commands report the deployment's
 identifier, and an organization's intake key page shows the identifier its
@@ -137,13 +139,6 @@ resolved at startup and after every resolution.
   moved organization's intake endpoints answer `410 Gone` with `moved`.
 * RFD 22: the deployment identifier is part of deployment configuration, and
   the operator API reports it.
-
-== Open questions
-
-. *Identifier in existing keys.* Setting an identifier on a deployment that
-  already issued keys leaves those keys without one. The proposal accepts
-  that: those agents keep working against the deployment directly, and an
-  owner who wants them resolvable rotates keys as RFD 3 already allows.
 
 == Future work
 
