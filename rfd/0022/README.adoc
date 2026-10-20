@@ -13,10 +13,12 @@ manage deployment identity providers, suspend an organization, read usage,
 and move an organization in or out. Today an operator can do some of this only
 with release commands on the server, and some of it not at all.
 
-The API is for operating a deployment, not for using it. It never reads or
-changes an organization's inventory, never signs in as a person, and never
-returns a secret. Organization owners keep control of what they own, such as
-their own identity provider and SCIM connections.
+The API is for operating a deployment, not for using it. Except for an
+explicitly authorized transfer, it never reads or changes an organization's
+inventory, never signs in as a person, and never returns a secret. Organization
+owners keep control of organization-owned configuration, such as their own
+identity providers. A token with transfer authority is consequently as
+sensitive as tenant-owner access, not an ordinary provisioning credential.
 
 == Operator tokens
 
@@ -26,12 +28,23 @@ an organization or a user.
 * An operator creates a token with a release command, `renga operator-tokens
   create --name <name> --scopes <scopes>`, which prints it once. Renga stores
   only a hash, as it does for RFD 3 intake keys.
-* A token has a name, scopes, an optional expiry, and an optional list of
-  source addresses it may be used from.
-* Tokens are revoked with a release command or through the API itself.
+* A token has an immutable ID, a unique display name, scopes, an optional
+  expiry, and an optional list of source addresses it may be used from.
+* Tokens are revoked with a release command. Any authenticated token can also
+  revoke itself, but cannot list, create, or revoke another token through the
+  API.
 * Without any token the API is off; no request reaches it.
 
-Scopes keep a token to what its automation needs:
+Authentication checks the stored hash, expiry, revocation, and source address
+on every request through a credential path separate from user and agent
+authentication. The API requires HTTPS outside development. Source restrictions
+use the connection's peer address unless the deployment explicitly names
+trusted reverse proxies; forwarding headers are accepted only from those
+proxies and are resolved with the same trusted-hop rules as the rest of the
+deployment.
+
+Scopes keep a token to what its automation needs. A write scope includes the
+matching read operation needed to obtain versions and observe results:
 
 [cols="1,2"]
 |===
@@ -44,29 +57,53 @@ Scopes keep a token to what its automation needs:
 |Creating, renaming, suspending, resuming, and scheduling deletion of
 organizations, and inviting owners
 
+|`policy:read`
+|Reading effective policy and its version
+
 |`policy:write`
-|Setting limits, quotas, locked settings, and feature entitlements
+|Reading and setting limits, quotas, locked settings, and feature entitlements
+
+|`providers:read`
+|Reading deployment provider configuration with secrets omitted
 
 |`providers:write`
-|Managing deployment identity providers (RFD 15)
+|Reading, testing, and managing deployment identity providers
 
 |`usage:read`
 |Reading usage counters
 
+|`transfers:read`
+|Reading transfer status, but not downloading an export
+
 |`transfers:write`
-|Starting exports and imports (RFD 20)
+|Starting and cancelling transfers, downloading exports, and importing
+archives; this grants explicit access to transferred inventory
 |===
 
+Self-revocation requires authentication but no additional scope. Every other
+operation requires the scope named above; having one scope never implies an
+unrelated scope.
+
 The API is served under `/operator/v1` with an OpenAPI description, like the
-agent API. An operator can instead serve it only on a separate internal port,
-so it is not reachable from the public internet at all.
+agent API. An operator can instead configure internal-only mode. That mode
+removes the route from the public listener and binds a separate listener to a
+configured private address; the deployment must also restrict network exposure
+to its operator network. Merely choosing a second port is not an access
+boundary.
 
 == Organizations
 
 * *Create* an organization with a name and slug. It starts with no members.
-* *Invite an owner* by email address. The invitation is an emailed link; the
-  person signs in or signs up and becomes the owner. The operator never sets a
-  password or receives a sign-in link.
+* *Invite an owner* by email address. The invitation is a purpose-specific,
+  expiring, revocable, single-use secret bound to the organization and intended
+  email. Acceptance atomically verifies that the signed-in or newly registered
+  account owns that email before granting ownership. Closed registration and
+  provider-only sign-in still apply: the invitation does not create a password
+  or bypass the deployment's allowed sign-in methods. The operator receives
+  neither the invitation nor a sign-in link. `organizations:write` may invite
+  an owner to an existing organization, so it can deliberately grant full
+  tenant access to an address the operator controls; deployments that need
+  provisioning without that authority use a token without this scope.
 * *Suspend* an organization. Its members cannot open it, its agents' intake is
   refused with `403`, and its jobs are not dispatched. Nothing is deleted.
   *Resume* undoes it. Both use the organization's existing `disabled` status.
@@ -81,13 +118,17 @@ so it is not reachable from the public internet at all.
 An operator sets an organization's policy as one document, replacing it
 whole:
 
-* *Limits and quotas* from RFD 21.
-* *Locked settings*: any security setting from RFD 19, fixed to a value. A
-  locked setting shows as read-only in organization settings, marked as set by
-  the deployment, and owners cannot change it.
+* *Limits and quotas*: named resource ceilings and rolling or calendar-period
+  usage quotas. Each entry defines its unit, period where applicable, and
+  reject-or-throttle behavior when exhausted; implementations add individual
+  limit definitions to the OpenAPI schema as they become enforceable.
+* *Locked settings*: operator-manageable security settings fixed to a value.
+  The schema enumerates which settings may be locked. A locked setting shows as
+  read-only in organization settings, marked as set by the deployment, and
+  owners cannot change it.
 * *Entitlements*: which optional features the organization may turn on, such
-  as organization identity providers (RFD 15), SCIM (RFD 16), terminals (RFD
-  13), and VM operations (RFD 14). An entitlement only allows a feature;
+  as organization identity providers, terminals (RFD 13), and VM operations
+  (RFD 14). An entitlement only allows a feature;
   owners still decide whether to use it. Removing an entitlement turns the
   feature off and keeps its configuration for when it is allowed again.
 
@@ -97,11 +138,22 @@ owners' choice.
 
 == Deployment providers
 
-The API manages deployment identity providers with the same fields and rules
-as the RFD 15 release commands: a provider cannot be enabled until a test
-sign-in succeeds, a change that would leave no way in is refused, and client
-secrets can be written but never read back. Organization providers are not
-reachable through this API; they belong to their organization's owners.
+RFD 15 defines environment-configured deployment identity providers and their
+sign-in and identity-linking security rules; it does not define runtime
+provider management. This RFD adds runtime-managed providers. Environment
+providers remain read-only and take precedence on ID collisions. Runtime
+providers use RFD 15's stable identity: changing kind or issuer requires a new
+ID or an explicit identity migration. Their configuration and encrypted client
+secrets are stored durably in the database; responses omit secrets entirely.
+
+A provider configuration version cannot be enabled until a test sign-in for
+that exact version succeeds. Updating a security-relevant field invalidates
+the result. Enabling, disabling, deleting, or changing a provider is one
+transaction that refuses to leave any affected user without a usable sign-in
+and sudo method under the effective local-sign-in policy. The same safeguard
+applies when a locked policy setting or entitlement disables a sign-in method.
+Organization providers are not reachable through this API; they belong to
+their organization's owners.
 
 == Usage
 
@@ -117,10 +169,21 @@ Daily totals are kept for 400 days.
 
 == Transfers
 
-The API starts an RFD 20 export of an organization and returns the archive's
-download link when it is ready. It can also create an organization from an
-archive. Both use RFD 20's rules unchanged, including importing only into an
-empty organization and bringing security approvals back pending.
+The API can start, inspect, and cancel an export, then authorize a download. It
+can also create an empty organization and import an archive into it. This is
+the sole exception to the ordinary inventory boundary and requires
+`transfers:write` for every start, cancellation, download authorization, and
+import; `transfers:read` alone reveals only status and non-secret metadata.
+
+An export omits passwords, session material, API and intake keys, provider and
+integration secrets, pending invitation secrets, and other credentials. A
+download authorization is a short-lived, single-use capability bound to the
+requesting token and is never returned in a status response. Revoking the token
+or cancelling the transfer invalidates it. Import verifies and stages the
+archive before atomically checking that the destination is still empty and
+making its inventory visible. Security approvals return pending, imported
+users receive no access without an independently valid membership, and no
+credential from the source becomes usable in the destination.
 
 == Writes
 
