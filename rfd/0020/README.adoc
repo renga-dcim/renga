@@ -45,9 +45,12 @@ and adds a converter from the previous version, so a release can import
 archives from older releases. Importing an archive from a newer release than
 the target is refused.
 
-Every record keeps its UUID. References between records therefore need no
-translation, and links that people saved to a resource keep working after a
-move.
+Organization-owned records keep their UUIDs. References among those records
+therefore need no translation, and links that people saved to a resource keep
+working after a move. The target organization and people are different: the
+importer chooses the target organization, and the source organization ID in the
+manifest can never select it. References to global users are mapped through the
+principal model below rather than trusted as destination user IDs.
 
 === Contents
 
@@ -61,9 +64,11 @@ The export always includes the organization's current state:
   contracts;
 * the catalog: types, revisions, templates, and expectations;
 * findings, finding workflows, and triage rules;
-* teams, saved views, and change requests;
+* teams, saved views, change requests, custom roles, assignments, and portable
+  organization settings;
 * agents and their installation IDs, without credentials;
-* members, as described below.
+* memberships and every person referenced by current state, as described
+  below.
 
 Two optional parts can be added when exporting:
 
@@ -74,10 +79,18 @@ Two optional parts can be added when exporting:
 
 === Members
 
-Users are global in Renga; an organization only holds memberships. The export
-lists each member by email address and display name, with their base role,
-team memberships, and assignments. It never includes a credential: no password
-hash, passkey, authenticator secret, recovery code, session, or token.
+Users are global in Renga and are not organization-owned records. The archive
+instead has a source-scoped principal for every person referenced by current
+state or included history, including former members. A principal carries the
+source attribution and, where available, the person's email address and display
+name. Current memberships, team memberships, and assignments refer to that
+principal and retain their manual, identity-provider, or directory authority,
+status, and validity.
+
+A principal records who the source says acted; it does not assert that a
+destination account is that person. The archive never includes a credential:
+no password hash, passkey, authenticator secret, recovery code, session, or
+token.
 
 === Excluded
 
@@ -88,7 +101,8 @@ hash, passkey, authenticator secret, recovery code, session, or token.
 * Security state that must be re-established by people at the destination:
   approved installation keys, trusted privileged bindings, and terminal or VM
   grants (RFDs 13 and 14). The archive lists them for reference, and import
-  creates them as pending or disabled.
+  creates them as pending or disabled. Accepting an invitation cannot enable
+  these grants.
 
 == Exporting
 
@@ -119,18 +133,27 @@ format version, every record against its schema, and every reference. It
 reports all problems at once. If the archive is valid, Renga applies it in the
 background and either the whole import lands or the organization stays empty.
 
-* *IDs*: if any record ID in the archive already exists anywhere in the target
-  deployment, Renga refuses the import unless the importer chooses to import a
-  copy. A copy gives every record a new ID and rewrites references; saved links
-  to the original do not carry over.
+* *IDs*: if any organization-owned record ID in the archive already exists
+  anywhere in the target deployment, Renga refuses the import unless the
+  importer chooses to import a copy. A copy gives every organization-owned
+  record a new ID and rewrites references; saved links to the original do not
+  carry over. The target organization and destination users are mapped in both
+  modes and never take identity from source UUIDs.
 * *Revisions*: resources get new revision numbers from the target deployment,
   allocated in the archive's order. Imported history keeps its timestamps and
   actors.
-* *Members*: each exported member becomes an invitation to their email
-  address, with the exported role, teams, and assignments applied when they
-  accept. A person who already has an account at the destination accepts by
-  signing in. Directory-managed memberships (RFD 16) return when the directory
-  connection is set up again.
+* *Members*: only active manual memberships, team memberships, and assignments
+  are eligible to return through an invitation. Acceptance proves control of a
+  destination identity before applying them. Identity-provider and
+  directory-managed access remains inactive reference data until a configured
+  destination authority freshly establishes it. Expired, disabled, or revoked
+  access never revives, and Renga never creates or overwrites a global user from
+  an archive assertion.
+* *People and actors*: source principals remain imported attribution, including
+  where a schema requires an actor, until safely linked to a destination user.
+  Unclaimed personal records, such as private saved views, remain private and
+  unavailable; an unresolved user reference is never changed to organization
+  ownership.
 * *Agents*: agent records keep their installation IDs. After the organization
   creates new intake keys and deploys them, each agent's reports continue its
   existing record and history.

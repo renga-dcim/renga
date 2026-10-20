@@ -15,9 +15,15 @@ Implements link:README.adoc[RFD 20: Organization export and import].
 * [ ] Validate a whole archive before writing and report every problem at once.
 * [ ] Import atomically into an empty organization, preserving IDs, refusing
   collisions unless importing a copy, and re-allocating revisions in order.
-* [ ] Turn members into invitations with their roles, teams, and assignments.
+* [ ] Export source-scoped principals and preserve the authority, status, and
+  validity of memberships, team memberships, assignments, and actor references.
+* [ ] Restore only active manual access through verified invitations; keep
+  externally managed, expired, disabled, and revoked access inactive until its
+  destination authority freshly establishes it.
+* [ ] Keep imported actor attribution distinct from destination accounts and
+  keep unclaimed personal records private until their owner is safely linked.
 * [ ] Import installation keys as pending, bindings unapproved, and terminal and
-  VM grants disabled.
+  VM grants disabled regardless of invitation acceptance.
 * [ ] Add `renga export` and `renga import` release commands.
 * [ ] Add converters from each previous archive format version, and refuse
   archives from newer releases.
