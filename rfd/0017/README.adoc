@@ -162,19 +162,28 @@ A role is a named set of permissions within an organization.
 
 The four built-in roles keep today's behavior exactly and cannot be edited:
 
-[cols="3,1,1,1,1"]
+[cols="3,1,1,1,1,1"]
 |===
-|Permission |`owner` |`admin` |`member` |`viewer`
+|Permission |`owner` |`admin` |`member` |`viewer` |`support`
 
-|`inventory.read` |yes |yes |yes |yes
-|`inventory.reconcile`, `findings.act`, `catalog.author` |yes |yes |yes |
-|`requests.create` | | |yes |
+|`inventory.read` |yes |yes |yes |yes |yes
+|`inventory.reconcile`, `findings.act`, `catalog.author` |yes |yes |yes | |
+|`requests.create` | | |yes | |
 |`inventory.edit`, `requests.decide`, `catalog.expectations`, `dcim.edit`,
  `ipam.edit`, `topology.edit`, `jobs.request`, `views.share`, `teams.manage`,
- `triage_rules.manage`, `intake_keys.manage` |yes |yes | |
-|`members.manage`, `roles.manage` |yes |yes | |
-|`organization.manage`, `organization.export` |yes | | |
+ `triage_rules.manage`, `intake_keys.manage` |yes |yes | | |
+|`members.manage`, `roles.manage` |yes |yes | | |
+|`organization.manage`, `organization.export` |yes | | | |
 |===
+
+The fifth built-in role, `support`, is `viewer`'s permissions for a
+deployment's support identities (link:../0022/README.adoc[RFD 22]). Nobody
+assigns it: Renga grants it to every support identity while the
+organization's _Allow support access_ setting (RFD 19) is on and removes it
+when the setting goes off, and `members.manage` can neither grant nor revoke
+it. A support identity can hold no other role and no explicit permission, and
+the role itself cannot be edited or carry a condition. It is listed here so
+that the members list, Activity, and the grant ceilings below account for it.
 
 `members.manage` and `roles.manage` are new; Renga has no member management UI
 today. Permission to administer a grant is separate from permission to perform
