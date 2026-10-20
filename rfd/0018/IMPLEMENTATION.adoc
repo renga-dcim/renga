@@ -2,8 +2,12 @@
 
 Implements link:README.adoc[RFD 18: Resource groups].
 
-* [ ] Add resource groups and group sets, with exclusive sets enforced in the
-  database, managed with `groups.manage`.
+* [ ] Add resource groups and group sets, managed with `groups.manage`.
+  Materialize deduplicated effective memberships and enforce exclusive sets in
+  the database for both authorization views. Reject rather than choose between
+  direct/inherited or ancestor/descendant conflicts; test membership,
+  placement, hierarchy, group-to-set, exclusivity-enabling, and concurrent
+  writes.
 * [ ] Add membership changes from resource pages, group pages, and bulk
   selections, requiring `inventory.edit` and RFD 17's before-and-after rule over
   every directly or transitively affected resource; refuse the whole operation

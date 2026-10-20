@@ -38,6 +38,24 @@ sets give the guarantee a single label key would ("a host is not both
 production and staging") without trusting reported data. A tenant model like
 NetBox's is an exclusive `Customer` set.
 
+Exclusivity applies to effective membership, not only direct membership, and
+separately to each authorization view described below. Multiple direct or
+inherited paths to the same group collapse to one membership, but paths to two
+different groups in one exclusive set conflict. Direct membership edits,
+placement and hierarchy changes, moving a group into a set, and making a set
+exclusive all reject the whole mutation if either resulting view would
+conflict. Renga never silently picks a winning path or removes another
+membership.
+
+Renga materializes one effective-membership row per organization, resource,
+authorization view, and group. A row for a group in an exclusive set also
+carries its group-set ID; a partial unique constraint on organization,
+resource, view, and group set enforces at most one such group. Candidate rows
+are rebuilt under the shared group-projection lock, so the constraint also
+guards concurrent direct, inherited, and set-reconfiguration writes. These
+deduplicated rows are the source of the group IDs in each resource's access
+row.
+
 Groups and sets are organization-wide definitions, managed with a new
 `groups.manage` permission that the built-in `owner` and `admin` roles include.
 
