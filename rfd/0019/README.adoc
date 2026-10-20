@@ -193,6 +193,13 @@ identity provider usually does, and setting or removing it is recorded in
 Activity. A `github` provider cannot be marked, because GitHub's OAuth API
 says nothing about how the person signed in.
 
+An organization provider's mark satisfies only its owning organization's MFA
+requirement. Only an operator-marked deployment provider can satisfy the
+requirement across organizations. The session keeps the provider ID, whether
+it is deployment- or organization-owned, and its owning organization as MFA
+evidence; Renga evaluates that evidence for the organization being opened
+rather than flattening it into an account-wide MFA flag.
+
 When a marked provider's ID token carries an `amr` claim, the sign-in counts
 only if `amr` contains `mfa` or names at least two methods (RFC 8176). Without
 `amr`, the mark alone decides. Removing the mark applies at each affected

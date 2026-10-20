@@ -19,6 +19,11 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
 * [ ] Add the _enforces MFA_ mark to identity providers, settable by the
   operator on deployment providers and by owners on organization providers,
   never on `github` providers, and recorded in Activity.
+* [ ] Keep the provider ID, ownership kind, and owning organization in session
+  MFA evidence. Accept an organization provider's mark only for its owning
+  organization and an operator-marked deployment provider across
+  organizations; test that an organization A provider, with and without
+  `amr`, never satisfies organization B's requirement.
 * [ ] Reject a marked provider's sign-in for the requirement when its `amr`
   claim is present without `mfa` or two methods; test tokens with and without
   `amr`.
