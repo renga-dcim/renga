@@ -41,7 +41,7 @@ The first release derives the catalogue from today's checks:
 |Permission |Allows
 
 |`inventory.read`
-|Seeing resources and everything that belongs to them (see <<reads>>)
+|Seeing resources and the payloads allowed by <<reads>>
 
 |`inventory.reconcile`
 |Reconciling observations into inventory, and accepting reconciliation results
@@ -268,7 +268,7 @@ Conditions never read agent-reported data such as resource labels. An
 organization configures its agents but does not fully control them, and anyone
 holding its intake key can report any label. Boundaries that cut across sites
 and teams, such as environment, customer, or compliance scope, are left to
-RFD 18's resource groups.
+future resource groups.
 
 === Trusted attributes
 
@@ -301,26 +301,57 @@ person sees a resource only when one of their assignments grants
 `inventory.read` with a condition the resource matches. Every built-in role
 includes it, so a member whose base role is built-in still reads the whole
 organization, as today. A contractor can instead be a member with no base role
-and a `viewer` assignment for hosts at one site, and sees nothing else.
+and a `viewer` assignment for servers at one site, and sees nothing else.
 
-What a resource's visibility covers:
+Resource visibility and payload disclosure are separate decisions:
 
-* Everything that belongs to one resource follows it: its fields, observations
-  and evidence, interfaces, components and modules, assigned addresses,
-  placement, findings, requests, jobs, and Activity entries.
-* Sites, locations, and racks are resources and follow the same rule, except
-  that a person also sees the containers of every resource they can see, so its
-  placement can be shown.
-* Organization-wide definitions (catalog types, VRFs, prefixes, VLAN groups and
-  VLANs, and teams) are shared vocabulary, visible to anyone who holds
-  `inventory.read` anywhere.
-* Records that join several resources, such as cables, neighbor adjacency, and
-  power paths, show only the endpoints the person can see. A hidden endpoint
-  appears as not visible to them, without its name or ID.
-* Aggregates over a shared container, such as rack occupancy and prefix
-  utilization, count every resource so capacity stays correct, and show a hidden
-  resource only as occupied or used, never by name. This deliberately reveals
-  that space is taken, not by what.
+[cols="2,5"]
+|===
+|Record class |Disclosure rule
+
+|Resource-owned metadata
+|The resource envelope, fields, interfaces, components, modules, addresses,
+placement, findings and requests follow the resource. Sites, locations and
+racks are also resources. A reader sees the containers of every visible
+resource so its placement can be rendered.
+
+|Shared definitions and organization records
+|Catalog types, VRFs, prefixes, VLAN groups, VLANs and teams are shared
+vocabulary visible to anyone with `inventory.read` anywhere. Organization-wide
+Activity and other records that are not safely attributable to visible
+resources require unconditioned `inventory.read`.
+
+|Raw observations and evidence
+|A resource page may show a safe projection. Every identifier and value that
+describes another resource, including neighbor system names and chassis IDs, is
+removed unless that resource is readable. A raw source payload is disclosed
+only when every resource it references is readable; an opaque payload that
+cannot be proven safe is not disclosed.
+
+|Mixed-resource and historical records
+|Cables, adjacency, power paths, change events and snapshots disclose complete
+payloads only when every referenced resource is readable. Otherwise a defined
+safe projection redacts each hidden endpoint, ID, name and snapshot field. An
+opaque JSON snapshot is withheld rather than filtered after decoding.
+
+|Jobs and operational payloads
+|Generic job metadata follows its resource. Query parameters, results and
+events require the current query permissions in the operation table. Terminal
+recordings require `terminal.replay`, and every replay remains audited. VM job
+payloads require `vm.power`. Generic Activity and job views expose only safe
+summaries and never bypass these payload permissions.
+
+|Aggregates
+|Rack occupancy and prefix utilization count hidden resources so capacity stays
+correct, but reveal only that space is occupied or used, never a hidden
+resource's name, ID or attributes.
+|===
+
+Human mutations require `inventory.read` over every target in addition to their
+action permissions. Renga does not support blind writes, so a successful
+mutation may return the ordinary resource representation without becoming a
+read side channel. Internal machine paths return only the payload their fixed
+principal needs.
 
 Every read path applies the same rule in its query:
 
@@ -334,8 +365,10 @@ Every read path applies the same rule in its query:
   re-fetches through its own scope and drops what it can no longer see.
 * Deciding a request requires reading its resource as well as the permission
   the change needs.
-* RFD 12 sensitivity still applies on top: reading a resource never by itself
-  reveals sensitive query results.
+* Each payload in the disclosure table is projected or withheld in the database
+  query or a typed safe projection before serialization. A generic preload,
+  mutation response, export, or Activity renderer never receives an opaque
+  payload it is not authorized to disclose.
 
 Losing read access takes effect like any other assignment change: connected
 LiveViews refresh their scope and stop showing the resource, and an open page
@@ -452,19 +485,22 @@ over it. A refused action names the missing permission, not just "forbidden".
 
 * RFDs 12, 13, and 14 are published but not yet implemented. Their member
   query policy, terminal grants, and VM operator grants become assignments of
-  explicit permissions. Their target sets (resources, a saved view, or an
-  owning team) become conditions; a saved view is not a condition because its
-  filters include observed data and its owner can edit it, so a grant from a
-  view resolves to that view's current resource IDs. Those RFDs are amended once
-  this one is published.
-* RFD 15 claim mappings and RFD 16 group mappings produce source-bound
-  assignments rather than setting a membership's role directly, so a mapping may
-  grant a custom role or a conditioned one.
+  explicit permissions with the action, payload and lifetime rules above. Their
+  target sets (resources, a saved view, or an owning team) become conditions; a
+  saved view is not a condition because its filters include observed data and
+  its owner can edit it. A grant from a view snapshots its current trusted
+  resource IDs and never expands when the view changes. Those RFDs are amended
+  once this one is published.
+* RFD 15 claim mappings produce deadline-bound assignments rather than setting
+  a membership's role directly, so a mapping may grant a custom role or a
+  conditioned one. Provider configuration and secrets remain deployment-owned.
 * RFD 8 teams keep owning resources; this RFD adds their members.
 
 == Future work
 
-* Resource groups for boundaries that cut across sites and teams (RFD 18).
+* Resource groups for boundaries that cut across sites and teams.
+* Directory group synchronization, using the source validity and grant
+  transition rules in this RFD.
 * Separation of duties beyond RFD 14's second-operator approval.
 * Scoped API tokens for people, using the same assignments.
 

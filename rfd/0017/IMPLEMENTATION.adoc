@@ -29,24 +29,33 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   placement and ownership changes and authorized against both states.
 * [ ] Filter every read path by `inventory.read`: lists, fetches (hidden reads
   as not found), search, counts and badges, exports, Activity, shared views,
-  multi-resource records with hidden endpoints, and aggregates that show hidden
-  resources only as occupied. Declare each public read function's permission
-  and test that none is undeclared, with a scoped-member suite over all of them.
+  and aggregates that show hidden resources only as occupied. Declare each
+  public read function's permission and test that none is undeclared, with a
+  scoped-member suite over all of them.
+* [ ] Implement the disclosure matrix for raw observations, mixed-resource and
+  historical records, query and VM payloads, terminal recordings, and
+  organization-wide records. Use typed safe projections or withhold opaque
+  payloads; test hidden neighbor identifiers, snapshots, generic Activity and
+  job views, mutation responses, and exports.
+* [ ] Require `inventory.read` over every target of a human mutation in addition
+  to its action permissions, and return only those readable targets.
 * [ ] Make live updates carry IDs only and re-fetch through each subscriber's
   scope; test that losing read access removes a resource from an open page.
 * [ ] Allow memberships with no base role.
 * [ ] Enforce the before-and-after rule for owner team and placement changes,
   for direct edits and request approval. Apply the grant ceiling to effective
   access added by team, role, external-source, ownership, and placement changes.
-* [ ] Restrict operational permissions to trusted attributes; test owner teams
-  set by triage rules and unconfirmed placement against `jobs.request`.
+* [ ] Restrict confidentiality and operational permissions to trusted
+  attributes. Test that owner teams set by triage rules and unconfirmed
+  placement neither reveal existing hidden data nor authorize `jobs.request`.
 * [ ] Add one locked organization authorization version shared by policy
   changes, resource-access changes, and protected mutations. Refresh connected
   LiveView scopes on role, membership, assignment, team, source, and expiry
   changes, and check versions and deadlines before protected data delivery and
   events. Test that each revocation path stops both reads and mutations.
-* [ ] Add explicit permissions with the operation-specific read permissions and
-  lifetimes in RFD 17, ready for RFDs 12, 13, and 14.
+* [ ] Add explicit permissions with the operation-specific action, retained
+  payload, approval, audit, and lifetime rules in RFD 17, ready for RFDs 12, 13,
+  and 14.
 * [ ] Add the access views on member and resource pages, and name the missing
   permission when an action is refused.
-* [ ] Amend RFDs 12, 13, 14, 15, and 16 to use assignments.
+* [ ] Amend RFDs 12, 13, 14, and 15 to use assignments and the disclosure table.
