@@ -22,12 +22,14 @@ means the identity provider, as in RFD 15.
 
 == Connections
 
-An organization owner creates a SCIM connection for their organization. A
-connection has:
+An organization owner creates a SCIM connection for their organization, when
+the deployment allows SCIM for it (see link:../0022/README.adoc[RFD 22]
+entitlements). A connection has:
 
 * the organization it manages; a connection never reaches another organization;
-* the ID of an RFD 15 `oidc` provider whose identities it describes. GitHub
-  identities cannot be provisioned because GitHub has no SCIM client;
+* the ID of an RFD 15 `oidc` provider whose identities it describes: the
+  organization's own provider, or a deployment provider. GitHub identities
+  cannot be provisioned because GitHub has no SCIM client;
 * the correlation claim, the ID token claim whose value the provider sends as
   each user's SCIM `externalId` (`sub` by default; `oid` for Microsoft Entra ID,
   whose `sub` is pairwise per application);
