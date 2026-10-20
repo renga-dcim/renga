@@ -78,9 +78,20 @@ changed, never the secret.
 === Operators
 
 Operators manage deployment providers with release commands, `renga providers
-list | add | update | enable | disable`, which work even when nobody can sign
-in. Disabling a provider or enabling local sign-in from the command line is
-the way back from a configuration that locks everyone out.
+list | add | update | test | enable | disable | recover-local`, which work even
+when nobody can sign in. `test` creates a short-lived, single-use URL for the
+exact pending revision. The browser callback is available in recovery mode and
+can only validate and atomically activate that revision; it never creates a
+user session or other authentication evidence. This is how an operator
+bootstraps the first provider without an existing sign-in method.
+
+`recover-local` creates a time-limited database override that enables existing
+local credentials even when the environment policy disables them. Only the
+release command can create or revoke the override; it does not open
+registration, it expires automatically, and every use and policy change is
+recorded in Activity. An operator can establish the override and disable a
+broken stored provider in one serialized operation, repair and test the
+provider, and then revoke the override.
 
 Operators who prefer declarative configuration can still define deployment
 providers in the environment, read in `config/runtime.exs`. Those providers
@@ -88,7 +99,9 @@ are loaded at boot, shown read-only in the UI, and override a stored provider
 with the same ID only when it is also a deployment provider with the same
 immutable properties. Renga refuses to boot on an ID collision with an
 organization provider or any other immutable-property mismatch rather than
-shadowing it.
+shadowing it. A release command cannot change an environment-managed provider;
+repairing one requires changing the deployment environment and restarting, or
+using the temporary local recovery override while doing so.
 
 [[organization-providers]]
 === Organization providers
@@ -305,9 +318,16 @@ Two independent settings control local credentials:
 * `local_sign_in`: `enabled` (passwords and magic links), or `disabled`, which
   leaves provider sign-in as the only way in.
 
-Both are deployment settings, read from the environment at boot. Disabling
-local sign-in requires at least one enabled deployment provider; Renga refuses
-to boot otherwise rather than locking everyone out.
+Both are deployment settings, read from the environment at boot. The only
+runtime exception is the time-limited, operator-only local recovery override
+described above; it does not change `registration`.
+
+If local sign-in is disabled and no deployment provider is active, a web node
+starts in fail-closed recovery mode instead of serving normal sign-in or
+protected routes. Health checks, release commands, and the short-lived provider
+test callback remain available so an operator can bootstrap or repair a
+provider. Leaving recovery mode requires atomically activating a tested
+deployment provider or establishing the temporary local recovery override.
 
 == Re-authentication and step-up
 
