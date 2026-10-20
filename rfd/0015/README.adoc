@@ -90,6 +90,16 @@ an email address whose domain the organization has verified with a DNS TXT
 record. A domain can be verified by one organization at a time, and an
 unverified domain never routes anyone to an organization's provider.
 
+Because an organization owner does not control the deployment network, every
+server-side request for an organization provider follows an operator-controlled
+destination policy. It applies to discovery, token and UserInfo endpoints,
+signing keys, every redirect, and any future back-channel endpoint. By default
+Renga rejects loopback, link-local and metadata addresses, private deployment
+networks, and any other non-public destination. It resolves and checks the
+destination again for each connection and redirect so a DNS change cannot
+bypass the policy. An operator may explicitly allow the destinations of an
+internal enterprise provider; an organization owner cannot add an exception.
+
 An organization provider is trusted only for its own organization, because its
 owners control the identities it asserts:
 

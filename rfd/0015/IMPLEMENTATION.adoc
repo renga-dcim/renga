@@ -14,6 +14,11 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add organization providers managed by owners, reached through the
   organization sign-in link or a DNS-verified email domain claimed by one
   organization at a time.
+* [ ] Apply an operator-controlled outbound policy to every organization
+  provider endpoint, redirect, and resolved destination. Deny loopback,
+  link-local and metadata addresses, and private deployment networks by
+  default; test discovered endpoints, redirects, mixed DNS answers, and DNS
+  changes, with internal providers requiring an explicit operator exception.
 * [ ] Make provider IDs globally unique and permanently bind kind, issuer,
   provider scope, and owning organization. Reject cross-scope environment
   overrides and ID reuse, and require migrations to preserve the authority of
