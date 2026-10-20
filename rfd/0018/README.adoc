@@ -125,11 +125,11 @@ direct or contained member of any listed group:
 ----
 {
   "group": ["<staging group id>"],
-  "kind": ["host"]
+  "kind": ["server"]
 }
 ----
 
-This reads as "hosts in Staging". Like every RFD 17 condition it compiles to an
+This reads as "servers in Staging". Like every RFD 17 condition it compiles to an
 SQL predicate. Each resource's access row carries separate current and trusted
 effective group IDs, sourced from the materialized membership rows and indexed
 for containment queries. The permission class selects the matching view; an

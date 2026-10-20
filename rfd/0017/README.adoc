@@ -273,7 +273,7 @@ Conditions never read agent-reported data such as resource labels. An
 organization configures its agents but does not fully control them, and anyone
 holding its intake key can report any label. Boundaries that cut across sites
 and teams, such as environment, customer, or compliance scope, are left to
-future resource groups.
+link:../0018/README.adoc[RFD 18's resource groups].
 
 === Trusted attributes
 
@@ -506,10 +506,11 @@ over it. A refused action names the missing permission, not just "forbidden".
   a membership's role directly, so a mapping may grant a custom role or a
   conditioned one. Provider configuration and secrets remain deployment-owned.
 * RFD 8 teams keep owning resources; this RFD adds their members.
+* RFD 18 adds the `group` condition and defines current and trusted effective
+  group membership using this RFD's condition and grant-transition rules.
 
 == Future work
 
-* Resource groups for boundaries that cut across sites and teams.
 * Directory group synchronization, using the source validity and grant
   transition rules in this RFD.
 * Separation of duties beyond RFD 14's second-operator approval.
