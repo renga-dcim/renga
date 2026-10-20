@@ -49,5 +49,9 @@ Implements link:README.adoc[RFD 21: Per-organization limits].
   arriving while the older one waits.
 * [ ] Read defaults from the environment, add `renga limits set` for
   per-organization overrides, and show usage to owners read-only.
+* [ ] Establish the built-in defaults with a documented load test of a
+  single-organization deployment under a large site's realistic intake,
+  including a full re-enrollment; check in the test and its results next to
+  the configuration reference, and confirm no default is met.
 * [ ] Emit per-organization telemetry for intake, database time, and rejected
   requests.

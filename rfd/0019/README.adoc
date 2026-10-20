@@ -30,6 +30,7 @@ responsible for its own multi-factor authentication. It meets an
 organization's MFA requirement only when the provider is marked as enforcing
 MFA (<<mfa-requirement>>).
 
+[[credentials]]
 == Credentials
 
 An account can hold:
@@ -42,10 +43,19 @@ An account can hold:
   digits).
 * *Recovery codes*: ten single-use codes, shown once and stored hashed.
   Generating a new set invalidates the old one.
-* *A password*, which becomes optional once the account has a passkey.
+* *A password*, which is optional once the account has a passkey.
 
 An account has multi-factor authentication (MFA) when it holds a passkey or an
 authenticator app. Adding the first one generates recovery codes.
+
+An account may be passwordless. A new account may register with only a
+passkey, and an existing account with a passkey may remove its password after
+the account re-check below. Removing the last passkey from a passwordless
+account is refused until a password is set, so an account always keeps at
+least one credential it can sign in with. A passwordless account has no
+password to reset: the reset email tells the person to sign in with a passkey
+or a recovery code instead, and the magic link still works as a first step
+but, as for any account with MFA, never signs the person in by itself.
 
 Renga uses a pinned, reviewed WebAuthn library for registration and assertion
 verification, as RFD 15 does for OpenID Connect. Renga requires user
@@ -297,9 +307,12 @@ authenticator app, generating recovery codes, using a recovery code, and
 changing the email or password send a notice to the account's email address,
 and an email change also notifies the old address.
 
-== Open questions
+== Decisions
 
-. *Passwordless accounts.* The proposal lets an account with a passkey remove
-  its password entirely, and lets new accounts register with only a passkey.
+. *Passwordless accounts.* Allowed. An account with a passkey may remove its
+  password, and a new account may register with only a passkey, as
+  <<credentials,Credentials>> describes. A passkey-only account has no
+  phishable or reusable secret, and recovery codes and the operator release
+  command already cover a lost device.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
