@@ -19,7 +19,6 @@ dev
 target
 agent
 dist
-rfd
 docs
 test
 scripts
