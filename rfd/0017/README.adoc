@@ -200,21 +200,34 @@ and an expiry:
 * _valid until_: optional, and required for explicit permissions when the
   operation table above requires it;
 * _source_: `manual`, a claim mapping, or a SCIM connection. A claim assignment
-  has the deadline issued by its own provider. A SCIM assignment has no timer
-  and is valid only while its connection, entry, identity binding, group
-  membership, and mapping remain valid. An external assignment grants nothing
-  after its deadline or source invalidation, and unlinking or removing its
-  identity, mapping, or connection invalidates it immediately;
+  has the deadline issued by its own provider. SCIM source validity has no
+  refresh deadline and depends on its connection, entry, identity binding,
+  mapping, and, for a group-derived assignment, group membership. An external
+  assignment grants nothing after its deadline or source invalidation, and
+  unlinking or removing its identity, mapping, or connection invalidates it
+  immediately;
 * who created it, when, and why.
 
-Each membership keeps one base role, as today, which acts as an assignment
-without a condition. A membership may instead have no base role, so that it
-holds only what its other assignments grant (see <<reads>>). Every further assignment adds access; the result is the
-union of everything a person holds. There are no deny rules, so the question
-"why can this person do this" always has a list of assignments as its answer.
-A manual assignment is never changed or removed by a claim mapping or directory
-connection; an externally sourced one is removed when its source no longer
-grants it.
+Authority selection happens before assignments are combined. An independently
+created manual membership is authoritative for that person and organization,
+even when it has no base role, and suppresses every claim- or SCIM-derived
+assignment. An individually issued supplemental manual assignment, such as a
+terminal grant to an externally governed member, does not change membership
+authority and remains additive.
+
+External sources continue reconciling their candidate assignments while a
+manual membership suppresses them. Removing the manual membership activates
+only candidates that are valid at that moment; it never resurrects one the
+provider expired or SCIM revoked while it was suppressed.
+
+Each eligible membership keeps one base role, as today, which acts as an
+assignment without a condition. It may instead have no base role, so that it
+holds only what its other eligible assignments grant (see <<reads>>). Further
+eligible assignments add access; the result is their union. There are no deny
+rules, so the answer to "why can this person do this" is always a list of
+eligible assignments. An external source never changes or removes a manual
+assignment, and an externally sourced assignment becomes ineligible when its
+source no longer grants it.
 
 Teams gain members. A team is already the owner of resources (RFD 8); adding
 people to it lets one assignment say "people on a team may operate what their

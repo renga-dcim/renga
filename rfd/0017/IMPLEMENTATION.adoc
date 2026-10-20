@@ -48,7 +48,13 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   to its action permissions, and return only those readable targets.
 * [ ] Make live updates carry IDs only and re-fetch through each subscriber's
   scope; test that losing read access removes a resource from an open page.
-* [ ] Allow memberships with no base role.
+* [ ] Allow memberships with no base role. Select membership authority before
+  taking the union of eligible assignments: a manual `viewer` must suppress an
+  external `admin` from either claims or SCIM, while externally governed members
+  receive all eligible default and group assignments. Supplemental manual
+  assignments must remain additive without selecting authority. Reconcile
+  suppressed external candidates so removing a manual membership never revives
+  a grant that expired or was revoked while suppressed.
 * [ ] Enforce the before-and-after rule for owner team and placement changes,
   for direct edits and request approval. Apply the grant ceiling to effective
   access added by team, role, external-source, ownership, and placement changes.
