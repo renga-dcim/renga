@@ -23,6 +23,10 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
   password or add its first factor. Deliver it to the account's current email,
   never accept a provider email claim for it, and test both bootstrap paths and
   that email cannot replace an enrolled factor.
+* [ ] Allow passkey-only registration and password removal after the account
+  re-check; refuse removing the last passkey of a passwordless account; test
+  that password reset and the magic link never create a session for a
+  passwordless account on their own.
 * [ ] Add the organization MFA requirement, satisfied by Renga's own second
   factor or by sign-in through a provider marked as enforcing MFA; ask
   members whose session does not qualify for a passkey or authenticator code
