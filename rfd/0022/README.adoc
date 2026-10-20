@@ -86,12 +86,36 @@ Self-revocation requires authentication but no additional scope. Every other
 operation requires the scope named above; having one scope never implies an
 unrelated scope.
 
+[[listener]]
+=== Listener
+
 The API is served under `/operator/v1` with an OpenAPI description, like the
-agent API. An operator can instead configure internal-only mode. That mode
-removes the route from the public listener and binds a separate listener to a
-configured private address; the deployment must also restrict network exposure
-to its operator network. Merely choosing a second port is not an access
-boundary.
+agent API, but always on its own listener and port, never on the listener that
+serves people and agents. The port may be public: a control plane that runs
+in another region or at another provider has no private network to a
+deployment, and this RFD does not assume one. Keeping the API on its own
+listener lets an operator apply rules to the whole port that a path prefix on
+a shared port cannot carry, such as a client certificate requirement, a
+firewall rule, or a separate reverse proxy.
+
+The listener has two settings:
+
+* *Mutual TLS*. The operator configures a certificate authority, and the
+  listener completes a TLS handshake only with a client that presents a
+  certificate from it. A token presented without a certificate is refused
+  before it is read. This is recommended whenever the port is reachable from
+  the internet, because a leaked token alone is then not enough to call the
+  API, and it works across providers without any network between them.
+  Certificates are checked against the configured authority and its
+  revocation data, and never against the public web PKI.
+* *Bind address*. By default the listener binds to the same address as the
+  main endpoint. An operator with a private network may bind it to a private
+  address instead; the deployment must also restrict network exposure to its
+  operator network, because a second port is not an access boundary on its
+  own.
+
+Tokens, scopes, and source address lists apply on every request regardless of
+these settings.
 
 == Organizations
 
@@ -298,11 +322,16 @@ Every API operation has a matching release command using the same domain
 function, validation, lockout prevention, idempotency, and auditing, so a
 deployment without network access to the API can be operated the same way.
 
+== Decisions
+
+. *Separate port.* The API always has its own listener and port, which may be
+  public (<<listener>>). The reason is not that a port is a boundary, but
+  that a whole listener can carry rules such as mutual TLS that a path prefix
+  on the shared endpoint cannot; the earlier proposal to serve the API on the
+  main endpoint unless an operator chose otherwise is withdrawn.
+
 == Open questions
 
-. *Separate port by default.* The proposal serves the API on the main
-  endpoint unless an operator chooses a separate port. Defaulting to a
-  separate port is safer but needs one more piece of deployment configuration.
 . *Deletion through the API.* The proposal allows scheduled deletion with a
   30-day grace period. Leaving deletion to release commands only would make a
   leaked token less damaging.

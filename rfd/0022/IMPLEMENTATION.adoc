@@ -9,9 +9,13 @@ Implements link:README.adoc[RFD 22: Operator API].
 * [ ] Authenticate operator tokens separately on every request, including
   expiry and revocation, and derive source addresses only from the peer or
   explicitly trusted proxies.
-* [ ] Serve `/operator/v1` over HTTPS with an OpenAPI description, and support
-  internal-only mode that removes the public route and binds to a restricted
-  address.
+* [ ] Serve `/operator/v1` over HTTPS on its own listener and port with an
+  OpenAPI description, never on the main listener; support a configurable
+  bind address and an optional mutual TLS requirement checked against a
+  configured certificate authority and its revocation data. Test that a
+  request without a valid client certificate is refused before the token is
+  read when mutual TLS is on, and that the operator routes are absent from the
+  main listener.
 * [ ] Add organization create, rename, suspend, resume, scheduled deletion and
   cancellation with a 30-day grace period, and read endpoints; serialize
   cancellation against purge and preserve shared users and audit attribution.
