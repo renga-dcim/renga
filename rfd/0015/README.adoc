@@ -196,13 +196,16 @@ Renga refuses to boot otherwise rather than locking everyone out.
 
 The account re-check (RFD 19) and RFD 13 step-up are separate security
 levels. For the re-check, a user without a passkey, authenticator app, or
-password may reauthenticate through a linked OpenID Connect provider. Renga
-sends `prompt=login` and `max_age`, and binds the callback to the initiating
-local session, the re-check's purpose, and the expected provider ID and
-subject; switching accounts fails the attempt. Renga accepts the result only
-after its normal ID-token checks and its own validation that `auth_time` is
-present, well formed, not in the future, and within the re-check window.
-Ordinary SSO, silent renewal, and GitHub OAuth never count as a re-check.
+password may reauthenticate through a linked deployment OpenID Connect
+provider. An organization-owned provider never authorizes an account-wide
+credential or identity change; the user needs RFD 19's independent email
+bootstrap instead. Renga sends `prompt=login` and `max_age`, and binds the
+callback to the initiating local session, the re-check's purpose, and the
+expected provider ID and subject; switching accounts fails the attempt. Renga
+accepts the result only after its normal ID-token checks and its own validation
+that `auth_time` is present, well formed, not in the future, and within the
+re-check window. Ordinary SSO, silent renewal, and GitHub OAuth never count as
+a re-check.
 
 Where an organization requires RFD 13 step-up, it is a passkey or
 authenticator code when enrolled, otherwise a fresh password entry within five

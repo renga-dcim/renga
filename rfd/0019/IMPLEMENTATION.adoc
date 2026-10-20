@@ -15,10 +15,14 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
   password reset never bypasses it.
 * [ ] Remove sudo mode from user settings and add the in-place account
   re-check for email, password, credential, and identity provider changes.
+  Accept provider reauthentication only from a deployment provider; test that
+  an organization provider cannot authorize a passkey that then opens another
+  organization.
 * [ ] Let an account with neither MFA nor a password use a fresh, five-minute,
   purpose-, browser-, and session-bound email challenge only to set its first
-  password or add its first factor; test both bootstrap paths and that email
-  cannot replace an enrolled factor.
+  password or add its first factor. Deliver it to the account's current email,
+  never accept a provider email claim for it, and test both bootstrap paths and
+  that email cannot replace an enrolled factor.
 * [ ] Add the organization MFA requirement, satisfied by Renga's own second
   factor or by sign-in through a provider marked as enforcing MFA; ask
   members whose session does not qualify for a passkey or authenticator code

@@ -94,14 +94,18 @@ account after the session ends:
 Each of these asks for one fresh check when the person saves it, in place, not
 a separate sign-in page. The check is a passkey assertion or an authenticator
 code; an account without MFA enters its password; an account that signs in only
-through an OpenID Connect provider re-authenticates there with RFD 15's
-`prompt=login` and `max_age` rules. A passing check covers that one change and
-any other on this list within the next five minutes, and nothing else.
+through a deployment OpenID Connect provider re-authenticates there with RFD
+15's `prompt=login` and `max_age` rules. An organization-owned provider alone
+never authorizes an account-wide credential or identity change. A passing check
+covers that one change and any other on this list within the next five minutes,
+and nothing else.
 
 An account with no enrolled MFA and no password uses a fresh email challenge
 to set its first password or add its first factor. The challenge is bound to
 that purpose, browser, and session, expires after five minutes, and authorizes
-no other account change. Email never substitutes for an enrolled factor.
+no other account change. Renga delivers it to the account's current email
+address; an identity provider's email claim cannot satisfy it. Email never
+substitutes for an enrolled factor.
 
 RFD 15's references to sudo mode mean this re-check.
 
