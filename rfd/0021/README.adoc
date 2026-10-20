@@ -103,15 +103,30 @@ and a resumable boundary.
 
 == Background work
 
-Sweeps such as neighbor expiry and job history purge process each
-organization in bounded batches and move on to the next organization when a
-batch or its time budget is used, returning to unfinished organizations on the
-next pass. One organization's failure is already logged and skipped; with
-batches, one organization's size no longer delays the others either.
+Sweeps process one bounded batch per organization, then move to the next
+organization and return to unfinished work on a later round. The scheduler
+persists its cursor, and an organization cannot receive a second batch until
+the other ready organizations have received one. One organization's failure is
+logged and skipped for that round rather than delaying the rest.
 
-Future background work that runs per organization uses the same pattern, or a
-queue that schedules organizations fairly, rather than draining one
-organization before starting the next.
+Neighbor expiry needs a stronger boundary than batching expired evidence.
+Adjacencies, neighbor findings, and cable findings are complete-set
+reconciliations: publishing a result computed from a partial scan could delete
+valid topology or resolve unrelated findings. Each run therefore captures a
+fixed evidence watermark and `as_of` time, builds all derived topology into a
+new organization-scoped generation in bounded, resumable batches, and exposes
+none of it until the generation is complete. Final publication takes the
+organization topology lock, verifies that the relevant evidence version has
+not changed, and atomically switches the current generation; otherwise the run
+is discarded and restarted. Old generations are purged separately in bounded
+batches. Unvisited evidence is never interpreted as absent.
+
+The existing job lease/deadline sweep joins history purge in the fair
+organization rotation. Lease and deadline batches keep their per-job
+`SKIP LOCKED` transactions, and the rotation's maximum scheduling delay stays
+inside the lease-expiry handling budget. Future background work uses the same
+fair scheduler, or a queue with the same one-batch-per-organization property,
+rather than draining one organization before starting the next.
 
 == Quotas
 

@@ -24,8 +24,14 @@ Implements link:README.adoc[RFD 21: Per-organization limits].
 * [ ] Set a baseline `statement_timeout` for every application connection,
   transaction-local overrides for approved background queries, and wall-clock
   budgets for their workers. Test standalone reads as well as transactions.
-* [ ] Batch the neighbor expiry sweep and job history purge per organization
-  with a time budget.
+* [ ] Add a persistent fair organization scheduler for job lease/deadline
+  sweeps and history purge: one bounded batch per ready organization per round,
+  with lease processing latency kept inside its expiry budget.
+* [ ] Make neighbor expiry resumable by staging a complete generation at a
+  fixed evidence watermark. Include adjacency, neighbor-finding, and cable
+  reconciliation; publish only after every batch completes and the evidence
+  version still matches. Test restart, concurrent evidence, timeout, and that
+  unvisited rows never cause deletion or finding resolution.
 * [ ] Add quotas with 80% findings, refusal at the limit, and deferred
   resource creation from intake.
 * [ ] Read defaults from the environment, add `renga limits set` for
