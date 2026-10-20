@@ -59,7 +59,8 @@ The export always includes the organization's current state:
 * inventory resources with their lifecycle, desired specification, identifiers,
   identifier claims, overrides, owners, conditions, and relationships;
 * sources and the evidence that current reconciliation relies on, so field
-  ownership and staleness survive the move;
+  ownership and staleness survive the move, including the observation records
+  and payloads that retained claims and evidence require;
 * DCIM, IPAM, and topology records, including cables, plans, and import
   contracts;
 * the catalog: types, revisions, templates, and expectations;
@@ -73,9 +74,11 @@ The export always includes the organization's current state:
 Two optional parts can be added when exporting:
 
 * *History*: Activity (change events), resource revisions, job and job events,
-  and cable and module change events.
-* *Raw observations*: the observations still within retention. These can be
-  much larger than everything else together.
+  and cable and module change events. Imported jobs are historical records, not
+  executable jobs.
+* *Additional raw observations*: observations still within retention that the
+  current-state evidence does not require. These can be much larger than
+  everything else together.
 
 === Members
 
@@ -95,7 +98,8 @@ token.
 === Excluded
 
 * Credentials of every kind: user credentials, intake key hashes, directory
-  connection tokens, and identity provider client secrets.
+  connection tokens, identity provider client secrets, job lease and report
+  credentials, and pending execution approvals.
 * Deployment configuration: identity providers, local sign-in policy, and
   anything else read from the environment.
 * Security state that must be re-established by people at the destination:
@@ -114,8 +118,10 @@ of the exporter's own read scope, so it is not part of ordinary read access.
 The export runs in the background inside one repeatable-read transaction, so
 the archive is a consistent snapshot even while agents keep reporting. When it
 finishes, Renga notifies the exporter and offers the archive for download from
-a link that expires after seven days, after which the archive is deleted.
-Starting an export, downloading it, and its expiry are recorded in Activity.
+a link that expires after seven days, after which the archive is deleted. Every
+download rechecks the member's current `organization.export` permission; an
+owner can revoke the download before expiry. Starting an export, downloading
+it, revoking it, and its expiry are recorded in Activity.
 
 Operators can export any organization with a release command, `renga export
 --organization <slug> --output <file>`, which writes the same archive. It is
@@ -129,9 +135,19 @@ organization that already holds data is out of scope, because there is no
 correct general answer to two records describing the same device.
 
 Renga validates the whole archive before writing anything: checksums, the
-format version, every record against its schema, and every reference. It
-reports all problems at once. If the archive is valid, Renga applies it in the
-background and either the whole import lands or the organization stays empty.
+format version, every record against its schema, and every reference. References
+must stay within the archive or point to the chosen target where the format
+explicitly allows it. Validation rejects unsafe archive paths and links and
+enforces limits on compressed and expanded bytes, files, records, and record
+size. It reports every problem it can safely collect within those limits.
+
+If the archive is valid, Renga applies it in one transaction. That transaction
+rechecks the importer's authorization, target emptiness, ID collisions, and
+destination constraints while preventing concurrent writes to the target.
+Notifications, invitation delivery, and other external effects happen only
+after commit. The whole import lands or the organization stays empty. Allocating
+a large range of global revision numbers may delay revision-producing writes in
+other organizations, so the implementation measures and bounds that effect.
 
 * *IDs*: if any organization-owned record ID in the archive already exists
   anywhere in the target deployment, Renga refuses the import unless the
@@ -139,9 +155,12 @@ background and either the whole import lands or the organization stays empty.
   record a new ID and rewrites references; saved links to the original do not
   carry over. The target organization and destination users are mapped in both
   modes and never take identity from source UUIDs.
-* *Revisions*: resources get new revision numbers from the target deployment,
-  allocated in the archive's order. Imported history keeps its timestamps and
-  actors.
+* *Revisions*: resources and included historical revisions get new revision
+  numbers from the target deployment, allocated in source revision order.
+  Current resource versions and versions embedded in snapshots are rewritten
+  consistently. Imported Activity keeps source timestamps and principal
+  attribution, is visibly marked as imported, and identifies its source
+  archive; it does not claim the destination authenticated those actors.
 * *Members*: only active manual memberships, team memberships, and assignments
   are eligible to return through an invitation. Acceptance proves control of a
   destination identity before applying them. Identity-provider and
@@ -154,12 +173,19 @@ background and either the whole import lands or the organization stays empty.
   Unclaimed personal records, such as private saved views, remain private and
   unavailable; an unresolved user reference is never changed to organization
   ownership.
+* *Jobs*: imported jobs and events preserve the source's recorded state,
+  including uncertainty, but are historical only. They never enter leasing,
+  retry, approval, or execution queues. Any destination execution is a newly
+  requested and authorized job with a new operation identity.
 * *Agents*: agent records keep their installation IDs. After the organization
   creates new intake keys and deploys them, each agent's reports continue its
   existing record and history.
 * *Security state*: installation keys come back pending, privileged bindings
   unapproved, and terminal and VM grants disabled, so someone at the
   destination approves each again.
+* *Settings*: portable organization policy travels with the archive, but values
+  that weaken security require owner confirmation and can never override a
+  destination operator's locks or deployment policy.
 
 Importing requires an organization's `owner`, or an operator through a matching
 `renga import` release command. The import, its source manifest, and its
@@ -180,9 +206,9 @@ of this RFD.
 
 == Open questions
 
-. *Raw observations by default.* The proposal leaves them out of the default
-  export because of their size, which means an imported organization loses the
-  raw evidence behind current facts until agents report again.
+. *Additional raw observations by default.* The archive always includes the
+  observations required by retained claims and current evidence. The proposal
+  leaves other retained observations out by default because of their size.
 
 == Future work
 
