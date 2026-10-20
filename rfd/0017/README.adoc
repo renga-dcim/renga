@@ -96,8 +96,16 @@ The first release derives the catalogue from today's checks:
 |Defining custom roles
 
 |`organization.manage`
-|Organization settings, including job settings and appearance
+|Organization settings, including job settings, appearance, security settings
+(RFD 19), and the organization's identity providers and directory connections
+(RFDs 15 and 16)
+
+|`organization.export`
+|Exporting the whole organization (link:../0020/README.adoc[RFD 20])
 |===
+
+A setting the deployment has locked (link:../0022/README.adoc[RFD 22]) stays
+read-only even for holders of `organization.manage`.
 
 Relationship checks such as "only the person who
 made a request may withdraw it" and "a personal view belongs to its owner" stay
@@ -127,7 +135,7 @@ The four built-in roles keep today's behavior exactly and cannot be edited:
  `ipam.edit`, `topology.edit`, `jobs.request`, `views.share`, `teams.manage`,
  `triage_rules.manage`, `intake_keys.manage` |yes |yes | |
 |`members.manage`, `roles.manage` |yes |yes | |
-|`organization.manage` |yes | | |
+|`organization.manage`, `organization.export` |yes | | |
 |===
 
 `members.manage` and `roles.manage` are new; Renga has no member management UI
@@ -317,8 +325,9 @@ application run as fixed internal principals with fixed permission sets, which
 cannot be assigned to people.
 
 Some requirements stay outside the policy model as hard guards, checked after a
-permission is granted: an active organization, organization enablement such as
-allowed job capabilities, agent-local policy, step-up authentication (RFD 13),
+permission is granted: an active organization, deployment entitlements (RFD
+22), organization enablement such as allowed job capabilities, agent-local
+policy, step-up authentication (RFD 13),
 second-operator approval (RFD 14), where the approver needs the same permission
 over the target, and query sensitivity (RFD 12). Policy can only narrow who
 reaches these guards; no assignment bypasses them.
