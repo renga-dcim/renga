@@ -12,8 +12,11 @@ Implements link:README.adoc[RFD 22: Operator API].
 * [ ] Serve `/operator/v1` over HTTPS with an OpenAPI description, and support
   internal-only mode that removes the public route and binds to a restricted
   address.
-* [ ] Add organization create, rename, suspend, resume, scheduled deletion
-  with a 30-day grace period, and read endpoints.
+* [ ] Add organization create, rename, suspend, resume, scheduled deletion and
+  cancellation with a 30-day grace period, and read endpoints; serialize
+  cancellation against purge and preserve shared users and audit attribution.
+* [ ] Enforce suspension and entitlement removal on HTTP, sockets, data
+  delivery, agent requests, job dispatch and renewal, and active sessions.
 * [ ] Add expiring, revocable, single-use owner invitations bound to an
   organization and verified email; test atomic acceptance, deployment sign-in
   policy, and that the operator never receives a sign-in link or sets a
@@ -28,9 +31,14 @@ Implements link:README.adoc[RFD 22: Operator API].
 * [ ] Add staged exports and imports with credential exclusion, token-bound
   short-lived downloads, atomic empty-destination enforcement, and explicit
   transfer authority tests.
-* [ ] Support `Idempotency-Key` on creates and `If-Match` on document writes.
-* [ ] Record every change in a deployment audit log and in the affected
-  organization's Activity.
-* [ ] Add a release command for every API operation.
+* [ ] Require durable, request-bound `Idempotency-Key` handling for
+  non-idempotent actions, including concurrent and asynchronous retries, and
+  require atomically checked `If-Match` versions on document writes.
+* [ ] Preserve, replace, and clear write-only provider secrets explicitly.
+* [ ] Record sanitized immutable attribution for attempted mutations in the
+  deployment audit log and successful organization changes in Activity,
+  transactionally coupled to the change without credentials or capabilities.
+* [ ] Add a release command for every API operation using the same domain
+  mutation, precondition, idempotency, lockout, and audit contracts.
 * [ ] Test the operation-to-scope matrix and that no endpoint outside an
   authorized transfer returns inventory data, a secret, or a session.

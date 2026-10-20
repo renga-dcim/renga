@@ -15,10 +15,12 @@ with release commands on the server, and some of it not at all.
 
 The API is for operating a deployment, not for using it. Except for an
 explicitly authorized transfer, it never reads or changes an organization's
-inventory, never signs in as a person, and never returns a secret. Organization
-owners keep control of organization-owned configuration, such as their own
-identity providers. A token with transfer authority is consequently as
-sensitive as tenant-owner access, not an ordinary provisioning credential.
+inventory. It never signs in as a person or returns a reusable application
+credential or user session; an authorized export may return the short-lived
+download capability defined below. Organization owners keep control of
+organization-owned configuration, such as their own identity providers. A
+token with transfer authority is consequently as sensitive as tenant-owner
+access, not an ordinary provisioning credential.
 
 == Operator tokens
 
@@ -54,8 +56,8 @@ matching read operation needed to obtain versions and observe results:
 |Listing organizations, their status, and their memberships
 
 |`organizations:write`
-|Creating, renaming, suspending, resuming, and scheduling deletion of
-organizations, and inviting owners
+|Creating, renaming, suspending, resuming, scheduling or cancelling deletion
+of organizations, and inviting owners
 
 |`policy:read`
 |Reading effective policy and its version
@@ -105,11 +107,23 @@ boundary.
   tenant access to an address the operator controls; deployments that need
   provisioning without that authority use a token without this scope.
 * *Suspend* an organization. Its members cannot open it, its agents' intake is
-  refused with `403`, and its jobs are not dispatched. Nothing is deleted.
-  *Resume* undoes it. Both use the organization's existing `disabled` status.
+  refused with `403`, and its jobs are not dispatched. The `403` deliberately
+  replaces intake's current `401` for a valid credential belonging to a
+  disabled organization. Suspension is checked on every authenticated HTTP
+  request, LiveView or Channel event, data delivery, job lease and renewal, and
+  agent request. Renga disconnects existing sockets and terminal sessions;
+  queued jobs stay queued, and workers cancel active leases at their next
+  heartbeat and discard later results. Nothing is deleted. *Resume* undoes the
+  access block, but does not restart sessions or jobs that were cancelled.
 * *Schedule deletion*. The organization is suspended at once and deleted after
-  30 days unless the deletion is cancelled. Owners are told when deletion is
-  scheduled and offered an export (RFD 20).
+  30 days unless the deletion is cancelled. The pending-deletion record holds
+  one deadline; repeating the request returns that record without extending
+  it. An operator with `organizations:write` may cancel it, and resuming an
+  organization atomically cancels pending deletion. Until purge begins, an
+  owner can sign in to a restricted deletion page to cancel through the normal
+  owner authorization path or request and download an export, without access
+  to the ordinary organization UI. Owners are notified when deletion is
+  scheduled or cancelled.
 * *Read* organizations, their status, and their members' email addresses and
   roles, so automation can confirm an owner accepted.
 
@@ -130,7 +144,11 @@ whole:
   as organization identity providers, terminals (RFD 13), and VM operations
   (RFD 14). An entitlement only allows a feature;
   owners still decide whether to use it. Removing an entitlement turns the
-  feature off and keeps its configuration for when it is allowed again.
+  feature off and keeps its configuration for when it is allowed again. The
+  effective entitlement is checked before every request and authorization
+  renewal. Removing one disconnects its active terminal or control channels,
+  prevents new jobs and leases, and cancels affected active leases at their
+  next heartbeat; restoring it does not resume cancelled work.
 
 Deployment-wide defaults for all three come from the environment, and an
 organization's policy overrides them. A setting that neither locks stays the
@@ -157,8 +175,8 @@ their organization's owners.
 
 == Usage
 
-The API reports each organization's usage, for capacity planning and for
-anyone who bills by it:
+The API reports each organization's usage for capacity planning and internal
+cost allocation:
 
 * current counts: members, resources, agents, intake keys, and recording
   storage;
@@ -166,6 +184,13 @@ anyone who bills by it:
   minutes.
 
 Daily totals are kept for 400 days.
+
+Counters use UTC calendar days. Intake requests and bytes count accepted
+requests once after deduplication; jobs count a job once when created; terminal
+minutes are the sum of connected seconds rounded up only when the daily value
+is presented. Failed and retried attempts do not inflate totals. These are
+operational measurements, not billing records, until a later RFD defines a
+billing contract.
 
 == Transfers
 
@@ -187,29 +212,74 @@ credential from the source becomes usable in the destination.
 
 == Writes
 
-Writes are safe to retry:
+Writes are safe to retry. Every create, invitation, transfer start, and other
+non-idempotent action requires an `Idempotency-Key`. Its namespace is the
+immutable token ID, HTTP method, and canonical route. Renga stores a digest of
+the normalized request and the completed response for at least 24 hours and
+returns the retention deadline. A retry with the same request returns the
+stored result; a different request in the same namespace returns `409`.
+Concurrent requests serialize on the key, persist one operation before any
+side effect is queued, and converge on that operation and result.
 
-* Creating an organization or an invitation accepts an `Idempotency-Key`
-  header; repeating a request with the same key returns the first result.
-* Policy and provider documents are replaced whole with `PUT`, and accept
-  `If-Match` with the version from the last read so two writers cannot
-  silently overwrite each other.
+Authentication and current scope authorization run before a stored result is
+returned, so expiry or revocation cannot be bypassed by replay. Retries of an
+asynchronous operation return the same operation ID. Cancellation, suspension,
+resume, and deletion scheduling also define the already-requested target state
+as success rather than repeating a side effect.
+
+Policy and provider documents are replaced whole with `PUT`. They require
+`If-Match` with the version from the last read: a missing precondition returns
+`428`, a stale one returns `412`, and comparison and update happen atomically.
+Provider responses omit the client-secret field. Omitting it from a write
+preserves the current secret, an explicit replacement object changes it, and
+explicit `null` clears it only while the provider is disabled. A redacted read
+can therefore be written back without erasing a secret.
 
 This lets automation hold the desired state and apply it repeatedly until the
 deployment matches.
 
+Release commands call the same mutation functions and obey the same
+preconditions. For a non-idempotent action they accept or generate an operation
+key and print it, so rerunning a command can recover the same operation.
+
+== Deletion
+
+Deletion has distinct `active`, `deletion_pending`, and `purging` states. The
+purge worker locks and changes `deletion_pending` to `purging` only when the
+stored deadline has passed. Cancellation or resume locks the same record, so
+one of cancellation and purge wins atomically; once `purging` begins it cannot
+be cancelled.
+
+Purge removes organization-owned inventory, settings, memberships, pending
+invitations, and transfer artifacts. It does not delete shared user accounts.
+Deployment audit records retain their immutable organization ID and display
+name snapshot under the deployment's audit-retention policy, while the
+organization Activity disappears with the organization. Export capabilities
+expire no later than purge.
+
 == Audit
 
-Every API call that changes something is recorded in a deployment audit log
-with the token's name, the request, and the result. A change to an
-organization is also recorded in that organization's Activity, attributed to
-the operator token by name, so owners can see what their deployment changed
-and when.
+Every attempted mutation is recorded in a deployment audit log with an
+allowlisted, secret-free summary: immutable actor ID and display-name snapshot,
+operation, target IDs, request ID, time, outcome, and changed field names. It
+never stores request bodies or authorization headers, secrets, invitation or
+idempotency keys, archive contents, or download capabilities. A change to an
+organization is also recorded in that organization's Activity with the same
+sanitized summary, attributed to the operator token's immutable ID and name
+snapshot, so owners can see what their deployment changed and when.
+
+A successful mutation and its audit event commit in one transaction, or the
+mutation commits with a durable transactional outbox record that must become
+the audit event before success is returned. Release commands have the same
+audit and Activity guarantees and use an explicit local-operator actor with a
+command invocation ID; they are not anonymous or exempt because no API token
+is involved.
 
 == Release commands
 
-Every API operation has a matching release command, so a deployment without
-network access to the API can be operated the same way.
+Every API operation has a matching release command using the same domain
+function, validation, lockout prevention, idempotency, and auditing, so a
+deployment without network access to the API can be operated the same way.
 
 == Open questions
 
