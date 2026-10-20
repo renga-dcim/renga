@@ -35,10 +35,12 @@ Implements link:README.adoc[RFD 21: Per-organization limits].
 * [ ] Add an organization quota ledger with atomic, idempotent reservation and
   mutation across nodes. Implement the accounting table, 80% findings,
   below-current-use behavior, and crash-safe expiry for byte reservations.
-* [ ] Reserve 50 MiB before authorizing a terminal session and the declared
-  maximum before starting an export. Convert reserved bytes to retained bytes
-  as they are written, release only unused capacity, and never start work whose
-  required audit or archive storage cannot be reserved.
+* [ ] When the effective start-time policy requires recording, reserve 50 MiB
+  before authorizing a terminal session; reserve the declared maximum before
+  starting an export. Convert reserved bytes to retained bytes as they are
+  written and release only unused capacity. Test quota exhaustion with
+  recording on and off, and both policy changes during an active session; the
+  start-time decision stays fixed and every session retains its Activity audit.
 * [ ] On resource exhaustion, accept the immutable observation, record a
   structured `quota_deferred` failed reconciliation, and enqueue one durable
   retry item. Retry fairly after capacity changes and periodically across

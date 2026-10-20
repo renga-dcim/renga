@@ -153,8 +153,8 @@ An organization has hard quotas with these accounting rules:
 |When the key is revoked
 
 |Terminal recordings (RFD 13)
-|Stored bytes plus the unused part of each active session's 50 MiB reservation
-|When retained bytes are deleted, or unused reservation is released at session end
+|Stored bytes plus the unused part of each recorded active session's 50 MiB reservation
+|When retained bytes are deleted, or unused reservation is released at recorded session end
 
 |Export archives (future RFD 20)
 |Stored bytes plus the unused part of each running export's declared maximum reservation
@@ -167,9 +167,12 @@ reservation, and performs the creation, so creators on different nodes cannot
 both take the last unit. Long-lived byte reservations survive process restarts,
 have an owner and expiry, and are reclaimed only after the owner is terminal.
 Writing bytes converts reserved capacity to used capacity without increasing
-the total. A terminal is not authorized or started unless its full recording
-reservation succeeds, preserving RFD 13's requirement to record every session.
-An export similarly does not start without its maximum reservation.
+the total. When the effective policy at session start requires recording, a
+terminal is not authorized or started unless its full recording reservation
+succeeds. That start-time decision and reservation remain fixed for the running
+session if the setting later changes. An unrecorded session acquires no
+recording reservation, but retains RFD 13's required Activity record. An export
+similarly does not start without its maximum reservation.
 
 At 80% of a quota Renga opens a finding for the organization's owners. At the
 quota, Renga refuses an operation that needs more capacity and says which quota
