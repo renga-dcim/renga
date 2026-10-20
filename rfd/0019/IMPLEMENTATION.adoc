@@ -12,7 +12,16 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
   password reset never bypasses it.
 * [ ] Remove sudo mode from user settings and add the in-place account
   re-check for email, password, credential, and identity provider changes.
-* [ ] Add the organization MFA requirement, satisfied by RFD 15 sign-in.
+* [ ] Add the organization MFA requirement, satisfied by Renga's own second
+  factor or by sign-in through a provider marked as enforcing MFA; ask
+  members whose session does not qualify for a passkey or authenticator code
+  in place.
+* [ ] Add the _enforces MFA_ mark to identity providers, settable by the
+  operator on deployment providers and by owners on organization providers,
+  never on `github` providers, and recorded in Activity.
+* [ ] Reject a marked provider's sign-in for the requirement when its `amr`
+  claim is present without `mfa` or two methods; test tokens with and without
+  `amr`.
 * [ ] Add the operator release command that removes a user's MFA.
 * [ ] Add the per-account security log and email notices for credential
   changes.

@@ -26,7 +26,9 @@ asked to authenticate again, wait for a second person, or renew access unless
 their organization decided it should work that way.
 
 Sign-in through an identity provider (RFD 15) is unchanged: that provider is
-responsible for its own multi-factor authentication.
+responsible for its own multi-factor authentication. It meets an
+organization's MFA requirement only when the provider is marked as enforcing
+MFA (<<mfa-requirement>>).
 
 == Credentials
 
@@ -169,11 +171,32 @@ default, as RFDs 13 and 14 define.
 [[mfa-requirement]]
 === MFA requirement
 
-An organization owner may require MFA. Members who sign in with an email
-account without MFA are sent to enroll a passkey or authenticator app before
-they can open that organization; their other organizations are unaffected.
-Sign-in through an RFD 15 identity provider satisfies the requirement, because
-that provider enforces its own factors.
+An organization owner may require MFA. A member can then open that
+organization only with a session whose sign-in used a second factor:
+
+* a passkey, or a password or magic link followed by Renga's second step; or
+* an RFD 15 identity provider marked as enforcing MFA, as long as its ID token
+  does not contradict the mark (below).
+
+A member whose session does not qualify is asked for their passkey or
+authenticator code in place, without signing out, and a member without either
+is sent to enroll one first. Their other organizations are unaffected. So a
+member who signs in through a provider that is not marked adds a passkey to
+their Renga account once and confirms it after each provider sign-in.
+
+Each identity provider has an _enforces MFA_ mark, off by default. The
+operator sets it on deployment providers, and an organization owner sets it on
+the organization's own providers; an owner cannot mark a deployment provider,
+because other organizations share it. The mark says the provider asks every
+person who signs in through it for a second factor, as a company's own
+identity provider usually does, and setting or removing it is recorded in
+Activity. A `github` provider cannot be marked, because GitHub's OAuth API
+says nothing about how the person signed in.
+
+When a marked provider's ID token carries an `amr` claim, the sign-in counts
+only if `amr` contains `mfa` or names at least two methods (RFC 8176). Without
+`amr`, the mark alone decides. Removing the mark applies at each affected
+member's next request, like any setting that adds a requirement.
 
 [[grant-validity]]
 === Grant validity
@@ -225,6 +248,9 @@ as set by the deployment, and owners cannot change it.
   the organization's maximum if one is set; recording follows the
   organization's setting.
 * RFD 14: VM operator grants follow the same validity rule as terminal grants.
+* RFD 15: each identity provider gains the _enforces MFA_ mark, which only
+  affects an organization's MFA requirement. It does not change RFD 15's rule
+  that provider re-authentication never satisfies terminal step-up.
 * RFD 17: an assignment that grants an explicit permission may expire, and must
   when the organization sets a maximum validity.
 
@@ -251,12 +277,5 @@ and an email change also notifies the old address.
 
 . *Passwordless accounts.* The proposal lets an account with a passkey remove
   its password entirely, and lets new accounts register with only a passkey.
-. *Trusting provider MFA.* The proposal accepts any RFD 15 sign-in as meeting
-  an organization's MFA requirement. A stricter rule would check the ID
-  token's `amr` claim, which not every provider sends.
-
-== Future work
-
-* Checking `amr` from identity providers that send it.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
