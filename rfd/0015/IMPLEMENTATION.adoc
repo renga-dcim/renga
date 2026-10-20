@@ -14,9 +14,14 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add organization providers managed by owners, reached through the
   organization sign-in link or a DNS-verified email domain claimed by one
   organization at a time.
-* [ ] Scope sessions, claim mappings, and directory connections from an
-  organization provider to its organization; test that such a session cannot
-  open another organization or accept another organization's invitation.
+* [ ] Make provider IDs globally unique and permanently bind kind, issuer,
+  provider scope, and owning organization. Reject cross-scope environment
+  overrides and ID reuse, and require migrations to preserve the authority of
+  existing identities, sessions, and grants.
+* [ ] Scope sessions, authentication evidence, claim mappings, and directory
+  connections from an organization provider to its organization. Test that it
+  cannot open another organization, accept its invitation, establish a global
+  login email, or change or link an account-wide credential.
 * [ ] Add `user_identities` with a unique `(provider_id, subject)`.
 * [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
   token validation, using a pinned, reviewed `oidcc` version while keeping
@@ -24,9 +29,16 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Add the `github` provider as a `Req` adapter using verified primary
   emails and stable numeric user IDs; permit linking but not sign-up.
 * [ ] Resolve first sign-in by sign-up or refusal, never by automatically
-  linking an email collision; test unverified emails, unconfirmed local
-  accounts, email changes, and different subjects with the same reassigned
-  verified address.
+  linking an email collision. Keep organization-asserted email scoped until
+  independently verified; test unverified emails, unconfirmed local accounts,
+  global-email reservation, email changes, and different subjects with the
+  same reassigned verified address.
+* [ ] Let an organization-created account with no global email or local
+  credential initialize an empty global email through a five-minute challenge
+  bound to its account, purpose, browser, and session, then enter only RFD 19's
+  limited first-password or first-factor bootstrap. Test that provider claims
+  cannot satisfy it and that it cannot replace an email, claim another
+  account's address, auto-link accounts, or grant a general account re-check.
 * [ ] Add linking and unlinking in user settings behind the RFD 19 account
   re-check, refusing to link a subject owned by another user or remove the
   last method usable for sign-in or the re-check under the active policy.
@@ -54,8 +66,9 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   and `max_age`, binding the callback to its session, purpose, provider, and
   subject. Validate missing, malformed, stale, and future `auth_time` values in
   Renga and reject account switching. Accept only deployment providers; test
-  that an organization provider cannot authorize account-wide credential or
-  identity changes and that RFD 19's independent email bootstrap still works.
+  that an organization provider cannot establish an account-wide sign-in
+  method and then reach another organization, and that the email initialization
+  and limited RFD 19 bootstrap work without granting general re-check evidence.
 * [ ] Keep RFD 13 step-up on passkeys, authenticator codes, or a fresh password
   rather than accepting provider `auth_time`; test the distinction from the
   account re-check.

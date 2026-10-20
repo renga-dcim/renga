@@ -31,8 +31,11 @@ Providers exist at two levels:
 Each provider has:
 
 * a stable `id`, used in callback URLs and stored on linked identities. The ID
-  permanently names that provider kind and, for OpenID Connect, its issuer;
-  changing either requires a new ID or an explicit identity migration;
+  is globally unique and permanently names that provider's kind, OpenID
+  Connect issuer, deployment-or-organization scope, and owning organization.
+  An ID is not reused after deletion. Changing any of those properties requires
+  a new ID or an explicit migration that cannot silently broaden existing
+  identities, sessions, or grants;
 * a display name and icon for the sign-in page;
 * a kind: `oidc` (any OpenID Connect issuer, discovered from its issuer URL) or
   `github` (OAuth 2.0 with GitHub's user and email APIs, because GitHub is not an
@@ -72,7 +75,10 @@ the way back from a configuration that locks everyone out.
 Operators who prefer declarative configuration can still define deployment
 providers in the environment, read in `config/runtime.exs`. Those providers
 are loaded at boot, shown read-only in the UI, and override a stored provider
-with the same ID.
+with the same ID only when it is also a deployment provider with the same
+immutable properties. Renga refuses to boot on an ID collision with an
+organization provider or any other immutable-property mismatch rather than
+shadowing it.
 
 [[organization-providers]]
 === Organization providers
@@ -91,9 +97,17 @@ owners control the identities it asserts:
   organization. Reaching another organization needs a different sign-in method.
 * Its claim mappings and SCIM connections (RFD 16) can manage only that
   organization.
-* Sign-up through it creates a user only when the organization allows it, and
-  the email address it asserts is not treated as verified anywhere else, so it
-  cannot accept another organization's invitation by matching an address.
+* Sign-up through it creates a user only when the organization allows it. The
+  asserted email remains an organization-scoped profile attribute: it neither
+  populates nor confirms the account's global login email, reserves that email
+  against another account, nor accepts another organization's invitation. A
+  global login email must be proved through the independent initialization
+  flow below.
+* Its authentication evidence has organization scope. It can establish access
+  and satisfy policy only within its own organization, but cannot change a
+  global password or recovery email, link or unlink a global sign-in identity,
+  or perform another account-wide credential operation. Those operations use
+  RFD 19's account re-check with a local credential or deployment provider.
 
 These rules keep an organization's identity provider from reaching a person's
 access in other organizations, even when that person links the provider to an
@@ -150,16 +164,30 @@ The first sign-in through a provider is resolved in this order:
   the two accounts have the same owner because addresses can be reassigned.
   The person must sign in to the existing Renga account and explicitly link the
   provider, which requires the account re-check.
-. If no user exists and the provider allows sign-up, Renga creates a confirmed
-  user from the verified email. It creates no organization membership on its
-  own; the person lands where a new password user does today.
+. If no user exists and the provider allows sign-up, a deployment provider
+  creates a confirmed user from the verified email. An organization provider
+  creates an account with no global login email; its asserted email and
+  authority remain scoped as described above. Provider sign-up creates no
+  organization membership on its own; the person lands where a new password
+  user does today.
 . Otherwise sign-in is refused.
 
+An organization-created account that still has no global login email may start
+RFD 19's first-password or first-factor bootstrap by entering an address and
+proving mailbox control. Renga binds the challenge to that account, purpose,
+browser, and session and expires it after five minutes; the provider's email
+claim neither chooses the address nor satisfies the challenge. Success may
+initialize only an empty global email and grants only RFD 19's limited bootstrap
+authorization, never a general account re-check. Renga refuses an address that
+belongs to another account and never uses this path to overwrite an existing
+global email or automatically link accounts.
+
 Signed-in users can link and unlink providers from their settings, which
-requires the account re-check. The linking callback is bound to the initiating user and
-refuses a provider subject already linked to another user. Renga refuses to
-unlink a user's last usable sign-in method under the current local sign-in and
-provider policy, or the last method capable of passing the account re-check.
+requires the account re-check. The linking callback is bound to the initiating
+user and refuses a provider subject already linked to another user.
+Renga refuses to unlink a user's last usable sign-in method under the current
+local sign-in and provider policy, or the last method capable of passing the
+account re-check.
 
 GitHub cannot provide the fresh authentication evidence the re-check requires.
 The first release therefore does not allow GitHub to create a new user: a
@@ -267,14 +295,14 @@ The account re-check (RFD 19) and RFD 13 step-up are separate security
 levels. For the re-check, a user without a passkey, authenticator app, or
 password may reauthenticate through a linked deployment OpenID Connect
 provider. An organization-owned provider never authorizes an account-wide
-credential or identity change; the user needs RFD 19's independent email
-bootstrap instead. Renga sends `prompt=login` and `max_age`, and binds the
-callback to the initiating local session, the re-check's purpose, and the
-expected provider ID and subject; switching accounts fails the attempt. Renga
-accepts the result only after its normal ID-token checks and its own validation
-that `auth_time` is present, well formed, not in the future, and within the
-re-check window. Ordinary SSO, silent renewal, and GitHub OAuth never count as
-a re-check.
+credential or identity change; an organization-created account with no other
+method first uses the email initialization and limited RFD 19 bootstrap above.
+Renga sends `prompt=login` and `max_age`, and binds the callback to the
+initiating local session, the re-check's purpose, and the expected provider ID
+and subject; switching accounts fails the attempt. Renga accepts the result
+only after its normal ID-token checks and its own validation that `auth_time`
+is present, well formed, not in the future, and within the re-check window.
+Ordinary SSO, silent renewal, and GitHub OAuth never count as a re-check.
 
 Where an organization requires RFD 13 step-up, it is a passkey or
 authenticator code when enrolled, otherwise a fresh password entry within five
