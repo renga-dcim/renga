@@ -195,10 +195,18 @@ Retries rerun normal identity matching, idempotency, and freshness ordering, so
 an older deferred observation cannot overwrite newer reconciled evidence. The
 quota finding lists the durable items waiting for capacity.
 
+[[configuration]]
 == Configuration
 
 Every limit and quota has a default, which an operator sets for the deployment
-through the environment. An operator can override them for one organization
+through the environment. This RFD does not fix the numbers. The built-in
+defaults must satisfy one rule: a deployment serving a single organization,
+under the realistic intake of a large site (thousands of hosts reporting on
+their normal schedule, plus a full fleet re-enrollment), never meets any of
+them. The implementation establishes the defaults with a load test that it
+documents alongside the configuration reference, and revises them the same
+way. Concurrency defaults are expressed relative to the connection pool, so
+they follow the deployment's size. An operator can override them for one organization
 with a release command, such as `renga limits set --organization <slug>
 --intake-rate 600`. Organization owners see their usage against each limit and
 quota on a read-only page in organization settings; they cannot change them.
@@ -210,10 +218,12 @@ organization is using what before it reaches a limit.
 An organization that needs more than a shared deployment can give it can move
 to a deployment of its own with an export and import (RFD 20).
 
-== Open questions
+== Decisions
 
-. *Default values.* The proposal leaves the defaults to the implementation,
-  measured against realistic intake from a large organization.
+. *Default values.* The RFD states the sizing rule and the required load test
+  (<<configuration,Configuration>>) rather than numbers. Numbers picked before
+  measurement would go stale; the rule holds whatever the numbers turn out to
+  be.
 
 == Future work
 
