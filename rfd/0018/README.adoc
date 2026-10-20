@@ -1,0 +1,175 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: discussion
+:discussion: https://github.com/renga-dcim/renga/pull/170
+:labels: authorization, inventory, security, software
+
+= RFD 18 Resource groups
+
+== Goal
+
+Let an organization draw access boundaries that cut across sites and teams,
+such as environment (production, staging, lab), customer, or compliance scope,
+and use them in RFD 17 conditions.
+
+RFD 17 scopes access by resource, kind, owner team, and site. Those cover where
+a resource is, what it is, and who owns it, but a resource has one owner team
+and one site, so they cannot express a second axis: staging and production
+hosts often share racks and a team, and a colocation customer's servers span
+several. RFD 17 also never reads agent-reported labels, because anyone holding an
+organization's intake key can report any label.
+
+A resource group is a named set of resources that people curate. It is the one
+new attribute this RFD adds; everything else about authorization stays in RFD
+17.
+
+Resource groups are unrelated to directory groups (RFD 16), which are groups of
+people.
+
+== Groups and sets
+
+A resource group has a name, a description, and its members. A resource may
+belong to any number of groups.
+
+Groups may belong to a group set, such as `Environment` with `Production`,
+`Staging`, and `Lab`, or `Customer` with one group per customer. A set may be
+exclusive, in which case a resource belongs to at most one of its groups, and
+moving a resource between two groups of the set is a single change. Exclusive
+sets give the guarantee a single label key would ("a host is not both
+production and staging") without trusting reported data. A tenant model like
+NetBox's is an exclusive `Customer` set.
+
+Exclusivity applies to effective membership, not only direct membership, and
+separately to each authorization view described below. Multiple direct or
+inherited paths to the same group collapse to one membership, but paths to two
+different groups in one exclusive set conflict. Direct membership edits,
+placement and hierarchy changes, moving a group into a set, and making a set
+exclusive all reject the whole mutation if either resulting view would
+conflict. Renga never silently picks a winning path or removes another
+membership.
+
+Renga materializes one effective-membership row per organization, resource,
+authorization view, and group. A row for a group in an exclusive set also
+carries its group-set ID; a partial unique constraint on organization,
+resource, view, and group set enforces at most one such group. Candidate rows
+are rebuilt under the shared group-projection lock, so the constraint also
+guards concurrent direct, inherited, and set-reconfiguration writes. These
+deduplicated rows are the source of the group IDs in each resource's access
+row.
+
+Groups and sets are organization-wide definitions, managed with a new
+`groups.manage` permission that the built-in `owner` and `admin` roles include.
+
+== Membership
+
+Only people change direct membership. Agents, reconcilers, and triage rules
+never add or remove a direct member, so direct group membership is a trusted
+attribute in RFD 17's sense and operational permissions may match it.
+
+Adding a resource to a group, removing it, or moving it within an exclusive set
+requires `inventory.edit` over the resource. Group membership is an attribute
+that conditions read, so RFD 17's before-and-after rule applies: the actor must
+cover the resource both before and after the change. Someone who may edit
+staging hosts cannot add a production host to `Staging`, and cannot move a
+staging host into a group they do not cover.
+
+Membership can be changed from a resource page, from a group page, or in bulk
+from any list or saved view. A bulk change adds the resources the selection
+contains at that moment; a group never follows a query, because a saved view's
+filters can match observed data and its owner can edit it. A bulk change is
+refused as a whole if the actor does not cover every selected resource.
+
+=== Containers
+
+A site, location, or rack may itself be a member. Its membership extends to the
+resources placed in it, so adding a customer's cage to `Acme` covers every
+server racked in that cage, and a server that leaves the cage leaves the group
+with it.
+
+Renga derives two effective-membership views. The inventory view contains
+direct memberships and memberships inherited through current placement. The
+trusted view contains direct memberships and memberships inherited only when
+every placement and containment edge from the resource to the member container
+was set or confirmed by a person. Inventory workflow permissions use the first;
+RFD 17's operational permissions (`jobs.request` and explicit permissions) use
+the second. Reconciliation may change current placement and therefore the
+inventory view, but never direct membership or the trusted view.
+
+Membership provenance retains every direct and inherited path. Removing one
+path does not remove an independent direct membership or another path to the
+same group; effective membership disappears only when its last path does. Each
+resource page shows whether a membership is direct or inherited and the
+container path that supplies it.
+
+The affected set of a membership change is every resource whose effective
+membership would change, including resources that inherit from a selected
+container. The actor's `inventory.edit` assignments must cover every resource
+in that set both before and after the change, not only the selected container.
+A placement or containment change applies the same rule with `dcim.edit`. The
+whole operation is refused if any affected resource is not covered.
+
+Every write that can change effective membership serializes on one
+organization-and-group-projection lock before deriving and authorizing its
+affected set, and before taking RFD 5's hierarchy or rack locks. Direct
+membership, group-set, current or confirmed placement, containment hierarchy,
+and reconciliation writers all follow that order. The transaction then changes
+the source records and every affected access projection together. A concurrent
+placement therefore cannot escape a container edit's authorization check or
+leave a stale grant behind.
+
+== Conditions
+
+RFD 17 conditions gain a `group` attribute, satisfied when the resource is a
+direct or contained member of any listed group:
+
+[source,json]
+----
+{
+  "group": ["<staging group id>"],
+  "kind": ["host"]
+}
+----
+
+This reads as "hosts in Staging". Like every RFD 17 condition it compiles to an
+SQL predicate. Each resource's access row carries separate current and trusted
+effective group IDs, sourced from the materialized membership rows and indexed
+for containment queries. The permission class selects the matching view; an
+undifferentiated group list is never used for authorization. The transaction
+that changes direct membership, current or confirmed placement, or containment
+updates the affected effective-membership and access rows too. Adding a rack to
+a group therefore updates both views of every affected resource in that
+transaction, according to the provenance of each path.
+
+Deleting a group removes it from every condition that names it. A clause left
+with no values matches nothing, so access fails closed, and the assignment is
+flagged in the access view rather than silently widened.
+
+== Visibility
+
+A group's name can itself be sensitive, such as a customer's name. A person sees
+a group if they hold `groups.manage`, hold an assignment that names it, or can
+read at least one of its members; the resource page lists only the groups the
+viewer can see. Counts on a group page include only members the viewer can
+read.
+
+== Audit
+
+Creating, renaming, or deleting a group or set, and every membership change, is
+recorded in Activity on both the group and the resource, with its actor, before
+and after values, and reason.
+
+== Open questions
+
+. *Containers in the first release.* Container membership is what makes
+  customer cages and per-site environments practical, but it couples groups to
+  placement. The proposal includes it.
+. *Suggested membership.* Triage rules could propose group membership for a
+  person to accept in the Inbox, much as they propose owners. The proposal
+  leaves membership entirely manual at first.
+
+== Future work
+
+* Triage-rule suggestions for group membership.
+* Groups as the target of RFD 15 claim mappings and RFD 16 group mappings,
+  so an identity provider can grant access to a customer's group directly.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

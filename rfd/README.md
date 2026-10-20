@@ -21,6 +21,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [13: Live terminal](0013/README.adoc) | Installation credentials, terminal grants, step-up authentication, channel relay, and session recording |
 | [14: VM lifecycle operations](0014/README.adoc) | Idempotent VM power actions, desired power state and drift, grants, and two-operator approval |
 | [15: OpenID Connect sign-in](0015/README.adoc) | Provider configuration, identity linking, claim-mapped memberships, local sign-in policy, and re-authentication |
+| [18: Resource groups](0018/README.adoc) | People-curated resource sets, exclusive group sets, container membership, and group conditions for authorization |
 
 ## Source format
 
