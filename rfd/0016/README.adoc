@@ -175,31 +175,60 @@ nothing. Groups name organizations implicitly, because the connection belongs
 to exactly one organization, so the mapping only names roles (`owner`,
 `admin`, `member`, `viewer`).
 
+Mappings identify a group by its Renga-assigned, connection-scoped SCIM `id`,
+not by mutable `displayName` or provider-supplied `externalId`. Renaming a group
+therefore preserves its mapping. Deleting and recreating one produces a new
+`id` and never inherits the deleted group's authority.
+
 Like RFD 15 claim-mapped grants, SCIM grants record the connection that issued
-them and are valid only while that source is: the connection exists, the
-entry is active and linked, and the group mapping still produces the role. A
-membership granted by hand takes precedence over a SCIM grant for the same
+them and are valid only while that source is: the connection and provider are
+enabled, the entry is active and linked to an existing identity, and the
+connection's current default role and group mappings produce the recorded role.
+A membership granted by hand takes precedence over a SCIM grant for the same
 user and organization and is never changed or revoked by SCIM.
+
+Renga reconciles a linked entry after every relevant mutation: user creation,
+replacement, patch, activation, deactivation, or deletion; identity binding or
+unlinking; group membership or mapping changes; group deletion; default-role
+changes; and connection or provider disablement or deletion. It recomputes the
+highest resulting SCIM role and creates, upgrades, downgrades, or removes the
+source-bound grant before acknowledging the change. It then applies manual
+membership precedence to determine the effective role.
 
 Because the provider pushes every change, SCIM grants do not expire on a timer.
 RFD 15's provider session lifetime still applies to the sessions themselves.
 
-== Deprovisioning
+== Authorization changes
 
-Setting `active` to false, deleting the user, removing them from every mapped
-group, or deleting the connection takes effect when the request completes:
+Every grant reduction takes effect before the triggering SCIM or administrative
+request completes. This includes a complete removal and a downgrade caused by
+leaving one group while a default role or another mapped group remains.
 
-. Renga revokes the entry's grants for that organization.
-. Renga marks the provider sessions backed by the entry's linked identity as
-  expired, so the next request or LiveView event must revalidate with the
-  provider under RFD 15's rules, which an offboarded person fails.
-. Connected LiveViews scoped to the organization drop to organization
-  selection, the same way RFD 15 handles losing access during renewal.
+Authorization always evaluates the reconciled effective role, regardless of
+whether the browser session was created with this provider, another provider, a
+password, or a magic link. HTTP requests recheck it normally. Renga also pushes
+the change to connected LiveViews and Channels scoped to the organization so
+they stop unauthorized data delivery and mutations immediately. A LiveView
+returns to organization selection only when the user loses effective
+membership; an independent manual membership keeps its role and unrelated
+organizations remain available.
 
-Deprovisioning never deletes the Renga account, which may still belong to other
-organizations or hold its own credentials. Deleting a directory entry removes
-the entry and its group memberships; its activity history stays attributed to
-the user.
+Long-lived privileged operations are reauthorized too. In particular, an RFD
+13 terminal whose organization membership or terminal grant is no longer
+sufficient is ended and its PTY process group is killed; the same rule applies
+to any later Channel or leased operation whose authorization no longer holds.
+
+Renga does not expire the linked identity's provider session in response to an
+organization-scoped SCIM change. One identity and browser session may serve
+other organizations, and disabling access in one must not suspend the others.
+Conversely, successful OIDC reauthentication cannot restore a missing, inactive,
+unlinked, or role-less SCIM source; only a later SCIM change and valid identity
+correlation can produce its grant again.
+
+Removing SCIM authority never deletes the Renga account, which may still belong
+to other organizations or hold its own credentials. Deleting a directory entry
+removes the entry and its group memberships; its activity history stays
+attributed to the user.
 
 == Audit
 

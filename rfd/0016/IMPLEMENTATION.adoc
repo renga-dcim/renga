@@ -6,12 +6,14 @@ Implements link:README.adoc[RFD 16: SCIM provisioning].
   eligible `oidc` provider and a provider-declared stable, unique correlation
   claim; make both immutable, scope organization providers to their own
   organization when RFD 15 defines them, and refuse an organization that
-  already has an RFD 15 claim mapping.
+  already has an RFD 15 claim mapping. Also refuse adding a claim mapping to an
+  organization that already has a SCIM connection.
 * [ ] Add connection bearer tokens stored as hashes, revealed once, with two
   active tokens for rotation and immediate revocation; redact them from logs,
   diagnostics, and audits, and test that tokens only reach `/scim/v2` and only
   their own organization.
-* [ ] Serve `ServiceProviderConfig`, `ResourceTypes`, and `Schemas`.
+* [ ] Serve `ServiceProviderConfig`, `ResourceTypes`, and `Schemas`, advertise
+  only their defined capabilities, and return `501` for `/Me`.
 * [ ] Add `scim_users`, `scim_groups`, and group memberships with
   per-connection uniqueness on user `userName` and `externalId` and an optional
   binding from a user entry to a specific RFD 15 identity.
@@ -28,10 +30,15 @@ Implements link:README.adoc[RFD 16: SCIM provisioning].
   entries. Keep RFD 15's email collision refusal and test that SCIM never
   changes account email, name, credentials, or other memberships.
 * [ ] Grant memberships from the default role and group mappings as
-  source-bound grants, with manual membership precedence.
-* [ ] Deprovision on `active` false, delete, group removal, and connection
-  deletion: revoke grants, expire the identity's provider sessions, and move
-  connected LiveViews to organization selection.
+  source-bound grants keyed by stable, connection-scoped group IDs, with manual
+  membership precedence. Reconcile after every source mutation, including
+  default and mapping changes, partial group removal, identity unlinking, and
+  provider or connection disablement; test upgrades, downgrades, and removal.
+* [ ] Enforce reconciled authorization on every HTTP request and immediately on
+  connected LiveViews, Channels, terminals, and later leased operations.
+  Redirect only after effective membership loss, preserve manual access and
+  unrelated organizations, and never expire a provider session or let provider
+  reauthentication recreate absent SCIM authority.
 * [ ] Show directory entries, linked or not, in the organization member list.
 * [ ] Bound request size and rate limit per connection.
 * [ ] Record audit entries for SCIM changes and connection administration.
