@@ -331,12 +331,15 @@ deployment without network access to the API can be operated the same way.
   on the shared endpoint cannot; the earlier proposal to serve the API on the
   main endpoint unless an operator chose otherwise is withdrawn.
 . *Deletion through the API.* Allowed, as <<deletion,Deletion>> describes.
-  With the 30-day grace period, owner notice, and the owner's ability to
-  cancel or export, a leaked token with `organizations:write` causes a
-  visible, reversible suspension rather than data loss, and the listener's
-  client certificate requirement makes a leaked token alone insufficient.
-  Leaving deletion to release commands would put a human on the deployment
-  host in every customer cancellation.
+  This lets an external control plane schedule deletion without running a
+  release command on the deployment. A compromised token with
+  `organizations:write` can schedule a deletion that becomes irreversible
+  when purge begins. The 30-day grace period, owner notification, and owner
+  cancellation and export path provide an opportunity to recover, not a
+  guarantee against data loss. When mutual TLS is enabled, a leaked token
+  without a valid client certificate is insufficient to connect; deployments
+  without it rely on token authentication and their configured source-address
+  and network restrictions.
 
 == Future work
 
