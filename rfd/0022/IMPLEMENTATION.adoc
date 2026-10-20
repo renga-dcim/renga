@@ -47,5 +47,11 @@ Implements link:README.adoc[RFD 22: Operator API].
   transactionally coupled to the change without credentials or capabilities.
 * [ ] Add a release command for every API operation using the same domain
   mutation, precondition, idempotency, lockout, and audit contracts.
+* [ ] Add the support source flag on deployment providers, `renga support
+  enable|disable|status` including the signed license file input, and the
+  support-access fields on organization reads. Test that no scope, policy
+  document, default, or lock can turn an organization's support access on,
+  and that disabling the support source ends every support membership and
+  session.
 * [ ] Test the operation-to-scope matrix and that no endpoint outside an
   authorized transfer returns inventory data, a secret, or a session.
