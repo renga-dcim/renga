@@ -2,17 +2,28 @@
 
 Implements link:README.adoc[RFD 21: Per-organization limits].
 
-* [ ] Key the resource revision lock by organization; test that writes in two
-  organizations do not wait on each other and that revision order holds within
-  each organization.
-* [ ] Add per-organization and per-installation intake rate limits answering
-  `429` with `Retry-After` before a transaction opens.
-* [ ] Teach the agent to honor `Retry-After`.
-* [ ] Add an intake size limit and a per-organization intake concurrency cap on
-  each node.
-* [ ] Add per-user and per-organization browser and API rate limits, and move
-  the job creation limit into the same settings.
-* [ ] Set `statement_timeout` for request and background transactions.
+* [ ] Stop and drain every resource writer for the cutover, then key the
+  resource revision lock by organization in its own lock namespace. Test that
+  writes in two organizations do not wait on each other, revision commit order
+  holds within each organization, and old and new allocators cannot overlap.
+* [ ] Bound credential lookup before organization admission, split contact
+  recording from authentication, and coalesce authenticated contact writes in
+  a bounded recorder. Test that rejected floods cannot consume connections
+  reserved for another organization.
+* [ ] Add separate per-organization and per-installation capacity for bulk
+  observations and lease maintenance. Reserve capacity for check-ins and
+  already-leased job reports, and backpressure new leases before using it.
+* [ ] Return `429` with `Retry-After` and teach the agent to treat it as a
+  retry-not-before deadline without exceeding its delivery budget; test
+  observation retry and RFD 9 lease-loss behavior.
+* [ ] Add an intake size limit and hold each per-organization concurrency
+  admission through acceptance and reconciliation on each node.
+* [ ] Add per-user and per-organization HTTP and LiveView event/navigation
+  limits with a retryable LiveView notice, and move the job creation limit into
+  the same settings.
+* [ ] Set a baseline `statement_timeout` for every application connection,
+  transaction-local overrides for approved background queries, and wall-clock
+  budgets for their workers. Test standalone reads as well as transactions.
 * [ ] Batch the neighbor expiry sweep and job history purge per organization
   with a time budget.
 * [ ] Add quotas with 80% findings, refusal at the limit, and deferred

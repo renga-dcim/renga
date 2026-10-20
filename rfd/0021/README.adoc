@@ -33,9 +33,17 @@ Revision allocation holds a lock until commit so that anyone reading changes
 in revision order never skips a revision that is allocated but not yet
 visible. Every such reader is scoped to one organization, so the order only
 has to hold within an organization. The lock becomes per organization, keyed by
-the organization ID. The revision sequence stays global, so revisions remain
-unique and increase within each organization; they no longer say anything
-about order across organizations, which nothing relies on.
+the organization ID in a resource-revision-specific advisory-lock namespace.
+The revision sequence stays global, so revisions remain unique and increase
+within each organization; they no longer say anything about order across
+organizations, which nothing relies on.
+
+Old writers taking only the global lock cannot run alongside writers taking
+the new lock: they could commit revisions for one organization out of order.
+The deployment that enables the new allocator therefore stops and drains all
+resource writers, including background work, deploys the new allocator to
+every node, and only then resumes writes. A future rolling cutover would need a
+staged dual-lock protocol instead.
 
 === Other locks
 
@@ -46,29 +54,52 @@ its RFD.
 
 == Request limits
 
-Each organization gets rate limits, applied before the request opens a
-transaction:
+Each organization gets rate limits. Intake admission has two bounded stages so
+traffic cannot exhaust the database pool before Renga learns which organization
+owns it. A small node-wide authentication lane bounds credential lookups for
+valid and invalid callers. After lookup, but before any domain write, the
+organization and installation limits apply. Latest authenticated contact still
+includes rejected authenticated requests as RFD 1 requires, but contact writes
+are coalesced by installation through a bounded recorder rather than issuing a
+database update for every rejected request.
 
-* *Intake*: observations, check-ins, job leases, and job events, limited per
-  organization and per installation. An over-limit request gets `429` with
-  `Retry-After`. The agent already treats `429` as transient and keeps
-  undelivered observations in its queue; it starts honoring `Retry-After`
-  instead of its own backoff.
+* *Intake*: observations, check-ins, job leases, and job events are limited per
+  organization and per installation. Bulk observation traffic has its own
+  capacity. Check-ins and reports for already-leased jobs have reserved
+  capacity, and Renga stops granting new leases before that reserve is needed.
+  This keeps lease maintenance available when observations are throttled.
+  Exhausted capacity returns `429` with `Retry-After`.
 * *Intake size*: the largest observation an organization may send.
-* *Concurrency*: at most a set number of intake transactions per organization
-  run at once on each node, a fraction of the connection pool by default. Extra
-  requests get `429` rather than waiting for a connection.
-* *People and API*: browser and API requests are limited per user and per
-  organization, high enough that nobody working normally meets them.
+* *Concurrency*: at most a set number of admitted intake operations per
+  organization run at once on each node, a fraction of the connection pool by
+  default. Admission is held through the complete synchronous operation,
+  including observation acceptance and inline reconciliation even though they
+  use separate transactions. Extra requests get `429` rather than waiting for
+  a connection.
+* *People and API*: HTTP requests, authenticated LiveView navigations, and
+  LiveView events are limited per user and per organization, high enough that
+  nobody working normally meets them. A throttled LiveView event does not run
+  its handler and shows a retryable notice; an HTTP request gets `429`.
+
+`Retry-After` is a retry-not-before deadline, not permission to exceed an
+agent's delivery budget. If the deadline and another request cannot fit in the
+current 25-second budget, the agent returns control and schedules a later
+attempt instead of sleeping past the budget. It keeps observations and
+terminal job outcomes durable until delivery. If overload nevertheless lets a
+job lease expire, Renga applies RFD 9's existing retry-class transition and
+records `lease_lost`; it never treats an unreported outcome as delivered.
 
 Job creation keeps its existing limit, which becomes one of these settings.
 
 == Database time
 
-Every request transaction runs with a `statement_timeout`, and background work
-with a longer one, so a pathological query fails instead of holding a
-connection. Queries that can legitimately run long, such as an export (RFD 20),
-run in the background under their own timeout.
+Every application database connection has a baseline `statement_timeout`, so
+standalone reads and writes are covered as well as explicit transactions.
+Requests use the shorter application default. Approved background workers may
+set a longer transaction-local timeout for their own queries; work such as a
+future export (RFD 20) runs there. Because `statement_timeout` bounds each
+statement rather than a whole job, every worker also has a wall-clock budget
+and a resumable boundary.
 
 == Background work
 
