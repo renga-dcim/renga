@@ -206,9 +206,12 @@ evidence; Renga evaluates that evidence for the organization being opened
 rather than flattening it into an account-wide MFA flag.
 
 When a marked provider's ID token carries an `amr` claim, the sign-in counts
-only if `amr` contains `mfa` or names at least two methods (RFC 8176). Without
-`amr`, the mark alone decides. Removing the mark applies at each affected
-member's next request, like any setting that adds a requirement.
+only if `amr` contains `mfa` or a combination that the provider's configuration
+explicitly approves as independent factors (RFC 8176). Counting methods is not
+enough: for example, `pwd` and `kba` are both knowledge factors. Any other
+present `amr` requires Renga's local second step. Without `amr`, the mark alone
+decides. Removing the mark applies at each affected member's next request, like
+any setting that adds a requirement.
 
 [[grant-validity]]
 === Grant validity

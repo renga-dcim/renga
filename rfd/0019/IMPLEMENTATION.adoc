@@ -32,8 +32,9 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
   organizations; test that an organization A provider, with and without
   `amr`, never satisfies organization B's requirement.
 * [ ] Reject a marked provider's sign-in for the requirement when its `amr`
-  claim is present without `mfa` or two methods; test tokens with and without
-  `amr`.
+  claim is present without `mfa` or a provider-approved combination of
+  independent factors; test tokens with and without `amr`, including rejection
+  of `pwd` plus `kba`.
 * [ ] Add the operator release command that removes a user's MFA.
 * [ ] Add the per-account security log and email notices for credential
   changes.
