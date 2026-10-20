@@ -210,6 +210,11 @@ A setting that adds a requirement applies at each member's next request to
 the organization; turning it on never signs anyone out or ends a running
 terminal session.
 
+An operator can set deployment-wide defaults for these settings, and lock any
+of them to a value for the whole deployment or for one organization
+(link:../0022/README.adoc[RFD 22]). A locked setting shows as read-only, marked
+as set by the deployment, and owners cannot change it.
+
 === Amendments
 
 * RFD 1: live terminal access is disabled by default and requires
@@ -252,8 +257,6 @@ and an email change also notifies the old address.
 
 == Future work
 
-* Deployment-wide defaults that an operator can set or lock for every
-  organization, such as requiring MFA everywhere.
 * Checking `amr` from identity providers that send it.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
