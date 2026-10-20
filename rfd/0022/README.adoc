@@ -1,0 +1,167 @@
+:authors: Darwin D Wu <darwin67@users.noreply.github.com>
+:state: prediscussion
+:discussion:
+:labels: api, operations, organizations, security, software
+
+= RFD 22 Operator API
+
+== Goal
+
+Let whoever runs a Renga deployment manage it from their own automation:
+create organizations and invite their owners, set limits and locked settings,
+manage deployment identity providers, suspend an organization, read usage,
+and move an organization in or out. Today an operator can do some of this only
+with release commands on the server, and some of it not at all.
+
+The API is for operating a deployment, not for using it. It never reads or
+changes an organization's inventory, never signs in as a person, and never
+returns a secret. Organization owners keep control of what they own, such as
+their own identity provider and SCIM connections.
+
+== Operator tokens
+
+An operator token authenticates the API. It belongs to the deployment, not to
+an organization or a user.
+
+* An operator creates a token with a release command, `renga operator-tokens
+  create --name <name> --scopes <scopes>`, which prints it once. Renga stores
+  only a hash, as it does for RFD 3 intake keys.
+* A token has a name, scopes, an optional expiry, and an optional list of
+  source addresses it may be used from.
+* Tokens are revoked with a release command or through the API itself.
+* Without any token the API is off; no request reaches it.
+
+Scopes keep a token to what its automation needs:
+
+[cols="1,2"]
+|===
+|Scope |Allows
+
+|`organizations:read`
+|Listing organizations, their status, and their memberships
+
+|`organizations:write`
+|Creating, renaming, suspending, resuming, and scheduling deletion of
+organizations, and inviting owners
+
+|`policy:write`
+|Setting limits, quotas, locked settings, and feature entitlements
+
+|`providers:write`
+|Managing deployment identity providers (RFD 15)
+
+|`usage:read`
+|Reading usage counters
+
+|`transfers:write`
+|Starting exports and imports (RFD 20)
+|===
+
+The API is served under `/operator/v1` with an OpenAPI description, like the
+agent API. An operator can instead serve it only on a separate internal port,
+so it is not reachable from the public internet at all.
+
+== Organizations
+
+* *Create* an organization with a name and slug. It starts with no members.
+* *Invite an owner* by email address. The invitation is an emailed link; the
+  person signs in or signs up and becomes the owner. The operator never sets a
+  password or receives a sign-in link.
+* *Suspend* an organization. Its members cannot open it, its agents' intake is
+  refused with `403`, and its jobs are not dispatched. Nothing is deleted.
+  *Resume* undoes it. Both use the organization's existing `disabled` status.
+* *Schedule deletion*. The organization is suspended at once and deleted after
+  30 days unless the deletion is cancelled. Owners are told when deletion is
+  scheduled and offered an export (RFD 20).
+* *Read* organizations, their status, and their members' email addresses and
+  roles, so automation can confirm an owner accepted.
+
+== Policy
+
+An operator sets an organization's policy as one document, replacing it
+whole:
+
+* *Limits and quotas* from RFD 21.
+* *Locked settings*: any security setting from RFD 19, fixed to a value. A
+  locked setting shows as read-only in organization settings, marked as set by
+  the deployment, and owners cannot change it.
+* *Entitlements*: which optional features the organization may turn on, such
+  as organization identity providers (RFD 15), SCIM (RFD 16), terminals (RFD
+  13), and VM operations (RFD 14). An entitlement only allows a feature;
+  owners still decide whether to use it. Removing an entitlement turns the
+  feature off and keeps its configuration for when it is allowed again.
+
+Deployment-wide defaults for all three come from the environment, and an
+organization's policy overrides them. A setting that neither locks stays the
+owners' choice.
+
+== Deployment providers
+
+The API manages deployment identity providers with the same fields and rules
+as the RFD 15 release commands: a provider cannot be enabled until a test
+sign-in succeeds, a change that would leave no way in is refused, and client
+secrets can be written but never read back. Organization providers are not
+reachable through this API; they belong to their organization's owners.
+
+== Usage
+
+The API reports each organization's usage, for capacity planning and for
+anyone who bills by it:
+
+* current counts: members, resources, agents, intake keys, and recording
+  storage;
+* daily totals: intake requests, intake bytes, jobs, and terminal session
+  minutes.
+
+Daily totals are kept for 400 days.
+
+== Transfers
+
+The API starts an RFD 20 export of an organization and returns the archive's
+download link when it is ready. It can also create an organization from an
+archive. Both use RFD 20's rules unchanged, including importing only into an
+empty organization and bringing security approvals back pending.
+
+== Writes
+
+Writes are safe to retry:
+
+* Creating an organization or an invitation accepts an `Idempotency-Key`
+  header; repeating a request with the same key returns the first result.
+* Policy and provider documents are replaced whole with `PUT`, and accept
+  `If-Match` with the version from the last read so two writers cannot
+  silently overwrite each other.
+
+This lets automation hold the desired state and apply it repeatedly until the
+deployment matches.
+
+== Audit
+
+Every API call that changes something is recorded in a deployment audit log
+with the token's name, the request, and the result. A change to an
+organization is also recorded in that organization's Activity, attributed to
+the operator token by name, so owners can see what their deployment changed
+and when.
+
+== Release commands
+
+Every API operation has a matching release command, so a deployment without
+network access to the API can be operated the same way.
+
+== Open questions
+
+. *Separate port by default.* The proposal serves the API on the main
+  endpoint unless an operator chooses a separate port. Defaulting to a
+  separate port is safer but needs one more piece of deployment configuration.
+. *Deletion through the API.* The proposal allows scheduled deletion with a
+  30-day grace period. Leaving deletion to release commands only would make a
+  leaked token less damaging.
+
+== Future work
+
+* Webhooks for events an operator's automation cares about, such as an owner
+  accepting an invitation or a quota reaching 80%.
+* Short-lived tokens issued through workload identity instead of stored
+  operator tokens.
+
+link:IMPLEMENTATION.adoc[Implementation checklist]

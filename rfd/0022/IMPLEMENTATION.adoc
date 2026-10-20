@@ -1,0 +1,25 @@
+= RFD 0022 implementation checklist
+
+Implements link:README.adoc[RFD 22: Operator API].
+
+* [ ] Add hashed operator tokens with names, scopes, expiry, and source
+  address lists, created and revoked by `renga operator-tokens` release
+  commands; keep the API off while no token exists.
+* [ ] Serve `/operator/v1` with an OpenAPI description, and allow serving it
+  only on a separate internal port.
+* [ ] Add organization create, rename, suspend, resume, scheduled deletion
+  with a 30-day grace period, and read endpoints.
+* [ ] Add owner invitations by emailed link; test that the operator never
+  receives a sign-in link or sets a password.
+* [ ] Add the policy document for limits, locked settings, and entitlements,
+  with environment defaults and read-only locked settings in organization
+  settings.
+* [ ] Manage deployment identity providers through the API with RFD 15's test
+  sign-in and lockout rules and write-only secrets.
+* [ ] Record daily usage totals and serve current counts and totals.
+* [ ] Start RFD 20 exports and imports through the API.
+* [ ] Support `Idempotency-Key` on creates and `If-Match` on document writes.
+* [ ] Record every change in a deployment audit log and in the affected
+  organization's Activity.
+* [ ] Add a release command for every API operation.
+* [ ] Test that no endpoint returns inventory data, a secret, or a session.
