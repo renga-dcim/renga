@@ -204,11 +204,12 @@ A deployment that serves a single organization can also hand that organization
 a full database dump; that is ordinary PostgreSQL administration and not part
 of this RFD.
 
-== Open questions
+== Decisions
 
-. *Additional raw observations by default.* The archive always includes the
-  observations required by retained claims and current evidence. The proposal
-  leaves other retained observations out by default because of their size.
+. *Additional raw observations by default.* Left out unless the exporter asks
+  for them. The default archive already includes every observation that
+  current claims and evidence require, so it imports as a complete
+  organization; the remaining retained observations mostly add size.
 
 == Future work
 
