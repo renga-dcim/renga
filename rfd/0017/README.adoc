@@ -114,40 +114,45 @@ made a request may withdraw it" and "a personal view belongs to its owner" stay
 in context code; they are not permissions.
 
 RFDs 12, 13, and 14 add `queries.run`, `queries.run_sensitive`,
-`terminal.open`, `terminal.replay`, `vm.power`, and `vm.approve` when they are
-implemented. Those are _explicit_ permissions: no built-in role includes them
-and nobody holds them by default, including owners. Their grant and disclosure
-contracts are:
+`terminal.open`, `vm.power`, and `vm.approve` when they are implemented. Those
+are _explicit_ permissions: no built-in role includes them and nobody holds them
+by default, including owners. Their grant and disclosure contracts are:
 
-[cols="2,3,3,2"]
+[cols="2,3,3,2,2"]
 |===
-|Operation |Permission to act |Permission to read retained payload |Lifetime
+|Operation |Permission to act |May issue to |Permission to read retained payload |Lifetime
 
 |Inventory query
 |`queries.run`
+|Built-in owner or admin; any member may receive it
 |`queries.run`
 |Expiry optional
 
 |Sensitive query, including ad hoc SQL
 |`queries.run` and `queries.run_sensitive`
+|Built-in owner or admin; any member may receive both
 |`queries.run` and `queries.run_sensitive`
 |Expiry optional
 
 |Live terminal
 |`terminal.open`
-|`terminal.replay` to replay its recording
+|Built-in owner or admin; any member may receive it
+|Only a current built-in owner or admin may replay a recording; every replay is
+audited
 |`terminal.open` expires in at most 30 days
 
 |VM power operation
 |`vm.power`; a second operator also needs `vm.approve` and `vm.power`
+|Built-in owner or admin; any member may receive one or both
 |Job metadata requires `inventory.read`; payloads require `vm.power`
 |`vm.power` and `vm.approve` must expire
 |===
 
 This deliberately replaces RFD 12's owner/admin and member-query role checks
 with permissions while preserving its sensitivity split. It preserves RFD 13's
-30-day terminal limit, replay restriction and replay audit, and RFD 14's
-expiring grants and distinct second operator. A deployment or organization may
+30-day terminal limit, owner/admin-only replay restriction and replay audit,
+and RFD 14's expiring grants and distinct second operator. Replay is a hard
+eligibility rule, not a delegable permission. A deployment or organization may
 set a shorter maximum, never a longer one. Explicit permissions are kept in
 roles that contain no non-explicit permissions, so a routine role never quietly
 acquires operational access.
@@ -312,8 +317,12 @@ Resource visibility and payload disclosure are separate decisions:
 |Resource-owned metadata
 |The resource envelope, fields, interfaces, components, modules, addresses,
 placement, findings and requests follow the resource. Sites, locations and
-racks are also resources. A reader sees the containers of every visible
-resource so its placement can be rendered.
+racks are also resources. Confirmed placement may disclose a breadcrumb
+projection of a visible resource's containers: container ID, kind, display name
+and hierarchy only. That projection does not grant `inventory.read` over the
+container or expose its other fields, contents or descendants. An unconfirmed
+or observation-derived placement discloses no container ID, name or metadata
+unless the reader independently holds `inventory.read` over that container.
 
 |Shared definitions and organization records
 |Catalog types, VRFs, prefixes, VLAN groups, VLANs and teams are shared
@@ -337,9 +346,9 @@ opaque JSON snapshot is withheld rather than filtered after decoding.
 |Jobs and operational payloads
 |Generic job metadata follows its resource. Query parameters, results and
 events require the current query permissions in the operation table. Terminal
-recordings require `terminal.replay`, and every replay remains audited. VM job
-payloads require `vm.power`. Generic Activity and job views expose only safe
-summaries and never bypass these payload permissions.
+recordings remain limited to current built-in owners and admins, and every
+replay remains audited. VM job payloads require `vm.power`. Generic Activity and
+job views expose only safe summaries and never bypass these payload permissions.
 
 |Aggregates
 |Rack occupancy and prefix utilization count hidden resources so capacity stays
@@ -406,8 +415,9 @@ fetch, search, count, and export with a member who can see one site.
 The scope carries the person's resolved assignments and the organization's
 authorization version, loaded once per request or LiveView mount. Every change
 to a role definition, membership status or base role, assignment, team
-membership, or external source validity increments that version and broadcasts
-on the organization's authorization topic. Connected LiveViews refresh before
+membership, external source validity, resource ownership or placement, or
+relevant container hierarchy increments that version and broadcasts on the
+organization's authorization topic. Connected LiveViews refresh before
 protected data delivery or events when the version changes. They also check the
 earliest assignment or provider deadline before delivery; a timer is only a
 wake-up mechanism, never enforcement. The transaction check, current version,
@@ -444,9 +454,10 @@ reaches these guards; no assignment bypasses them.
   non-explicit permission. A built-in admin may grant `admin`, `member`, or
   `viewer` and any non-explicit permission except `organization.manage` and
   `organization.export`; this includes `requests.create`, although the admin
-  cannot create requests. Owners and admins may grant the explicit permissions
-  whose source RFD authorizes them to issue, including to themselves. This is
-  the bootstrap path for permissions nobody initially holds.
+  cannot create requests. Built-in owners and admins may issue every explicit
+  permission in the operation table, including to themselves, subject to its
+  recipient and lifetime rules. This is the bootstrap path when nobody holds an
+  explicit permission.
 * `members.manage` and `roles.manage` are reserved to the built-in owner and
   admin roles; custom roles cannot carry them. Creating, changing, or deleting
   a role and assigning it requires both the matching management permission and

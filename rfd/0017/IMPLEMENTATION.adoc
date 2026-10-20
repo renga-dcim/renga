@@ -7,7 +7,9 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   role and for machine scopes; it must pass before and after the next item.
 * [ ] Replace every hard-coded role list and `organization_manager?`-style
   hint with permission checks, and turn unchecked public mutations into
-  explicit system paths. No behavior changes.
+  explicit system paths. Preserve supported human workflows and machine
+  behavior; deliberately close undocumented low-level human entry points that
+  previously skipped authorization.
 * [ ] Add member management in organization settings: invite, disable, change
   base role, with Activity entries and at least one active, direct,
   non-expiring manual recovery owner.
@@ -17,7 +19,9 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   unconditioned assignments. Keep `members.manage` and `roles.manage` out of
   custom roles. Test that admins can assign `member` and bootstrap authorized
   explicit permissions without acquiring their actions, but cannot grant
-  `owner`, `organization.manage`, or `organization.export`.
+  `owner`, `organization.manage`, or `organization.export`. From a state where
+  nobody holds an explicit permission, test issuance of every explicit role and
+  its recipient and lifetime rules.
 * [ ] Add conditions on `resource`, `kind`, `owner_team` (including
   `$subject_teams`), and `site`, compiled to SQL predicates, with `filter/3`
   for lists and whole-batch refusal for bulk actions. Reject unknown vocabulary
@@ -36,7 +40,10 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   historical records, query and VM payloads, terminal recordings, and
   organization-wide records. Use typed safe projections or withhold opaque
   payloads; test hidden neighbor identifiers, snapshots, generic Activity and
-  job views, mutation responses, and exports.
+  job views, mutation responses, and exports. Test that an ID-scoped reader does
+  not learn an unconfirmed placement's hidden container ID or metadata; once
+  placement is confirmed, expose only its breadcrumb projection unless the
+  reader independently holds `inventory.read` over the container.
 * [ ] Require `inventory.read` over every target of a human mutation in addition
   to its action permissions, and return only those readable targets.
 * [ ] Make live updates carry IDs only and re-fetch through each subscriber's
@@ -55,7 +62,8 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   events. Test that each revocation path stops both reads and mutations.
 * [ ] Add explicit permissions with the operation-specific action, retained
   payload, approval, audit, and lifetime rules in RFD 17, ready for RFDs 12, 13,
-  and 14.
+  and 14. Test that terminal replay remains owner/admin-only and audited rather
+  than becoming delegable through a custom role.
 * [ ] Add the access views on member and resource pages, and name the missing
   permission when an action is refused.
 * [ ] Amend RFDs 12, 13, 14, and 15 to use assignments and the disclosure table.
