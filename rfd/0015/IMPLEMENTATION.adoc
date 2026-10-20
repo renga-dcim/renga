@@ -96,3 +96,8 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   rather than accepting provider `auth_time`; test the distinction from the
   account re-check.
 * [ ] Add optional RP-initiated logout.
+* [ ] Add the hidden and support-source flags on deployment providers,
+  enforce the support source's allowlist, MFA mark, and uniqueness, and keep
+  support identities as separate accounts; test that a support identity cannot
+  be linked, invited, mapped, or provisioned, and that the hidden provider is
+  absent from the sign-in page.
