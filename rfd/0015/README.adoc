@@ -38,6 +38,12 @@ the database or shown in the UI.
 Configuring providers in the UI at runtime is out of scope for this RFD (see
 future work).
 
+SAML 2.0 is out of scope. Every major workforce identity provider also offers
+OpenID Connect, and SAML would add XML signature validation, a frequent source
+of authentication bypasses, to Renga's sign-in path. A deployment whose provider
+only speaks SAML can put an OpenID Connect broker such as Keycloak, Authentik,
+or Dex in front of it and configure the broker as an `oidc` provider.
+
 == Sign-in flow
 
 Renga uses a pinned, reviewed version of `oidcc` for `oidc` providers. The
@@ -217,7 +223,7 @@ authentication.
 == Future work
 
 * SCIM provisioning, for removing people and memberships the moment an
-  identity provider does, without waiting for a renewal.
+  identity provider does, without waiting for a renewal (link:../0016/README.adoc[RFD 16]).
 * Configuring providers in the UI, once Renga has secret storage and an audit
   trail for it.
 * OpenID Connect back-channel logout.
