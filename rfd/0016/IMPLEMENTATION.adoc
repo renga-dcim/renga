@@ -3,22 +3,30 @@
 Implements link:README.adoc[RFD 16: SCIM provisioning].
 
 * [ ] Add SCIM connections per organization, created by owners, naming an
-  `oidc` provider and a correlation claim, and refusing an organization that
+  eligible `oidc` provider and a provider-declared stable, unique correlation
+  claim; make both immutable, scope organization providers to their own
+  organization when RFD 15 defines them, and refuse an organization that
   already has an RFD 15 claim mapping.
 * [ ] Add connection bearer tokens stored as hashes, revealed once, with two
-  active tokens for rotation and immediate revocation; test that tokens only
-  reach `/scim/v2` and only their own organization.
+  active tokens for rotation and immediate revocation; redact them from logs,
+  diagnostics, and audits, and test that tokens only reach `/scim/v2` and only
+  their own organization.
 * [ ] Serve `ServiceProviderConfig`, `ResourceTypes`, and `Schemas`.
 * [ ] Add `scim_users`, `scim_groups`, and group memberships with
-  per-connection uniqueness on `userName` and `externalId`.
+  per-connection uniqueness on user `userName` and `externalId` and an optional
+  binding from a user entry to a specific RFD 15 identity.
 * [ ] Implement `Users` and `Groups` create, read, replace, patch, delete, and
-  list with `eq` filters and bounded pagination; return SCIM errors.
+  list with `eq` filters and bounded pagination; implement the documented
+  omitted, null, empty, and explicit-value semantics and return SCIM errors.
 * [ ] Accept Okta and Microsoft Entra ID PATCH variants and test them against
-  recorded request fixtures.
+  recorded request fixtures; accept and discard create-time passwords without
+  persisting, logging, auditing, or returning them, and reject password changes.
 * [ ] Link directory entries at provider sign-in and reauthentication by the
-  correlation claim; allow provider sign-up for active entries; keep RFD 15's
-  email collision refusal and test that SCIM never changes account email,
-  name, credentials, or other memberships.
+  exact nonempty correlation claim; reject missing, malformed, ambiguous, and
+  unsafe claim values and reassignment, clear bindings and grants when their
+  identity source or `externalId` changes, and allow provider sign-up for active
+  entries. Keep RFD 15's email collision refusal and test that SCIM never
+  changes account email, name, credentials, or other memberships.
 * [ ] Grant memberships from the default role and group mappings as
   source-bound grants, with manual membership precedence.
 * [ ] Deprovision on `active` false, delete, group removal, and connection

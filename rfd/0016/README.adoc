@@ -22,14 +22,16 @@ means the identity provider, as in RFD 15.
 
 == Connections
 
-An organization owner creates a SCIM connection for their organization, when
-the deployment allows SCIM for it (see link:../0022/README.adoc[RFD 22]
-entitlements). A connection has:
+An organization owner creates a SCIM connection for their organization. The
+first release has no entitlement dependency: every active organization may use
+SCIM unless the operator disables it deployment-wide. A connection has:
 
 * the organization it manages; a connection never reaches another organization;
-* the ID of an RFD 15 `oidc` provider whose identities it describes: the
-  organization's own provider, or a deployment provider. GitHub identities
-  cannot be provisioned because GitHub has no SCIM client;
+* the ID of an RFD 15 `oidc` provider visible to the organization whose
+  identities it describes. RFD 15 currently defines deployment providers; an
+  organization provider is also eligible if RFD 15 is amended to define one,
+  and only for the same organization. GitHub identities cannot be provisioned
+  because GitHub has no SCIM client;
 * the correlation claim, the ID token claim whose value the provider sends as
   each user's SCIM `externalId` (`sub` by default; `oid` for Microsoft Entra ID,
   whose `sub` is pairwise per application);
@@ -37,10 +39,26 @@ entitlements). A connection has:
   from SCIM groups to Renga roles;
 * up to two bearer tokens, so a token can be rotated without downtime.
 
+The provider's trusted configuration declares which correlation claims are
+eligible. Renga always permits `sub`; it permits another claim only when that
+configuration identifies it as a stable, unique, non-reassignable identifier
+within the provider's issuer namespace. Correlation accepts only a nonempty
+string and compares it exactly, without case folding or type coercion. A
+missing, malformed, or ambiguous value never links an entry or grants SCIM
+access, though the sign-in may continue under RFD 15.
+
+The provider and correlation claim cannot be retargeted in place. Changing
+either requires a replacement connection, with the old connection disabled and
+its grants reconciled before the replacement becomes active. If RFD 15 later
+adds organization providers, its provider-visibility checks remain an
+authorization boundary: a connection context rechecks that the provider
+belongs to its organization, and provider removal disables the connection.
+
 Tokens follow RFD 3 intake keys: Renga generates them, shows each once, and
 stores only a hash. The organization owner can revoke a token at any time.
 SCIM requests authenticate only with these tokens; a browser session never
-reaches the SCIM endpoints, and a SCIM token never reaches anything else.
+reaches the SCIM endpoints, and a SCIM token never reaches anything else. Token
+values are redacted from request logs, diagnostics, and audit payloads.
 
 An organization has at most one external membership authority: either one RFD
 15 claim mapping or one SCIM connection. Two sources writing the same roster
@@ -59,26 +77,67 @@ the organization, so one URL serves every organization. Renga implements:
 Listing supports `startIndex` and `count` pagination with a maximum page size,
 and filters of the form `attribute eq "value"` on `userName`, `externalId`,
 `displayName`, and `id`, which is what the major identity providers send.
-Bulk operations, sorting, ETags, password changes, and the `/Me` endpoint are
-not supported and are reported as such in `ServiceProviderConfig`.
+Bulk operations, sorting, ETags, and password changes are not supported.
+`ServiceProviderConfig` reports only capabilities that resource defines, such
+as PATCH, filtering, bulk, and authentication schemes. `/Me` is documented
+separately and returns a SCIM `501` error.
 
 Requests are bounded in size and rate limited per connection. Errors use the
 SCIM error schema. A duplicate `userName` or `externalId` within one connection
-is a `409` with `scimType` `uniqueness`.
+is a `409` with `scimType` `uniqueness`. Per-connection `externalId` uniqueness
+is a deliberate Renga restriction, not a guarantee made by the SCIM schema.
 
 Providers differ in small ways, such as PATCH operation names in different
 cases, booleans sent as strings, and value-filtered paths like
 `members[value eq "..."]`. Renga accepts these forms for the attributes it
-supports. Compatibility with Okta and Microsoft Entra ID is tested against
-recorded request fixtures.
+supports. The strings `"true"` and `"false"` are normalized to booleans before
+applying the write rules below; no other string is. Compatibility with Okta and
+Microsoft Entra ID is tested against recorded request fixtures.
 
 == Directory entries
 
 A provisioned SCIM user is a directory entry belonging to its connection, not a
 Renga account. A new `scim_users` table holds the connection, a Renga-assigned
 SCIM `id`, the `externalId`, `userName`, display name, primary email, `active`,
-the remaining attributes as received, and an optional link to a Renga user.
-`scim_groups` and their memberships hold groups the same way.
+supported attributes and extensions declared by Renga's `Schemas` resources,
+and an optional link to the specific RFD 15 `user_identity` that proved the
+correlation. The account is reached through that identity; an entry never stores
+an account-only binding. `scim_groups` and their memberships hold groups the
+same way. Undeclared extension data is not retained.
+
+The SCIM `password` attribute is never persisted, logged, audited, or returned.
+Renga accepts and discards a `password` sent incidentally on user creation so
+Okta provisioning remains compatible. A PUT or PATCH that attempts to change a
+password returns a SCIM `400` error with `scimType` `invalidValue`.
+
+The authorization-relevant write semantics are explicit rather than delegated
+to provider-specific PUT behavior:
+
+[cols="1,2,2,2"]
+|===
+|Attribute |POST |PUT |PATCH
+
+|User `externalId`
+|An omitted, null, or empty value creates an unlinked entry. A nonempty string
+must be unique in the connection.
+|An omitted, null, or empty value clears it. Changing or clearing it also clears
+the identity binding before grants are reconciled.
+|Adding or replacing it follows PUT's binding rule; removing it clears the
+binding.
+
+|User `active`
+|Omission defaults to `true`; null or any value other than a boolean or its
+accepted string form is `invalidValue`.
+|Omission preserves the current value. An explicit accepted boolean value
+replaces it; null or any other value is `invalidValue`.
+|Only an explicit accepted boolean value may replace it.
+
+|Group `members`
+|Omission creates an empty group.
+|Omission replaces the membership set with empty. Supplied members replace it
+whole after every referenced user is validated in the same connection.
+|Add and remove change only the named members. User `groups` is read-only.
+|===
 
 Renga does not create accounts from SCIM. An organization's provider is
 authoritative for that organization, not for the account a person may also use
@@ -87,14 +146,21 @@ email, name, credentials, or other memberships. Not creating accounts also
 means a connection cannot reserve an email address for an account its owner
 never signs in to.
 
-A directory entry links to a Renga user when that user signs in or reauthenticates
-through the connection's provider and the validated ID token's correlation
-claim equals the entry's `externalId`. If the person has no Renga account yet,
-the active directory entry permits RFD 15 provider sign-up for them even when
-the provider otherwise disallows sign-up. RFD 15's rules still hold: Renga
-never links by email, and an email collision with an existing account is
-refused until the person signs in to that account and links the provider from
-their settings, which then links the entry too.
+A directory entry links to the RFD 15 identity when that identity signs in or
+reauthenticates through the connection's provider and the validated ID token's
+correlation claim exactly equals the entry's nonempty `externalId`. Renga
+refuses to reassign an entry already bound to another identity. If the person
+has no Renga account yet, the active directory entry permits RFD 15 provider
+sign-up for them even when the provider otherwise disallows sign-up. RFD 15's
+rules still hold: Renga never links by email, and an email collision with an
+existing account is refused until the person signs in to that account and links
+the provider from their settings, which then links the entry too.
+
+Changing or clearing `externalId`, unlinking the RFD 15 identity, or removing
+its provider clears the entry's binding and reconciles its grant immediately.
+A later sign-in with valid correlation evidence may establish a new binding;
+neither the old account link nor a successful sign-in through another identity
+can carry the SCIM authority forward.
 
 Organization owners and admins can see directory entries in the organization's
 member list, including entries not yet linked to an account, so they can tell
