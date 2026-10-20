@@ -5,10 +5,20 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 * [ ] Store deployment and organization providers in the database, with
   client secrets encrypted under rotatable key-encryption keys read from the
   environment; never display a saved secret.
-* [ ] Cache provider configuration per node and invalidate it over PubSub on
-  change; test that a change applies on every node without a restart.
-* [ ] Require a successful test sign-in before enabling a provider, refuse
-  changes that leave no usable way in, and record every change in Activity.
+* [ ] Give stored provider configuration an authoritative database revision.
+  Check freshness before sign-in initiation, callback completion, and renewal,
+  failing closed when it cannot be established; use PubSub only to accelerate
+  eviction. Test missed and delayed invalidation and commit-before-broadcast
+  failure on multiple nodes.
+* [ ] Keep authentication-affecting edits pending while the previous revision
+  remains active. Bind test sign-in to its actor, purpose, provider, and exact
+  revision, prevent it from creating normal authentication evidence, and
+  atomically activate only that tested revision. Test stale results, concurrent
+  edits, and a broken edit to the sole active provider.
+* [ ] Serialize activation, disable, and removal with the effective-policy
+  guard, including environment overrides, so no change leaves no usable
+  deployment sign-in method. Record pending changes and transitions in
+  Activity without secrets.
 * [ ] Add `renga providers` release commands, and keep environment-defined
   deployment providers, loaded at boot and read-only in the UI.
 * [ ] Add organization providers managed by owners, reached through the

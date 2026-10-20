@@ -53,17 +53,27 @@ by adding a new key, letting Renga re-encrypt, and then retiring the old one. A
 saved secret is never shown again; the settings page only says that one is set
 and when it changed.
 
-Changes take effect without a restart. Each node caches provider configuration
-and drops its cache when a change is broadcast over PubSub, so the next sign-in
-on any node uses the new settings. Discovery documents and signing keys stay
-cached per provider and refresh as today.
+Changes take effect without a restart. Each stored provider has an authoritative
+configuration revision in the database. Before a node initiates or completes a
+sign-in or renews a provider session, it verifies that its cached revision is
+still current; if it cannot establish freshness, it fails closed. PubSub
+invalidation evicts caches promptly but is only an acceleration, so a missed or
+delayed message cannot keep old configuration usable. Discovery documents and
+signing keys stay cached per provider and refresh as today.
 
-A provider cannot be enabled until a test sign-in through it succeeds, run by
-the person making the change against the saved settings. Renga refuses a
-change that would leave no usable way to sign in under the local sign-in
-policy, as it refuses to boot today. Every create, change, enable, disable, and
-removal is recorded in Activity with the actor and the fields that changed,
-never the secret.
+Creating or changing authentication-affecting settings produces a pending
+revision while the previous active revision remains in use. The person making
+the change runs a test sign-in against that exact pending revision. Its callback
+is bound to the actor, test purpose, provider, and revision and cannot create
+an ordinary session, link an identity, or satisfy the account re-check. A
+successful test and activation are one atomic transition; another edit
+invalidates the result.
+
+Renga serializes activation, disable, and removal with the guard that preserves
+at least one usable deployment sign-in method under the effective local policy,
+including environment overrides. Every pending change, activation, enable,
+disable, and removal is recorded in Activity with the actor and the fields that
+changed, never the secret.
 
 === Operators
 
