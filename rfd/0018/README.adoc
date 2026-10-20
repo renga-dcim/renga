@@ -89,16 +89,20 @@ Renga derives two effective-membership views. The inventory view contains
 direct memberships and memberships inherited through current placement. The
 trusted view contains direct memberships and memberships inherited only when
 every placement and containment edge from the resource to the member container
-was set or confirmed by a person. Inventory workflow permissions use the first;
-RFD 17's operational permissions (`jobs.request` and explicit permissions) use
-the second. Reconciliation may change current placement and therefore the
-inventory view, but never direct membership or the trusted view.
+was set or confirmed by a person. Inventory workflow permissions other than
+`inventory.read` use the first. `inventory.read`, `jobs.request`, and explicit
+permissions use the trusted view. Reconciliation may change current placement
+and therefore the inventory view, but never direct membership or the trusted
+view.
 
 Membership provenance retains every direct and inherited path. Removing one
 path does not remove an independent direct membership or another path to the
 same group; effective membership disappears only when its last path does. Each
 resource page shows whether a membership is direct or inherited and the
-container path that supplies it.
+container path that supplies it, subject to RFD 17's disclosure matrix. An
+unconfirmed path redacts every container the viewer cannot independently read.
+A confirmed path exposes only RFD 17's breadcrumb projection unless the viewer
+independently holds `inventory.read` over the container.
 
 The affected set of a membership change is every resource whose effective
 membership would change, including resources that inherit from a selected
@@ -107,14 +111,16 @@ in that set both before and after the change, not only the selected container.
 A placement or containment change applies the same rule with `dcim.edit`. The
 whole operation is refused if any affected resource is not covered.
 
-Every write that can change effective membership serializes on one
-organization-and-group-projection lock before deriving and authorizing its
-affected set, and before taking RFD 5's hierarchy or rack locks. Direct
-membership, group-set, current or confirmed placement, containment hierarchy,
-and reconciliation writers all follow that order. The transaction then changes
-the source records and every affected access projection together. A concurrent
-placement therefore cannot escape a container edit's authorization check or
-leave a stale grant behind.
+Every write that can change effective membership first takes RFD 17's
+organization authorization-version lock, then the organization-and-group-
+projection lock before deriving and authorizing its affected set, and then RFD
+5's applicable hierarchy or rack locks. Direct membership, group-set, current
+or confirmed placement, containment hierarchy, and reconciliation writers all
+follow that order. The transaction changes the source records and every
+affected access projection together, increments the authorization version, and
+broadcasts the change. A concurrent placement therefore cannot escape a
+container edit's authorization check, leave a stale grant behind, or remain
+visible through a cached scope.
 
 == Conditions
 
@@ -125,11 +131,11 @@ direct or contained member of any listed group:
 ----
 {
   "group": ["<staging group id>"],
-  "kind": ["host"]
+  "kind": ["server"]
 }
 ----
 
-This reads as "hosts in Staging". Like every RFD 17 condition it compiles to an
+This reads as "servers in Staging". Like every RFD 17 condition it compiles to an
 SQL predicate. Each resource's access row carries separate current and trusted
 effective group IDs, sourced from the materialized membership rows and indexed
 for containment queries. The permission class selects the matching view; an
