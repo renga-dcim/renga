@@ -2,8 +2,21 @@
 
 Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
 
-* [ ] Read provider configuration from the environment in `config/runtime.exs`
-  and validate it at boot.
+* [ ] Store deployment and organization providers in the database, with
+  client secrets encrypted under rotatable key-encryption keys read from the
+  environment; never display a saved secret.
+* [ ] Cache provider configuration per node and invalidate it over PubSub on
+  change; test that a change applies on every node without a restart.
+* [ ] Require a successful test sign-in before enabling a provider, refuse
+  changes that leave no usable way in, and record every change in Activity.
+* [ ] Add `renga providers` release commands, and keep environment-defined
+  deployment providers, loaded at boot and read-only in the UI.
+* [ ] Add organization providers managed by owners, reached through the
+  organization sign-in link or a DNS-verified email domain claimed by one
+  organization at a time.
+* [ ] Scope sessions, claim mappings, and directory connections from an
+  organization provider to its organization; test that such a session cannot
+  open another organization or accept another organization's invitation.
 * [ ] Add `user_identities` with a unique `(provider_id, subject)`.
 * [ ] Add the authorization code flow with PKCE, `state`, and `nonce`, and ID
   token validation, using a pinned, reviewed `oidcc` version while keeping
@@ -32,7 +45,7 @@ Implements link:README.adoc[RFD 15: OpenID Connect sign-in].
   revalidation. Preserve unsaved browser input through reauthentication where
   feasible and test both the authorization boundary and draft behavior.
 * [ ] Add the `registration` and `local_sign_in` settings, refusing to boot
-  with local sign-in disabled and no provider, and test direct password and
+  with local sign-in disabled and no enabled deployment provider, and test
   magic-link endpoints plus previously issued links.
 * [ ] Keep session issuance, provider validity, and re-check evidence
   separate; test that ordinary SSO, silent renewal, refresh, and session

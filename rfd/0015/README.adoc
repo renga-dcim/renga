@@ -14,11 +14,21 @@ deployment keeps its own credentials and has to offboard people by hand.
 
 Renga is a relying party only. It never issues tokens for other applications,
 and no provider is special to it: every provider, including whichever one an
-operator chooses as the only way in, is configuration.
+operator chooses as the only way in, is configuration. That configuration lives
+in Renga's database and takes effect without a restart.
 
 == Providers
 
-An operator configures zero or more providers at deploy time. Each has:
+Providers exist at two levels:
+
+* *Deployment providers* appear on the sign-in page for everyone. An operator
+  manages them.
+* *Organization providers* belong to one organization, such as that
+  organization's own Okta or Microsoft Entra ID tenant. Its owners manage them
+  in organization settings, and they are always `oidc` providers (see
+  <<organization-providers>>).
+
+Each provider has:
 
 * a stable `id`, used in callback URLs and stored on linked identities. The ID
   permanently names that provider kind and, for OpenID Connect, its issuer;
@@ -28,15 +38,69 @@ An operator configures zero or more providers at deploy time. Each has:
   `github` (OAuth 2.0 with GitHub's user and email APIs, because GitHub is not an
   OpenID Connect provider);
 * a client ID and client secret;
-* optional extra scopes, and an optional allowlist of email domains.
+* optional extra scopes, and an optional allowlist of email domains;
+* whether it is enabled.
 
-Providers are configured through the environment and read in
-`config/runtime.exs`, like the rest of Renga's deployment settings, so a
-container image needs no rebuild to add one. Client secrets are never stored in
-the database or shown in the UI.
+=== Storage and changes
 
-Configuring providers in the UI at runtime is out of scope for this RFD (see
-future work).
+Providers are stored in the database. Client secrets are encrypted at rest with
+AES-256-GCM under a key-encryption key that Renga reads from the environment at
+boot. Each key has an ID stored beside every ciphertext, so an operator rotates
+by adding a new key, letting Renga re-encrypt, and then retiring the old one. A
+saved secret is never shown again; the settings page only says that one is set
+and when it changed.
+
+Changes take effect without a restart. Each node caches provider configuration
+and drops its cache when a change is broadcast over PubSub, so the next sign-in
+on any node uses the new settings. Discovery documents and signing keys stay
+cached per provider and refresh as today.
+
+A provider cannot be enabled until a test sign-in through it succeeds, run by
+the person making the change against the saved settings. Renga refuses a
+change that would leave no usable way to sign in under the local sign-in
+policy, as it refuses to boot today. Every create, change, enable, disable, and
+removal is recorded in Activity with the actor and the fields that changed,
+never the secret.
+
+=== Operators
+
+Operators manage deployment providers with release commands, `renga providers
+list | add | update | enable | disable`, which work even when nobody can sign
+in. Disabling a provider or enabling local sign-in from the command line is
+the way back from a configuration that locks everyone out.
+
+Operators who prefer declarative configuration can still define deployment
+providers in the environment, read in `config/runtime.exs`. Those providers
+are loaded at boot, shown read-only in the UI, and override a stored provider
+with the same ID.
+
+[[organization-providers]]
+=== Organization providers
+
+An organization owner can add an OpenID Connect provider for their
+organization. Members reach it from the organization's sign-in link,
+`/users/log-in?organization=<slug>`, or from the main sign-in page by entering
+an email address whose domain the organization has verified with a DNS TXT
+record. A domain can be verified by one organization at a time, and an
+unverified domain never routes anyone to an organization's provider.
+
+An organization provider is trusted only for its own organization, because its
+owners control the identities it asserts:
+
+* A session that signed in through an organization provider can open only that
+  organization. Reaching another organization needs a different sign-in method.
+* Its claim mappings and SCIM connections (RFD 16) can manage only that
+  organization.
+* Sign-up through it creates a user only when the organization allows it, and
+  the email address it asserts is not treated as verified anywhere else, so it
+  cannot accept another organization's invitation by matching an address.
+
+These rules keep an organization's identity provider from reaching a person's
+access in other organizations, even when that person links the provider to an
+account they use elsewhere.
+
+Turning a GitHub organization into an organization provider is out of scope;
+GitHub stays a deployment provider.
 
 SAML 2.0 is out of scope. Every major workforce identity provider also offers
 OpenID Connect, and SAML would add XML signature validation, a frequent source
@@ -106,8 +170,10 @@ for reauthentication even when local password sign-in is disabled.
 
 == Organization membership from claims
 
-An operator may map a provider claim (for example `groups`, or a custom
-claim) to organization memberships and roles. Renga records each mapped grant
+A provider claim (for example `groups`, or a custom claim) can be mapped to
+organization memberships and roles. An operator sets the mapping for a
+deployment provider; an organization's owners set it for their own
+organization's provider. Renga records each mapped grant
 with the provider identity and mapping that issued it and a `valid_until` time;
 it does not flatten provider authority into an indefinite user membership.
 Authorization treats a mapped grant as a membership only while that source is
@@ -128,12 +194,14 @@ sign-in never touches memberships.
 
 The mapping names organizations by slug and roles by Renga's role names
 (`owner`, `admin`, `member`, `viewer`). A claim value that names an unknown
-organization or role is ignored and logged, not created.
+organization or role is ignored and logged, not created. An organization
+provider's mapping can name only its own organization.
 
 == Provider session lifetime
 
 A session created through a provider carries a lifetime, 12 hours by default
-and configurable per provider. Renga's remember-me cookie would otherwise keep
+and configurable per provider. An operator may set a longest allowed lifetime
+that organization providers cannot exceed. Renga's remember-me cookie would otherwise keep
 a person signed in for weeks after their identity provider removed them.
 
 When the lifetime has passed, Renga confirms the person with the provider again
@@ -189,8 +257,9 @@ Two independent settings control local credentials:
 * `local_sign_in`: `enabled` (passwords and magic links), or `disabled`, which
   leaves provider sign-in as the only way in.
 
-Disabling local sign-in requires at least one provider to be configured;
-Renga refuses to boot otherwise rather than locking everyone out.
+Both are deployment settings, read from the environment at boot. Disabling
+local sign-in requires at least one enabled deployment provider; Renga refuses
+to boot otherwise rather than locking everyone out.
 
 == Re-authentication and step-up
 
@@ -231,8 +300,6 @@ authentication.
 
 * SCIM provisioning, for removing people and memberships the moment an
   identity provider does, without waiting for a renewal (link:../0016/README.adoc[RFD 16]).
-* Configuring providers in the UI, once Renga has secret storage and an audit
-  trail for it.
 * OpenID Connect back-channel logout.
 
 link:IMPLEMENTATION.adoc[Implementation checklist]
