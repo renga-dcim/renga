@@ -36,3 +36,7 @@ Implements link:README.adoc[RFD 18: Resource groups].
   can read a member; test that group names and counts never reveal hidden
   resources.
 * [ ] Record group, set, and membership changes in Activity.
+* [ ] Add a group suggestion to triage rules and the Inbox. Accepting one
+  runs the same authorization, locking, and Activity path as a manual add;
+  test that a suggestion changes nothing until accepted, that an unauthorized
+  acceptor is refused, and that a dismissed suggestion is not repeated.

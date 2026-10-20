@@ -65,6 +65,14 @@ Only people change direct membership. Agents, reconcilers, and triage rules
 never add or remove a direct member, so direct group membership is a trusted
 attribute in RFD 17's sense and operational permissions may match it.
 
+A triage rule may _suggest_ a group for a resource, as rules already suggest
+owners, and the suggestion appears in the Inbox for a person to accept or
+dismiss. Accepting it is an ordinary direct-membership change by that person:
+it requires the same `inventory.edit` coverage as adding the resource by hand,
+is refused under the same rules, and is recorded in Activity as their change.
+A suggestion that nobody accepts changes nothing, and a dismissed suggestion is
+not raised again for the same resource and group unless the rule changes.
+
 Adding a resource to a group, removing it, or moving it within an exclusive set
 requires `inventory.edit` over the resource. Group membership is an attribute
 that conditions read, so RFD 17's before-and-after rule applies: the actor must
@@ -163,18 +171,18 @@ Creating, renaming, or deleting a group or set, and every membership change, is
 recorded in Activity on both the group and the resource, with its actor, before
 and after values, and reason.
 
-== Open questions
+== Decisions
 
-. *Containers in the first release.* Container membership is what makes
-  customer cages and per-site environments practical, but it couples groups to
-  placement. The proposal includes it.
-. *Suggested membership.* Triage rules could propose group membership for a
-  person to accept in the Inbox, much as they propose owners. The proposal
-  leaves membership entirely manual at first.
+. *Containers in the first release.* Container membership ships in the first
+  release. It is what makes customer cages and per-site environments
+  practical, and the two-view membership and affected-set rules above keep
+  observed placement from granting access.
+. *Suggested membership.* Triage rules may suggest group membership for a
+  person to accept in the Inbox. Only the accepting person's action changes
+  membership, so direct membership stays a trusted attribute.
 
 == Future work
 
-* Triage-rule suggestions for group membership.
 * Groups as the target of RFD 15 claim mappings and RFD 16 group mappings,
   so an identity provider can grant access to a customer's group directly.
 
