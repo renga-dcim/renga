@@ -9,15 +9,24 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   hint with permission checks, and turn unchecked public mutations into
   explicit system paths. No behavior changes.
 * [ ] Add member management in organization settings: invite, disable, change
-  base role, with the last-owner rule and Activity entries.
-* [ ] Add team membership, managed with `teams.manage`.
-* [ ] Add custom roles and unconditioned assignments, refusing any role or
-  assignment carrying a permission the actor does not hold.
+  base role, with Activity entries and at least one active, direct,
+  non-expiring manual recovery owner.
+* [ ] Add team membership, managed with `teams.manage`, and treat membership
+  that confers access as a grant transition.
+* [ ] Add code-defined owner and admin grant ceilings, custom roles and
+  unconditioned assignments. Keep `members.manage` and `roles.manage` out of
+  custom roles. Test that admins can assign `member` and bootstrap authorized
+  explicit permissions without acquiring their actions, but cannot grant
+  `owner`, `organization.manage`, or `organization.export`.
 * [ ] Add conditions on `resource`, `kind`, `owner_team` (including
   `$subject_teams`), and `site`, compiled to SQL predicates, with `filter/3`
-  for lists and whole-batch refusal for bulk actions.
+  for lists and whole-batch refusal for bulk actions. Reject unknown vocabulary
+  and cross-organization IDs. Derive complete target sets on the server and
+  require unconditioned authority when that is impossible before a change.
+  Require unconditioned grant authority for recipient-relative or dynamically
+  expanding conditions.
 * [ ] Add the per-resource access row, updated in the same transaction as
-  placement and ownership changes.
+  placement and ownership changes and authorized against both states.
 * [ ] Filter every read path by `inventory.read`: lists, fetches (hidden reads
   as not found), search, counts and badges, exports, Activity, shared views,
   multi-resource records with hidden endpoints, and aggregates that show hidden
@@ -27,13 +36,17 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   scope; test that losing read access removes a resource from an open page.
 * [ ] Allow memberships with no base role.
 * [ ] Enforce the before-and-after rule for owner team and placement changes,
-  for direct edits and request approval.
+  for direct edits and request approval. Apply the grant ceiling to effective
+  access added by team, role, external-source, ownership, and placement changes.
 * [ ] Restrict operational permissions to trusted attributes; test owner teams
   set by triage rules and unconfirmed placement against `jobs.request`.
-* [ ] Refresh connected LiveView scopes on assignment, team, and expiry
-  changes; test that a revoked assignment stops a LiveView mutation.
-* [ ] Add explicit permissions with optional expiry, enforcing the RFD 19
-  organization maximum validity, ready for RFDs 12, 13, and 14.
+* [ ] Add one locked organization authorization version shared by policy
+  changes, resource-access changes, and protected mutations. Refresh connected
+  LiveView scopes on role, membership, assignment, team, source, and expiry
+  changes, and check versions and deadlines before protected data delivery and
+  events. Test that each revocation path stops both reads and mutations.
+* [ ] Add explicit permissions with the operation-specific read permissions and
+  lifetimes in RFD 17, ready for RFDs 12, 13, and 14.
 * [ ] Add the access views on member and resource pages, and name the missing
   permission when an action is refused.
 * [ ] Amend RFDs 12, 13, 14, 15, and 16 to use assignments.
