@@ -21,16 +21,17 @@ Implements link:README.adoc[RFD 22: Operator API].
   organization and verified email; test atomic acceptance, deployment sign-in
   policy, and that the operator never receives a sign-in link or sets a
   password.
-* [ ] Add the policy document for limits, locked settings, and entitlements,
-  with environment defaults and read-only locked settings in organization
-  settings.
-* [ ] Manage durable runtime deployment identity providers while leaving
-  environment providers read-only; bind test sign-in to a configuration
-  version, encrypt secrets, and atomically prevent sign-in or sudo lockout.
+* [ ] Add the policy document over RFD 21 limits and quotas, RFD 19 locked
+  settings, and entitlements, with environment defaults and read-only locked
+  settings in organization settings.
+* [ ] Expose RFD 15's deployment-provider lifecycle through the API, including
+  its revision-bound testing, collision and cache-freshness rules, encrypted
+  secrets, sign-in guard, and account re-check distinction; keep
+  `recover-local` release-command-only.
 * [ ] Record daily usage totals and serve current counts and totals.
-* [ ] Add staged exports and imports with credential exclusion, token-bound
-  short-lived downloads, atomic empty-destination enforcement, and explicit
-  transfer authority tests.
+* [ ] Expose RFD 20 exports and imports with its validation and principal
+  mapping, plus token-bound short-lived downloads and explicit transfer
+  authority tests.
 * [ ] Require durable, request-bound `Idempotency-Key` handling for
   non-idempotent actions, including concurrent and asynchronous retries, and
   require atomically checked `If-Match` versions on document writes.

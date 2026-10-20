@@ -132,14 +132,14 @@ boundary.
 An operator sets an organization's policy as one document, replacing it
 whole:
 
-* *Limits and quotas*: named resource ceilings and rolling or calendar-period
-  usage quotas. Each entry defines its unit, period where applicable, and
-  reject-or-throttle behavior when exhausted; implementations add individual
-  limit definitions to the OpenAPI schema as they become enforceable.
-* *Locked settings*: operator-manageable security settings fixed to a value.
-  The schema enumerates which settings may be locked. A locked setting shows as
-  read-only in organization settings, marked as set by the deployment, and
-  owners cannot change it.
+* *Limits and quotas*: RFD 21's named request limits, database time budgets,
+  work limits, and capacity quotas. The policy document and `renga limits`
+  commands read and write the same persisted organization overrides. They do
+  not replace RFD 21's admission counters, transactional quota ledger,
+  reservations, or defined exhaustion behavior.
+* *Locked settings*: any RFD 19 organization security setting fixed to a value.
+  A locked setting shows as read-only in organization settings, marked as set
+  by the deployment, and owners cannot change it.
 * *Entitlements*: which optional features the organization may turn on, such
   as organization identity providers, terminals (RFD 13), and VM operations
   (RFD 14). An entitlement only allows a feature;
@@ -150,28 +150,35 @@ whole:
   prevents new jobs and leases, and cancels affected active leases at their
   next heartbeat; restoring it does not resume cancelled work.
 
+SCIM remains available under RFD 16's first-release rules rather than becoming
+entitlement-gated. If an entitlement disables an organization provider, Renga
+uses RFD 15's provider-disable behavior and completes RFD 16's source-bound
+membership and grant reductions before acknowledging the change. Ordinary RFD
+19 security-setting changes keep RFD 19's own effective-time rules; they are
+not feature withdrawal and do not terminate running work.
+
 Deployment-wide defaults for all three come from the environment, and an
 organization's policy overrides them. A setting that neither locks stays the
 owners' choice.
 
 == Deployment providers
 
-RFD 15 defines environment-configured deployment identity providers and their
-sign-in and identity-linking security rules; it does not define runtime
-provider management. This RFD adds runtime-managed providers. Environment
-providers remain read-only and take precedence on ID collisions. Runtime
-providers use RFD 15's stable identity: changing kind or issuer requires a new
-ID or an explicit identity migration. Their configuration and encrypted client
-secrets are stored durably in the database; responses omit secrets entirely.
+The API exposes RFD 15's existing deployment-provider lifecycle; it does not
+create a second provider store or mutation contract. Stored configuration,
+encrypted secrets, immutable provider identity, authoritative revisions,
+fail-closed cache freshness, pending revisions, and purpose-bound test
+callbacks all follow RFD 15. Test and activation remain one atomic transition
+for the exact pending revision. Responses omit saved secrets entirely.
 
-A provider configuration version cannot be enabled until a test sign-in for
-that exact version succeeds. Updating a security-relevant field invalidates
-the result. Enabling, disabling, deleting, or changing a provider is one
-transaction that refuses to leave any affected user without a usable sign-in
-and sudo method under the effective local-sign-in policy. The same safeguard
-applies when a locked policy setting or entitlement disables a sign-in method.
-Organization providers are not reachable through this API; they belong to
-their organization's owners.
+Environment providers remain read-only. They override a stored deployment
+provider only when RFD 15 permits the collision because all immutable
+properties match; every incompatible collision refuses boot. Ordinary API and
+release-command changes use RFD 15's serialized guard that preserves a usable
+deployment sign-in method. They add no per-user guarantee and preserve the
+distinction between sign-in, RFD 19's account re-check, and RFD 13 terminal
+step-up. RFD 15's `recover-local` escape hatch remains release-command-only and
+is never exposed to a bearer token. Organization providers are not reachable
+through this API; they belong to their organization's owners.
 
 == Usage
 
@@ -194,16 +201,20 @@ billing contract.
 
 == Transfers
 
-The API can start, inspect, and cancel an export, then authorize a download. It
-can also create an empty organization and import an archive into it. This is
-the sole exception to the ordinary inventory boundary and requires
+These endpoints use RFD 20's archive and export/import engine, including its
+validation, principal mapping, historical-only jobs, pending security state,
+destination policy, and atomic import. The API can start, inspect, and cancel
+an export, then authorize a download. It can also create an empty organization
+and import an archive into it. This is the sole exception to the ordinary
+inventory boundary and requires
 `transfers:write` for every start, cancellation, download authorization, and
 import; `transfers:read` alone reveals only status and non-secret metadata.
 
 An export omits passwords, session material, API and intake keys, provider and
 integration secrets, pending invitation secrets, and other credentials. A
 download authorization is a short-lived, single-use capability bound to the
-requesting token and is never returned in a status response. Revoking the token
+requesting token and is never returned in a status response. It is separate
+from RFD 20's owner-authorized seven-day artifact lifetime. Revoking the token
 or cancelling the transfer invalidates it. Import verifies and stages the
 archive before atomically checking that the destination is still empty and
 making its inventory visible. Security approvals return pending, imported
