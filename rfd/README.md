@@ -28,6 +28,7 @@ authoritative merely because it exists; its `state` says how it should be read.
 | [20: Organization export and import](0020/README.adoc) | A versioned archive of one organization's data, imported into an empty organization, without credentials |
 | [21: Per-organization limits](0021/README.adoc) | Organization-scoped revision locks, intake and request rate limits, database timeouts, fair background work, and quotas |
 | [22: Operator API](0022/README.adoc) | Scoped operator tokens for managing organizations, owner invitations, limits, locked settings, entitlements, deployment providers, usage, and transfers |
+| [23: Deployment identifiers and agent home resolution](0023/README.adoc) | A non-secret deployment identifier in intake keys and an agent that resolves its home deployment once and again after a move |
 
 ## Source format
 
