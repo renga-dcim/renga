@@ -182,6 +182,10 @@ cannot end:
 |Require a second operator for VM `force_off` and `reset`
 |off
 |link:../0014/README.adoc[RFD 14]
+
+|Allow support access
+|off
+|<<support-access>>, link:../0022/README.adoc[RFD 22]
 |===
 
 Terminals and VM operations themselves are also organization settings, off by
@@ -241,6 +245,30 @@ they end at the maximum measured from the moment the setting changed. It never
 ends a grant immediately, and running sessions continue until their own grant
 or lease ends.
 
+[[support-access]]
+=== Support access
+
+A deployment's operator may declare _support identities_ (RFD 22): accounts
+from one hidden, MFA-enforcing identity provider that exist only to help
+diagnose problems. _Allow support access_ appears in an organization's
+security settings only when the deployment has declared them. It is off by
+default, and an owner may turn it on indefinitely or until a chosen time,
+with the description that it is for diagnostic purposes.
+
+While it is on, every support identity holds the built-in read-only `support`
+role (RFD 17) in the organization, appears in the members list marked as
+support, and is recorded in Activity under its own name like any member.
+Support identities never hold other roles or explicit permissions, so they
+cannot change inventory, open terminals, operate VMs, export, or change
+settings.
+
+Turning it off, or the expiry passing, ends the support memberships and their
+sessions in the organization immediately; this is the one setting whose change
+does end sessions, because its purpose is to end access. Unlike every other
+setting in this table, the operator can neither set a default for it nor lock
+it (RFD 22): the operator decides who its support people are, and only the
+owners decide whether they may enter.
+
 [[terminal-recording]]
 === Terminal recording
 
@@ -264,8 +292,9 @@ terminal session.
 
 An operator can set deployment-wide defaults for these settings, and lock any
 of them to a value for the whole deployment or for one organization
-(link:../0022/README.adoc[RFD 22]). A locked setting shows as read-only, marked
-as set by the deployment, and owners cannot change it.
+(link:../0022/README.adoc[RFD 22]), except _Allow support access_
+(<<support-access>>). A locked setting shows as read-only, marked as set by
+the deployment, and owners cannot change it.
 
 === Amendments
 

@@ -57,3 +57,8 @@ Implements link:README.adoc[RFD 19: Passkeys, multi-factor authentication, and s
 * [ ] Add the terminal recording setting, on by default, applying to sessions
   that start afterwards; keep session metadata when recording is off and tell
   the user at session start whether the session is recorded.
+* [ ] Add the _Allow support access_ setting with an optional expiry, shown
+  only when the deployment declares support identities; grant and remove the
+  `support` role for them as it changes, mark them in the members list, and
+  end their sessions on off or expiry. Test that it cannot be defaulted or
+  locked by the operator.

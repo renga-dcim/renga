@@ -153,8 +153,9 @@ these settings.
   owner authorization path or request and download an export, without access
   to the ordinary organization UI. Owners are notified when deletion is
   scheduled or cancelled.
-* *Read* organizations, their status, and their members' email addresses and
-  roles, so automation can confirm an owner accepted.
+* *Read* organizations, their status, their members' email addresses and
+  roles, and whether support access is on and until when, so automation can
+  confirm an owner accepted or granted access.
 
 == Policy
 
@@ -166,9 +167,10 @@ whole:
   commands read and write the same persisted organization overrides. They do
   not replace RFD 21's admission counters, transactional quota ledger,
   reservations, or defined exhaustion behavior.
-* *Locked settings*: any RFD 19 organization security setting fixed to a value.
-  A locked setting shows as read-only in organization settings, marked as set
-  by the deployment, and owners cannot change it.
+* *Locked settings*: any RFD 19 organization security setting fixed to a value,
+  except _Allow support access_, which no policy can set, default, or lock
+  (<<support-access>>). A locked setting shows as read-only in organization
+  settings, marked as set by the deployment, and owners cannot change it.
 * *Entitlements*: which optional features the organization may turn on, such
   as organization identity providers, terminals (RFD 13), and VM operations
   (RFD 14). An entitlement only allows a feature;
@@ -228,6 +230,58 @@ minutes are the sum of connected seconds rounded up only when the daily value
 is presented. Failed and retried attempts do not inflate totals. These are
 operational measurements, not billing records, until a later RFD defines a
 billing contract.
+
+[[support-access]]
+== Support access
+
+An operator sometimes needs to look inside an organization to diagnose a
+problem. Renga has no impersonation, and nothing in this API reads inventory
+or acts as a user, so that access is a grant the organization's owners make,
+visible to them, and revocable by them at any moment. The operator's part is
+to say who its support people are; it can never grant itself access.
+
+=== Support identities
+
+The operator declares the deployment's _support identities_ as one deployment
+provider (RFD 15) flagged as the support source. Such a provider must have an
+email-domain allowlist and the _enforces MFA_ mark (RFD 19), and it is hidden
+from the sign-in page: it is reached only by its direct URL,
+`/users/log-in?provider=<id>`. Every account created through it is a support
+identity. A support identity is always its own account, never linked to an
+existing account or to any other provider, can hold only the built-in
+`support` role (RFD 17) in any organization, and cannot be invited, mapped, or
+provisioned as an ordinary member. A deployment has at most one support
+source; a deployment that declares none has no support access anywhere, and
+the setting below does not appear.
+
+The support source is managed with `providers:write` through the
+deployment-provider endpoints and with `renga support enable`, which takes a
+provider definition or a signed support license file that carries one, and
+`renga support disable`. Disabling or deleting the support source ends every
+support membership and session in the deployment at once.
+
+=== Granting and ending access
+
+An organization owner turns on _Allow support access_ in Renga's security
+settings (RFD 19), optionally until a chosen time. While it is on, Renga
+itself gives every support identity the `support` role in that organization,
+shows them in the members list marked as support, and records their every
+action in Activity under their own names. The operator API can read whether
+the setting is on and until when, through `organizations:read`; no scope,
+policy document, default, or lock can turn it on, extend it, or keep it on.
+
+When the owner turns the setting off, or its expiry passes, Renga removes the
+support memberships, closes those identities' sessions and channels in that
+organization with the revocation path RFD 16 uses for source-bound access,
+and revokes any API tokens they created there. Support identities never hold
+explicit permissions, so there is no running terminal or VM operation to
+preserve; a read in progress simply fails. Turning it off is recorded in
+Activity like turning it on.
+
+Support people use the normal web interface and API with the `support` role.
+Nothing they do goes through this API, so it carries the organization's own
+audit trail, and the operator API's own audit log records only the operator's
+changes to the support source.
 
 == Transfers
 
@@ -322,6 +376,9 @@ is involved.
 Every API operation has a matching release command using the same domain
 function, validation, lockout prevention, idempotency, and auditing, so a
 deployment without network access to the API can be operated the same way.
+`renga support enable|disable|status` manage the support source
+(<<support-access>>); like the API, they never turn an organization's support
+access on.
 
 == Decisions
 
@@ -340,6 +397,22 @@ deployment without network access to the API can be operated the same way.
   without a valid client certificate is insufficient to connect; deployments
   without it rely on token authentication and their configured source-address
   and network restrictions.
+. *Support access.* Defined in <<support-access>> as an owner-granted,
+  owner-revocable membership for operator-declared identities, rather than
+  impersonation or an API that reads inventory. The one invariant that makes
+  it safe is that the operator declares who, and only the owner decides
+  whether; this RFD therefore exempts the setting from policy defaults and
+  locks.
+
+=== Amendments
+
+* RFD 15: a deployment provider may be hidden from the sign-in page and
+  flagged as the deployment's support source; identities from it are always
+  new accounts that hold only the `support` role.
+* RFD 17: a fifth built-in role, `support`, holding `inventory.read` only,
+  granted and removed by Renga rather than by `members.manage`.
+* RFD 19: the _Allow support access_ organization setting, off by default,
+  with an optional expiry, exempt from operator defaults and locks.
 
 == Future work
 

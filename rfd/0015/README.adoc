@@ -42,7 +42,12 @@ Each provider has:
   OpenID Connect provider);
 * a client ID and client secret;
 * optional extra scopes, and an optional allowlist of email domains;
-* whether it is enabled.
+* whether it is enabled;
+* for a deployment provider, whether it is hidden from the sign-in page, in
+  which case it is reached only at `/users/log-in?provider=<id>`, and whether
+  it is the deployment's _support source_ (link:../0022/README.adoc[RFD 22]).
+  A support source must be hidden, have an email-domain allowlist, and carry
+  RFD 19's _enforces MFA_ mark; a deployment has at most one.
 
 === Storage and changes
 
@@ -189,6 +194,13 @@ stable numeric user ID, never the mutable login name.
 Renga matches a returning sign-in by `(provider_id, subject)` only, never by
 email, because email addresses are reassigned and some providers let users
 change them freely.
+
+An identity from the support source is always its own account, created on
+first sign-in and marked as a support identity. It is never linked to an
+existing account, no other provider can be linked to it, and it can hold only
+the built-in `support` role (RFD 17), granted by Renga while an organization
+allows support access (RFD 19); invitations, claim mappings, and SCIM never
+apply to it.
 
 The first sign-in through a provider is resolved in this order:
 
