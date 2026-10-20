@@ -21,7 +21,10 @@ Implements link:README.adoc[RFD 16: SCIM provisioning].
   list with `eq` filters and bounded pagination; implement the documented
   omitted, null, empty, and explicit-value semantics and return SCIM errors.
 * [ ] Accept Okta and Microsoft Entra ID PATCH variants and test them against
-  recorded request fixtures; accept and discard create-time passwords without
+  recorded request fixtures, including Entra's title-case `"True"` and
+  `"False"` strings. Verify that `"False"` removes the SCIM grant and refreshes
+  organization-scoped live authorization while preserving manual access and
+  unrelated organizations. Accept and discard create-time passwords without
   persisting, logging, auditing, or returning them, and reject password changes.
 * [ ] Link directory entries at provider sign-in and reauthentication by the
   exact nonempty correlation claim; reject missing, malformed, ambiguous, and

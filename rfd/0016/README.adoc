@@ -90,9 +90,10 @@ is a deliberate Renga restriction, not a guarantee made by the SCIM schema.
 Providers differ in small ways, such as PATCH operation names in different
 cases, booleans sent as strings, and value-filtered paths like
 `members[value eq "..."]`. Renga accepts these forms for the attributes it
-supports. The strings `"true"` and `"false"` are normalized to booleans before
-applying the write rules below; no other string is. Compatibility with Okta and
-Microsoft Entra ID is tested against recorded request fixtures.
+supports. The strings `"true"`, `"false"`, `"True"`, and `"False"` are
+normalized to booleans before applying the write rules below; no other string
+is. Compatibility with Okta and Microsoft Entra ID is tested against recorded
+request fixtures.
 
 == Directory entries
 
@@ -221,9 +222,10 @@ to any later Channel or leased operation whose authorization no longer holds.
 Renga does not expire the linked identity's provider session in response to an
 organization-scoped SCIM change. One identity and browser session may serve
 other organizations, and disabling access in one must not suspend the others.
-Conversely, successful OIDC reauthentication cannot restore a missing, inactive,
-unlinked, or role-less SCIM source; only a later SCIM change and valid identity
-correlation can produce its grant again.
+Conversely, successful OIDC reauthentication cannot recreate a deleted entry,
+activate an inactive entry, restore a removed role, or reuse a stale binding.
+It may establish a fresh binding to an otherwise eligible entry only with valid
+correlation evidence, after which normal reconciliation determines its grant.
 
 Removing SCIM authority never deletes the Renga account, which may still belong
 to other organizations or hold its own credentials. Deleting a directory entry
