@@ -69,6 +69,22 @@ with it. For operational permissions, only confirmed placement extends
 membership, matching RFD 17's trusted attributes. Each resource page shows
 whether a membership is direct or comes from a container.
 
+The affected set of a membership change is every resource whose effective
+membership would change, including resources that inherit from a selected
+container. The actor's `inventory.edit` assignments must cover every resource
+in that set both before and after the change, not only the selected container.
+A placement or containment change applies the same rule with `dcim.edit`. The
+whole operation is refused if any affected resource is not covered.
+
+Every write that can change effective membership serializes on one
+organization-and-group-projection lock before deriving and authorizing its
+affected set, and before taking RFD 5's hierarchy or rack locks. Direct
+membership, group-set, current or confirmed placement, containment hierarchy,
+and reconciliation writers all follow that order. The transaction then changes
+the source records and every affected access projection together. A concurrent
+placement therefore cannot escape a container edit's authorization check or
+leave a stale grant behind.
+
 == Conditions
 
 RFD 17 conditions gain a `group` attribute, satisfied when the resource is a

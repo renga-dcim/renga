@@ -5,10 +5,16 @@ Implements link:README.adoc[RFD 18: Resource groups].
 * [ ] Add resource groups and group sets, with exclusive sets enforced in the
   database, managed with `groups.manage`.
 * [ ] Add membership changes from resource pages, group pages, and bulk
-  selections, requiring `inventory.edit` and RFD 17's before-and-after rule;
-  test that no agent, reconciler, or triage rule path can change membership.
+  selections, requiring `inventory.edit` and RFD 17's before-and-after rule over
+  every directly or transitively affected resource; refuse the whole operation
+  when any descendant is unauthorized, and test that no agent, reconciler, or
+  triage rule path can change direct membership.
 * [ ] Extend membership from sites, locations, and racks to placed resources,
-  using only confirmed placement for operational permissions.
+  using only confirmed placement for operational permissions. Serialize every
+  membership, group-set, placement, hierarchy, and reconciliation write on the
+  shared organization-and-group-projection lock before existing hierarchy or
+  rack locks; test concurrent membership and placement changes and whole-change
+  rollback.
 * [ ] Add effective group IDs to the RFD 17 access row, updated with
   membership and placement changes, and the `group` condition attribute.
 * [ ] Remove deleted groups from conditions so emptied clauses match nothing,
