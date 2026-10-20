@@ -66,8 +66,9 @@ the authenticated **Collectors** screen without manual enrollment.
 
 ## Design proposals
 
-Product and architecture decisions live in [Requests for Discussion](rfd/README.md).
-Run `make check-rfds` after changing an RFD or its implementation checklist.
+Product and architecture decisions live in Requests for Discussion (RFDs) in
+[renga-dcim/RFD](https://github.com/renga-dcim/RFD), which also publishes them
+as a site. Code and comments cite them by number, such as "RFD 8".
 
 ## Running in production
 
