@@ -66,4 +66,6 @@ Implements link:README.adoc[RFD 17: Attribute-based authorization].
   than becoming delegable through a custom role.
 * [ ] Add the access views on member and resource pages, and name the missing
   permission when an action is refused.
-* [ ] Amend RFDs 12, 13, 14, and 15 to use assignments and the disclosure table.
+* [ ] Amend RFDs 12, 13, 14, 15, and 16 to use assignments and the disclosure
+  table. Preserve RFD 16's event-driven source validity while replacing its
+  highest-fixed-role calculation with role-ID and optional-condition mappings.

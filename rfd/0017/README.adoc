@@ -18,10 +18,9 @@ only see and operate a few hosts for two weeks.
 This RFD replaces the role lists with one model. A role is a named combination
 of permissions. Attributes of the person decide which roles they hold, and
 attributes of the resource decide where each role applies. RFDs 12, 13, and 14
-already need scoped grants that can expire, and RFD 15 grants access from an
-identity provider; all of them become instances of this model instead of
-separate grant tables. A future directory synchronization design uses the same
-source-bound assignment contract defined here.
+already need scoped grants that can expire, and RFDs 15 and 16 grant access from
+an identity provider; all of them become instances of this model instead of
+separate grant tables.
 
 Authorization stays where it is today: in context functions, inside the
 transaction that performs the change. Hiding a control in the UI remains a hint,
@@ -194,16 +193,18 @@ An assignment gives one role to a subject, optionally limited by a condition
 and an expiry:
 
 * _role_: a built-in or custom role;
-* _subject_: one member, a team, a mapped claim value (RFD 15), or a directory
-  group once directory synchronization is designed;
+* _subject_: one member, a team, a mapped claim value (RFD 15), or a SCIM group
+  (RFD 16);
 * _condition_: which resources it covers (below); none means the whole
   organization;
 * _valid until_: optional, and required for explicit permissions when the
   operation table above requires it;
-* _source_: `manual`, a claim mapping, or a future directory connection. An
-  external assignment has a deadline issued only by its own source. It grants
-  nothing after that deadline, and unlinking or removing its identity, mapping,
-  or connection invalidates it immediately;
+* _source_: `manual`, a claim mapping, or a SCIM connection. A claim assignment
+  has the deadline issued by its own provider. A SCIM assignment has no timer
+  and is valid only while its connection, entry, identity binding, group
+  membership, and mapping remain valid. An external assignment grants nothing
+  after its deadline or source invalidation, and unlinking or removing its
+  identity, mapping, or connection invalidates it immediately;
 * who created it, when, and why.
 
 Each membership keeps one base role, as today, which acts as an assignment
@@ -217,8 +218,8 @@ grants it.
 
 Teams gain members. A team is already the owner of resources (RFD 8); adding
 people to it lets one assignment say "people on a team may operate what their
-team owns". Team membership is managed with `teams.manage`; a future directory
-connection may manage only the membership of teams explicitly mapped to it.
+team owns". Team membership is managed with `teams.manage`. RFD 16 SCIM groups
+are assignment subjects and never silently add people to Renga teams.
 
 == Conditions
 
@@ -505,14 +506,16 @@ over it. A refused action names the missing permission, not just "forbidden".
 * RFD 15 claim mappings produce deadline-bound assignments rather than setting
   a membership's role directly, so a mapping may grant a custom role or a
   conditioned one. Provider configuration and secrets remain deployment-owned.
+* RFD 16's SCIM default-role and group mappings likewise produce source-bound
+  assignments, so they name role IDs and may include conditions rather than
+  selecting the highest fixed built-in role. Its one-external-authority rule,
+  manual precedence, source validity, and immediate reconciliation remain.
 * RFD 8 teams keep owning resources; this RFD adds their members.
 * RFD 18 adds the `group` condition and defines current and trusted effective
   group membership using this RFD's condition and grant-transition rules.
 
 == Future work
 
-* Directory group synchronization, using the source validity and grant
-  transition rules in this RFD.
 * Separation of duties beyond RFD 14's second-operator approval.
 * Scoped API tokens for people, using the same assignments.
 
