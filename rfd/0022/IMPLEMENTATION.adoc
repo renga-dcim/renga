@@ -16,7 +16,9 @@ Implements link:README.adoc[RFD 22: Operator API].
   cancellation with a 30-day grace period, and read endpoints; serialize
   cancellation against purge and preserve shared users and audit attribution.
 * [ ] Enforce suspension and entitlement removal on HTTP, sockets, data
-  delivery, agent requests, job dispatch and renewal, and active sessions.
+  delivery, agent requests, job dispatch and renewal, and active sessions;
+  request cooperative cancellation while preserving RFD 9, 13, and 14 outcome,
+  uncertainty, process-termination, and execution-evidence contracts.
 * [ ] Add expiring, revocable, single-use owner invitations bound to an
   organization and verified email; test atomic acceptance, deployment sign-in
   policy, and that the operator never receives a sign-in link or sets a

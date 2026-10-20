@@ -111,10 +111,15 @@ boundary.
   replaces intake's current `401` for a valid credential belonging to a
   disabled organization. Suspension is checked on every authenticated HTTP
   request, LiveView or Channel event, data delivery, job lease and renewal, and
-  agent request. Renga disconnects existing sockets and terminal sessions;
-  queued jobs stay queued, and workers cancel active leases at their next
-  heartbeat and discard later results. Nothing is deleted. *Resume* undoes the
-  access block, but does not restart sessions or jobs that were cancelled.
+  agent request. Renga disconnects existing sockets; terminal termination
+  follows RFD 13, including PTY process-group termination. It stops new
+  dispatch and authorization renewal and requests cooperative cancellation of
+  active leases. This does not imply that an external effect was undone.
+  Started work retains RFD 9 and RFD 14 outcome and uncertainty semantics and
+  durable execution evidence; a rejected or stale report cannot authorize more
+  execution or publish an ordinary successful result. Nothing is deleted.
+  *Resume* undoes the access block, but never automatically reruns cancelled or
+  uncertain work.
 * *Schedule deletion*. The organization is suspended at once and deleted after
   30 days unless the deletion is cancelled. The pending-deletion record holds
   one deadline; repeating the request returns that record without extending
@@ -146,9 +151,10 @@ whole:
   owners still decide whether to use it. Removing an entitlement turns the
   feature off and keeps its configuration for when it is allowed again. The
   effective entitlement is checked before every request and authorization
-  renewal. Removing one disconnects its active terminal or control channels,
-  prevents new jobs and leases, and cancels affected active leases at their
-  next heartbeat; restoring it does not resume cancelled work.
+  renewal. Removing one applies suspension's revocation rules to that feature:
+  it disconnects affected channels, prevents new work and renewals, requests
+  cooperative cancellation, and preserves execution evidence and uncertainty.
+  Restoring it does not resume cancelled or uncertain work.
 
 SCIM remains available under RFD 16's first-release rules rather than becoming
 entitlement-gated. If an entitlement disables an organization provider, Renga
