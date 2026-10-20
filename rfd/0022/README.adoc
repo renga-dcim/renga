@@ -283,6 +283,7 @@ Release commands call the same mutation functions and obey the same
 preconditions. For a non-idempotent action they accept or generate an operation
 key and print it, so rerunning a command can recover the same operation.
 
+[[deletion]]
 == Deletion
 
 Deletion has distinct `active`, `deletion_pending`, and `purging` states. The
@@ -329,12 +330,13 @@ deployment without network access to the API can be operated the same way.
   that a whole listener can carry rules such as mutual TLS that a path prefix
   on the shared endpoint cannot; the earlier proposal to serve the API on the
   main endpoint unless an operator chose otherwise is withdrawn.
-
-== Open questions
-
-. *Deletion through the API.* The proposal allows scheduled deletion with a
-  30-day grace period. Leaving deletion to release commands only would make a
-  leaked token less damaging.
+. *Deletion through the API.* Allowed, as <<deletion,Deletion>> describes.
+  With the 30-day grace period, owner notice, and the owner's ability to
+  cancel or export, a leaked token with `organizations:write` causes a
+  visible, reversible suspension rather than data loss, and the listener's
+  client certificate requirement makes a leaked token alone insufficient.
+  Leaving deletion to release commands would put a human on the deployment
+  host in every customer cancellation.
 
 == Future work
 
