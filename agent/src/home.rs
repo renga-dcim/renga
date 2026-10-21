@@ -107,6 +107,16 @@ pub fn resolve(
     if let Some(home) = load(state_directory)?.filter(|home| home.answers(config)) {
         return Ok(home);
     }
+    resolve_again(config, state_directory, cancellation)
+}
+
+/// Asks `renga_url` even when a home is persisted, as after `410 moved`. Only an answer
+/// replaces the persisted home, so a failed resolution leaves the previous one in place.
+pub fn resolve_again(
+    config: &Config,
+    state_directory: &Path,
+    cancellation: &Cancellation,
+) -> Result<Home, HomeError> {
     let deployment = deployment_id(&config.intake_api_key).unwrap_or_default();
     let home = Home {
         renga_url: config.renga_url.clone(),
@@ -116,16 +126,6 @@ pub fn resolve(
     };
     persist(state_directory, &home)?;
     Ok(home)
-}
-
-/// Forgets the persisted home so the next resolution asks `renga_url` again.
-pub fn discard(state_directory: &Path) -> Result<(), HomeError> {
-    match fs::remove_file(state_directory.join(HOME_FILE)) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(HomeError::state(
-            format!("cannot discard persisted home: {error}"),
-        )),
-        _ => Ok(()),
-    }
 }
 
 /// A missing or unreadable home is resolved again rather than treated as an error.
@@ -308,12 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn resolves_again_when_the_address_or_key_changes_or_the_home_is_discarded() {
+    fn resolves_again_when_the_address_or_key_changes_or_the_home_is_deleted() {
         let (origin, server) = home_server(vec![
             (200, home_body("http://one.test")),
             (200, home_body("http://two.test")),
             (200, home_body("http://three.test")),
             (200, home_body("http://four.test")),
+            (200, home_body("http://five.test")),
         ]);
         let state = state_directory();
         let first = config(&origin, &format!("renga_intake_eu-1_{SECRET}"));
@@ -327,17 +328,49 @@ mod tests {
             resolve(&rotated, &state, &cancellation).unwrap(),
             resolve(&readdressed, &state, &cancellation).unwrap(),
             {
-                discard(&state).unwrap();
+                fs::remove_file(state.join(HOME_FILE)).unwrap();
                 resolve(&readdressed, &state, &cancellation).unwrap()
             },
+            resolve_again(&readdressed, &state, &cancellation).unwrap(),
         ];
 
-        assert_eq!(server.join().unwrap().len(), 4);
+        assert_eq!(server.join().unwrap().len(), 5);
         assert_eq!(
             homes.map(|home| home.home.host_str().unwrap().to_owned()),
-            ["one.test", "two.test", "three.test", "four.test"]
+            [
+                "one.test",
+                "two.test",
+                "three.test",
+                "four.test",
+                "five.test"
+            ]
         );
-        discard(&state).unwrap();
+        assert_eq!(
+            resolve(&readdressed, &state, &cancellation)
+                .unwrap()
+                .home
+                .host_str(),
+            Some("five.test")
+        );
+        let _ = fs::remove_dir_all(state);
+    }
+
+    #[test]
+    fn a_failed_resolution_keeps_the_persisted_home() {
+        let (origin, server) = home_server(vec![
+            (200, home_body("http://home.test")),
+            (503, "{}".into()),
+        ]);
+        let state = state_directory();
+        let config = config(&origin, &format!("renga_intake_{SECRET}"));
+        let cancellation = Cancellation::default();
+
+        let home = resolve(&config, &state, &cancellation).unwrap();
+        let error = resolve_again(&config, &state, &cancellation).unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.transient());
+        assert_eq!(load(&state).unwrap(), Some(home));
         let _ = fs::remove_dir_all(state);
     }
 

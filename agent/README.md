@@ -187,8 +187,16 @@ changes, or when the file is deleted. While the address cannot be reached at
 startup, the daemon keeps retrying, backing off from 5 seconds to 5 minutes;
 `--once` fails instead. A reload that changes `renga_url` or the key resolves
 again before it takes effect, and keeps the previous configuration if it
-cannot. The agent logs `renga_url`, the home, and when the home was resolved at
-startup and whenever the home changes.
+cannot.
+
+When the home answers `410 Gone` with `{"error": "moved"}`, the organization
+now lives on another deployment. The agent stops retrying that request, keeps
+the observation queued, and asks `renga_url` again. A different answer becomes
+the new home at once, with the same installation identity. The same answer
+means the resolver has not caught up, so the agent keeps its home and asks again
+after 30 seconds, doubling up to 15 minutes. Any other status, including `401`
+and `403`, never triggers resolution. The agent logs `renga_url`, the home, and
+when the home was resolved at startup and whenever the home changes.
 
 ## Jobs
 

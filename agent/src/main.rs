@@ -39,6 +39,37 @@ const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
 /// Backoff between startup home resolutions while the resolver is unreachable.
 const HOME_RETRY_INITIAL: Duration = Duration::from_secs(5);
 const HOME_RETRY_MAX: Duration = Duration::from_secs(300);
+/// Backoff between resolutions after `410 moved` that return the same home, so a resolver
+/// that has not caught up is asked again rarely while the queue holds observations.
+const RELOCATION_RETRY_INITIAL: Duration = Duration::from_secs(30);
+const RELOCATION_RETRY_MAX: Duration = Duration::from_secs(900);
+
+/// When the daemon may next ask where a moved organization lives.
+struct Relocation {
+    not_before: Instant,
+    delay: Duration,
+}
+
+impl Relocation {
+    fn new(now: Instant) -> Self {
+        Self {
+            not_before: now,
+            delay: RELOCATION_RETRY_INITIAL,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now >= self.not_before
+    }
+
+    /// Defers the next resolution and returns how long it waits.
+    fn back_off(&mut self, now: Instant) -> Duration {
+        let delay = self.delay;
+        self.not_before = now + delay;
+        self.delay = (delay * 2).min(RELOCATION_RETRY_MAX);
+        delay
+    }
+}
 
 /// Queue failure degrades durability, not lease renewal or direct delivery. Only delivery
 /// work retries opening it, so filesystem recovery cannot hold up periodic check-ins.
@@ -262,6 +293,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // delivery thread like every later one instead of holding up lease check-ins.
     let mut delivery_worker = None;
     spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
+    let mut relocation = Relocation::new(Instant::now());
     info!("daemon started");
 
     while !stopped.cancelled() {
@@ -364,6 +396,31 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         Instant::now(),
                         config.config_refresh_interval,
                     );
+                }
+            }
+        }
+        // Requests already on their way to the old home fail with `moved` and stay queued
+        // or are retried on the next pass, which uses the new client.
+        if client.take_moved() && relocation.due(Instant::now()) {
+            match relocate(&config, &args.state_directory, &stopped) {
+                Ok((new_home, new_client)) if new_home.home != home.home => {
+                    log_home(&config, &new_home);
+                    home = new_home;
+                    client = new_client.with_installation_key(Arc::clone(&installation_key));
+                    relocation = Relocation::new(Instant::now());
+                    if let Some(previous) = listener.take() {
+                        previous.stop();
+                    }
+                    listener = start_listener(&client, &config, &queue, &notices, &stopped);
+                }
+                Ok((same, _)) => {
+                    home = same;
+                    let retry_in = relocation.back_off(Instant::now());
+                    warn!(home = %home.home, ?retry_in, "home says the organization moved, but resolution returned it again");
+                }
+                Err(failure) => {
+                    let retry_in = relocation.back_off(Instant::now());
+                    warn!(error = %failure, ?retry_in, "home resolution after a move failed");
                 }
             }
         }
@@ -753,6 +810,17 @@ fn reload(
     let home = home::resolve(&config, state_directory, &cancellation)?;
     let client = HttpClient::for_home(&config, &home.home, cancellation)?;
     Ok((config, home, client))
+}
+
+/// Asks `renga_url` where the organization lives after its home answered `410 moved`.
+fn relocate(
+    config: &Config,
+    state_directory: &Path,
+    stopped: &Cancellation,
+) -> Result<(Home, HttpClient), Box<dyn Error>> {
+    let home = home::resolve_again(config, state_directory, stopped)?;
+    let client = HttpClient::for_home(config, &home.home, stopped.clone())?;
+    Ok((home, client))
 }
 
 /// Resolves where authenticated requests go before any is sent. A daemon keeps asking while
@@ -1176,6 +1244,151 @@ mod tests {
             checkin_result,
             server,
         )
+    }
+
+    /// Answers each HTTP request with `route(request line and headers)` until stopped.
+    fn routed_server(
+        stopped: Cancellation,
+        route: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let route = Arc::new(route);
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let route = Arc::clone(&route);
+                        connections.push(thread::spawn(move || {
+                            let (request, mut reader) = read_http_request(stream);
+                            let (status, body) = route(&request);
+                            answer(&mut reader, status, &body);
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("routed server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                let _ = connection.join();
+            }
+        });
+        (origin, server)
+    }
+
+    #[test]
+    fn an_unchanged_home_after_a_move_is_asked_again_less_often() {
+        let start = Instant::now();
+        let mut relocation = Relocation::new(start);
+        assert!(relocation.due(start));
+
+        let waits: Vec<_> = (0..7).map(|_| relocation.back_off(start)).collect();
+
+        assert_eq!(
+            waits,
+            [30, 60, 120, 240, 480, 900, 900].map(Duration::from_secs)
+        );
+        assert!(!relocation.due(start + Duration::from_secs(899)));
+        assert!(relocation.due(start + Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn follows_a_moved_organization_to_the_home_the_resolver_names_next() {
+        let state = std::env::temp_dir().join(format!("renga-moved-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (checked_in, new_home_checkins) = mpsc::channel();
+        let new_home_stop = stopped.clone();
+        let (new_origin, new_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins") {
+                let _ = checked_in.send(());
+                new_home_stop.cancel();
+                (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+            } else if request.contains("/api/v1/observations") {
+                (202, "{}".into())
+            } else {
+                (404, "{}".into())
+            }
+        });
+        let expected_home = format!("{new_origin}/");
+        let old_requests = Arc::new(Mutex::new(Vec::new()));
+        let old_log = Arc::clone(&old_requests);
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+            old_log
+                .lock()
+                .unwrap()
+                .push(request.lines().next().unwrap().to_owned());
+            if request.contains("/api/v1/agent/socket") {
+                (404, "{}".into())
+            } else {
+                (410, r#"{"error":"moved"}"#.into())
+            }
+        });
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let resolved = Arc::clone(&resolutions);
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |request| {
+            assert!(request.contains("GET /api/v1/agent/home?deployment=eu-1 "));
+            assert!(!request.to_ascii_lowercase().contains("authorization"));
+            let home = if resolved.fetch_add(1, Ordering::SeqCst) == 0 {
+                &old_origin
+            } else {
+                &new_origin
+            };
+            (200, json!({ "home": home }).to_string())
+        });
+        let config = state.join("agent.toml");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "renga_url = {resolver:?}\nallow_insecure_http = true\nintake_api_key = \"renga_intake_eu-1_{}\"\ncheckin_interval_seconds = 1\nrequest_timeout_seconds = 2\nmax_retry_attempts = 3\n",
+                "a".repeat(43)
+            ),
+        )
+        .unwrap();
+        let daemon_stop = stopped.clone();
+        let daemon_state = state.clone();
+        let daemon = thread::spawn(move || {
+            run_configured(
+                Args {
+                    config,
+                    state_directory: daemon_state,
+                    once: false,
+                    dry_run: false,
+                    command: None,
+                },
+                daemon_stop,
+            )
+            .map_err(|error| error.to_string())
+        });
+
+        new_home_checkins
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [new_server, old_server, resolver_server] {
+            server.join().unwrap();
+        }
+
+        assert_eq!(resolutions.load(Ordering::SeqCst), 2);
+        // `moved` is not retried against the home that said it.
+        let old_checkins = old_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains("/api/v1/agent/checkins"))
+            .count();
+        assert_eq!(old_checkins, 1);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("home.json")).unwrap()).unwrap();
+        assert_eq!(persisted["deployment"], "eu-1");
+        assert_eq!(persisted["home"], expected_home);
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     fn stub_client(origin: &str) -> HttpClient {

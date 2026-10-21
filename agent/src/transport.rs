@@ -17,7 +17,16 @@ use reqwest::{
     StatusCode, Url,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt, io::Read, sync::Arc, thread, time::Duration};
+use std::{
+    fmt,
+    io::Read,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 use tracing::warn;
 
 const MAX_ERROR_BODY: usize = 512;
@@ -49,6 +58,7 @@ pub struct TransportError {
     message: String,
     kind: FailureKind,
     status: Option<StatusCode>,
+    moved: bool,
 }
 
 impl TransportError {
@@ -57,6 +67,7 @@ impl TransportError {
             message,
             kind,
             status: None,
+            moved: false,
         }
     }
 
@@ -78,6 +89,11 @@ impl TransportError {
 
     pub fn kind(&self) -> FailureKind {
         self.kind
+    }
+
+    /// Whether the home said this agent's organization now lives on another deployment.
+    pub fn is_moved(&self) -> bool {
+        self.moved
     }
 
     fn transient(&self) -> bool {
@@ -112,6 +128,8 @@ pub struct HttpClient {
     attempts: u32,
     request_timeout: Duration,
     cancellation: Cancellation,
+    /// Raised by any clone that hears `410 moved`, so the daemon resolves the home again.
+    moved: Arc<AtomicBool>,
 }
 
 impl HttpClient {
@@ -167,6 +185,7 @@ impl HttpClient {
             attempts: config.max_retry_attempts,
             request_timeout: config.request_timeout,
             cancellation,
+            moved: Arc::default(),
         })
     }
     /// Signs claims of privileged job offers with `key` (RFD 13). Without
@@ -182,6 +201,19 @@ impl HttpClient {
     pub fn home(&self) -> &Url {
         &self.base_url
     }
+
+    /// Whether a request heard `410 moved` since the last call, clearing the flag.
+    pub fn take_moved(&self) -> bool {
+        self.moved.swap(false, Ordering::SeqCst)
+    }
+
+    fn noting_moved<T>(&self, result: Result<T, TransportError>) -> Result<T, TransportError> {
+        if result.as_ref().is_err_and(TransportError::is_moved) {
+            self.moved.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
     /// Where and how to open the job notice socket (see `crate::notices`).
     pub fn notice_endpoint(&self) -> NoticeEndpoint {
         self.notices.clone()
@@ -280,7 +312,7 @@ impl HttpClient {
         body: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
-        retry(
+        self.noting_moved(retry(
             self.attempts,
             self.request_timeout,
             || {
@@ -297,7 +329,7 @@ impl HttpClient {
             },
             thread::sleep,
             cancelled,
-        )
+        ))
     }
     fn post_json<T: Serialize, R: DeserializeOwned>(
         &self,
@@ -315,7 +347,7 @@ impl HttpClient {
 
     /// Posts JSON and returns the successful response's body.
     fn post_reading<T: Serialize>(&self, url: Url, value: &T) -> Result<Vec<u8>, TransportError> {
-        retry(
+        self.noting_moved(retry(
             self.attempts,
             self.request_timeout,
             || {
@@ -331,7 +363,7 @@ impl HttpClient {
             },
             thread::sleep,
             || self.cancellation.cancelled(),
-        )
+        ))
     }
 }
 
@@ -536,16 +568,29 @@ fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, Transport
 
 fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
     let excerpt = bounded_error_excerpt(response);
-    TransportError::new(
-        format!("server returned {status}; response excerpt: {excerpt:?}"),
-        failure_kind(status, &excerpt),
-    )
-    .with_status(status)
+    TransportError {
+        moved: moved(status, &excerpt),
+        ..TransportError::new(
+            format!("server returned {status}; response excerpt: {excerpt:?}"),
+            failure_kind(status, &excerpt),
+        )
+        .with_status(status)
+    }
+}
+
+/// `410 moved` names an organization that now lives on another deployment (RFD 23). Any other
+/// `410` is not an answer the agent knows how to act on.
+fn moved(status: StatusCode, excerpt: &str) -> bool {
+    status == StatusCode::GONE
+        && serde_json::from_str::<serde_json::Value>(excerpt)
+            .is_ok_and(|body| body.get("error").and_then(|value| value.as_str()) == Some("moved"))
 }
 
 fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
     match status {
         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => FailureKind::Transient,
+        // The payload is fine; it waits for the agent to find its new home.
+        StatusCode::GONE if moved(status, excerpt) => FailureKind::Transient,
         status if status.is_server_error() => FailureKind::Transient,
         StatusCode::BAD_REQUEST
         | StatusCode::PAYLOAD_TOO_LARGE
@@ -591,7 +636,10 @@ fn retry<T>(
         }
         match operation() {
             Ok(value) => return Ok(value),
-            Err(error) if !error.transient() || attempt == attempts => return Err(error),
+            // Asking the same home again cannot succeed once it said the organization moved.
+            Err(error) if !error.transient() || error.is_moved() || attempt == attempts => {
+                return Err(error)
+            }
             Err(error) => {
                 // Do not start an attempt whose configured timeout cannot fit inside the fixed
                 // delivery budget; check-in interval plus this budget must remain below lease TTL.
@@ -699,6 +747,12 @@ mod tests {
             (StatusCode::UNAUTHORIZED, "", FailureKind::Permanent),
             (StatusCode::FORBIDDEN, "", FailureKind::Permanent),
             (StatusCode::NOT_FOUND, "", FailureKind::Permanent),
+            (
+                StatusCode::GONE,
+                r#"{"error":"moved"}"#,
+                FailureKind::Transient,
+            ),
+            (StatusCode::GONE, "", FailureKind::Permanent),
         ] {
             assert_eq!(failure_kind(status, excerpt), kind, "{status} {excerpt}");
         }
@@ -799,6 +853,40 @@ mod tests {
         config.allow_insecure_http = true;
         config.request_timeout = Duration::from_secs(5);
         HttpClient::new(&config, Cancellation::default()).unwrap()
+    }
+
+    #[test]
+    fn moved_stops_retrying_keeps_the_payload_and_raises_the_shared_flag() {
+        let (origin, server) = answer_once(410, r#"{"error":"moved"}"#);
+        let mut config = config(&origin, "token");
+        config.allow_insecure_http = true;
+        config.max_retry_attempts = 3;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let clone = client.clone();
+
+        // The stub answers once, so a retry would fail to connect instead.
+        let error = clone.post_checkin(&CheckIn::new(vec![], None)).unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.is_moved());
+        assert_eq!(error.kind(), FailureKind::Transient);
+        assert!(client.take_moved());
+        assert!(!client.take_moved());
+    }
+
+    #[test]
+    fn a_gone_without_moved_is_not_a_move() {
+        let (origin, server) = answer_once(410, r#"{"error":"gone"}"#);
+        let client = insecure_client(&origin);
+
+        let error = client
+            .post_checkin(&CheckIn::new(vec![], None))
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(!error.is_moved());
+        assert_eq!(error.kind(), FailureKind::Permanent);
+        assert!(!client.take_moved());
     }
 
     #[test]
