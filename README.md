@@ -88,6 +88,11 @@ runtime server and database settings with environment variables:
 | `DNS_CLUSTER_QUERY` | no | DNS name that resolves to every node, for clustering |
 | `PORT` | no | HTTP port (default 4000) |
 | `DEPLOYMENT_ID` | no | A short, non-secret name for this deployment, such as `eu1`: at most 16 lowercase letters, digits, and hyphens. New intake keys carry it so a resolver can route agents here (RFD 23); existing keys keep working |
+| `OPERATOR_PORT` | no | Serve the operator API (RFD 22) on this port, over HTTPS, separately from `PORT`. Unset, there is no operator listener |
+| `OPERATOR_TLS_CERTFILE`, `OPERATOR_TLS_KEYFILE` | with `OPERATOR_PORT` | PEM certificate chain and key the operator listener serves |
+| `OPERATOR_IP` | no | Address the operator listener binds to (default: all interfaces, like `PORT`). Binding to a private address is not an access boundary by itself |
+| `OPERATOR_CLIENT_CA_FILE` | no | PEM certificate authority for mutual TLS: the listener completes a handshake only with a client certificate it issued. Recommended whenever the port is reachable from the internet |
+| `OPERATOR_CLIENT_CRL_FILE` | no | That authority's revocation list (PEM or DER), checked on every handshake; read at startup, so restart to pick up a new one before it expires |
 
 Run `/app/bin/migrate` once per deploy, before new nodes start, then run
 `/app/bin/server`.
