@@ -57,6 +57,24 @@ defmodule RengaWeb.SignInPolicyTest do
       assert redirected_to(conn) == ~p"/users/log-in"
     end
 
+    test "a sign-in the policy refuses as its session is issued signs nobody in", %{
+      conn: conn,
+      user: user
+    } do
+      # As when an override is revoked between the request's check and the
+      # session being issued.
+      conn =
+        conn
+        |> Map.replace!(:secret_key_base, RengaWeb.Endpoint.config(:secret_key_base))
+        |> init_test_session(%{})
+        |> fetch_flash()
+        |> RengaWeb.UserAuth.log_in_user(user, %{}, "password")
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "isn't available"
+      refute get_session(conn, :user_token)
+    end
+
     test "the recovery override lets local credentials in again", %{conn: conn, user: user} do
       {:ok, _} = SignInPolicy.recover_local(30, "jane")
 

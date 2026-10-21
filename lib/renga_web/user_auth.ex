@@ -62,11 +62,20 @@ defmodule RengaWeb.UserAuth do
     # log entry commit together. Signing back in after a password change
     # is not a new sign-in and passes none.
     issue = if method, do: &Accounts.create_signed_in_session(user, &1, method)
-    {:ok, signed_in} = create_or_extend_session(conn, user, params, issue)
 
-    signed_in
-    |> put_default_organization(user, user_return_to)
-    |> redirect(to: user_return_to || signed_in_path(conn))
+    case create_or_extend_session(conn, user, params, issue) do
+      {:ok, signed_in} ->
+        signed_in
+        |> put_default_organization(user, user_return_to)
+        |> redirect(to: user_return_to || signed_in_path(conn))
+
+      # The local sign-in policy refused the method as the session was
+      # issued, such as when an override was revoked meanwhile.
+      {:error, conn} ->
+        conn
+        |> put_flash(:error, "That way of signing in isn't available right now.")
+        |> redirect(to: ~p"/users/log-in")
+    end
   end
 
   defp put_default_organization(conn, user, user_return_to) do

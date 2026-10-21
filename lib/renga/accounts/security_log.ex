@@ -107,9 +107,17 @@ defmodule Renga.Accounts.SecurityLog do
     description = Map.fetch!(@descriptions, kind)
 
     case metadata do
-      %{"method" => method} -> "#{description} with #{method_label(method)}"
-      %{"actor" => actor} -> "#{description} (#{actor})"
-      _ -> description
+      %{"method" => method, "local_override" => _} ->
+        "#{description} with #{method_label(method)} during a local sign-in override"
+
+      %{"method" => method} ->
+        "#{description} with #{method_label(method)}"
+
+      %{"actor" => actor} ->
+        "#{description} (#{actor})"
+
+      _ ->
+        description
     end
   end
 

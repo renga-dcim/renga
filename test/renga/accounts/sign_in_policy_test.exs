@@ -2,11 +2,16 @@ defmodule Renga.Accounts.SignInPolicyTest do
   # Changes the application's sign-in settings.
   use Renga.DataCase, async: false
 
+  import Ecto.Query
   import Renga.AccountsFixtures
 
+  alias Renga.Accounts
   alias Renga.Accounts.IdentityProviders
   alias Renga.Accounts.LocalSignInOverride
+  alias Renga.Accounts.SecurityEvent
+  alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.SignInPolicy
+  alias Renga.Accounts.UserToken
   alias Renga.FakeOIDCProvider
 
   setup do
@@ -70,6 +75,56 @@ defmodule Renga.Accounts.SignInPolicyTest do
 
     refute IdentityProviders.get(provider.id).enabled
     assert SignInPolicy.local_sign_in?()
+  end
+
+  describe "issuing a session" do
+    test "refuses a local method while local sign-in is off, logging nothing" do
+      user = user_fixture()
+
+      for method <- ~w(password passkey magic_link) do
+        assert :error = Accounts.create_signed_in_session(user, Ecto.UUID.generate(), method)
+      end
+
+      token = Accounts.create_pending_second_step(user)
+
+      assert :error =
+               Accounts.finish_pending_second_step(user, token, Ecto.UUID.generate(), :totp)
+
+      assert :error = Accounts.create_bootstrap_session(user, Ecto.UUID.generate())
+
+      refute Repo.exists?(from e in SecurityEvent, where: e.user_id == ^user.id)
+
+      refute Repo.exists?(
+               from t in UserToken, where: t.user_id == ^user.id and t.context == "session"
+             )
+    end
+
+    test "still accepts a provider sign-in" do
+      user = user_fixture()
+
+      assert {:ok, _token} =
+               Accounts.create_signed_in_session(user, Ecto.UUID.generate(), "provider:sso")
+    end
+
+    test "under an override, names the override in the security log" do
+      user = user_fixture()
+      {:ok, override} = SignInPolicy.recover_local(30, "jane")
+
+      assert {:ok, _token} =
+               Accounts.create_signed_in_session(user, Ecto.UUID.generate(), "password")
+
+      assert [event] = SecurityLog.list(user)
+      assert event.metadata == %{"method" => "password", "local_override" => override.id}
+      assert SecurityLog.describe(event) =~ "during a local sign-in override"
+    end
+
+    test "refuses once the override is revoked" do
+      user = user_fixture()
+      {:ok, _} = SignInPolicy.recover_local(30, "jane")
+      {:ok, 1} = SignInPolicy.revoke_overrides("jane")
+
+      assert :error = Accounts.create_signed_in_session(user, Ecto.UUID.generate(), "password")
+    end
   end
 
   test "limits an override to a day" do

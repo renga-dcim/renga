@@ -58,6 +58,36 @@ defmodule Renga.Accounts.SignInPolicy do
   defp override_active?, do: not is_nil(active_override())
 
   @doc """
+  Checks, inside the transaction that issues a session, that local
+  credentials may sign in now. Returns `{:ok, nil}` when the environment
+  enables local sign-in, `{:ok, override_id}` when only an override does, and
+  `{:error, :local_sign_in_disabled}` otherwise.
+
+  The override's row stays share-locked until the sign-in commits, so a
+  revocation running alongside waits for it: a sign-in either committed
+  before the override was revoked, or is refused.
+  """
+  def local_sign_in_grant do
+    if configured_local_sign_in?() do
+      {:ok, nil}
+    else
+      now = Renga.Time.utc_now_ms()
+
+      Override
+      |> where([override], is_nil(override.revoked_at) and override.expires_at > ^now)
+      |> order_by(desc: :expires_at)
+      |> limit(1)
+      |> lock("FOR SHARE")
+      |> select([override], override.id)
+      |> Repo.one()
+      |> case do
+        nil -> {:error, :local_sign_in_disabled}
+        id -> {:ok, id}
+      end
+    end
+  end
+
+  @doc """
   Turns local sign-in on for `minutes`, at most a day, recording `actor`.
   With `disable: provider_id`, also disables that provider in the same
   serialized change, so a broken sole provider can be taken out of service
