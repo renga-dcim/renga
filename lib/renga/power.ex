@@ -260,16 +260,19 @@ defmodule Renga.Power do
       {graphemes, _length} =
         value
         |> String.graphemes()
-        |> Enum.reduce_while({[], 0}, fn grapheme, {graphemes, length} ->
-          next_length = length + codepoint_length(grapheme)
-
-          if next_length < limit,
-            do: {:cont, {[grapheme | graphemes], next_length}},
-            else: {:halt, {graphemes, length}}
-        end)
+        |> Enum.reduce_while({[], 0}, &take_grapheme(&1, &2, limit))
 
       graphemes |> Enum.reverse() |> Enum.join() |> Kernel.<>("…")
     end
+  end
+
+  # Keeps graphemes while they leave room for the ellipsis.
+  defp take_grapheme(grapheme, {graphemes, length}, limit) do
+    next_length = length + codepoint_length(grapheme)
+
+    if next_length < limit,
+      do: {:cont, {[grapheme | graphemes], next_length}},
+      else: {:halt, {graphemes, length}}
   end
 
   defp codepoint_length(value), do: value |> String.codepoints() |> length()
