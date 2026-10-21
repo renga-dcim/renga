@@ -23,9 +23,8 @@ defmodule Renga.TriageRules do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.DCIM
   alias Renga.DCIM.CurrentPlacement
   alias Renga.DCIM.Location
@@ -64,8 +63,8 @@ defmodule Renga.TriageRules do
     end
   end
 
-  @doc "UI hint: owners and admins manage triage rules."
-  def can_manage?(%Scope{} = scope), do: Inventory.organization_manager?(scope)
+  @doc "UI hint for `triage_rules.manage`."
+  def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "triage_rules.manage")
 
   @doc "The fact a rule kind sets."
   def fact(%Rule{kind: "ownership"}), do: :owner
@@ -584,41 +583,9 @@ defmodule Renga.TriageRules do
     |> Changes.broadcast(organization_id)
   end
 
-  defp authorize!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
-    unless @system_role in roles and active_organization?(organization_id),
-      do: Repo.rollback(:forbidden)
-  end
+  defp authorize!(%Scope{user: nil} = scope),
+    do: Authorization.authorize_system!(scope, @system_role)
 
-  defp authorize!(%Scope{
-         membership_id: membership_id,
-         user: %{id: user_id},
-         organization_id: organization_id
-       })
-       when not is_nil(membership_id) do
-    # Match Teams/DCIM: organization before membership, including across
-    # nested mutations, so concurrent manager actions cannot deadlock.
-    unless active_organization?(organization_id), do: Repo.rollback(:forbidden)
-
-    manager? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active")
-      |> where([membership], membership.role in ["owner", "admin"])
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    unless manager?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize!(%Scope{}), do: Repo.rollback(:forbidden)
-
-  defp active_organization?(organization_id) do
-    Organization
-    |> where([organization], organization.id == ^organization_id)
-    |> where([organization], organization.status == "active")
-    |> lock("FOR UPDATE")
-    |> Repo.exists?()
-  end
+  defp authorize!(%Scope{} = scope),
+    do: Authorization.authorize!(scope, "triage_rules.manage")
 end
