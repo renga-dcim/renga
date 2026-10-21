@@ -131,6 +131,29 @@ defmodule Renga.PowerTest do
       assert Inventory.get_resource!(scope, feed.resource_id).display_name == "PDP-2 / A1"
     end
 
+    test "long names keep feed envelope labels within the resource limit", %{
+      scope: scope,
+      site: site
+    } do
+      panel = panel!(scope, site, String.duplicate("P", 255))
+      {:ok, feed} = Power.create_feed(scope, panel.id, feed_attrs(%{name: "A1"}))
+
+      created_label = Inventory.get_resource!(scope, feed.resource_id).display_name
+      assert String.length(created_label) == 255
+      assert String.ends_with?(created_label, " / A1")
+
+      {:ok, feed} = Power.update_feed(scope, feed, %{name: String.duplicate("F", 255)})
+      renamed_feed_label = Inventory.get_resource!(scope, feed.resource_id).display_name
+      assert String.length(renamed_feed_label) == 255
+      assert renamed_feed_label =~ "… / "
+
+      {:ok, _panel} = Power.update_panel(scope, panel, %{name: String.duplicate("Q", 255)})
+      renamed_panel_label = Inventory.get_resource!(scope, feed.resource_id).display_name
+      assert String.length(renamed_panel_label) == 255
+      assert String.starts_with?(renamed_panel_label, "Q")
+      assert renamed_panel_label =~ "… / F"
+    end
+
     test "DC feeds have no phase and AC feeds need one", %{scope: scope, site: site} do
       panel = panel!(scope, site)
 

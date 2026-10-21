@@ -22,6 +22,9 @@ defmodule Renga.Power do
   alias Renga.Power.Panel
   alias Renga.Repo
 
+  @display_name_limit 255
+  @feed_label_separator " / "
+
   @doc """
   Lists a site's panels by name, each with its location and its feeds by
   name with their racks.
@@ -220,9 +223,39 @@ defmodule Renga.Power do
     end
   end
 
-  # A feed's envelope reads "Panel / Feed", since feed names repeat across panels.
-  defp feed_label(%Panel{name: panel_name}, %Feed{name: name}), do: "#{panel_name} / #{name}"
-  defp feed_label(%Panel{name: panel_name}, name), do: "#{panel_name} / #{name}"
+  # A feed's envelope keeps both names identifiable without exceeding the
+  # resource display-name limit; the typed rows retain the complete names.
+  defp feed_label(%Panel{name: panel_name}, %Feed{name: name}), do: feed_label(panel_name, name)
+  defp feed_label(%Panel{name: panel_name}, name), do: feed_label(panel_name, name)
+
+  defp feed_label(panel_name, name) do
+    available = @display_name_limit - String.length(@feed_label_separator)
+    half = div(available, 2)
+
+    {panel_limit, name_limit} =
+      cond do
+        String.length(panel_name) + String.length(name) <= available ->
+          {String.length(panel_name), String.length(name)}
+
+        String.length(panel_name) <= half ->
+          {String.length(panel_name), available - String.length(panel_name)}
+
+        String.length(name) <= half ->
+          {available - String.length(name), String.length(name)}
+
+        true ->
+          {half, available - half}
+      end
+
+    truncate_label_part(panel_name, panel_limit) <>
+      @feed_label_separator <> truncate_label_part(name, name_limit)
+  end
+
+  defp truncate_label_part(value, limit) do
+    if String.length(value) <= limit,
+      do: value,
+      else: String.slice(value, 0, limit - 1) <> "…"
+  end
 
   defp rename_envelope!(scope, resource_id, display_name) do
     resource = lock!(Renga.Inventory.Resource, scope.organization_id, resource_id)
