@@ -308,10 +308,9 @@ defmodule RengaWeb.InventoryOperationsLive do
           <%!-- One line per collector, with times and counts inline after each
                 state (docs/design-system.md, "Overflow"). As the table narrows
                 it drops the installation id (already in the name), then the
-                installation key (pending keys also reach the Inbox), the
-                resource, jobs, queue and inventory; the name and connection
-                always stay. The page is max-w-6xl, so the installation id
-                shows only if the page grows wider. --%>
+                installation key, the resource, jobs, queue and inventory; the
+                name and connection always stay. The page is max-w-6xl, so the
+                installation id shows only if the page grows wider. --%>
           <.table
             id="collectors"
             rows={@streams.sources}
