@@ -103,7 +103,9 @@ defmodule RengaWeb.AppearanceLive do
 
     assign(socket,
       organization_accent: organization_accent,
-      owner?: not is_nil(scope.organization) and "owner" in (scope.roles || [])
+      can_set_default?:
+        not is_nil(scope.organization) and
+          Renga.Authorization.allowed?(scope, "organization.manage")
     )
   end
 
@@ -226,7 +228,7 @@ defmodule RengaWeb.AppearanceLive do
         </.form>
 
         <section
-          :if={@owner?}
+          :if={@can_set_default?}
           id="organization-appearance"
           aria-labelledby="organization-appearance-title"
           class="space-y-2 border-t border-edge pt-6"
