@@ -25,6 +25,19 @@ defmodule RengaWeb.UserLive.Login do
           </p>
         </div>
 
+        <div :if={@providers != []} id="provider_options" class="space-y-2">
+          <.button
+            :for={provider <- @providers}
+            id={"provider-#{provider.id}"}
+            href={~p"/users/log-in/provider/#{provider.id}"}
+            class="w-full"
+          >
+            Log in with {provider.display_name}
+          </.button>
+        </div>
+
+        <.divider :if={@providers != []} label="or" />
+
         <form
           :if={@passkey_options}
           id="passkey_login_form"
@@ -121,7 +134,7 @@ defmodule RengaWeb.UserLive.Login do
   end
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
     email = Phoenix.Flash.get(socket.assigns.flash, :email)
 
     form = to_form(%{"email" => email}, as: "user")
@@ -130,7 +143,13 @@ defmodule RengaWeb.UserLive.Login do
     # asks for one.
     passkey_options = if connected?(socket), do: Accounts.passkey_sign_in_options()
 
-    {:ok, assign(socket, form: form, trigger_submit: false, passkey_options: passkey_options)}
+    {:ok,
+     assign(socket,
+       form: form,
+       trigger_submit: false,
+       passkey_options: passkey_options,
+       providers: Accounts.IdentityProviders.sign_in_options(params["provider"])
+     )}
   end
 
   @impl true

@@ -230,6 +230,8 @@ defmodule RengaWeb.Router do
     post "/users/log-in", UserSessionController, :create
     post "/users/log-in/second-step", UserSessionController, :second_step
     post "/users/log-in/passkey", UserSessionController, :passkey
+    get "/users/log-in/provider/:provider", UserProviderController, :start
+    get "/users/auth/:provider/callback", UserProviderController, :callback
     delete "/users/log-out", UserSessionController, :delete
   end
 end
