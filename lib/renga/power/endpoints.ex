@@ -6,7 +6,9 @@ defmodule Renga.Power.Endpoints do
 
   Endpoints are matched by name, so an operator's allocation override
   survives a template change. An endpoint the device no longer expects is
-  removed.
+  removed, unless a power cable claim names it: cable claims are
+  append-only history, so that endpoint is retired instead and comes back
+  if the template defines it again.
   """
 
   import Ecto.Query, warn: false
@@ -15,6 +17,7 @@ defmodule Renga.Power.Endpoints do
   alias Renga.Power.Outlet
   alias Renga.Power.Port
   alias Renga.Repo
+  alias Renga.Topology.CableAssertion
 
   @max_watts 999_999_999
 
@@ -52,6 +55,7 @@ defmodule Renga.Power.Endpoints do
           connector: text(component.attributes["connector"]),
           maximum_draw_w: watts(component.attributes["maximum_draw_w"]),
           default_allocated_draw_w: watts(component.attributes["allocated_draw_w"]),
+          retired_at: nil,
           inserted_at: now,
           updated_at: now
         }
@@ -59,11 +63,19 @@ defmodule Renga.Power.Endpoints do
 
     Repo.insert_all(Port, rows,
       on_conflict:
-        {:replace, [:label, :connector, :maximum_draw_w, :default_allocated_draw_w, :updated_at]},
+        {:replace,
+         [
+           :label,
+           :connector,
+           :maximum_draw_w,
+           :default_allocated_draw_w,
+           :retired_at,
+           :updated_at
+         ]},
       conflict_target: [:organization_id, :resource_id, :name]
     )
 
-    remove_unexpected!(Port, organization_id, resource_id, Enum.map(expected, & &1.name))
+    remove_unexpected!(Port, :power_port_id, organization_id, resource_id, names(expected), now)
   end
 
   defp sync_outlets!(organization_id, resource_id, expected, now) do
@@ -86,25 +98,53 @@ defmodule Renga.Power.Endpoints do
           label: component.label,
           connector: text(component.attributes["connector"]),
           feed_leg: feed_leg(component.attributes["feed_leg"]),
+          retired_at: nil,
           inserted_at: now,
           updated_at: now
         }
       end)
 
     Repo.insert_all(Outlet, rows,
-      on_conflict: {:replace, [:inlet_port_id, :label, :connector, :feed_leg, :updated_at]},
+      on_conflict:
+        {:replace, [:inlet_port_id, :label, :connector, :feed_leg, :retired_at, :updated_at]},
       conflict_target: [:organization_id, :resource_id, :name]
     )
 
-    remove_unexpected!(Outlet, organization_id, resource_id, Enum.map(expected, & &1.name))
+    remove_unexpected!(
+      Outlet,
+      :power_outlet_id,
+      organization_id,
+      resource_id,
+      names(expected),
+      now
+    )
   end
 
-  defp remove_unexpected!(schema, organization_id, resource_id, names) do
-    schema
-    |> where([row], row.organization_id == ^organization_id and row.resource_id == ^resource_id)
-    |> where([row], row.name not in ^names)
+  defp remove_unexpected!(schema, reference, organization_id, resource_id, names, now) do
+    unexpected =
+      from row in schema,
+        as: :endpoint,
+        where: row.organization_id == ^organization_id and row.resource_id == ^resource_id,
+        where: row.name not in ^names
+
+    # A current cable always has a claim behind it, and plans are intent that
+    # goes with the endpoint, so claims alone decide what history to keep.
+    claims =
+      from claim in CableAssertion,
+        where:
+          claim.organization_id == parent_as(:endpoint).organization_id and
+            field(claim, ^reference) == parent_as(:endpoint).id
+
+    unexpected
+    |> where([row], exists(claims) and is_nil(row.retired_at))
+    |> Repo.update_all(set: [retired_at: now, updated_at: now])
+
+    unexpected
+    |> where(not exists(claims))
     |> Repo.delete_all()
   end
+
+  defp names(expected), do: Enum.map(expected, & &1.name)
 
   defp text(value) when is_binary(value) do
     case String.trim(value) do

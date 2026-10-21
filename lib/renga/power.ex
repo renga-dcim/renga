@@ -198,12 +198,14 @@ defmodule Renga.Power do
 
   @doc """
   A device's power ports and outlets by name, each outlet with its inlet.
-  They come from the device's hardware type (RFD 10 phase 2).
+  They come from the device's hardware type (RFD 10 phase 2); retired
+  endpoints, which only cable history still names, are left out.
   """
   def list_device_endpoints(%Scope{organization_id: organization_id}, resource_id) do
     by_name = fn schema ->
       schema
       |> where([row], row.organization_id == ^organization_id and row.resource_id == ^resource_id)
+      |> where([row], is_nil(row.retired_at))
       |> order_by([row], fragment(~s(? COLLATE "C"), row.name))
     end
 
