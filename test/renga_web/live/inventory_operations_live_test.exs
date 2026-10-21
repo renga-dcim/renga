@@ -361,4 +361,70 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
         completed_at: now
       })
   end
+
+  describe "installation keys" do
+    defp present_key(agent, public_key) do
+      {:ok, key} =
+        Repo.transaction(fn ->
+          Renga.Inventory.InstallationKeys.present!(
+            agent,
+            %{algorithm: "ed25519", public_key: public_key},
+            Renga.Time.utc_now_ms()
+          )
+        end)
+
+      key
+    end
+
+    test "approves a pending key after showing its fingerprint", %{
+      conn: conn,
+      agent: agent,
+      source: source
+    } do
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      assert has_element?(view, "#collector-key-#{source.id}", "Not presented")
+
+      key = present_key(agent, :crypto.strong_rand_bytes(32))
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+
+      assert has_element?(view, "#collector-key-#{source.id}", "Pending")
+      assert has_element?(view, "#approve-key-#{key.id}", key.fingerprint)
+
+      render_click(view, "approve_installation_key", %{id: key.id, fingerprint: key.fingerprint})
+
+      assert has_element?(view, "#collector-key-#{source.id}", "Approved")
+      refute has_element?(view, "#approve-key-#{key.id}-button")
+    end
+
+    test "refuses a key that changed after the page loaded", %{conn: conn, agent: agent} do
+      key = present_key(agent, :crypto.strong_rand_bytes(32))
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      _replacement = present_key(agent, :crypto.strong_rand_bytes(32))
+
+      html =
+        render_click(view, "approve_installation_key", %{id: key.id, fingerprint: key.fingerprint})
+
+      assert html =~ "The installation presented a different key"
+    end
+
+    test "members see key state without approving", %{
+      agent: agent,
+      source: source,
+      scope: scope
+    } do
+      member = user_fixture()
+      organization_membership_fixture(member, scope.organization, %{role: "member"})
+
+      conn =
+        build_conn()
+        |> log_in_user(member)
+        |> put_session(:current_organization_id, scope.organization_id)
+
+      key = present_key(agent, :crypto.strong_rand_bytes(32))
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+
+      assert has_element?(view, "#collector-key-#{source.id}", "Pending")
+      refute has_element?(view, "#approve-key-#{key.id}-button")
+    end
+  end
 end
