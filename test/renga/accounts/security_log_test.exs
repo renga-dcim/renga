@@ -235,8 +235,14 @@ defmodule Renga.Accounts.SecurityLogTest do
       refute Passkeys.any?(user)
       assert MFA.recovery_codes_left(user) == 0
 
-      assert [%{kind: "mfa_removed_by_operator", metadata: %{"actor" => "Jane (ticket 12)"}} | _] =
-               SecurityLog.list(user)
+      # Events from one millisecond have no order, so look for it.
+      assert Enum.any?(
+               SecurityLog.list(user),
+               &match?(
+                 %{kind: "mfa_removed_by_operator", metadata: %{"actor" => "Jane (ticket 12)"}},
+                 &1
+               )
+             )
     end
 
     test "the release command removes them and emails the account" do
