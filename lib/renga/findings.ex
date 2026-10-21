@@ -19,9 +19,9 @@ defmodule Renga.Findings do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts
-  alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.HardwareMatchFinding
   alias Renga.DCIM.PlacementFinding
@@ -36,7 +36,6 @@ defmodule Renga.Findings do
   alias Renga.Repo
   alias Renga.Topology.TopologyFinding
 
-  @actor_roles ~w(owner admin member)
   @states ~w(open snoozed excepted resolved)
   @groups ~w(drift health)
   @per_page 50
@@ -69,15 +68,12 @@ defmodule Renga.Findings do
   UI hint: whether the scope may assign, snooze, or accept exceptions. The
   actions recheck membership themselves.
   """
-  def can_change_workflow?(%Scope{user: %{}, roles: roles}),
-    do: Enum.any?(roles || [], &(&1 in @actor_roles))
+  def can_change_workflow?(scope), do: Authorization.allowed?(scope, "findings.act")
 
-  def can_change_workflow?(_scope), do: false
-
-  @doc "People a finding can be assigned to: active owners, admins, and members."
+  @doc "People a finding can be assigned to: active members who hold `findings.act`."
   def assignable_users(%Scope{} = scope) do
     scope
-    |> Accounts.list_active_members(@actor_roles)
+    |> Accounts.list_active_members(Authorization.roles_granting("findings.act"))
     |> Enum.map(& &1.user)
   end
 
@@ -496,37 +492,14 @@ defmodule Renga.Findings do
     OrganizationMembership
     |> where([membership], membership.organization_id == ^organization_id)
     |> where([membership], membership.user_id == ^user_id)
-    |> where([membership], membership.status == "active" and membership.role in @actor_roles)
+    |> where([membership], membership.status == "active")
+    |> where([membership], membership.role in ^Authorization.roles_granting("findings.act"))
     |> Repo.exists?()
     |> if(do: :ok, else: {:error, :invalid_assignee})
   end
 
-  defp authorize_actor!(%Scope{
-         membership_id: membership_id,
-         user: %{id: user_id},
-         organization_id: organization_id
-       })
-       when not is_nil(membership_id) do
-    active? =
-      Organization
-      |> where([organization], organization.id == ^organization_id)
-      |> where([organization], organization.status == "active")
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    member? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active" and membership.role in @actor_roles)
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    unless active? and member?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize_actor!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_actor!(%Scope{} = scope),
+    do: Authorization.authorize!(scope, "findings.act")
 
   ## Query building
 
