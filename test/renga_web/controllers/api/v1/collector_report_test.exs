@@ -1,0 +1,534 @@
+defmodule RengaWeb.Api.V1.CollectorReportTest do
+  @moduledoc """
+  RFD 11 phase 1: collector streams and scoped, multi-resource reports.
+  """
+
+  use RengaWeb.ConnCase, async: true
+
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
+
+  alias Renga.Accounts
+  alias Renga.Inventory
+  alias Renga.Inventory.CollectionClocks
+  alias Renga.Inventory.CollectorTargetResource
+  alias Renga.Inventory.Collectors
+  alias Renga.Inventory.Observation
+  alias Renga.Repo
+
+  @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
+  @other_installation_id "8ea9ae04-bf9b-4c34-8192-4f617eade95e"
+
+  setup do
+    user = user_fixture()
+    organization = organization_fixture()
+    organization_membership_fixture(user, organization, %{role: "admin"})
+    scope = Accounts.scope_for_user(user, organization.id)
+    {:ok, {_key, token}} = Inventory.create_intake_api_key(scope, %{name: "Fleet"})
+
+    %{scope: scope, token: token}
+  end
+
+  describe "collector streams" do
+    test "a module reports through its own stream without retyping the host source", %{
+      scope: scope,
+      token: token
+    } do
+      host = post_observation(token, host_report())
+      assert %{"observation" => %{"source_id" => host_source_id}} = valid_api_response(host, 202)
+
+      report = post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]))
+
+      assert %{"observation" => %{"source_id" => stream_id}} = valid_api_response(report, 202)
+      refute stream_id == host_source_id
+
+      [agent] = Inventory.list_agents(scope)
+      assert agent.source_id == host_source_id
+      assert Inventory.get_source!(scope, host_source_id).kind == "host_agent"
+
+      assert [stream] = Collectors.list_streams(scope)
+      assert stream.id == stream_id
+      assert stream.kind == "switch_poller"
+      assert stream.collector_id == "core-switches"
+      assert stream.agent_id == agent.id
+    end
+
+    test "a collector ID keeps its stream when targets change, and each ID gets its own", %{
+      scope: scope,
+      token: token
+    } do
+      first = post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]))
+      moved = post_observation(token, switch_report([switch("10.0.9.9", "SER-1")]))
+
+      other =
+        post_observation(
+          token,
+          switch_report([switch("10.0.0.1", "SER-1")], collector_id: "edge-switches")
+        )
+
+      assert %{"observation" => %{"source_id" => stream_id}} = valid_api_response(first, 202)
+      assert %{"observation" => %{"source_id" => ^stream_id}} = valid_api_response(moved, 202)
+      assert %{"observation" => %{"source_id" => other_id}} = valid_api_response(other, 202)
+      refute other_id == stream_id
+
+      # Another installation's module with the same ID is a different stream.
+      elsewhere =
+        post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]),
+          installation_id: @other_installation_id
+        )
+
+      assert %{"observation" => %{"source_id" => elsewhere_id}} =
+               valid_api_response(elsewhere, 202)
+
+      refute elsewhere_id in [stream_id, other_id]
+      assert length(Collectors.list_streams(scope)) == 3
+    end
+
+    test "a stream's kind never changes", %{token: token} do
+      assert %{"status" => "accepted"} =
+               token
+               |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+               |> valid_api_response(202)
+
+      conflict =
+        post_observation(
+          token,
+          hypervisor_report([vm("VM-UUID-1")], collector_id: "core-switches")
+        )
+
+      assert %{"errors" => [%{"path" => "collector.kind"}]} = valid_api_response(conflict, 409)
+    end
+
+    test "a disabled stream rejects reports", %{scope: scope, token: token} do
+      token
+      |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+      |> valid_api_response(202)
+
+      [stream] = Collectors.list_streams(scope)
+      {:ok, _stream} = Inventory.update_source(scope, stream, %{status: "disabled"})
+
+      rejected = post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]))
+      assert %{"errors" => [%{"path" => "collector.id"}]} = valid_api_response(rejected, 409)
+    end
+
+    test "stream inventory clocks are the stream's own", %{scope: scope, token: token} do
+      token |> post_observation(host_report()) |> valid_api_response(202)
+
+      report =
+        post_observation(
+          token,
+          switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T07:00:00Z")
+        )
+
+      assert %{"observation" => %{"source_id" => stream_id}} = valid_api_response(report, 202)
+
+      # A later host report moves only the host source's clocks.
+      token
+      |> post_observation(host_report(observed_at: "2026-08-13T09:00:00Z"))
+      |> valid_api_response(202)
+
+      clocks = CollectionClocks.by_source(scope)
+      stream_clocks = Map.fetch!(clocks, stream_id)
+      assert stream_clocks.reconciled_observed_at == ~U[2026-08-13 07:00:00.000000Z]
+      assert stream_clocks.latest_outcome == "succeeded"
+    end
+  end
+
+  describe "scoped reports" do
+    test "each resource reconciles on its own", %{scope: scope, token: token} do
+      conn =
+        post_observation(
+          token,
+          switch_report([switch("10.0.0.1", "SER-1"), switch("10.0.0.2", "SER-2")])
+        )
+
+      assert %{
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "resources" => [
+                   %{"status" => "succeeded", "resource_id" => first_id},
+                   %{"status" => "succeeded", "resource_id" => second_id}
+                 ]
+               },
+               "observation" => %{"id" => report_id}
+             } = valid_api_response(conn, 202)
+
+      refute first_id == second_id
+      assert Inventory.get_resource!(scope, first_id).kind == "switch"
+
+      derived = Inventory.list_derived_observations(scope, report_id)
+      assert Enum.map(derived, & &1.resource_index) == [0, 1]
+      assert Enum.map(derived, & &1.payload["target"]) == ["10.0.0.1", "10.0.0.2"]
+
+      # A resent report is the stored one, reconciled once.
+      duplicate =
+        post_observation(
+          token,
+          switch_report([switch("10.0.0.1", "SER-1"), switch("10.0.0.2", "SER-2")],
+            observation_id: Repo.get!(Observation, report_id).idempotency_key
+          )
+        )
+
+      assert %{
+               "duplicate" => true,
+               "reconciliation" => %{"resources" => [_first, _second]}
+             } = valid_api_response(duplicate, 200)
+
+      assert length(Inventory.list_derived_observations(scope, report_id)) == 2
+    end
+
+    test "a later report of the same chassis serial matches the same switch", %{token: token} do
+      first = post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]))
+      second = post_observation(token, switch_report([switch("10.0.0.7", "SER-1")]))
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
+               valid_api_response(first, 202)
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
+               valid_api_response(second, 202)
+    end
+
+    test "names and MAC addresses alone never merge a collector resource", %{
+      token: token
+    } do
+      host = post_observation(token, host_report(hostname: "core1", mac: "52:54:00:00:00:01"))
+
+      assert %{"reconciliation" => %{"matched_resource_id" => host_id}} =
+               valid_api_response(host, 202)
+
+      lookalike =
+        switch("10.0.0.1", "SER-1",
+          hostname: "core1",
+          interfaces: [
+            %{"name" => "eth0", "kind" => "ethernet", "mac_address" => "52:54:00:00:00:01"}
+          ]
+        )
+
+      report = post_observation(token, switch_report([lookalike]))
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => switch_id}]}} =
+               valid_api_response(report, 202)
+
+      refute switch_id == host_id
+    end
+
+    test "a VM whose UUID a guest agent reports reconciles to the guest's resource", %{
+      token: token
+    } do
+      host =
+        post_observation(token, host_report(dmi_uuid: "4c4c4544-0000-1111-2222-333344445555"))
+
+      assert %{"reconciliation" => %{"matched_resource_id" => guest_id}} =
+               valid_api_response(host, 202)
+
+      report =
+        post_observation(token, hypervisor_report([vm("4c4c4544-0000-1111-2222-333344445555")]))
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^guest_id}]}} =
+               valid_api_response(report, 202)
+    end
+  end
+
+  describe "targets and retirement" do
+    test "an unreachable target is unknown, never absent", %{scope: scope, token: token} do
+      token
+      |> post_observation(switch_report([switch("10.0.0.1", "SER-1")], complete: true))
+      |> valid_api_response(202)
+
+      unreachable =
+        switch_report([],
+          targets: [%{"address" => "10.0.0.1", "status" => "unreachable", "error" => "timeout"}],
+          complete: true,
+          observed_at: "2026-08-13T08:00:00Z"
+        )
+
+      token |> post_observation(unreachable) |> valid_api_response(202)
+
+      [stream] = Collectors.list_streams(scope)
+      assert [target] = Collectors.list_targets(scope, stream.id)
+      assert target.status == "unreachable"
+      assert target.error == "timeout"
+      assert target.last_reachable_at == ~U[2026-08-13 07:30:00.000000Z]
+
+      assert [member] = Collectors.list_target_resources(scope, stream.id)
+      assert CollectorTargetResource.present?(member)
+      assert inventory_current(scope, member.resource_id) == "true"
+    end
+
+    test "only a complete report withdraws what a target no longer reports", %{
+      scope: scope,
+      token: token
+    } do
+      token
+      |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+      |> valid_api_response(202)
+
+      # The switch at the address was replaced. A partial report adds the new
+      # one without deciding the old one is gone.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-2")], observed_at: "2026-08-13T08:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      [stream] = Collectors.list_streams(scope)
+      assert Enum.all?(Collectors.list_target_resources(scope, stream.id), &present?/1)
+
+      complete =
+        post_observation(
+          token,
+          switch_report([switch("10.0.0.1", "SER-2")],
+            observed_at: "2026-08-13T09:00:00Z",
+            complete: true
+          )
+        )
+
+      valid_api_response(complete, 202)
+
+      members = Collectors.list_target_resources(scope, stream.id)
+      old = Enum.find(members, &(serial(scope, &1) == "SER-1"))
+      new = Enum.find(members, &(&1 != old))
+
+      refute present?(old)
+      assert old.withdrawn_at == ~U[2026-08-13 09:00:00.000000Z]
+      assert present?(new)
+      assert inventory_current(scope, old.resource_id) == "false"
+      assert inventory_current(scope, new.resource_id) == "true"
+
+      assert Enum.any?(
+               Inventory.list_change_events(scope, old.resource_id),
+               &(&1.kind == "withdrawn")
+             )
+
+      # A report from before the withdrawal, replayed late, changes nothing.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-1")],
+          observed_at: "2026-08-13T08:30:00Z",
+          complete: true
+        )
+      )
+      |> valid_api_response(202)
+
+      old = Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == old.id))
+      refute present?(old)
+      [target] = Collectors.list_targets(scope, stream.id)
+      assert target.last_reported_at == ~U[2026-08-13 09:00:00.000000Z]
+
+      assert present?(
+               Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == new.id))
+             )
+    end
+
+    test "a resource another source still reports stays current when withdrawn", %{
+      scope: scope,
+      token: token
+    } do
+      uuid = "4c4c4544-0000-1111-2222-333344445555"
+      token |> post_observation(host_report(dmi_uuid: uuid)) |> valid_api_response(202)
+      token |> post_observation(hypervisor_report([vm(uuid)])) |> valid_api_response(202)
+
+      token
+      |> post_observation(
+        hypervisor_report([], complete: true, observed_at: "2026-08-13T09:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      [stream] = Collectors.list_streams(scope)
+      [member] = Collectors.list_target_resources(scope, stream.id)
+      refute present?(member)
+      assert inventory_current(scope, member.resource_id) == "true"
+    end
+
+    test "a failed resource stops its target from withdrawing anything", %{
+      scope: scope,
+      token: token
+    } do
+      token
+      |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+      |> valid_api_response(202)
+
+      # Two existing resources claim the identifiers this switch now reports.
+      token
+      |> post_observation(switch_report([switch("10.0.0.2", "SER-2")]))
+      |> valid_api_response(202)
+
+      ambiguous =
+        switch("10.0.0.1", "SER-1")
+        |> put_in(["identifiers", "serial_number"], ["SER-1", "SER-2"])
+
+      conn =
+        post_observation(
+          token,
+          switch_report([ambiguous, switch("10.0.0.2", "SER-2")],
+            targets: [
+              %{"address" => "10.0.0.1", "status" => "reachable"},
+              %{"address" => "10.0.0.2", "status" => "reachable"}
+            ],
+            complete: true,
+            observed_at: "2026-08-13T09:00:00Z"
+          )
+        )
+
+      assert %{
+               "reconciliation" => %{
+                 "status" => "succeeded",
+                 "resources" => [%{"status" => "failed"}, %{"status" => "succeeded"}]
+               }
+             } = valid_api_response(conn, 202)
+
+      [stream] = Collectors.list_streams(scope)
+      assert Enum.all?(Collectors.list_target_resources(scope, stream.id), &present?/1)
+    end
+  end
+
+  describe "validation" do
+    test "rejects malformed scoped reports", %{token: token} do
+      cases = [
+        {Map.delete(switch_report([switch("10.0.0.1", "SER-1")]), "collector"), "collector"},
+        {Map.put(host_report(), "collector", %{"id" => "x", "kind" => "switch_poller"}),
+         "collector"},
+        {switch_report([switch("10.0.0.1", "SER-1")], collector_id: "-bad"), "collector.id"},
+        {switch_report([switch("10.0.0.1", "SER-1")], kind: "vm_provider"), "collector.kind"},
+        {switch_report([switch("10.9.9.9", "SER-1")]), "resources.0.target"},
+        {switch_report([switch("10.0.0.1", "SER-1")],
+           targets: [%{"address" => "10.0.0.1", "status" => "unreachable"}]
+         ), "resources.0.target"},
+        {switch_report([Map.put(switch("10.0.0.1", "SER-1"), "kind", "vm")]), "resources.0.kind"},
+        {switch_report([
+           switch("10.0.0.1", nil, hostname: "core1")
+         ]), "resources.0.identifiers"},
+        {switch_report([],
+           targets: [
+             %{"address" => "10.0.0.1", "status" => "reachable"},
+             %{"address" => "10.0.0.1", "status" => "reachable"}
+           ]
+         ), "targets.1.address"},
+        {hypervisor_report([vm("VM-1")], status: "unreachable"), "resources.0"},
+        {Map.put(switch_report([]), "scope", "galaxy"), "scope"}
+      ]
+
+      for {payload, path} <- cases do
+        conn = post_observation(token, payload)
+        assert %{"errors" => errors} = valid_api_response(conn, 422)
+        assert Enum.any?(errors, &(&1["path"] == path)), "expected #{path} in #{inspect(errors)}"
+      end
+    end
+  end
+
+  defp post_observation(token, payload, opts \\ []) do
+    build_conn()
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header(
+      "x-renga-installation-id",
+      Keyword.get(opts, :installation_id, @installation_id)
+    )
+    |> post(~p"/api/v1/observations", payload)
+  end
+
+  defp host_report(opts \\ []) do
+    identifiers =
+      %{"machine_id" => "machine-#{System.unique_integer([:positive])}"}
+      |> maybe_put("dmi_uuid", opts[:dmi_uuid])
+      |> maybe_put("hostname", opts[:hostname])
+
+    interfaces =
+      case opts[:mac] do
+        nil -> []
+        mac -> [%{"name" => "eth0", "kind" => "ethernet", "mac_address" => mac}]
+      end
+
+    %{
+      "observation_id" => "host-#{System.unique_integer([:positive])}",
+      "observed_at" => Keyword.get(opts, :observed_at, "2026-08-13T07:30:00Z"),
+      "resources" => [
+        %{
+          "kind" => "server",
+          "identifiers" => identifiers,
+          "attributes" => %{},
+          "interfaces" => interfaces
+        }
+      ]
+    }
+  end
+
+  defp switch_report(resources, opts \\ []) do
+    targets =
+      Keyword.get_lazy(opts, :targets, fn ->
+        resources
+        |> Enum.map(& &1["target"])
+        |> Enum.uniq()
+        |> Enum.reject(&(&1 == "10.9.9.9"))
+        |> Enum.map(&%{"address" => &1, "status" => "reachable"})
+        |> case do
+          [] -> [%{"address" => "10.0.0.1", "status" => "reachable"}]
+          targets -> targets
+        end
+      end)
+
+    %{
+      "observation_id" =>
+        Keyword.get(opts, :observation_id, "poll-#{System.unique_integer([:positive])}"),
+      "observed_at" => Keyword.get(opts, :observed_at, "2026-08-13T07:30:00Z"),
+      "scope" => "targets",
+      "collector" => %{
+        "id" => Keyword.get(opts, :collector_id, "core-switches"),
+        "kind" => Keyword.get(opts, :kind, "switch_poller")
+      },
+      "targets" => targets,
+      "complete" => Keyword.get(opts, :complete, false),
+      "resources" => resources
+    }
+  end
+
+  defp hypervisor_report(resources, opts \\ []) do
+    %{
+      "observation_id" => "libvirt-#{System.unique_integer([:positive])}",
+      "observed_at" => Keyword.get(opts, :observed_at, "2026-08-13T07:30:00Z"),
+      "scope" => "hypervisor",
+      "collector" => %{
+        "id" => Keyword.get(opts, :collector_id, "local-libvirt"),
+        "kind" => "vm_provider"
+      },
+      "hypervisor" => %{"id" => "hv-1", "status" => Keyword.get(opts, :status, "reachable")},
+      "complete" => Keyword.get(opts, :complete, false),
+      "resources" => resources
+    }
+  end
+
+  defp switch(target, serial, opts \\ []) do
+    identifiers =
+      %{}
+      |> maybe_put("serial_number", serial)
+      |> maybe_put("hostname", opts[:hostname])
+
+    %{
+      "kind" => "switch",
+      "target" => target,
+      "identifiers" => identifiers,
+      "attributes" => %{"model" => "S5248F"},
+      "interfaces" => Keyword.get(opts, :interfaces, [])
+    }
+  end
+
+  defp vm(uuid) do
+    %{"kind" => "vm", "identifiers" => %{"dmi_uuid" => uuid}, "interfaces" => []}
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp present?(member), do: CollectorTargetResource.present?(member)
+
+  defp serial(scope, member) do
+    scope
+    |> Inventory.list_resource_identifiers(member.resource_id)
+    |> Enum.find_value(&if(&1.kind == "serial_number", do: &1.value))
+  end
+
+  defp inventory_current(scope, resource_id) do
+    scope
+    |> Inventory.list_resource_conditions(resource_id)
+    |> Enum.find_value(&if(&1.type == "InventoryCurrent", do: &1.status))
+  end
+end
