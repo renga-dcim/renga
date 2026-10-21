@@ -12,6 +12,8 @@ defmodule Renga.Accounts.SecurityLog do
 
   import Ecto.Query
 
+  require Logger
+
   alias Renga.Accounts.SecurityEvent
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
@@ -47,7 +49,9 @@ defmodule Renga.Accounts.SecurityLog do
     "recovery_code_used" => "A recovery code was used to sign in to your Renga account.",
     "password_changed" => "The password of your Renga account was changed.",
     "password_removed" => "The password was removed from your Renga account.",
-    "email_changed" => "The email address of your Renga account was changed."
+    "email_changed" => "The email address of your Renga account was changed.",
+    "mfa_removed_by_operator" =>
+      "An operator removed every passkey, the authenticator app, and the recovery codes from your Renga account."
   }
 
   @doc "Records an event in the account's security log."
@@ -60,18 +64,32 @@ defmodule Renga.Accounts.SecurityLog do
   committed, so a rolled-back change sends nothing. An email change also
   tells the old address.
   """
-  def notify(%User{} = user, kind, opts \\ []) do
+  def notify(%User{id: user_id} = user, kind, opts \\ []) do
     case @notices do
       %{^kind => text} ->
-        UserNotifier.deliver_security_notice(user.email, text)
+        # The stored address, not the caller's copy, which a change made
+        # elsewhere may have outdated.
+        email = Repo.one(from u in User, where: u.id == ^user_id, select: u.email) || user.email
 
-        if previous = opts[:previous_email],
-          do: UserNotifier.deliver_security_notice(previous, text)
-
-        :ok
+        [email | List.wrap(opts[:previous_email])]
+        |> Enum.map(&deliver(&1, kind, text))
+        |> Enum.find(:ok, &(&1 != :ok))
 
       _ ->
         :ok
+    end
+  end
+
+  # Delivery is best effort: the change already committed. A failure is
+  # logged for the operator and returned.
+  defp deliver(email, kind, text) do
+    case UserNotifier.deliver_security_notice(email, text) do
+      {:ok, _email} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Security notice #{kind} could not be sent: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 

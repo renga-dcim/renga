@@ -319,9 +319,7 @@ defmodule Renga.Accounts.MFA do
   def regenerate_recovery_codes(%User{} = user) do
     with_account_lock(user, fn ->
       if mfa?(user) do
-        codes = replace_recovery_codes(user)
-        SecurityLog.record(user, "recovery_codes_generated")
-        {:ok, codes}
+        {:ok, replace_recovery_codes(user)}
       else
         {:error, :no_mfa}
       end
@@ -407,7 +405,9 @@ defmodule Renga.Accounts.MFA do
     Vault.decrypt(totp.secret_key_id, totp.secret_ciphertext, secret_aad(totp.user_id))
   end
 
+  # Every new set is logged, including the first one a factor brings.
   defp replace_recovery_codes(user) do
+    SecurityLog.record(user, "recovery_codes_generated")
     Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
     now = Renga.Time.utc_now_ms()
     codes = for _ <- 1..@recovery_code_count, do: generate_recovery_code()

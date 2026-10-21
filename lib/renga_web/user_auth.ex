@@ -45,7 +45,8 @@ defmodule RengaWeb.UserAuth do
   @session_reissue_age_in_days 7
 
   @doc """
-  Logs the user in.
+  Logs the user in. `method` is how a fresh sign-in authenticated, such as
+  `"password"`, for the security log.
 
   Redirects to the session's `:user_return_to` path
   or falls back to the `signed_in_path/1`. A fresh session opens the
@@ -53,10 +54,14 @@ defmodule RengaWeb.UserAuth do
   skip the organization picker (`Renga.Accounts.default_organization_id/2`).
   A return-to link that could name a record opens only a sole organization.
   """
-  def log_in_user(conn, user, params \\ %{}) do
+  def log_in_user(conn, user, params \\ %{}, method \\ nil) do
     user_return_to = get_session(conn, :user_return_to)
 
-    {:ok, signed_in} = create_or_extend_session(conn, user, params)
+    # A fresh sign-in names its `method`, and the session and its security
+    # log entry commit together. Signing back in after a password change
+    # is not a new sign-in and passes none.
+    issue = if method, do: &Accounts.create_signed_in_session(user, &1, method)
+    {:ok, signed_in} = create_or_extend_session(conn, user, params, issue)
 
     signed_in
     |> put_default_organization(user, user_return_to)
@@ -338,7 +343,7 @@ defmodule RengaWeb.UserAuth do
   #
   # `issue` creates the token for the browser session id; the second step
   # passes one that issues it only while the pending sign-in is unspent.
-  defp create_or_extend_session(conn, user, params, issue \\ nil) do
+  defp create_or_extend_session(conn, user, params, issue) do
     issue = issue || (&{:ok, Accounts.generate_user_session_token(user, &1)})
     revoke_browser_session(conn)
     remember_me = get_session(conn, :user_remember_me)

@@ -411,14 +411,12 @@ defmodule Renga.Accounts do
                  replace: true,
                  authorize: fn -> Recheck.spend_recovery(user, session_token) end
                ) do
-          SecurityLog.notify(user, "totp_added")
-          {:ok, codes}
+          notify_factor_added(user, "totp_added", codes)
         end
 
       Recheck.authorized?(user, session_token, :add_factor) ->
         with {:ok, codes} <- MFA.enable_totp(user, secret, code) do
-          SecurityLog.notify(user, "totp_added")
-          {:ok, codes}
+          notify_factor_added(user, "totp_added", codes)
         end
 
       true ->
@@ -445,9 +443,16 @@ defmodule Renga.Accounts do
 
     with {:ok, {passkey, codes}} <-
            MFA.add_factor(user, fn -> Passkeys.register(user, response, name) end, authorize) do
-      SecurityLog.notify(user, "passkey_added")
+      notify_factor_added(user, "passkey_added", codes)
       {:ok, passkey, codes}
     end
+  end
+
+  # The first factor also brings the first recovery codes.
+  defp notify_factor_added(user, kind, codes) do
+    SecurityLog.notify(user, kind)
+    if codes, do: SecurityLog.notify(user, "recovery_codes_generated")
+    {:ok, codes}
   end
 
   @doc "Removes a passkey if this session passed the re-check."
@@ -563,6 +568,18 @@ defmodule Renga.Accounts do
   def record_sign_in(%User{} = user, method),
     do: SecurityLog.record(user, "signed_in", %{"method" => method})
 
+  @doc """
+  Issues a session for a fresh sign-in by `method` and records the sign-in
+  in the same transaction, so the log never shows a sign-in whose session
+  was not created.
+  """
+  def create_signed_in_session(%User{} = user, browser_session_id, method) do
+    Repo.transact(fn ->
+      record_sign_in(user, method)
+      {:ok, generate_user_session_token(user, browser_session_id)}
+    end)
+  end
+
   @doc "The account's most recent security log entries, newest first."
   defdelegate list_security_events(user), to: SecurityLog, as: :list
 
@@ -573,7 +590,8 @@ defmodule Renga.Accounts do
   Removes every second factor and recovery code from the account with
   `email`, for someone who has lost them all (RFD 19, "Recovery"). Only an
   operator runs this, through `Renga.Release.remove_mfa/2`; `actor` names
-  them in the account's security log.
+  them in the account's security log. Returns the user and whether the
+  notice to the account was delivered.
   """
   def remove_mfa_by_operator(email, actor) when is_binary(email) and is_binary(actor) do
     case get_user_by_email(email) do
@@ -583,11 +601,14 @@ defmodule Renga.Accounts do
       user ->
         # Under the account lock, like every factor change, so a factor
         # being added meanwhile is removed too or added after.
-        MFA.with_account_lock(user, fn ->
-          MFA.remove_all(user)
-          SecurityLog.record(user, "mfa_removed_by_operator", %{"actor" => actor})
-          {:ok, user}
-        end)
+        with {:ok, user} <-
+               MFA.with_account_lock(user, fn ->
+                 MFA.remove_all(user)
+                 SecurityLog.record(user, "mfa_removed_by_operator", %{"actor" => actor})
+                 {:ok, user}
+               end) do
+          {:ok, user, SecurityLog.notify(user, "mfa_removed_by_operator")}
+        end
     end
   end
 

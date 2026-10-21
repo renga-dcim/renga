@@ -73,11 +73,9 @@ defmodule RengaWeb.UserSessionController do
     if Accounts.mfa?(user) do
       UserAuth.begin_second_step(conn, user, params)
     else
-      Accounts.record_sign_in(user, method)
-
       conn
       |> put_flash(:info, info)
-      |> UserAuth.log_in_user(user, params)
+      |> UserAuth.log_in_user(user, params, method)
     end
   end
 
@@ -85,11 +83,9 @@ defmodule RengaWeb.UserSessionController do
   def passkey(conn, %{"passkey" => %{"response" => response}}) do
     with {:ok, response} when is_map(response) <- Jason.decode(response),
          %Accounts.User{} = user <- Accounts.get_user_by_passkey(response) do
-      Accounts.record_sign_in(user, "passkey")
-
       conn
       |> put_flash(:info, "Welcome back!")
-      |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
+      |> UserAuth.log_in_user(user, %{"remember_me" => "true"}, "passkey")
     else
       _ ->
         conn

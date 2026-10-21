@@ -54,6 +54,9 @@ defmodule Renga.Release do
   """
   def remove_mfa(email, actor) do
     load_app()
+    # The notice to the account goes out from here, so the mailer's HTTP
+    # client must run too.
+    {:ok, _apps} = Application.ensure_all_started([:swoosh, :req])
 
     for repo <- repos() do
       {:ok, result, _} =
@@ -62,8 +65,15 @@ defmodule Renga.Release do
         end)
 
       case result do
-        {:ok, _user} -> IO.puts("Removed the second factors of #{email}.")
-        {:error, :not_found} -> raise "No account has the email #{email}."
+        {:ok, _user, :ok} ->
+          IO.puts("Removed the second factors of #{email} and emailed a notice.")
+
+        {:ok, _user, {:error, reason}} ->
+          IO.puts("Removed the second factors of #{email}.")
+          IO.puts(:stderr, "The notice could not be emailed: #{inspect(reason)}")
+
+        {:error, :not_found} ->
+          raise "No account has the email #{email}."
       end
     end
 
