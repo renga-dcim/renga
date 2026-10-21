@@ -30,8 +30,7 @@
                 "const": "ed25519"
               },
               "public_key": {
-                "description": "The raw 32-byte Ed25519 public key in unpadded base64url.",
-                "pattern": "^[A-Za-z0-9_-]{43}$",
+                "description": "The raw 32-byte Ed25519 public key in base64url, normally unpadded (43 characters); a padded key is also accepted.",
                 "type": "string"
               }
             },

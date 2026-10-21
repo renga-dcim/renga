@@ -36,10 +36,13 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
               "returns the installation to pending.",
           properties: %{
             algorithm: %{const: "ed25519"},
+            # Prose rather than a pattern: the server also accepts the padded
+            # form, and a request schema must not reject what the API accepts.
             public_key: %{
               type: :string,
-              pattern: "^[A-Za-z0-9_-]{43}$",
-              description: "The raw 32-byte Ed25519 public key in unpadded base64url."
+              description:
+                "The raw 32-byte Ed25519 public key in base64url, normally unpadded " <>
+                  "(43 characters); a padded key is also accepted."
             }
           },
           required: [:algorithm, :public_key]
