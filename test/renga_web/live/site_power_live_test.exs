@@ -262,7 +262,7 @@ defmodule RengaWeb.SitePowerLiveTest do
     assert has_element?(view, "#feed-#{feed.id}-load", "A leg is over its limit")
 
     view |> element("#feed-#{feed.id}-load") |> render_click()
-    assert has_element?(view, "#load-status", "Over capacity")
+    assert has_element?(view, "#load-status", "A leg is over its limit")
     assert has_element?(view, "#load-leg-a .text-crit", "26.0 A of 25.6 A")
     assert has_element?(view, "#load-leg-b", "1.0 A of 25.6 A")
     assert has_element?(view, "#load-leg-c", "0.0 A of 25.6 A")

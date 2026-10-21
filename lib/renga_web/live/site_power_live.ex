@@ -726,7 +726,7 @@ defmodule RengaWeb.SitePowerLive do
   defp load_label(%Load{}), do: "Unknown"
 
   defp load_note(%Load{status: :over} = load) do
-    if Decimal.gt?(load.known, load.capacity.usable),
+    if over_usable?(load),
       do: "Over usable capacity#{if load.uses_default?, do: " · default power factor"}",
       else: "A leg is over its limit"
   end
@@ -761,8 +761,13 @@ defmodule RengaWeb.SitePowerLive do
   end
 
   defp status_label(%Load{status: :ok}), do: "Within capacity"
-  defp status_label(%Load{status: :over}), do: "Over capacity"
+
+  defp status_label(%Load{status: :over} = load),
+    do: if(over_usable?(load), do: "Over capacity", else: "A leg is over its limit")
+
   defp status_label(%Load{status: :unknown}), do: "Unknown"
+
+  defp over_usable?(load), do: Decimal.gt?(load.known, load.capacity.usable)
 
   defp bar_class(%Load{status: :over}), do: "bg-crit"
   defp bar_class(%Load{status: :unknown}), do: "bg-fg-subtle"
