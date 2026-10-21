@@ -40,6 +40,10 @@ config :renga, RengaWeb.Endpoint,
   pubsub_server: Renga.PubSub,
   live_view: [signing_salt: "hbEUUN7o"]
 
+# The WebAuthn origin passkeys are bound to; its host is the relying party ID
+# (RFD 19). Production derives it from PHX_HOST in runtime.exs.
+config :renga, :webauthn, origin: "http://localhost:4000"
+
 # Configures the mailer
 #
 # By default it uses the "Local" adapter which stores the emails

@@ -3,7 +3,7 @@ defmodule Renga.Accounts.MFA do
   Second factors and recovery codes (RFD 19, "Credentials").
 
   An account has multi-factor authentication when it holds an authenticator
-  app (and, once they land, a passkey). Adding the first factor generates
+  app or a passkey (`Renga.Accounts.Passkeys`). Adding the first factor generates
   ten recovery codes; removing the last one discards them, since a recovery
   code only ever stands in for a second factor.
 
@@ -26,6 +26,7 @@ defmodule Renga.Accounts.MFA do
 
   import Ecto.Query
 
+  alias Renga.Accounts.Passkeys
   alias Renga.Accounts.SecurityEvent
   alias Renga.Accounts.User
   alias Renga.Accounts.UserRecoveryCode
@@ -42,8 +43,14 @@ defmodule Renga.Accounts.MFA do
   @max_failures 10
   @failure_window_minutes 15
 
-  @doc "Whether the account holds a second factor."
-  def mfa?(%User{} = user), do: totp_enabled?(user)
+  @doc "Whether the account holds a second factor: a passkey or an authenticator app."
+  def mfa?(%User{} = user), do: totp_enabled?(user) or Passkeys.any?(user)
+
+  @doc "Discards the recovery codes once the account has no second factor left."
+  def discard_recovery_codes_without_mfa(%User{} = user) do
+    unless mfa?(user), do: Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
+    :ok
+  end
 
   @doc "Whether the account has an authenticator app."
   def totp_enabled?(%User{id: user_id}), do: Repo.exists?(where(UserTOTP, user_id: ^user_id))
@@ -137,7 +144,7 @@ defmodule Renga.Accounts.MFA do
   def disable_totp(%User{} = user) do
     with_account_lock(user, fn ->
       Repo.delete_all(where(UserTOTP, user_id: ^user.id))
-      unless mfa?(user), do: Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
+      discard_recovery_codes_without_mfa(user)
       end_pending_sign_ins(user)
       record_event(user, "totp_removed")
       {:ok, user}

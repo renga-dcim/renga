@@ -94,3 +94,10 @@ config :swoosh, :api_client, false
 
 # A fixed key for development secrets such as authenticator app secrets.
 config :renga, Renga.Vault, keys: "dev:OyMJcHqXVS5r+ch7+AZaZANdQIP+j3lV/rKmR94Sswc="
+
+# Passkeys only work on the origin the browser shows, so set WEBAUTHN_ORIGIN
+# when the server is reached through another host, such as Tailscale Serve.
+config :renga, :webauthn,
+  origin:
+    System.get_env("WEBAUTHN_ORIGIN") ||
+      "http://localhost:#{System.get_env("PORT") || "4401"}"

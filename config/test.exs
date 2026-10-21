@@ -82,3 +82,5 @@ config :phoenix_live_view,
   enable_expensive_runtime_checks: true
 
 config :renga, Renga.Vault, keys: "test:JEhIiyOdTqyJVJP6LBS3Tt65N+Ho5AQzC7ov/t6FjVM="
+
+config :renga, :webauthn, origin: "http://localhost:4002"
