@@ -601,15 +601,18 @@ defmodule Renga.Accounts do
       user ->
         # Under the account lock, like every factor change, so a factor
         # being added meanwhile is removed too or added after.
-        with {:ok, user} <-
-               MFA.with_account_lock(user, fn ->
-                 MFA.remove_all(user)
-                 SecurityLog.record(user, "mfa_removed_by_operator", %{"actor" => actor})
-                 {:ok, user}
-               end) do
+        remove = fn -> remove_all_mfa(user, actor) end
+
+        with {:ok, user} <- MFA.with_account_lock(user, remove) do
           {:ok, user, SecurityLog.notify(user, "mfa_removed_by_operator")}
         end
     end
+  end
+
+  defp remove_all_mfa(user, actor) do
+    MFA.remove_all(user)
+    SecurityLog.record(user, "mfa_removed_by_operator", %{"actor" => actor})
+    {:ok, user}
   end
 
   @second_step_minutes 5
