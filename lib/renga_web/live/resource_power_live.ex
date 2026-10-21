@@ -238,7 +238,7 @@ defmodule RengaWeb.ResourcePowerLive do
                   }
                   title={path_summary(@paths_by_port[port.id])}
                   phx-click={show_path(@paths_by_port[port.id])}
-                  class="flex h-7 min-h-tap min-w-tap w-full items-center gap-1 rounded-sm text-left transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  class="flex min-h-tap min-w-tap w-full items-center gap-1 rounded-sm text-left transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
                   <span class={[
                     "min-w-0 flex-1 truncate",
@@ -404,9 +404,9 @@ defmodule RengaWeb.ResourcePowerLive do
               <div class="min-w-0 flex-1">
                 <.link
                   navigate={~p"/inventory/#{outlet.resource}/power"}
-                  class="inline-flex h-7 min-h-tap min-w-tap max-w-full items-center rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  class="flex min-h-tap min-w-tap w-full items-center rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
-                  <span class="break-words">{outlet.resource.name}</span>
+                  <span class="min-w-0 break-words">{outlet.resource.name}</span>
                 </.link>
                 <p class="break-words text-sm">
                   Outlet <span class="font-mono">{outlet.name}</span>

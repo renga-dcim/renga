@@ -274,9 +274,13 @@ defmodule RengaWeb.Browser.PowerTest do
   defp panel_fits_js(id) do
     """
     (() => {
-      const box = document.getElementById('#{id}-container').getBoundingClientRect();
+      const panel = document.getElementById('#{id}-container');
+      const box = panel.getBoundingClientRect();
+      const contentFits = [...panel.querySelectorAll('*')].every(element =>
+        element.scrollWidth <= element.clientWidth + 0.5
+      );
       return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
-        box.width >= document.getElementById('#{id}-container').scrollWidth &&
+        box.width >= panel.scrollWidth && contentFits &&
         document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
     """
