@@ -305,6 +305,48 @@ defmodule RengaWeb.InventoryOperationsLive do
             </.form>
           </div>
 
+          <%!-- The table drops its key column below the 5xl container size,
+                which a page with the sidebar reaches only on wide screens, so
+                keys awaiting approval are listed here at every width. --%>
+          <div
+            :if={@pending_keys != []}
+            id="pending-installation-keys"
+            aria-labelledby="pending-installation-keys-heading"
+            role="region"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <h3
+              id="pending-installation-keys-heading"
+              class="border-b border-line px-4 py-2 text-xs font-medium text-fg-muted"
+            >
+              Installation keys awaiting approval
+            </h3>
+            <ul class="divide-y divide-line">
+              <li
+                :for={{key, name} <- @pending_keys}
+                id={"pending-key-#{key.id}"}
+                class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm"
+              >
+                <span class="min-w-0 truncate font-medium text-fg" title={name}>{name}</span>
+                <span class="font-mono text-xs text-fg-muted" title={key.fingerprint}>
+                  {short_fingerprint(key.fingerprint)}
+                </span>
+                <button
+                  :if={@can_manage?}
+                  id={"pending-key-#{key.id}-approve"}
+                  type="button"
+                  phx-click={show_overlay("approve-key-#{key.id}")}
+                  class="ml-auto min-h-tap min-w-tap cursor-pointer text-xs text-link hover:underline"
+                >
+                  Approve
+                </button>
+                <span :if={!@can_manage?} class="ml-auto text-xs text-fg-subtle">
+                  Needs someone who manages intake keys
+                </span>
+              </li>
+            </ul>
+          </div>
+
           <%!-- One line per collector, with times and counts inline after each
                 state (docs/design-system.md, "Overflow"). As the table narrows
                 it drops the installation id (already in the name), then the
@@ -387,7 +429,7 @@ defmodule RengaWeb.InventoryOperationsLive do
           </.table>
 
           <.confirm_dialog
-            :for={key <- @pending_keys}
+            :for={{key, _name} <- @pending_keys}
             :if={@can_manage?}
             id={"approve-key-#{key.id}"}
             title="Approve this installation key?"
@@ -573,10 +615,7 @@ defmodule RengaWeb.InventoryOperationsLive do
     socket
     |> assign(:can_manage?, Inventory.collector_manager?(scope))
     |> assign(:keys_by_agent, keys_by_agent)
-    |> assign(
-      :pending_keys,
-      keys_by_agent |> Map.values() |> Enum.filter(&(&1.status == "pending"))
-    )
+    |> assign(:pending_keys, pending_keys(sources, keys_by_agent))
     |> assign(:clocks_by_source, CollectionClocks.by_source(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
     |> stream(:intake_api_keys, Inventory.list_intake_api_keys(scope), reset: true)
@@ -586,6 +625,13 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp schedule_refresh(socket) do
     if connected?(socket), do: Process.send_after(self(), :refresh, @refresh_interval)
     socket
+  end
+
+  # Pending keys with the collector each belongs to, in table order.
+  defp pending_keys(sources, keys_by_agent) do
+    for source <- sources,
+        %{status: "pending"} = key <- [Map.get(keys_by_agent, collector_agent(source).id)],
+        do: {key, source.name}
   end
 
   defp key_form, do: to_form(%{"name" => ""}, as: :intake_api_key)

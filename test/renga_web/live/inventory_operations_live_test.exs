@@ -389,11 +389,14 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
       assert has_element?(view, "#collector-key-#{source.id}", "Pending")
       assert has_element?(view, "#approve-key-#{key.id}", key.fingerprint)
+      assert has_element?(view, "#pending-key-#{key.id}", source.name)
+      assert has_element?(view, "#pending-key-#{key.id}-approve")
 
       render_click(view, "approve_installation_key", %{id: key.id, fingerprint: key.fingerprint})
 
       assert has_element?(view, "#collector-key-#{source.id}", "Approved")
       refute has_element?(view, "#approve-key-#{key.id}-button")
+      refute has_element?(view, "#pending-installation-keys")
     end
 
     test "refuses a key that changed after the page loaded", %{conn: conn, agent: agent} do
@@ -425,6 +428,9 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
       assert has_element?(view, "#collector-key-#{source.id}", "Pending")
       refute has_element?(view, "#approve-key-#{key.id}-button")
+      assert has_element?(view, "#pending-key-#{key.id}")
+      refute has_element?(view, "#pending-key-#{key.id}-approve")
+      refute has_element?(view, "#approve-key-#{key.id}")
     end
   end
 end
