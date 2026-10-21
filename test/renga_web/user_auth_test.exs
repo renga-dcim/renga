@@ -27,17 +27,21 @@ defmodule RengaWeb.UserAuthTest do
       organization
     end
 
-    # Logs in from a browser carrying the cookies `previous` set, if any.
-    defp logged_in_organization(user, previous \\ nil) do
+    # A browser carrying the cookies `previous` set, if any.
+    defp browser(previous) do
       cookies = if previous, do: previous.resp_cookies, else: %{}
 
       conn =
         Map.replace!(build_conn(), :secret_key_base, RengaWeb.Endpoint.config(:secret_key_base))
 
-      cookies
-      |> Enum.reduce(conn, fn {name, %{value: value}}, conn ->
+      Enum.reduce(cookies, conn, fn {name, %{value: value}}, conn ->
         put_req_cookie(conn, name, value)
       end)
+    end
+
+    defp logged_in_organization(user, previous \\ nil) do
+      previous
+      |> browser()
       |> init_test_session(%{})
       |> UserAuth.log_in_user(user)
       |> get_session(:current_organization_id)
@@ -111,6 +115,34 @@ defmodule RengaWeb.UserAuthTest do
       {:ok, _} = Accounts.update_organization_membership(membership, %{status: "disabled"})
 
       assert logged_in_organization(user, opened) == first.id
+    end
+
+    test "falls back when the remembered organization was disabled", %{conn: conn, user: user} do
+      first = join(user)
+      second = join(user)
+      opened = open(conn, user, second)
+
+      {:ok, _} = Accounts.update_organization(second, %{status: "disabled"})
+
+      assert logged_in_organization(user, opened) == first.id
+    end
+
+    test "keeps the organization of a signed-in user who signs in again", %{
+      conn: conn,
+      user: user
+    } do
+      first = join(user)
+      second = join(user)
+      opened = open(conn, user, first)
+
+      conn =
+        opened
+        |> browser()
+        |> init_test_session(%{current_organization_id: second.id})
+        |> assign(:current_scope, Accounts.scope_for_user(user, second.id))
+        |> UserAuth.log_in_user(user)
+
+      assert get_session(conn, :current_organization_id) == second.id
     end
   end
 
