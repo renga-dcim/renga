@@ -59,6 +59,56 @@ defmodule Renga.TeamsTest do
     end
   end
 
+  describe "members" do
+    test "people are added to and removed from teams, each recorded", context do
+      {:ok, team} = Teams.create_team(context.admin, %{"name" => "Platform"})
+      member_id = context.member.membership_id
+
+      assert {:ok, :added} = Teams.add_member(context.admin, team, member_id)
+      assert {:ok, :unchanged} = Teams.add_member(context.admin, team, member_id)
+
+      assert [%{id: ^member_id, user: %{email: email}}] =
+               Teams.list_team_members(context.admin, team)
+
+      assert email == context.member.user.email
+      assert [%{member_count: 1}] = Teams.list_teams(context.admin)
+
+      assert {:ok, :removed} = Teams.remove_member(context.admin, team, member_id)
+      assert {:ok, :unchanged} = Teams.remove_member(context.admin, team, member_id)
+      assert Teams.list_team_members(context.admin, team) == []
+
+      kinds = context.admin |> Inventory.list_activity() |> Enum.map(& &1.kind)
+      assert ["team_member_removed", "team_member_added" | _] = kinds
+    end
+
+    test "needs teams.manage and an active member of the same organization", context do
+      {:ok, team} = Teams.create_team(context.admin, %{"name" => "Platform"})
+
+      assert {:error, :forbidden} =
+               Teams.add_member(context.member, team, context.member.membership_id)
+
+      stranger = member_scope(organization_fixture(), "member")
+
+      assert {:error, :invalid_member} =
+               Teams.add_member(context.admin, team, stranger.membership_id)
+
+      assert {:error, :invalid_member} = Teams.add_member(context.admin, team, "nope")
+
+      {:ok, _} = Renga.Members.disable_member(context.admin, context.member.membership_id)
+
+      assert {:error, :invalid_member} =
+               Teams.add_member(context.admin, team, context.member.membership_id)
+    end
+
+    test "deleting a team takes everyone off it", context do
+      {:ok, team} = Teams.create_team(context.admin, %{"name" => "Platform"})
+      {:ok, :added} = Teams.add_member(context.admin, team, context.member.membership_id)
+      {:ok, _} = Teams.delete_team(context.admin, team)
+
+      assert Repo.aggregate(Renga.Teams.TeamMembership, :count) == 0
+    end
+  end
+
   describe "owners" do
     test "setting an owner records the person, a revision, and Activity", context do
       {:ok, team} = Teams.create_team(context.admin, %{"name" => "Platform"})
