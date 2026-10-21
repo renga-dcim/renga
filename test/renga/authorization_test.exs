@@ -45,6 +45,13 @@ defmodule Renga.AuthorizationTest do
       assert Authorization.roles_granting("inventory.read") == ~w(owner admin member viewer)
     end
 
+    test "grant ceilings keep owner with owners" do
+      assert Authorization.grantable_roles("owner") == ~w(owner admin member viewer)
+      assert Authorization.grantable_roles("admin") == ~w(admin member viewer)
+      assert Authorization.grantable_roles("member") == []
+      assert Authorization.grantable_roles("viewer") == []
+    end
+
     test "an unknown permission is a programming error" do
       assert_raise ArgumentError, ~r/unknown permission/, fn ->
         Authorization.roles_granting("inventory.delete")

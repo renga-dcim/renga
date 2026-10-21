@@ -102,6 +102,18 @@ defmodule Renga.Authorization do
     Enum.filter(@role_order, &(permission in Map.fetch!(@built_in_roles, &1)))
   end
 
+  @doc """
+  The built-in roles a holder of `role` may grant, change, or take away
+  (RFD 17's grant ceiling), most privileged first.
+
+  The ceiling is separate from action permissions: an admin may grant
+  `member`, and with it `requests.create`, without holding it. Only an owner
+  may grant `owner`, and so the owner-only organization permissions.
+  """
+  def grantable_roles("owner"), do: @role_order
+  def grantable_roles("admin"), do: ~w(admin member viewer)
+  def grantable_roles(_role), do: []
+
   @doc "The fixed internal principals machine scopes run as."
   def machine_principals, do: @machine_principals
 

@@ -68,6 +68,15 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "rule_applied", new_value: value} = event),
     do: "Owner set to #{value["name"]} by #{rule_label(event)}"
 
+  def describe(%{kind: "member_role_changed", metadata: metadata, new_value: %{"value" => role}}),
+    do: "#{metadata["member"]} became #{role}" <> reason(metadata)
+
+  def describe(%{kind: "member_disabled", metadata: metadata}),
+    do: "#{metadata["member"]} disabled" <> reason(metadata)
+
+  def describe(%{kind: "member_enabled", metadata: metadata}),
+    do: "#{metadata["member"]} re-enabled" <> reason(metadata)
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
@@ -132,4 +141,7 @@ defmodule RengaWeb.ChangeDescription do
 
   defp with_field(verb, nil), do: verb
   defp with_field(verb, field), do: "#{verb} #{String.replace(field, "_", " ")}"
+
+  defp reason(%{"reason" => reason}) when is_binary(reason), do: " · #{reason}"
+  defp reason(_metadata), do: ""
 end
