@@ -307,7 +307,8 @@ defmodule RengaWeb.InventoryOperationsLive do
 
           <%!-- One line per collector, with times and counts inline after each
                 state (docs/design-system.md, "Overflow"). As the table narrows
-                it drops the installation id (already in the name), then the
+                it drops the installation key (pending keys also reach the
+                Inbox), then the installation id (already in the name), the
                 resource, jobs, queue and inventory; the name and connection
                 always stay. --%>
           <.table
@@ -330,14 +331,6 @@ defmodule RengaWeb.InventoryOperationsLive do
                     source
                   )}
                 </span>
-              </span>
-            </:col>
-            <:col :let={{_id, source}} label="Installation key" class="w-44">
-              <span id={"collector-key-#{source.id}"}>
-                <.installation_key_state
-                  key={Map.get(@keys_by_agent, collector_agent(source).id)}
-                  can_approve?={@can_manage?}
-                />
               </span>
             </:col>
             <:col :let={{_id, source}} label="Resource" class="w-32" hide_below="5xl">
@@ -363,6 +356,14 @@ defmodule RengaWeb.InventoryOperationsLive do
               hide_below="5xl"
             >
               {short_installation_id(collector_agent(source).installation_id)}
+            </:col>
+            <:col :let={{_id, source}} label="Installation key" class="w-44" hide_below="6xl">
+              <span id={"collector-key-#{source.id}"}>
+                <.installation_key_state
+                  key={Map.get(@keys_by_agent, collector_agent(source).id)}
+                  can_approve?={@can_manage?}
+                />
+              </span>
             </:col>
             <:col :let={{_id, source}} label="Inventory" class="w-48" hide_below="xl">
               <span id={"collector-inventory-#{source.id}"}>
