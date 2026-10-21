@@ -4,9 +4,11 @@ defmodule RengaWeb.MemberLiveTest do
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Swoosh.TestAssertions
 
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Members
 
   setup do
     organization = organization_fixture()
@@ -105,6 +107,78 @@ defmodule RengaWeb.MemberLiveTest do
       assert has_element?(view, "#members-read-only")
       refute has_element?(view, "#member-panel")
       refute has_element?(view, "[id$=-edit]")
+    end
+  end
+
+  describe "invitations" do
+    test "admins invite, see, and revoke pending invitations", context do
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/members")
+
+      refute has_element?(view, "#invite-form option[value=owner]")
+
+      view
+      |> form("#invite-form", invitation: %{email: "not-an-email", role: "member"})
+      |> render_submit()
+
+      assert has_element?(view, "#invite-form", "must have the @ sign")
+
+      view
+      |> form("#invite-form", invitation: %{email: "new@example.com", role: "viewer"})
+      |> render_submit()
+
+      assert_received {:email, %{to: [{_, "new@example.com"}], text_body: body}}
+      assert body =~ "/invitations/"
+
+      [invitation] = Members.list_invitations(context.admin)
+      assert has_element?(view, "#invitation-#{invitation.id}", "new@example.com")
+
+      view |> element("#invitation-#{invitation.id}-revoke") |> render_click()
+      refute has_element?(view, "#invitation-#{invitation.id}")
+      assert Members.list_invitations(context.admin) == []
+    end
+
+    test "the invited person accepts and can open the organization", context do
+      user = user_fixture()
+
+      {:ok, _} =
+        Members.invite(context.owner, %{"email" => user.email, "role" => "member"}, &"/i/#{&1}")
+
+      assert_received {:email, %{subject: "You're invited" <> _, text_body: body}}
+      [_, token] = Regex.run(~r{/i/(\S+)}, body)
+
+      conn = log_in_user(build_conn(), user)
+      {:ok, view, _html} = live(conn, ~p"/invitations/#{token}")
+      assert has_element?(view, "#invitation-offer", "member")
+
+      assert {:error, {:live_redirect, %{to: "/organizations"}}} =
+               view |> element("#accept-invitation") |> render_click()
+
+      assert Accounts.scope_for_user(user, context.owner.organization_id).roles == ["member"]
+
+      {:ok, view, _html} = live(conn, ~p"/invitations/#{token}")
+      assert has_element?(view, "#invitation-invalid")
+    end
+
+    test "someone else's account is refused", context do
+      {:ok, _} =
+        Members.invite(
+          context.owner,
+          %{"email" => "a@example.com", "role" => "member"},
+          &"/i/#{&1}"
+        )
+
+      assert_received {:email, %{subject: "You're invited" <> _, text_body: body}}
+      [_, token] = Regex.run(~r{/i/(\S+)}, body)
+
+      {:ok, view, _html} =
+        live(log_in_user(build_conn(), user_fixture()), ~p"/invitations/#{token}")
+
+      html = view |> element("#accept-invitation") |> render_click()
+      assert html =~ "for a different email address"
+    end
+
+    test "signing in comes first", %{conn: conn} do
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} = live(conn, ~p"/invitations/anything")
     end
   end
 
