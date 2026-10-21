@@ -13,8 +13,9 @@ use renga_agent::{
         Address, AgentHome, CheckIn, CheckInAck, Collector, CollectorIdentifiers, CollectorKind,
         CollectorResource, CollectorResourceKind, Component, HostAttributes, HypervisorStatus,
         Identifiers, Interface, JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse,
-        LeasedJob, Observation, PresentedKey, QueueReport, Reachability, ReportAck, ReportScope,
-        ReportType, ResourceKind, ScopedReport, ServerResource, TargetStatus,
+        LeasedJob, Neighbor, Observation, PresentedKey, QueueReport, Reachability, ReportAck,
+        ReportScope, ReportType, ResourceKind, ScopedReport, SectionCompleteness, ServerResource,
+        TaggingMode, TargetStatus, VlanMembership,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -160,13 +161,36 @@ fn a_switch_poller_report_matches_the_contract() {
                 model: Some("S5248F-ON".into()),
                 ..Default::default()
             }),
-            interfaces: Some(vec![interface(
-                "ethernet1/1/1",
-                "ethernet",
-                Some("52:54:00:aa:00:01"),
-            )]),
+            interfaces: Some(vec![Interface {
+                vlan_mode: Some("trunk".into()),
+                vlans: Some(vec![
+                    VlanMembership {
+                        vid: 10,
+                        tagging_mode: TaggingMode::Untagged,
+                    },
+                    VlanMembership {
+                        vid: 20,
+                        tagging_mode: TaggingMode::Tagged,
+                    },
+                ]),
+                neighbors: Some(vec![Neighbor {
+                    protocol: "lldp",
+                    remote_chassis_id: "192.0.2.10".into(),
+                    remote_chassis_id_kind: "network_address",
+                    remote_port_id: "52:54:00:12:34:56".into(),
+                    remote_port_id_kind: "mac_address",
+                    remote_system_name: Some("db-01".into()),
+                    remote_port_description: None,
+                    ttl_seconds: 2_700,
+                }]),
+                ..interface("ethernet1/1/1", "ethernet", Some("52:54:00:aa:00:01"))
+            }]),
         }],
-    );
+    )
+    .with_section_completeness(SectionCompleteness {
+        interface_vlans: true,
+        interface_neighbors: true,
+    });
 
     assert_conforms("Observation", &report);
 }
@@ -479,4 +503,55 @@ fn the_agent_decodes_documented_responses() {
         }),
     );
     assert!(!ack.cancel_requested);
+}
+
+/// Polls a real SNMP agent when `RENGA_SNMPD_TEST` names one (see `snmp::client`'s live test)
+/// and checks the report the poller would send. The agent must expose a chassis serial in
+/// ENTITY-MIB. Skipped otherwise.
+#[test]
+fn a_live_switch_poll_matches_the_contract() {
+    use renga_agent::snmp::{
+        self,
+        client::{PollError, Session, WireSession},
+        config::{AuthProtocol, Credentials, PrivacyProtocol, SnmpCollector, Target},
+    };
+    use std::time::Duration;
+
+    let (Ok(address), Ok(auth), Ok(privacy)) = (
+        std::env::var("RENGA_SNMPD_TEST"),
+        std::env::var("RENGA_SNMPD_AUTH"),
+        std::env::var("RENGA_SNMPD_PRIV"),
+    ) else {
+        return;
+    };
+    let collector = SnmpCollector {
+        id: "lab".into(),
+        targets: vec![Target::parse(&address).unwrap()],
+        credentials: Credentials::V3 {
+            username: "renga".into(),
+            auth_protocol: AuthProtocol::Sha256,
+            auth_password_file: auth.into(),
+            privacy_protocol: PrivacyProtocol::Aes128,
+            privacy_password_file: privacy.into(),
+        },
+        interval: Duration::from_secs(900),
+        timeout: Duration::from_secs(2),
+        max_concurrent_targets: 1,
+    };
+    let open = |target: &Target| -> Result<Box<dyn Session>, PollError> {
+        WireSession::open(target, &collector.credentials, collector.timeout)
+            .map(|session| Box::new(session) as Box<dyn Session>)
+    };
+    let outcomes = snmp::poll(&collector, &Cancellation::default(), open);
+    assert!(outcomes[0].result.is_ok(), "{:?}", outcomes[0].result);
+
+    let [(_, body)] = <[_; 1]>::try_from(snmp::reports("lab", outcomes)).unwrap();
+    let report: Value = serde_json::from_slice(&body).unwrap();
+    let errors = violations("Observation", &report);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(report["targets"][0]["status"], "reachable");
+    assert!(!report["resources"][0]["interfaces"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
