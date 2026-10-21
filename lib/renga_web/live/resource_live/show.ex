@@ -83,6 +83,7 @@ defmodule RengaWeb.ResourceLive.Show do
        lifecycle_form: lifecycle_form(resource),
        hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
        can_manage_lifecycle?: Authorization.allowed?(scope, "inventory.edit"),
+       can_bind_targets?: Authorization.allowed?(scope, "intake_keys.manage"),
        host_fields: @host_fields,
        can_request?: Requests.can_request?(scope),
        teams: Teams.list_teams(scope),
@@ -401,7 +402,7 @@ defmodule RengaWeb.ResourceLive.Show do
               <.target_binding
                 binding={@target_binding}
                 candidates={@binding_candidates}
-                can_manage?={@can_manage_lifecycle?}
+                can_manage?={@can_bind_targets?}
               />
               <.sources resource={@resource} signals={@signals} />
             </div>

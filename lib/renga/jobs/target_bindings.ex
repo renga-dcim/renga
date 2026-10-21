@@ -56,12 +56,14 @@ defmodule Renga.Jobs.TargetBindings do
   end
 
   @doc """
-  Binds a resource to an installation as an owner or admin. `fingerprint` is
-  the key the person compared; a key replaced in the meantime is refused.
+  Binds a resource to an installation. Binding trusts that installation's
+  key for the resource's privileged jobs, so it needs `intake_keys.manage`,
+  which owners and admins hold. `fingerprint` is the key the person
+  compared; a key replaced in the meantime is refused.
   """
   def bind(%Scope{} = scope, resource_id, agent_id, fingerprint) do
     scope
-    |> Inventory.organization_management_transaction(fn ->
+    |> Inventory.organization_management_transaction("intake_keys.manage", fn ->
       organization_id = scope.organization_id
       lock_resource_bindings!(organization_id, resource_id)
       agent = Repo.get_by(Agent, organization_id: organization_id, id: agent_id)
@@ -118,10 +120,10 @@ defmodule Renga.Jobs.TargetBindings do
     |> Changes.broadcast(scope.organization_id)
   end
 
-  @doc "Ends a resource's binding as an owner or admin."
+  @doc "Ends a resource's binding; it needs `intake_keys.manage`, like binding."
   def revoke(%Scope{} = scope, binding_id) do
     scope
-    |> Inventory.organization_management_transaction(fn ->
+    |> Inventory.organization_management_transaction("intake_keys.manage", fn ->
       binding =
         TargetBinding
         |> where([binding], binding.organization_id == ^scope.organization_id)
