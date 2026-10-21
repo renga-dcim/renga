@@ -26,6 +26,7 @@ defmodule RengaWeb.ResourceLive.Show do
   import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.RequestComponents, only: [pending_request: 1]
   import RengaWeb.JobComponents, only: [collect_notice: 1, job_change: 1, job_change?: 1]
+  import RengaWeb.TargetBindingComponents, only: [target_binding: 1]
 
   alias Renga.Authorization
   alias Renga.Catalog
@@ -36,6 +37,7 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Inventory.SourcePrecedence
   alias Renga.Jobs
   alias Renga.Jobs.Job
+  alias Renga.Jobs.TargetBindings
   alias Renga.Requests
   alias Renga.Teams
   alias RengaWeb.Format
@@ -277,6 +279,28 @@ defmodule RengaWeb.ResourceLive.Show do
     end
   end
 
+  def handle_event("bind_target", %{"agent_id" => agent_id, "fingerprint" => fingerprint}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    case TargetBindings.bind(scope, resource.id, agent_id, fingerprint) do
+      {:ok, _binding} ->
+        {:noreply, socket |> put_flash(:info, "Privileged jobs bound") |> assign_signals()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, binding_error(reason)) |> assign_signals()}
+    end
+  end
+
+  def handle_event("revoke_target", %{"id" => id}, socket) do
+    case TargetBindings.revoke(socket.assigns.current_scope, id) do
+      {:ok, _binding} ->
+        {:noreply, socket |> put_flash(:info, "Privileged jobs unbound") |> assign_signals()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, binding_error(reason)) |> assign_signals()}
+    end
+  end
+
   def handle_event("collect", _params, socket) do
     %{current_scope: scope, resource: resource, collect: collect} = socket.assigns
 
@@ -373,7 +397,14 @@ defmodule RengaWeb.ResourceLive.Show do
               routing_domains={@routing_domains}
             />
           <% :sources -> %>
-            <.sources resource={@resource} signals={@signals} />
+            <div class="space-y-6">
+              <.target_binding
+                binding={@target_binding}
+                candidates={@binding_candidates}
+                can_manage?={@can_manage_lifecycle?}
+              />
+              <.sources resource={@resource} signals={@signals} />
+            </div>
           <% :activity -> %>
             <.activity events={@resource.change_events} />
         <% end %>
@@ -1538,10 +1569,24 @@ defmodule RengaWeb.ResourceLive.Show do
   # Only the Sources tab shows reporting signals, so only it loads them.
   defp assign_signals(%{assigns: %{live_action: :sources}} = socket) do
     %{current_scope: scope, resource: resource} = socket.assigns
-    assign(socket, :signals, Renga.Inventory.ReportingSignals.for_resource(scope, resource))
+
+    assign(socket,
+      signals: Renga.Inventory.ReportingSignals.for_resource(scope, resource),
+      target_binding: TargetBindings.current(scope, resource.id),
+      binding_candidates: TargetBindings.candidates(scope, resource.id)
+    )
   end
 
-  defp assign_signals(socket), do: assign(socket, :signals, [])
+  defp assign_signals(socket),
+    do: assign(socket, signals: [], target_binding: nil, binding_candidates: [])
+
+  defp binding_error(:forbidden), do: "Only owners and admins can bind privileged jobs"
+  defp binding_error(:key_changed), do: "That installation's key changed; compare it again"
+
+  defp binding_error(:agent_not_for_resource),
+    do: "That installation no longer reports this resource"
+
+  defp binding_error(_reason), do: "The binding changed elsewhere; review it and retry"
 
   defp observation_count_label(1), do: "1 observation"
   defp observation_count_label(count), do: "#{count} observations"
