@@ -19,6 +19,7 @@ defmodule Renga.Application do
         Renga.Repo,
         {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Renga.PubSub},
+        Renga.Accounts.OIDC.Discovery,
         neighbor_expiry_worker(),
         assignment_expiry_worker(),
         job_sweeper(),

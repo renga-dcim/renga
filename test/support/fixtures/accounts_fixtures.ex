@@ -78,6 +78,34 @@ defmodule Renga.AccountsFixtures do
     {secret, codes}
   end
 
+  @doc """
+  An active deployment OpenID Connect provider for `fake`, a
+  `Renga.FakeOIDCProvider`. Activation is set directly here; the real path is
+  a test sign-in.
+  """
+  def identity_provider_fixture(fake, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          "id" => "idp-#{System.unique_integer([:positive])}",
+          "kind" => "oidc",
+          "issuer" => fake.issuer,
+          "display_name" => "Company SSO",
+          "client_id" => fake.client_id,
+          "client_secret" => "client-secret",
+          "allow_sign_up" => true
+        },
+        attrs
+      )
+
+    {:ok, {provider, _revision}} =
+      Accounts.IdentityProviders.create(attrs, {:operator, "fixture"})
+
+    provider
+    |> Ecto.Changeset.change(active_revision: 1, pending_revision: nil)
+    |> Renga.Repo.update!()
+  end
+
   def extract_user_token(fun) do
     {:ok, captured_email} = fun.(&"[TOKEN]#{&1}[TOKEN]")
     [_, token | _] = String.split(captured_email.text_body, "[TOKEN]")
