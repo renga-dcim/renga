@@ -2,6 +2,7 @@ defmodule RengaWeb.Browser.PowerTest do
   use PhoenixTest.Playwright.Case, async: true
 
   import Renga.AccountsFixtures
+  import Renga.CatalogFixtures
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
@@ -27,6 +28,13 @@ defmodule RengaWeb.Browser.PowerTest do
         amperage: "16"
       })
 
+    {server, _expected} =
+      assigned_server_fixture(scope, "web-1", [
+        %{kind: "power_port", name: "PSU1", attributes: %{"allocated_draw_w" => 350}}
+      ])
+
+    %{ports: [port]} = Power.list_device_endpoints(scope, server.id)
+
     conn =
       add_session_cookie(
         conn,
@@ -39,7 +47,7 @@ defmodule RengaWeb.Browser.PowerTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, site: site, feed: feed}
+    %{conn: conn, site: site, feed: feed, server: server, port: port}
   end
 
   test "a feed editor opens from the keyboard and restores focus when closed", context do
@@ -58,6 +66,25 @@ defmodule RengaWeb.Browser.PowerTest do
     )
     |> press("#feed-panel [role=dialog]", "Escape")
     |> refute_has("#feed-panel [role=dialog]")
+    |> assert_has("#{edit}:focus")
+  end
+
+  test "an allocation editor opens from the keyboard and restores focus when closed", context do
+    edit = "#power-port-#{context.port.id}-edit"
+
+    context.conn
+    |> visit("/inventory/#{context.server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> evaluate("document.querySelector(#{Jason.encode!(edit)}).focus()")
+    |> assert_has("#{edit}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#allocation-panel [role=dialog]", text: "Allocate PSU1")
+    |> evaluate(
+      "document.querySelector('#allocation-panel [role=dialog]').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> press("#allocation-panel [role=dialog]", "Escape")
+    |> refute_has("#allocation-panel [role=dialog]")
     |> assert_has("#{edit}:focus")
   end
 end

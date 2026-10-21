@@ -139,6 +139,18 @@ defmodule RengaWeb.ResourcePowerLive do
                   set here
                 </span>
               </:col>
+              <:action :let={port} :if={@can_manage?}>
+                <.button
+                  id={"power-port-#{port.id}-edit"}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label={"Edit allocation for #{port.name}"}
+                  phx-click={edit_port(port)}
+                >
+                  Edit
+                </.button>
+              </:action>
             </.table>
           </section>
 
