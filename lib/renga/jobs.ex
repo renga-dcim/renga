@@ -34,6 +34,7 @@ defmodule Renga.Jobs do
   alias Renga.Jobs.JobEvent
   alias Renga.Jobs.Registry
   alias Renga.Jobs.Settings
+  alias Renga.Jobs.TargetBindings
   alias Renga.Repo
 
   @lease_seconds 60
@@ -287,6 +288,20 @@ defmodule Renga.Jobs do
     end
   end
 
+  defp authorize_capability!(capability, scope, agent, parameters) do
+    case capability.authorize(scope, agent, parameters) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # A privileged job runs only where its resource is bound (RFD 13), never
+  # wherever inventory currently reports the resource.
+  defp capture_binding!(organization_id, agent, resource_id, capability) do
+    if capability.risk_class() != :observe,
+      do: TargetBindings.capture!(organization_id, agent, resource_id)
+  end
+
   defp do_create!(organization_id, actor, agent_id, capability, parameters, opts, scope) do
     key = Capability.key(capability)
     organization = Repo.get!(Organization, organization_id)
@@ -300,10 +315,8 @@ defmodule Renga.Jobs do
     parameters = cast_parameters!(capability, parameters)
     not_after = deadline!(opts, now)
 
-    case capability.authorize(scope, agent, parameters) do
-      :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
-    end
+    authorize_capability!(capability, scope, agent, parameters)
+    binding = capture_binding!(organization_id, agent, resource_id, capability)
 
     # Serializes creation per organization so idempotency and the rate limit
     # see every concurrent request.
@@ -332,7 +345,9 @@ defmodule Renga.Jobs do
             max_attempts: Keyword.get(opts, :max_attempts, @default_max_attempts),
             not_after: not_after,
             output_limit_bytes: capability.output_limit_bytes(),
-            timeout_ms: capability.timeout_ms()
+            timeout_ms: capability.timeout_ms(),
+            target_binding_id: binding && binding.id,
+            target_binding_version: binding && binding.version
           })
 
         apply!(job, %{}, [{"created", actor, %{"capability" => key}}], now)
@@ -571,15 +586,11 @@ defmodule Renga.Jobs do
   requests share the queue without waiting on each other. A queued job whose
   capability the organization no longer allows fails here instead of running.
 
-  ## Options
-
-    * `:risk_classes` - lease only jobs of these risk classes. Callers that
-      authenticate the agent with a shared organization credential pass
-      `["observe"]` (RFD 9, "Trust boundary").
+  Only `observe` jobs lease here. `operate` and `interactive` jobs need a
+  request signed with the installation's approved key (RFD 13), through
+  `Renga.Jobs.SignedLeases`.
   """
-  def lease_jobs(scope, agent, keys, limit, opts \\ [])
-
-  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit, opts)
+  def lease_jobs(%Scope{organization_id: organization_id}, %Agent{} = agent, keys, limit)
       when is_list(keys) and is_integer(limit) and limit > 0 do
     if agent.organization_id != organization_id do
       {:error, :forbidden}
@@ -593,7 +604,7 @@ defmodule Renga.Jobs do
           jobs =
             organization_id
             |> leasable_jobs(agent, keys, limit, now)
-            |> where_risk_class(Keyword.get(opts, :risk_classes))
+            |> where([job], job.risk_class == "observe")
             |> lock("FOR UPDATE SKIP LOCKED")
             |> Repo.all()
 
@@ -613,7 +624,8 @@ defmodule Renga.Jobs do
 
   defp broadcast_lease_change(result, _organization_id), do: result
 
-  defp leasable_jobs(organization_id, agent, keys, limit, now) do
+  @doc false
+  def leasable_jobs(organization_id, agent, keys, limit, now) do
     Job
     |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
     |> where([job], job.state == "queued" and job.not_after > ^now)
@@ -630,11 +642,6 @@ defmodule Renga.Jobs do
     |> limit(^limit)
   end
 
-  defp where_risk_class(query, nil), do: query
-
-  defp where_risk_class(query, risk_classes) when is_list(risk_classes),
-    do: where(query, [job], job.risk_class in ^risk_classes)
-
   defp lease_or_refuse!(%Job{} = job, agent, allowed, now) do
     if Job.capability_key(job) in allowed do
       [lease!(job, agent, now)]
@@ -644,9 +651,15 @@ defmodule Renga.Jobs do
     end
   end
 
-  defp lease!(%Job{} = job, %Agent{} = agent, now) do
-    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+  defp lease!(%Job{} = job, %Agent{} = agent, now),
+    do: lease_with_token!(job, agent, new_token(), now)
 
+  @doc false
+  def new_token, do: :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+  # Signed leases (RFD 13) lease with the token the agent signed over.
+  @doc false
+  def lease_with_token!(%Job{} = job, %Agent{} = agent, token, now) do
     job =
       apply!(
         job,
@@ -666,7 +679,21 @@ defmodule Renga.Jobs do
     {job, token}
   end
 
-  defp refuse!(%Job{} = job, reason, now) do
+  @doc """
+  Fails the queued privileged jobs requested under a binding that just
+  ended, so none of them runs on another installation (RFD 13).
+  """
+  def fail_queued_for_binding!(organization_id, binding_id, reason, now) do
+    Job
+    |> where([job], job.organization_id == ^organization_id)
+    |> where([job], job.target_binding_id == ^binding_id and job.state == "queued")
+    |> lock("FOR UPDATE")
+    |> Repo.all()
+    |> Enum.each(&refuse!(&1, reason, now))
+  end
+
+  @doc false
+  def refuse!(%Job{} = job, reason, now) do
     apply!(
       job,
       %{state: "failed", failure_reason: reason, finished_at: now},
@@ -861,7 +888,8 @@ defmodule Renga.Jobs do
 
   defp lease_expiry(now), do: DateTime.add(now, @lease_seconds)
 
-  defp hash_token(token), do: :crypto.hash(:sha256, token)
+  @doc false
+  def hash_token(token), do: :crypto.hash(:sha256, token)
 
   # Work reports leave room for a small terminal report, so exhausting output
   # cannot prevent the agent from recording a failure or cancellation.
@@ -915,15 +943,26 @@ defmodule Renga.Jobs do
     query
     |> order_by([job], asc: job.id)
     |> limit(@sweep_batch)
-    |> select([job], job.id)
+    |> select([job], {job.organization_id, job.id})
     |> Repo.all()
   end
 
-  defp sweep_one(job_id, now, kind) do
+  # Takes the organization before the job, the order every other job writer
+  # and binding change uses. Locking the job first would deadlock with a
+  # binding change: it holds the organization FOR UPDATE while it fails the
+  # binding's queued jobs, and the job event's foreign key needs KEY SHARE on
+  # that same organization row. Disabled organizations' jobs are swept too,
+  # so this does not require the organization to be active.
+  defp sweep_one({organization_id, job_id}, now, kind) do
     Changes.after_commit(fn ->
       Repo.transaction(fn ->
+        Organization
+        |> where([organization], organization.id == ^organization_id)
+        |> lock("FOR SHARE")
+        |> Repo.one()
+
         Job
-        |> where([job], job.id == ^job_id)
+        |> where([job], job.id == ^job_id and job.organization_id == ^organization_id)
         |> sweep_condition(kind, now)
         |> lock("FOR UPDATE SKIP LOCKED")
         |> Repo.one()
@@ -1245,7 +1284,8 @@ defmodule Renga.Jobs do
     end
   end
 
-  defp lock_active_organization!(organization_id, lock \\ :share) do
+  @doc false
+  def lock_active_organization!(organization_id, lock \\ :share) do
     query =
       Organization
       |> where([organization], organization.id == ^organization_id)

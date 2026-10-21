@@ -3,11 +3,13 @@
 use crate::{
     cancellation::Cancellation,
     config::{Config, DELIVERY_BUDGET},
+    installation_key::InstallationKey,
     payload::{
-        CheckIn, CheckInAck, JobReport, LeaseRequest, LeaseResponse, LeasedJob, Observation,
-        ReportAck, MAX_OBSERVATION_BYTES,
+        CheckIn, CheckInAck, JobClaim, JobOffer, JobReport, LeaseRequest, LeaseResponse, LeasedJob,
+        Observation, ReportAck, MAX_OBSERVATION_BYTES,
     },
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::{
     blocking::{Client, Response},
     header::{HeaderValue, AUTHORIZATION},
@@ -16,6 +18,7 @@ use reqwest::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fmt, io::Read, sync::Arc, thread, time::Duration};
+use tracing::warn;
 
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
@@ -102,6 +105,8 @@ pub struct HttpClient {
     lease_url: Url,
     authorization: HeaderValue,
     installation_id: HeaderValue,
+    installation: uuid::Uuid,
+    installation_key: Option<Arc<InstallationKey>>,
     notices: NoticeEndpoint,
     attempts: u32,
     request_timeout: Duration,
@@ -195,12 +200,23 @@ impl HttpClient {
             lease_url,
             authorization,
             installation_id,
+            installation: config.installation_id,
+            installation_key: None,
             notices,
             attempts: config.max_retry_attempts,
             request_timeout: config.request_timeout,
             cancellation,
         })
     }
+    /// Signs claims of privileged job offers with `key` (RFD 13). Without
+    /// one, the client leases only `observe` jobs.
+    pub fn with_installation_key(self, key: Arc<InstallationKey>) -> Self {
+        Self {
+            installation_key: Some(key),
+            ..self
+        }
+    }
+
     /// Where and how to open the job notice socket (see `crate::notices`).
     pub fn notice_endpoint(&self) -> NoticeEndpoint {
         self.notices.clone()
@@ -213,7 +229,8 @@ impl HttpClient {
         Ok(serde_json::from_slice(&body).unwrap_or_default())
     }
 
-    /// Leases up to `limit` queued jobs for the given `name@version` keys.
+    /// Leases up to `limit` queued jobs for the given `name@version` keys,
+    /// claiming each privileged job Renga offers with the installation key.
     pub fn lease_jobs(
         &self,
         capabilities: &[String],
@@ -224,7 +241,38 @@ impl HttpClient {
             limit,
         };
         let response: LeaseResponse = self.post_json(self.lease_url.clone(), &request)?;
-        Ok(response.jobs)
+        let mut jobs = response.jobs;
+        for offer in &response.offers {
+            match self.claim_offer(offer) {
+                Ok(job) => jobs.push(job),
+                // A lapsed offer is offered again, and a job whose resource was
+                // rebound has failed in Renga, so the other offers still lease.
+                Err(error) => {
+                    warn!(job_id = %offer.job_id, error = %error, "cannot claim job offer");
+                }
+            }
+        }
+        Ok(jobs)
+    }
+
+    /// Signs and posts the claim that leases an offered privileged job.
+    fn claim_offer(&self, offer: &JobOffer) -> Result<LeasedJob, TransportError> {
+        let key = self.installation_key.as_ref().ok_or_else(|| {
+            TransportError::new(
+                "no installation key to claim a privileged job".into(),
+                FailureKind::Permanent,
+            )
+        })?;
+        let url = endpoint_url(
+            &self.base_url,
+            &format!("/api/v1/agent/jobs/{}/claims", offer.job_id),
+        )?;
+        let claim = JobClaim {
+            lease_token: &offer.lease_token,
+            nonce: &offer.nonce,
+            signature: URL_SAFE_NO_PAD.encode(key.sign(&offer.message(self.installation))),
+        };
+        self.post_json(url, &claim)
     }
 
     /// Posts one numbered report on a leased job. Retries resend the same
@@ -626,37 +674,53 @@ mod tests {
 
     /// Answers one request with `status` and `body`, returning the request.
     fn answer_once(status: u16, body: &'static str) -> (String, thread::JoinHandle<String>) {
+        let (origin, server) = answer_each(vec![(status, body)]);
+        (
+            origin,
+            thread::spawn(move || server.join().unwrap().remove(0)),
+        )
+    }
+
+    /// Answers one connection per response, in order, and returns the requests.
+    fn answer_each(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0; 4096];
-            loop {
-                let read = stream.read(&mut buffer).unwrap();
-                request.extend_from_slice(&buffer[..read]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some((head, rest)) = text.split_once("\r\n\r\n") {
-                    let length = head
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if rest.len() >= length {
-                        break;
+            responses
+                .into_iter()
+                .map(|(status, body)| {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 4096];
+                    loop {
+                        let read = stream.read(&mut buffer).unwrap();
+                        request.extend_from_slice(&buffer[..read]);
+                        let text = String::from_utf8_lossy(&request);
+                        if let Some((head, rest)) = text.split_once("\r\n\r\n") {
+                            let length = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if rest.len() >= length {
+                                break;
+                            }
+                        }
                     }
-                }
-            }
-            write!(
-                stream,
-                "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-            String::from_utf8(request).unwrap()
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                    String::from_utf8(request).unwrap()
+                })
+                .collect()
         });
         (origin, server)
     }
@@ -726,6 +790,68 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.status(), Some(StatusCode::CONFLICT));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn claims_privileged_offers_with_the_installation_key() {
+        const OFFER: &str = r#"{"job_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","lease_token":"t","nonce":"n","resource_id":"1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b","binding_version":2,"expires_at":"2026-10-14T12:00:00Z"}"#;
+        let lease = format!(r#"{{"jobs":[],"offers":[{OFFER}]}}"#).leak();
+        let (origin, server) = answer_each(vec![
+            (200, lease),
+            (
+                200,
+                r#"{"id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","parameters":{"service":"sshd"},"attempt":1,"lease_token":"t","lease_expires_at":"2026-10-14T12:00:00Z","not_after":null,"timeout_ms":1000,"output_limit_bytes":65536}"#,
+            ),
+        ]);
+        let state = std::env::temp_dir().join(format!("renga-key-{}", uuid::Uuid::new_v4()));
+        let key = Arc::new(InstallationKey::load_or_create(&state).unwrap());
+        let jobs = insecure_client(&origin)
+            .with_installation_key(Arc::clone(&key))
+            .lease_jobs(&["service.restart@1".into()], 1)
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].parameters["service"], "sshd");
+
+        let requests = server.join().unwrap();
+        let claim = &requests[1];
+        assert!(claim
+            .starts_with("POST /api/v1/agent/jobs/67e55044-10b1-426f-9247-bb680e5fe0c8/claims "));
+        let body: serde_json::Value =
+            serde_json::from_str(claim.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let offer: JobOffer = serde_json::from_str(OFFER).unwrap();
+        let signature = URL_SAFE_NO_PAD
+            .decode(body["signature"].as_str().unwrap())
+            .unwrap();
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            URL_SAFE_NO_PAD.decode(key.public_key()).unwrap(),
+        )
+        .verify(&offer.message(uuid::Uuid::nil()), &signature)
+        .unwrap();
+        assert_eq!(body["lease_token"], "t");
+        assert_eq!(body["nonce"], "n");
+    }
+
+    #[test]
+    fn skips_offers_it_cannot_claim() {
+        let (origin, server) = answer_each(vec![
+            (
+                200,
+                r#"{"jobs":[],"offers":[{"job_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","lease_token":"t","nonce":"n","resource_id":"1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b","binding_version":2,"expires_at":"2026-10-14T12:00:00Z"}]}"#,
+            ),
+            (
+                409,
+                r#"{"status":"rejected","errors":[{"path":"id","message":"the resource was bound elsewhere"}]}"#,
+            ),
+        ]);
+        let state = std::env::temp_dir().join(format!("renga-key-{}", uuid::Uuid::new_v4()));
+        let key = Arc::new(InstallationKey::load_or_create(&state).unwrap());
+        let jobs = insecure_client(&origin)
+            .with_installation_key(key)
+            .lease_jobs(&["service.restart@1".into()], 1)
+            .unwrap();
+        assert!(jobs.is_empty());
+        assert_eq!(server.join().unwrap().len(), 2);
     }
 
     #[test]

@@ -116,13 +116,22 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => [@restart]}})
       |> Repo.update!()
 
-      {:ok, _job} =
-        Jobs.create_system_job(context.organization.id, context.agent.id, @restart, %{
-          "service" => "nginx"
-        })
+      %{resource: resource} = target_binding_fixture(context.organization, context.agent)
 
-      assert %{"jobs" => []} =
+      {:ok, job} =
+        Jobs.create_system_job(
+          context.organization.id,
+          context.agent.id,
+          @restart,
+          %{"service" => "nginx"},
+          resource_id: resource.id
+        )
+
+      assert %{"jobs" => [], "offers" => [offer]} =
                valid_api_response(lease(context, %{"capabilities" => [@restart]}), 200)
+
+      assert offer["job_id"] == job.id
+      refute Map.has_key?(offer, "parameters")
     end
 
     test "validates the request", context do
@@ -378,6 +387,160 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       assert %{"jobs_waiting" => true} = valid_api_response(check_in.(), 202)
       valid_api_response(lease(context), 200)
       assert %{"jobs_waiting" => false} = valid_api_response(check_in.(), 202)
+    end
+  end
+
+  describe "POST /api/v1/agent/jobs/:id/claims" do
+    setup context do
+      context.organization
+      |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => [@restart]}})
+      |> Repo.update!()
+
+      bound = target_binding_fixture(context.organization, context.agent)
+
+      {:ok, job} =
+        Jobs.create_system_job(
+          context.organization.id,
+          context.agent.id,
+          @restart,
+          %{"service" => "nginx"},
+          resource_id: bound.resource.id
+        )
+
+      Map.merge(context, %{bound: bound, job: job})
+    end
+
+    defp offered(context) do
+      %{"offers" => [offer]} =
+        valid_api_response(lease(context, %{"capabilities" => [@restart]}), 200)
+
+      offer
+    end
+
+    defp signature(context, offer, private_key) do
+      message =
+        Renga.Jobs.SignedLeases.message(
+          offer["job_id"],
+          offer["lease_token"],
+          offer["nonce"],
+          context.installation_id,
+          offer["resource_id"],
+          offer["binding_version"]
+        )
+
+      :eddsa
+      |> :crypto.sign(:none, message, [private_key, :ed25519])
+      |> Base.url_encode64(padding: false)
+    end
+
+    defp claim(context, offer, signature) do
+      post_json(context, ~p"/api/v1/agent/jobs/#{offer["job_id"]}/claims", %{
+        "lease_token" => offer["lease_token"],
+        "nonce" => offer["nonce"],
+        "signature" => signature
+      })
+    end
+
+    test "offers the job with its binding and leases it on a valid signature", context do
+      offer = offered(context)
+      assert offer["job_id"] == context.job.id
+      assert offer["resource_id"] == context.bound.resource.id
+      assert offer["binding_version"] == 1
+
+      leased =
+        context
+        |> claim(offer, signature(context, offer, context.bound.private_key))
+        |> valid_api_response(200)
+
+      assert leased["id"] == context.job.id
+      assert leased["lease_token"] == offer["lease_token"]
+      assert leased["parameters"] == %{"service" => "nginx"}
+
+      assert %{"status" => "accepted"} =
+               context
+               |> report(context.job.id, leased["lease_token"], 1, "started")
+               |> valid_api_response(200)
+    end
+
+    test "rejects a signature from another key", context do
+      offer = offered(context)
+      {_public, stranger} = :crypto.generate_key(:eddsa, :ed25519)
+
+      assert %{"errors" => [%{"path" => "signature"}]} =
+               context
+               |> claim(offer, signature(context, offer, stranger))
+               |> valid_api_response(403)
+
+      assert %{"errors" => [%{"path" => "signature"}]} =
+               context |> claim(offer, "not-a-signature") |> valid_api_response(422)
+    end
+
+    test "accepts a padded signature, and a replayed claim is a conflict", context do
+      offer = offered(context)
+      signature = signature(context, offer, context.bound.private_key)
+
+      {:ok, raw} = Base.url_decode64(signature, padding: false)
+      padded = Base.url_encode64(raw)
+      assert String.ends_with?(padded, "=")
+
+      assert %{"id" => id} = context |> claim(offer, padded) |> valid_api_response(200)
+      assert id == context.job.id
+
+      # The offer ends when it is claimed, so the same signed claim cannot
+      # lease the job a second time.
+      assert %{"errors" => [%{"path" => "lease_token"}]} =
+               context |> claim(offer, signature) |> valid_api_response(409)
+    end
+
+    test "a capability withdrawn after the offer fails the job at the claim", context do
+      offer = offered(context)
+
+      context.organization
+      |> Repo.reload!()
+      |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => []}})
+      |> Repo.update!()
+
+      response =
+        context
+        |> claim(offer, signature(context, offer, context.bound.private_key))
+        |> valid_api_response(409)
+
+      assert %{"errors" => [%{"path" => "id"}]} = response
+      refute Map.has_key?(response, "parameters")
+
+      job = Repo.reload!(context.job)
+      assert job.state == "failed"
+      assert job.failure_reason == "capability_not_allowed"
+      assert is_nil(job.lease_token_hash)
+    end
+
+    test "a replaced offer is a conflict", context do
+      first = offered(context)
+      _second = offered(context)
+
+      assert %{"errors" => [%{"path" => "lease_token"}]} =
+               context
+               |> claim(first, signature(context, first, context.bound.private_key))
+               |> valid_api_response(409)
+    end
+
+    test "a binding that changed fails the job with a conflict", context do
+      offer = offered(context)
+
+      context.bound.binding
+      |> Ecto.Changeset.change(
+        status: "revoked",
+        revoked_at: Renga.Time.utc_now_ms(),
+        revoked_reason: "revoked"
+      )
+      |> Repo.update!()
+
+      assert %{"errors" => [%{"path" => "id"}]} =
+               context
+               |> claim(offer, signature(context, offer, context.bound.private_key))
+               |> valid_api_response(409)
+
+      assert Repo.reload!(context.job).failure_reason == "binding_changed"
     end
   end
 end

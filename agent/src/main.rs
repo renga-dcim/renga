@@ -190,10 +190,11 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config, &args.state_directory)?;
-    let installation_key = InstallationKey::load_or_create(&args.state_directory)?;
+    let installation_key = Arc::new(InstallationKey::load_or_create(&args.state_directory)?);
     info!(fingerprint = %installation_key.fingerprint(), "installation key loaded");
     let presented_key = PresentedKey::ed25519(installation_key.public_key());
-    let mut client = HttpClient::new(&config, stopped.clone())?;
+    let mut client = HttpClient::new(&config, stopped.clone())?
+        .with_installation_key(Arc::clone(&installation_key));
     let queue = DeliveryQueue::new(args.state_directory.clone());
     let monitor = queue.monitor.clone();
     let queue = Arc::new(Mutex::new(queue));
@@ -325,7 +326,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     match reload(&args.config, &args.state_directory, stopped.clone()) {
                         Ok((new_config, new_client)) => {
                             config = new_config;
-                            client = new_client;
+                            client =
+                                new_client.with_installation_key(Arc::clone(&installation_key));
                             policy_generation.advance();
                             // The socket carries the old credentials and policy.
                             if let Some(previous) = listener.take() {

@@ -117,8 +117,13 @@ sudo -u renga-agent renga-agent fingerprint
 
 The command only reads the key; it never creates one. A different key returns
 the installation to pending, and if the old key was approved Renga opens a
-finding. Privileged jobs, such as terminals, need an approved key. Exclude the
-key from machine images for the same reason as the installation UUID.
+finding. Exclude the key from machine images for the same reason as the
+installation UUID.
+
+Privileged jobs, such as restarts and terminals, need an approved key and run
+only on resources an owner or admin bound to this installation. Renga offers
+them without their parameters, and the agent claims each offer by signing it
+with the key, so a copied intake key alone never leases one.
 
 Every collected observation is written to `observations/` under the state
 directory before the first delivery attempt, so an outage or restart does not

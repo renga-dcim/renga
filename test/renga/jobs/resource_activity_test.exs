@@ -152,6 +152,15 @@ defmodule Renga.Jobs.ResourceActivityTest do
     |> Repo.update!()
 
     agent |> Ecto.Changeset.change(capabilities: [@collect, restart]) |> Repo.update!()
+    {key, _private_key} = approved_key_fixture(organization, agent)
+
+    {:ok, _binding} =
+      Renga.Jobs.TargetBindings.bind(
+        member_scope(organization, "owner"),
+        resource.id,
+        agent.id,
+        key.fingerprint
+      )
 
     assert {:ok, _newer_job} =
              Jobs.create_system_job(organization.id, agent.id, restart, %{"service" => "sshd"},

@@ -6,8 +6,9 @@ defmodule RengaWeb.Api.V1.JobController do
   post numbered reports while they run them. Requests use the intake
   authentication of every other agent endpoint, which identifies an
   organization and an installation but does not prove the installation is
-  who it claims (RFD 9, "Trust boundary"). Only `observe` jobs are leased
-  here until per-installation credentials exist.
+  who it claims (RFD 9, "Trust boundary"). So only `observe` jobs lease on
+  it alone; privileged jobs are offered, then claimed with a signature from
+  the installation's approved key (RFD 13).
   """
   use RengaWeb, :controller
   use Oaskit.Controller
@@ -16,6 +17,7 @@ defmodule RengaWeb.Api.V1.JobController do
   alias Renga.Jobs
   alias Renga.Jobs.Changes
   alias Renga.Jobs.Job
+  alias Renga.Jobs.SignedLeases
   alias RengaWeb.Api.V1.Schemas
 
   @max_lease_limit 10
@@ -38,9 +40,9 @@ defmodule RengaWeb.Api.V1.JobController do
     operation_id: "leaseAgentJobs",
     summary: "Lease queued jobs",
     description:
-      "Leases up to `limit` queued jobs for the calling installation whose capability it " <>
-        "listed. Only `observe` jobs are leased until installations have their own " <>
-        "credentials. The installation must have checked in first.",
+      "Leases up to `limit` queued `observe` jobs for the calling installation whose " <>
+        "capability it listed, and offers privileged jobs within the same limit for it to " <>
+        "claim with a signature (RFD 13). The installation must have checked in first.",
     security: Schemas.intake_security(),
     request_body: Schemas.JobLeaseRequest,
     responses: [
@@ -52,14 +54,74 @@ defmodule RengaWeb.Api.V1.JobController do
     ]
 
   def lease(conn, params) do
+    scope = conn.assigns.current_scope
+
     with {:ok, keys, limit} <- validate_lease(params),
+         {:ok, {leased, offers}} <-
+           with_calling_agent(conn, &lease_and_offer(scope, &1, keys, limit)) do
+      json(conn, %{jobs: Enum.map(leased, &leased_job/1), offers: offers})
+    else
+      error -> rejected(conn, error)
+    end
+  end
+
+  # Plain leases come first; offers for privileged jobs fill what is left.
+  defp lease_and_offer(scope, agent, keys, limit) do
+    with {:ok, leased} <- Jobs.lease_jobs(scope, agent, keys, limit),
+         {:ok, offers} <- offer(scope, agent, keys, limit - length(leased)) do
+      {:ok, {leased, Enum.map(offers, &job_offer/1)}}
+    end
+  end
+
+  defp offer(_scope, _agent, _keys, 0), do: {:ok, []}
+  defp offer(scope, agent, keys, limit), do: SignedLeases.offer(scope, agent, keys, limit)
+
+  operation :claim,
+    operation_id: "claimAgentJob",
+    summary: "Claim an offered privileged job",
+    description:
+      "Leases a privileged job offered by `leaseAgentJobs` when the signature verifies " <>
+        "against the installation's approved key (RFD 13). A job whose resource was bound " <>
+        "elsewhere in the meantime fails instead.",
+    security: Schemas.intake_security(),
+    parameters: [
+      id: [in: :path, required: true, schema: Schemas.uuid(), description: "The job's ID."]
+    ],
+    request_body: Schemas.JobClaim,
+    responses: [
+      ok: {Schemas.LeasedJob, description: "The job, now leased."},
+      unauthorized: Schemas.unauthorized_response(),
+      forbidden:
+        {Schemas.Rejected,
+         description:
+           "The signature does not verify, the installation's key is not approved, or its " <>
+             "agent is disabled."},
+      not_found: {Schemas.Rejected, description: "No such job for this installation."},
+      conflict:
+        {Schemas.Rejected,
+         description:
+           "The offer expired or was replaced, or the job failed because its binding " <>
+             "changed or its capability is no longer allowed. Lease again."},
+      unprocessable_entity: {Schemas.Rejected, description: "The claim is invalid."}
+    ]
+
+  def claim(conn, %{"id" => job_id} = params) do
+    with {:ok, claim} <- validate_claim(params),
          {:ok, leased} <-
            with_calling_agent(conn, fn agent ->
-             Jobs.lease_jobs(conn.assigns.current_scope, agent, keys, limit,
-               risk_classes: ["observe"]
+             SignedLeases.claim(
+               conn.assigns.current_scope,
+               agent,
+               job_id,
+               claim.lease_token,
+               claim.nonce,
+               claim.signature
              )
            end) do
-      json(conn, %{jobs: Enum.map(leased, &leased_job/1)})
+      case leased do
+        {:failed, reason} -> rejected(conn, {:error, reason})
+        leased -> json(conn, leased_job(leased))
+      end
     else
       error -> rejected(conn, error)
     end
@@ -178,6 +240,45 @@ defmodule RengaWeb.Api.V1.JobController do
     end
   end
 
+  defp validate_claim(params) do
+    token = Map.get(params, "lease_token")
+    nonce = Map.get(params, "nonce")
+    signature = decode_signature(Map.get(params, "signature"))
+
+    errors =
+      []
+      |> check(is_binary(token) and token != "", "lease_token", "is required")
+      |> check(is_binary(nonce) and nonce != "", "nonce", "is required")
+      |> check(signature != :error, "signature", "must be a 64-byte signature in base64url")
+
+    if errors == [] do
+      {:ok, %{lease_token: token, nonce: nonce, signature: signature}}
+    else
+      {:error, errors}
+    end
+  end
+
+  defp decode_signature(encoded) when is_binary(encoded) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, <<_::binary-size(64)>> = signature} -> signature
+      _invalid -> :error
+    end
+  end
+
+  defp decode_signature(_encoded), do: :error
+
+  defp job_offer(offer) do
+    %{
+      job_id: offer.job.id,
+      capability: Job.capability_key(offer.job),
+      lease_token: offer.lease_token,
+      nonce: offer.nonce,
+      resource_id: offer.job.resource_id,
+      binding_version: offer.job.target_binding_version,
+      expires_at: iso8601(offer.expires_at)
+    }
+  end
+
   defp check(errors, true, _path, _message), do: errors
   defp check(errors, false, path, message), do: errors ++ [%{path: path, message: message}]
 
@@ -236,6 +337,21 @@ defmodule RengaWeb.Api.V1.JobController do
 
   defp rejection(:output_limit_exceeded),
     do: {:request_entity_too_large, "payload", "exceeds the job's output limit"}
+
+  defp rejection(:offer_invalid),
+    do: {:conflict, "lease_token", "does not match a current offer; lease again"}
+
+  defp rejection(:capability_not_allowed),
+    do: {:conflict, "id", "uses a capability the organization no longer allows and has failed"}
+
+  defp rejection(:binding_changed),
+    do: {:conflict, "id", "was bound to a different target and has failed"}
+
+  defp rejection(:signature_invalid),
+    do: {:forbidden, "signature", "does not verify against the approved installation key"}
+
+  defp rejection(:installation_key_not_approved),
+    do: {:forbidden, "installation_key", "is not approved"}
 
   defp rejection(:invalid_result),
     do: {:unprocessable_entity, "payload.result", "must be an object"}

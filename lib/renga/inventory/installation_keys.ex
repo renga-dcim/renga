@@ -131,6 +131,9 @@ defmodule Renga.Inventory.InstallationKeys do
     |> Ecto.Changeset.change(status: "replaced", replaced_at: now)
     |> Repo.update!()
 
+    # Bindings named the old key, so none of them carries over (RFD 13).
+    Renga.Jobs.TargetBindings.revoke_for_key!(agent.organization_id, current.id, now)
+
     key = insert_pending!(agent, algorithm, public_key, now)
     scope = %Scope{organization_id: agent.organization_id}
     record_event!(scope, agent.id, current.fingerprint, key.fingerprint, "pending")

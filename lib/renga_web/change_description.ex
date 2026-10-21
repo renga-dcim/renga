@@ -65,6 +65,20 @@ defmodule RengaWeb.ChangeDescription do
       }),
       do: "Presented a new installation key #{fingerprint}"
 
+  def describe(%{
+        kind: "updated",
+        field: "target_binding",
+        new_value: %{"value" => installation, "fingerprint" => fingerprint}
+      }),
+      do: "Bound privileged jobs to #{installation} (key #{fingerprint})"
+
+  def describe(%{
+        kind: "updated",
+        field: "target_binding",
+        old_value: %{"value" => installation}
+      }),
+      do: "Unbound privileged jobs from #{installation}"
+
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
   def describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
 

@@ -18,13 +18,30 @@ defmodule Renga.Jobs.SweepTest do
     )
     |> Repo.update!()
 
-    Map.put(context, :agent, agent_fixture(organization, [@collect, @restart]))
+    agent = agent_fixture(organization, [@collect, @restart])
+
+    context
+    |> Map.put(:agent, agent)
+    |> Map.put(:bound, target_binding_fixture(organization, agent))
   end
 
-  defp queue(%{organization: organization, agent: agent}, key, opts \\ []) do
-    params = if key == @restart, do: %{"service" => "sshd"}, else: %{}
+  # The restart capability is `operate`, so it runs on a bound resource and
+  # leases through a signed claim (RFD 13).
+  defp queue(%{organization: organization, agent: agent} = context, key, opts \\ []) do
+    {params, opts} =
+      if key == @restart,
+        do: {%{"service" => "sshd"}, Keyword.put(opts, :resource_id, context.bound.resource.id)},
+        else: {%{}, opts}
+
     {:ok, job} = Jobs.create_system_job(organization.id, agent.id, key, params, opts)
     job
+  end
+
+  defp lease(%{system_scope: scope, agent: agent} = context, @restart) do
+    {:ok, [{job, token}]} =
+      lease_privileged(scope, agent, [@restart], context.bound.private_key)
+
+    {job, token}
   end
 
   defp lease(%{system_scope: scope, agent: agent}, key) do
@@ -89,7 +106,8 @@ defmodule Renga.Jobs.SweepTest do
              "uncertain"
            ]
 
-    assert {:ok, []} = Jobs.lease_jobs(context.system_scope, context.agent, [@restart], 1)
+    assert {:ok, []} =
+             Renga.Jobs.SignedLeases.offer(context.system_scope, context.agent, [@restart], 1)
   end
 
   test "expires a job out of attempts", context do
