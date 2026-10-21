@@ -36,6 +36,18 @@ defmodule RengaWeb.Api.V1.Schemas.CheckInAccepted do
           description:
             "True when jobs are queued for this installation, so the agent should lease " <>
               "now rather than at its next lease attempt."
+        },
+        installation_key: %{
+          type: :object,
+          description:
+            "The key this check-in presented and whether it is approved. Absent when " <>
+              "the check-in presented no key.",
+          properties: %{
+            fingerprint: %{type: :string, description: "SHA256: and the unpadded base64 digest."},
+            status: %{enum: ["pending", "approved"]}
+          },
+          required: [:fingerprint, :status],
+          additionalProperties: false
         }
       },
       required: [:status, :source, :agent, :jobs_waiting],

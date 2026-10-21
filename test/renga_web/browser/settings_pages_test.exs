@@ -166,6 +166,40 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> assert_has("#members-read-only")
   end
 
+  # The table drops its installation key column at this width, so pending
+  # keys are listed above it, where they can still be compared and approved.
+  test "a pending installation key can be approved by touch at phone width", %{conn: conn} do
+    %{agent: agent, conn: conn} = collector_context(conn)
+
+    {:ok, pending} =
+      Renga.Repo.transaction(fn ->
+        Renga.Inventory.InstallationKeys.present!(
+          agent,
+          %{algorithm: "ed25519", public_key: :crypto.strong_rand_bytes(32)},
+          Renga.Time.utc_now_ms()
+        )
+      end)
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display",
+      &assert(&1 == "none")
+    )
+    |> assert_has("#pending-key-#{pending.id}")
+    |> evaluate(
+      "(() => { const r = document.getElementById('pending-key-#{pending.id}-approve').getBoundingClientRect(); return r.width >= 44 && r.height >= 44; })()",
+      &assert(&1 == true)
+    )
+    |> evaluate(@fits, &assert(&1 == true))
+    |> click_button("#pending-key-#{pending.id}-approve", "Approve")
+    |> assert_has("#approve-key-#{pending.id} [role=alertdialog]", text: pending.fingerprint)
+    |> click_button("#approve-key-#{pending.id}-confirm", "Approve key")
+    |> refute_has("#pending-installation-keys")
+    |> assert_has("#flash-info", text: "Installation key approved")
+  end
+
   test "collectors fit the screen without scrolling and key controls are 44px in both dimensions",
        %{conn: conn} do
     %{agent: agent, conn: conn, key: key} = collector_context(conn)
@@ -227,7 +261,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> visit("/settings/collectors")
     |> assert_has("body .phx-connected")
     |> evaluate(
-      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(2, 4).every(cell => getComputedStyle(cell).display !== 'none')",
+      "[document.querySelectorAll('#collector-#{agent.source_id} td')[2], document.getElementById('collector-key-#{agent.source_id}').closest('td')].every(cell => getComputedStyle(cell).display !== 'none')",
       &assert(&1 == true)
     )
     |> assert_has(
@@ -245,7 +279,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
             fits: wrapper.scrollWidth <= wrapper.clientWidth,
             collector_width: cells[0].clientWidth,
             resource_visible: getComputedStyle(cells[2]).display !== 'none',
-            installation_visible: getComputedStyle(cells[3]).display !== 'none'
+            key_visible: getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display !== 'none'
           })
         }))
       })
@@ -254,7 +288,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         assert layout["fits"] == true
         assert layout["collector_width"] >= 160
         assert layout["resource_visible"] == true
-        assert layout["installation_visible"] == true
+        assert layout["key_visible"] == true
       end
     )
     |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")

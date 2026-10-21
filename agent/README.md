@@ -106,6 +106,20 @@ when state is absent, requires it to match existing state, and then no longer
 needs the override. Portable-tarball installations can select a writable path
 with `--state-directory`; its default is `/var/lib/renga`.
 
+The agent also creates an Ed25519 key pair at `/var/lib/renga/installation-key`
+(mode `0600`) and presents the public key on every check-in. Renga shows the
+key as pending on the Collectors page until an owner or admin approves it.
+Before approving, compare the fingerprint there with the one the host prints:
+
+```sh
+sudo -u renga-agent renga-agent fingerprint
+```
+
+The command only reads the key; it never creates one. A different key returns
+the installation to pending, and if the old key was approved Renga opens a
+finding. Privileged jobs, such as terminals, need an approved key. Exclude the
+key from machine images for the same reason as the installation UUID.
+
 Every collected observation is written to `observations/` under the state
 directory before the first delivery attempt, so an outage or restart does not
 lose it. The agent delivers queued observations oldest first after each

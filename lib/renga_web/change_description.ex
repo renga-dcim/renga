@@ -50,6 +50,21 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "updated", field: "default_power_factor"}),
     do: "Cleared the organization's default power factor"
 
+  def describe(%{
+        kind: "updated",
+        field: "installation_key",
+        metadata: %{"status" => "approved"},
+        new_value: %{"value" => fingerprint}
+      }),
+      do: "Approved installation key #{fingerprint}"
+
+  def describe(%{
+        kind: "updated",
+        field: "installation_key",
+        new_value: %{"value" => fingerprint}
+      }),
+      do: "Presented a new installation key #{fingerprint}"
+
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
   def describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
 

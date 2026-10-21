@@ -329,4 +329,57 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
              } = valid_api_response(conn, 422)
     end
   end
+
+  describe "installation keys" do
+    defp check_in_key(conn, token, installation_key) do
+      conn
+      |> authorize(token)
+      |> put_req_header("content-type", "application/json")
+      |> post(
+        ~p"/api/v1/agent/checkins",
+        Jason.encode!(%{"installation_key" => installation_key})
+      )
+    end
+
+    defp encoded(raw), do: Base.url_encode64(raw, padding: false)
+
+    test "records a presented key as pending and reports its fingerprint", %{conn: conn} do
+      %{token: token, scope: scope, source: source} = source_fixture()
+      raw = :crypto.strong_rand_bytes(32)
+      fingerprint = Renga.Inventory.InstallationKey.fingerprint(raw)
+
+      response =
+        conn
+        |> check_in_key(token, %{"algorithm" => "ed25519", "public_key" => encoded(raw)})
+        |> valid_api_response(202)
+
+      assert response["installation_key"] == %{
+               "fingerprint" => fingerprint,
+               "status" => "pending"
+             }
+
+      agent = scope |> Inventory.list_agents() |> Enum.find(&(&1.source_id == source.id))
+      assert Renga.Inventory.InstallationKeys.current(scope, agent.id).fingerprint == fingerprint
+    end
+
+    test "omits the key from the response when none was presented", %{conn: conn} do
+      %{token: token} = source_fixture()
+      response = conn |> check_in_json(token, %{}) |> valid_api_response(202)
+      refute Map.has_key?(response, "installation_key")
+    end
+
+    test "rejects keys that are not 32-byte Ed25519 keys", %{conn: _conn} do
+      %{token: token} = source_fixture()
+
+      for {key, path} <- [
+            {%{"algorithm" => "ed25519", "public_key" => encoded(<<1, 2, 3>>)},
+             "installation_key.public_key"},
+            {%{"algorithm" => "rsa", "public_key" => encoded(:crypto.strong_rand_bytes(32))},
+             "installation_key.algorithm"}
+          ] do
+        response = build_conn() |> check_in_key(token, key) |> valid_api_response(422)
+        assert [%{"path" => ^path} | _rest] = response["errors"]
+      end
+    end
+  end
 end

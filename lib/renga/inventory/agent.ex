@@ -33,6 +33,9 @@ defmodule Renga.Inventory.Agent do
     # Set by intake authentication, never cast.
     field :last_contacted_at, :utc_datetime_usec
 
+    # The key presented on this check-in, set only by check-in (RFD 13).
+    field :installation_key, :any, virtual: true
+
     belongs_to :organization, Organization
     belongs_to :source, Source
     has_one :lease, AgentLease

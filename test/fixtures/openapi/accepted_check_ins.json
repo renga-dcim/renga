@@ -13,5 +13,14 @@
     "metadata": {
       "agent_version": null
     }
+  },
+  {
+    "installation_key": null
+  },
+  {
+    "installation_key": {
+      "algorithm": "ed25519",
+      "public_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
+    }
   }
 ]

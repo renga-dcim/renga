@@ -5,6 +5,7 @@ pub mod collectors;
 pub mod command;
 pub mod config;
 pub mod identity;
+pub mod installation_key;
 pub mod jobs;
 pub mod logging;
 pub mod notices;

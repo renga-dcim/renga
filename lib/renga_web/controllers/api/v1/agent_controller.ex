@@ -55,24 +55,32 @@ defmodule RengaWeb.Api.V1.AgentController do
   defp accepted(conn, source, agent, lease) do
     conn
     |> put_status(:accepted)
-    |> json(%{
-      status: "accepted",
-      source: %{
-        id: source.id,
-        kind: source.kind,
-        name: source.name,
-        last_seen_at: DateTime.to_iso8601(lease.renewed_at)
-      },
-      agent: %{
-        id: agent.id,
-        name: agent.name,
-        lease_expires_at: DateTime.to_iso8601(lease.expires_at)
-      },
-      # A hint, not the job itself: the agent leases right away instead of
-      # waiting for its next lease attempt (RFD 9, "Delivery over HTTPS").
-      jobs_waiting: Jobs.jobs_waiting?(conn.assigns.current_scope, agent)
-    })
+    |> json(
+      %{
+        status: "accepted",
+        source: %{
+          id: source.id,
+          kind: source.kind,
+          name: source.name,
+          last_seen_at: DateTime.to_iso8601(lease.renewed_at)
+        },
+        agent: %{
+          id: agent.id,
+          name: agent.name,
+          lease_expires_at: DateTime.to_iso8601(lease.expires_at)
+        },
+        # A hint, not the job itself: the agent leases right away instead of
+        # waiting for its next lease attempt (RFD 9, "Delivery over HTTPS").
+        jobs_waiting: Jobs.jobs_waiting?(conn.assigns.current_scope, agent)
+      }
+      |> put_installation_key(agent.installation_key)
+    )
   end
+
+  defp put_installation_key(body, nil), do: body
+
+  defp put_installation_key(body, key),
+    do: Map.put(body, :installation_key, %{fingerprint: key.fingerprint, status: key.status})
 
   defp check_in_error(conn, {:error, :intake_credential_changed}) do
     conn

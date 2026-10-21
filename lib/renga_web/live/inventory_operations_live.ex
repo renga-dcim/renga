@@ -7,6 +7,7 @@ defmodule RengaWeb.InventoryOperationsLive do
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.CollectionClocks
+  alias Renga.Inventory.InstallationKeys
 
   @refresh_interval 30_000
 
@@ -88,6 +89,29 @@ defmodule RengaWeb.InventoryOperationsLive do
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Could not revoke intake API key")}
+    end
+  end
+
+  def handle_event(
+        "approve_installation_key",
+        %{"id" => id, "fingerprint" => fingerprint},
+        socket
+      ) do
+    case InstallationKeys.approve(socket.assigns.current_scope, id, fingerprint) do
+      {:ok, _key} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Installation key approved")
+         |> load_operations()}
+
+      {:error, :key_changed} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "The installation presented a different key. Compare it again.")
+         |> load_operations()}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Could not approve the installation key")}
     end
   end
 
@@ -281,11 +305,54 @@ defmodule RengaWeb.InventoryOperationsLive do
             </.form>
           </div>
 
+          <%!-- The table drops its key column below the 5xl container size,
+                which a page with the sidebar reaches only on wide screens, so
+                keys awaiting approval are listed here at every width. --%>
+          <div
+            :if={@pending_keys != []}
+            id="pending-installation-keys"
+            aria-labelledby="pending-installation-keys-heading"
+            role="region"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <h3
+              id="pending-installation-keys-heading"
+              class="border-b border-line px-4 py-2 text-xs font-medium text-fg-muted"
+            >
+              Installation keys awaiting approval
+            </h3>
+            <ul class="divide-y divide-line">
+              <li
+                :for={{key, name} <- @pending_keys}
+                id={"pending-key-#{key.id}"}
+                class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm"
+              >
+                <span class="min-w-0 truncate font-medium text-fg" title={name}>{name}</span>
+                <span class="font-mono text-xs text-fg-muted" title={key.fingerprint}>
+                  {short_fingerprint(key.fingerprint)}
+                </span>
+                <button
+                  :if={@can_manage?}
+                  id={"pending-key-#{key.id}-approve"}
+                  type="button"
+                  phx-click={show_overlay("approve-key-#{key.id}")}
+                  class="ml-auto min-h-tap min-w-tap cursor-pointer text-xs text-link hover:underline"
+                >
+                  Approve
+                </button>
+                <span :if={!@can_manage?} class="ml-auto text-xs text-fg-subtle">
+                  Needs someone who manages intake keys
+                </span>
+              </li>
+            </ul>
+          </div>
+
           <%!-- One line per collector, with times and counts inline after each
                 state (docs/design-system.md, "Overflow"). As the table narrows
                 it drops the installation id (already in the name), then the
-                resource, jobs, queue and inventory; the name and connection
-                always stay. --%>
+                installation key, the resource, jobs, queue and inventory; the
+                name and connection always stay. The page is max-w-6xl, so the
+                installation id shows only if the page grows wider. --%>
           <.table
             id="collectors"
             rows={@streams.sources}
@@ -328,9 +395,17 @@ defmodule RengaWeb.InventoryOperationsLive do
               :let={{_id, source}}
               label="Installation"
               class="w-28 font-mono text-xs text-fg-muted"
-              hide_below="5xl"
+              hide_below="6xl"
             >
               {short_installation_id(collector_agent(source).installation_id)}
+            </:col>
+            <:col :let={{_id, source}} label="Installation key" class="w-36" hide_below="5xl">
+              <span id={"collector-key-#{source.id}"}>
+                <.installation_key_state
+                  key={Map.get(@keys_by_agent, collector_agent(source).id)}
+                  can_approve?={@can_manage?}
+                />
+              </span>
             </:col>
             <:col :let={{_id, source}} label="Inventory" class="w-48" hide_below="xl">
               <span id={"collector-inventory-#{source.id}"}>
@@ -352,9 +427,68 @@ defmodule RengaWeb.InventoryOperationsLive do
             </:col>
             <:empty>No discovered collectors match this view.</:empty>
           </.table>
+
+          <.confirm_dialog
+            :for={{key, _name} <- @pending_keys}
+            :if={@can_manage?}
+            id={"approve-key-#{key.id}"}
+            title="Approve this installation key?"
+            confirm_label="Approve key"
+            variant="primary"
+            on_confirm={
+              JS.push("approve_installation_key",
+                value: %{id: key.id, fingerprint: key.fingerprint}
+              )
+            }
+          >
+            <p>
+              Approve only if this matches what <code class="font-mono">renga-agent fingerprint</code>
+              prints on the host:
+            </p>
+            <p class="mt-2 break-all font-mono text-xs text-fg">{key.fingerprint}</p>
+          </.confirm_dialog>
         </section>
       </.settings_page>
     </Layouts.app>
+    """
+  end
+
+  attr :key, :any, required: true
+  attr :can_approve?, :boolean, required: true
+
+  # An approved key lets the installation run privileged jobs (RFD 13).
+  defp installation_key_state(%{key: nil} = assigns) do
+    ~H"""
+    <span class="text-xs text-fg-subtle">Not presented</span>
+    """
+  end
+
+  defp installation_key_state(assigns) do
+    ~H"""
+    <span class="inline-flex flex-wrap items-center gap-x-1.5">
+      <span class={[
+        "inline-flex items-center gap-1.5 text-xs font-medium",
+        if(@key.status == "approved", do: "text-ok", else: "text-warn-text")
+      ]}>
+        <span class={[
+          "size-1.5 rounded-full",
+          if(@key.status == "approved", do: "bg-ok", else: "bg-warn")
+        ]} />
+        {if @key.status == "approved", do: "Approved", else: "Pending"}
+      </span>
+      <span class="font-mono text-xs text-fg-muted" title={@key.fingerprint}>
+        {short_fingerprint(@key.fingerprint)}
+      </span>
+      <button
+        :if={@key.status == "pending" && @can_approve?}
+        id={"approve-key-#{@key.id}-button"}
+        type="button"
+        phx-click={show_overlay("approve-key-#{@key.id}")}
+        class="min-h-tap min-w-tap cursor-pointer text-xs text-link hover:underline"
+      >
+        Approve
+      </button>
+    </span>
     """
   end
 
@@ -475,7 +609,13 @@ defmodule RengaWeb.InventoryOperationsLive do
           else: sources
       end)
 
+    keys_by_agent =
+      InstallationKeys.current_by_agent(scope, Enum.map(sources, &collector_agent(&1).id))
+
     socket
+    |> assign(:can_manage?, Inventory.collector_manager?(scope))
+    |> assign(:keys_by_agent, keys_by_agent)
+    |> assign(:pending_keys, pending_keys(sources, keys_by_agent))
     |> assign(:clocks_by_source, CollectionClocks.by_source(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
     |> stream(:intake_api_keys, Inventory.list_intake_api_keys(scope), reset: true)
@@ -485,6 +625,13 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp schedule_refresh(socket) do
     if connected?(socket), do: Process.send_after(self(), :refresh, @refresh_interval)
     socket
+  end
+
+  # Pending keys with the collector each belongs to, in table order.
+  defp pending_keys(sources, keys_by_agent) do
+    for source <- sources,
+        %{status: "pending"} = key <- [Map.get(keys_by_agent, collector_agent(source).id)],
+        do: {key, source.name}
   end
 
   defp key_form, do: to_form(%{"name" => ""}, as: :intake_api_key)
@@ -508,6 +655,8 @@ defmodule RengaWeb.InventoryOperationsLive do
       %{lease: lease} -> "expires #{format_time(lease.expires_at)}"
     end
   end
+
+  defp short_fingerprint("SHA256:" <> digest), do: "SHA256:#{String.slice(digest, 0, 8)}…"
 
   defp short_installation_id(nil), do: "Identity unavailable"
 
