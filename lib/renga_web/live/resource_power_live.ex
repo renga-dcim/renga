@@ -690,8 +690,9 @@ defmodule RengaWeb.ResourcePowerLive do
       data-status={@redundancy.status}
       class={[
         "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
-        @redundancy.status == :not_redundant && "border-warn-line bg-warn-fill text-warn-text",
-        @redundancy.status != :not_redundant && "border-edge bg-surface text-fg"
+        @redundancy.status in [:not_redundant, :unknown] &&
+          "border-warn-line bg-warn-fill text-warn-text",
+        @redundancy.status not in [:not_redundant, :unknown] && "border-edge bg-surface text-fg"
       ]}
     >
       <.icon
@@ -710,6 +711,7 @@ defmodule RengaWeb.ResourcePowerLive do
 
   defp redundancy_icon(:redundant), do: "hero-check-circle-mini"
   defp redundancy_icon(:not_redundant), do: "hero-exclamation-triangle-mini"
+  defp redundancy_icon(:unknown), do: "hero-question-mark-circle-mini"
   defp redundancy_icon(:single_supply), do: "hero-minus-circle-mini"
 
   defp redundancy_icon_class(:redundant), do: "text-ok"
@@ -720,14 +722,18 @@ defmodule RengaWeb.ResourcePowerLive do
     do: "Redundant: reaches sides #{Enum.map_join(sides, " and ", &String.upcase/1)}"
 
   defp redundancy_label(%Redundancy{status: :not_redundant}), do: "Not redundant"
+  defp redundancy_label(%Redundancy{status: :unknown}), do: "Redundancy unknown"
   defp redundancy_label(%Redundancy{status: :single_supply}), do: "Single supply"
 
   defp redundancy_note(%Redundancy{status: :redundant, feeds: feeds}),
     do: "Through #{Enum.map_join(feeds, ", ", &feed_with_side/1)}."
 
-  defp redundancy_note(%Redundancy{status: :not_redundant} = redundancy) do
+  defp redundancy_note(%Redundancy{status: status} = redundancy)
+       when status in [:not_redundant, :unknown] do
     [
-      redundancy.feeds == [] && "No port reaches a feed yet",
+      redundancy.untraced != [] &&
+        "#{Enum.map_join(redundancy.untraced, ", ", & &1.name)} #{if match?([_], redundancy.untraced), do: "has a path", else: "have paths"} that cannot be traced to a feed",
+      redundancy.feeds == [] && redundancy.untraced == [] && "No port reaches a feed yet",
       match?([_], redundancy.sides) &&
         "Every fed port reaches side #{String.upcase(hd(redundancy.sides))}",
       redundancy.feeds != [] && redundancy.unfed != [] &&

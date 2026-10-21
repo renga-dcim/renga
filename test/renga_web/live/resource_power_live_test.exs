@@ -271,6 +271,21 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
     assert has_element?(view, "#power-redundancy[data-status=redundant]", "sides A and B")
     assert has_element?(view, "#power-redundancy", "A1 (A), B1 (B)")
+
+    # Moving PSU2 to an outlet whose PDU does not name its inlet: it might
+    # still reach side B, so redundancy is unknown rather than missing.
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-unmapped", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "1"}
+      ])
+
+    %{ports: [inlet], outlets: [outlet]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: a2.id})
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_outlet_id: outlet.id})
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    assert has_element?(view, "#power-redundancy[data-status=unknown]", "Redundancy unknown")
+    assert has_element?(view, "#power-redundancy", "PSU2 has a path that cannot be traced")
   end
 
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do

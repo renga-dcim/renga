@@ -566,11 +566,38 @@ defmodule RengaWeb.SitePowerLive do
           >
             <.link
               navigate={~p"/inventory/#{resource.id}/power"}
-              class="font-medium text-link hover:underline"
+              class="break-words font-medium text-link hover:underline"
             >
               {resource.name}
             </.link>
             <span class="block text-xs text-fg-muted">No other feed reaches it.</span>
+          </li>
+        </ul>
+      </section>
+
+      <section
+        :if={@failure.uncertain != []}
+        id="failure-uncertain"
+        aria-labelledby="failure-uncertain-title"
+      >
+        <h3 id="failure-uncertain-title" class="mb-1 text-xs font-semibold text-fg">
+          Might lose supply or redundancy ({length(@failure.uncertain)})
+        </h3>
+        <ul class="divide-y divide-line rounded-md border border-warn-line">
+          <li
+            :for={{resource, feeds, consequence} <- @failure.uncertain}
+            id={"failure-uncertain-#{resource.id}"}
+            class="px-3 py-2"
+          >
+            <.link
+              navigate={~p"/inventory/#{resource.id}/power"}
+              class="break-words font-medium text-link hover:underline"
+            >
+              {resource.name}
+            </.link>
+            <span class="block text-xs text-fg-muted">
+              {uncertain_note(consequence, feeds)}
+            </span>
           </li>
         </ul>
       </section>
@@ -591,7 +618,7 @@ defmodule RengaWeb.SitePowerLive do
           >
             <.link
               navigate={~p"/inventory/#{resource.id}/power"}
-              class="font-medium text-link hover:underline"
+              class="break-words font-medium text-link hover:underline"
             >
               {resource.name}
             </.link>
@@ -838,10 +865,14 @@ defmodule RengaWeb.SitePowerLive do
   defp failure_summary(failure) do
     supply = length(failure.loses_supply)
     redundancy = length(failure.loses_redundancy)
+    uncertain = length(failure.uncertain)
 
     cond do
-      supply + redundancy + failure.keeps == 0 ->
+      supply + redundancy + uncertain + failure.keeps == 0 ->
         "No devices are recorded below #{failure.feed.name}."
+
+      uncertain > 0 ->
+        "#{supply} #{plural(supply, "device")} would lose all supply, #{redundancy} would lose redundancy, and #{uncertain} might, depending on paths that cannot be traced."
 
       supply + redundancy == 0 ->
         "Every device below #{failure.feed.name} keeps supply without losing redundancy."
@@ -850,6 +881,13 @@ defmodule RengaWeb.SitePowerLive do
         "#{supply} #{plural(supply, "device")} would lose all supply and #{redundancy} would lose redundancy."
     end
   end
+
+  defp uncertain_note(:supply, _feeds),
+    do: "Loses all supply unless a path that cannot be traced reaches another feed."
+
+  defp uncertain_note(:redundancy, feeds),
+    do:
+      "Still supplied by #{Enum.map_join(feeds, ", ", &feed_with_side/1)}; loses redundancy unless a path that cannot be traced reaches another side."
 
   defp feed_with_side(%{side: nil} = feed), do: feed.name
   defp feed_with_side(feed), do: "#{feed.name} (side #{String.upcase(feed.side)})"

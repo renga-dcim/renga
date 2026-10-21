@@ -374,8 +374,11 @@ defmodule RengaWeb.SitePowerLiveTest do
 
     view |> element("#feed-#{a1.id}-failure") |> render_click()
     assert has_element?(view, "#failure-panel-title", "If A1 fails")
-    assert has_element?(view, "#failure-summary", "1 device would lose all supply and 1")
+    # The PDU below A1 is a device too.
+    assert has_element?(view, "#failure-summary", "2 devices would lose all supply and 1")
     assert has_element?(view, "#failure-loses-supply", "web-1")
+    assert has_element?(view, "#failure-supply-#{pdu.id}", "pdu-a")
+    refute has_element?(view, "#failure-uncertain")
 
     assert has_element?(
              view,
@@ -385,11 +388,49 @@ defmodule RengaWeb.SitePowerLiveTest do
 
     view |> element("#feed-#{b1.id}-failure") |> render_click()
     assert has_element?(view, "#failure-loses-supply", "None.")
+    assert has_element?(view, "#failure-summary", "0 devices would lose all supply and 1")
 
     assert has_element?(
              view,
              "#failure-redundancy-#{redundant.id}",
              "Still supplied by A1 (side A)"
+           )
+  end
+
+  test "lists devices that might fail when a path below the feed cannot be traced",
+       %{conn: conn, site: site, scope: scope} do
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+    a1 = feed!(scope, panel, "A1", %{side: "a"})
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-a", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}},
+        %{kind: "power_outlet", name: "2"}
+      ])
+
+    %{ports: [inlet], outlets: [mapped, unmapped]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _cable} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: a1.id})
+
+    {server, _expected} =
+      assigned_server_fixture(scope, "web-1", [
+        %{kind: "power_port", name: "PSU1"},
+        %{kind: "power_port", name: "PSU2"}
+      ])
+
+    %{ports: [psu1, psu2]} = Power.list_device_endpoints(scope, server.id)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: mapped.id})
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_outlet_id: unmapped.id})
+
+    {:ok, view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+    view |> element("#feed-#{a1.id}-failure") |> render_click()
+    assert has_element?(view, "#failure-untraced")
+    assert has_element?(view, "#failure-summary", "and 1 might")
+
+    assert has_element?(
+             view,
+             "#failure-uncertain-#{server.id}",
+             "unless a path that cannot be traced"
            )
   end
 end
