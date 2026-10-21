@@ -37,13 +37,19 @@ defmodule Renga.Power.PowerFactor do
 
   @doc "Validates a power factor field: above 0, at most 1, three decimal places."
   def validate(changeset, field) do
-    changeset
-    |> validate_number(field, greater_than: 0, less_than_or_equal_to: 1)
-    |> validate_change(field, fn ^field, value ->
-      if Decimal.eq?(Decimal.round(value, 3), value),
-        do: [],
-        else: [{field, "can have at most three decimal places"}]
-    end)
+    changeset = validate_number(changeset, field, greater_than: 0, less_than_or_equal_to: 1)
+
+    # Rounding a value far out of range can exceed Decimal's precision and
+    # raise, so places are only checked once the value is in range.
+    if Keyword.has_key?(changeset.errors, field) do
+      changeset
+    else
+      validate_change(changeset, field, fn ^field, value ->
+        if Decimal.eq?(Decimal.round(value, 3), value),
+          do: [],
+          else: [{field, "can have at most three decimal places"}]
+      end)
+    end
   end
 
   @doc """

@@ -69,7 +69,8 @@ defmodule Renga.Power.PowerFactorTest do
   test "rejects a power factor outside (0, 1] or finer than three places", %{scope: scope} do
     [psu1] = ports!(scope, [%{kind: "power_port", name: "PSU1"}])
 
-    for value <- ["0", "1.01", "-0.5", "0.9999"] do
+    # Far out of range values are rejected, not raised on while rounding.
+    for value <- ["0", "1.01", "-0.5", "0.9999", "1e32", "-1e32", "NaN"] do
       assert {:error, %Ecto.Changeset{errors: [power_factor: _]}} =
                Power.update_port_allocation(scope, psu1, %{power_factor: value}),
              "expected #{value} to be rejected"
@@ -105,7 +106,10 @@ defmodule Renga.Power.PowerFactorTest do
     assert {:ok, _organization} = Power.set_default_power_factor(scope, "0.9")
     assert Decimal.eq?(Power.default_power_factor(scope), "0.9")
 
-    assert {:error, %Ecto.Changeset{}} = Power.set_default_power_factor(scope, "1.2")
+    for value <- ["1.2", "1e32"] do
+      assert {:error, %Ecto.Changeset{}} = Power.set_default_power_factor(scope, value)
+    end
+
     assert {:ok, _organization} = Power.set_default_power_factor(scope, nil)
     assert Power.default_power_factor(scope) == nil
     # Clearing an unset default changes nothing and records nothing.
