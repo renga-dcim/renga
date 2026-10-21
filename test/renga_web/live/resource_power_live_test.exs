@@ -102,11 +102,13 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     |> form("#connect-form", connection: %{target: "outlet:#{outlet.id}"})
     |> render_submit()
 
-    assert has_element?(
-             view,
-             "#power-port-#{psu1.id} a[href='/inventory/#{pdu.id}/power']",
-             "pdu-1"
-           )
+    # The PDU's own inlet has no feed yet, so the path says where it stops.
+    assert has_element?(view, "#power-port-#{psu1.id}", "Inlet not connected")
+    view |> element("#power-path-#{psu1.id}") |> render_click()
+    assert has_element?(view, "#path-panel-title", "Power path for PSU1")
+    assert has_element?(view, "#power-path-detail", "pdu-1")
+    assert has_element?(view, "#power-path-detail", "Outlet 7 via inlet Inlet")
+    assert has_element?(view, "#power-path-terminal", "Path stops here")
 
     {:ok, pdu_view, _html} = live(conn, ~p"/inventory/#{pdu}/power")
     assert has_element?(pdu_view, "#power-outlet-#{outlet.id}", "web-1")
@@ -137,8 +139,10 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet2.id})
     render_click(view, "unplug_port", %{"id" => old_cable.id})
 
-    assert has_element?(view, "#power-port-#{psu1.id}", "pdu-1")
     assert has_element?(view, "#flash-error", "That connection has already changed")
+    view |> element("#power-path-#{psu1.id}") |> render_click()
+    assert has_element?(view, "#power-path-detail", "pdu-1")
+    assert has_element?(view, "#power-path-detail", "Outlet 2 via inlet Inlet")
 
     assert [{psu1.id, outlet2.id}] ==
              Enum.map(Cables.list_cables(scope), &{&1.power_port_id, &1.power_outlet_id})

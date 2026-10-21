@@ -529,7 +529,7 @@ defmodule RengaUI.Components do
         >
           <header class="flex items-start gap-3 border-b border-edge px-5 py-4">
             <div class="min-w-0 flex-1">
-              <h2 id={"#{@id}-title"} class="text-base font-semibold">{@title}</h2>
+              <h2 id={"#{@id}-title"} class="break-words text-base font-semibold">{@title}</h2>
               <p :if={@description} id={"#{@id}-description"} class="mt-0.5 text-sm text-fg-muted">
                 {@description}
               </p>
@@ -633,7 +633,7 @@ defmodule RengaUI.Components do
     <button
       type="button"
       phx-click={JS.dispatch("renga:overlay-cancel", to: "##{@id}")}
-      class="grid min-h-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
+      class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
       aria-label={gettext("Close")}
     >
       <.icon name="hero-x-mark" class="size-4" />

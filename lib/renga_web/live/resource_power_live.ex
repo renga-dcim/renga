@@ -7,8 +7,9 @@ defmodule RengaWeb.ResourcePowerLive do
   defaults from the catalog template; owners and admins can override it per
   port in a side panel, and clearing the override restores the default.
 
-  Each port and outlet shows what it is plugged into: an outlet on another
-  device or a panel feed. Owners and admins record a connection or unplug
+  Each port shows its power path: the outlets and PDUs it passes through on
+  the way to a panel feed, or where that path stops. Each outlet shows what
+  it powers. Owners and admins record a connection or unplug
   one; both are confirmed power cable claims (RFD 10 phase 2b).
   """
   use RengaWeb, :live_view
@@ -22,6 +23,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Inventory.Changes
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.Paths
   alias Renga.Power.Port
 
   @impl true
@@ -42,7 +44,8 @@ defmodule RengaWeb.ResourcePowerLive do
        connecting_port: nil,
        connect_form: to_form(%{"target" => ""}, as: :connection),
        connect_error: nil,
-       connect_options: []
+       connect_options: [],
+       selected_path: nil
      )
      |> load_endpoints()}
   end
@@ -68,6 +71,10 @@ defmodule RengaWeb.ResourcePowerLive do
        connect_error: nil,
        connect_options: connect_options(socket)
      )}
+  end
+
+  def handle_event("show_path", %{"id" => id}, socket) do
+    {:noreply, assign(socket, selected_path: socket.assigns.paths_by_port[id])}
   end
 
   def handle_event("save_connection", %{"connection" => %{"target" => target}}, socket) do
@@ -185,17 +192,34 @@ defmodule RengaWeb.ResourcePowerLive do
               id="power-ports"
               rows={@ports}
               row_id={&"power-port-#{&1.id}"}
-              row_click={if @can_manage?, do: &edit_port/1}
+              overflow="clip"
             >
-              <:col :let={port} label="Port">
+              <:col :let={port} label="Port" class="w-24 @3xl:w-32">
                 <span class="font-mono">{port.name}</span>
                 <span :if={port.label} class="ml-2 text-fg-muted">{port.label}</span>
               </:col>
-              <:col :let={port} label="Connector" class="text-fg-muted">{port.connector || "—"}</:col>
-              <:col :let={port} label="Maximum" class="text-right font-mono tabular-nums">
+              <:col
+                :let={port}
+                label="Connector"
+                class="w-28 text-fg-muted"
+                hide_below="5xl"
+              >
+                {port.connector || "—"}
+              </:col>
+              <:col
+                :let={port}
+                label="Maximum"
+                class="w-24 text-right font-mono tabular-nums"
+                hide_below="4xl"
+              >
                 {watts(port.maximum_draw_w)}
               </:col>
-              <:col :let={port} label="Allocated" class="text-right">
+              <:col
+                :let={port}
+                label="Allocated"
+                class="w-28 text-right"
+                hide_below="3xl"
+              >
                 <span class="font-mono tabular-nums">{watts(Port.allocated_draw_w(port))}</span>
                 <span
                   :if={port.allocated_draw_w}
@@ -205,8 +229,26 @@ defmodule RengaWeb.ResourcePowerLive do
                   set here
                 </span>
               </:col>
-              <:col :let={port} label="Plugged into">
-                <.port_connection cable={@cables_by_port[port.id]} />
+              <:col :let={port} label="Path" class="w-20 @3xl:w-auto" clip={false}>
+                <button
+                  id={"power-path-#{port.id}"}
+                  type="button"
+                  aria-label={
+                    "View power path for #{port.name}: #{path_summary(@paths_by_port[port.id])}"
+                  }
+                  title={path_summary(@paths_by_port[port.id])}
+                  phx-click={show_path(@paths_by_port[port.id])}
+                  class="flex min-h-tap min-w-tap w-full items-center gap-1 rounded-sm text-left transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                >
+                  <span class={[
+                    "min-w-0 flex-1 truncate",
+                    @paths_by_port[port.id].stop not in [nil, :not_connected] && "text-warn-text",
+                    @paths_by_port[port.id].stop == :not_connected && "text-fg-muted"
+                  ]}>
+                    {path_summary(@paths_by_port[port.id])}
+                  </span>
+                  <.icon name="hero-chevron-right-mini" class="size-4 shrink-0 text-fg-muted" />
+                </button>
               </:col>
               <:action :let={port} :if={@can_manage?}>
                 <div class="flex justify-end gap-2">
@@ -216,27 +258,51 @@ defmodule RengaWeb.ResourcePowerLive do
                     size="sm"
                     variant="ghost"
                     aria-label={"Edit allocation for #{port.name}"}
+                    title={"Edit allocation for #{port.name}"}
+                    class="min-w-tap"
                     phx-click={edit_port(port)}
                   >
-                    Edit
+                    <.icon name="hero-pencil-square-mini" class="size-4" />
+                    <span class="hidden @3xl:inline">Edit</span>
                   </.button>
                   <.button
                     id={"connect-port-#{port.id}"}
                     type="button"
                     size="sm"
+                    aria-label={
+                      if @cables_by_port[port.id],
+                        do: "Move connection for #{port.name}",
+                        else: "Connect #{port.name}"
+                    }
+                    title={if @cables_by_port[port.id], do: "Move connection", else: "Connect"}
+                    class="min-w-tap"
                     phx-click={connect_port(port)}
                   >
-                    {if @cables_by_port[port.id], do: "Move", else: "Connect"}
+                    <.icon
+                      name={
+                        if @cables_by_port[port.id],
+                          do: "hero-arrows-right-left-mini",
+                          else: "hero-link-mini"
+                      }
+                      class="size-4"
+                    />
+                    <span class="hidden @3xl:inline">
+                      {if @cables_by_port[port.id], do: "Move", else: "Connect"}
+                    </span>
                   </.button>
                   <.button
                     :if={@cables_by_port[port.id]}
                     id={"unplug-port-#{port.id}"}
                     type="button"
                     size="sm"
+                    aria-label={"Unplug #{port.name}"}
+                    title={"Unplug #{port.name}"}
+                    class="min-w-tap"
                     phx-click="unplug_port"
                     phx-value-id={@cables_by_port[port.id].id}
                   >
-                    Unplug
+                    <.icon name="hero-link-slash-mini" class="size-4" />
+                    <span class="hidden @3xl:inline">Unplug</span>
                   </.button>
                 </div>
               </:action>
@@ -314,6 +380,71 @@ defmodule RengaWeb.ResourcePowerLive do
       </.resource_frame>
 
       <.side_panel
+        id="path-panel"
+        title={
+          if @selected_path,
+            do: "Power path for #{@selected_path.port.name}",
+            else: "Power path"
+        }
+      >
+        <div :if={@selected_path} id="power-path-detail" class="space-y-5">
+          <div>
+            <p class="text-xs font-medium text-fg-muted">Starts at</p>
+            <p class="mt-1 break-words font-mono text-sm">
+              {@resource.name} · {@selected_path.port.name}
+            </p>
+          </div>
+
+          <ol :if={@selected_path.outlets != []} class="space-y-3" aria-label="Power path hops">
+            <li
+              :for={{outlet, index} <- Enum.with_index(@selected_path.outlets, 1)}
+              class="flex items-start gap-3 border-l border-edge pl-4"
+            >
+              <span class="mt-1 font-mono text-xs text-fg-muted">{index}</span>
+              <div class="min-w-0 flex-1">
+                <.link
+                  navigate={~p"/inventory/#{outlet.resource}/power"}
+                  class="flex min-h-tap min-w-tap w-full items-center rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                >
+                  <span class="min-w-0 break-words">{outlet.resource.name}</span>
+                </.link>
+                <p class="break-words text-sm">
+                  Outlet <span class="font-mono">{outlet.name}</span>
+                  <span :if={outlet.inlet_port} class="text-fg-muted">
+                    via inlet <span class="font-mono">{outlet.inlet_port.name}</span>
+                  </span>
+                </p>
+              </div>
+            </li>
+          </ol>
+
+          <div
+            :if={@selected_path.feed}
+            id="power-path-terminal"
+            class="rounded-lg border border-edge bg-sunken p-3"
+          >
+            <p class="text-xs font-medium text-fg-muted">Panel feed</p>
+            <p class="mt-1 break-words text-sm">
+              {@selected_path.feed.panel.name}
+              <span class="font-mono">{@selected_path.feed.name}</span>
+              <span :if={@selected_path.feed.side} class="ml-1 text-xs text-fg-muted">
+                side {String.upcase(@selected_path.feed.side)}
+              </span>
+            </p>
+          </div>
+
+          <div
+            :if={@selected_path.stop}
+            id="power-path-terminal"
+            class="rounded-lg border border-warn-line bg-warn-fill p-3 text-warn-text"
+          >
+            <p class="text-xs font-medium">Path stops here</p>
+            <p class="mt-1 break-words text-sm">{stop_label(@selected_path)}</p>
+          </div>
+        </div>
+      </.side_panel>
+
+      <.side_panel
         :if={@can_manage?}
         id="allocation-panel"
         title={if @editing_port, do: "Allocate #{@editing_port.name}", else: "Allocate"}
@@ -375,12 +506,26 @@ defmodule RengaWeb.ResourcePowerLive do
     """
   end
 
-  attr :cable, :any, required: true
+  defp path_summary(%{feed: %{panel: panel} = feed, outlets: outlets}),
+    do: "#{panel.name} #{feed.name}#{hop_suffix(outlets)}"
 
-  defp port_connection(%{cable: nil} = assigns),
-    do: ~H"""
-    <span class="text-fg-muted">Not recorded</span>
-    """
+  defp path_summary(%{stop: :not_connected}), do: "Not recorded"
+  defp path_summary(path), do: "#{stop_label(path)}#{hop_suffix(path.outlets)}"
+
+  defp hop_suffix([]), do: ""
+  defp hop_suffix([_outlet]), do: " · 1 PDU hop"
+  defp hop_suffix(outlets), do: " · #{length(outlets)} PDU hops"
+
+  defp stop_label(%{stop: :not_connected}), do: "No connection is recorded"
+  defp stop_label(%{stop: :inlet_unknown}), do: "No inlet mapped for this outlet"
+
+  defp stop_label(%{stop: :inlet_not_connected, outlets: outlets}),
+    do: "#{List.last(outlets).inlet_port.name} not connected"
+
+  defp stop_label(%{stop: :loop}), do: "Loops back on itself"
+  defp stop_label(%{stop: :too_deep}), do: "Too many hops to follow"
+
+  attr :cable, :any, required: true
 
   defp port_connection(%{cable: %{power_outlet: %{}}} = assigns) do
     ~H"""
@@ -492,6 +637,9 @@ defmodule RengaWeb.ResourcePowerLive do
   defp edit_port(port),
     do: "edit_port" |> JS.push(value: %{id: port.id}) |> show_overlay("allocation-panel")
 
+  defp show_path(path),
+    do: "show_path" |> JS.push(value: %{id: path.port.id}) |> show_overlay("path-panel")
+
   defp load_endpoints(socket) do
     %{ports: ports, outlets: outlets} =
       Power.list_device_endpoints(socket.assigns.current_scope, socket.assigns.resource.id)
@@ -499,6 +647,8 @@ defmodule RengaWeb.ResourcePowerLive do
     cables =
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
+    paths = Paths.for_ports(socket.assigns.current_scope, ports)
+    selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
 
@@ -506,6 +656,8 @@ defmodule RengaWeb.ResourcePowerLive do
       ports: ports,
       outlets: outlets,
       cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
+      paths_by_port: Map.new(paths, &{&1.port.id, &1}),
+      selected_path: Enum.find(paths, &(&1.port.id == selected_path_id)),
       cables_by_outlet:
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
       retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
