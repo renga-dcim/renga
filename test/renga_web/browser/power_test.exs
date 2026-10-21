@@ -15,6 +15,8 @@ defmodule RengaWeb.Browser.PowerTest do
   @tablet [has_touch: true, viewport: %{width: 820, height: 900}]
   @rack_pdu_name "rackpduwithanextremelylongunbrokenidentifierthatmustwrapinthepathpanelwithoutoverflow"
   @floor_pdu_name "floor-pdu-upstream"
+  @long_port_name "psuwithanextremelylongunbrokenidentifierthatmustwrapinthepathpaneltitlewithoutoverflow"
+  @long_inlet_name "inletwithanextremelylongunbrokenidentifierthatmustwrapinthepathstopwithoutoverflow"
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -57,6 +59,21 @@ defmodule RengaWeb.Browser.PowerTest do
         %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}}
       ])
 
+    {orphan_pdu, _expected} =
+      assigned_server_fixture(scope, "orphan-pdu", [
+        %{kind: "power_port", name: @long_inlet_name},
+        %{
+          kind: "power_outlet",
+          name: "9",
+          attributes: %{"inlet" => @long_inlet_name}
+        }
+      ])
+
+    {long_port_server, _expected} =
+      assigned_server_fixture(scope, "long-endpoint-server", [
+        %{kind: "power_port", name: @long_port_name}
+      ])
+
     %{ports: [port]} = Power.list_device_endpoints(scope, server.id)
 
     %{ports: [rack_inlet], outlets: [rack_outlet, _rack_outlet8]} =
@@ -65,6 +82,10 @@ defmodule RengaWeb.Browser.PowerTest do
     %{ports: [floor_inlet], outlets: [floor_outlet]} =
       Power.list_device_endpoints(scope, floor_pdu.id)
 
+    %{outlets: [orphan_outlet]} = Power.list_device_endpoints(scope, orphan_pdu.id)
+
+    %{ports: [long_port]} = Power.list_device_endpoints(scope, long_port_server.id)
+
     {:ok, _assertion} =
       Cables.connect(scope, %{power_port_id: floor_inlet.id, power_feed_id: feed.id})
 
@@ -72,6 +93,12 @@ defmodule RengaWeb.Browser.PowerTest do
       Cables.connect(scope, %{
         power_port_id: rack_inlet.id,
         power_outlet_id: floor_outlet.id
+      })
+
+    {:ok, _assertion} =
+      Cables.connect(scope, %{
+        power_port_id: long_port.id,
+        power_outlet_id: orphan_outlet.id
       })
 
     conn =
@@ -93,7 +120,9 @@ defmodule RengaWeb.Browser.PowerTest do
       feed: feed,
       server: server,
       port: port,
-      rack_outlet: rack_outlet
+      rack_outlet: rack_outlet,
+      long_port_server: long_port_server,
+      long_port: long_port
     }
   end
 
@@ -253,6 +282,20 @@ defmodule RengaWeb.Browser.PowerTest do
     |> evaluate(tap_sizes_js("#power-ports button"), &assert_tappable/1)
     |> click(path)
     |> assert_has("#power-path-detail", text: @rack_pdu_name)
+    |> evaluate(panel_fits_js("path-panel"), &assert(&1 == true))
+    |> evaluate(tap_sizes_js("#path-panel a, #path-panel button"), &assert_tappable/1)
+  end
+
+  @tag browser_context_opts: @phone
+  test "long endpoint names wrap in an incomplete phone path panel", context do
+    path = "#power-path-#{context.long_port.id}"
+
+    context.conn
+    |> visit("/inventory/#{context.long_port_server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> click(path)
+    |> assert_has("#path-panel-title", text: @long_port_name)
+    |> assert_has("#power-path-terminal", text: @long_inlet_name)
     |> evaluate(panel_fits_js("path-panel"), &assert(&1 == true))
     |> evaluate(tap_sizes_js("#path-panel a, #path-panel button"), &assert_tappable/1)
   end

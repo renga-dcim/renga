@@ -529,7 +529,7 @@ defmodule RengaUI.Components do
         >
           <header class="flex items-start gap-3 border-b border-edge px-5 py-4">
             <div class="min-w-0 flex-1">
-              <h2 id={"#{@id}-title"} class="text-base font-semibold">{@title}</h2>
+              <h2 id={"#{@id}-title"} class="break-words text-base font-semibold">{@title}</h2>
               <p :if={@description} id={"#{@id}-description"} class="mt-0.5 text-sm text-fg-muted">
                 {@description}
               </p>

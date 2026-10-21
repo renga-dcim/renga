@@ -439,7 +439,7 @@ defmodule RengaWeb.ResourcePowerLive do
             class="rounded-lg border border-warn-line bg-warn-fill p-3 text-warn-text"
           >
             <p class="text-xs font-medium">Path stops here</p>
-            <p class="mt-1 text-sm">{stop_label(@selected_path)}</p>
+            <p class="mt-1 break-words text-sm">{stop_label(@selected_path)}</p>
           </div>
         </div>
       </.side_panel>
