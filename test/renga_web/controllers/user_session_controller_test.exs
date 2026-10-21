@@ -421,6 +421,42 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "registering with only a passkey, once the account has a factor" do
+    test "an account with an authenticator app still takes the second step", %{
+      conn: conn,
+      user: user
+    } do
+      totp_fixture(user)
+      {token, _hashed} = generate_user_magic_link_token(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"token" => token, "add_passkey" => "true", "remember_me" => "true"}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+      refute get_session(conn, :user_token)
+      refute conn.resp_cookies["_renga_web_user_remember_me"][:value]
+
+      refute Renga.Repo.exists?(
+               from t in Accounts.UserToken,
+                 where: t.user_id == ^user.id and t.context == "session"
+             )
+    end
+
+    test "staying signed in follows the person's choice", %{conn: conn, unconfirmed_user: user} do
+      {token, _hashed} = generate_user_magic_link_token(user)
+
+      conn =
+        post(conn, ~p"/users/log-in?_action=confirmed", %{
+          "user" => %{"token" => token, "add_passkey" => "true"}
+        })
+
+      assert get_session(conn, :user_token)
+      refute conn.resp_cookies["_renga_web_user_remember_me"]
+    end
+  end
+
   describe "POST /users/update-password" do
     setup %{conn: conn, user: user} do
       user = set_password(user)

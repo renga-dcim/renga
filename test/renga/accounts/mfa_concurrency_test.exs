@@ -125,6 +125,36 @@ defmodule Renga.Accounts.MFAConcurrencyTest do
     end
   end
 
+  test "a bootstrap session is not issued once a factor is added meanwhile" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    user = user_fixture()
+
+    try do
+      authenticator = Renga.FakeAuthenticator.new()
+
+      response =
+        Renga.FakeAuthenticator.register(authenticator, Passkeys.registration_options(user))
+
+      assert {{:ok, _added}, :error} =
+               race(
+                 fn ->
+                   MFA.add_factor(user, fn -> Passkeys.register(user, response, "Key") end, fn ->
+                     true
+                   end)
+                 end,
+                 fn -> Accounts.create_bootstrap_session(user, Ecto.UUID.generate()) end
+               )
+
+      refute Repo.exists?(
+               from t in Accounts.UserToken,
+                 where: t.user_id == ^user.id and t.context == "session"
+             )
+    after
+      Repo.delete!(user)
+      Sandbox.checkin(Repo)
+    end
+  end
+
   defp with_totp_user(fun) do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     user = user_fixture()

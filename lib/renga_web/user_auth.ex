@@ -198,6 +198,16 @@ defmodule RengaWeb.UserAuth do
   end
 
   @doc """
+  Signs in a person who just proved control of the email to add a first
+  credential, with the bootstrap authorization (RFD 19). Nothing is written
+  to the response unless the session and its grant were committed together;
+  `{:error, conn}` means the account is no longer eligible.
+  """
+  def log_in_user_to_bootstrap(conn, user, params \\ %{}) do
+    create_or_extend_session(conn, user, params, &Accounts.create_bootstrap_session(user, &1))
+  end
+
+  @doc """
   Logs the user out.
 
   It clears all session data for safety. See renew_session.

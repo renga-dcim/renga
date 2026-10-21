@@ -288,6 +288,16 @@ defmodule Renga.Accounts.PasskeysTest do
       refute Accounts.get_user_by_email_and_password(user.email, valid_user_password())
     end
 
+    test "removing the password ends a sign-in half-finished with it" do
+      user = set_password(user_fixture())
+      {authenticator, _passkey} = register(user)
+      pending = Accounts.create_pending_second_step(user)
+      token = rechecked_session(user, authenticator)
+
+      assert {:ok, _user} = Accounts.remove_user_password(user, token)
+      refute Accounts.get_pending_second_step_user(pending)
+    end
+
     test "an account without a passkey keeps its password" do
       user = set_password(user_fixture())
       token = Accounts.generate_user_session_token(user)
