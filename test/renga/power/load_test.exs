@@ -74,6 +74,36 @@ defmodule Renga.Power.LoadTest do
   defp load!(scope, feed, default \\ nil),
     do: Map.fetch!(Load.for_feeds(scope, [feed], default), feed.id)
 
+  # A PDU whose hardware type names no inlet for any outlet: its inlet may
+  # pass power on, so its own 9,000 W budget is neither a load nor zero.
+  defp unmapped_pdu!(scope, name) do
+    {pdu, _expected} =
+      assigned_server_fixture(scope, name, [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 9000}},
+        %{kind: "power_outlet", name: "1"}
+      ])
+
+    %{ports: [inlet], outlets: [outlet]} = Power.list_device_endpoints(scope, pdu.id)
+    {inlet, outlet}
+  end
+
+  test "an inlet that may feed unmapped outlets is neither a load nor zero", context do
+    %{scope: scope, panel: panel} = context
+    feed = feed!(scope, panel, "A1", %{})
+    {inlet, outlet} = unmapped_pdu!(scope, "rack-pdu")
+    plug!(scope, inlet, feed)
+
+    load = load!(scope, feed, Decimal.new(1))
+    assert {load.draws, load.load, load.untraced?, load.status} == {[], nil, true, :unknown}
+    assert Decimal.eq?(load.known, 0)
+
+    # Something plugged in still cannot prove the 9,000 W budget an overload.
+    plug!(scope, port!(scope, "web-1", %{"allocated_draw_w" => 230}), outlet)
+    load = load!(scope, feed, Decimal.new(1))
+    assert {load.draws, load.untraced?, load.status} == {[], true, :unknown}
+    assert Decimal.eq?(load.known, 0)
+  end
+
   test "converts each load with its own power factor, counting PDUs once", context do
     %{scope: scope, panel: panel} = context
     feed = feed!(scope, panel, "A1", %{})

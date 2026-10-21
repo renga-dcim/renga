@@ -9,7 +9,9 @@ defmodule Renga.Power.Load do
   nothing. Loads are computed from current power cables and never stored.
   When a chain cannot be followed (an outlet in use whose hardware type does
   not name its inlet, or a chain deeper than any real power train) the
-  feed's load is incomplete.
+  feed's load is incomplete. So is it when a port's device has outlets that
+  name no inlet: that port may pass power on to them, so its allocation is
+  neither counted as a load nor taken as zero.
 
   Units stay apart. Allocated real load is in W. AC capacity is in VA, so
   each load converts with its own power factor (`Renga.Power.PowerFactor`);
@@ -138,6 +140,7 @@ defmodule Renga.Power.Load do
     hop = %{
       downstream: downstream(organization_id, port_ids),
       inlets: inlets(organization_id, port_ids),
+      unmapped: unmapped(organization_id, Enum.map(frontier, &elem(&1, 0).resource_id)),
       three_phase: three_phase,
       first?: hops == 0
     }
@@ -153,6 +156,11 @@ defmodule Renga.Power.Load do
       # A PDU inlet with nothing plugged in passes nothing on.
       nil when is_map_key(hop.inlets, port.id) ->
         {next, acc}
+
+      # The port may feed outlets that name no inlet: whether it draws or
+      # passes power on is unknown.
+      nil when is_map_key(hop.unmapped, port.resource_id) ->
+        {next, update_in(acc.untraced, &MapSet.put(&1, feed_id))}
 
       # Nothing downstream: the port draws the power itself.
       nil ->
@@ -192,6 +200,19 @@ defmodule Renga.Power.Load do
     |> where([outlet], outlet.organization_id == ^organization_id)
     |> where([outlet], outlet.inlet_port_id in ^port_ids and is_nil(outlet.retired_at))
     |> select([outlet], {outlet.inlet_port_id, true})
+    |> distinct(true)
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # The devices among `resource_ids` with a current outlet that names no
+  # inlet.
+  defp unmapped(organization_id, resource_ids) do
+    Outlet
+    |> where([outlet], outlet.organization_id == ^organization_id)
+    |> where([outlet], outlet.resource_id in ^Enum.uniq(resource_ids))
+    |> where([outlet], is_nil(outlet.inlet_port_id) and is_nil(outlet.retired_at))
+    |> select([outlet], {outlet.resource_id, true})
     |> distinct(true)
     |> Repo.all()
     |> Map.new()
