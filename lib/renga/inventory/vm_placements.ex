@@ -87,14 +87,21 @@ defmodule Renga.Inventory.VmPlacements do
   end
 
   defp fresh_active?(%{active_since: nil}, _now), do: false
+  defp fresh_active?(claim, now), do: fresh?(claim.target, claim.last_reported_at, now)
 
-  defp fresh_active?(claim, now) do
+  @doc """
+  Whether a hypervisor's report of a domain at `reported_at` is still fresh
+  at `now`: the stream reached the hypervisor, and reported the domain, in
+  the freshness window.
+  """
+  def fresh?(target, reported_at, now) do
     oldest = DateTime.add(now, -@freshness_seconds)
 
-    claim.target.status == "reachable" and
-      not is_nil(claim.target.last_reachable_at) and
-      DateTime.compare(claim.target.last_reachable_at, oldest) != :lt and
-      DateTime.compare(claim.last_reported_at, oldest) != :lt
+    target.status == "reachable" and
+      not is_nil(target.last_reachable_at) and
+      DateTime.compare(target.last_reachable_at, oldest) != :lt and
+      not is_nil(reported_at) and
+      DateTime.compare(reported_at, oldest) != :lt
   end
 
   # A hypervisor that last said "active" before another began saying so has
