@@ -23,10 +23,13 @@ defmodule RengaWeb.UserAuth do
   @current_organization_key :current_organization_id
 
   # The organization this browser last opened, so signing in again returns
-  # to it. It only suggests: sign-in still checks the user may open it.
+  # to it. It only suggests: sign-in still checks the user may open it. The
+  # value names the user who opened it, so someone else signing in on a
+  # shared browser is not steered into that person's organization, and is
+  # encrypted so it does not reveal either id to the next person.
   @last_organization_cookie "_renga_web_last_organization"
   @last_organization_options [
-    sign: true,
+    encrypt: true,
     max_age: 365 * 24 * 60 * 60,
     same_site: "Lax"
   ]
@@ -61,9 +64,16 @@ defmodule RengaWeb.UserAuth do
     if get_session(conn, @current_organization_key) do
       conn
     else
-      conn = fetch_cookies(conn, signed: [@last_organization_cookie])
+      conn = fetch_cookies(conn, encrypted: [@last_organization_cookie])
+      user_id = user.id
 
-      case Accounts.default_organization_id(user, conn.cookies[@last_organization_cookie]) do
+      remembered_id =
+        case conn.cookies[@last_organization_cookie] do
+          {^user_id, organization_id} -> organization_id
+          _absent_or_someone_elses -> nil
+        end
+
+      case Accounts.default_organization_id(user, remembered_id) do
         nil -> conn
         organization_id -> put_session(conn, @current_organization_key, organization_id)
       end
@@ -118,7 +128,11 @@ defmodule RengaWeb.UserAuth do
            Accounts.scope_for_user(user, organization_id) do
       conn
       |> put_session(@current_organization_key, organization_id)
-      |> put_resp_cookie(@last_organization_cookie, organization_id, @last_organization_options)
+      |> put_resp_cookie(
+        @last_organization_cookie,
+        {user.id, organization_id},
+        @last_organization_options
+      )
       |> assign(:current_scope, scope)
     else
       _ -> conn

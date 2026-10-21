@@ -70,6 +70,21 @@ defmodule RengaWeb.UserAuthTest do
       assert logged_in_organization(user) == nil
     end
 
+    test "ignores the organization someone else opened in this browser", %{
+      conn: conn,
+      user: user
+    } do
+      colleague = user_fixture()
+      shared = join(colleague)
+      organization_membership_fixture(user, shared, %{role: "member"})
+      join(user)
+      opened = open(conn, colleague, shared)
+
+      # Both belong to it, but it was the colleague's choice, not this user's.
+      assert logged_in_organization(user, opened) == nil
+      assert logged_in_organization(colleague, opened) == shared.id
+    end
+
     test "ignores a remembered organization the user does not belong to", %{
       conn: conn,
       user: user
