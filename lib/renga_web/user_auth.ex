@@ -47,20 +47,26 @@ defmodule RengaWeb.UserAuth do
   Logs the user in.
 
   Redirects to the session's `:user_return_to` path
-  or falls back to the `signed_in_path/1`. A fresh session opens the
-  organization this browser last opened, or the user's only one, so they
-  skip the organization picker (`Renga.Accounts.default_organization_id/2`).
+  or falls back to the `signed_in_path/1`. Without a return-to path, a
+  fresh session opens the organization this browser last opened, or the
+  user's only one, so they skip the organization picker
+  (`Renga.Accounts.default_organization_id/2`).
   """
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
 
     conn
     |> create_or_extend_session(user, params)
-    |> put_default_organization(user)
+    |> put_default_organization(user, user_return_to)
     |> redirect(to: user_return_to || signed_in_path(conn))
   end
 
-  defp put_default_organization(conn, user) do
+  # A return-to link may belong to a different organization than the
+  # default, and opening it there would not find its record. Without a
+  # selection it reaches the organization picker, as before.
+  defp put_default_organization(conn, _user, return_to) when is_binary(return_to), do: conn
+
+  defp put_default_organization(conn, user, nil) do
     if get_session(conn, @current_organization_key) do
       conn
     else

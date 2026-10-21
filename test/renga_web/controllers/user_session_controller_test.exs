@@ -120,6 +120,71 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "organization after log in" do
+    import Renga.InventoryFixtures
+
+    setup %{user: user} do
+      user = set_password(user)
+      first = organization_fixture()
+      second = organization_fixture()
+      organization_membership_fixture(user, first, %{role: "owner"})
+      organization_membership_fixture(user, second, %{role: "owner"})
+      %{user: user, first: first, second: second}
+    end
+
+    defp log_in_with_password(conn, user) do
+      post(conn, ~p"/users/log-in", %{
+        "user" => %{"email" => user.email, "password" => valid_user_password()}
+      })
+    end
+
+    defp open_then_log_out(conn, user, organization) do
+      conn
+      |> log_in_with_password(user)
+      |> post(~p"/organizations/select", %{"organization" => %{"id" => organization.id}})
+      |> delete(~p"/users/log-out")
+    end
+
+    test "reopens the organization opened before logging out", %{
+      conn: conn,
+      user: user,
+      second: second
+    } do
+      conn = log_in_with_password(conn, user)
+      assert redirected_to(get(conn, ~p"/")) == ~p"/organizations"
+
+      conn = conn |> open_then_log_out(user, second) |> log_in_with_password(user)
+
+      assert get_session(conn, :current_organization_id) == second.id
+      assert redirected_to(get(conn, ~p"/")) == ~p"/inbox"
+    end
+
+    test "a link into another organization reaches the picker, not the remembered one", %{
+      conn: conn,
+      user: user,
+      first: first,
+      second: second
+    } do
+      resource =
+        Renga.TriageFixtures.resource_fixture(
+          Accounts.scope_for_user(user, second.id),
+          "server",
+          "db-01"
+        )
+
+      path = ~p"/inventory/#{resource.id}"
+      conn = open_then_log_out(conn, user, first)
+      conn = get(conn, path)
+      assert redirected_to(conn) == ~p"/users/log-in"
+
+      {token, _hashed_token} = generate_user_magic_link_token(user)
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+
+      assert redirected_to(conn) == path
+      assert redirected_to(get(conn, path)) == ~p"/organizations"
+    end
+  end
+
   describe "DELETE /users/log-out" do
     test "logs the user out", %{conn: conn, user: user} do
       conn = conn |> log_in_user(user) |> delete(~p"/users/log-out")
