@@ -1645,6 +1645,7 @@ dependencies = [
  "procfs",
  "rcgen",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
