@@ -203,6 +203,18 @@ defmodule RengaWeb.SitePowerLive do
                   {feed.max_utilization}% of {rated_label(feed)}
                 </span>
               </:col>
+              <:action :let={feed} :if={@can_manage?}>
+                <.button
+                  id={"feed-#{feed.id}-edit"}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label={"Edit #{feed.name}"}
+                  phx-click={edit_feed(feed)}
+                >
+                  Edit
+                </.button>
+              </:action>
               <:empty>No feeds on this panel yet.</:empty>
             </.table>
           </section>
