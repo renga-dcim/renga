@@ -57,8 +57,17 @@ defmodule Renga.Power.PowerFactor do
   string above 0 and at most 1 with at most three significant decimal
   places, else `nil`. The phase 3 migration's backfill parses the same way.
   """
-  # The repo decodes JSON numbers as decimals.
-  def parse(%Decimal{} = value), do: parse(Decimal.to_string(value, :normal))
+  # The repo decodes JSON numbers as decimals, of any exponent PostgreSQL
+  # stores. Only one that prints within the pattern's 16 integer and 16
+  # fraction digits is printed and matched, so a huge exponent is ignored
+  # like the backfill ignores it, rather than raising while it is printed.
+  def parse(%Decimal{coef: coef, exp: exp} = value) when is_integer(coef) do
+    # At most 16 - exp digits, compared without counting a huge coefficient's.
+    if exp in -16..15 and coef < Integer.pow(10, 16 - exp),
+      do: parse(Decimal.to_string(value, :normal))
+  end
+
+  def parse(%Decimal{}), do: nil
   def parse(value) when is_integer(value) or is_float(value), do: parse(to_string(value))
 
   def parse(value) when is_binary(value) do
