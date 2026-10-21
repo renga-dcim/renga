@@ -238,7 +238,7 @@ defmodule RengaWeb.ResourcePowerLive do
                   }
                   title={path_summary(@paths_by_port[port.id])}
                   phx-click={show_path(@paths_by_port[port.id])}
-                  class="flex min-h-tap w-full min-w-0 items-center gap-1 rounded-sm text-left transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring sm:min-h-7"
+                  class="flex h-7 min-h-tap min-w-tap w-full items-center gap-1 rounded-sm text-left transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
                   <span class={[
                     "min-w-0 flex-1 truncate",
@@ -259,6 +259,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     variant="ghost"
                     aria-label={"Edit allocation for #{port.name}"}
                     title={"Edit allocation for #{port.name}"}
+                    class="min-w-tap"
                     phx-click={edit_port(port)}
                   >
                     <.icon name="hero-pencil-square-mini" class="size-4" />
@@ -274,6 +275,7 @@ defmodule RengaWeb.ResourcePowerLive do
                         else: "Connect #{port.name}"
                     }
                     title={if @cables_by_port[port.id], do: "Move connection", else: "Connect"}
+                    class="min-w-tap"
                     phx-click={connect_port(port)}
                   >
                     <.icon
@@ -295,6 +297,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     size="sm"
                     aria-label={"Unplug #{port.name}"}
                     title={"Unplug #{port.name}"}
+                    class="min-w-tap"
                     phx-click="unplug_port"
                     phx-value-id={@cables_by_port[port.id].id}
                   >
@@ -387,7 +390,9 @@ defmodule RengaWeb.ResourcePowerLive do
         <div :if={@selected_path} id="power-path-detail" class="space-y-5">
           <div>
             <p class="text-xs font-medium text-fg-muted">Starts at</p>
-            <p class="mt-1 font-mono text-sm">{@resource.name} · {@selected_path.port.name}</p>
+            <p class="mt-1 break-words font-mono text-sm">
+              {@resource.name} · {@selected_path.port.name}
+            </p>
           </div>
 
           <ol :if={@selected_path.outlets != []} class="space-y-3" aria-label="Power path hops">
@@ -399,11 +404,11 @@ defmodule RengaWeb.ResourcePowerLive do
               <div class="min-w-0 flex-1">
                 <.link
                   navigate={~p"/inventory/#{outlet.resource}/power"}
-                  class="inline-flex min-h-tap max-w-full items-center rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring sm:min-h-7"
+                  class="inline-flex h-7 min-h-tap min-w-tap max-w-full items-center rounded-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
-                  <span class="truncate">{outlet.resource.name}</span>
+                  <span class="break-words">{outlet.resource.name}</span>
                 </.link>
-                <p class="text-sm">
+                <p class="break-words text-sm">
                   Outlet <span class="font-mono">{outlet.name}</span>
                   <span :if={outlet.inlet_port} class="text-fg-muted">
                     via inlet <span class="font-mono">{outlet.inlet_port.name}</span>
@@ -419,7 +424,7 @@ defmodule RengaWeb.ResourcePowerLive do
             class="rounded-lg border border-edge bg-sunken p-3"
           >
             <p class="text-xs font-medium text-fg-muted">Panel feed</p>
-            <p class="mt-1 text-sm">
+            <p class="mt-1 break-words text-sm">
               {@selected_path.feed.panel.name}
               <span class="font-mono">{@selected_path.feed.name}</span>
               <span :if={@selected_path.feed.side} class="ml-1 text-xs text-fg-muted">

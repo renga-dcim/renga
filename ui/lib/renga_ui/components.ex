@@ -633,7 +633,7 @@ defmodule RengaUI.Components do
     <button
       type="button"
       phx-click={JS.dispatch("renga:overlay-cancel", to: "##{@id}")}
-      class="grid min-h-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
+      class="grid min-h-tap min-w-tap size-8 shrink-0 cursor-pointer place-items-center rounded-md text-fg-muted transition-colors hover:bg-sunken hover:text-fg"
       aria-label={gettext("Close")}
     >
       <.icon name="hero-x-mark" class="size-4" />
