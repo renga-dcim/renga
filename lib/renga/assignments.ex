@@ -181,15 +181,25 @@ defmodule Renga.Assignments do
       with {:ok, assignment} <- lock_assignment(scope, assignment_id),
            :ok <- within_ceiling(assignment.role || assignment.built_in_role, ceiling),
            {:ok, deleted} <- Repo.delete(assignment) do
-        if Assignment.current?(assignment, Renga.Time.utc_now_ms()) do
-          record!(scope, "role_unassigned", assignment, nil, opts[:reason])
-        else
-          if is_nil(assignment.expired_at), do: record_expiry!(assignment)
-        end
-
+        record_removal!(scope, assignment, opts[:reason])
         {:ok, deleted}
       end
     end)
+  end
+
+  # Taking away a current assignment is the actor's change; an expired one
+  # records its expiry unless that was already recorded.
+  defp record_removal!(scope, assignment, reason) do
+    cond do
+      Assignment.current?(assignment, Renga.Time.utc_now_ms()) ->
+        record!(scope, "role_unassigned", assignment, nil, reason)
+
+      is_nil(assignment.expired_at) ->
+        record_expiry!(assignment)
+
+      true ->
+        :ok
+    end
   end
 
   defp administer(%Scope{} = scope, mutation) do
