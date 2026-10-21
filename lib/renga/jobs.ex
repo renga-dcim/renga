@@ -22,8 +22,8 @@ defmodule Renga.Jobs do
 
   alias Ecto.Changeset
   alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Inventory.Agent
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Resource
@@ -278,11 +278,11 @@ defmodule Renga.Jobs do
 
   defp requesting_user(_scope), do: {:error, :forbidden}
 
-  # Owners and admins may request `observe` jobs. `operate` and `interactive`
+  # `jobs.request` covers `observe` jobs. `operate` and `interactive`
   # jobs need grants RFDs 13 and 14 define, so nobody may request them yet.
   defp authorize_request!(%Scope{} = scope, capability) do
     case capability.risk_class() do
-      :observe -> authorize_member!(scope, ["owner", "admin"])
+      :observe -> authorize_member!(scope, "jobs.request")
       _operate_or_interactive -> Repo.rollback(:forbidden)
     end
   end
@@ -508,14 +508,14 @@ defmodule Renga.Jobs do
   ## Cancelling
 
   @doc """
-  Cancels a job as an owner or admin. A queued job is cancelled at once; a
+  Cancels a job; needs `jobs.request`. A queued job is cancelled at once; a
   leased or running one records the request, which the agent sees on its next
   report and acknowledges with a `cancelled` report.
   """
   def cancel_job(%Scope{} = scope, job_id) do
     with {:ok, actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
-        authorize_member!(scope, ["owner", "admin"])
+        authorize_member!(scope, "jobs.request")
 
         scope.organization_id
         |> lock_job!(job_id)
@@ -998,7 +998,7 @@ defmodule Renga.Jobs do
   @max_note_length 1000
 
   @doc """
-  Records what happened to an `uncertain` job, as an owner or admin who
+  Records what happened to an `uncertain` job, as a `jobs.request` holder who
   checked the target. `outcome` is `"succeeded"` or `"failed"`. Resolving
   never runs the job again; trying again means requesting a new job.
   """
@@ -1006,7 +1006,7 @@ defmodule Renga.Jobs do
       when outcome in ~w(succeeded failed) do
     with {:ok, actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
-        authorize_member!(scope, ["owner", "admin"])
+        authorize_member!(scope, "jobs.request")
         resolve!(scope.organization_id, job_id, actor, outcome, note_payload(note))
       end)
       |> Changes.broadcast(scope.organization_id)
@@ -1098,15 +1098,15 @@ defmodule Renga.Jobs do
 
   @doc """
   Changes which capabilities may be targeted in the organization and how
-  long job history is kept. Only an owner may. Allowing a capability does
-  not let anyone request it: roles and, for `operate` and `interactive`
-  capabilities, grants still apply.
+  long job history is kept; needs `organization.manage`. Allowing a
+  capability does not let anyone request it: permissions and, for `operate`
+  and `interactive` capabilities, grants still apply.
   """
   def update_settings(%Scope{} = scope, attrs) do
     with {:ok, _actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
         organization = lock_active_organization!(scope.organization_id, :update)
-        authorize_membership!(scope, ["owner"])
+        authorize_member!(scope, "organization.manage")
         put_settings!(organization, attrs)
       end)
     end
@@ -1266,43 +1266,10 @@ defmodule Renga.Jobs do
   end
 
   # Rechecks the scope's membership inside the transaction so a stale browser
-  # scope cannot act after its role was changed.
-  defp authorize_member!(
-         %Scope{
-           membership_id: membership_id,
-           organization_id: organization_id
-         } = scope,
-         roles
-       )
-       when not is_nil(membership_id) do
-    lock_active_organization!(organization_id)
-    authorize_membership!(scope, roles)
-  end
-
-  defp authorize_member!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
-
-  defp authorize_membership!(
-         %Scope{
-           membership_id: membership_id,
-           user: %{id: user_id},
-           organization_id: organization_id
-         },
-         roles
-       )
-       when not is_nil(membership_id) do
-    member? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active" and membership.role in ^roles)
-      |> lock("FOR SHARE")
-      |> Repo.exists?()
-
-    unless member?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize_membership!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
+  # scope cannot act after its role was changed. Shared locks keep concurrent
+  # job requests from serializing on the organization.
+  defp authorize_member!(%Scope{} = scope, permission),
+    do: Authorization.authorize!(scope, permission, lock: :share)
 
   # Stores parameters, results, and payloads exactly as they read back from
   # JSONB, so comparisons (idempotency) and size accounting see one shape.
