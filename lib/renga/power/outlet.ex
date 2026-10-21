@@ -16,6 +16,8 @@ defmodule Renga.Power.Outlet do
     field :name, :string
     field :label, :string
     field :connector, :string
+    # Set while cable history keeps an endpoint the hardware type dropped.
+    field :retired_at, :utc_datetime_usec
     field :feed_leg, :string
 
     belongs_to :organization, Renga.Accounts.Organization

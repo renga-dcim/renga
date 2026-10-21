@@ -25,6 +25,10 @@ defmodule Renga.Topology.CableChangeEvent do
     field :occurred_at, :utc_datetime_usec
     field :actor_user_id, :binary_id
     field :metadata, :map, default: %{}
+    field :cable_kind, :string, default: "data"
+    field :power_port_id, :binary_id
+    field :power_outlet_id, :binary_id
+    field :power_feed_id, :binary_id
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :interface_a, Renga.Inventory.Interface
     belongs_to :interface_b, Renga.Inventory.Interface

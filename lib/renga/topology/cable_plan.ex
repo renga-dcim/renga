@@ -18,6 +18,7 @@ defmodule Renga.Topology.CablePlan do
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "cable_plans" do
+    field :cable_kind, :string, default: "data"
     field :cable_type, :string
     field :status, :string, default: "planned"
     field :label, :string
@@ -29,6 +30,10 @@ defmodule Renga.Topology.CablePlan do
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :interface_a, Renga.Inventory.Interface
     belongs_to :interface_b, Renga.Inventory.Interface
+    # RFD 10: a power cable joins a power port to an outlet or a feed.
+    belongs_to :power_port, Renga.Power.Port
+    belongs_to :power_outlet, Renga.Power.Outlet
+    belongs_to :power_feed, Renga.Power.Feed
     timestamps()
   end
 
@@ -56,5 +61,24 @@ defmodule Renga.Topology.CablePlan do
     |> unique_constraint([:organization_id, :interface_a_id, :interface_b_id],
       name: :cable_plans_endpoints_index
     )
+  end
+
+  @doc "Intent for a power cable (RFD 10): a power port to an outlet or a feed."
+  def power_changeset(plan, attrs) do
+    plan
+    |> CableAttributes.cast_attributes(attrs)
+    |> put_change(:cable_kind, "power")
+    |> validate_required([:organization_id, :power_port_id, :status, :metadata])
+    |> check_constraint(:power_port_id, name: :cable_plans_endpoint_shape)
+    |> check_constraint(:status, name: :cable_plans_valid_status)
+    |> check_constraint(:length_unit, name: :cable_plans_valid_length_unit)
+    |> check_constraint(:length_value, name: :cable_plans_length_pair)
+    |> check_constraint(:length_value, name: :cable_plans_positive_length)
+    |> check_constraint(:color, name: :cable_plans_color_format)
+    |> assoc_constraint(:power_port, name: :cable_plans_tenant_power_port_fkey)
+    |> assoc_constraint(:power_outlet, name: :cable_plans_tenant_power_outlet_fkey)
+    |> assoc_constraint(:power_feed, name: :cable_plans_tenant_power_feed_fkey)
+    |> unique_constraint(:power_outlet_id, name: :cable_plans_power_outlet_pair_index)
+    |> unique_constraint(:power_feed_id, name: :cable_plans_power_feed_pair_index)
   end
 end

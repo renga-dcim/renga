@@ -21,6 +21,8 @@ defmodule Renga.Power.Port do
     field :name, :string
     field :label, :string
     field :connector, :string
+    # Set while cable history keeps an endpoint the hardware type dropped.
+    field :retired_at, :utc_datetime_usec
     field :maximum_draw_w, :integer
     field :default_allocated_draw_w, :integer
     field :allocated_draw_w, :integer
