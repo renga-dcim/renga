@@ -41,15 +41,15 @@ defmodule Renga.Power.PowerFactor do
 
     # Rounding a value far out of range can exceed Decimal's precision and
     # raise, so places are only checked once the value is in range.
-    if Keyword.has_key?(changeset.errors, field) do
-      changeset
-    else
-      validate_change(changeset, field, fn ^field, value ->
-        if Decimal.eq?(Decimal.round(value, 3), value),
-          do: [],
-          else: [{field, "can have at most three decimal places"}]
-      end)
-    end
+    if Keyword.has_key?(changeset.errors, field),
+      do: changeset,
+      else: validate_change(changeset, field, &validate_places/2)
+  end
+
+  defp validate_places(field, value) do
+    if Decimal.eq?(Decimal.round(value, 3), value),
+      do: [],
+      else: [{field, "can have at most three decimal places"}]
   end
 
   @doc """
