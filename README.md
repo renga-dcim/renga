@@ -90,7 +90,14 @@ runtime server and database settings with environment variables:
 | `DEPLOYMENT_ID` | no | A short, non-secret name for this deployment, such as `eu1`: at most 16 lowercase letters, digits, and hyphens. New intake keys carry it so a resolver can route agents here (RFD 23); existing keys keep working |
 
 Run `/app/bin/migrate` once per deploy, before new nodes start, then run
-`/app/bin/server`. Put the server behind a TLS-terminating reverse proxy; the
+`/app/bin/server`.
+
+Operator tasks run on the server with `/app/bin/renga-admin`, which starts only
+the database connection. `renga-admin operator-tokens create --name NAME
+--scope SCOPE` creates a token for the operator API (RFD 22) and prints it
+once; `list` and `revoke ID_OR_NAME` manage existing tokens. Run
+`renga-admin` with no arguments for usage, or `mix renga.admin` in
+development. Put the server behind a TLS-terminating reverse proxy; the
 container listens for HTTP on `PORT`. `DATABASE_SSL` uses the image's public CA
 bundle, so install private or provider-specific roots in a derived image.
 
