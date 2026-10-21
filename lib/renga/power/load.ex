@@ -134,34 +134,39 @@ defmodule Renga.Power.Load do
 
   defp walk(organization_id, three_phase, frontier, hops, acc) do
     port_ids = Enum.map(frontier, &elem(&1, 0).id)
-    downstream = downstream(organization_id, port_ids)
-    inlets = inlets(organization_id, port_ids)
 
-    {next, acc} =
-      Enum.reduce(frontier, {[], acc}, fn {port, feed_id, leg}, {next, acc} ->
-        acc = update_in(acc.devices, &add(&1, feed_id, port.resource_id))
+    hop = %{
+      downstream: downstream(organization_id, port_ids),
+      inlets: inlets(organization_id, port_ids),
+      three_phase: three_phase,
+      first?: hops == 0
+    }
 
-        case Map.get(downstream, port.id) do
-          # A PDU inlet with nothing plugged in passes nothing on.
-          nil when is_map_key(inlets, port.id) ->
-            {next, acc}
-
-          # Nothing downstream: the port draws the power itself.
-          nil ->
-            {next, update_in(acc.draws, &add(&1, feed_id, {port, leg}))}
-
-          children ->
-            # The first PDU off a three-phase feed decides each load's leg.
-            first? = hops == 0 and MapSet.member?(three_phase, feed_id)
-
-            children =
-              for {outlet, child} <- children, do: {child, feed_id, leg_of(outlet, leg, first?)}
-
-            {children ++ next, acc}
-        end
-      end)
-
+    {next, acc} = Enum.reduce(frontier, {[], acc}, &step(&1, &2, hop))
     walk(organization_id, three_phase, next, hops + 1, acc)
+  end
+
+  defp step({port, feed_id, leg}, {next, acc}, hop) do
+    acc = update_in(acc.devices, &add(&1, feed_id, port.resource_id))
+
+    case Map.get(hop.downstream, port.id) do
+      # A PDU inlet with nothing plugged in passes nothing on.
+      nil when is_map_key(hop.inlets, port.id) ->
+        {next, acc}
+
+      # Nothing downstream: the port draws the power itself.
+      nil ->
+        {next, update_in(acc.draws, &add(&1, feed_id, {port, leg}))}
+
+      children ->
+        # The first PDU off a three-phase feed decides each load's leg.
+        first? = hop.first? and MapSet.member?(hop.three_phase, feed_id)
+
+        children =
+          for {outlet, child} <- children, do: {child, feed_id, leg_of(outlet, leg, first?)}
+
+        {children ++ next, acc}
+    end
   end
 
   defp add(map, key, value), do: Map.update(map, key, [value], &[value | &1])
@@ -220,10 +225,7 @@ defmodule Renga.Power.Load do
   defp summarize(feed, draws, untraced?) do
     capacity = Capacity.of(feed)
     unallocated = Enum.count(draws, &is_nil(&1.watts))
-
-    unconverted =
-      if capacity.unit == :va, do: Enum.count(draws, &(&1.watts && is_nil(&1.va))), else: 0
-
+    unconverted = unconverted(draws, capacity.unit)
     unassigned_legs = if three_phase?(feed), do: Enum.count(draws, &is_nil(&1.leg)), else: 0
     complete? = not untraced? and unallocated == 0 and unconverted == 0
     known = known(draws, capacity.unit)
@@ -247,6 +249,10 @@ defmodule Renga.Power.Load do
     }
     |> put_status()
   end
+
+  # A DC feed needs no conversion.
+  defp unconverted(_draws, :w), do: 0
+  defp unconverted(draws, :va), do: Enum.count(draws, &(&1.watts && is_nil(&1.va)))
 
   defp known(draws, :w),
     do: draws |> Enum.map(&(&1.watts || 0)) |> Enum.sum() |> Decimal.new()
