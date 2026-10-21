@@ -63,13 +63,13 @@ defmodule Renga.Inventory.InstallationKeys do
   end
 
   @doc """
-  Approves a pending key as an owner or admin. `fingerprint` is the one the
-  person saw when deciding, so a key replaced in the meantime is refused
-  rather than approved unseen.
+  Approves a pending key; it needs `intake_keys.manage`, which owners and
+  admins hold. `fingerprint` is the one the person saw when deciding, so a
+  key replaced in the meantime is refused rather than approved unseen.
   """
   def approve(%Scope{} = scope, key_id, fingerprint) do
     scope
-    |> Inventory.organization_management_transaction(fn ->
+    |> Inventory.organization_management_transaction("intake_keys.manage", fn ->
       key =
         InstallationKey
         |> where([key], key.organization_id == ^scope.organization_id and key.id == ^key_id)
