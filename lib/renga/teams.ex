@@ -11,17 +11,16 @@ defmodule Renga.Teams do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Inventory.Resource
   alias Renga.Repo
   alias Renga.Teams.Team
 
-  @doc "UI hint: owners and admins manage teams and owners."
-  def can_manage?(%Scope{} = scope), do: Inventory.organization_manager?(scope)
+  @doc "UI hint: `teams.manage` covers teams and resource owners."
+  def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "teams.manage")
 
   ## Teams
 
@@ -190,31 +189,6 @@ defmodule Renga.Teams do
     |> Changes.broadcast(organization_id)
   end
 
-  defp authorize_manager!(%Scope{
-         membership_id: membership_id,
-         user: %{id: user_id},
-         organization_id: organization_id
-       })
-       when not is_nil(membership_id) do
-    active? =
-      Organization
-      |> where([organization], organization.id == ^organization_id)
-      |> where([organization], organization.status == "active")
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    manager? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active")
-      |> where([membership], membership.role in ["owner", "admin"])
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    unless active? and manager?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize_manager!(%Scope{}), do: Repo.rollback(:forbidden)
+  defp authorize_manager!(%Scope{} = scope),
+    do: Authorization.authorize!(scope, "teams.manage")
 end
