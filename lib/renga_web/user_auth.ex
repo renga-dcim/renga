@@ -126,8 +126,14 @@ defmodule RengaWeb.UserAuth do
       "return_to" => get_session(conn, :user_return_to)
     }
 
+    # Starting a sign-in ends whatever this browser was signed in as, so a
+    # half-finished sign-in is never also a session through a leftover
+    # session or remember-me cookie.
+    revoke_browser_session(conn)
+
     conn
     |> renew_session(nil)
+    |> delete_resp_cookie(@remember_me_cookie, @remember_me_options)
     |> put_session(@second_step_key, pending)
     |> redirect(to: ~p"/users/log-in/second-step")
   end

@@ -140,6 +140,23 @@ defmodule RengaWeb.UserSessionControllerTest do
       refute get_session(conn, :user_token)
     end
 
+    # A browser that was signed in, as anyone, holds no live session while
+    # its next sign-in waits for the second step.
+    test "starting a sign-in ends the browser's earlier session", %{conn: conn, user: user} do
+      other = user_fixture()
+      earlier = Renga.Accounts.generate_user_session_token(other)
+
+      conn =
+        conn
+        |> init_test_session(%{user_token: earlier})
+        |> sign_in_with_password(user)
+
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+      refute get_session(conn, :user_token)
+      refute Renga.Accounts.get_user_by_session_token(earlier)
+      assert %{max_age: 0} = conn.resp_cookies["_renga_web_user_remember_me"]
+    end
+
     test "a magic link is only the first step", %{conn: conn, user: user} do
       {token, _hashed_token} = generate_user_magic_link_token(user)
       conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
@@ -162,12 +179,12 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert conn.resp_cookies["_renga_web_user_remember_me"]
     end
 
-    test "a wrong code signs nobody in", %{conn: conn, user: user} do
+    test "a wrong code signs nobody in", %{conn: conn, user: user, secret: secret} do
       conn = sign_in_with_password(conn, user)
 
       conn =
         post(recycle(conn), ~p"/users/log-in/second-step", %{
-          "second_step" => %{"code" => "000000"}
+          "second_step" => %{"code" => wrong_totp_code(secret)}
         })
 
       assert redirected_to(conn) == ~p"/users/log-in/second-step"
