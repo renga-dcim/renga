@@ -11,8 +11,8 @@ defmodule Renga.Inventory do
   require Logger
 
   alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.HardwareAssignment
   alias Renga.Inventory.Address
@@ -117,11 +117,11 @@ defmodule Renga.Inventory do
   @doc """
   Returns whether the current human organization scope can manage organization inventory.
   """
-  def organization_manager?(%Scope{user: user, roles: roles}) do
-    not is_nil(user) and Enum.any?(roles, &(&1 in ["owner", "admin"]))
-  end
+  def organization_manager?(%Scope{} = scope),
+    do: Authorization.allowed?(scope, "inventory.edit")
 
-  def collector_manager?(%Scope{} = scope), do: organization_manager?(scope)
+  def collector_manager?(%Scope{} = scope),
+    do: Authorization.allowed?(scope, "intake_keys.manage")
 
   @doc """
   Lists organization intake keys without exposing credential material.
@@ -140,7 +140,7 @@ defmodule Renga.Inventory do
   inside the transaction so a stale browser scope cannot issue credentials.
   """
   def create_intake_api_key(%Scope{} = scope, attrs) do
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "intake_keys.manage", fn ->
       token = generate_intake_api_key()
 
       case %IntakeApiKey{organization_id: scope.organization_id}
@@ -156,7 +156,7 @@ defmodule Renga.Inventory do
   Revokes one scoped intake key without deleting collectors or provenance.
   """
   def revoke_intake_api_key(%Scope{} = scope, key_id) do
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "intake_keys.manage", fn ->
       IntakeApiKey
       |> where([key], key.organization_id == ^scope.organization_id)
       |> where([key], key.id == ^key_id)
@@ -318,18 +318,17 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Runs `mutation` for an owner or admin of the scope's active organization,
-  re-checking the membership in the database inside the transaction rather
-  than trusting the roles loaded into the scope. Locks the organization and
-  then the membership, the order every managed-inventory context follows.
+  Runs `mutation` once the scope holds `permission`, re-checked in the
+  database inside the transaction rather than trusted from the scope (see
+  `Renga.Authorization.authorize!/3`), so IPAM and other organization-wide
+  editors share one lock order.
 
   `mutation` may return `{:ok, result}`, `{:error, reason}` (rolled back),
   or a bare result.
   """
-  def organization_management_transaction(%Scope{} = scope, mutation) do
+  def organization_management_transaction(%Scope{} = scope, permission, mutation) do
     Repo.transaction(fn ->
-      ensure_organization_active_or_rollback(scope.organization_id)
-      authorize_current_organization_manager_or_rollback(scope)
+      Authorization.authorize!(scope, permission)
 
       case mutation.() do
         {:ok, result} -> result
@@ -341,70 +340,19 @@ defmodule Renga.Inventory do
 
   defp authorized_reconciliation_observation(%Scope{} = scope, observation_id) do
     Repo.transaction(fn ->
-      ensure_organization_active_or_rollback(scope.organization_id)
-      authorize_current_reconciliation_actor_or_rollback(scope)
+      authorize_reconciliation!(scope)
       get_observation!(scope, observation_id)
     end)
   end
 
-  defp authorize_reconciliation!(%Scope{} = scope) do
-    ensure_organization_active_or_rollback(scope.organization_id)
-    authorize_current_reconciliation_actor_or_rollback(scope)
-  end
+  defp authorize_reconciliation!(%Scope{} = scope),
+    do: Authorization.authorize!(scope, "inventory.reconcile")
 
-  defp authorize_current_reconciliation_actor_or_rollback(%Scope{
-         membership_id: membership_id,
-         user: %{id: user_id},
-         organization_id: organization_id
-       })
-       when not is_nil(membership_id) do
-    authorized? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active")
-      |> where([membership], membership.role in ["owner", "admin", "member"])
-      |> select([membership], membership.id)
-      |> lock("FOR UPDATE")
-      |> Repo.one()
-      |> is_binary()
-
-    unless authorized?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize_current_reconciliation_actor_or_rollback(%Scope{}),
-    do: Repo.rollback(:forbidden)
-
-  defp authorize_current_organization_manager_or_rollback(%Scope{
-         membership_id: membership_id,
-         user: %{id: user_id},
-         organization_id: organization_id
-       })
-       when not is_nil(membership_id) do
-    authorized? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active")
-      |> where([membership], membership.role in ["owner", "admin"])
-      |> select([membership], membership.id)
-      |> lock("FOR UPDATE")
-      |> Repo.one()
-      |> is_binary()
-
-    unless authorized?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize_current_organization_manager_or_rollback(%Scope{}),
-    do: Repo.rollback(:forbidden)
-
+  # Kinds that another context manages may only be created or changed
+  # directly here by people who may edit inventory.
   defp authorize_managed_resource_kind!(%Scope{} = scope, kind)
-       when kind in @managed_resource_kinds do
-    ensure_organization_active_or_rollback(scope.organization_id)
-    authorize_current_organization_manager_or_rollback(scope)
-  end
+       when kind in @managed_resource_kinds,
+       do: Authorization.authorize!(scope, "inventory.edit")
 
   defp authorize_managed_resource_kind!(_scope, _kind), do: :ok
 
@@ -445,18 +393,6 @@ defmodule Renga.Inventory do
   end
 
   defp reject_context_managed_resource_creation!(_organization_id, _kind, _attrs), do: :ok
-
-  defp ensure_organization_active_or_rollback(organization_id) do
-    Organization
-    |> where([organization], organization.id == ^organization_id)
-    |> select([organization], organization.status)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      "active" -> :ok
-      _inactive_or_missing -> Repo.rollback(:forbidden)
-    end
-  end
 
   @doc """
   Registers or refreshes an agent and renews its independent liveness lease.
@@ -1294,7 +1230,7 @@ defmodule Renga.Inventory do
   Updates operator-owned lifecycle intent after rechecking current organization management access.
   """
   def update_resource_lifecycle(%Scope{} = scope, %Resource{} = resource, lifecycle_state) do
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "inventory.edit", fn ->
       update_resource(scope, resource, %{lifecycle_state: lifecycle_state})
     end)
     |> case do
@@ -1333,7 +1269,7 @@ defmodule Renga.Inventory do
       when is_list(ids) do
     ids = Enum.flat_map(ids, &List.wrap(Ecto.UUID.cast(&1) |> ok_value()))
 
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "inventory.edit", fn ->
       Resource
       |> where([resource], resource.organization_id == ^organization_id)
       |> where([resource], resource.id in ^ids)
@@ -2521,7 +2457,7 @@ defmodule Renga.Inventory do
         value -> %{"value" => value}
       end
 
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "inventory.edit", fn ->
       lock_organization!(scope.organization_id)
       delete_override(scope, resource.id, path)
 
@@ -2543,7 +2479,7 @@ defmodule Renga.Inventory do
       when field in @host_override_fields do
     path = "host." <> field
 
-    organization_management_transaction(scope, fn ->
+    organization_management_transaction(scope, "inventory.edit", fn ->
       lock_organization!(scope.organization_id)
       resource = get_resource!(scope, resource.id)
 

@@ -413,7 +413,7 @@ defmodule Renga.IPAM do
   # Every prefix and address write changes which address findings should be
   # open, so each one reconciles them before it commits (RFD 4, "Findings").
   defp ipam_transaction(%Scope{organization_id: organization_id} = scope, mutation) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       case mutation.() do
         {:error, _reason} = error ->
           error
@@ -521,7 +521,7 @@ defmodule Renga.IPAM do
   envelope's display name is the VRF's name, and Activity records it.
   """
   def create_vrf(%Scope{organization_id: organization_id} = scope, attrs) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       validation = change_vrf(%Vrf{organization_id: organization_id}, attrs)
       unless validation.valid?, do: Repo.rollback(%{validation | action: :insert})
 
@@ -572,7 +572,7 @@ defmodule Renga.IPAM do
   has changed since, the edit returns `{:error, :stale}` and writes nothing.
   """
   def update_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id} = baseline, attrs) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       current = lock_vrf!(organization_id, id)
 
       if Map.take(current, @vrf_event_fields) != Map.take(baseline, @vrf_event_fields),
@@ -627,7 +627,7 @@ defmodule Renga.IPAM do
   since nothing should silently fall back into the global table.
   """
   def delete_vrf(%Scope{organization_id: organization_id} = scope, %Vrf{id: id}) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       current = lock_vrf!(organization_id, id)
 
       in_use? =
@@ -697,7 +697,7 @@ defmodule Renga.IPAM do
   since a family's plan is its levels sorted by length.
   """
   def create_plan_level(%Scope{organization_id: organization_id} = scope, attrs) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       %PlanLevel{organization_id: organization_id, created_by_id: scope.user.id}
       |> PlanLevel.changeset(attrs)
       |> Repo.insert()
@@ -710,7 +710,7 @@ defmodule Renga.IPAM do
   planned fall back to the next level or the guess. Owners and admins only.
   """
   def delete_plan_level(%Scope{organization_id: organization_id} = scope, id) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       PlanLevel
       |> where([level], level.organization_id == ^organization_id and level.id == ^id)
       |> Repo.one!()
