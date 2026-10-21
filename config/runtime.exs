@@ -90,6 +90,12 @@ if config_env() == :prod do
 
   config :renga, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # Keys for secrets Renga stores and reads back, such as identity provider
+  # client secrets: a comma-separated list of id:base64-key pairs, the first
+  # of which encrypts. Generate a key with `openssl rand -base64 32`. Without
+  # one, Renga runs but cannot save a provider's client secret.
+  config :renga, Renga.Vault, keys: System.get_env("ENCRYPTION_KEYS")
+
   config :renga, RengaWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [

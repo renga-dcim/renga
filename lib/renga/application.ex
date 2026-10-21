@@ -10,6 +10,9 @@ defmodule Renga.Application do
 
   @impl true
   def start(_type, _args) do
+    # A malformed ENCRYPTION_KEYS fails the boot rather than the first secret.
+    Renga.Vault.keys()
+
     children =
       [
         RengaWeb.Telemetry,

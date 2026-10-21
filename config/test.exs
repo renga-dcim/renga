@@ -80,3 +80,5 @@ config :phoenix, :plug_init_mode, :runtime
 # Enable helpful, but potentially expensive runtime checks
 config :phoenix_live_view,
   enable_expensive_runtime_checks: true
+
+config :renga, Renga.Vault, keys: "test:JEhIiyOdTqyJVJP6LBS3Tt65N+Ho5AQzC7ov/t6FjVM="
