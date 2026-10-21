@@ -149,6 +149,122 @@ impl Serialize for Component {
     }
 }
 
+/// A collector module's report about the targets it polls or the hypervisor it reads (RFD 11).
+///
+/// Unlike a host observation it carries any number of resources, and is authoritative only for
+/// its scope. The collector names the stream the server resolves it to, and because the queue
+/// stores the exact body, a report replayed after a restart or reconfiguration still lands in the
+/// stream that produced it.
+#[derive(Debug, Serialize)]
+pub struct ScopedReport {
+    pub observation_id: Uuid,
+    pub observed_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub scope: ReportScope,
+    pub collector: Collector,
+    /// Whether each reachable target's resources are all here, so the server may withdraw what a
+    /// target no longer reports. Partial reports never withdraw anything.
+    pub complete: bool,
+    pub resources: Vec<CollectorResource>,
+}
+
+impl ScopedReport {
+    pub fn new(
+        collector: Collector,
+        scope: ReportScope,
+        complete: bool,
+        resources: Vec<CollectorResource>,
+    ) -> Self {
+        Self {
+            observation_id: Uuid::new_v4(),
+            observed_at: Utc::now(),
+            scope,
+            collector,
+            complete,
+            resources,
+        }
+    }
+}
+
+/// What a report covers. An unreachable target's or hypervisor's resources are unknown, not gone.
+#[derive(Debug, Serialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum ReportScope {
+    Targets { targets: Vec<TargetStatus> },
+    Hypervisor { hypervisor: HypervisorStatus },
+}
+
+#[derive(Debug, Serialize)]
+pub struct TargetStatus {
+    pub address: String,
+    pub status: Reachability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HypervisorStatus {
+    pub id: String,
+    pub status: Reachability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reachability {
+    Reachable,
+    Unreachable,
+}
+
+/// The stable, locally configured identity of one collector module instance.
+#[derive(Debug, Clone, Serialize)]
+pub struct Collector {
+    pub id: String,
+    pub kind: CollectorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectorKind {
+    SwitchPoller,
+    VmProvider,
+}
+
+/// A switch or VM a collector reports. The server matches it only by `serial_number`,
+/// `dmi_uuid`, or `machine_id`, so one of them is required.
+#[derive(Debug, Serialize)]
+pub struct CollectorResource {
+    pub kind: CollectorResourceKind,
+    /// The address of the reachable target it was polled from; `targets` scope only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub identifiers: CollectorIdentifiers,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<HostAttributes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interfaces: Option<Vec<Interface>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectorResourceKind {
+    Switch,
+    Vm,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct CollectorIdentifiers {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dmi_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mac_address: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CheckIn {
     /// Unversioned entries describe what the agent reports; `name@version`
@@ -433,6 +549,34 @@ mod tests {
         assert!(value["resources"][0].get("attributes").is_none());
         assert!(value["resources"][0].get("interfaces").is_none());
         assert_eq!(value["resources"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_scoped_report_names_its_scope_and_collector() {
+        let report = ScopedReport::new(
+            Collector {
+                id: "core-switches".into(),
+                kind: CollectorKind::SwitchPoller,
+            },
+            ReportScope::Targets {
+                targets: vec![TargetStatus {
+                    address: "10.0.0.1".into(),
+                    status: Reachability::Unreachable,
+                    error: Some("timeout".into()),
+                }],
+            },
+            false,
+            vec![],
+        );
+        let value = serde_json::to_value(&report).unwrap();
+
+        assert_eq!(value["scope"], "targets");
+        assert_eq!(value["collector"]["id"], "core-switches");
+        assert_eq!(value["collector"]["kind"], "switch_poller");
+        assert_eq!(value["targets"][0]["status"], "unreachable");
+        assert_eq!(value["complete"], false);
+        assert_eq!(value["resources"], serde_json::json!([]));
+        assert!(value.get("hypervisor").is_none());
     }
 
     #[test]
