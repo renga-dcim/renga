@@ -203,7 +203,7 @@ defmodule RengaWeb.UserLive.SettingsTest do
           }
         })
 
-      assert render_submit(form) =~ "Your account has no password yet."
+      assert render_submit(form) =~ "Your account has no password or authenticator app yet."
 
       lv |> element("#bootstrap_send") |> render_click()
       assert_received {:email, %{subject: "Your Renga confirmation code", text_body: body}}
@@ -360,6 +360,117 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert path == ~p"/users/log-in"
       assert %{"error" => message} = flash
       assert message == "You must log in to access this page."
+    end
+  end
+
+  describe "authenticator app" do
+    setup %{conn: conn} do
+      user = user_fixture() |> set_password()
+      %{conn: log_in_user(conn, user), user: user}
+    end
+
+    defp secret_from(lv) do
+      lv
+      |> element("#totp_secret")
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.text()
+      |> String.replace(~r/\s/, "")
+      |> Base.decode32!(padding: false)
+    end
+
+    defp turn_on(lv) do
+      lv |> element("#totp_setup") |> render_click()
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      secret = secret_from(lv)
+
+      lv
+      |> form("#totp_form", %{"totp" => %{"code" => NimbleTOTP.verification_code(secret)}})
+      |> render_submit()
+
+      secret
+    end
+
+    test "setting it up asks for the password, then shows recovery codes once", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv |> element("#totp_setup") |> render_click()
+      assert has_element?(lv, "#recheck_form")
+      refute has_element?(lv, "#totp_form")
+
+      turn_on(lv)
+
+      assert has_element?(lv, "#totp_status", "10 recovery codes left.")
+      assert lv |> element("#recovery_codes li") |> has_element?()
+      assert Renga.Accounts.MFA.totp_enabled?(user)
+
+      lv |> element("button", "I've saved them") |> render_click()
+      refute has_element?(lv, "#recovery_codes")
+    end
+
+    test "a wrong code does not turn it on", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv |> element("#totp_setup") |> render_click()
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      result = lv |> form("#totp_form", %{"totp" => %{"code" => "000000"}}) |> render_submit()
+
+      assert result =~ "That code isn&#39;t right."
+      refute Renga.Accounts.MFA.totp_enabled?(user)
+    end
+
+    test "removing it asks for a code from the app, not the password", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      secret = turn_on(lv)
+
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+      lv |> element("#totp_remove") |> render_click()
+
+      assert has_element?(lv, "#recheck_totp_form")
+      refute has_element?(lv, "#recheck_form")
+
+      next_code = NimbleTOTP.verification_code(secret, time: System.os_time(:second) + 30)
+
+      lv
+      |> form("#recheck_totp_form", %{"recheck" => %{"code" => next_code}})
+      |> render_submit()
+
+      refute Renga.Accounts.MFA.totp_enabled?(user)
+      assert has_element?(lv, "#totp_setup")
+    end
+
+    test "an account with no password adds the app after an emailed code", %{conn: conn} do
+      user = user_fixture()
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+
+      lv |> element("#totp_setup") |> render_click()
+      lv |> element("#bootstrap_send") |> render_click()
+      assert_received {:email, %{subject: "Your Renga confirmation code", text_body: body}}
+      [code] = Regex.run(~r/[A-Z0-9]{5}-[A-Z0-9]{5}/, body)
+
+      lv |> form("#bootstrap_form", %{"recheck" => %{"code" => code}}) |> render_submit()
+
+      secret = secret_from(lv)
+
+      lv
+      |> form("#totp_form", %{"totp" => %{"code" => NimbleTOTP.verification_code(secret)}})
+      |> render_submit()
+
+      assert Renga.Accounts.MFA.totp_enabled?(user)
     end
   end
 end

@@ -8,6 +8,7 @@ defmodule RengaWeb.UserLive.Settings do
   use RengaWeb, :live_view
 
   alias Renga.Accounts
+  alias Renga.Accounts.MFA
 
   @impl true
   def render(assigns) do
@@ -21,7 +22,7 @@ defmodule RengaWeb.UserLive.Settings do
       <.settings_page
         id="account"
         title="Account"
-        description="The email you sign in with and an optional password."
+        description="How you sign in: your email, an optional password, and a second factor."
         class="max-w-3xl"
       >
         <.settings_section
@@ -90,6 +91,89 @@ defmodule RengaWeb.UserLive.Settings do
           </.form>
           <.recheck_panel :if={@recheck && @recheck.change == :set_password} recheck={@recheck} />
         </.settings_section>
+
+        <.settings_section
+          id="account-mfa"
+          title="Authenticator app"
+          description="A six-digit code from an app such as 1Password or Google Authenticator, asked for after your password or emailed link."
+        >
+          <div :if={!@totp_enabled and !@totp_setup} class="space-y-3">
+            <p class="text-sm text-fg-muted">Off.</p>
+            <.button id="totp_setup" variant="primary" phx-click="start_totp">
+              Set up authenticator app
+            </.button>
+          </div>
+
+          <div :if={@totp_setup} id="totp_setup_panel" class="space-y-4">
+            <p class="text-sm text-fg">
+              Scan this code with your authenticator app, or enter the key by hand.
+            </p>
+            <div class="flex flex-wrap items-center gap-4">
+              <div class="rounded-md bg-white p-2" aria-hidden="true">
+                {Phoenix.HTML.raw(@totp_setup.qr_svg)}
+              </div>
+              <div class="min-w-0 space-y-1">
+                <p class="text-xs text-fg-muted">Key</p>
+                <p id="totp_secret" class="font-mono text-sm break-all text-fg">
+                  {@totp_setup.formatted_secret}
+                </p>
+              </div>
+            </div>
+            <.form for={@totp_setup.form} id="totp_form" phx-submit="enable_totp">
+              <.input
+                field={@totp_setup.form[:code]}
+                type="text"
+                label="Code from the app"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                spellcheck="false"
+                required
+                phx-mounted={JS.focus()}
+              />
+              <div class="flex gap-2">
+                <.button variant="primary" phx-disable-with="Checking...">Turn on</.button>
+                <.button type="button" phx-click="cancel_totp">Cancel</.button>
+              </div>
+            </.form>
+          </div>
+
+          <div :if={@totp_enabled} class="space-y-3">
+            <p id="totp_status" class="text-sm text-fg">
+              On. {recovery_codes_text(@recovery_codes_left)}
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <.button id="recovery_regenerate" phx-click="regenerate_recovery_codes">
+                Generate new recovery codes
+              </.button>
+              <.button id="totp_remove" variant="danger" phx-click="remove_totp">
+                Remove
+              </.button>
+            </div>
+          </div>
+
+          <div
+            :if={@new_recovery_codes}
+            id="recovery_codes"
+            class="mt-4 space-y-3 rounded-lg border border-edge bg-sunken p-4"
+          >
+            <div>
+              <h3 class="text-sm font-medium text-fg">Recovery codes</h3>
+              <p class="mt-1 text-xs text-fg-muted">
+                Save these somewhere safe. Each one signs you in once if you lose your
+                authenticator app, and they won't be shown again.
+              </p>
+            </div>
+            <ul class="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-sm text-fg">
+              <li :for={code <- @new_recovery_codes}>{code}</li>
+            </ul>
+            <.button type="button" phx-click="dismiss_recovery_codes">I've saved them</.button>
+          </div>
+
+          <.recheck_panel
+            :if={@recheck && @recheck.change in [:add_factor, :remove_factor, :recovery_codes]}
+            recheck={@recheck}
+          />
+        </.settings_section>
       </.settings_page>
     </Layouts.app>
     """
@@ -112,6 +196,28 @@ defmodule RengaWeb.UserLive.Settings do
           {recheck_description(@recheck)}
         </p>
       </div>
+
+      <.form
+        :if={:totp in @recheck.methods}
+        for={@recheck.form}
+        id="recheck_totp_form"
+        phx-submit="recheck_totp"
+      >
+        <.input
+          field={@recheck.form[:code]}
+          type="text"
+          label="Code from your authenticator app"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          spellcheck="false"
+          required
+          phx-mounted={JS.focus()}
+        />
+        <div class="flex gap-2">
+          <.button variant="primary" phx-disable-with="Checking...">Confirm</.button>
+          <.button type="button" phx-click="cancel_recheck">Cancel</.button>
+        </div>
+      </.form>
 
       <.form
         :if={:password in @recheck.methods}
@@ -174,23 +280,30 @@ defmodule RengaWeb.UserLive.Settings do
     """
   end
 
-  defp bootstrap?(%{methods: [], change: :set_password}), do: true
+  defp bootstrap?(%{methods: [], change: change}), do: change in [:set_password, :add_factor]
   defp bootstrap?(_recheck), do: false
+
+  defp recheck_description(%{methods: [:totp | _]}),
+    do:
+      "Enter a code from your authenticator app. It covers changes to your sign-in for the next five minutes."
 
   defp recheck_description(%{methods: [:password | _]}),
     do:
       "Enter your current password. It covers changes to your sign-in for the next five minutes."
 
-  defp recheck_description(%{methods: [], change: :set_password, code_sent: false}),
-    do:
-      "Your account has no password yet. We'll email a code to your current address to confirm the first one."
-
-  defp recheck_description(%{methods: [], change: :set_password}),
+  defp recheck_description(%{methods: [], code_sent: true}),
     do: "Enter the code we emailed to your current address. It expires in five minutes."
 
-  defp recheck_description(%{methods: []}),
-    do:
-      "Set a password first. Your account needs a way to confirm it's you before its email changes."
+  defp recheck_description(%{methods: []} = recheck) do
+    if bootstrap?(recheck),
+      do:
+        "Your account has no password or authenticator app yet. We'll email a code to your current address to confirm the first one.",
+      else:
+        "Set a password first. Your account needs a way to confirm it's you before its email changes."
+  end
+
+  defp recovery_codes_text(1), do: "1 recovery code left."
+  defp recovery_codes_text(count), do: "#{count} recovery codes left."
 
   @impl true
   def mount(%{"token" => token}, _session, socket) do
@@ -219,6 +332,9 @@ defmodule RengaWeb.UserLive.Settings do
       |> assign(:password_form, to_form(password_changeset))
       |> assign(:trigger_submit, false)
       |> assign(:recheck, nil)
+      |> assign(:totp_setup, nil)
+      |> assign(:new_recovery_codes, nil)
+      |> assign_mfa()
 
     {:ok, socket}
   end
@@ -287,6 +403,68 @@ defmodule RengaWeb.UserLive.Settings do
       {:error, _reason} ->
         {:noreply, recheck_error(socket, :password, "That password isn't right.")}
     end
+  end
+
+  def handle_event("recheck_totp", %{"recheck" => %{"code" => code}}, socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.recheck_with_totp(user, session_token, code) do
+      :ok ->
+        {:noreply, resume(socket)}
+
+      {:error, :rate_limited} ->
+        {:noreply, recheck_error(socket, :code, "Too many wrong codes. Try again later.")}
+
+      {:error, _reason} ->
+        {:noreply, recheck_error(socket, :code, "That code isn't right.")}
+    end
+  end
+
+  def handle_event("start_totp", _params, socket) do
+    {:noreply, with_recheck(socket, :add_factor, %{})}
+  end
+
+  def handle_event("enable_totp", %{"totp" => %{"code" => code}}, socket) do
+    %{current_scope: %{user: user}, session_token: session_token, totp_setup: setup} =
+      socket.assigns
+
+    case Accounts.add_totp(user, session_token, setup.secret, code) do
+      {:ok, codes} ->
+        {:noreply,
+         socket
+         |> assign(:totp_setup, nil)
+         |> assign(:new_recovery_codes, codes)
+         |> assign_mfa()
+         |> put_flash(:info, "Authenticator app turned on.")}
+
+      {:error, :recheck_required} ->
+        {:noreply, with_recheck(socket, :add_factor, %{})}
+
+      {:error, :already_enabled} ->
+        {:noreply, socket |> assign(:totp_setup, nil) |> assign_mfa()}
+
+      {:error, :invalid_code} ->
+        form =
+          to_form(%{"code" => ""}, as: "totp", errors: [code: {"That code isn't right.", []}])
+
+        {:noreply, update(socket, :totp_setup, &%{&1 | form: form})}
+    end
+  end
+
+  def handle_event("cancel_totp", _params, socket) do
+    {:noreply, assign(socket, :totp_setup, nil)}
+  end
+
+  def handle_event("remove_totp", _params, socket) do
+    {:noreply, with_recheck(socket, :remove_factor, %{})}
+  end
+
+  def handle_event("regenerate_recovery_codes", _params, socket) do
+    {:noreply, with_recheck(socket, :recovery_codes, %{})}
+  end
+
+  def handle_event("dismiss_recovery_codes", _params, socket) do
+    {:noreply, assign(socket, :new_recovery_codes, nil)}
   end
 
   # The email bootstrap only stands in for a change it can authorize. Its
@@ -375,6 +553,57 @@ defmodule RengaWeb.UserLive.Settings do
   # browser back in after every other session ends.
   defp apply_change(socket, :set_password, _user_params) do
     assign(socket, :trigger_submit, true)
+  end
+
+  defp apply_change(%{assigns: %{totp_setup: nil}} = socket, :add_factor, _params) do
+    secret = MFA.new_totp_secret()
+    uri = MFA.totp_uri(socket.assigns.current_scope.user, secret)
+
+    assign(socket, :totp_setup, %{
+      secret: secret,
+      formatted_secret: MFA.format_totp_secret(secret),
+      qr_svg: uri |> EQRCode.encode() |> EQRCode.svg(width: 176),
+      form: to_form(%{}, as: "totp")
+    })
+  end
+
+  defp apply_change(socket, :add_factor, _params), do: socket
+
+  defp apply_change(socket, :remove_factor, _params) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.remove_totp(user, session_token) do
+      {:ok, _user} ->
+        socket
+        |> assign(:new_recovery_codes, nil)
+        |> assign_mfa()
+        |> put_flash(:info, "Authenticator app removed.")
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "The authenticator app could not be removed.")
+    end
+  end
+
+  defp apply_change(socket, :recovery_codes, _params) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.regenerate_recovery_codes(user, session_token) do
+      {:ok, codes} ->
+        socket
+        |> assign(:new_recovery_codes, codes)
+        |> assign_mfa()
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "New recovery codes could not be generated.")
+    end
+  end
+
+  defp assign_mfa(socket) do
+    user = socket.assigns.current_scope.user
+
+    socket
+    |> assign(:totp_enabled, MFA.totp_enabled?(user))
+    |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
   end
 
   defp recheck_form, do: to_form(%{}, as: "recheck")
