@@ -943,15 +943,26 @@ defmodule Renga.Jobs do
     query
     |> order_by([job], asc: job.id)
     |> limit(@sweep_batch)
-    |> select([job], job.id)
+    |> select([job], {job.organization_id, job.id})
     |> Repo.all()
   end
 
-  defp sweep_one(job_id, now, kind) do
+  # Takes the organization before the job, the order every other job writer
+  # and binding change uses. Locking the job first would deadlock with a
+  # binding change: it holds the organization FOR UPDATE while it fails the
+  # binding's queued jobs, and the job event's foreign key needs KEY SHARE on
+  # that same organization row. Disabled organizations' jobs are swept too,
+  # so this does not require the organization to be active.
+  defp sweep_one({organization_id, job_id}, now, kind) do
     Changes.after_commit(fn ->
       Repo.transaction(fn ->
+        Organization
+        |> where([organization], organization.id == ^organization_id)
+        |> lock("FOR SHARE")
+        |> Repo.one()
+
         Job
-        |> where([job], job.id == ^job_id)
+        |> where([job], job.id == ^job_id and job.organization_id == ^organization_id)
         |> sweep_condition(kind, now)
         |> lock("FOR UPDATE SKIP LOCKED")
         |> Repo.one()
