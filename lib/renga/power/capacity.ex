@@ -44,11 +44,12 @@ defmodule Renga.Power.Capacity do
   defp rated(%Feed{voltage: voltage, amperage: amperage}), do: Decimal.mult(voltage, amperage)
 
   @doc """
-  Formats a capacity value for display, rounded down to a whole unit so a
-  rounded figure never overstates what is usable.
+  Formats a value for display as a whole unit. Capacity rounds down so a
+  rounded figure never overstates what is usable; pass `:ceiling` for a
+  load, so a rounded figure never understates what is drawn.
   """
-  def format(%Decimal{} = value, unit) do
-    whole = value |> Decimal.round(0, :floor) |> Decimal.to_integer()
+  def format(%Decimal{} = value, unit, rounding \\ :floor) do
+    whole = value |> Decimal.round(0, rounding) |> Decimal.to_integer()
     "#{group_thousands(whole)} #{unit_label(unit)}"
   end
 

@@ -526,7 +526,7 @@ defmodule RengaWeb.SitePowerLive do
               @load.headroom && Decimal.negative?(@load.headroom) && "text-crit"
             ]}
           >
-            {@load.headroom && signed(@load.headroom, @load.capacity.unit)}
+            {@load.headroom && headroom(@load.headroom, @load.capacity.unit)}
           </span>
         </:item>
       </.properties>
@@ -554,9 +554,12 @@ defmodule RengaWeb.SitePowerLive do
             class="flex items-baseline justify-between gap-3 px-3 py-2 font-mono text-xs tabular-nums"
           >
             <span class="font-sans font-medium text-fg">Leg {String.upcase(leg.leg)}</span>
-            <span class="text-fg-muted">{Capacity.format(leg.va, :va)}</span>
+            <span class="text-fg-muted">
+              {Capacity.format(leg.va, :va, leg_rounding(leg))}
+            </span>
             <span class={leg_class(leg)}>
-              {amps(leg.current)} of {amps(leg.limit)}{if !leg.complete?, do: " or more"}
+              {amps(leg.current, leg_rounding(leg))} of {amps(leg.limit, :floor)}{if !leg.complete?,
+                do: " or more"}
             </span>
           </li>
         </ul>
@@ -718,7 +721,7 @@ defmodule RengaWeb.SitePowerLive do
   end
 
   defp load_label(%Load{load: %Decimal{} = load, capacity: capacity}),
-    do: Capacity.format(load, capacity.unit)
+    do: Capacity.format(load, capacity.unit, :ceiling)
 
   defp load_label(%Load{status: :over} = load),
     do: "#{Capacity.format(load.known, load.capacity.unit)} or more"
@@ -784,7 +787,7 @@ defmodule RengaWeb.SitePowerLive do
     do: "#{Capacity.format(Decimal.new(watts), :w)} · VA unknown"
 
   defp draw_label(%Load.Draw{watts: watts, va: va}, :va),
-    do: "#{Capacity.format(Decimal.new(watts), :w)} · #{Capacity.format(va, :va)}"
+    do: "#{Capacity.format(Decimal.new(watts), :w)} · #{Capacity.format(va, :va, :ceiling)}"
 
   defp draw_note(draw, load) do
     [
@@ -801,13 +804,23 @@ defmodule RengaWeb.SitePowerLive do
     do:
       "Power factor #{Decimal.to_string(power_factor.value)}, #{PowerFactor.source_label(power_factor.source)}"
 
-  defp signed(value, unit) do
-    if Decimal.negative?(value),
-      do: "−#{Capacity.format(Decimal.abs(value), unit)}",
-      else: Capacity.format(value, unit)
+  # Rounded down, so headroom is never overstated and an overload never
+  # understated: -0.4 VA reads as −1 VA.
+  defp headroom(value, unit) do
+    whole = Decimal.round(value, 0, :floor)
+
+    if Decimal.negative?(whole),
+      do: "−#{Capacity.format(Decimal.abs(whole), unit)}",
+      else: Capacity.format(whole, unit)
   end
 
-  defp amps(value), do: "#{value |> Decimal.round(1) |> Decimal.to_string(:normal)} A"
+  # A complete leg's figures round up, so a current just over its limit never
+  # reads as equal to it; a lower bound ("or more") rounds down to stay one.
+  defp leg_rounding(%Load.Leg{complete?: true}), do: :ceiling
+  defp leg_rounding(%Load.Leg{}), do: :floor
+
+  defp amps(value, rounding),
+    do: "#{value |> Decimal.round(1, rounding) |> Decimal.to_string(:normal)} A"
 
   defp plural(1, word), do: word
   defp plural(_count, word), do: word <> "s"

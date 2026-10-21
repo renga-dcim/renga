@@ -267,4 +267,33 @@ defmodule RengaWeb.SitePowerLiveTest do
     assert has_element?(view, "#load-leg-b", "1.0 A of 25.6 A")
     assert has_element?(view, "#load-leg-c", "0.0 A of 25.6 A")
   end
+
+  test "rounds load and leg figures so they never understate a load",
+       %{conn: conn, site: site, scope: scope} do
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+    feed = feed!(scope, panel, "A1", %{phase: "three", voltage: "400", amperage: "32"})
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "rack-pdu", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet", "feed_leg" => "a"}},
+        %{kind: "power_outlet", name: "2", attributes: %{"inlet" => "Inlet", "feed_leg" => "b"}}
+      ])
+
+    %{ports: [inlet], outlets: [a, b]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _cable} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: feed.id})
+    # 5,922 W at unity on leg A is 5,922 × √3 / 400 = 25.64 A, just over the
+    # 25.6 A limit, and must not read as 25.6 A.
+    plug!(scope, "db-1", %{"allocated_draw_w" => 5922, "power_factor" => 1}, a)
+    # 400 W at 0.97 is 412.37 VA, which reads as 413 VA.
+    port = plug!(scope, "web-1", %{"allocated_draw_w" => 400, "power_factor" => "0.97"}, b)
+
+    {:ok, view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+    assert has_element?(view, "#feed-#{feed.id}-load[data-status=over]", "6,335 VA")
+
+    view |> element("#feed-#{feed.id}-load") |> render_click()
+    assert has_element?(view, "#load-leg-a .text-crit", "25.7 A of 25.6 A")
+    assert has_element?(view, "#load-leg-a", "5,922 VA")
+    assert has_element?(view, "#load-draw-#{port.id}", "400 W · 413 VA")
+  end
 end
