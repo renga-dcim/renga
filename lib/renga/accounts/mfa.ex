@@ -59,18 +59,20 @@ defmodule Renga.Accounts.MFA do
   spent, such as a passkey challenge, is kept only if the factor is saved.
   """
   def add_factor(%User{} = user, insert, authorize) do
-    with_account_lock(user, fn ->
-      first_factor? = not mfa?(user)
+    with_account_lock(user, fn -> add_factor_locked(user, insert, authorize) end)
+  end
 
-      if authorize.() do
-        with {:ok, factor} <- insert.() do
-          end_pending_sign_ins(user)
-          {:ok, {factor, if(first_factor?, do: replace_recovery_codes(user))}}
-        end
-      else
-        {:error, :recheck_required}
+  defp add_factor_locked(user, insert, authorize) do
+    first_factor? = not mfa?(user)
+
+    if authorize.() do
+      with {:ok, factor} <- insert.() do
+        end_pending_sign_ins(user)
+        {:ok, {factor, if(first_factor?, do: replace_recovery_codes(user))}}
       end
-    end)
+    else
+      {:error, :recheck_required}
+    end
   end
 
   @doc """
@@ -79,17 +81,19 @@ defmodule Renga.Accounts.MFA do
   factor.
   """
   def remove_factor(%User{} = user, delete, authorize) do
-    with_account_lock(user, fn ->
-      if authorize.() do
-        with {:ok, factor} <- delete.() do
-          discard_recovery_codes_without_mfa(user)
-          end_pending_sign_ins(user)
-          {:ok, factor}
-        end
-      else
-        {:error, :recheck_required}
+    with_account_lock(user, fn -> remove_factor_locked(user, delete, authorize) end)
+  end
+
+  defp remove_factor_locked(user, delete, authorize) do
+    if authorize.() do
+      with {:ok, factor} <- delete.() do
+        discard_recovery_codes_without_mfa(user)
+        end_pending_sign_ins(user)
+        {:ok, factor}
       end
-    end)
+    else
+      {:error, :recheck_required}
+    end
   end
 
   @doc "Whether the account has an authenticator app."
