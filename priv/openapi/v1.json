@@ -701,65 +701,47 @@
         ],
         "type": "object"
       },
+      "JobClaim": {
+        "title": "JobClaim",
+        "additionalProperties": false,
+        "description": "A signed claim of an offered privileged job (RFD 13).",
+        "properties": {
+          "lease_token": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "nonce": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "signature": {
+            "description": "The 64-byte Ed25519 signature in unpadded base64url.",
+            "pattern": "^[A-Za-z0-9_-]{86}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token",
+          "nonce",
+          "signature"
+        ],
+        "type": "object"
+      },
       "JobLease": {
         "title": "JobLease",
         "additionalProperties": false,
-        "description": "Jobs leased to the calling installation, possibly none. Each lease lasts until `lease_expires_at`; every newly recorded report extends it.",
+        "description": "Jobs leased to the calling installation, possibly none, and privileged jobs offered to it. Each lease lasts until `lease_expires_at`; every newly recorded report extends it.",
         "properties": {
           "jobs": {
             "items": {
-              "additionalProperties": false,
-              "properties": {
-                "attempt": {
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "capability": {
-                  "description": "The `name@version` to run.",
-                  "type": "string"
-                },
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "lease_expires_at": {
-                  "format": "date-time",
-                  "type": "string"
-                },
-                "lease_token": {
-                  "description": "Proves the lease on every report about this job.",
-                  "type": "string"
-                },
-                "not_after": {
-                  "description": "After this time the job is no longer leased or retried.",
-                  "format": "date-time",
-                  "type": "string"
-                },
-                "output_limit_bytes": {
-                  "description": "Budget for all report payloads, across every attempt.",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "parameters": {
-                  "description": "Inputs for the capability.",
-                  "type": "object"
-                },
-                "timeout_ms": {
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "id",
-                "capability",
-                "parameters",
-                "attempt",
-                "lease_token",
-                "lease_expires_at",
-                "not_after",
-                "timeout_ms",
-                "output_limit_bytes"
-              ],
-              "type": "object"
+              "$ref": "#/components/schemas/LeasedJob"
+            },
+            "type": "array"
+          },
+          "offers": {
+            "description": "Privileged jobs (RFD 13) the installation may claim by signing for them with its approved installation key. Absent from older servers.",
+            "items": {
+              "$ref": "#/components/schemas/JobOffer"
             },
             "type": "array"
           }
@@ -791,6 +773,51 @@
         },
         "required": [
           "capabilities"
+        ],
+        "type": "object"
+      },
+      "JobOffer": {
+        "title": "JobOffer",
+        "additionalProperties": false,
+        "description": "A privileged job (RFD 13) offered to the calling installation. To lease it, sign these lines, each ending in a newline, with the installation key and post the signature to the job's claim endpoint before `expires_at`: `renga-job-lease-v1`, `job_id`, `lease_token`, `nonce`, the installation ID, `resource_id`, and `binding_version`. A later lease request replaces the offer.",
+        "properties": {
+          "binding_version": {
+            "description": "The version of the resource's target binding the job runs under.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "capability": {
+            "description": "The `name@version` to run.",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lease_token": {
+            "description": "Becomes the lease token once the claim succeeds.",
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "resource_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "capability",
+          "lease_token",
+          "nonce",
+          "resource_id",
+          "binding_version",
+          "expires_at"
         ],
         "type": "object"
       },
@@ -886,6 +913,62 @@
           "status",
           "job",
           "cancel_requested"
+        ],
+        "type": "object"
+      },
+      "LeasedJob": {
+        "title": "LeasedJob",
+        "additionalProperties": false,
+        "description": "A job leased to the calling installation.",
+        "properties": {
+          "attempt": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "capability": {
+            "description": "The `name@version` to run.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "lease_token": {
+            "description": "Proves the lease on every report about this job.",
+            "type": "string"
+          },
+          "not_after": {
+            "description": "After this time the job is no longer leased or retried.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "output_limit_bytes": {
+            "description": "Budget for all report payloads, across every attempt.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parameters": {
+            "description": "Inputs for the capability.",
+            "type": "object"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "capability",
+          "parameters",
+          "attempt",
+          "lease_token",
+          "lease_expires_at",
+          "not_after",
+          "timeout_ms",
+          "output_limit_bytes"
         ],
         "type": "object"
       },
@@ -1295,7 +1378,7 @@
             "description": "The lease request is invalid."
           }
         },
-        "description": "Leases up to `limit` queued jobs for the calling installation whose capability it listed. Only `observe` jobs are leased until installations have their own credentials. The installation must have checked in first.",
+        "description": "Leases up to `limit` queued `observe` jobs for the calling installation whose capability it listed, and offers privileged jobs within the same limit for it to claim with a signature (RFD 13). The installation must have checked in first.",
         "operationId": "leaseAgentJobs",
         "parameters": [
           {
@@ -1320,6 +1403,115 @@
           "required": true
         },
         "summary": "Lease queued jobs"
+      }
+    },
+    "/api/v1/agent/jobs/{id}/claims": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeasedJob"
+                }
+              }
+            },
+            "description": "The job, now leased."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The signature does not verify, the installation's key is not approved, or its agent is disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "No such job for this installation."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The offer expired or was replaced, or the job's binding changed and it failed. Lease again."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The claim is invalid."
+          }
+        },
+        "description": "Leases a privileged job offered by `leaseAgentJobs` when the signature verifies against the installation's approved key (RFD 13). A job whose resource was bound elsewhere in the meantime fails instead.",
+        "operationId": "claimAgentJob",
+        "parameters": [
+          {
+            "description": "The job's ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Claim an offered privileged job"
       }
     },
     "/api/v1/agent/jobs/{id}/events": {

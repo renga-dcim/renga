@@ -32,6 +32,7 @@ defmodule RengaWeb.Router do
 
     post "/agent/checkins", AgentController, :check_in
     post "/agent/jobs/lease", JobController, :lease
+    post "/agent/jobs/:id/claims", JobController, :claim
     post "/agent/jobs/:id/events", JobController, :create_event
     post "/observations", ObservationController, :create
   end
