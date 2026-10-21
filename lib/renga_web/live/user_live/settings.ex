@@ -301,6 +301,15 @@ defmodule RengaWeb.UserLive.Settings do
           Cancel
         </.button>
       </div>
+      <p
+        :for={{message, _opts} <- passkey_errors(@recheck)}
+        id="recheck_passkey_error"
+        role="alert"
+        class="flex items-center gap-1.5 text-xs text-crit"
+      >
+        <.icon name="hero-exclamation-circle" class="size-4 shrink-0" />
+        {message}
+      </p>
 
       <.divider :if={:passkey in @recheck.methods and :totp in @recheck.methods} label="or" />
 
@@ -827,6 +836,12 @@ defmodule RengaWeb.UserLive.Settings do
     |> assign(:totp_enabled, MFA.totp_enabled?(user))
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
     |> assign(:recovering, Accounts.recovering?(user, socket.assigns.session_token))
+  end
+
+  # With an authenticator app too, a passkey error shows on the code field;
+  # a passkey-only panel shows it by itself.
+  defp passkey_errors(%{methods: methods, form: form}) do
+    if :totp in methods, do: [], else: Keyword.get_values(form.errors, :code)
   end
 
   defp passkey_form, do: to_form(%{"name" => "Passkey"}, as: "passkey")

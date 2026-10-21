@@ -594,6 +594,24 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert Renga.Accounts.MFA.recovery_codes_left(user) == 0
     end
 
+    test "a failed passkey re-check says so and keeps the passkey", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      add_passkey(lv, FakeAuthenticator.new())
+      [passkey] = Renga.Accounts.list_passkeys(user)
+
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+      lv |> element("#passkey-#{passkey.id} button", "Remove") |> render_click()
+      lv |> element("#recheck_passkey_start") |> render_click()
+
+      # A different authenticator answers: its credential is not on file.
+      answer_passkey(lv, "recheck_passkey", "recheck_passkey", fn options ->
+        FakeAuthenticator.assert(FakeAuthenticator.new(), options)
+      end)
+
+      assert has_element?(lv, "#recheck_passkey_error")
+      assert [_] = Renga.Accounts.list_passkeys(user)
+    end
+
     test "a cancelled ceremony adds nothing", %{conn: conn, user: user} do
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
       lv |> form("#passkey_form", %{"passkey" => %{"name" => "Laptop"}}) |> render_submit()
