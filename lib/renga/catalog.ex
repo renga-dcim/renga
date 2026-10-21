@@ -10,9 +10,8 @@ defmodule Renga.Catalog do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Catalog.ActualComponent
   alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Catalog.ComponentTemplate
@@ -43,10 +42,6 @@ defmodule Renga.Catalog do
   alias Renga.Repo
 
   @physical_device_kinds ~w(server switch pdu storage)
-  @catalog_author_roles ~w(owner admin member)
-  # Changing what one resource expects overrides the catalog for it, so it
-  # is an owner or admin decision; members request it instead.
-  @expectation_roles ~w(owner admin)
   @inventory_item_hierarchy_lock "catalog-inventory-item-hierarchy"
   @module_hierarchy_lock "catalog-module-hierarchy"
   @canonical_component_kinds ~w(cpu memory disk)
@@ -57,15 +52,13 @@ defmodule Renga.Catalog do
                                       @module_component_finding_kinds
   @assignment_component_finding_kinds ~w(ambiguous_expected_component component_drift missing_expected_component unexpected_actual_component)
 
-  def catalog_author?(%Scope{user: user, roles: roles}) do
-    not is_nil(user) and Enum.any?(roles, &(&1 in @catalog_author_roles))
-  end
+  def catalog_author?(%Scope{} = scope), do: Authorization.allowed?(scope, "catalog.author")
 
-  @doc "UI hint: owners and admins change what a resource expects; members request it."
-  def can_change_expectations?(%Scope{user: %{}, roles: roles}),
-    do: Enum.any?(roles || [], &(&1 in @expectation_roles))
-
-  def can_change_expectations?(_scope), do: false
+  @doc """
+  UI hint for `catalog.expectations`. Changing what one resource expects
+  overrides the catalog for it, so built-in members request it instead.
+  """
+  def can_change_expectations?(scope), do: Authorization.allowed?(scope, "catalog.expectations")
 
   def hardware_assignable_resource?(%Resource{kind: kind}), do: kind in @physical_device_kinds
 
@@ -2615,7 +2608,7 @@ defmodule Renga.Catalog do
 
   defp expectation_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
-      authorize_catalog_author!(scope, @expectation_roles)
+      authorize_catalog_author!(scope, "catalog.expectations")
 
       case mutation.() do
         {:ok, result} -> result
@@ -2639,53 +2632,15 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
-  defp authorize_catalog_author!(scope, roles \\ @catalog_author_roles)
+  defp authorize_catalog_author!(%Scope{} = scope, permission \\ "catalog.author"),
+    do: Authorization.authorize!(scope, permission)
 
-  defp authorize_catalog_author!(
-         %Scope{membership_id: membership_id, user: %{id: user_id}} = scope,
-         roles
-       )
-       when not is_nil(membership_id) do
-    lock_active_organization!(scope.organization_id)
-
-    OrganizationMembership
-    |> where([membership], membership.id == ^membership_id)
-    |> where([membership], membership.user_id == ^user_id)
-    |> where([membership], membership.organization_id == ^scope.organization_id)
-    |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^roles)
-    |> select([membership], membership.id)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      nil -> Repo.rollback(:forbidden)
-      _membership_id -> :ok
-    end
-  end
-
-  defp authorize_catalog_author!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
-
-  defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
-    if "catalog_reconciler" in roles do
-      lock_active_organization!(organization_id)
-    else
-      Repo.rollback(:forbidden)
-    end
-  end
+  # Agents reconcile as the catalog reconciler; people need catalog.author,
+  # which every role holding inventory.reconcile also holds.
+  defp authorize_reconciler!(%Scope{user: nil} = scope),
+    do: Authorization.authorize_system!(scope, "catalog_reconciler")
 
   defp authorize_reconciler!(%Scope{} = scope), do: authorize_catalog_author!(scope)
-
-  defp lock_active_organization!(organization_id) do
-    Organization
-    |> where([organization], organization.id == ^organization_id)
-    |> select([organization], organization.status)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      "active" -> :ok
-      _inactive_or_missing -> Repo.rollback(:forbidden)
-    end
-  end
 
   defp insert_or_rollback(changeset) do
     case Repo.insert(changeset) do
