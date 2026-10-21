@@ -484,7 +484,7 @@ defmodule RengaWeb.InventoryOperationsLive do
         id={"approve-key-#{@key.id}-button"}
         type="button"
         phx-click={show_overlay("approve-key-#{@key.id}")}
-        class="min-h-tap cursor-pointer text-xs text-link hover:underline"
+        class="min-h-tap min-w-tap cursor-pointer text-xs text-link hover:underline"
       >
         Approve
       </button>
