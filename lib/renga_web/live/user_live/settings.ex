@@ -25,6 +25,17 @@ defmodule RengaWeb.UserLive.Settings do
         description="How you sign in: your email, an optional password, and a second factor."
         class="max-w-3xl"
       >
+        <div
+          :if={@recovering}
+          id="recovery_notice"
+          class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
+        >
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
+          <p>
+            You signed in with a recovery code. Add a new passkey or replace your authenticator
+            app now; this works only for the next few minutes.
+          </p>
+        </div>
         <.settings_section
           id="account-email"
           title="Email"
@@ -46,7 +57,7 @@ defmodule RengaWeb.UserLive.Settings do
             />
             <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
           </.form>
-          <.recheck_panel :if={@recheck && @recheck.change == :change_email} recheck={@recheck} />
+          <.recheck_panel :if={@recheck && @recheck.action == :change_email} recheck={@recheck} />
         </.settings_section>
 
         <.settings_section
@@ -89,7 +100,64 @@ defmodule RengaWeb.UserLive.Settings do
               Save Password
             </.button>
           </.form>
-          <.recheck_panel :if={@recheck && @recheck.change == :set_password} recheck={@recheck} />
+          <.recheck_panel :if={@recheck && @recheck.action == :set_password} recheck={@recheck} />
+        </.settings_section>
+
+        <.settings_section
+          id="account-passkeys"
+          title="Passkeys"
+          description="Sign in with your device's fingerprint, face, or PIN instead of a password. A passkey counts as a second factor by itself."
+        >
+          <ul :if={@passkeys != []} id="passkeys" class="mb-4 divide-y divide-line">
+            <li
+              :for={passkey <- @passkeys}
+              id={"passkey-#{passkey.id}"}
+              class="flex items-center justify-between gap-3 py-2"
+            >
+              <div class="min-w-0">
+                <p class="truncate text-sm font-medium text-fg">{passkey.name}</p>
+                <p class="text-xs text-fg-muted">
+                  Added {Calendar.strftime(passkey.inserted_at, "%b %-d, %Y")} · {last_used(passkey)}
+                </p>
+              </div>
+              <.button
+                size="sm"
+                phx-click="remove_passkey"
+                phx-value-id={passkey.id}
+                aria-label={"Remove #{passkey.name}"}
+              >
+                Remove
+              </.button>
+            </li>
+          </ul>
+
+          <div
+            id="passkey_register"
+            phx-hook="Passkey"
+            data-mode="create"
+            data-reply="register_passkey"
+          >
+            <.form for={@passkey_form} id="passkey_form" phx-submit="add_passkey">
+              <%!-- The form's value never changes, so LiveView would leave the
+                   last name typed in the field; a new ID replaces the input
+                   after each added passkey. --%>
+              <.input
+                field={@passkey_form[:name]}
+                id={"passkey_name_#{length(@passkeys)}"}
+                type="text"
+                label="Name"
+                spellcheck="false"
+              />
+              <.button id="passkey_add" variant="primary" phx-disable-with="Waiting...">
+                Add a passkey
+              </.button>
+            </.form>
+          </div>
+
+          <.recheck_panel
+            :if={@recheck && @recheck.action in [:add_passkey, :remove_passkey]}
+            recheck={@recheck}
+          />
         </.settings_section>
 
         <.settings_section
@@ -145,32 +213,11 @@ defmodule RengaWeb.UserLive.Settings do
             </.form>
           </div>
 
-          <div :if={@totp_enabled} class="space-y-3">
-            <p id="totp_status" class="text-sm text-fg">
-              On. {recovery_codes_text(@recovery_codes_left)}
-            </p>
-            <div
-              :if={@recovering and !@totp_setup}
-              id="recovery_notice"
-              class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
-            >
-              <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
-              <p>
-                You signed in with a recovery code. Replace your authenticator app now; this
-                works only for the next few minutes.
-              </p>
-            </div>
+          <div :if={@totp_enabled and !@totp_setup} class="space-y-3">
+            <p id="totp_status" class="text-sm text-fg">On.</p>
             <div class="flex flex-wrap gap-2">
-              <.button
-                :if={@recovering and !@totp_setup}
-                id="totp_replace"
-                variant="primary"
-                phx-click="start_totp"
-              >
+              <.button :if={@recovering} id="totp_replace" variant="primary" phx-click="start_totp">
                 Replace authenticator app
-              </.button>
-              <.button id="recovery_regenerate" phx-click="regenerate_recovery_codes">
-                Generate new recovery codes
               </.button>
               <.button id="totp_remove" variant="danger" phx-click="remove_totp">
                 Remove
@@ -178,28 +225,43 @@ defmodule RengaWeb.UserLive.Settings do
             </div>
           </div>
 
+          <.recheck_panel
+            :if={@recheck && @recheck.action in [:add_totp, :remove_totp]}
+            recheck={@recheck}
+          />
+        </.settings_section>
+
+        <.settings_section
+          :if={@mfa or @new_recovery_codes}
+          id="account-recovery"
+          title="Recovery codes"
+          description="Each code signs you in once if you lose your passkeys and authenticator app."
+        >
+          <div :if={!@new_recovery_codes} class="space-y-3">
+            <p id="recovery_status" class="text-sm text-fg">
+              {recovery_codes_text(@recovery_codes_left)}
+            </p>
+            <.button id="recovery_regenerate" phx-click="regenerate_recovery_codes">
+              Generate new recovery codes
+            </.button>
+          </div>
+
           <div
             :if={@new_recovery_codes}
             id="recovery_codes"
-            class="mt-4 space-y-3 rounded-lg border border-edge bg-sunken p-4"
+            class="space-y-3 rounded-lg border border-edge bg-sunken p-4"
           >
-            <div>
-              <h3 class="text-sm font-medium text-fg">Recovery codes</h3>
-              <p class="mt-1 text-xs text-fg-muted">
-                Save these somewhere safe. Each one signs you in once if you lose your
-                authenticator app, and they won't be shown again.
-              </p>
-            </div>
+            <p class="text-xs text-fg-muted">
+              Save these somewhere safe now. They won't be shown again, and generating a new
+              set replaces them.
+            </p>
             <ul class="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-sm text-fg">
               <li :for={code <- @new_recovery_codes}>{code}</li>
             </ul>
             <.button type="button" phx-click="dismiss_recovery_codes">I've saved them</.button>
           </div>
 
-          <.recheck_panel
-            :if={@recheck && @recheck.change in [:add_factor, :remove_factor, :recovery_codes]}
-            recheck={@recheck}
-          />
+          <.recheck_panel :if={@recheck && @recheck.action == :recovery_codes} recheck={@recheck} />
         </.settings_section>
       </.settings_page>
     </Layouts.app>
@@ -223,6 +285,24 @@ defmodule RengaWeb.UserLive.Settings do
           {recheck_description(@recheck)}
         </p>
       </div>
+
+      <div
+        :if={:passkey in @recheck.methods}
+        id="recheck_passkey"
+        phx-hook="Passkey"
+        data-mode="get"
+        data-reply="recheck_passkey"
+        class="flex gap-2"
+      >
+        <.button id="recheck_passkey_start" variant="primary" phx-click="start_recheck_passkey">
+          <.icon name="hero-finger-print" class="size-4" /> Use a passkey
+        </.button>
+        <.button :if={:totp not in @recheck.methods} type="button" phx-click="cancel_recheck">
+          Cancel
+        </.button>
+      </div>
+
+      <.divider :if={:passkey in @recheck.methods and :totp in @recheck.methods} label="or" />
 
       <.form
         :if={:totp in @recheck.methods}
@@ -310,6 +390,10 @@ defmodule RengaWeb.UserLive.Settings do
   defp bootstrap?(%{methods: [], change: change}), do: change in [:set_password, :add_factor]
   defp bootstrap?(_recheck), do: false
 
+  defp recheck_description(%{methods: [:passkey | _]}),
+    do:
+      "Use a passkey or an authenticator code. It covers changes to your sign-in for the next five minutes."
+
   defp recheck_description(%{methods: [:totp | _]}),
     do:
       "Enter a code from your authenticator app. It covers changes to your sign-in for the next five minutes."
@@ -328,6 +412,11 @@ defmodule RengaWeb.UserLive.Settings do
       else:
         "Set a password first. Your account needs a way to confirm it's you before its email changes."
   end
+
+  defp last_used(%{last_used_at: nil}), do: "never used"
+
+  defp last_used(%{last_used_at: at}),
+    do: "last used " <> Calendar.strftime(at, "%b %-d, %Y")
 
   defp recovery_codes_text(1), do: "1 recovery code left."
   defp recovery_codes_text(count), do: "#{count} recovery codes left."
@@ -361,6 +450,8 @@ defmodule RengaWeb.UserLive.Settings do
       |> assign(:recheck, nil)
       |> assign(:totp_setup, nil)
       |> assign(:new_recovery_codes, nil)
+      |> assign(:pending_passkey_name, nil)
+      |> assign(:passkey_form, passkey_form())
       |> assign_mfa()
 
     {:ok, socket}
@@ -449,7 +540,7 @@ defmodule RengaWeb.UserLive.Settings do
 
   def handle_event("start_totp", _params, socket) do
     if MFA.totp_available?(),
-      do: {:noreply, with_recheck(socket, :add_factor, %{})},
+      do: {:noreply, with_recheck(socket, :add_totp, %{})},
       else: {:noreply, socket}
   end
 
@@ -473,7 +564,7 @@ defmodule RengaWeb.UserLive.Settings do
          |> put_flash(:info, "Authenticator app turned on.")}
 
       {:error, :recheck_required} ->
-        {:noreply, with_recheck(socket, :add_factor, %{})}
+        {:noreply, with_recheck(socket, :add_totp, %{})}
 
       {:error, :already_enabled} ->
         {:noreply, socket |> assign(:totp_setup, nil) |> assign_mfa()}
@@ -497,7 +588,65 @@ defmodule RengaWeb.UserLive.Settings do
   end
 
   def handle_event("remove_totp", _params, socket) do
-    {:noreply, with_recheck(socket, :remove_factor, %{})}
+    {:noreply, with_recheck(socket, :remove_totp, %{})}
+  end
+
+  def handle_event("add_passkey", %{"passkey" => %{"name" => name}}, socket) do
+    name = if String.trim(name) == "", do: "Passkey", else: name
+    {:noreply, with_recheck(socket, :add_passkey, %{"name" => name})}
+  end
+
+  def handle_event("register_passkey", %{"response" => response}, socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+    name = socket.assigns.pending_passkey_name || "Passkey"
+
+    case Accounts.add_passkey(user, session_token, response, name) do
+      {:ok, passkey, codes} ->
+        {:noreply,
+         socket
+         |> assign(:pending_passkey_name, nil)
+         |> assign(:passkey_form, passkey_form())
+         |> assign(:new_recovery_codes, codes || socket.assigns.new_recovery_codes)
+         |> assign_mfa()
+         |> put_flash(:info, "Passkey “#{passkey.name}” added.")}
+
+      {:error, :recheck_required} ->
+        {:noreply, with_recheck(socket, :add_passkey, %{"name" => name})}
+
+      {:error, :already_registered} ->
+        {:noreply, put_flash(socket, :error, "That passkey is already on an account.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "The passkey couldn't be added. Try again.")}
+    end
+  end
+
+  def handle_event("register_passkey", %{"error" => _name}, socket) do
+    {:noreply, put_flash(socket, :error, "The passkey wasn't added.")}
+  end
+
+  def handle_event("remove_passkey", %{"id" => id}, socket) do
+    {:noreply, with_recheck(socket, :remove_passkey, %{"id" => id})}
+  end
+
+  def handle_event("start_recheck_passkey", _params, socket) do
+    options = Accounts.passkey_options(socket.assigns.current_scope.user, "recheck")
+
+    {:noreply,
+     push_event(socket, "passkey:start", %{target: "recheck_passkey", options: options})}
+  end
+
+  def handle_event("recheck_passkey", %{"response" => response}, socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.recheck_with_passkey(user, session_token, response) do
+      :ok -> {:noreply, resume(socket)}
+      {:error, _reason} -> {:noreply, recheck_error(socket, :code, "That passkey didn't work.")}
+    end
+  end
+
+  def handle_event("recheck_passkey", %{"error" => _name}, socket) do
+    {:noreply, recheck_error(socket, :code, "That passkey didn't work.")}
   end
 
   def handle_event("regenerate_recovery_codes", _params, socket) do
@@ -547,15 +696,18 @@ defmodule RengaWeb.UserLive.Settings do
     {:noreply, assign(socket, :recheck, nil)}
   end
 
-  # Runs `change` now if this session is already authorized for it, otherwise
-  # asks for the re-check and keeps the change to resume afterwards.
-  defp with_recheck(socket, change, params) do
+  # Runs `action` now if this session is already authorized for the change
+  # it makes, otherwise asks for the re-check and keeps the action to resume
+  # afterwards.
+  defp with_recheck(socket, action, params) do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+    change = guarded_change(action)
 
     if Accounts.authorized_account_change?(user, session_token, change) do
-      apply_change(socket, change, params)
+      apply_change(socket, action, params)
     else
       assign(socket, :recheck, %{
+        action: action,
         change: change,
         params: params,
         methods: Accounts.recheck_methods(user),
@@ -568,13 +720,17 @@ defmodule RengaWeb.UserLive.Settings do
   # A passed check only resumes the pending change through the same
   # authorization test that asked for it, so evidence that cannot authorize
   # that change, such as the email bootstrap for an email change, asks again.
-  defp resume(%{assigns: %{recheck: %{change: change, params: params}}} = socket) do
+  defp resume(%{assigns: %{recheck: %{action: action, params: params}}} = socket) do
     socket
     |> assign(:recheck, nil)
-    |> with_recheck(change, params)
+    |> with_recheck(action, params)
   end
 
   defp resume(socket), do: socket
+
+  defp guarded_change(action) when action in [:add_totp, :add_passkey], do: :add_factor
+  defp guarded_change(action) when action in [:remove_totp, :remove_passkey], do: :remove_factor
+  defp guarded_change(action), do: action
 
   defp apply_change(socket, :change_email, user_params) do
     user = socket.assigns.current_scope.user
@@ -596,7 +752,7 @@ defmodule RengaWeb.UserLive.Settings do
     assign(socket, :trigger_submit, true)
   end
 
-  defp apply_change(%{assigns: %{totp_setup: nil}} = socket, :add_factor, _params) do
+  defp apply_change(%{assigns: %{totp_setup: nil}} = socket, :add_totp, _params) do
     secret = MFA.new_totp_secret()
     uri = MFA.totp_uri(socket.assigns.current_scope.user, secret)
 
@@ -608,9 +764,31 @@ defmodule RengaWeb.UserLive.Settings do
     })
   end
 
-  defp apply_change(socket, :add_factor, _params), do: socket
+  defp apply_change(socket, :add_totp, _params), do: socket
 
-  defp apply_change(socket, :remove_factor, _params) do
+  defp apply_change(socket, :add_passkey, %{"name" => name}) do
+    options = Accounts.passkey_registration_options(socket.assigns.current_scope.user)
+
+    socket
+    |> assign(:pending_passkey_name, name)
+    |> push_event("passkey:start", %{target: "passkey_register", options: options})
+  end
+
+  defp apply_change(socket, :remove_passkey, %{"id" => id}) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.remove_passkey(user, session_token, id) do
+      {:ok, passkey} ->
+        socket
+        |> assign_mfa()
+        |> put_flash(:info, "Passkey “#{passkey.name}” removed.")
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "The passkey could not be removed.")
+    end
+  end
+
+  defp apply_change(socket, :remove_totp, _params) do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
 
     case Accounts.remove_totp(user, session_token) do
@@ -643,11 +821,15 @@ defmodule RengaWeb.UserLive.Settings do
     user = socket.assigns.current_scope.user
 
     socket
+    |> assign(:passkeys, Accounts.list_passkeys(user))
+    |> assign(:mfa, MFA.mfa?(user))
     |> assign(:totp_available, MFA.totp_available?())
     |> assign(:totp_enabled, MFA.totp_enabled?(user))
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
     |> assign(:recovering, Accounts.recovering?(user, socket.assigns.session_token))
   end
+
+  defp passkey_form, do: to_form(%{"name" => "Passkey"}, as: "passkey")
 
   defp recheck_form, do: to_form(%{}, as: "recheck")
 
