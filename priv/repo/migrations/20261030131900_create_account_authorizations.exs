@@ -6,6 +6,15 @@ defmodule Renga.Repo.Migrations.CreateAccountAuthorizations do
   # session must never refresh it (RFD 15, "Sign-in flow"). Each row is bound
   # to one browser session and dies with it.
   def change do
+    # Every session token records the browser session it belongs to, so
+    # signing out or signing in again ends all of that browser's tokens, even
+    # one that a late response wrote back into its cookie.
+    alter table(:users_tokens) do
+      add :browser_session_id, :binary_id
+    end
+
+    create index(:users_tokens, [:browser_session_id])
+
     create table(:account_authorizations, primary_key: false) do
       add :id, :binary_id, primary_key: true
       add :user_id, references(:users, type: :binary_id, on_delete: :delete_all), null: false

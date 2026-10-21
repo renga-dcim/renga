@@ -448,10 +448,83 @@ defmodule Renga.Accounts do
   @doc """
   Generates a session token.
   """
-  def generate_user_session_token(user) do
-    {token, user_token} = UserToken.build_session_token(user)
+  def generate_user_session_token(user, browser_session_id \\ nil) do
+    {token, user_token} = UserToken.build_session_token(user, browser_session_id)
     Repo.insert!(user_token)
     token
+  end
+
+  @doc """
+  Restarts the validity period of the session `token` in place.
+
+  Renewal keeps the token, so it never leaves a second live session behind
+  and keeps everything bound to it, such as an account re-check that has not
+  expired yet. It creates no evidence of its own.
+  """
+  def extend_user_session_token(token) when is_binary(token) do
+    Repo.update_all(
+      from(UserToken, where: [token: ^token, context: "session"]),
+      set: [inserted_at: Renga.Time.utc_now_ms()]
+    )
+
+    :ok
+  end
+
+  @doc """
+  Returns the browser session id recorded on the session `token`, recording
+  a new one first for a token issued before they were recorded.
+  """
+  def ensure_browser_session_id(token) when is_binary(token) do
+    Repo.update_all(
+      from(t in UserToken,
+        where: t.token == ^token and t.context == "session" and is_nil(t.browser_session_id)
+      ),
+      set: [browser_session_id: Ecto.UUID.generate()]
+    )
+
+    Repo.one(
+      from t in UserToken,
+        where: t.token == ^token and t.context == "session",
+        select: t.browser_session_id
+    )
+  end
+
+  @doc """
+  Deletes the session `token` and every other session token of the same
+  browser session: `browser_session_id`, or the one recorded on `token`.
+
+  A late response can write an earlier token back into a browser's cookie,
+  so ending a browser session must not depend on the cookie holding its
+  newest token. Returns the deleted tokens so their LiveViews can be
+  disconnected.
+  """
+  def delete_browser_session_tokens(token, browser_session_id) do
+    recorded =
+      if token do
+        Repo.all(
+          from t in UserToken,
+            where: t.token == ^token and t.context == "session",
+            where: not is_nil(t.browser_session_id),
+            select: t.browser_session_id
+        )
+      else
+        []
+      end
+
+    browser_session_ids = Enum.uniq(Enum.reject([browser_session_id | recorded], &is_nil/1))
+
+    query =
+      from t in UserToken,
+        where: t.context == "session" and t.browser_session_id in ^browser_session_ids,
+        select: t.token
+
+    query =
+      if token,
+        do: or_where(query, [t], t.context == "session" and t.token == ^token),
+        else: query
+
+    {_count, tokens} = Repo.delete_all(query)
+    {:ok, tokens}
   end
 
   @doc """

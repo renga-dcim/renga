@@ -26,6 +26,8 @@ defmodule Renga.Accounts.UserToken do
     field :context, :string
     field :sent_to, :string
     field :authenticated_at, :utc_datetime_usec
+    # The browser session a session token belongs to; see `RengaWeb.UserAuth`.
+    field :browser_session_id, :binary_id
     belongs_to :user, Renga.Accounts.User
 
     timestamps(
@@ -54,10 +56,18 @@ defmodule Renga.Accounts.UserToken do
   and devices in the UI and allow users to explicitly expire any
   session they deem invalid.
   """
-  def build_session_token(user) do
+  def build_session_token(user, browser_session_id \\ nil) do
     token = :crypto.strong_rand_bytes(@rand_size)
     dt = user.authenticated_at || Renga.Time.utc_now_ms()
-    {token, %UserToken{token: token, context: "session", user_id: user.id, authenticated_at: dt}}
+
+    {token,
+     %UserToken{
+       token: token,
+       context: "session",
+       user_id: user.id,
+       authenticated_at: dt,
+       browser_session_id: browser_session_id
+     }}
   end
 
   @doc """
