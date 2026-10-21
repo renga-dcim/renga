@@ -29,12 +29,9 @@ defmodule Renga.Roles.Role do
   def changeset(role, attrs) do
     role
     |> cast(attrs, [:name, :description, :permissions])
-    |> update_change(:name, &String.trim/1)
+    |> update_change(:name, &blank_to_nil/1)
     |> update_change(:description, &blank_to_nil/1)
-    |> update_change(
-      :permissions,
-      &(&1 |> Enum.reject(fn p -> p in [nil, ""] end) |> Enum.uniq() |> Enum.sort())
-    )
+    |> update_change(:permissions, &normalize_permissions/1)
     |> validate_required([:organization_id, :name])
     |> validate_length(:name, max: 60)
     |> validate_length(:description, max: 500)
@@ -60,6 +57,15 @@ defmodule Renga.Roles.Role do
     if get_field(changeset, :permissions) in [nil, []],
       do: add_error(changeset, :permissions, "choose at least one permission"),
       else: changeset
+  end
+
+  defp normalize_permissions(nil), do: nil
+
+  defp normalize_permissions(permissions) do
+    permissions
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp blank_to_nil(value) when is_binary(value) do

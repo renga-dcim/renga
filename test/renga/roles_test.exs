@@ -53,6 +53,34 @@ defmodule Renga.RolesTest do
     assert "is already a role in this organization" in errors_on(changeset).name
   end
 
+  test "blank updates return errors without changing the role or Activity", context do
+    {:ok, role} = Roles.create_role(context.owner, attrs("Network", ["topology.edit"]))
+    activity_before = Inventory.list_activity(context.owner)
+
+    for name <- ["", "   ", nil] do
+      assert {:error, changeset} =
+               Roles.update_role(context.owner, role, %{
+                 "name" => name,
+                 "permissions" => ["topology.edit"]
+               })
+
+      assert "can't be blank" in errors_on(changeset).name
+    end
+
+    assert {:error, changeset} =
+             Roles.update_role(context.owner, role, %{
+               "name" => "Network",
+               "permissions" => nil
+             })
+
+    assert "choose at least one permission" in errors_on(changeset).permissions
+
+    assert %{name: "Network", permissions: ["topology.edit"]} =
+             Roles.get_role(context.owner, role.id)
+
+    assert Inventory.list_activity(context.owner) == activity_before
+  end
+
   test "custom roles never carry member or role management", context do
     for reserved <- ~w(members.manage roles.manage) do
       assert {:error, changeset} = Roles.create_role(context.owner, attrs("Admins", [reserved]))

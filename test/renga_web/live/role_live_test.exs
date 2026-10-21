@@ -42,6 +42,13 @@ defmodule RengaWeb.RoleLiveTest do
     view |> element("#role-#{role.id}-edit") |> render_click()
 
     view
+    |> form("#role-form", role: %{name: "   ", permissions: ["topology.edit"]})
+    |> render_submit()
+
+    assert has_element?(view, "#role-form", "can't be blank")
+    assert Process.alive?(view.pid)
+
+    view
     |> form("#role-form", role: %{name: "Network", permissions: ["", "topology.edit"]})
     |> render_submit()
 
