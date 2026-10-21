@@ -240,8 +240,8 @@ defmodule Renga.Assignments do
 
   defp invalid_role do
     %Assignment{}
-    |> Ecto.Changeset.change()
-    |> Ecto.Changeset.add_error(:built_in_role, "choose a role")
+    |> Ecto.Changeset.cast(%{"built_in_role" => ""}, [:built_in_role])
+    |> Ecto.Changeset.validate_required([:built_in_role], message: "choose a role")
     |> Map.put(:action, :insert)
   end
 
