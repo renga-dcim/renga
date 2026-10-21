@@ -25,6 +25,7 @@ defmodule Renga.Inventory do
   alias Renga.Inventory.ComponentEvidence
   alias Renga.Inventory.FieldProvenance
   alias Renga.Inventory.Host
+  alias Renga.Inventory.InstallationKeys
   alias Renga.Inventory.IntakeApiKey
   alias Renga.Inventory.Interface
   alias Renga.Inventory.InterfaceEvidence
@@ -222,12 +223,19 @@ defmodule Renga.Inventory do
         installation_id,
         attrs \\ %{}
       ) do
+    {installation_key, attrs} = Map.pop(attrs, :installation_key)
+
     with_intake_installation(scope, intake_api_key, installation_id, attrs, fn agent,
                                                                                lease,
                                                                                _source ->
-      {agent, lease}
+      {present_installation_key!(agent, installation_key, lease.renewed_at), lease}
     end)
   end
+
+  defp present_installation_key!(agent, nil, _now), do: agent
+
+  defp present_installation_key!(agent, installation_key, now),
+    do: %{agent | installation_key: InstallationKeys.present!(agent, installation_key, now)}
 
   @doc """
   Runs an agent operation only while its intake authorization remains current.

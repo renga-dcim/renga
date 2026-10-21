@@ -23,6 +23,27 @@
               "null"
             ]
           },
+          "installation_key": {
+            "description": "The installation's public key (RFD 13). Renga records the first key as pending until an owner or admin approves its fingerprint; a different key returns the installation to pending.",
+            "properties": {
+              "algorithm": {
+                "const": "ed25519"
+              },
+              "public_key": {
+                "description": "The raw 32-byte Ed25519 public key in unpadded base64url.",
+                "pattern": "^[A-Za-z0-9_-]{43}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "algorithm",
+              "public_key"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "metadata": {
             "description": "Agent metadata, stored with the source. Must encode to at most 16000 bytes of JSON.",
             "properties": {
@@ -79,6 +100,27 @@
               "id",
               "name",
               "lease_expires_at"
+            ],
+            "type": "object"
+          },
+          "installation_key": {
+            "additionalProperties": false,
+            "description": "The key this check-in presented and whether it is approved. Absent when the check-in presented no key.",
+            "properties": {
+              "fingerprint": {
+                "description": "SHA256: and the unpadded base64 digest.",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "approved"
+                ]
+              }
+            },
+            "required": [
+              "fingerprint",
+              "status"
             ],
             "type": "object"
           },

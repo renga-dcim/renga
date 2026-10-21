@@ -100,12 +100,14 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_source_identity(params, source)
     |> validate_capabilities(params)
     |> validate_metadata(params)
+    |> validate_installation_key(params)
     |> case do
       [] ->
         {:ok,
          %{}
          |> maybe_put(:capabilities, Map.get(params, "capabilities"))
-         |> maybe_put(:metadata, Map.get(params, "metadata"))}
+         |> maybe_put(:metadata, Map.get(params, "metadata"))
+         |> maybe_put(:installation_key, installation_key(params))}
 
       errors ->
         {:error, Enum.reverse(errors)}
@@ -209,6 +211,46 @@ defmodule Renga.Inventory.AgentPayload do
 
       _invalid ->
         [error("capabilities", "must be a list of strings") | errors]
+    end
+  end
+
+  # RFD 13: an Ed25519 public key, raw 32 bytes in unpadded base64url.
+  defp validate_installation_key(errors, params) do
+    case Map.get(params, "installation_key") do
+      nil ->
+        errors
+
+      %{"algorithm" => "ed25519", "public_key" => public_key} when is_binary(public_key) ->
+        case decode_public_key(public_key) do
+          {:ok, _key} ->
+            errors
+
+          :error ->
+            [error("installation_key.public_key", "must be a 32-byte key in base64url") | errors]
+        end
+
+      %{"algorithm" => algorithm} when algorithm != "ed25519" ->
+        [error("installation_key.algorithm", "must be ed25519") | errors]
+
+      %{} ->
+        [error("installation_key", "must have an algorithm and a public_key") | errors]
+
+      _invalid ->
+        [error("installation_key", "must be an object") | errors]
+    end
+  end
+
+  defp installation_key(%{"installation_key" => %{"public_key" => public_key}}) do
+    {:ok, key} = decode_public_key(public_key)
+    %{algorithm: "ed25519", public_key: key}
+  end
+
+  defp installation_key(_params), do: nil
+
+  defp decode_public_key(encoded) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, <<_::binary-size(32)>> = key} -> {:ok, key}
+      _invalid -> :error
     end
   end
 
