@@ -317,6 +317,9 @@ defmodule Renga.Accounts do
   """
   def get_user!(id), do: Repo.get!(User, id)
 
+  @doc "Gets a single user, or `nil`."
+  def get_user(id) when is_binary(id), do: Repo.get(User, id)
+
   ## User registration
 
   @doc """
@@ -370,10 +373,43 @@ defmodule Renga.Accounts do
   email bootstrap). Returns new recovery codes when it is the first factor.
   """
   def add_totp(%User{} = user, session_token, secret, code) do
-    if Recheck.authorized?(user, session_token, :add_factor),
-      do: MFA.enable_totp(user, secret, code),
-      else: {:error, :recheck_required}
+    cond do
+      # Recovery replaces a lost app, and ends once it has.
+      Recheck.recovering?(user, session_token) ->
+        with {:ok, codes} <- MFA.enable_totp(user, secret, code, replace: true) do
+          Recheck.end_recovery(user, session_token)
+          {:ok, codes}
+        end
+
+      Recheck.authorized?(user, session_token, :add_factor) ->
+        MFA.enable_totp(user, secret, code)
+
+      true ->
+        {:error, :recheck_required}
+    end
   end
+
+  @doc "Whether this session signed in with a recovery code and may replace a factor."
+  defdelegate recovering?(user, session_token), to: Recheck
+
+  @doc """
+  Completes the second step of signing in (RFD 19) with an authenticator
+  code or, failing that, a recovery code. Returns `{:ok, :totp}` or
+  `{:ok, :recovery_code}`.
+  """
+  def verify_second_step(%User{} = user, code) when is_binary(code) do
+    if String.match?(code, ~r/^\s*\d{6}\s*$/) do
+      with :ok <- MFA.verify_totp(user, code), do: {:ok, :totp}
+    else
+      with :ok <- MFA.spend_recovery_code(user, code), do: {:ok, :recovery_code}
+    end
+  end
+
+  @doc "Grants a session that signed in with a recovery code its recovery window."
+  defdelegate start_recovery(user, session_token), to: Recheck
+
+  @doc "Whether signing in as `user` needs a second step after a password or magic link."
+  defdelegate mfa?(user), to: MFA
 
   @doc "Removes the authenticator app if this session passed the re-check."
   def remove_totp(%User{} = user, session_token) do

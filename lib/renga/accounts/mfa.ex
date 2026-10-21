@@ -72,13 +72,17 @@ defmodule Renga.Accounts.MFA do
   Saves `secret` as the account's authenticator app once `code` proves the
   app produces it. Returns the new recovery codes when this is the account's
   first factor, otherwise `nil`.
+
+  With `replace: true` the new app takes the place of an existing one, for
+  recovery when the old app is lost.
   """
-  def enable_totp(%User{} = user, secret, code) when is_binary(secret) and is_binary(code) do
-    with_account_lock(user, fn -> enable_totp_locked(user, secret, code) end)
+  def enable_totp(%User{} = user, secret, code, opts \\ [])
+      when is_binary(secret) and is_binary(code) do
+    with_account_lock(user, fn -> enable_totp_locked(user, secret, code, opts) end)
   end
 
-  defp enable_totp_locked(user, secret, code) do
-    if totp_enabled?(user) do
+  defp enable_totp_locked(user, secret, code, opts) do
+    if totp_enabled?(user) and not Keyword.get(opts, :replace, false) do
       {:error, :already_enabled}
     else
       case matching_step(secret, code, nil) do
@@ -87,12 +91,13 @@ defmodule Renga.Accounts.MFA do
           {:ok, {:error, :invalid_code}}
 
         step ->
-          insert_totp(user, secret, step)
+          insert_totp(user, secret, step, opts[:replace])
       end
     end
   end
 
-  defp insert_totp(user, secret, step) do
+  defp insert_totp(user, secret, step, replace?) do
+    if replace?, do: Repo.delete_all(where(UserTOTP, user_id: ^user.id))
     first_factor? = not mfa?(user)
 
     case Vault.encrypt(secret, secret_aad(user.id)) do
