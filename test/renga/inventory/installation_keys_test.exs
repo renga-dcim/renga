@@ -89,6 +89,14 @@ defmodule Renga.Inventory.InstallationKeysTest do
     assert {:error, :not_found} = InstallationKeys.approve(other.scope, key.id, key.fingerprint)
   end
 
+  test "the organization's machine scope, which intake check-ins run as, cannot approve",
+       %{agent: agent, system_scope: system_scope, scope: scope} do
+    key = present(agent, public_key())
+
+    assert {:error, :forbidden} = InstallationKeys.approve(system_scope, key.id, key.fingerprint)
+    assert InstallationKeys.current(scope, agent.id).status == "pending"
+  end
+
   test "changing a pending key opens no finding", %{agent: agent, scope: scope} do
     first = present(agent, public_key())
     second = present(agent, public_key())
