@@ -444,6 +444,18 @@ defmodule RengaWeb.UserSessionControllerTest do
              )
     end
 
+    test "falling back keeps where the person was going", %{conn: conn, user: user} do
+      user = set_password(user)
+      {token, _hashed} = generate_user_magic_link_token(user)
+
+      conn =
+        conn
+        |> init_test_session(user_return_to: "/foo/bar")
+        |> post(~p"/users/log-in", %{"user" => %{"token" => token, "add_passkey" => "true"}})
+
+      assert redirected_to(conn) == "/foo/bar"
+    end
+
     test "staying signed in follows the person's choice", %{conn: conn, unconfirmed_user: user} do
       {token, _hashed} = generate_user_magic_link_token(user)
 

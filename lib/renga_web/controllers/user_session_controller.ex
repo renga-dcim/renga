@@ -51,14 +51,19 @@ defmodule RengaWeb.UserSessionController do
   # issued signs in the usual way instead, second step included. Staying
   # signed in follows the person's own choice.
   defp sign_in_to_add_passkey(conn, user, params, info) do
+    return_to = get_session(conn, :user_return_to)
+
     case UserAuth.log_in_user_to_bootstrap(conn, user, params) do
       {:ok, conn} ->
         conn
         |> put_flash(:info, "Email confirmed. Add your passkey now.")
         |> redirect(to: ~p"/users/settings#passkey_register")
 
+      # The attempt cleared the session; only where to go next carries over.
       {:error, conn} ->
-        sign_in(conn, user, params, info)
+        conn
+        |> then(&if(return_to, do: put_session(&1, :user_return_to, return_to), else: &1))
+        |> sign_in(user, params, info)
     end
   end
 
