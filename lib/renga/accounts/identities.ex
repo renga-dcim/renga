@@ -70,27 +70,31 @@ defmodule Renga.Accounts.Identities do
              |> User.email_changeset(%{email: address})
              |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
              |> Repo.insert() do
-        %UserIdentity{
-          user_id: user.id,
-          provider_id: provider.id,
-          subject: subject,
-          email: address,
-          last_signed_in_at: Renga.Time.utc_now_ms()
-        }
-        |> Ecto.Changeset.change()
-        |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
-        |> Repo.insert()
-        |> case do
-          {:ok, _identity} -> {:ok, user}
-          # A concurrent first sign-in by the same subject linked it first.
-          {:error, _changeset} -> {:error, :already_linked}
-        end
+        link_new_user(user, provider, subject, address)
       end
     end)
     |> case do
       {:ok, user} -> {:ok, user}
       {:error, :already_linked} -> {:error, :already_linked}
       {:error, %Ecto.Changeset{} = changeset} -> sign_up_error(changeset)
+    end
+  end
+
+  defp link_new_user(user, provider, subject, address) do
+    %UserIdentity{
+      user_id: user.id,
+      provider_id: provider.id,
+      subject: subject,
+      email: address,
+      last_signed_in_at: Renga.Time.utc_now_ms()
+    }
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
+    |> Repo.insert()
+    |> case do
+      {:ok, _identity} -> {:ok, user}
+      # A concurrent first sign-in by the same subject linked it first.
+      {:error, _changeset} -> {:error, :already_linked}
     end
   end
 
