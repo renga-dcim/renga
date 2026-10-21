@@ -221,10 +221,13 @@ defmodule RengaWeb.Browser.PowerTest do
     |> click_button("#save-connection", "Move")
     |> refute_has("#connect-panel [role=dialog]")
     |> assert_has("#flash-info", text: "PSU1 moved")
-    |> assert_has("#power-port-#{context.port.id} .font-mono", text: "8", exact: true)
     |> assert_has("#{connect}:focus")
+    |> click(path)
+    |> assert_has("#power-path-detail", text: "Outlet 8 via inlet Inlet")
+    |> press("#path-panel [role=dialog]", "Escape")
+    |> refute_has("#path-panel [role=dialog]")
     |> click_button("#unplug-port-#{context.port.id}", "Unplug")
-    |> assert_has("#power-port-#{context.port.id}", text: "Not recorded")
+    |> assert_has(path, text: "Not recorded")
   end
 
   @tag browser_context_opts: @phone
