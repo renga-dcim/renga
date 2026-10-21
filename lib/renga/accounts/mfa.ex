@@ -52,6 +52,46 @@ defmodule Renga.Accounts.MFA do
     :ok
   end
 
+  @doc """
+  Adds a second factor with `insert`, under the account lock, once
+  `authorize` agrees there. Returns `{:ok, {factor, codes}}`, with new
+  recovery codes when it is the account's first factor. Anything `insert`
+  spent, such as a passkey challenge, is kept only if the factor is saved.
+  """
+  def add_factor(%User{} = user, insert, authorize) do
+    with_account_lock(user, fn ->
+      first_factor? = not mfa?(user)
+
+      if authorize.() do
+        with {:ok, factor} <- insert.() do
+          end_pending_sign_ins(user)
+          {:ok, {factor, if(first_factor?, do: replace_recovery_codes(user))}}
+        end
+      else
+        {:error, :recheck_required}
+      end
+    end)
+  end
+
+  @doc """
+  Removes a second factor with `delete`, under the account lock, once
+  `authorize` agrees there, and discards the recovery codes with the last
+  factor.
+  """
+  def remove_factor(%User{} = user, delete, authorize) do
+    with_account_lock(user, fn ->
+      if authorize.() do
+        with {:ok, factor} <- delete.() do
+          discard_recovery_codes_without_mfa(user)
+          end_pending_sign_ins(user)
+          {:ok, factor}
+        end
+      else
+        {:error, :recheck_required}
+      end
+    end)
+  end
+
   @doc "Whether the account has an authenticator app."
   def totp_enabled?(%User{id: user_id}), do: Repo.exists?(where(UserTOTP, user_id: ^user_id))
 

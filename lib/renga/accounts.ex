@@ -401,35 +401,24 @@ defmodule Renga.Accounts do
   recovery codes.
   """
   def add_passkey(%User{} = user, session_token, response, name) do
-    recovering? = Recheck.recovering?(user, session_token)
+    # A recovering session spends its grant on this passkey; otherwise the
+    # re-check is checked again under the lock.
+    authorize =
+      if Recheck.recovering?(user, session_token),
+        do: fn -> Recheck.spend_recovery(user, session_token) end,
+        else: fn -> Recheck.authorized?(user, session_token, :add_factor) end
 
-    if recovering? or Recheck.authorized?(user, session_token, :add_factor) do
-      register_passkey(user, session_token, response, name, recovering?)
-    else
-      {:error, :recheck_required}
-    end
-  end
-
-  defp register_passkey(user, session_token, response, name, recovering?) do
-    first_factor? = not MFA.mfa?(user)
-
-    with {:ok, passkey} <- Passkeys.register(user, response, name) do
-      if recovering?, do: Recheck.spend_recovery(user, session_token)
-      codes = if first_factor?, do: elem(MFA.regenerate_recovery_codes(user), 1)
+    with {:ok, {passkey, codes}} <-
+           MFA.add_factor(user, fn -> Passkeys.register(user, response, name) end, authorize) do
       {:ok, passkey, codes}
     end
   end
 
   @doc "Removes a passkey if this session passed the re-check."
   def remove_passkey(%User{} = user, session_token, passkey_id) do
-    if Recheck.authorized?(user, session_token, :remove_factor) do
-      with {:ok, passkey} <- Passkeys.delete(user, passkey_id) do
-        MFA.discard_recovery_codes_without_mfa(user)
-        {:ok, passkey}
-      end
-    else
-      {:error, :recheck_required}
-    end
+    MFA.remove_factor(user, fn -> Passkeys.delete(user, passkey_id) end, fn ->
+      Recheck.authorized?(user, session_token, :remove_factor)
+    end)
   end
 
   @doc "Options for signing in with any of this site's passkeys, including autofill."

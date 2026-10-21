@@ -141,9 +141,8 @@ defmodule Renga.Accounts.Passkeys do
              wax_challenge(challenge, :authenticate),
              [{credential_id, cose_key}]
            ),
-         :ok <- check_sign_count(passkey, auth_data.sign_count) do
-      passkey = touch(passkey, auth_data)
-      {:ok, Repo.get!(User, passkey.user_id), passkey}
+         :ok <- record_use(passkey, auth_data) do
+      {:ok, Repo.get!(User, passkey.user_id), Repo.get!(UserPasskey, passkey.id)}
     else
       {:error, %{__exception__: true}} ->
         fail(user)
@@ -244,21 +243,24 @@ defmodule Renga.Accounts.Passkeys do
     do: Repo.get_by(UserPasskey, credential_id: credential_id, user_id: user_id)
 
   # A counter that stops increasing suggests a cloned authenticator. Synced
-  # passkeys always report zero, which is allowed.
-  defp check_sign_count(%UserPasskey{sign_count: stored}, new)
-       when stored > 0 and new <= stored,
-       do: {:error, :sign_count}
+  # passkeys always report zero, which is allowed. The check and the update
+  # are one statement, so concurrent assertions cannot move it backwards.
+  defp record_use(%UserPasskey{id: id}, auth_data) do
+    new = auth_data.sign_count
 
-  defp check_sign_count(_passkey, _new), do: :ok
+    {count, _} =
+      UserPasskey
+      |> where(id: ^id)
+      |> where([passkey], passkey.sign_count == 0 or passkey.sign_count < ^new)
+      |> Repo.update_all(
+        set: [
+          sign_count: new,
+          backed_up: auth_data.flag_credential_backed_up,
+          last_used_at: Renga.Time.utc_now_ms()
+        ]
+      )
 
-  defp touch(passkey, auth_data) do
-    passkey
-    |> Ecto.Changeset.change(
-      sign_count: auth_data.sign_count,
-      backed_up: auth_data.flag_credential_backed_up,
-      last_used_at: Renga.Time.utc_now_ms()
-    )
-    |> Repo.update!()
+    if count == 1, do: :ok, else: {:error, :sign_count}
   end
 
   defp descriptor(%UserPasskey{} = passkey) do

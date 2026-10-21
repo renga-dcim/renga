@@ -144,6 +144,15 @@ defmodule Renga.Accounts.PasskeysTest do
       assert {:error, :sign_count} = Passkeys.authenticate("sign_in", response)
     end
 
+    test "rejects a counter that fell back to zero" do
+      user = user_fixture()
+      {authenticator, _passkey} = register(user, FakeAuthenticator.new(sign_count: 5))
+
+      reset = %{authenticator | sign_count: 0}
+      response = FakeAuthenticator.assert(reset, Passkeys.authentication_options("sign_in"))
+      assert {:error, :sign_count} = Passkeys.authenticate("sign_in", response)
+    end
+
     test "a removed passkey no longer signs in", %{
       user: user,
       authenticator: authenticator,
