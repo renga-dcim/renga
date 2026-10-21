@@ -12,7 +12,9 @@ defmodule Renga.FakeAuthenticator do
     :user_handle,
     sign_count: 0,
     user_verified: true,
-    alg: -7
+    alg: -7,
+    attested: true,
+    client_data: %{}
   ]
 
   @doc "A new authenticator holding one credential."
@@ -26,13 +28,15 @@ defmodule Renga.FakeAuthenticator do
       sign_count: Keyword.get(opts, :sign_count, 0),
       user_verified: Keyword.get(opts, :user_verified, true),
       alg: Keyword.get(opts, :alg, -7),
-      user_handle: Keyword.get(opts, :user_handle)
+      user_handle: Keyword.get(opts, :user_handle),
+      attested: Keyword.get(opts, :attested, true),
+      client_data: Keyword.get(opts, :client_data, %{})
     }
   end
 
   @doc "The response to registration options, as the browser hook sends it."
   def register(%__MODULE__{} = authenticator, options, origin \\ origin()) do
-    client_data = client_data("webauthn.create", options.challenge, origin)
+    client_data = client_data(authenticator, "webauthn.create", options.challenge, origin)
     <<4, x::binary-size(32), y::binary-size(32)>> = authenticator.public_point
 
     # Like a real authenticator, remember which account the credential was
@@ -53,7 +57,12 @@ defmodule Renga.FakeAuthenticator do
       <<0::128, byte_size(authenticator.credential_id)::16>> <>
         authenticator.credential_id <> cose_key
 
-    auth_data = auth_data(authenticator, options.rp.id, 0x40) <> attested
+    # `attested: false` leaves out the credential, as a broken
+    # authenticator might, with the attested-data flag cleared.
+    auth_data =
+      if authenticator.attested,
+        do: auth_data(authenticator, options.rp.id, 0x40) <> attested,
+        else: auth_data(authenticator, options.rp.id, 0)
 
     attestation_object =
       CBOR.encode(%{
@@ -72,7 +81,7 @@ defmodule Renga.FakeAuthenticator do
 
   @doc "The response to authentication options, as the browser hook sends it."
   def assert(%__MODULE__{} = authenticator, options, origin \\ origin()) do
-    client_data = client_data("webauthn.get", options.challenge, origin)
+    client_data = client_data(authenticator, "webauthn.get", options.challenge, origin)
     auth_data = auth_data(authenticator, options.rpId, 0)
 
     signature =
@@ -107,8 +116,11 @@ defmodule Renga.FakeAuthenticator do
     :crypto.hash(:sha256, rp_id) <> <<flags, authenticator.sign_count::32>>
   end
 
-  defp client_data(type, challenge, origin) do
-    Jason.encode!(%{"type" => type, "challenge" => challenge, "origin" => origin})
+  # `client_data:` adds or overrides fields, such as `crossOrigin`.
+  defp client_data(authenticator, type, challenge, origin) do
+    %{"type" => type, "challenge" => challenge, "origin" => origin}
+    |> Map.merge(authenticator.client_data)
+    |> Jason.encode!()
   end
 
   defp origin, do: Application.fetch_env!(:renga, :webauthn)[:origin]

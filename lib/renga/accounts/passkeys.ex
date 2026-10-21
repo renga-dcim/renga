@@ -79,7 +79,7 @@ defmodule Renga.Accounts.Passkeys do
                wax_challenge(challenge, :register)
              )
            end),
-         credential = auth_data.attested_credential_data,
+         {:ok, credential} <- attested_credential(auth_data),
          :ok <- check_algorithm(credential.credential_public_key) do
       %UserPasskey{
         user_id: user.id,
@@ -208,8 +208,11 @@ defmodule Renga.Accounts.Passkeys do
   # Deletes the challenge the response signed, so it can be used only once,
   # and checks it was issued for this purpose and user.
   defp take_challenge(client_data_json, purpose, user) do
-    with {:ok, %{"challenge" => encoded}} when is_binary(encoded) <-
+    with {:ok, %{"challenge" => encoded} = client_data} when is_binary(encoded) <-
            Jason.decode(client_data_json),
+         # Wax does not check crossOrigin; a ceremony run inside another
+         # site's frame is refused rather than left to the framing policy.
+         false <- Map.get(client_data, "crossOrigin", false),
          {:ok, bytes} <- Base.url_decode64(encoded, padding: false) do
       now = Renga.Time.utc_now_ms()
       user_id = user && user.id
@@ -260,6 +263,10 @@ defmodule Renga.Accounts.Passkeys do
   rescue
     _exception -> {:error, :invalid_response}
   end
+
+  # Wax accepts a "none" attestation without attested credential data.
+  defp attested_credential(%{attested_credential_data: %{} = credential}), do: {:ok, credential}
+  defp attested_credential(_auth_data), do: {:error, :invalid_response}
 
   # WebAuthn §7.1 step 16: the new key must use an algorithm Renga offered.
   defp check_algorithm(%{3 => alg}) when alg in @algorithms, do: :ok

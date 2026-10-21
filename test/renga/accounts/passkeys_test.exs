@@ -61,6 +61,21 @@ defmodule Renga.Accounts.PasskeysTest do
       assert {:error, :invalid_challenge} = Passkeys.register(user, response)
     end
 
+    test "refuses a response without a credential or from another site's frame" do
+      user = user_fixture()
+
+      for authenticator <- [
+            FakeAuthenticator.new(attested: false),
+            FakeAuthenticator.new(client_data: %{"crossOrigin" => true}),
+            FakeAuthenticator.new(client_data: %{"type" => "webauthn.get"})
+          ] do
+        response = FakeAuthenticator.register(authenticator, Passkeys.registration_options(user))
+        assert {:error, _} = Passkeys.register(user, response)
+      end
+
+      refute Passkeys.any?(user)
+    end
+
     test "refuses a key algorithm Renga did not offer" do
       user = user_fixture()
 
@@ -186,6 +201,25 @@ defmodule Renga.Accounts.PasskeysTest do
         response = %{response | "clientDataJSON" => encode(Jason.encode!(client_data))}
         assert {:error, _} = Passkeys.authenticate("sign_in", response)
       end
+
+      # Signed over a live challenge, so only these fields are wrong.
+      for client_data <- [%{"type" => "webauthn.create"}, %{"crossOrigin" => true}] do
+        response =
+          FakeAuthenticator.assert(
+            %{authenticator | client_data: client_data},
+            Passkeys.authentication_options("sign_in")
+          )
+
+        assert {:error, _} = Passkeys.authenticate("sign_in", response)
+      end
+
+      response =
+        FakeAuthenticator.assert(
+          %{authenticator | client_data: %{"crossOrigin" => false}},
+          Passkeys.authentication_options("sign_in")
+        )
+
+      assert {:ok, _user, _passkey} = Passkeys.authenticate("sign_in", response)
     end
 
     test "rejects a counter that went backwards" do
