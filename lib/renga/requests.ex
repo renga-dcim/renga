@@ -16,9 +16,8 @@ defmodule Renga.Requests do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
@@ -34,12 +33,11 @@ defmodule Renga.Requests do
   @lifecycle_states ~w(active inactive retired unknown)
   @per_page 50
 
-  @doc "UI hint: members propose changes instead of applying them."
-  def can_request?(%Scope{user: %{}, roles: roles}), do: "member" in (roles || [])
-  def can_request?(_scope), do: false
+  @doc "UI hint: built-in members propose changes instead of applying them."
+  def can_request?(scope), do: Authorization.allowed?(scope, "requests.create")
 
-  @doc "UI hint: owners and admins decide requests."
-  def can_decide?(%Scope{} = scope), do: Inventory.organization_manager?(scope)
+  @doc "UI hint for `requests.decide`."
+  def can_decide?(%Scope{} = scope), do: Authorization.allowed?(scope, "requests.decide")
 
   ## Creating
 
@@ -183,7 +181,7 @@ defmodule Renga.Requests do
          extra
        ) do
     Repo.transaction(fn ->
-      authorize!(scope, ["member"])
+      authorize!(scope, "requests.create")
       resource = Inventory.get_resource!(scope, resource.id)
       now = Renga.Time.utc_now_ms()
 
@@ -427,7 +425,7 @@ defmodule Renga.Requests do
   """
   def approve(%Scope{organization_id: organization_id} = scope, requests, note \\ nil) do
     Repo.transaction(fn ->
-      authorize!(scope, ["owner", "admin"])
+      authorize!(scope, "requests.decide")
       now = Renga.Time.utc_now_ms()
 
       requests
@@ -454,17 +452,17 @@ defmodule Renga.Requests do
 
   @doc "Rejects an open request, optionally saying why."
   def reject(%Scope{} = scope, %Request{} = request, note \\ nil) do
-    close(scope, request, ["owner", "admin"], "rejected", note)
+    close(scope, request, "requests.decide", "rejected", note)
   end
 
-  @doc "Withdraws an open request. Only its requester may."
+  @doc "Withdraws an open request. Only its requester may, while still a member."
   def withdraw(%Scope{} = scope, %Request{} = request) do
-    close(scope, request, ["owner", "admin", "member", "viewer"], "withdrawn", nil)
+    close(scope, request, "inventory.read", "withdrawn", nil)
   end
 
-  defp close(%Scope{organization_id: organization_id} = scope, request, roles, status, note) do
+  defp close(%Scope{organization_id: organization_id} = scope, request, permission, status, note) do
     Repo.transaction(fn ->
-      authorize!(scope, roles)
+      authorize!(scope, permission)
       now = Renga.Time.utc_now_ms()
       request = lock_open!(scope, request)
 
@@ -583,33 +581,5 @@ defmodule Renga.Requests do
   defp event_field(%Request{kind: "expectation", field: field}), do: "expectation." <> field
   defp event_field(%Request{field: field}), do: "host." <> field
 
-  defp authorize!(
-         %Scope{
-           membership_id: membership_id,
-           user: %{id: user_id},
-           organization_id: organization_id
-         },
-         roles
-       )
-       when not is_nil(membership_id) do
-    active? =
-      Organization
-      |> where([organization], organization.id == ^organization_id)
-      |> where([organization], organization.status == "active")
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    member? =
-      OrganizationMembership
-      |> where([membership], membership.id == ^membership_id)
-      |> where([membership], membership.user_id == ^user_id)
-      |> where([membership], membership.organization_id == ^organization_id)
-      |> where([membership], membership.status == "active" and membership.role in ^roles)
-      |> lock("FOR UPDATE")
-      |> Repo.exists?()
-
-    unless active? and member?, do: Repo.rollback(:forbidden)
-  end
-
-  defp authorize!(%Scope{}, _roles), do: Repo.rollback(:forbidden)
+  defp authorize!(%Scope{} = scope, permission), do: Authorization.authorize!(scope, permission)
 end
