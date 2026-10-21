@@ -296,4 +296,32 @@ defmodule RengaWeb.SitePowerLiveTest do
     assert has_element?(view, "#load-leg-a", "5,922 VA")
     assert has_element?(view, "#load-draw-#{port.id}", "400 W · 413 VA")
   end
+
+  test "says the load is untraced rather than empty when it cannot be followed",
+       %{conn: conn, site: site, scope: scope} do
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+    feed = feed!(scope, panel, "A1", %{phase: "three", voltage: "400", amperage: "32"})
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "rack-pdu", [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 90_000}},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet", "feed_leg" => "a"}},
+        %{kind: "power_outlet", name: "2", attributes: %{"inlet" => "Inlet", "feed_leg" => "b"}},
+        %{kind: "power_outlet", name: "3"}
+      ])
+
+    %{ports: [inlet], outlets: [a, _b, unmapped]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _cable} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: feed.id})
+    plug!(scope, "db-1", %{"allocated_draw_w" => 1000, "power_factor" => 1}, a)
+    plug!(scope, "lab-1", %{"allocated_draw_w" => 100, "power_factor" => 1}, unmapped)
+
+    {:ok, view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+    assert has_element?(view, "#feed-#{feed.id}-load[data-status=unknown]", "Chain not traced")
+
+    view |> element("#feed-#{feed.id}-load") |> render_click()
+    assert has_element?(view, "#load-incomplete", "does not name the inlet")
+    # Known leg A current is a lower bound: 1,000 VA × √3 / 400 V = 4.33 A.
+    assert has_element?(view, "#load-leg-a", "1,000 VA or more")
+    assert has_element?(view, "#load-leg-a", "4.3 A or more of 25.6 A")
+  end
 end

@@ -555,11 +555,10 @@ defmodule RengaWeb.SitePowerLive do
           >
             <span class="font-sans font-medium text-fg">Leg {String.upcase(leg.leg)}</span>
             <span class="text-fg-muted">
-              {Capacity.format(leg.va, :va, leg_rounding(leg))}
+              {Capacity.format(leg.va, :va, leg_rounding(leg))}{or_more(leg)}
             </span>
             <span class={leg_class(leg)}>
-              {amps(leg.current, leg_rounding(leg))} of {amps(leg.limit, :floor)}{if !leg.complete?,
-                do: " or more"}
+              {amps(leg.current, leg_rounding(leg))}{or_more(leg)} of {amps(leg.limit, :floor)}
             </span>
           </li>
         </ul>
@@ -573,8 +572,10 @@ defmodule RengaWeb.SitePowerLive do
         <h3 id="load-draws-title" class="mb-1 text-xs font-semibold text-fg">
           Loads ({length(@load.draws)})
         </h3>
-        <p :if={@load.draws == []} class="text-xs text-fg-muted">
-          Nothing is plugged in downstream of this feed.
+        <p :if={@load.draws == []} id="load-draws-empty" class="text-xs text-fg-muted">
+          {if @load.untraced?,
+            do: "No load below this feed could be traced.",
+            else: "Nothing is plugged in downstream of this feed."}
         </p>
         <ul :if={@load.draws != []} class="divide-y divide-line rounded-md border border-edge">
           <li :for={draw <- @load.draws} id={"load-draw-#{draw.port.id}"} class="px-3 py-2">
@@ -752,7 +753,7 @@ defmodule RengaWeb.SitePowerLive do
   defp incomplete_reasons(load) do
     [
       load.untraced? &&
-        "Part of the chain below this feed cannot be followed: an outlet in use whose hardware type does not name the inlet that feeds it, or a chain deeper than any power train.",
+        "Part of the chain below this feed cannot be followed: a device whose hardware type does not name the inlet that feeds its outlets, or a chain deeper than any power train.",
       load.unallocated > 0 &&
         "#{load.unallocated} #{plural(load.unallocated, "load")} #{verb(load.unallocated, "has", "have")} no allocated draw. Set one on the device's power ports or its hardware type.",
       load.unconverted > 0 &&
@@ -818,6 +819,9 @@ defmodule RengaWeb.SitePowerLive do
   # reads as equal to it; a lower bound ("or more") rounds down to stay one.
   defp leg_rounding(%Load.Leg{complete?: true}), do: :ceiling
   defp leg_rounding(%Load.Leg{}), do: :floor
+
+  defp or_more(%Load.Leg{complete?: true}), do: nil
+  defp or_more(%Load.Leg{}), do: " or more"
 
   defp amps(value, rounding),
     do: "#{value |> Decimal.round(1, rounding) |> Decimal.to_string(:normal)} A"
