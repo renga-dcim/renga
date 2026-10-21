@@ -10,7 +10,9 @@ defmodule RengaWeb.ResourcePowerLive do
   override restores the default.
 
   Each port shows its power path: the outlets and PDUs it passes through on
-  the way to a panel feed, or where that path stops. Each outlet shows what
+  the way to a panel feed, or where that path stops. A device with more than
+  one port shows whether those paths make it redundant, by the sides of the
+  feeds they reach (`Renga.Power.Redundancy`). Each outlet shows what
   it powers. Owners and admins record a connection or unplug
   one; both are confirmed power cable claims (RFD 10 phase 2b).
   """
@@ -28,6 +30,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Paths
   alias Renga.Power.Port
   alias Renga.Power.PowerFactor
+  alias Renga.Power.Redundancy
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -187,6 +190,8 @@ defmodule RengaWeb.ResourcePowerLive do
               Check its hardware type
             </.link>
           </p>
+
+          <.redundancy redundancy={@redundancy} />
 
           <section :if={@ports != []} aria-labelledby="power-ports-heading" class="space-y-2">
             <div class="flex items-baseline justify-between gap-4">
@@ -675,6 +680,82 @@ defmodule RengaWeb.ResourcePowerLive do
   defp edit_port(port),
     do: "edit_port" |> JS.push(value: %{id: port.id}) |> show_overlay("allocation-panel")
 
+  attr :redundancy, Redundancy, required: true
+
+  defp redundancy(%{redundancy: %Redundancy{status: :none}} = assigns), do: ~H""
+
+  defp redundancy(assigns) do
+    ~H"""
+    <p
+      id="power-redundancy"
+      data-status={@redundancy.status}
+      class={[
+        "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
+        @redundancy.status in [:not_redundant, :unknown] &&
+          "border-warn-line bg-warn-fill text-warn-text",
+        @redundancy.status not in [:not_redundant, :unknown] && "border-edge bg-surface text-fg"
+      ]}
+    >
+      <.icon
+        name={redundancy_icon(@redundancy.status)}
+        class={"mt-0.5 size-4 shrink-0 #{redundancy_icon_class(@redundancy.status)}"}
+      />
+      <span>
+        <span class="font-medium">{redundancy_label(@redundancy)}</span>
+        <span :if={redundancy_note(@redundancy)} class="block text-xs">
+          {redundancy_note(@redundancy)}
+        </span>
+      </span>
+    </p>
+    """
+  end
+
+  defp redundancy_icon(:redundant), do: "hero-check-circle-mini"
+  defp redundancy_icon(:not_redundant), do: "hero-exclamation-triangle-mini"
+  defp redundancy_icon(:unknown), do: "hero-question-mark-circle-mini"
+  defp redundancy_icon(:single_supply), do: "hero-minus-circle-mini"
+
+  defp redundancy_icon_class(:redundant), do: "text-ok"
+  defp redundancy_icon_class(:single_supply), do: "text-fg-muted"
+  defp redundancy_icon_class(_status), do: ""
+
+  defp redundancy_label(%Redundancy{status: :redundant, sides: sides}),
+    do: "Redundant: reaches sides #{Enum.map_join(sides, " and ", &String.upcase/1)}"
+
+  defp redundancy_label(%Redundancy{status: :not_redundant}), do: "Not redundant"
+  defp redundancy_label(%Redundancy{status: :unknown}), do: "Redundancy unknown"
+  defp redundancy_label(%Redundancy{status: :single_supply}), do: "Single supply"
+
+  defp redundancy_note(%Redundancy{status: :redundant, feeds: feeds}),
+    do: "Through #{Enum.map_join(feeds, ", ", &feed_with_side/1)}."
+
+  defp redundancy_note(%Redundancy{status: status} = redundancy)
+       when status in [:not_redundant, :unknown] do
+    [
+      named(redundancy.untraced, "has a path", "have paths", "that cannot be traced to a feed"),
+      redundancy.feeds == [] && redundancy.untraced == [] && "No port reaches a feed yet",
+      match?([_], redundancy.sides) &&
+        "Every feed with a recorded side is on side #{String.upcase(hd(redundancy.sides))}",
+      redundancy.feeds != [] && named(redundancy.unfed, "reaches", "reach", "no feed"),
+      named(redundancy.sideless, "has", "have", "no side")
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.map_join(" ", &(&1 <> "."))
+  end
+
+  defp redundancy_note(%Redundancy{}), do: nil
+
+  # "PSU2 reaches no feed", or nil when there is nothing to name.
+  defp named([], _one, _many, _rest), do: nil
+
+  defp named(items, one, many, rest) do
+    verb = if match?([_], items), do: one, else: many
+    "#{Enum.map_join(items, ", ", & &1.name)} #{verb} #{rest}"
+  end
+
+  defp feed_with_side(%{side: nil} = feed), do: feed.name
+  defp feed_with_side(feed), do: "#{feed.name} (#{String.upcase(feed.side)})"
+
   defp show_path(path),
     do: "show_path" |> JS.push(value: %{id: path.port.id}) |> show_overlay("path-panel")
 
@@ -685,7 +766,15 @@ defmodule RengaWeb.ResourcePowerLive do
     cables =
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
-    paths = Paths.for_ports(socket.assigns.current_scope, ports)
+    # A port retired from the hardware type keeps its cable, and with it its
+    # supply, so redundancy follows it until it is unplugged.
+    retired_cabled =
+      for %{power_port: %Port{retired_at: retired_at} = port} <- cables,
+          retired_at,
+          port.resource_id == socket.assigns.resource.id,
+          do: port
+
+    paths = Paths.for_ports(socket.assigns.current_scope, ports ++ retired_cabled)
     default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
@@ -696,6 +785,7 @@ defmodule RengaWeb.ResourcePowerLive do
       outlets: outlets,
       cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
       paths_by_port: Map.new(paths, &{&1.port.id, &1}),
+      redundancy: Redundancy.of(paths),
       selected_path: Enum.find(paths, &(&1.port.id == selected_path_id)),
       cables_by_outlet:
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),

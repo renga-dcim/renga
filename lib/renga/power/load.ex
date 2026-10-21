@@ -26,6 +26,9 @@ defmodule Renga.Power.Load do
   overloaded leg is reported even when the aggregate has headroom. A load
   with no leg leaves leg coverage, and the feed's status, incomplete.
 
+  `devices` lists every device the walk passes below the feed, PDUs and
+  devices whose load is unknown included, by resource id.
+
   What is known always counts towards `known`, a lower bound: a feed or leg
   it already takes over its limit is over even while its load is unknown.
   """
@@ -65,6 +68,7 @@ defmodule Renga.Power.Load do
     :load,
     :headroom,
     draws: [],
+    devices: [],
     unallocated: 0,
     unconverted: 0,
     unassigned_legs: 0,
@@ -88,7 +92,7 @@ defmodule Renga.Power.Load do
     do: for_feeds(scope, feeds, Power.default_power_factor(scope))
 
   def for_feeds(%Scope{organization_id: organization_id}, [%Feed{} | _] = feeds, default) do
-    {draws, untraced} = walk(organization_id, feeds)
+    {draws, untraced, devices} = walk(organization_id, feeds)
 
     Map.new(feeds, fn feed ->
       feed_draws =
@@ -97,7 +101,8 @@ defmodule Renga.Power.Load do
         |> Enum.map(&draw(&1, default))
         |> Enum.sort_by(&{&1.port.resource.name, &1.port.name})
 
-      {feed.id, summarize(feed, feed_draws, MapSet.member?(untraced, feed.id))}
+      load = summarize(feed, feed_draws, MapSet.member?(untraced, feed.id))
+      {feed.id, %{load | devices: devices |> Map.get(feed.id, []) |> Enum.uniq()}}
     end)
   end
 
@@ -126,7 +131,8 @@ defmodule Renga.Power.Load do
 
     acc = %{draws: %{}, devices: %{}, untraced: MapSet.new()}
     acc = walk(organization_id, three_phase, frontier, 0, acc)
-    {acc.draws, MapSet.union(acc.untraced, untraced(organization_id, acc.devices))}
+    untraced = MapSet.union(acc.untraced, untraced(organization_id, acc.devices))
+    {acc.draws, untraced, acc.devices}
   end
 
   defp walk(_organization_id, _three_phase, [], _hops, acc), do: acc
