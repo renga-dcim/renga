@@ -97,10 +97,17 @@ defmodule RengaWeb.SitePowerLive do
     end
   end
 
-  def handle_event("save_power_factor", %{"organization" => params}, socket) do
+  # Form fields arrive as text; any other shape is a malformed event and
+  # changes nothing rather than clearing the default.
+  def handle_event(
+        "save_power_factor",
+        %{"organization" => %{"default_power_factor" => value}},
+        socket
+      )
+      when is_binary(value) do
     case Power.set_default_power_factor(
            socket.assigns.current_scope,
-           blank_to_nil(String.trim(params["default_power_factor"] || ""))
+           blank_to_nil(String.trim(value))
          ) do
       {:ok, _organization} ->
         {:noreply,
@@ -117,6 +124,8 @@ defmodule RengaWeb.SitePowerLive do
          put_flash(socket, :error, "Only owners change the organization's default power factor")}
     end
   end
+
+  def handle_event("save_power_factor", _params, socket), do: {:noreply, socket}
 
   defp after_mutation({:ok, _record}, socket, message, panel) do
     {:noreply,

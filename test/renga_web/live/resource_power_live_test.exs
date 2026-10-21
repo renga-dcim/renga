@@ -91,6 +91,15 @@ defmodule RengaWeb.ResourcePowerLiveTest do
 
     assert has_element?(view, "#power-factor-#{psu2.id}", "0.900 set here")
 
+    # A field that is not text is a malformed event: nothing is cleared.
+    render_click(view, "edit_port", %{"id" => psu2.id})
+
+    render_submit(view, "save_allocation", %{
+      "allocation" => %{"allocated_draw_w" => "", "power_factor" => ["0.5"]}
+    })
+
+    assert has_element?(view, "#power-factor-#{psu2.id}", "0.900 set here")
+
     render_click(view, "edit_port", %{"id" => psu1.id})
 
     assert view

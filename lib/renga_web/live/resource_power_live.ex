@@ -125,11 +125,15 @@ defmodule RengaWeb.ResourcePowerLive do
     end
   end
 
-  def handle_event("save_allocation", %{"allocation" => params}, socket) do
-    attrs = %{
-      allocated_draw_w: blank_to_nil(params["allocated_draw_w"]),
-      power_factor: blank_to_nil(params["power_factor"])
-    }
+  # Form fields arrive as text; any other shape is a malformed event and
+  # changes nothing rather than clearing an override.
+  def handle_event(
+        "save_allocation",
+        %{"allocation" => %{"allocated_draw_w" => watts, "power_factor" => power_factor}},
+        socket
+      )
+      when is_binary(watts) and is_binary(power_factor) do
+    attrs = %{allocated_draw_w: blank_to_nil(watts), power_factor: blank_to_nil(power_factor)}
 
     case Power.update_port_allocation(
            socket.assigns.current_scope,
@@ -154,6 +158,8 @@ defmodule RengaWeb.ResourcePowerLive do
         {:noreply, put_flash(socket, :error, "The allocation could not be saved")}
     end
   end
+
+  def handle_event("save_allocation", _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -713,14 +719,12 @@ defmodule RengaWeb.ResourcePowerLive do
     )
   end
 
-  defp blank_to_nil(value) when is_binary(value) do
+  defp blank_to_nil(value) do
     case String.trim(value) do
       "" -> nil
       text -> text
     end
   end
-
-  defp blank_to_nil(_value), do: nil
 
   attr :power_factor, PowerFactor, default: nil
 

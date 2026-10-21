@@ -154,6 +154,14 @@ defmodule RengaWeb.SitePowerLiveTest do
     assert has_element?(view, "#default-power-factor", "0.900")
     assert Decimal.eq?(Power.default_power_factor(scope), "0.9")
 
+    # A value that is not text is rejected, never read as clearing the default.
+    render_submit(view, "save_power_factor", %{
+      "organization" => %{"default_power_factor" => %{"value" => "0.5"}}
+    })
+
+    assert Decimal.eq?(Power.default_power_factor(scope), "0.9")
+    assert render(view) =~ "0.900"
+
     view
     |> form("#power-factor-form", organization: %{default_power_factor: ""})
     |> render_submit()
