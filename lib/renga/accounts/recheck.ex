@@ -19,6 +19,7 @@ defmodule Renga.Accounts.Recheck do
 
   alias Renga.Accounts.AccountAuthorization
   alias Renga.Accounts.AccountChallenge
+  alias Renga.Accounts.MFA
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
@@ -31,29 +32,39 @@ defmodule Renga.Accounts.Recheck do
   @code_length 10
 
   @typedoc "A change the re-check guards."
-  @type change :: :change_email | :set_password
+  @type change :: :change_email | :set_password | :add_factor | :remove_factor | :recovery_codes
+
+  @changes [:change_email, :set_password, :add_factor, :remove_factor, :recovery_codes]
+  # What an account with nothing to re-check with may do after proving its
+  # email: get its first credential, and nothing else.
+  @bootstrap_changes [:set_password, :add_factor]
 
   @doc "How long a passing check or a bootstrap authorization lasts."
   def window_minutes, do: @window_minutes
 
   @doc """
-  The ways this account can pass the re-check, strongest first. An empty list
+  The ways this account can pass the re-check. An account with a second
+  factor confirms with it; one without enters its password. An empty list
   means the account must bootstrap through its email first.
   """
   def methods(%User{} = user) do
-    if user.hashed_password, do: [:password], else: []
+    cond do
+      MFA.totp_enabled?(user) -> [:totp]
+      user.hashed_password -> [:password]
+      true -> []
+    end
   end
 
   @doc """
   Whether `user` may make `change` from the browser session holding
   `session_token` without being asked again.
   """
-  def authorized?(%User{} = user, session_token, change)
-      when change in [:change_email, :set_password] do
+  def authorized?(%User{} = user, session_token, change) when change in @changes do
     case fetch_session(user, session_token) do
       {:ok, session} ->
         active?(session, "recheck") or
-          (change == :set_password and methods(user) == [] and active?(session, "bootstrap"))
+          (change in @bootstrap_changes and methods(user) == [] and
+             active?(session, "bootstrap"))
 
       :error ->
         false
@@ -68,7 +79,22 @@ defmodule Renga.Accounts.Recheck do
   """
   def recheck_with_password(%User{} = user, session_token, password) when is_binary(password) do
     with {:ok, session} <- fetch_session(user, session_token),
+         true <- :password in methods(user) || {:error, :not_available},
          true <- User.valid_password?(user, password) || {:error, :invalid_password} do
+      grant(session, "recheck")
+    else
+      :error -> {:error, :no_session}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Checks an authenticator code and, if it is good, records a re-check for
+  this session.
+  """
+  def recheck_with_totp(%User{} = user, session_token, code) when is_binary(code) do
+    with {:ok, session} <- fetch_session(user, session_token),
+         :ok <- MFA.verify_totp(user, code) do
       grant(session, "recheck")
     else
       :error -> {:error, :no_session}

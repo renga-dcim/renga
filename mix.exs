@@ -42,6 +42,8 @@ defmodule Renga.MixProject do
     [
       {:renga_ui, path: "ui"},
       {:argon2_elixir, "~> 4.0"},
+      {:nimble_totp, "~> 1.0"},
+      {:eqrcode, "~> 0.2"},
       {:phoenix, "~> 1.8.1"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
