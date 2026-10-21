@@ -239,6 +239,148 @@
             },
             "type": "object"
           },
+          "domain": {
+            "description": "For a `vm` in a `hypervisor` report only: the hypervisor's own view of the domain. Running, idle, paused, and shutting-down domains occupy the hypervisor; the rest are only defined on it.",
+            "properties": {
+              "disks": {
+                "description": "Block devices by guest target name, such as `vda`.",
+                "items": {
+                  "properties": {
+                    "bus": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "device": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "format": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "target": {
+                      "description": "Must not be blank. At most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "target"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 256,
+                "type": "array"
+              },
+              "interfaces": {
+                "description": "Virtual NICs. MAC addresses are evidence only and never match the VM to a host.",
+                "items": {
+                  "properties": {
+                    "mac_address": {
+                      "description": "A MAC address in any common notation.",
+                      "type": "string"
+                    },
+                    "model": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "target": {
+                      "description": "At most 255 characters.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "type": {
+                      "enum": [
+                        "bridge",
+                        "network",
+                        "direct",
+                        "user",
+                        "other"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mac_address"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 256,
+                "type": "array"
+              },
+              "memory_mib": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Must not be blank. At most 255 characters.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "persistent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "running",
+                  "idle",
+                  "paused",
+                  "shutting_down",
+                  "shutoff",
+                  "crashed",
+                  "pmsuspended",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "vcpus": {
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "state"
+            ],
+            "type": "object"
+          },
           "id": false,
           "identifiers": {
             "additionalProperties": false,

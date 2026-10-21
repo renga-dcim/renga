@@ -47,7 +47,8 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
               "Hardware components, stored as reported. The agent sends objects with a " <>
                 "`kind` discriminator whose other fields depend on the kind."
           },
-          "labels" => labels(contract)
+          "labels" => labels(contract),
+          "domain" => domain(contract)
         }),
       required: [:kind, :identifiers]
     }
@@ -87,6 +88,68 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
         contract.prohibited_resource_keys
         |> forbidden()
         |> Map.merge(Map.new(contract.host_projection_fields, &{&1, nullable(string())}))
+    }
+  end
+
+  defp domain(contract) do
+    device_list = fn items, description ->
+      %{
+        type: :array,
+        maxItems: contract.max_domain_devices,
+        items: items,
+        description: description
+      }
+    end
+
+    optional_strings = fn keys -> Map.new(keys, &{&1, nullable(string())}) end
+    positive = nullable(%{type: :integer, minimum: 1})
+
+    %{
+      type: :object,
+      description:
+        "For a `vm` in a `hypervisor` report only: the hypervisor's own view of the domain. " <>
+          "Running, idle, paused, and shutting-down domains occupy the hypervisor; the rest " <>
+          "are only defined on it.",
+      properties: %{
+        "name" => non_blank_string(),
+        "state" => %{type: :string, enum: contract.domain_states},
+        "persistent" => %{type: [:boolean, :null]},
+        "vcpus" => positive,
+        "memory_mib" => positive,
+        "disks" =>
+          device_list.(
+            %{
+              type: :object,
+              properties:
+                Map.put(
+                  optional_strings.(~w(device bus format source)),
+                  "target",
+                  non_blank_string()
+                ),
+              required: ["target"]
+            },
+            "Block devices by guest target name, such as `vda`."
+          ),
+        "interfaces" =>
+          device_list.(
+            %{
+              type: :object,
+              properties:
+                ~w(source model target)
+                |> optional_strings.()
+                |> Map.merge(%{
+                  "mac_address" => %{
+                    type: :string,
+                    description: "A MAC address in any common notation."
+                  },
+                  "type" => %{type: :string, enum: contract.domain_interface_types}
+                }),
+              required: ["mac_address"]
+            },
+            "Virtual NICs. MAC addresses are evidence only and never match the VM to a host."
+          )
+      },
+      required: ["name", "state"]
     }
   end
 
