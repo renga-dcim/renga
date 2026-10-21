@@ -227,7 +227,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> visit("/settings/collectors")
     |> assert_has("body .phx-connected")
     |> evaluate(
-      "[...document.querySelectorAll('#collector-#{agent.source_id} td')].slice(2, 4).every(cell => getComputedStyle(cell).display !== 'none')",
+      "[document.querySelectorAll('#collector-#{agent.source_id} td')[2], document.getElementById('collector-key-#{agent.source_id}').closest('td')].every(cell => getComputedStyle(cell).display !== 'none')",
       &assert(&1 == true)
     )
     |> assert_has(
@@ -245,7 +245,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
             fits: wrapper.scrollWidth <= wrapper.clientWidth,
             collector_width: cells[0].clientWidth,
             resource_visible: getComputedStyle(cells[2]).display !== 'none',
-            installation_visible: getComputedStyle(cells[3]).display !== 'none'
+            key_visible: getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display !== 'none'
           })
         }))
       })
@@ -254,7 +254,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         assert layout["fits"] == true
         assert layout["collector_width"] >= 160
         assert layout["resource_visible"] == true
-        assert layout["installation_visible"] == true
+        assert layout["key_visible"] == true
       end
     )
     |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")

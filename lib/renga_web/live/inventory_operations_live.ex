@@ -307,10 +307,11 @@ defmodule RengaWeb.InventoryOperationsLive do
 
           <%!-- One line per collector, with times and counts inline after each
                 state (docs/design-system.md, "Overflow"). As the table narrows
-                it drops the installation key (pending keys also reach the
-                Inbox), then the installation id (already in the name), the
+                it drops the installation id (already in the name), then the
+                installation key (pending keys also reach the Inbox), the
                 resource, jobs, queue and inventory; the name and connection
-                always stay. --%>
+                always stay. The page is max-w-6xl, so the installation id
+                shows only if the page grows wider. --%>
           <.table
             id="collectors"
             rows={@streams.sources}
@@ -353,11 +354,11 @@ defmodule RengaWeb.InventoryOperationsLive do
               :let={{_id, source}}
               label="Installation"
               class="w-28 font-mono text-xs text-fg-muted"
-              hide_below="5xl"
+              hide_below="6xl"
             >
               {short_installation_id(collector_agent(source).installation_id)}
             </:col>
-            <:col :let={{_id, source}} label="Installation key" class="w-44" hide_below="6xl">
+            <:col :let={{_id, source}} label="Installation key" class="w-36" hide_below="5xl">
               <span id={"collector-key-#{source.id}"}>
                 <.installation_key_state
                   key={Map.get(@keys_by_agent, collector_agent(source).id)}
