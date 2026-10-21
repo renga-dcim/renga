@@ -142,6 +142,26 @@ defmodule RengaWeb.TeamLiveTest do
     end
   end
 
+  describe "team people" do
+    test "admins put people on a team and take them off", context do
+      {:ok, team} = Teams.create_team(context.admin, %{"name" => "Platform"})
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/teams")
+      person = context.member.membership_id
+
+      view |> element("#team-#{team.id}-edit") |> render_click()
+      assert has_element?(view, "#team-people", "Nobody is on this team yet")
+
+      view |> form("#team-add-person", %{membership_id: person}) |> render_submit()
+      assert has_element?(view, "#team-person-#{person}", context.member.user.email)
+      assert has_element?(view, "#team-#{team.id}", "1")
+      refute has_element?(view, "#team-add-person-select option[value='#{person}']")
+
+      view |> element("#team-person-#{person}-remove") |> render_click()
+      refute has_element?(view, "#team-person-#{person}")
+      assert Teams.list_team_members(context.admin, team) == []
+    end
+  end
+
   defp member(organization, role) do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: role})
