@@ -719,8 +719,11 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
           ])
         )
 
-      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => _vm_id}]}} =
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => vm_id}]}} =
                valid_api_response(report, 202)
+
+      # With no hostname to go on, the VM is named after its domain.
+      assert Repo.get!(Inventory.Resource, vm_id).name == "web-1"
     end
   end
 
