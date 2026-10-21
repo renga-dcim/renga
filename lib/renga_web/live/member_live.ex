@@ -95,6 +95,22 @@ defmodule RengaWeb.MemberLive do
         {:noreply,
          assign(socket, :invite_form, to_form(changeset, as: :invitation, action: :insert))}
 
+      {:error, {:delivery_failed, invitation}} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :error,
+           "Invitation saved, but the email could not be delivered. Try sending it again."
+         )
+         |> assign(
+           :invite_form,
+           to_form(
+             Members.change_invitation(%{"email" => invitation.email, "role" => invitation.role}),
+             as: :invitation
+           )
+         )
+         |> load_members()}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, refusal(reason))}
     end

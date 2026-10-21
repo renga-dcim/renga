@@ -149,7 +149,7 @@ defmodule Renga.Members do
           |> validate_invitable(scope, ceiling)
 
         with true <- changeset.valid? || {:error, changeset},
-             :ok <- replace_open_invitation(scope, changeset.changes.email, now),
+             :ok <- replace_open_invitation(scope, changeset.changes.email, ceiling, now),
              {:ok, invitation} <- Repo.insert(changeset) do
           record!(scope, "member_invited", nil, invitation.role, %{
             "member" => invitation.email,
@@ -162,17 +162,20 @@ defmodule Renga.Members do
         end
       end)
 
+    result = Changes.broadcast(result, scope.organization_id)
+
     with {:ok, invitation} <- result do
       organization = Repo.get!(Renga.Accounts.Organization, invitation.organization_id)
 
-      UserNotifier.deliver_organization_invitation(
-        invitation.email,
-        organization.name,
-        invitation.role,
-        url_fun.(token)
-      )
-
-      Changes.broadcast(result, scope.organization_id)
+      case UserNotifier.deliver_organization_invitation(
+             invitation.email,
+             organization.name,
+             invitation.role,
+             url_fun.(token)
+           ) do
+        {:ok, _email} -> {:ok, invitation}
+        {:error, _reason} -> {:error, {:delivery_failed, invitation}}
+      end
     end
   end
 
@@ -192,14 +195,36 @@ defmodule Renga.Members do
     |> Repo.exists?()
   end
 
-  defp replace_open_invitation(scope, email, now) do
-    OrganizationInvitation
-    |> where([invitation], invitation.organization_id == ^scope.organization_id)
-    |> where([invitation], invitation.email == ^email)
-    |> where([invitation], is_nil(invitation.accepted_at) and is_nil(invitation.revoked_at))
-    |> Repo.update_all(set: [revoked_at: now, revoked_by_user_id: scope.user.id])
+  defp replace_open_invitation(scope, email, ceiling, now) do
+    invitation =
+      OrganizationInvitation
+      |> where([invitation], invitation.organization_id == ^scope.organization_id)
+      |> where([invitation], invitation.email == ^email)
+      |> where([invitation], is_nil(invitation.accepted_at) and is_nil(invitation.revoked_at))
+      |> lock("FOR UPDATE")
+      |> Repo.one()
 
-    :ok
+    case invitation do
+      nil ->
+        :ok
+
+      %OrganizationInvitation{} = invitation ->
+        if invitation.role in ceiling do
+          invitation
+          |> Ecto.Changeset.change(revoked_at: now, revoked_by_user_id: scope.user.id)
+          |> Repo.update!()
+
+          record!(scope, "invitation_revoked", invitation.role, nil, %{
+            "member" => invitation.email,
+            "invitation_id" => invitation.id,
+            "reason" => "Replaced by a new invitation"
+          })
+
+          :ok
+        else
+          {:error, :forbidden}
+        end
+    end
   end
 
   @doc "Revokes an open invitation whose role is within the actor's ceiling."
@@ -265,34 +290,37 @@ defmodule Renga.Members do
   `:wrong_email`, `:already_member`, or `:forbidden`.
   """
   def accept_invitation(%User{} = user, token) when is_binary(token) do
-    Repo.transaction(fn ->
-      now = Renga.Time.utc_now_ms()
+    token_hash = OrganizationInvitation.hash_token(token)
 
-      invitation =
+    Repo.transaction(fn ->
+      organization_id =
         OrganizationInvitation
-        |> where([invitation], invitation.token_hash == ^OrganizationInvitation.hash_token(token))
-        |> lock("FOR UPDATE")
+        |> where([invitation], invitation.token_hash == ^token_hash)
+        |> select([invitation], invitation.organization_id)
         |> Repo.one()
 
-      with %OrganizationInvitation{} <- invitation,
+      with organization_id when is_binary(organization_id) <- organization_id,
+           :ok <- Authorization.lock_active_organization!(organization_id),
+           %OrganizationInvitation{} = invitation <- lock_invitation(organization_id, token_hash),
+           %User{} = recipient <- lock_recipient(user.id),
+           now = Renga.Time.utc_now_ms(),
            true <- OrganizationInvitation.open?(invitation, now),
-           :ok <- Authorization.lock_active_organization!(invitation.organization_id),
-           :ok <- confirmed_recipient(user, invitation),
+           :ok <- confirmed_recipient(recipient, invitation),
            :ok <- inviter_may_grant(invitation),
-           :ok <- not_yet_member(user, invitation) do
+           :ok <- not_yet_member(recipient, invitation) do
         {:ok, membership} =
           %OrganizationMembership{organization_id: invitation.organization_id}
-          |> OrganizationMembership.changeset(%{user_id: user.id, role: invitation.role})
+          |> OrganizationMembership.changeset(%{user_id: recipient.id, role: invitation.role})
           |> Repo.insert()
 
         invitation
-        |> Ecto.Changeset.change(accepted_at: now, accepted_by_user_id: user.id)
+        |> Ecto.Changeset.change(accepted_at: now, accepted_by_user_id: recipient.id)
         |> Repo.update!()
 
-        scope = %Scope{user: user, organization_id: invitation.organization_id}
+        scope = %Scope{user: recipient, organization_id: invitation.organization_id}
 
         record!(scope, "member_joined", nil, invitation.role, %{
-          "member" => user.email,
+          "member" => recipient.email,
           "membership_id" => membership.id,
           "invitation_id" => invitation.id
         })
@@ -307,6 +335,21 @@ defmodule Renga.Members do
       {:ok, membership} = result -> Changes.broadcast(result, membership.organization_id)
       error -> error
     end)
+  end
+
+  defp lock_invitation(organization_id, token_hash) do
+    OrganizationInvitation
+    |> where([invitation], invitation.organization_id == ^organization_id)
+    |> where([invitation], invitation.token_hash == ^token_hash)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_recipient(user_id) do
+    User
+    |> where([user], user.id == ^user_id)
+    |> lock("FOR SHARE")
+    |> Repo.one()
   end
 
   defp confirmed_recipient(%User{confirmed_at: nil}, _invitation), do: {:error, :wrong_email}

@@ -3,7 +3,6 @@ defmodule Renga.MembersTest do
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
-  import Swoosh.TestAssertions
   import Renga.JobsFixtures, only: [member_scope: 2]
 
   alias Renga.Accounts
@@ -271,8 +270,18 @@ defmodule Renga.MembersTest do
       assert {:error, :forbidden} = invite(context.member, "new@example.com", "viewer")
 
       {:ok, owner_invite} = invite(context.owner, "boss@example.com", "owner")
-      _token = token_from_email()
+      owner_token = token_from_email()
       assert {:error, :forbidden} = Members.revoke_invitation(context.admin, owner_invite.id)
+
+      assert {:error, :forbidden} =
+               invite(context.admin, "BOSS@example.com", "viewer")
+
+      refute_received {:email, %{subject: "You're invited" <> _}}
+      assert [%{id: id, role: "owner"}] = Members.list_invitations(context.owner)
+      assert id == owner_invite.id
+
+      boss = user_fixture(%{email: "boss@example.com"})
+      assert {:ok, %{role: "owner"}} = Members.accept_invitation(boss, owner_token)
     end
 
     test "an invitation dies with its inviter's authority", context do
@@ -288,6 +297,48 @@ defmodule Renga.MembersTest do
       assert {:error, changeset} = invite(context.owner, context.member.user.email, "admin")
       assert "already belongs to a member" in errors_on(changeset).email
       refute_received {:email, %{subject: "You're invited" <> _}}
+    end
+
+    test "acceptance re-reads the recipient's confirmed email", context do
+      user = user_fixture()
+      {:ok, invitation} = invite(context.owner, user.email, "viewer")
+      token = token_from_email()
+
+      user
+      |> Ecto.Changeset.change(email: "changed@example.com")
+      |> Repo.update!()
+
+      assert {:error, :wrong_email} = Members.accept_invitation(user, token)
+      assert Accounts.get_user_organization_membership(user, context.organization.id) == nil
+      assert Members.get_open_invitation(token).id == invitation.id
+    end
+
+    test "acceptance refuses inactive organizations and existing disabled members", context do
+      inactive_user = user_fixture()
+      {:ok, _} = invite(context.owner, inactive_user.email, "viewer")
+      inactive_token = token_from_email()
+
+      Repo.update_all(
+        from(o in Accounts.Organization, where: o.id == ^context.organization.id),
+        set: [status: "disabled"]
+      )
+
+      assert {:error, :forbidden} = Members.accept_invitation(inactive_user, inactive_token)
+
+      other_organization = organization_fixture()
+      other_owner = member_scope(other_organization, "owner")
+      existing_user = user_fixture()
+      {:ok, _} = invite(other_owner, existing_user.email, "viewer")
+      existing_token = token_from_email()
+      membership = organization_membership_fixture(existing_user, other_organization)
+
+      Repo.update_all(
+        from(m in Accounts.OrganizationMembership, where: m.id == ^membership.id),
+        set: [status: "disabled"]
+      )
+
+      assert {:error, :already_member} =
+               Members.accept_invitation(existing_user, existing_token)
     end
   end
 end

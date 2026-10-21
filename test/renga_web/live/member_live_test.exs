@@ -4,7 +4,6 @@ defmodule RengaWeb.MemberLiveTest do
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
-  import Swoosh.TestAssertions
 
   alias Renga.Accounts
   alias Renga.Inventory
