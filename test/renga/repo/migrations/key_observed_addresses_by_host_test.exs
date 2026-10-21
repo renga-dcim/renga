@@ -140,7 +140,16 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
     {:ok, _} =
       query(repo, """
       ALTER TABLE sources
-        ADD COLUMN authoritative_routing_domains boolean NOT NULL DEFAULT false
+        ADD COLUMN authoritative_routing_domains boolean NOT NULL DEFAULT false,
+        ADD COLUMN agent_id uuid,
+        ADD COLUMN collector_id varchar
+      """)
+
+    {:ok, _} =
+      query(repo, """
+      ALTER TABLE observations
+        ADD COLUMN parent_observation_id uuid,
+        ADD COLUMN resource_index integer
       """)
 
     Renga.Repo.put_dynamic_repo(repo)

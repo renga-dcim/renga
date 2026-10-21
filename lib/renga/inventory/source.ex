@@ -11,6 +11,13 @@ defmodule Renga.Inventory.Source do
   domain an interface is in are trusted enough to call a managed assignment
   wrong. Host agents and switch pollers read a device's own configuration,
   so they are authoritative unless an owner or admin says otherwise.
+
+  A collector stream (RFD 11) is a source that one installation's collector
+  module reports through: `agent_id` is the installation's agent and
+  `collector_id` the stable ID configured locally. The pair is unique and its
+  kind never changes, so a retargeted module keeps its history and a queued
+  report always replays into the stream that produced it. A host source has
+  neither; it is linked from its agent instead.
   """
 
   use Ecto.Schema
@@ -40,8 +47,12 @@ defmodule Renga.Inventory.Source do
     field :status, :string, default: "active"
     field :metadata, :map, default: %{}
     field :authoritative_routing_domains, :boolean, default: false
+    field :collector_id, :string
 
     belongs_to :organization, Organization
+    # The installation a collector stream belongs to; `agents` below are the
+    # agents that report as this source, which only a host source has.
+    belongs_to :installation_agent, Agent, foreign_key: :agent_id
     has_many :agents, Agent
     has_many :address_evidence, AddressEvidence
     has_many :change_events, ChangeEvent
@@ -62,8 +73,15 @@ defmodule Renga.Inventory.Source do
     |> validate_inclusion(:status, @statuses)
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :name])
+    |> unique_constraint([:organization_id, :agent_id, :collector_id],
+      name: :sources_agent_collector_index
+    )
+    |> check_constraint(:collector_id, name: :sources_collector_stream)
     |> put_default_routing_domain_authority()
   end
+
+  @doc "Whether the source is a collector stream rather than a host or manual source."
+  def collector_stream?(%__MODULE__{collector_id: collector_id}), do: not is_nil(collector_id)
 
   @doc "Sets whether the source's routing-domain claims are authoritative."
   def routing_domain_authority_changeset(source, authoritative?) do
