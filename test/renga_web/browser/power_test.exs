@@ -266,6 +266,32 @@ defmodule RengaWeb.Browser.PowerTest do
     |> evaluate(tap_sizes_js("#path-panel a, #path-panel button"), &assert_tappable/1)
   end
 
+  @tag browser_context_opts: @phone
+  test "an owner sets the default power factor on a phone with tappable controls", context do
+    organization = Renga.Repo.get!(Renga.Accounts.Organization, context.scope.organization_id)
+    owner = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+
+    context.conn
+    |> add_session_cookie(
+      [
+        value: %{
+          user_token: Accounts.generate_user_session_token(owner),
+          current_organization_id: organization.id
+        }
+      ],
+      RengaWeb.Endpoint.session_options()
+    )
+    |> visit("/places/sites/#{context.site.id}/power")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#default-power-factor", text: "Not set")
+    |> evaluate(tap_sizes_js("#edit-default-power-factor"), &assert_tappable/1)
+    |> click("#edit-default-power-factor")
+    |> assert_has("#power-factor-panel [role=dialog]")
+    |> evaluate(panel_fits_js("power-factor-panel"), &assert(&1 == true))
+    |> evaluate(tap_sizes_js("#power-factor-form button"), &assert_tappable/1)
+  end
+
   @tag browser_context_opts: @tablet
   test "connected actions and path controls stay tappable above the phone breakpoint", context do
     {:ok, _cable} =

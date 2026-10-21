@@ -277,7 +277,7 @@ defmodule RengaWeb.SitePowerLive do
                   :if={@can_manage_organization?}
                   id="edit-default-power-factor"
                   type="button"
-                  class="min-h-tap cursor-pointer text-xs text-link hover:underline"
+                  class="inline-flex min-h-tap min-w-tap cursor-pointer items-center justify-center text-xs text-link hover:underline"
                   phx-click={show_overlay("power-factor-panel")}
                 >
                   {if @default_power_factor, do: "Change", else: "Set"}
