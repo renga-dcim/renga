@@ -8,6 +8,7 @@ defmodule RengaWeb.Browser.PowerTest do
   alias Renga.Accounts
   alias Renga.DCIM
   alias Renga.Power
+  alias Renga.Power.Cables
 
   @moduletag :playwright
   @phone [has_touch: true, is_mobile: true, viewport: %{width: 390, height: 844}]
@@ -18,11 +19,17 @@ defmodule RengaWeb.Browser.PowerTest do
     organization_membership_fixture(user, organization, %{role: "admin"})
     scope = Accounts.scope_for_user(user, organization.id)
     {:ok, site} = DCIM.create_site(scope, %{name: "DC1"}, %{slug: "dc1"})
-    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+
+    {:ok, panel} =
+      Power.create_panel(scope, %{
+        site_id: site.id,
+        name: "Distribution Panel Alpha With A Long Identifying Label"
+      })
 
     {:ok, feed} =
       Power.create_feed(scope, panel.id, %{
         name: "A1",
+        side: "a",
         supply: "ac",
         phase: "single",
         voltage: "230",
@@ -35,14 +42,17 @@ defmodule RengaWeb.Browser.PowerTest do
       ])
 
     {pdu, _expected} =
-      assigned_server_fixture(scope, "pdu-1", [
+      assigned_server_fixture(scope, "rack-pdu-with-a-long-overflow-name", [
         %{kind: "power_port", name: "Inlet"},
         %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}},
         %{kind: "power_outlet", name: "8", attributes: %{"inlet" => "Inlet"}}
       ])
 
     %{ports: [port]} = Power.list_device_endpoints(scope, server.id)
-    %{outlets: [_outlet7, _outlet8]} = Power.list_device_endpoints(scope, pdu.id)
+    %{ports: [inlet], outlets: [_outlet7, _outlet8]} =
+      Power.list_device_endpoints(scope, pdu.id)
+
+    {:ok, _assertion} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: feed.id})
 
     conn =
       add_session_cookie(
@@ -99,10 +109,12 @@ defmodule RengaWeb.Browser.PowerTest do
 
   test "a connection editor works from the keyboard and restores focus", context do
     connect = "#connect-port-#{context.port.id}"
+    path = "#power-path-#{context.port.id}"
 
     context.conn
     |> visit("/inventory/#{context.server.id}/power")
     |> assert_has("body .phx-connected")
+    |> assert_has(path, text: "Not recorded")
     |> evaluate("document.querySelector(#{Jason.encode!(connect)}).focus()")
     |> assert_has("#{connect}:focus")
     |> press(":focus", "Enter")
@@ -114,8 +126,28 @@ defmodule RengaWeb.Browser.PowerTest do
     |> select("Plugged into", option: "Outlet 7", exact: false)
     |> click_button("#save-connection", "Connect")
     |> assert_has("#flash-info", text: "PSU1 connected")
-    |> assert_has("#power-port-#{context.port.id}", text: "pdu-1")
+    |> assert_has(
+      path,
+      text: "Distribution Panel Alpha With A Long Identifying Label A1 · 1 PDU hop"
+    )
     |> assert_has(connect, text: "Move")
+    |> evaluate("document.querySelector(#{Jason.encode!(path)}).focus()")
+    |> assert_has("#{path}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#path-panel [role=dialog]", text: "Power path for PSU1")
+    |> assert_has("#power-path-detail", text: "rack-pdu-with-a-long-overflow-name")
+    |> assert_has("#power-path-detail", text: "Outlet 7 via inlet Inlet")
+    |> assert_has(
+      "#power-path-terminal",
+      text: "Distribution Panel Alpha With A Long Identifying Label A1 side A"
+    )
+    |> evaluate(
+      "document.querySelector('#path-panel [role=dialog]').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> press("#path-panel [role=dialog]", "Escape")
+    |> refute_has("#path-panel [role=dialog]")
+    |> assert_has("#{path}:focus")
     |> evaluate("document.querySelector(#{Jason.encode!(connect)}).focus()")
     |> press(":focus", "Enter")
     |> assert_has("#connect-panel [role=dialog]", text: "Move PSU1")
@@ -131,6 +163,8 @@ defmodule RengaWeb.Browser.PowerTest do
 
   @tag browser_context_opts: @phone
   test "the Power tab and connection panel fit a phone with tappable controls", context do
+    path = "#power-path-#{context.port.id}"
+
     context.conn
     |> visit("/inventory/#{context.server.id}/power")
     |> assert_has("body .phx-connected")
@@ -139,13 +173,26 @@ defmodule RengaWeb.Browser.PowerTest do
       &assert(&1 == true)
     )
     |> evaluate(tap_heights_js("#power-ports button"), &assert_tappable/1)
-    |> click_button("#connect-port-#{context.port.id}", "Connect")
+    |> click("#connect-port-#{context.port.id}")
     |> assert_has("#connect-panel [role=dialog]")
     |> evaluate(panel_fits_js("connect-panel"), &assert(&1 == true))
     |> evaluate(
       tap_heights_js("#connect-form select, #connect-form button"),
       &assert_tappable/1
     )
+    |> select("Plugged into", option: "Outlet 7", exact: false)
+    |> click_button("#save-connection", "Connect")
+    |> assert_has(path, text: "Distribution Panel Alpha With A Long Identifying Label")
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
+    |> evaluate(single_line_rows_js(), &assert(&1 == true))
+    |> click(path)
+    |> assert_has("#path-panel [role=dialog]", text: "Power path for PSU1")
+    |> assert_has("#power-path-detail", text: "rack-pdu-with-a-long-overflow-name")
+    |> evaluate(panel_fits_js("path-panel"), &assert(&1 == true))
+    |> evaluate(tap_heights_js("#path-panel a, #path-panel button"), &assert_tappable/1)
   end
 
   defp assert_tappable(heights) do
@@ -160,6 +207,13 @@ defmodule RengaWeb.Browser.PowerTest do
       return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
         document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
+    """
+  end
+
+  defp single_line_rows_js do
+    """
+    [...document.querySelectorAll('#power-ports tbody tr[data-list-row]')]
+      .every(row => row.getBoundingClientRect().height <= 44.5)
     """
   end
 
