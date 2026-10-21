@@ -333,6 +333,16 @@ defmodule Renga.Accounts.IdentityProvidersTest do
       end)
     end
 
+    test "with no way to sign in yet, still allows adding a provider" do
+      without_local_sign_in(fn ->
+        refute IdentityProviders.sign_in_available?()
+        assert {:ok, {provider, _}} = IdentityProviders.create(attrs(), @operator)
+
+        assert {:ok, _} =
+                 IdentityProviders.update_display(provider, %{"hidden" => true}, @operator)
+      end)
+    end
+
     test "allows anything while local sign-in works" do
       {provider, _} = create()
       provider = activate(provider)

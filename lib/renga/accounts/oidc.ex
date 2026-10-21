@@ -4,7 +4,7 @@ defmodule Renga.Accounts.OIDC do
 
   `oidcc` supplies discovery, the token exchange, and ID token validation:
   signature, issuer, audience, expiry, and nonce. Renga binds each attempt
-  itself. `start/3` returns the provider's authorization URL and an attempt
+  itself. `start/2` returns the provider's authorization URL and an attempt
   holding a fresh `state`, `nonce`, and PKCE verifier, which the caller keeps
   in the browser session, and records the state's hash on the server;
   `finish/3` accepts a callback only for that attempt, at most once, and
@@ -28,13 +28,30 @@ defmodule Renga.Accounts.OIDC do
   Starts signing in with `provider`. Returns `{:ok, url, attempt}`; send the
   browser to `url` and keep `attempt` for the callback.
   """
-  def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri, opts \\ []) do
+  def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri) do
     with %Revision{} = revision <-
            IdentityProviders.active_revision(provider) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
-         {:ok, context} <- client_context(provider, revision) do
-      configuration = context.provider_configuration
+         {:ok, url, attempt} <- authorize(provider, revision, redirect_uri) do
+      Repo.insert!(%IdentityProviderAttempt{
+        provider_id: provider.id,
+        revision: revision.number,
+        state_hash: hash(attempt["state"]),
+        expires_at: DateTime.add(Renga.Time.utc_now_ms(), @attempt_seconds, :second)
+      })
 
+      {:ok, url, attempt}
+    end
+  end
+
+  @doc """
+  The authorization URL for `revision` of `provider`, whichever revision
+  that is, with a fresh attempt. `start/2` uses the active revision and
+  records the attempt; a test sign-in uses the pending one and keeps the
+  attempt on its own record.
+  """
+  def authorize(%IdentityProvider{} = provider, %Revision{} = revision, redirect_uri) do
+    with {:ok, context} <- client_context(provider, revision) do
       attempt = %{
         "provider" => provider.id,
         "revision" => revision.number,
@@ -43,27 +60,18 @@ defmodule Renga.Accounts.OIDC do
         "verifier" => random(),
         "started_at" => System.system_time(:second),
         # RFC 9207: a provider that says it sends `iss` must send it.
-        "iss_required" => configuration.authorization_response_iss_parameter_supported == true
+        "iss_required" => iss_required?(context)
       }
 
-      Repo.insert!(%IdentityProviderAttempt{
-        provider_id: provider.id,
-        revision: revision.number,
-        state_hash: hash(attempt["state"]),
-        expires_at: DateTime.add(Renga.Time.utc_now_ms(), @attempt_seconds, :second)
-      })
-
-      authorization =
-        %{
-          redirect_uri: redirect_uri,
-          state: attempt["state"],
-          nonce: attempt["nonce"],
-          pkce_verifier: attempt["verifier"],
-          require_pkce: true,
-          scopes: Enum.uniq(@default_scopes ++ revision.scopes),
-          request_opts: HTTP.request_opts()
-        }
-        |> put_extension(opts[:url_extension])
+      authorization = %{
+        redirect_uri: redirect_uri,
+        state: attempt["state"],
+        nonce: attempt["nonce"],
+        pkce_verifier: attempt["verifier"],
+        require_pkce: true,
+        scopes: Enum.uniq(@default_scopes ++ revision.scopes),
+        request_opts: HTTP.request_opts()
+      }
 
       with {:ok, url} <- Oidcc.Authorization.create_redirect_url(context, authorization) do
         {:ok, IO.iodata_to_binary(url), attempt}
@@ -80,8 +88,36 @@ defmodule Renga.Accounts.OIDC do
          :ok <- check_age(attempt),
          {:ok, provider, revision} <- current(attempt),
          :ok <- check_response(provider, attempt, params),
-         :ok <- consume(attempt),
-         {:ok, context} <- client_context(provider, revision),
+         :ok <- consume(attempt) do
+      exchange(provider, revision, attempt, params, redirect_uri)
+    end
+  end
+
+  def finish(_attempt, _params, _redirect_uri), do: {:error, :no_attempt}
+
+  @doc """
+  Exchanges the callback's code with `revision` of `provider` and validates
+  the ID token against the attempt's nonce and PKCE verifier. The caller has
+  already matched the callback's state to the attempt, and spent it.
+  """
+  def exchange(
+        %IdentityProvider{} = provider,
+        %Revision{} = revision,
+        attempt,
+        params,
+        redirect_uri
+      ) do
+    with {:ok, context} <- client_context(provider, revision),
+         # The provider's current metadata counts too, for an attempt that
+         # did not record whether `iss` is required, such as a test's.
+         attempt =
+           Map.update(
+             attempt,
+             "iss_required",
+             iss_required?(context),
+             &(&1 or iss_required?(context))
+           ),
+         :ok <- check_response(provider, attempt, params),
          {:ok, %Oidcc.Token{id: %Oidcc.Token.Id{claims: claims}}} <-
            Oidcc.Token.retrieve(params["code"], context, %{
              redirect_uri: redirect_uri,
@@ -100,7 +136,8 @@ defmodule Renga.Accounts.OIDC do
     end
   end
 
-  def finish(_attempt, _params, _redirect_uri), do: {:error, :no_attempt}
+  defp iss_required?(context),
+    do: context.provider_configuration.authorization_response_iss_parameter_supported == true
 
   defp check_state(%{"state" => expected}, %{"state" => given})
        when is_binary(expected) and is_binary(given) do
@@ -188,11 +225,6 @@ defmodule Renga.Accounts.OIDC do
     with {:ok, jwks} <- Discovery.refresh_jwks(provider.issuer),
          do: {:ok, JOSE.JWK.to_record(jwks)}
   end
-
-  defp put_extension(authorization, nil), do: authorization
-
-  defp put_extension(authorization, extension),
-    do: Map.put(authorization, :url_extension, extension)
 
   defp random, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
 end
