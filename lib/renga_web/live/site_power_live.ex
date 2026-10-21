@@ -4,9 +4,10 @@ defmodule RengaWeb.SitePowerLive do
   much of every feed may be used.
 
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
-  together. Owners and admins add panels and add or edit feeds in side
-  panels; everyone else reads. Owners also set the organization's default
-  power factor here, which loads without their own convert to VA with.
+  together. People holding `dcim.edit` (owners and admins) add panels and
+  add or edit feeds in side panels; everyone else reads. Those holding
+  `organization.manage` (owners) also set the organization's default power
+  factor here, which loads without their own convert to VA with.
   """
   use RengaWeb, :live_view
 
@@ -30,7 +31,7 @@ defmodule RengaWeb.SitePowerLive do
        site: site,
        page_title: "#{site.resource.name} power",
        can_manage?: Renga.Authorization.allowed?(scope, "dcim.edit"),
-       owner?: Renga.Authorization.allowed?(scope, "organization.manage"),
+       can_manage_organization?: Renga.Authorization.allowed?(scope, "organization.manage"),
        locations: DCIM.list_locations(scope, site.id),
        panel_form: panel_form(%{}),
        feed_form: feed_form(%{}),
@@ -121,7 +122,11 @@ defmodule RengaWeb.SitePowerLive do
 
       {:error, :forbidden} ->
         {:noreply,
-         put_flash(socket, :error, "Only owners change the organization's default power factor")}
+         put_flash(
+           socket,
+           :error,
+           "You are not allowed to change the organization's default power factor"
+         )}
     end
   end
 
@@ -269,7 +274,7 @@ defmodule RengaWeb.SitePowerLive do
                 </span>
                 <span :if={!@default_power_factor} class="text-fg-muted">Not set</span>
                 <button
-                  :if={@owner?}
+                  :if={@can_manage_organization?}
                   id="edit-default-power-factor"
                   type="button"
                   class="min-h-tap cursor-pointer text-xs text-link hover:underline"
@@ -288,7 +293,11 @@ defmodule RengaWeb.SitePowerLive do
         </:aside>
       </.object_page>
 
-      <.side_panel :if={@owner?} id="power-factor-panel" title="Default power factor">
+      <.side_panel
+        :if={@can_manage_organization?}
+        id="power-factor-panel"
+        title="Default power factor"
+      >
         <.form
           for={@power_factor_form}
           id="power-factor-form"
