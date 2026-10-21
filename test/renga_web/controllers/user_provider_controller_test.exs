@@ -339,4 +339,70 @@ defmodule RengaWeb.UserProviderControllerTest do
     conn = get(build_conn(), ~p"/users/log-in/provider/#{provider.id}")
     assert redirected_to(conn) == ~p"/users/log-in"
   end
+
+  describe "test sign-in links" do
+    setup %{fake: fake} do
+      {:ok, {provider, _}} =
+        Accounts.IdentityProviders.create(
+          %{
+            "id" => "new-idp-#{System.unique_integer([:positive])}",
+            "kind" => "oidc",
+            "issuer" => fake.issuer,
+            "display_name" => "New SSO",
+            "client_id" => fake.client_id,
+            "client_secret" => "client-secret"
+          },
+          {:operator, "release"}
+        )
+
+      {:ok, {token, _}} = Accounts.IdentityProviders.create_test(provider, {:operator, "release"})
+      %{new_provider: provider, token: token}
+    end
+
+    test "activate the tested revision from a browser with no Renga session", %{
+      conn: conn,
+      fake: fake,
+      new_provider: provider,
+      token: token
+    } do
+      conn = get(conn, ~p"/users/providers/test/#{token}")
+      url = redirected_to(conn, 302)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+
+      conn = get(build_conn(), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "now uses revision 1"
+      refute get_session(conn, :user_token)
+      assert Accounts.IdentityProviders.usable?(Accounts.IdentityProviders.get(provider.id))
+      refute Accounts.get_user_by_email("sam@example.com")
+    end
+
+    test "leave a signed-in session as it was", %{
+      conn: conn,
+      fake: fake,
+      new_provider: provider,
+      token: token
+    } do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+      session_token = get_session(conn, :user_token)
+
+      conn = get(conn, ~p"/users/providers/test/#{token}")
+      params = FakeOIDCProvider.authorize(fake, redirected_to(conn, 302), claims())
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert get_session(conn, :user_token) == session_token
+      refute Accounts.authorized_account_change?(user, session_token, :change_email)
+    end
+
+    test "an expired or used link explains itself", %{conn: conn, token: token} do
+      conn = get(conn, ~p"/users/providers/test/#{token}")
+      assert redirected_to(conn, 302) =~ "/authorize"
+
+      conn = get(build_conn(), ~p"/users/providers/test/#{token}")
+      assert redirected_to(conn) == ~p"/users/log-in"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "expired or was already used"
+    end
+  end
 end

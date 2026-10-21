@@ -232,6 +232,7 @@ defmodule RengaWeb.Router do
     post "/users/log-in/passkey", UserSessionController, :passkey
     get "/users/log-in/provider/:provider", UserProviderController, :start
     get "/users/auth/:provider/callback", UserProviderController, :callback
+    get "/users/providers/test/:token", UserProviderController, :test
     delete "/users/log-out", UserSessionController, :delete
   end
 end
