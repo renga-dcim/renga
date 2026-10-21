@@ -205,13 +205,18 @@ defmodule Renga.Power.Load do
     |> Map.new()
   end
 
-  # The devices among `resource_ids` with a current outlet that names no
-  # inlet.
+  # The devices among `resource_ids` with an outlet that names no inlet and
+  # is current or still has a current cable: retiring an outlet keeps its
+  # cable.
   defp unmapped(organization_id, resource_ids) do
     Outlet
+    |> join(:left, [outlet], cable in Cable,
+      on: cable.power_outlet_id == outlet.id and cable.cable_kind == "power"
+    )
     |> where([outlet], outlet.organization_id == ^organization_id)
     |> where([outlet], outlet.resource_id in ^Enum.uniq(resource_ids))
-    |> where([outlet], is_nil(outlet.inlet_port_id) and is_nil(outlet.retired_at))
+    |> where([outlet], is_nil(outlet.inlet_port_id))
+    |> where([outlet, cable], is_nil(outlet.retired_at) or not is_nil(cable.id))
     |> select([outlet], {outlet.resource_id, true})
     |> distinct(true)
     |> Repo.all()

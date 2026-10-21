@@ -77,20 +77,20 @@ defmodule Renga.Power.LoadTest do
   # A PDU whose hardware type names no inlet for any outlet: its inlet may
   # pass power on, so its own 9,000 W budget is neither a load nor zero.
   defp unmapped_pdu!(scope, name) do
-    {pdu, _expected} =
+    {pdu, expected} =
       assigned_server_fixture(scope, name, [
         %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 9000}},
         %{kind: "power_outlet", name: "1"}
       ])
 
     %{ports: [inlet], outlets: [outlet]} = Power.list_device_endpoints(scope, pdu.id)
-    {inlet, outlet}
+    {inlet, outlet, pdu, expected}
   end
 
   test "an inlet that may feed unmapped outlets is neither a load nor zero", context do
     %{scope: scope, panel: panel} = context
     feed = feed!(scope, panel, "A1", %{})
-    {inlet, outlet} = unmapped_pdu!(scope, "rack-pdu")
+    {inlet, outlet, _pdu, _expected} = unmapped_pdu!(scope, "rack-pdu")
     plug!(scope, inlet, feed)
 
     load = load!(scope, feed, Decimal.new(1))
@@ -102,6 +102,46 @@ defmodule Renga.Power.LoadTest do
     load = load!(scope, feed, Decimal.new(1))
     assert {load.draws, load.untraced?, load.status} == {[], true, :unknown}
     assert Decimal.eq?(load.known, 0)
+  end
+
+  test "a retired unmapped outlet that keeps its cable still leaves the inlet unknown",
+       context do
+    %{scope: scope, panel: panel} = context
+    feed = feed!(scope, panel, "A1", %{})
+    {inlet, outlet, pdu, expected} = unmapped_pdu!(scope, "rack-pdu")
+    plug!(scope, inlet, feed)
+    plug!(scope, port!(scope, "web-1", %{"allocated_draw_w" => 230}), outlet)
+
+    {:ok, exception} =
+      Renga.Catalog.put_expected_component_exception(scope, pdu.id, %{
+        action: "suppress",
+        component_template_id: expected["1"].component_template_id,
+        reason: "Blanked outlet"
+      })
+
+    assert Repo.get!(Power.Outlet, outlet.id).retired_at
+
+    assert [_cable] =
+             Cables.list_cables(scope, resource_ids: [pdu.id])
+             |> Enum.filter(&(&1.power_outlet_id == outlet.id))
+
+    load = load!(scope, feed, Decimal.new(1))
+    assert {load.draws, load.untraced?, load.status} == {[], true, :unknown}
+    assert Decimal.eq?(load.known, 0)
+
+    # Unplugged, the retired outlet no longer makes the inlet ambiguous.
+    {:ok, _} =
+      Cables.disconnect(scope, %{
+        power_port_id:
+          Repo.get_by!(Renga.Topology.Cable, power_outlet_id: outlet.id).power_port_id,
+        power_outlet_id: outlet.id
+      })
+
+    load = load!(scope, feed, Decimal.new(1))
+    assert [%{port: %{id: inlet_id}}] = load.draws
+    assert inlet_id == inlet.id
+    assert {load.untraced?, load.status} == {false, :over}
+    {:ok, _} = Renga.Catalog.delete_expected_component_exception(scope, pdu.id, exception.id)
   end
 
   test "converts each load with its own power factor, counting PDUs once", context do

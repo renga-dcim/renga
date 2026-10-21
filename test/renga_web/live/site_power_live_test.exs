@@ -323,5 +323,20 @@ defmodule RengaWeb.SitePowerLiveTest do
     # Known leg A current is a lower bound: 1,000 VA × √3 / 400 V = 4.33 A.
     assert has_element?(view, "#load-leg-a", "1,000 VA or more")
     assert has_element?(view, "#load-leg-a", "4.3 A or more of 25.6 A")
+
+    # A feed whose only device names no inlet traces no load at all.
+    b1 = feed!(scope, panel, "B1")
+
+    {strip, _expected} =
+      assigned_server_fixture(scope, "power-strip", [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 9000}},
+        %{kind: "power_outlet", name: "1"}
+      ])
+
+    [strip_inlet] = Power.list_device_endpoints(scope, strip.id).ports
+    {:ok, _cable} = Cables.connect(scope, %{power_port_id: strip_inlet.id, power_feed_id: b1.id})
+
+    view |> element("#feed-#{b1.id}-load") |> render_click()
+    assert has_element?(view, "#load-draws-empty", "No load below this feed could be traced")
   end
 end
