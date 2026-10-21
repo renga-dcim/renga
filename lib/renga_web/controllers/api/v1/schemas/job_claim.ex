@@ -9,14 +9,17 @@ defmodule RengaWeb.Api.V1.Schemas.JobClaim do
       properties: %{
         lease_token: %{type: :string, minLength: 1},
         nonce: %{type: :string, minLength: 1},
+        # Prose rather than a pattern, and no additionalProperties: a request
+        # schema must not reject a claim the endpoint accepts, and the endpoint
+        # also takes padded signatures and ignores unknown fields.
         signature: %{
           type: :string,
-          pattern: "^[A-Za-z0-9_-]{86}$",
-          description: "The 64-byte Ed25519 signature in unpadded base64url."
+          description:
+            "The 64-byte Ed25519 signature in base64url, normally unpadded " <>
+              "(86 characters); a padded signature is also accepted."
         }
       },
-      required: [:lease_token, :nonce, :signature],
-      additionalProperties: false
+      required: [:lease_token, :nonce, :signature]
     }
   end
 end

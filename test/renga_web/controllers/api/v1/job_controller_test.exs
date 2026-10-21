@@ -475,6 +475,23 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                context |> claim(offer, "not-a-signature") |> valid_api_response(422)
     end
 
+    test "accepts a padded signature, and a replayed claim is a conflict", context do
+      offer = offered(context)
+      signature = signature(context, offer, context.bound.private_key)
+
+      {:ok, raw} = Base.url_decode64(signature, padding: false)
+      padded = Base.url_encode64(raw)
+      assert String.ends_with?(padded, "=")
+
+      assert %{"id" => id} = context |> claim(offer, padded) |> valid_api_response(200)
+      assert id == context.job.id
+
+      # The offer ends when it is claimed, so the same signed claim cannot
+      # lease the job a second time.
+      assert %{"errors" => [%{"path" => "lease_token"}]} =
+               context |> claim(offer, signature) |> valid_api_response(409)
+    end
+
     test "a replaced offer is a conflict", context do
       first = offered(context)
       _second = offered(context)

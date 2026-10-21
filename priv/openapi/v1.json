@@ -703,7 +703,6 @@
       },
       "JobClaim": {
         "title": "JobClaim",
-        "additionalProperties": false,
         "description": "A signed claim of an offered privileged job (RFD 13).",
         "properties": {
           "lease_token": {
@@ -715,8 +714,7 @@
             "type": "string"
           },
           "signature": {
-            "description": "The 64-byte Ed25519 signature in unpadded base64url.",
-            "pattern": "^[A-Za-z0-9_-]{86}$",
+            "description": "The 64-byte Ed25519 signature in base64url, normally unpadded (86 characters); a padded signature is also accepted.",
             "type": "string"
           }
         },
