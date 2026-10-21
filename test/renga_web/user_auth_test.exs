@@ -20,6 +20,85 @@ defmodule RengaWeb.UserAuthTest do
     %{user: %{user_fixture() | authenticated_at: Renga.Time.utc_now_ms()}, conn: conn}
   end
 
+  describe "log_in_user/3 organization" do
+    defp join(user) do
+      organization = organization_fixture()
+      organization_membership_fixture(user, organization, %{role: "member"})
+      organization
+    end
+
+    # Logs in from a browser carrying the cookies `previous` set, if any.
+    defp logged_in_organization(user, previous \\ nil) do
+      cookies = if previous, do: previous.resp_cookies, else: %{}
+
+      conn =
+        Map.replace!(build_conn(), :secret_key_base, RengaWeb.Endpoint.config(:secret_key_base))
+
+      cookies
+      |> Enum.reduce(conn, fn {name, %{value: value}}, conn ->
+        put_req_cookie(conn, name, value)
+      end)
+      |> init_test_session(%{})
+      |> UserAuth.log_in_user(user)
+      |> get_session(:current_organization_id)
+    end
+
+    defp open(conn, user, organization) do
+      conn
+      |> assign(:current_scope, Scope.for_user(user))
+      |> UserAuth.put_current_organization(organization.id)
+    end
+
+    test "opens the user's only organization", %{user: user} do
+      organization = join(user)
+      assert logged_in_organization(user) == organization.id
+    end
+
+    test "leaves the choice to people with several organizations", %{user: user} do
+      join(user)
+      join(user)
+      assert logged_in_organization(user) == nil
+    end
+
+    test "reopens the organization this browser last opened", %{conn: conn, user: user} do
+      _first = join(user)
+      second = join(user)
+      opened = open(conn, user, second)
+
+      assert logged_in_organization(user, opened) == second.id
+      # Another browser has nothing remembered.
+      assert logged_in_organization(user) == nil
+    end
+
+    test "ignores a remembered organization the user does not belong to", %{
+      conn: conn,
+      user: user
+    } do
+      stranger = user_fixture()
+      theirs = join(stranger)
+      opened = open(conn, stranger, theirs)
+
+      join(user)
+      join(user)
+      assert logged_in_organization(user, opened) == nil
+    end
+
+    test "falls back when the remembered organization can no longer be opened", %{
+      conn: conn,
+      user: user
+    } do
+      first = join(user)
+      second = join(user)
+      opened = open(conn, user, second)
+
+      second_scope = Accounts.scope_for_user(user, second.id)
+      membership = Accounts.get_organization_membership!(second_scope, second_scope.membership_id)
+      {:ok, _} = Accounts.update_organization_membership(membership, %{status: "disabled"})
+
+      assert logged_in_organization(user, opened) == first.id
+    end
+  end
+
   describe "log_in_user/3" do
     test "stores the user token in the session", %{conn: conn, user: user} do
       conn = UserAuth.log_in_user(conn, user)

@@ -22,6 +22,15 @@ defmodule RengaWeb.UserAuth do
   ]
   @current_organization_key :current_organization_id
 
+  # The organization this browser last opened, so signing in again returns
+  # to it. It only suggests: sign-in still checks the user may open it.
+  @last_organization_cookie "_renga_web_last_organization"
+  @last_organization_options [
+    sign: true,
+    max_age: 365 * 24 * 60 * 60,
+    same_site: "Lax"
+  ]
+
   # How old the session token should be before a new one is issued. When a request is made
   # with a session token older than this value, then a new session token will be created
   # and the session and remember-me cookies (if set) will be updated with the new token.
@@ -35,14 +44,30 @@ defmodule RengaWeb.UserAuth do
   Logs the user in.
 
   Redirects to the session's `:user_return_to` path
-  or falls back to the `signed_in_path/1`.
+  or falls back to the `signed_in_path/1`. A fresh session opens the
+  organization this browser last opened, or the user's only one, so they
+  skip the organization picker (`Renga.Accounts.default_organization_id/2`).
   """
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
 
     conn
     |> create_or_extend_session(user, params)
+    |> put_default_organization(user)
     |> redirect(to: user_return_to || signed_in_path(conn))
+  end
+
+  defp put_default_organization(conn, user) do
+    if get_session(conn, @current_organization_key) do
+      conn
+    else
+      conn = fetch_cookies(conn, signed: [@last_organization_cookie])
+
+      case Accounts.default_organization_id(user, conn.cookies[@last_organization_cookie]) do
+        nil -> conn
+        organization_id -> put_session(conn, @current_organization_key, organization_id)
+      end
+    end
   end
 
   @doc """
@@ -84,7 +109,8 @@ defmodule RengaWeb.UserAuth do
   end
 
   @doc """
-  Stores the current organization in the session and refreshes `current_scope`.
+  Stores the current organization in the session and refreshes `current_scope`,
+  and remembers it in this browser for the next sign-in.
   """
   def put_current_organization(conn, organization_id) when is_binary(organization_id) do
     with %Scope{user: %Accounts.User{} = user} <- conn.assigns[:current_scope],
@@ -92,6 +118,7 @@ defmodule RengaWeb.UserAuth do
            Accounts.scope_for_user(user, organization_id) do
       conn
       |> put_session(@current_organization_key, organization_id)
+      |> put_resp_cookie(@last_organization_cookie, organization_id, @last_organization_options)
       |> assign(:current_scope, scope)
     else
       _ -> conn
