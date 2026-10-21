@@ -183,6 +183,81 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(conn) == path
       assert redirected_to(get(conn, path)) == ~p"/organizations"
     end
+
+    test "a link to a page leaves several organizations to the picker", %{
+      conn: conn,
+      user: user,
+      first: first
+    } do
+      conn = conn |> open_then_log_out(user, first) |> get(~p"/inbox")
+      conn = log_in_with_password(conn, user)
+
+      assert redirected_to(conn) == ~p"/inbox"
+      assert redirected_to(get(conn, ~p"/inbox")) == ~p"/organizations"
+    end
+
+    for method <- [:password, :magic_link] do
+      test "a link into the user's only organization opens there (#{method})", %{
+        conn: conn,
+        user: user,
+        first: first,
+        second: second
+      } do
+        resource =
+          Renga.TriageFixtures.resource_fixture(
+            Accounts.scope_for_user(user, first.id),
+            "server",
+            "web-01"
+          )
+
+        # The remembered organization is no longer the user's to open.
+        conn = open_then_log_out(conn, user, second)
+        disable_membership(user, second)
+
+        path = ~p"/inventory/#{resource.id}?from=link"
+        conn = get(conn, path)
+        conn = log_in(conn, user, unquote(method))
+
+        assert redirected_to(conn) == path
+        assert html_response(get(conn, path), 200) =~ "web-01"
+      end
+    end
+
+    test "a link to another tenant's record finds nothing in the user's only organization", %{
+      conn: conn,
+      user: user,
+      second: second
+    } do
+      disable_membership(user, second)
+      stranger = user_fixture()
+      theirs = organization_fixture()
+      organization_membership_fixture(stranger, theirs, %{role: "owner"})
+
+      resource =
+        Renga.TriageFixtures.resource_fixture(
+          Accounts.scope_for_user(stranger, theirs.id),
+          "server",
+          "secret-01"
+        )
+
+      path = ~p"/inventory/#{resource.id}"
+      conn = conn |> get(path) |> log_in(user, :magic_link)
+
+      assert redirected_to(conn) == path
+      assert_error_sent 404, fn -> get(conn, path) end
+    end
+  end
+
+  defp log_in(conn, user, :password), do: log_in_with_password(conn, user)
+
+  defp log_in(conn, user, :magic_link) do
+    {token, _hashed_token} = generate_user_magic_link_token(user)
+    post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+  end
+
+  defp disable_membership(user, organization) do
+    membership = Accounts.get_membership_for_user(organization, user.id)
+    {:ok, _} = Accounts.update_organization_membership(membership, %{status: "disabled"})
   end
 
   describe "DELETE /users/log-out" do

@@ -47,10 +47,10 @@ defmodule RengaWeb.UserAuth do
   Logs the user in.
 
   Redirects to the session's `:user_return_to` path
-  or falls back to the `signed_in_path/1`. Without a return-to path, a
-  fresh session opens the organization this browser last opened, or the
-  user's only one, so they skip the organization picker
-  (`Renga.Accounts.default_organization_id/2`).
+  or falls back to the `signed_in_path/1`. A fresh session opens the
+  organization this browser last opened, or the user's only one, so they
+  skip the organization picker (`Renga.Accounts.default_organization_id/2`).
+  With a return-to path pending, only their sole organization is opened.
   """
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
@@ -61,12 +61,11 @@ defmodule RengaWeb.UserAuth do
     |> redirect(to: user_return_to || signed_in_path(conn))
   end
 
-  # A return-to link may belong to a different organization than the
-  # default, and opening it there would not find its record. Without a
-  # selection it reaches the organization picker, as before.
-  defp put_default_organization(conn, _user, return_to) when is_binary(return_to), do: conn
-
-  defp put_default_organization(conn, user, nil) do
+  # A return-to link may belong to another of the user's organizations than
+  # the remembered one, and opening it there would not find its record, so
+  # with one pending only a user's sole organization is opened. Others reach
+  # the organization picker, as before.
+  defp put_default_organization(conn, user, user_return_to) do
     if get_session(conn, @current_organization_key) do
       conn
     else
@@ -74,9 +73,9 @@ defmodule RengaWeb.UserAuth do
       user_id = user.id
 
       remembered_id =
-        case conn.cookies[@last_organization_cookie] do
-          {^user_id, organization_id} -> organization_id
-          _absent_or_someone_elses -> nil
+        case {user_return_to, conn.cookies[@last_organization_cookie]} do
+          {nil, {^user_id, organization_id}} -> organization_id
+          _return_to_pending_or_no_hint_for_this_user -> nil
         end
 
       case Accounts.default_organization_id(user, remembered_id) do
