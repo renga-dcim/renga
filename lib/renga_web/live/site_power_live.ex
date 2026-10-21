@@ -4,8 +4,10 @@ defmodule RengaWeb.SitePowerLive do
   much of every feed may be used.
 
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
-  together. People holding `dcim.edit` (owners and admins) add panels and
-  add or edit feeds in side panels; everyone else reads. Those holding
+  together. Each feed shows the allocated load on it (`Renga.Power.Load`),
+  or why it is unknown, and opens a breakdown by load and three-phase leg.
+  People holding `dcim.edit` (owners and admins) add panels and add or edit
+  feeds in side panels; everyone else reads. Those holding
   `organization.manage` (owners) also set the organization's default power
   factor here, which loads without their own convert to VA with.
   """
@@ -18,6 +20,8 @@ defmodule RengaWeb.SitePowerLive do
   alias Renga.Power
   alias Renga.Power.Capacity
   alias Renga.Power.Feed
+  alias Renga.Power.Load
+  alias Renga.Power.PowerFactor
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -36,7 +40,8 @@ defmodule RengaWeb.SitePowerLive do
        panel_form: panel_form(%{}),
        feed_form: feed_form(%{}),
        feed_panel: nil,
-       editing_feed: nil
+       editing_feed: nil,
+       load_feed_id: nil
      )
      |> load_panels()}
   end
@@ -76,6 +81,9 @@ defmodule RengaWeb.SitePowerLive do
      socket
      |> assign(feed_panel: panel, editing_feed: feed, feed_form: feed_form(feed_params(feed)))}
   end
+
+  def handle_event("show_load", %{"id" => id}, socket),
+    do: {:noreply, assign(socket, load_feed_id: id)}
 
   # The phase field follows the supply.
   def handle_event("feed_change", %{"feed" => params}, socket),
@@ -240,6 +248,9 @@ defmodule RengaWeb.SitePowerLive do
                   {feed.max_utilization}% of {rated_label(feed)}
                 </span>
               </:col>
+              <:col :let={feed} label="Allocated" class="w-44">
+                <.feed_load feed={feed} load={Map.fetch!(@loads, feed.id)} />
+              </:col>
               <:action :let={feed} :if={@can_manage?}>
                 <.button
                   id={"feed-#{feed.id}-edit"}
@@ -290,8 +301,20 @@ defmodule RengaWeb.SitePowerLive do
             three-phase. DC capacity is volts × amps in watts. Each applies the feed's maximum
             utilization.
           </p>
+          <p class="text-xs text-fg-muted">
+            Allocated load sums the allocated draw of the devices downstream of each feed. It is
+            planning data, not a measurement.
+          </p>
         </:aside>
       </.object_page>
+
+      <.side_panel id="load-panel" title={load_panel_title(@loads, @load_feed_id)}>
+        <.load_details
+          :if={@loads[@load_feed_id]}
+          load={@loads[@load_feed_id]}
+          default_power_factor={@default_power_factor}
+        />
+      </.side_panel>
 
       <.side_panel
         :if={@can_manage_organization?}
@@ -429,6 +452,153 @@ defmodule RengaWeb.SitePowerLive do
   defp edit_feed(feed),
     do: "edit_feed" |> JS.push(value: %{id: feed.id}) |> show_overlay("feed-panel")
 
+  attr :feed, Feed, required: true
+  attr :load, Load, required: true
+
+  # The allocated load in a feed's row: a bar and share of usable capacity
+  # when known, otherwise what is known and why the rest is not. Opens the
+  # breakdown either way.
+  defp feed_load(assigns) do
+    assigns = assign(assigns, :percent, Load.percent(assigns.load))
+
+    ~H"""
+    <button
+      id={"feed-#{@feed.id}-load"}
+      type="button"
+      data-status={@load.status}
+      aria-label={"#{@feed.name} load: #{status_label(@load)}"}
+      class="block min-h-tap w-full cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+      phx-click={JS.push("show_load", value: %{id: @feed.id}) |> show_overlay("load-panel")}
+    >
+      <span class="flex items-baseline justify-between gap-2 font-mono text-xs tabular-nums">
+        <span class={[@load.status == :over && "font-medium text-crit", "text-fg"]}>
+          {load_label(@load)}
+        </span>
+        <span :if={@percent} class={[@load.status == :over && "text-crit", "text-fg-muted"]}>
+          {@percent}%
+        </span>
+      </span>
+      <span
+        :if={@percent}
+        class="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-sunken"
+        aria-hidden="true"
+      >
+        <span
+          class={["block h-full rounded-full", bar_class(@load)]}
+          style={"width: #{min(@percent, 100)}%"}
+        />
+      </span>
+      <span class={[
+        "block text-[11px]",
+        if(@load.status == :over, do: "text-crit", else: "text-fg-muted")
+      ]}>
+        {load_note(@load)}
+      </span>
+    </button>
+    """
+  end
+
+  attr :load, Load, required: true
+  attr :default_power_factor, Decimal, default: nil
+
+  defp load_details(assigns) do
+    ~H"""
+    <div id="load-details" class="space-y-5 text-sm">
+      <.properties id="load-summary" title="Allocated load">
+        <:item label="Status">
+          <span id="load-status" class={@load.status == :over && "font-medium text-crit"}>
+            {status_label(@load)}
+          </span>
+        </:item>
+        <:item label="Allocated">
+          <span id="load-allocated" class="font-mono tabular-nums">{load_label(@load)}</span>
+        </:item>
+        <:item label="Usable">
+          <span class="font-mono tabular-nums">
+            {Capacity.format(@load.capacity.usable, @load.capacity.unit)}
+          </span>
+        </:item>
+        <:item label="Headroom" blank={is_nil(@load.headroom)} placeholder="Unknown">
+          <span
+            id="load-headroom"
+            class={[
+              "font-mono tabular-nums",
+              @load.headroom && Decimal.negative?(@load.headroom) && "text-crit"
+            ]}
+          >
+            {@load.headroom && signed(@load.headroom, @load.capacity.unit)}
+          </span>
+        </:item>
+      </.properties>
+
+      <p
+        :if={@load.uses_default?}
+        id="load-default-power-factor"
+        class="rounded-md border border-warn-line bg-warn-fill px-3 py-2 text-xs text-warn-text"
+      >
+        Rests on the organization's default power factor of {@default_power_factor &&
+          Decimal.to_string(@default_power_factor)} for loads with none of their own, not on
+        per-load values.
+      </p>
+
+      <ul :if={incomplete_reasons(@load) != []} id="load-incomplete" class="space-y-1 text-xs">
+        <li :for={reason <- incomplete_reasons(@load)} class="text-fg-muted">{reason}</li>
+      </ul>
+
+      <section :if={@load.legs != []} id="load-legs" aria-labelledby="load-legs-title">
+        <h3 id="load-legs-title" class="mb-1 text-xs font-semibold text-fg">Legs</h3>
+        <ul class="divide-y divide-line rounded-md border border-edge">
+          <li
+            :for={leg <- @load.legs}
+            id={"load-leg-#{leg.leg}"}
+            class="flex items-baseline justify-between gap-3 px-3 py-2 font-mono text-xs tabular-nums"
+          >
+            <span class="font-sans font-medium text-fg">Leg {String.upcase(leg.leg)}</span>
+            <span class="text-fg-muted">{Capacity.format(leg.va, :va)}</span>
+            <span class={leg_class(leg)}>
+              {amps(leg.current)} of {amps(leg.limit)}{if !leg.complete?, do: " or more"}
+            </span>
+          </li>
+        </ul>
+        <p class="mt-1 text-xs text-fg-muted">
+          Each leg's current is its volt-amperes over line-to-line volts / √3, against the
+          feed's rated current at its maximum utilization.
+        </p>
+      </section>
+
+      <section id="load-draws" aria-labelledby="load-draws-title">
+        <h3 id="load-draws-title" class="mb-1 text-xs font-semibold text-fg">
+          Loads ({length(@load.draws)})
+        </h3>
+        <p :if={@load.draws == []} class="text-xs text-fg-muted">
+          Nothing is plugged in downstream of this feed.
+        </p>
+        <ul :if={@load.draws != []} class="divide-y divide-line rounded-md border border-edge">
+          <li :for={draw <- @load.draws} id={"load-draw-#{draw.port.id}"} class="px-3 py-2">
+            <div class="flex items-baseline justify-between gap-3">
+              <.link
+                navigate={~p"/inventory/#{draw.port.resource_id}/power"}
+                class="min-w-0 truncate font-medium text-link hover:underline"
+              >
+                {draw.port.resource.name} · {draw.port.name}
+              </.link>
+              <span class="shrink-0 font-mono text-xs tabular-nums text-fg">
+                {draw_label(draw, @load.capacity.unit)}
+              </span>
+            </div>
+            <p class="text-xs text-fg-muted">{draw_note(draw, @load)}</p>
+          </li>
+        </ul>
+      </section>
+
+      <p class="text-xs text-fg-muted">
+        Measured load needs power readings, which Renga does not collect yet. Until then this is
+        allocated load only, which is not proof that another device can safely be connected.
+      </p>
+    </div>
+    """
+  end
+
   attr :panel, :string, required: true
   attr :id, :string, required: true
   attr :label, :string, required: true
@@ -450,6 +620,7 @@ defmodule RengaWeb.SitePowerLive do
     assign(socket,
       panels: panels,
       feeds: feeds,
+      loads: Load.for_feeds(socket.assigns.current_scope, feeds, default_power_factor),
       totals: Power.capacity_totals(feeds),
       default_power_factor: default_power_factor,
       power_factor_form:
@@ -538,6 +709,106 @@ defmodule RengaWeb.SitePowerLive do
     capacity = Capacity.of(feed)
     Capacity.format(capacity.rated, capacity.unit)
   end
+
+  defp load_panel_title(loads, id) do
+    case loads[id] do
+      %Load{feed: feed} -> "#{feed.name} load"
+      nil -> "Feed load"
+    end
+  end
+
+  defp load_label(%Load{load: %Decimal{} = load, capacity: capacity}),
+    do: Capacity.format(load, capacity.unit)
+
+  defp load_label(%Load{status: :over} = load),
+    do: "#{Capacity.format(load.known, load.capacity.unit)} or more"
+
+  defp load_label(%Load{}), do: "Unknown"
+
+  defp load_note(%Load{status: :over} = load) do
+    if Decimal.gt?(load.known, load.capacity.usable),
+      do: "Over usable capacity#{if load.uses_default?, do: " · default power factor"}",
+      else: "A leg is over its limit"
+  end
+
+  defp load_note(%Load{status: :unknown, load: %Decimal{}}), do: "Legs not all known"
+  defp load_note(%Load{status: :unknown} = load), do: hd(short_reasons(load))
+  defp load_note(%Load{uses_default?: true}), do: "Default power factor"
+  defp load_note(%Load{draws: []}), do: "Nothing plugged in"
+  defp load_note(%Load{draws: draws}), do: "#{length(draws)} #{plural(length(draws), "load")}"
+
+  defp short_reasons(load) do
+    [
+      load.untraced? && "Chain not traced",
+      load.unallocated > 0 && "#{load.unallocated} without allocation",
+      load.unconverted > 0 && "#{load.unconverted} without power factor"
+    ]
+    |> Enum.filter(& &1)
+  end
+
+  defp incomplete_reasons(load) do
+    [
+      load.untraced? &&
+        "Part of the chain below this feed cannot be followed: an outlet in use whose hardware type does not name the inlet that feeds it, or a chain deeper than any power train.",
+      load.unallocated > 0 &&
+        "#{load.unallocated} #{plural(load.unallocated, "load")} #{verb(load.unallocated, "has", "have")} no allocated draw. Set one on the device's power ports or its hardware type.",
+      load.unconverted > 0 &&
+        "#{load.unconverted} #{plural(load.unconverted, "load")} #{verb(load.unconverted, "has", "have")} no power factor, so #{verb(load.unconverted, "its", "their")} volt-amperes are unknown. Set one on the port, its hardware type, or as the organization default.",
+      load.unassigned_legs > 0 &&
+        "#{load.unassigned_legs} #{plural(load.unassigned_legs, "load")} #{verb(load.unassigned_legs, "is", "are")} on an outlet with no leg, so leg currents are incomplete."
+    ]
+    |> Enum.filter(& &1)
+  end
+
+  defp status_label(%Load{status: :ok}), do: "Within capacity"
+  defp status_label(%Load{status: :over}), do: "Over capacity"
+  defp status_label(%Load{status: :unknown}), do: "Unknown"
+
+  defp bar_class(%Load{status: :over}), do: "bg-crit"
+  defp bar_class(%Load{status: :unknown}), do: "bg-fg-subtle"
+  defp bar_class(%Load{uses_default?: true}), do: "bg-warn"
+  defp bar_class(%Load{}), do: "bg-accent"
+
+  defp leg_class(%Load.Leg{} = leg),
+    do: if(Decimal.gt?(leg.current, leg.limit), do: "font-medium text-crit", else: "text-fg")
+
+  defp draw_label(%Load.Draw{watts: nil}, _unit), do: "No allocation"
+  defp draw_label(%Load.Draw{watts: watts}, :w), do: "#{Capacity.format(Decimal.new(watts), :w)}"
+
+  defp draw_label(%Load.Draw{watts: watts, va: nil}, :va),
+    do: "#{Capacity.format(Decimal.new(watts), :w)} · VA unknown"
+
+  defp draw_label(%Load.Draw{watts: watts, va: va}, :va),
+    do: "#{Capacity.format(Decimal.new(watts), :w)} · #{Capacity.format(va, :va)}"
+
+  defp draw_note(draw, load) do
+    [
+      load.capacity.unit == :va && power_factor_note(draw.power_factor),
+      load.legs != [] && if(draw.leg, do: "Leg #{String.upcase(draw.leg)}", else: "No leg")
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
+  end
+
+  defp power_factor_note(nil), do: "No power factor"
+
+  defp power_factor_note(%PowerFactor{} = power_factor),
+    do:
+      "Power factor #{Decimal.to_string(power_factor.value)}, #{PowerFactor.source_label(power_factor.source)}"
+
+  defp signed(value, unit) do
+    if Decimal.negative?(value),
+      do: "−#{Capacity.format(Decimal.abs(value), unit)}",
+      else: Capacity.format(value, unit)
+  end
+
+  defp amps(value), do: "#{value |> Decimal.round(1) |> Decimal.to_string(:normal)} A"
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
+
+  defp verb(1, one, _many), do: one
+  defp verb(_count, _one, many), do: many
 
   defp capacity_summary([]), do: nil
 
