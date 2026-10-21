@@ -9,9 +9,8 @@ defmodule Renga.DCIM do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.DCIM.CurrentPlacement
   alias Renga.DCIM.DesiredPlacement
   alias Renga.DCIM.Elevation
@@ -1268,48 +1267,14 @@ defmodule Renga.DCIM do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
-  defp authorize_manager!(%Scope{membership_id: membership_id, user: %{id: user_id}} = scope)
-       when not is_nil(membership_id) do
-    lock_active_organization!(scope.organization_id)
+  defp authorize_manager!(%Scope{} = scope), do: Authorization.authorize!(scope, "dcim.edit")
 
-    OrganizationMembership
-    |> where([membership], membership.id == ^membership_id)
-    |> where([membership], membership.user_id == ^user_id)
-    |> where([membership], membership.organization_id == ^scope.organization_id)
-    |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ["owner", "admin"])
-    |> select([membership], membership.id)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      nil -> Repo.rollback(:forbidden)
-      _membership_id -> :ok
-    end
-  end
-
-  defp authorize_manager!(%Scope{}), do: Repo.rollback(:forbidden)
-
-  defp authorize_reconciler!(%Scope{user: nil, roles: roles, organization_id: organization_id}) do
-    if "placement_reconciler" in roles do
-      lock_active_organization!(organization_id)
-    else
-      Repo.rollback(:forbidden)
-    end
-  end
+  # Placement reconciliation runs as the placement reconciler for agents and
+  # as a DCIM editor for people.
+  defp authorize_reconciler!(%Scope{user: nil} = scope),
+    do: Authorization.authorize_system!(scope, "placement_reconciler")
 
   defp authorize_reconciler!(%Scope{} = scope), do: authorize_manager!(scope)
-
-  defp lock_active_organization!(organization_id) do
-    Organization
-    |> where([organization], organization.id == ^organization_id)
-    |> select([organization], organization.status)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      "active" -> :ok
-      _inactive_or_missing -> Repo.rollback(:forbidden)
-    end
-  end
 
   defp placement_finding_query(organization_id, resource_id, kind) do
     from finding in PlacementFinding,

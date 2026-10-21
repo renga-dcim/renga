@@ -26,7 +26,7 @@ defmodule RengaWeb.DcimLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       can_manage?: Renga.Inventory.organization_manager?(socket.assigns.current_scope),
+       can_manage?: Renga.Authorization.allowed?(socket.assigns.current_scope, "dcim.edit"),
        site_form: to_form(%{"name" => "", "slug" => "", "time_zone" => "Etc/UTC"}, as: :site),
        location_form: to_form(%{"name" => "", "kind" => "", "parent_id" => ""}, as: :location),
        rack_form: rack_form(%{}),

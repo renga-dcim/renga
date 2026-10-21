@@ -27,8 +27,8 @@ defmodule RengaWeb.PrefixDetailLive do
   import RengaWeb.FindingComponents, only: [finding_list: 1]
   import RengaWeb.PrefixComponents
 
+  alias Renga.Authorization
   alias Renga.Findings
-  alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Inventory.Prefix
   alias Renga.IPAM
@@ -52,7 +52,7 @@ defmodule RengaWeb.PrefixDetailLive do
     {:ok,
      socket
      |> assign(
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "ipam.edit"),
        tables: IPAM.list_routing_tables(scope),
        reload_timer: nil
      )

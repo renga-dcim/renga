@@ -22,6 +22,7 @@ defmodule RengaWeb.VrfLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
@@ -39,7 +40,7 @@ defmodule RengaWeb.VrfLive do
      socket
      |> assign(
        page_title: "VRFs",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "ipam.edit"),
        editing: nil,
        panel_open?: false,
        reload_timer: nil

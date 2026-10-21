@@ -13,6 +13,7 @@ defmodule RengaWeb.VlanLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Topology
@@ -31,7 +32,7 @@ defmodule RengaWeb.VlanLive do
      socket
      |> assign(
        page_title: "VLANs",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "topology.edit"),
        status_options: @status_options,
        reload_timer: nil,
        vlan_form: vlan_form()

@@ -22,8 +22,8 @@ defmodule RengaWeb.AddressLive do
 
   import RengaWeb.FindingComponents, only: [finding_list: 1]
 
+  alias Renga.Authorization
   alias Renga.Findings
-  alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
   alias Renga.IPAM.Cidr
@@ -45,7 +45,7 @@ defmodule RengaWeb.AddressLive do
      socket
      |> assign(
        page_title: "Addresses",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "ipam.edit"),
        panel: nil,
        editing: nil,
        reload_timer: nil

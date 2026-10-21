@@ -1,9 +1,9 @@
 defmodule Renga.SavedViews do
   @moduledoc """
-  Saved views for lists (RFD 8): any member saves personal views, and owners
-  and admins save views shared with the organization. Either kind can be
-  pinned to the sidebar; a person's sidebar shows the organization's pinned
-  views and their own pinned views.
+  Saved views for lists (RFD 8): any member saves personal views, and people
+  with `views.share` save views shared with the organization. Either kind
+  can be pinned to the sidebar; a person's sidebar shows the organization's
+  pinned views and their own pinned views.
 
   Views are scoped to their organization, and a personal view is only ever
   visible to its owner. Opening a view runs the list's normal query under
@@ -13,8 +13,8 @@ defmodule Renga.SavedViews do
 
   import Ecto.Query, warn: false
 
-  alias Renga.Accounts
   alias Renga.Accounts.Scope
+  alias Renga.Authorization
   alias Renga.Repo
   alias Renga.SavedViews.SavedView
 
@@ -43,13 +43,12 @@ defmodule Renga.SavedViews do
 
   @doc """
   Saves a view. With `shared: true` it is shared with the organization, which
-  needs the owner or admin role; otherwise it belongs to the person saving
-  it.
+  needs `views.share`; otherwise it belongs to the person saving it.
   """
   def create_view(%Scope{user: %{id: user_id}} = scope, attrs) do
     shared? = attrs |> Map.get(:shared, Map.get(attrs, "shared")) |> truthy?()
 
-    with :ok <- authorize_sharing(scope, shared?) do
+    write(scope, shared?, fn ->
       %SavedView{
         organization_id: scope.organization_id,
         user_id: if(shared?, do: nil, else: user_id),
@@ -57,21 +56,23 @@ defmodule Renga.SavedViews do
       }
       |> SavedView.changeset(attrs)
       |> Repo.insert()
-    end
+    end)
   end
 
   def create_view(%Scope{}, _attrs), do: {:error, :forbidden}
 
   @doc "Renames, re-pins, or replaces the query of a view the scope may manage."
   def update_view(%Scope{} = scope, %SavedView{} = view, attrs) do
-    with :ok <- authorize_manage(scope, view) do
-      view |> SavedView.changeset(attrs) |> Repo.update()
+    with {:ok, shared?} <- manageable(scope, view) do
+      write(scope, shared?, fn -> view |> SavedView.changeset(attrs) |> Repo.update() end)
     end
   end
 
   @doc "Deletes a view the scope may manage."
   def delete_view(%Scope{} = scope, %SavedView{} = view) do
-    with :ok <- authorize_manage(scope, view), do: Repo.delete(view)
+    with {:ok, shared?} <- manageable(scope, view) do
+      write(scope, shared?, fn -> Repo.delete(view) end)
+    end
   end
 
   @doc "Whether the scope may change or delete the view."
@@ -84,7 +85,7 @@ defmodule Renga.SavedViews do
       do: true
 
   def can_manage?(%Scope{} = scope, %SavedView{user_id: nil}),
-    do: Renga.Inventory.organization_manager?(scope)
+    do: Authorization.allowed?(scope, "views.share")
 
   def can_manage?(%Scope{}, %SavedView{}), do: false
 
@@ -98,33 +99,34 @@ defmodule Renga.SavedViews do
     |> where([view], is_nil(view.user_id) or view.user_id == ^user_id)
   end
 
-  # The view must belong to the caller's organization before any role or
-  # ownership check: callers pass structs, not ids, so the struct itself is
-  # not proof of access.
-  defp authorize_manage(%Scope{organization_id: org_id}, %SavedView{organization_id: other})
+  # The view must belong to the caller's organization before any permission
+  # or ownership check: callers pass structs, not ids, so the struct itself
+  # is not proof of access. Returns whether the view is shared.
+  defp manageable(%Scope{organization_id: org_id}, %SavedView{organization_id: other})
        when org_id != other,
        do: {:error, :forbidden}
 
-  defp authorize_manage(scope, %SavedView{user_id: nil}), do: authorize_sharing(scope, true)
+  defp manageable(%Scope{user: %{}}, %SavedView{user_id: nil}), do: {:ok, true}
 
-  defp authorize_manage(%Scope{user: %{id: user_id}}, %SavedView{user_id: user_id})
+  defp manageable(%Scope{user: %{id: user_id}}, %SavedView{user_id: user_id})
        when is_binary(user_id),
-       do: :ok
+       do: {:ok, false}
 
-  defp authorize_manage(_scope, _view), do: {:error, :forbidden}
+  defp manageable(_scope, _view), do: {:error, :forbidden}
 
-  defp authorize_sharing(_scope, false), do: :ok
+  # Shared views need views.share, re-checked in the database inside the
+  # write's transaction so a demoted admin cannot keep changing them.
+  # Personal views belong to the person saving them.
+  defp write(%Scope{} = scope, shared?, write) do
+    Repo.transaction(fn ->
+      if shared?, do: Authorization.authorize!(scope, "views.share")
 
-  # Re-read the membership instead of trusting the role cached in the scope,
-  # so a demoted admin cannot keep changing organization views.
-  defp authorize_sharing(%Scope{user: %Accounts.User{} = user, organization_id: org_id}, true) do
-    case Accounts.get_user_organization_membership(user, org_id) do
-      %{role: role, status: "active"} when role in ["owner", "admin"] -> :ok
-      _other -> {:error, :forbidden}
-    end
+      case write.() do
+        {:ok, view} -> view
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
-
-  defp authorize_sharing(_scope, true), do: {:error, :forbidden}
 
   defp truthy?(value), do: value in [true, "true", "on"]
 end

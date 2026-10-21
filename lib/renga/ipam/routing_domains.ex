@@ -396,7 +396,7 @@ defmodule Renga.IPAM.RoutingDomains do
   admins only.
   """
   def put_mapping(%Scope{organization_id: organization_id} = scope, source_id, key, vrf_id) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       source = scoped_source!(organization_id, source_id)
       key = String.trim(key || "")
 
@@ -429,7 +429,7 @@ defmodule Renga.IPAM.RoutingDomains do
 
   @doc "Removes an explicit mapping; the key resolves automatically again."
   def delete_mapping(%Scope{organization_id: organization_id} = scope, mapping_id) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       mapping =
         RoutingDomainMapping
         |> where([m], m.organization_id == ^organization_id and m.id == ^mapping_id)
@@ -445,7 +445,7 @@ defmodule Renga.IPAM.RoutingDomains do
   @doc "Sets whether a source's routing-domain claims are authoritative. Owners and admins only."
   def set_source_authority(%Scope{organization_id: organization_id} = scope, source_id, value)
       when is_boolean(value) do
-    Inventory.organization_management_transaction(scope, fn ->
+    Inventory.organization_management_transaction(scope, "ipam.edit", fn ->
       source =
         organization_id
         |> scoped_source!(source_id)

@@ -16,9 +16,9 @@ defmodule RengaWeb.RackLive do
 
   import RengaWeb.ElevationComponents
 
+  alias Renga.Authorization
   alias Renga.DCIM
   alias Renga.DCIM.Elevation
-  alias Renga.Inventory
   alias Renga.Inventory.Changes
 
   @reload_after_ms 400
@@ -32,7 +32,7 @@ defmodule RengaWeb.RackLive do
      socket
      |> assign(
        rack_id: id,
-       can_place?: Inventory.organization_manager?(scope),
+       can_place?: Authorization.allowed?(scope, "dcim.edit"),
        reload_timer: nil
      )
      |> load_elevation()

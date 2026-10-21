@@ -3,6 +3,7 @@ defmodule RengaWeb.CableLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Topology
 
@@ -14,7 +15,7 @@ defmodule RengaWeb.CableLive do
      socket
      |> assign(
        page_title: "Cables",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "topology.edit"),
        assert_form: assert_form(),
        plan_form: plan_form()
      )}

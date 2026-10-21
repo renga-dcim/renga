@@ -11,6 +11,7 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
+  alias Renga.Authorization
   alias Renga.Repo
 
   @doc """
@@ -84,23 +85,12 @@ defmodule Renga.Accounts do
 
   @doc """
   Changes the accent an organization's members see until they choose
-  their own (RFD 8, "Visual design"). Only an active owner may.
+  their own (RFD 8, "Visual design"). Needs `organization.manage`.
   """
-  def set_default_accent(
-        %Scope{user: %User{id: user_id}, organization_id: organization_id},
-        accent
-      )
+  def set_default_accent(%Scope{user: %User{}, organization_id: organization_id} = scope, accent)
       when is_binary(organization_id) do
     Repo.transaction(fn ->
-      owner? =
-        OrganizationMembership
-        |> where([membership], membership.organization_id == ^organization_id)
-        |> where([membership], membership.user_id == ^user_id and membership.role == "owner")
-        |> where([membership], membership.status == "active")
-        |> lock("FOR UPDATE")
-        |> Repo.exists?()
-
-      unless owner?, do: Repo.rollback(:forbidden)
+      Authorization.authorize!(scope, "organization.manage")
 
       Organization
       |> Repo.get!(organization_id)

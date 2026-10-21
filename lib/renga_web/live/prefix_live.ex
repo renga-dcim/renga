@@ -27,7 +27,7 @@ defmodule RengaWeb.PrefixLive do
 
   import RengaWeb.PrefixComponents
 
-  alias Renga.Inventory
+  alias Renga.Authorization
   alias Renga.Inventory.Changes
   alias Renga.Inventory.Prefix
   alias Renga.IPAM
@@ -46,7 +46,7 @@ defmodule RengaWeb.PrefixLive do
        page_title: "Prefixes",
        reload_timer: nil,
        query: nil,
-       can_manage?: Inventory.organization_manager?(scope)
+       can_manage?: Authorization.allowed?(scope, "ipam.edit")
      )}
   end
 
