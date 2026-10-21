@@ -2,6 +2,7 @@ defmodule RengaWeb.UserLive.Registration do
   use RengaWeb, :live_view
 
   alias Renga.Accounts
+  alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
 
   @impl true
@@ -50,13 +51,35 @@ defmodule RengaWeb.UserLive.Registration do
   end
 
   def mount(_params, _session, socket) do
-    changeset = Accounts.change_user_email(%User{}, %{}, validate_unique: false)
+    if SignInPolicy.registration_open?() do
+      changeset = Accounts.change_user_email(%User{}, %{}, validate_unique: false)
+      {:ok, assign_form(socket, changeset), temporary_assigns: [form: nil]}
+    else
+      {:ok, registration_closed(socket)}
+    end
+  end
 
-    {:ok, assign_form(socket, changeset), temporary_assigns: [form: nil]}
+  # Closed registration (RFD 15): people join through an identity provider
+  # that allows sign-up, or an invitation.
+  defp registration_closed(socket) do
+    socket
+    |> put_flash(:error, "This Renga doesn't take new sign-ups. Ask an administrator for access.")
+    |> redirect(to: ~p"/users/log-in")
   end
 
   @impl true
   def handle_event("save", %{"user" => user_params}, socket) do
+    if SignInPolicy.registration_open?(),
+      do: register(socket, user_params),
+      else: {:noreply, registration_closed(socket)}
+  end
+
+  def handle_event("validate", %{"user" => user_params}, socket) do
+    changeset = Accounts.change_user_email(%User{}, user_params, validate_unique: false)
+    {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
+  end
+
+  defp register(socket, user_params) do
     case Accounts.register_user(user_params) do
       {:ok, user} ->
         {:ok, _} =
@@ -76,11 +99,6 @@ defmodule RengaWeb.UserLive.Registration do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign_form(socket, changeset)}
     end
-  end
-
-  def handle_event("validate", %{"user" => user_params}, socket) do
-    changeset = Accounts.change_user_email(%User{}, user_params, validate_unique: false)
-    {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
   end
 
   defp assign_form(socket, %Ecto.Changeset{} = changeset) do

@@ -2,7 +2,23 @@ defmodule RengaWeb.UserSessionController do
   use RengaWeb, :controller
 
   alias Renga.Accounts
+  alias Renga.Accounts.SignInPolicy
   alias RengaWeb.UserAuth
+
+  # With local sign-in disabled, passwords, emailed links, and passkeys no
+  # longer sign anyone in (RFD 15), including links sent before.
+  plug :require_local_sign_in when action in [:create, :passkey, :second_step]
+
+  defp require_local_sign_in(conn, _opts) do
+    if SignInPolicy.local_sign_in?() do
+      conn
+    else
+      conn
+      |> put_flash(:error, "Sign in with your organization's identity provider.")
+      |> redirect(to: ~p"/users/log-in")
+      |> halt()
+    end
+  end
 
   def create(conn, %{"_action" => "confirmed"} = params) do
     create(conn, params, "User confirmed successfully.")

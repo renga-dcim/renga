@@ -11,6 +11,7 @@ defmodule RengaWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
+    plug RengaWeb.RecoveryMode
   end
 
   pipeline :api do
@@ -221,6 +222,7 @@ defmodule RengaWeb.Router do
         {RengaWeb.UserAuth, :mount_current_scope},
         RengaWeb.AppearanceHook
       ] do
+      live "/recovery", RecoveryLive, :show
       live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
       live "/users/log-in/second-step", UserLive.SecondStep, :new
