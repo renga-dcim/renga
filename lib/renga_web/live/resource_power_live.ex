@@ -41,6 +41,7 @@ defmodule RengaWeb.ResourcePowerLive do
        allocation_form: allocation_form(nil),
        connecting_port: nil,
        connect_form: to_form(%{"target" => ""}, as: :connection),
+       connect_error: nil,
        connect_options: []
      )
      |> load_endpoints()}
@@ -64,6 +65,7 @@ defmodule RengaWeb.ResourcePowerLive do
      assign(socket,
        connecting_port: port,
        connect_form: to_form(%{"target" => target_value(current)}, as: :connection),
+       connect_error: nil,
        connect_options: connect_options(socket)
      )}
   end
@@ -85,12 +87,12 @@ defmodule RengaWeb.ResourcePowerLive do
         {:noreply,
          socket
          |> put_flash(:info, "#{port.name} connected")
-         |> assign(connecting_port: nil)
+         |> assign(connecting_port: nil, connect_error: nil)
          |> close_overlay("connect-panel")
          |> load_endpoints()}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, connection_error(reason))}
+        {:noreply, assign(socket, connect_error: connection_error(reason))}
     end
   end
 
@@ -352,6 +354,9 @@ defmodule RengaWeb.ResourcePowerLive do
             prompt="Choose an outlet or feed"
             options={@connect_options}
           />
+          <p :if={@connect_error} id="connect-error" role="alert" class="text-sm text-crit">
+            {@connect_error}
+          </p>
           <p class="text-xs text-fg-muted">
             Recorded as a confirmed connection by you. Whatever this port or that outlet
             was plugged into before is replaced.

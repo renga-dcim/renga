@@ -87,6 +87,18 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#connect-form option[value='outlet:#{outlet.id}']", "Outlet 7")
 
     view
+    |> form("#connect-form", connection: %{target: ""})
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "#connect-error[role='alert']",
+             "Choose an outlet or feed to connect"
+           )
+
+    refute has_element?(view, "#flash-error")
+
+    view
     |> form("#connect-form", connection: %{target: "outlet:#{outlet.id}"})
     |> render_submit()
 
