@@ -299,6 +299,8 @@ defmodule RengaWeb.DcimLive do
           New rack
         </.button>
       </:actions>
+      <:tab navigate={~p"/places/sites/#{@site.id}"} active>Overview</:tab>
+      <:tab navigate={~p"/places/sites/#{@site.id}/power"}>Power</:tab>
 
       <div class="space-y-6">
         <.location_tree id="site-locations" tree={@location_tree} />

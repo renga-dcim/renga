@@ -171,6 +171,7 @@ defmodule RengaWeb.Router do
 
       live "/places", DcimLive, :sites
       live "/places/sites/:id", DcimLive, :site
+      live "/places/sites/:id/power", SitePowerLive, :show
       live "/places/locations/:id", DcimLive, :location
       live "/places/racks", DcimLive, :racks
       live "/places/racks/:id", RackLive, :show
