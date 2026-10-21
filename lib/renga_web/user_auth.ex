@@ -203,6 +203,37 @@ defmodule RengaWeb.UserAuth do
   end
 
   @doc """
+  Signs in through an identity provider, once `Renga.Accounts.OIDC.finish/3`
+  validated the callback (RFD 15). The account is resolved and the session
+  issued while the provider is locked against changes, and the session ends
+  when the provider's session lifetime does, however active it is. Returns
+  the conn with the new session and where to send the browser; nothing is
+  sent until the caller redirects, after it all committed.
+  """
+  def log_in_user_with_provider(conn, %{provider: provider, revision: revision} = result) do
+    return_to = get_session(conn, :user_return_to) || signed_in_path(conn)
+    method = "provider:#{provider.id}"
+
+    deadline =
+      DateTime.add(Renga.Time.utc_now_ms(), revision.session_lifetime_seconds, :second)
+
+    issue = fn user ->
+      case create_or_extend_session(
+             conn,
+             user,
+             %{},
+             &Accounts.create_signed_in_session(user, &1, method, deadline)
+           ) do
+        {:ok, conn} -> {:ok, conn}
+        {:error, _conn} -> {:error, :session_failed}
+      end
+    end
+
+    with {:ok, conn} <- Accounts.finish_provider_sign_in(result, issue),
+         do: {:ok, conn, return_to}
+  end
+
+  @doc """
   Signs in a person who just proved control of the email to add a first
   credential, with the bootstrap authorization (RFD 19). Nothing is written
   to the response unless the session and its grant were committed together;
@@ -503,7 +534,8 @@ defmodule RengaWeb.UserAuth do
   end
 
   defp mount_current_scope(socket, session) do
-    Phoenix.Component.assign_new(socket, :current_scope, fn ->
+    socket
+    |> Phoenix.Component.assign_new(:current_scope, fn ->
       {user, _} =
         if user_token = session["user_token"] do
           Accounts.get_user_by_session_token(user_token)
@@ -511,7 +543,37 @@ defmodule RengaWeb.UserAuth do
 
       Accounts.scope_for_user(user, session[to_string(@current_organization_key)])
     end)
+    |> end_at_session_deadline(session["user_token"])
   end
+
+  # A connected LiveView outlives the request that checked its session, so
+  # one whose session has a deadline (a provider sign-in) leaves at it.
+  defp end_at_session_deadline(socket, token) when is_binary(token) do
+    with true <- Phoenix.LiveView.connected?(socket),
+         %Scope{user: %Accounts.User{}} <- socket.assigns.current_scope,
+         %DateTime{} = deadline <- Accounts.session_deadline(token) do
+      Process.send_after(
+        self(),
+        :session_deadline,
+        max(DateTime.diff(deadline, Renga.Time.utc_now_ms(), :millisecond), 0)
+      )
+
+      Phoenix.LiveView.attach_hook(socket, :session_deadline, :handle_info, fn
+        :session_deadline, socket ->
+          {:halt,
+           socket
+           |> Phoenix.LiveView.put_flash(:error, "Your session ended. Please log in again.")
+           |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")}
+
+        _message, socket ->
+          {:cont, socket}
+      end)
+    else
+      _no_deadline -> socket
+    end
+  end
+
+  defp end_at_session_deadline(socket, _token), do: socket
 
   @doc "Returns the path to redirect to after log in."
   # the user was already logged in, redirect to settings

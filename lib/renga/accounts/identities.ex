@@ -46,11 +46,20 @@ defmodule Renga.Accounts.Identities do
   end
 
   defp first_sign_in(provider, revision, subject, email) do
+    # Only a verified address is said to be in use, so an unverified claim
+    # cannot ask whether an account exists.
     cond do
-      email && Repo.get_by(User, email: email.address) -> {:error, :email_in_use}
-      not revision.allow_sign_up -> {:error, :sign_up_closed}
-      is_nil(email) or not email.verified -> {:error, :unverified_email}
-      true -> sign_up(provider, subject, email.address)
+      email && email.verified && Repo.get_by(User, email: email.address) ->
+        {:error, :email_in_use}
+
+      not revision.allow_sign_up ->
+        {:error, :sign_up_closed}
+
+      is_nil(email) or not email.verified ->
+        {:error, :unverified_email}
+
+      true ->
+        sign_up(provider, subject, email.address)
     end
   end
 
@@ -61,22 +70,38 @@ defmodule Renga.Accounts.Identities do
              |> User.email_changeset(%{email: address})
              |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
              |> Repo.insert() do
-        Repo.insert!(%UserIdentity{
+        %UserIdentity{
           user_id: user.id,
           provider_id: provider.id,
           subject: subject,
           email: address,
           last_signed_in_at: Renga.Time.utc_now_ms()
-        })
-
-        {:ok, user}
+        }
+        |> Ecto.Changeset.change()
+        |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
+        |> Repo.insert()
+        |> case do
+          {:ok, _identity} -> {:ok, user}
+          # A concurrent first sign-in by the same subject linked it first.
+          {:error, _changeset} -> {:error, :already_linked}
+        end
       end
     end)
     |> case do
       {:ok, user} -> {:ok, user}
-      # The email was taken between the check and the insert.
-      {:error, %Ecto.Changeset{}} -> {:error, :email_in_use}
+      {:error, :already_linked} -> {:error, :already_linked}
+      {:error, %Ecto.Changeset{} = changeset} -> sign_up_error(changeset)
     end
+  end
+
+  # Only a collision means the address is taken; any other problem with it,
+  # such as its length, makes the claims unusable.
+  defp sign_up_error(changeset) do
+    if Enum.any?(changeset.errors, fn {_field, {_message, opts}} ->
+         opts[:constraint] == :unique or opts[:validation] == :unsafe_unique
+       end),
+       do: {:error, :email_in_use},
+       else: {:error, :invalid_claims}
   end
 
   # The allowlist limits who may sign in at all, so it applies to returning

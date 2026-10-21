@@ -6,16 +6,20 @@ defmodule Renga.Accounts.OIDC do
   signature, issuer, audience, expiry, and nonce. Renga binds each attempt
   itself. `start/3` returns the provider's authorization URL and an attempt
   holding a fresh `state`, `nonce`, and PKCE verifier, which the caller keeps
-  in the browser session; `finish/3` accepts a callback only for that
-  attempt, and only while the provider still uses the revision the attempt
-  started with.
+  in the browser session, and records the state's hash on the server;
+  `finish/3` accepts a callback only for that attempt, at most once, and
+  only while the provider still uses the revision the attempt started with.
   """
 
+  import Ecto.Query
+
   alias Renga.Accounts.IdentityProvider
+  alias Renga.Accounts.IdentityProviderAttempt
   alias Renga.Accounts.IdentityProviderRevision, as: Revision
   alias Renga.Accounts.IdentityProviders
   alias Renga.Accounts.OIDC.Discovery
   alias Renga.Accounts.OIDC.HTTP
+  alias Renga.Repo
 
   @attempt_seconds 10 * 60
   @default_scopes ["openid", "email", "profile"]
@@ -29,14 +33,25 @@ defmodule Renga.Accounts.OIDC do
            IdentityProviders.active_revision(provider) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
          {:ok, context} <- client_context(provider, revision) do
+      configuration = context.provider_configuration
+
       attempt = %{
         "provider" => provider.id,
         "revision" => revision.number,
         "state" => random(),
         "nonce" => random(),
         "verifier" => random(),
-        "started_at" => System.system_time(:second)
+        "started_at" => System.system_time(:second),
+        # RFC 9207: a provider that says it sends `iss` must send it.
+        "iss_required" => configuration.authorization_response_iss_parameter_supported == true
       }
+
+      Repo.insert!(%IdentityProviderAttempt{
+        provider_id: provider.id,
+        revision: revision.number,
+        state_hash: hash(attempt["state"]),
+        expires_at: DateTime.add(Renga.Time.utc_now_ms(), @attempt_seconds, :second)
+      })
 
       authorization =
         %{
@@ -64,7 +79,8 @@ defmodule Renga.Accounts.OIDC do
     with :ok <- check_state(attempt, params),
          :ok <- check_age(attempt),
          {:ok, provider, revision} <- current(attempt),
-         :ok <- check_response(provider, params),
+         :ok <- check_response(provider, attempt, params),
+         :ok <- consume(attempt),
          {:ok, context} <- client_context(provider, revision),
          {:ok, %Oidcc.Token{id: %Oidcc.Token.Id{claims: claims}}} <-
            Oidcc.Token.retrieve(params["code"], context, %{
@@ -77,8 +93,10 @@ defmodule Renga.Accounts.OIDC do
            }) do
       {:ok, %{provider: provider, revision: revision, claims: claims}}
     else
+      # Only a reason leaves here: tokens, claims, and the attempt's secrets
+      # must not reach a log line or an error report.
       {:error, reason} when is_atom(reason) -> {:error, reason}
-      {:error, _detail} -> {:error, :invalid_response}
+      _other -> {:error, :invalid_response}
     end
   end
 
@@ -110,16 +128,47 @@ defmodule Renga.Accounts.OIDC do
     end
   end
 
-  # An error from the provider, a code that is missing, or an `iss` naming
-  # another issuer (RFC 9207, against mix-up attacks) ends the attempt.
-  defp check_response(provider, params) do
+  # An error from the provider, a code that is missing, or an `iss` that
+  # names another issuer, is not a string, or is missing from a provider that
+  # promised it (RFC 9207, against mix-up attacks) ends the attempt.
+  defp check_response(provider, attempt, params) do
     cond do
-      is_binary(params["error"]) -> {:error, :denied}
-      not is_binary(params["code"]) -> {:error, :invalid_response}
-      is_binary(params["iss"]) and params["iss"] != provider.issuer -> {:error, :issuer_mismatch}
-      true -> :ok
+      Map.has_key?(params, "error") ->
+        {:error, :denied}
+
+      not is_binary(params["code"]) ->
+        {:error, :invalid_response}
+
+      Map.has_key?(params, "iss") and params["iss"] != provider.issuer ->
+        {:error, :issuer_mismatch}
+
+      attempt["iss_required"] == true and not Map.has_key?(params, "iss") ->
+        {:error, :issuer_mismatch}
+
+      true ->
+        :ok
     end
   end
+
+  # Spends the server's record of the attempt before the code is exchanged,
+  # so the attempt finishes at most once.
+  defp consume(%{"provider" => id, "revision" => number, "state" => state}) do
+    now = Renga.Time.utc_now_ms()
+    Repo.delete_all(where(IdentityProviderAttempt, [a], a.expires_at < ^now))
+
+    case Repo.delete_all(
+           where(IdentityProviderAttempt,
+             state_hash: ^hash(state),
+             provider_id: ^id,
+             revision: ^number
+           )
+         ) do
+      {1, _} -> :ok
+      _ -> {:error, :attempt_used}
+    end
+  end
+
+  defp hash(state), do: :crypto.hash(:sha256, state)
 
   defp client_context(provider, revision) do
     with {:ok, configuration, jwks} <- Discovery.fetch(provider.issuer),

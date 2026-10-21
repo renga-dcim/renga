@@ -10,7 +10,7 @@ defmodule Renga.FakeOIDCProvider do
       params = FakeOIDCProvider.authorize(fake, url, %{"sub" => "123", "email" => "a@b.c"})
   """
 
-  defstruct [:issuer, :jwk, :kid, client_id: "renga"]
+  defstruct [:issuer, :jwk, :kid, client_id: "renga", discovery: %{}, id_token: true]
 
   @stub Renga.Accounts.OIDC
 
@@ -24,7 +24,11 @@ defmodule Renga.FakeOIDCProvider do
         ),
       jwk: JOSE.JWK.generate_key({:ec, "P-256"}),
       kid: "key-#{System.unique_integer([:positive])}",
-      client_id: Keyword.get(opts, :client_id, "renga")
+      client_id: Keyword.get(opts, :client_id, "renga"),
+      # Overrides for the discovery document, and whether tokens carry an
+      # ID token, for providers that misbehave.
+      discovery: Keyword.get(opts, :discovery, %{}),
+      id_token: Keyword.get(opts, :id_token, true)
     }
   end
 
@@ -71,7 +75,7 @@ defmodule Renga.FakeOIDCProvider do
     case {conn.method, conn.request_path} do
       {"GET", "/.well-known/openid-configuration"} -> json(conn, discovery(fake))
       {"GET", "/jwks"} -> json(conn, %{"keys" => [public_jwk(fake)]})
-      {"POST", "/token"} -> token(conn)
+      {"POST", "/token"} -> token(fake, conn)
       _other -> Plug.Conn.send_resp(conn, 404, "")
     end
   end
@@ -90,6 +94,7 @@ defmodule Renga.FakeOIDCProvider do
       "code_challenge_methods_supported" => ["S256"],
       "token_endpoint_auth_methods_supported" => ["client_secret_basic"]
     }
+    |> Map.merge(fake.discovery)
   end
 
   defp public_jwk(fake) do
@@ -97,7 +102,9 @@ defmodule Renga.FakeOIDCProvider do
     Map.merge(map, %{"kid" => fake.kid, "use" => "sig", "alg" => "ES256"})
   end
 
-  defp token(conn) do
+  defp token(fake, conn) do
+    send(self(), {__MODULE__, :token_requested})
+
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     params = URI.decode_query(body)
     grant = Process.delete({__MODULE__, params["code"]})
@@ -109,12 +116,8 @@ defmodule Renga.FakeOIDCProvider do
         |> JOSE.JWS.compact()
         |> elem(1)
 
-      json(conn, %{
-        "access_token" => "access",
-        "token_type" => "Bearer",
-        "expires_in" => 300,
-        "id_token" => id_token
-      })
+      body = %{"access_token" => "access", "token_type" => "Bearer", "expires_in" => 300}
+      json(conn, if(fake.id_token, do: Map.put(body, "id_token", id_token), else: body))
     else
       conn |> Plug.Conn.put_status(400) |> json(%{"error" => "invalid_grant"})
     end

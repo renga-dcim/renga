@@ -3,9 +3,12 @@ defmodule Renga.Accounts.OIDC.HTTP do
   The HTTP transport for `oidcc`, over Req (RFD 15, "Sign-in flow").
 
   Every request `oidcc` makes for Renga goes through here: discovery, signing
-  keys, and the token exchange. Redirects are not followed, so a provider
-  cannot send Renga somewhere its configuration does not name; organization
-  providers will add their destination policy here. Tests route requests to a
+  keys, and the token exchange. Each goes only to an https URL, or over plain
+  HTTP to this machine. Redirects are not followed, so a provider
+  cannot send Renga somewhere its configuration does not name. Deployment
+  providers are configured by the operator, who is trusted with the
+  destinations they name, private addresses included; organization providers
+  will add their destination policy here. Tests route requests to a
   `Req.Test` stub with `config :renga, :oidc_req_options`.
   """
 
@@ -14,10 +17,38 @@ defmodule Renga.Accounts.OIDC.HTTP do
   @doc "The `request_opts` that make `oidcc` use this adapter."
   def request_opts, do: %{http_adapter: {__MODULE__, %{}}, timeout: :timer.seconds(10)}
 
+  @doc """
+  Whether Renga sends anything to `url`: an absolute https URL, or plain HTTP
+  only to this machine's loopback address. Neither may carry credentials or
+  a fragment.
+  """
+  def allowed_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: host, userinfo: nil, fragment: nil}
+      when is_binary(host) and host != "" ->
+        true
+
+      %URI{scheme: "http", host: host, userinfo: nil, fragment: nil}
+      when host in ["localhost", "127.0.0.1", "::1"] ->
+        true
+
+      _other ->
+        false
+    end
+  end
+
+  def allowed_url?(_url), do: false
+
   @impl true
   def request(method, request, http_options, _request_options, _config) do
     {url, headers, body} = split(request)
 
+    if allowed_url?(to_string(url)),
+      do: send_request(method, url, headers, body, http_options),
+      else: {:error, :insecure_endpoint}
+  end
+
+  defp send_request(method, url, headers, body, http_options) do
     options =
       [
         method: method,

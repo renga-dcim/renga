@@ -21,5 +21,30 @@ defmodule Renga.Repo.Migrations.CreateUserIdentities do
 
     create unique_index(:user_identities, [:provider_id, :subject])
     create index(:user_identities, [:user_id])
+
+    # A sign-in attempt in progress. The browser keeps its nonce and PKCE
+    # verifier; the server keeps the state's hash, so a copied session
+    # cookie cannot complete the same attempt twice.
+    create table(:identity_provider_attempts, primary_key: false) do
+      add :id, :binary_id, primary_key: true
+
+      add :provider_id, references(:identity_providers, type: :string, on_delete: :delete_all),
+        null: false
+
+      add :revision, :integer, null: false
+      add :state_hash, :binary, null: false
+      add :expires_at, :"timestamp(3)", null: false
+
+      timestamps(type: :"timestamp(3)", updated_at: false)
+    end
+
+    create unique_index(:identity_provider_attempts, [:state_hash])
+    create index(:identity_provider_attempts, [:expires_at])
+
+    # A session from a provider sign-in ends when the provider's session
+    # lifetime does; renewal never moves it.
+    alter table(:users_tokens) do
+      add :expires_at, :"timestamp(3)"
+    end
   end
 end

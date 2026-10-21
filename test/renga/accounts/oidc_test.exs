@@ -23,6 +23,14 @@ defmodule Renga.Accounts.OIDCTest do
     {attempt, params, OIDC.finish(attempt, params, @redirect_uri)}
   end
 
+  defp flush_token_requests do
+    receive do
+      {FakeOIDCProvider, :token_requested} -> flush_token_requests()
+    after
+      0 -> :ok
+    end
+  end
+
   defp claims(overrides \\ %{}) do
     Map.merge(
       %{"sub" => "subject-1", "email" => "pat@example.com", "email_verified" => true},
@@ -59,6 +67,23 @@ defmodule Renga.Accounts.OIDCTest do
 
       assert {:ok, url, _attempt} = OIDC.start(provider, @redirect_uri)
       assert String.starts_with?(url, fake.issuer <> "/authorize?")
+    end
+
+    test "refuses a provider whose endpoints are not https or offer only plain PKCE", %{
+      fake: fake
+    } do
+      for discovery <- [
+            %{"token_endpoint" => "http://idp.example.com/token"},
+            %{"jwks_uri" => "http://idp.example.com/jwks"},
+            %{"authorization_endpoint" => "http://idp.example.com/authorize"},
+            %{"code_challenge_methods_supported" => ["plain"]}
+          ] do
+        fake = %{fake | issuer: FakeOIDCProvider.new().issuer, discovery: discovery}
+        FakeOIDCProvider.stub(fake)
+        provider = identity_provider_fixture(fake)
+
+        assert {:error, :provider_unavailable} = OIDC.start(provider, @redirect_uri)
+      end
     end
 
     test "refuses a provider that is not active", %{fake: fake} do
@@ -165,9 +190,74 @@ defmodule Renga.Accounts.OIDCTest do
       assert {:error, :inactive} = OIDC.finish(attempt, params, @redirect_uri)
     end
 
-    test "a code works only once", %{fake: fake, provider: provider} do
-      {attempt, params, {:ok, _}} = sign_in(fake, provider, claims())
-      assert {:error, :invalid_response} = OIDC.finish(attempt, params, @redirect_uri)
+    test "an attempt finishes once, even from a copied session", %{
+      fake: fake,
+      provider: provider
+    } do
+      {:ok, url, attempt} = OIDC.start(provider, @redirect_uri)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+      assert {:ok, _} = OIDC.finish(attempt, params, @redirect_uri)
+
+      # A fresh code from the same authorization request, with the saved
+      # attempt, is refused before any token request.
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+      flush_token_requests()
+      assert {:error, :attempt_used} = OIDC.finish(attempt, params, @redirect_uri)
+      refute_received {FakeOIDCProvider, :token_requested}
+    end
+
+    test "a provider that promised iss must send it, as a string", %{fake: fake} do
+      fake = %{fake | discovery: %{"authorization_response_iss_parameter_supported" => true}}
+      FakeOIDCProvider.stub(fake)
+      provider = identity_provider_fixture(fake)
+
+      for change <- [&Map.delete(&1, "iss"), &Map.put(&1, "iss", %{"x" => fake.issuer})] do
+        {:ok, url, attempt} = OIDC.start(provider, @redirect_uri)
+        params = fake |> FakeOIDCProvider.authorize(url, claims()) |> change.()
+        flush_token_requests()
+
+        assert {:error, :issuer_mismatch} = OIDC.finish(attempt, params, @redirect_uri)
+        refute_received {FakeOIDCProvider, :token_requested}
+      end
+    end
+
+    test "a token response without an ID token is refused, not raised", %{fake: fake} do
+      fake = %{fake | id_token: false}
+      FakeOIDCProvider.stub(fake)
+      provider = identity_provider_fixture(fake)
+
+      {_attempt, _params, result} = sign_in(fake, provider, claims())
+      assert {:error, :invalid_response} = result
+    end
+  end
+
+  describe "Accounts.finish_provider_sign_in/2" do
+    test "creates nothing once the provider changed after the token exchange", %{
+      fake: fake,
+      provider: provider
+    } do
+      {_attempt, _params, {:ok, result}} = sign_in(fake, provider, claims())
+      {:ok, _} = IdentityProviders.disable(provider, {:operator, "test"})
+
+      assert {:error, :inactive} =
+               Renga.Accounts.finish_provider_sign_in(result, fn _user -> {:ok, :issued} end)
+
+      refute Repo.get_by(Renga.Accounts.User, email: "pat@example.com")
+    end
+
+    test "rolls a new account back when the session is not issued", %{
+      fake: fake,
+      provider: provider
+    } do
+      {_attempt, _params, {:ok, result}} = sign_in(fake, provider, claims())
+
+      assert {:error, :session_failed} =
+               Renga.Accounts.finish_provider_sign_in(result, fn _user ->
+                 {:error, :session_failed}
+               end)
+
+      refute Repo.get_by(Renga.Accounts.User, email: "pat@example.com")
+      refute Repo.get_by(UserIdentity, subject: "subject-1")
     end
   end
 
@@ -202,6 +292,18 @@ defmodule Renga.Accounts.OIDCTest do
 
       assert {:ok, different} = Identities.resolve(other)
       refute different.id == user.id
+    end
+
+    test "an unverified email does not say whether an account uses it", %{
+      fake: fake,
+      provider: provider
+    } do
+      user_fixture(%{email: "pat@example.com"})
+
+      {_attempt, _params, {:ok, result}} =
+        sign_in(fake, provider, claims(%{"email_verified" => false}))
+
+      assert {:error, :unverified_email} = Identities.resolve(result)
     end
 
     test "never links to an existing account by email", %{fake: fake, provider: provider} do

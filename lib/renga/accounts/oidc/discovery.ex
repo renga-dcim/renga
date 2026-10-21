@@ -53,9 +53,9 @@ defmodule Renga.Accounts.OIDC.Discovery do
   def evict(issuer), do: :ets.delete(@table, issuer)
 
   defp load(issuer) do
-    # oidcc requires https endpoints; plain HTTP is allowed only for an
-    # issuer on localhost, which provider validation also allows, for
-    # development against a local identity provider.
+    # oidcc checks only the issuer's own scheme, so the endpoints the
+    # document names are checked below: each must be https, or plain HTTP to
+    # this machine, for development against a local identity provider.
     opts = %{
       request_opts: HTTP.request_opts(),
       quirks: %{allow_unsafe_http: local_http?(issuer)}
@@ -63,6 +63,7 @@ defmodule Renga.Accounts.OIDC.Discovery do
 
     with {:ok, {configuration, configuration_ttl}} <-
            Oidcc.ProviderConfiguration.load_configuration(issuer, opts),
+         :ok <- check_configuration(configuration),
          {:ok, {jwks, jwks_ttl}} <- load_jwks(configuration) do
       ttl = configuration_ttl |> min(jwks_ttl) |> max(@min_ttl) |> min(@max_ttl)
 
@@ -74,6 +75,26 @@ defmodule Renga.Accounts.OIDC.Discovery do
       {:ok, configuration, jwks}
     end
   end
+
+  # The endpoints sign-in sends the browser, the client secret, and the
+  # PKCE verifier to, and where the signing keys come from. PKCE must be
+  # S256: a provider that offers only `plain` would see the verifier itself.
+  defp check_configuration(configuration) do
+    endpoints = [
+      configuration.authorization_endpoint,
+      configuration.token_endpoint,
+      configuration.jwks_uri
+    ]
+
+    cond do
+      not Enum.all?(endpoints, &HTTP.allowed_url?/1) -> {:error, :insecure_endpoint}
+      not s256?(configuration.code_challenge_methods_supported) -> {:error, :no_s256_pkce}
+      true -> :ok
+    end
+  end
+
+  defp s256?(methods) when is_list(methods), do: "S256" in methods
+  defp s256?(_undefined), do: true
 
   defp local_http?(issuer) do
     match?(

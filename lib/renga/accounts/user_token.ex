@@ -28,6 +28,8 @@ defmodule Renga.Accounts.UserToken do
     field :authenticated_at, :utc_datetime_usec
     # The browser session a session token belongs to; see `RengaWeb.UserAuth`.
     field :browser_session_id, :binary_id
+    # When a session from a provider sign-in ends (RFD 15); nil otherwise.
+    field :expires_at, :utc_datetime_usec
     belongs_to :user, Renga.Accounts.User
 
     timestamps(
@@ -83,6 +85,7 @@ defmodule Renga.Accounts.UserToken do
       from token in by_token_and_context_query(token, "session"),
         join: user in assoc(token, :user),
         where: token.inserted_at > ago(@session_validity_in_days, "day"),
+        where: is_nil(token.expires_at) or token.expires_at > ^Renga.Time.utc_now_ms(),
         select: {%{user | authenticated_at: token.authenticated_at}, token.inserted_at}
 
     {:ok, query}

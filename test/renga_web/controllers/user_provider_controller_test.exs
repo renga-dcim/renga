@@ -1,11 +1,13 @@
 defmodule RengaWeb.UserProviderControllerTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
 
   alias Renga.Accounts
   alias Renga.FakeOIDCProvider
+  alias Renga.Repo
 
   setup do
     fake = FakeOIDCProvider.new()
@@ -120,6 +122,48 @@ defmodule RengaWeb.UserProviderControllerTest do
 
     assert redirected_to(conn) == ~p"/users/log-in"
     refute get_session(conn, :user_token)
+  end
+
+  test "a provider session ends at the provider's session lifetime", %{
+    conn: conn,
+    fake: fake
+  } do
+    provider = identity_provider_fixture(fake, %{"session_lifetime_seconds" => 300})
+    {conn, url} = start(conn, provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+    token = get_session(conn, :user_token)
+
+    deadline = Accounts.session_deadline(token)
+    assert_in_delta DateTime.diff(deadline, DateTime.utc_now()), 300, 5
+
+    # Renewing an old session keeps the deadline.
+    eight_days_ago = DateTime.add(DateTime.utc_now(), -8, :day)
+
+    Repo.update_all(where(Accounts.UserToken, token: ^token),
+      set: [inserted_at: eight_days_ago]
+    )
+
+    conn = get(recycle(conn), ~p"/users/settings")
+    assert html_response(conn, 200)
+    assert Accounts.session_deadline(token) == deadline
+
+    Repo.update_all(where(Accounts.UserToken, token: ^token),
+      set: [expires_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+    )
+
+    refute Accounts.get_user_by_session_token(token)
+    conn = get(recycle(conn), ~p"/users/settings")
+    assert redirected_to(conn) == ~p"/users/log-in"
+  end
+
+  test "a connected page leaves when its provider session ends", %{conn: conn} do
+    user = user_fixture()
+    token = Accounts.generate_user_session_token(user, nil, DateTime.add(DateTime.utc_now(), 1))
+    conn = init_test_session(conn, user_token: token)
+
+    {:ok, lv, _html} = live(conn, ~p"/users/settings")
+    assert_redirect(lv, ~p"/users/log-in", 3_000)
   end
 
   test "explains an email that another account uses", %{
