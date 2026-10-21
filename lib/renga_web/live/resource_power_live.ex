@@ -418,6 +418,27 @@ defmodule RengaWeb.ResourcePowerLive do
 
   attr :cable, :any, required: true
 
+  defp port_connection(%{cable: %{power_outlet: %{}}} = assigns) do
+    ~H"""
+    <.link
+      navigate={~p"/inventory/#{@cable.power_outlet.resource}/power"}
+      class="text-link hover:underline"
+    >
+      {@cable.power_outlet.resource.name}
+    </.link>
+    <span class="font-mono">{@cable.power_outlet.name}</span>
+    """
+  end
+
+  defp port_connection(assigns) do
+    ~H"""
+    <span>{@cable.power_feed.panel.name}</span>
+    <span class="font-mono">{@cable.power_feed.name}</span>
+    """
+  end
+
+  attr :cable, :any, required: true
+
   defp outlet_connection(%{cable: nil} = assigns),
     do: ~H"""
     <span class="text-fg-muted">—</span>
