@@ -86,7 +86,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       )
 
     for path <-
-          ~w(/users/settings /organizations /settings/collectors /settings/teams /settings/triage-rules /settings/appearance) do
+          ~w(/users/settings /organizations /settings/collectors /settings/members /settings/teams /settings/triage-rules /settings/appearance) do
       conn
       |> visit(path)
       |> assert_has("body .phx-connected")
