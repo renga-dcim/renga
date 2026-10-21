@@ -97,20 +97,20 @@ defmodule Renga.Power.CablesTest do
     assert Cables.list_cables(scope) == []
   end
 
-  test "the newest claim wins a port and an outlet", context do
+  test "connecting replaces the current cables at both endpoints", context do
     %{scope: scope, psu1: psu1, psu2: psu2, outlet1: outlet1, outlet2: outlet2} = context
 
     {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet1.id})
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_outlet_id: outlet2.id})
+
+    # Moving PSU1 to outlet 2 explicitly replaces both its old cable and the
+    # cable occupying outlet 2 while preserving every assertion as history.
     {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet2.id})
     assert connections(scope) == [{psu1.id, outlet2.id}]
 
-    # PSU2 takes outlet 2. As with data cables, PSU1's older claim on outlet 1
-    # was never retracted, so it holds again until someone says otherwise.
-    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_outlet_id: outlet2.id})
-    assert connections(scope) == Enum.sort([{psu1.id, outlet1.id}, {psu2.id, outlet2.id}])
-
-    {:ok, _} = Cables.disconnect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet1.id})
-    assert connections(scope) == [{psu2.id, outlet2.id}]
+    [current] = Cables.list_cables(scope)
+    assert {:ok, _} = Cables.disconnect_current(scope, current.id)
+    assert connections(scope) == []
   end
 
   test "disconnecting by current cable id cannot retract a replacement", context do
@@ -126,7 +126,7 @@ defmodule Renga.Power.CablesTest do
     [current] = Cables.list_cables(scope)
     assert {:ok, _} = Cables.disconnect_current(scope, current.id)
     assert {:error, :power_connection_stale} = Cables.disconnect_current(scope, current.id)
-    assert connections(scope) == [{psu1.id, outlet1.id}]
+    assert connections(scope) == []
   end
 
   test "a port can be fed straight from a panel feed", %{scope: scope, inlet: inlet} do

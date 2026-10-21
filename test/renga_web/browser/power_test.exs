@@ -37,11 +37,12 @@ defmodule RengaWeb.Browser.PowerTest do
     {pdu, _expected} =
       assigned_server_fixture(scope, "pdu-1", [
         %{kind: "power_port", name: "Inlet"},
-        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}}
+        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}},
+        %{kind: "power_outlet", name: "8", attributes: %{"inlet" => "Inlet"}}
       ])
 
     %{ports: [port]} = Power.list_device_endpoints(scope, server.id)
-    %{outlets: [_outlet]} = Power.list_device_endpoints(scope, pdu.id)
+    %{outlets: [_outlet7, _outlet8]} = Power.list_device_endpoints(scope, pdu.id)
 
     conn =
       add_session_cookie(
@@ -118,8 +119,11 @@ defmodule RengaWeb.Browser.PowerTest do
     |> evaluate("document.querySelector(#{Jason.encode!(connect)}).focus()")
     |> press(":focus", "Enter")
     |> assert_has("#connect-panel [role=dialog]", text: "Connect PSU1")
-    |> press("#connect-panel [role=dialog]", "Escape")
+    |> select("Plugged into", option: "Outlet 8", exact: false)
+    |> click_button("#save-connection", "Connect")
     |> refute_has("#connect-panel [role=dialog]")
+    |> assert_has("#flash-info", text: "PSU1 connected")
+    |> assert_has("#power-port-#{context.port.id} .font-mono", text: "8", exact: true)
     |> assert_has("#{connect}:focus")
     |> click_button("#unplug-port-#{context.port.id}", "Unplug")
     |> assert_has("#power-port-#{context.port.id}", text: "Not recorded")

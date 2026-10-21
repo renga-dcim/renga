@@ -82,8 +82,27 @@ defmodule Renga.Power.Cables do
   Records that a port is plugged into an outlet or feed, as the scope's
   user. The port's and the outlet's earlier cables are replaced.
   """
-  def connect(%Scope{} = scope, attrs),
-    do: put_assertion(scope, normalize_attrs(attrs), "assert")
+  def connect(%Scope{} = scope, attrs) do
+    attrs = normalize_attrs(attrs)
+
+    transaction(scope, fn ->
+      endpoints = endpoints!(scope, attrs, live?: true)
+
+      scope.organization_id
+      |> current_cables_at(endpoints)
+      |> Enum.each(fn cable ->
+        cable
+        |> Map.take(@endpoint_keys)
+        |> create_assertion(scope, "retract")
+        |> unwrap_assertion!()
+      end)
+
+      with {:ok, assertion} <- create_assertion(endpoints, scope, "assert", attrs) do
+        CableReconciler.reconcile(scope)
+        {:ok, assertion}
+      end
+    end)
+  end
 
   @doc "Records that the port is no longer plugged into that outlet or feed."
   def disconnect(%Scope{} = scope, attrs),
@@ -149,24 +168,30 @@ defmodule Renga.Power.Cables do
   end
 
   defp insert_assertion(endpoints, scope, action, attrs \\ %{}) do
+    with {:ok, assertion} <- create_assertion(endpoints, scope, action, attrs) do
+      CableReconciler.reconcile(scope)
+      {:ok, assertion}
+    end
+  end
+
+  defp create_assertion(endpoints, scope, action, attrs \\ %{}) do
     details = if action == "assert", do: Map.take(attrs, @attribute_keys), else: %{}
 
-    assertion =
-      %CableAssertion{organization_id: scope.organization_id, actor_user_id: actor(scope)}
-      |> struct(endpoints)
-      |> CableAssertion.power_changeset(
-        Map.merge(details, %{
-          kind: "operator",
-          action: action,
-          confirmation: "confirmed",
-          asserted_at: Renga.Time.utc_now_ms()
-        })
-      )
-      |> Repo.insert()
-
-    with {:ok, _assertion} <- assertion, do: CableReconciler.reconcile(scope)
-    assertion
+    %CableAssertion{organization_id: scope.organization_id, actor_user_id: actor(scope)}
+    |> struct(endpoints)
+    |> CableAssertion.power_changeset(
+      Map.merge(details, %{
+        kind: "operator",
+        action: action,
+        confirmation: "confirmed",
+        asserted_at: Renga.Time.utc_now_ms()
+      })
+    )
+    |> Repo.insert()
   end
+
+  defp unwrap_assertion!({:ok, assertion}), do: assertion
+  defp unwrap_assertion!({:error, reason}), do: Repo.rollback(reason)
 
   # The port and exactly one of an outlet or a feed, all in the scope's
   # organization. A new connection needs endpoints the devices still have,
@@ -232,6 +257,27 @@ defmodule Renga.Power.Cables do
       :error ->
         nil
     end
+  end
+
+  # A connect action is an explicit move at both selected endpoints. Record
+  # retractions for the displaced current cables before the new assertion so a
+  # later unplug cannot make the cable that the operator replaced current again.
+  defp current_cables_at(organization_id, endpoints) do
+    port_id = endpoints.power_port_id
+
+    endpoint_filter =
+      case endpoints do
+        %{power_outlet_id: outlet_id} ->
+          dynamic([cable], cable.power_port_id == ^port_id or cable.power_outlet_id == ^outlet_id)
+
+        %{power_feed_id: feed_id} ->
+          dynamic([cable], cable.power_port_id == ^port_id or cable.power_feed_id == ^feed_id)
+      end
+
+    Cable
+    |> where([cable], cable.organization_id == ^organization_id and cable.cable_kind == "power")
+    |> where(^endpoint_filter)
+    |> Repo.all()
   end
 
   # Public context functions accept either form-style string keys or ordinary
