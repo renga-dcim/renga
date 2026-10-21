@@ -172,6 +172,9 @@ defmodule Renga.Power.EndpointsTest do
 
   test "migration backfill matches runtime normalization", %{scope: scope} do
     long_connector = String.duplicate("IEC-C13-", 40)
+    surrounding_whitespace = "\t\n\r\u00A0\u2003\u3000"
+    oversized_watts = String.duplicate("9", 131_073)
+    leading_zero_watts = String.duplicate("0", 1_000) <> "42"
 
     {pdu, _expected} =
       assigned_server_fixture(scope, "pdu-normalized", [
@@ -179,9 +182,9 @@ defmodule Renga.Power.EndpointsTest do
           kind: "power_port",
           name: "Inlet A",
           attributes: %{
-            "connector" => long_connector,
-            "maximum_draw_w" => "+7360",
-            "allocated_draw_w" => " 350 "
+            "connector" => surrounding_whitespace <> long_connector <> surrounding_whitespace,
+            "maximum_draw_w" => surrounding_whitespace <> "+7360" <> surrounding_whitespace,
+            "allocated_draw_w" => "\t350\n"
           }
         },
         %{
@@ -190,12 +193,21 @@ defmodule Renga.Power.EndpointsTest do
           attributes: %{"connector" => 123, "allocated_draw_w" => 1.5}
         },
         %{
+          kind: "power_port",
+          name: "bounded",
+          attributes: %{
+            "connector" => surrounding_whitespace,
+            "maximum_draw_w" => oversized_watts,
+            "allocated_draw_w" => leading_zero_watts
+          }
+        },
+        %{
           kind: "power_outlet",
           name: "trimmed",
           attributes: %{
-            "connector" => long_connector,
-            "inlet" => " Inlet A ",
-            "feed_leg" => " A "
+            "connector" => surrounding_whitespace <> long_connector <> surrounding_whitespace,
+            "inlet" => surrounding_whitespace <> "Inlet A" <> surrounding_whitespace,
+            "feed_leg" => surrounding_whitespace <> "A" <> surrounding_whitespace
           }
         },
         %{
@@ -207,6 +219,9 @@ defmodule Renga.Power.EndpointsTest do
 
     runtime = normalized_endpoints(scope, pdu.id)
     assert runtime.ports["Inlet A"].connector == long_connector
+    assert runtime.ports["bounded"].connector == nil
+    assert runtime.ports["bounded"].maximum_draw_w == nil
+    assert runtime.ports["bounded"].default_allocated_draw_w == 42
     assert runtime.outlets["trimmed"].connector == long_connector
 
     Repo.delete_all(Renga.Power.Outlet)

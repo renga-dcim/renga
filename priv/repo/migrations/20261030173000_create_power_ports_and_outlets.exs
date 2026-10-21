@@ -106,8 +106,8 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
       SELECT gen_random_uuid(), expected.organization_id, assignment.resource_id, inlet.id,
              expected.name, expected.label, #{text("connector")},
              CASE WHEN jsonb_typeof(expected.attributes->'feed_leg') = 'string'
-                        AND lower(btrim(expected.attributes->>'feed_leg')) IN ('a', 'b', 'c')
-                  THEN lower(btrim(expected.attributes->>'feed_leg')) END,
+                        AND lower(#{trimmed("feed_leg")}) IN ('a', 'b', 'c')
+                  THEN lower(#{trimmed("feed_leg")}) END,
              now(), now()
       FROM expected_components AS expected
       JOIN hardware_assignments AS assignment ON assignment.id = expected.hardware_assignment_id
@@ -128,11 +128,14 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
 
   # A positive whole number of watts small enough for an integer, or NULL.
   defp watts(key) do
+    value = trimmed(key)
+    significant = "ltrim(ltrim(#{value}, '+'), '0')"
+
     """
     CASE WHEN jsonb_typeof(expected.attributes->'#{key}') IN ('number', 'string')
-              AND btrim(expected.attributes->>'#{key}') ~ '^\\+?[0-9]+$'
-         THEN CASE WHEN (btrim(expected.attributes->>'#{key}'))::numeric BETWEEN 1 AND 999999999
-                   THEN (btrim(expected.attributes->>'#{key}'))::integer END
+              AND #{value} ~ '^\\+?[0-9]+$'
+         THEN CASE WHEN length(#{significant}) BETWEEN 1 AND 9
+                   THEN (#{significant})::integer END
          END
     """
   end
@@ -141,7 +144,16 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
   defp text(key) do
     """
     CASE WHEN jsonb_typeof(expected.attributes->'#{key}') = 'string'
-         THEN NULLIF(btrim(expected.attributes->>'#{key}'), '') END
+         THEN NULLIF(#{trimmed(key)}, '') END
     """
+  end
+
+  # PostgreSQL's one-argument btrim removes only spaces. This explicit set is
+  # Unicode White_Space, which is what Elixir's String.trim/1 removes.
+  defp trimmed(key) do
+    "btrim(expected.attributes->>'#{key}', " <>
+      "U&'\\0009\\000A\\000B\\000C\\000D\\0020\\0085\\00A0\\1680" <>
+      "\\2000\\2001\\2002\\2003\\2004\\2005\\2006\\2007\\2008\\2009\\200A" <>
+      "\\2028\\2029\\202F\\205F\\3000')"
   end
 end
