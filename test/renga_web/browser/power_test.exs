@@ -13,7 +13,7 @@ defmodule RengaWeb.Browser.PowerTest do
   @moduletag :playwright
   @phone [has_touch: true, is_mobile: true, viewport: %{width: 390, height: 844}]
   @tablet [has_touch: true, viewport: %{width: 820, height: 900}]
-  @rack_pdu_name "rack-pdu-with-an-extremely-long-unbroken-identifier-that-must-wrap-in-the-path-panel"
+  @rack_pdu_name "rackpduwithanextremelylongunbrokenidentifierthatmustwrapinthepathpanelwithoutoverflow"
   @floor_pdu_name "floor-pdu-upstream"
 
   setup %{conn: conn} do
