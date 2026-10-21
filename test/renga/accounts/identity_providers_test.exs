@@ -2,6 +2,7 @@ defmodule Renga.Accounts.IdentityProvidersTest do
   # Some tests turn local sign-in off for the whole application.
   use Renga.DataCase, async: false
 
+  import Ecto.Query
   import Renga.AccountsFixtures
 
   alias Renga.Accounts.IdentityProvider
@@ -366,6 +367,48 @@ defmodule Renga.Accounts.IdentityProvidersTest do
         assert revision.client_secret_key_id == "new"
         assert {:ok, "s3cret"} = IdentityProviders.client_secret(revision)
         assert "secret_reencrypted" in event_kinds(provider)
+      after
+        Application.put_env(:renga, Renga.Vault, previous)
+      end
+    end
+
+    test "reseals every revision of a provider at once, or none" do
+      previous = Application.get_env(:renga, Renga.Vault)
+      old = Base.encode64(:crypto.strong_rand_bytes(32))
+      new = Base.encode64(:crypto.strong_rand_bytes(32))
+
+      try do
+        Application.put_env(:renga, Renga.Vault, keys: "old:#{old}")
+        {provider, first} = create()
+
+        {:ok, {provider, second}} =
+          IdentityProviders.propose_revision(provider, %{"client_secret" => "other"}, @operator)
+
+        # A ciphertext that no longer decrypts stops the whole run.
+        Repo.update_all(where(IdentityProviderRevision, id: ^second.id),
+          set: [client_secret_ciphertext: :crypto.strong_rand_bytes(48)]
+        )
+
+        Application.put_env(:renga, Renga.Vault, keys: "new:#{new},old:#{old}")
+        assert {:error, _} = IdentityProviders.reencrypt_secrets(@operator)
+        assert Repo.get!(IdentityProviderRevision, first.id).client_secret_key_id == "old"
+        assert IdentityProviders.get(provider.id).version == provider.version
+        refute "secret_reencrypted" in event_kinds(provider)
+
+        # A third revision sealed by the old key replaces the broken one.
+        Application.put_env(:renga, Renga.Vault, keys: "old:#{old}")
+
+        {:ok, {provider, _third}} =
+          IdentityProviders.propose_revision(provider, %{"client_secret" => "third"}, @operator)
+
+        Application.put_env(:renga, Renga.Vault, keys: "new:#{new},old:#{old}")
+
+        Repo.update_all(where(IdentityProviderRevision, id: ^second.id),
+          set: [client_secret_ciphertext: nil, client_secret_key_id: nil]
+        )
+
+        assert {:ok, 2} = IdentityProviders.reencrypt_secrets(@operator)
+        assert IdentityProviders.get(provider.id).version == provider.version + 1
       after
         Application.put_env(:renga, Renga.Vault, previous)
       end

@@ -157,7 +157,8 @@ defmodule Renga.Accounts.IdentityProviders do
 
   @doc """
   Turns sign-in through the provider off. Refused with
-  `{:error, :last_sign_in_method}` when nothing else could sign in.
+  `{:error, :last_sign_in_method}` when it is the deployment's last way to
+  sign in.
   """
   def disable(%IdentityProvider{id: id}, actor), do: set_enabled(id, false, actor)
 
@@ -175,7 +176,8 @@ defmodule Renga.Accounts.IdentityProviders do
 
   @doc """
   Removes the provider. Its ID stays reserved, its revisions lose their
-  secrets, and the change is refused when nothing else could sign in.
+  secrets, and the change is refused when the provider is the deployment's
+  last way to sign in.
   """
   def remove(%IdentityProvider{id: id}, actor) do
     change_provider(id, fn provider ->
