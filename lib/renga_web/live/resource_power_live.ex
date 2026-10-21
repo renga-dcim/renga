@@ -10,7 +10,9 @@ defmodule RengaWeb.ResourcePowerLive do
   override restores the default.
 
   Each port shows its power path: the outlets and PDUs it passes through on
-  the way to a panel feed, or where that path stops. Each outlet shows what
+  the way to a panel feed, or where that path stops. A device with more than
+  one port shows whether those paths make it redundant, by the sides of the
+  feeds they reach (`Renga.Power.Redundancy`). Each outlet shows what
   it powers. Owners and admins record a connection or unplug
   one; both are confirmed power cable claims (RFD 10 phase 2b).
   """
@@ -28,6 +30,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Paths
   alias Renga.Power.Port
   alias Renga.Power.PowerFactor
+  alias Renga.Power.Redundancy
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -200,6 +203,7 @@ defmodule RengaWeb.ResourcePowerLive do
                 </span>
               </p>
             </div>
+            <.redundancy redundancy={@redundancy} />
             <.table
               id="power-ports"
               rows={@ports}
@@ -675,6 +679,72 @@ defmodule RengaWeb.ResourcePowerLive do
   defp edit_port(port),
     do: "edit_port" |> JS.push(value: %{id: port.id}) |> show_overlay("allocation-panel")
 
+  attr :redundancy, Redundancy, required: true
+
+  defp redundancy(%{redundancy: %Redundancy{status: :none}} = assigns), do: ~H""
+
+  defp redundancy(assigns) do
+    ~H"""
+    <p
+      id="power-redundancy"
+      data-status={@redundancy.status}
+      class={[
+        "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
+        @redundancy.status == :not_redundant && "border-warn-line bg-warn-fill text-warn-text",
+        @redundancy.status != :not_redundant && "border-edge bg-surface text-fg"
+      ]}
+    >
+      <.icon
+        name={redundancy_icon(@redundancy.status)}
+        class={"mt-0.5 size-4 shrink-0 #{redundancy_icon_class(@redundancy.status)}"}
+      />
+      <span>
+        <span class="font-medium">{redundancy_label(@redundancy)}</span>
+        <span :if={redundancy_note(@redundancy)} class="block text-xs">
+          {redundancy_note(@redundancy)}
+        </span>
+      </span>
+    </p>
+    """
+  end
+
+  defp redundancy_icon(:redundant), do: "hero-check-circle-mini"
+  defp redundancy_icon(:not_redundant), do: "hero-exclamation-triangle-mini"
+  defp redundancy_icon(:single_supply), do: "hero-minus-circle-mini"
+
+  defp redundancy_icon_class(:redundant), do: "text-ok"
+  defp redundancy_icon_class(:single_supply), do: "text-fg-muted"
+  defp redundancy_icon_class(_status), do: ""
+
+  defp redundancy_label(%Redundancy{status: :redundant, sides: sides}),
+    do: "Redundant: reaches sides #{Enum.map_join(sides, " and ", &String.upcase/1)}"
+
+  defp redundancy_label(%Redundancy{status: :not_redundant}), do: "Not redundant"
+  defp redundancy_label(%Redundancy{status: :single_supply}), do: "Single supply"
+
+  defp redundancy_note(%Redundancy{status: :redundant, feeds: feeds}),
+    do: "Through #{Enum.map_join(feeds, ", ", &feed_with_side/1)}."
+
+  defp redundancy_note(%Redundancy{status: :not_redundant} = redundancy) do
+    [
+      redundancy.feeds == [] && "No port reaches a feed yet",
+      match?([_], redundancy.sides) &&
+        "Every fed port reaches side #{String.upcase(hd(redundancy.sides))}",
+      redundancy.feeds != [] && redundancy.unfed != [] &&
+        "#{Enum.map_join(redundancy.unfed, ", ", & &1.name)} #{if match?([_], redundancy.unfed), do: "reaches", else: "reach"} no feed",
+      redundancy.sideless != [] &&
+        "#{Enum.map_join(redundancy.sideless, ", ", & &1.name)} #{if match?([_], redundancy.sideless), do: "has", else: "have"} no side"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join("; ")
+    |> Kernel.<>(".")
+  end
+
+  defp redundancy_note(%Redundancy{}), do: nil
+
+  defp feed_with_side(%{side: nil} = feed), do: feed.name
+  defp feed_with_side(feed), do: "#{feed.name} (#{String.upcase(feed.side)})"
+
   defp show_path(path),
     do: "show_path" |> JS.push(value: %{id: path.port.id}) |> show_overlay("path-panel")
 
@@ -696,6 +766,7 @@ defmodule RengaWeb.ResourcePowerLive do
       outlets: outlets,
       cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
       paths_by_port: Map.new(paths, &{&1.port.id, &1}),
+      redundancy: Redundancy.of(paths),
       selected_path: Enum.find(paths, &(&1.port.id == selected_path_id)),
       cables_by_outlet:
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),

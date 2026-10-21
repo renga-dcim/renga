@@ -238,6 +238,41 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     refute has_element?(view, "#retired-power-connections")
   end
 
+  test "shows whether the ports reach feeds on two sides", %{conn: conn, scope: scope} do
+    {:ok, site} = Renga.DCIM.create_site(scope, %{name: "DC1"}, %{slug: "dc1"})
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+
+    [a1, a2, b1] =
+      for {name, side} <- [{"A1", "a"}, {"A2", "a"}, {"B1", "b"}] do
+        {:ok, feed} =
+          Power.create_feed(scope, panel.id, %{
+            name: name,
+            side: side,
+            phase: "single",
+            voltage: "230",
+            amperage: "16"
+          })
+
+        feed
+      end
+
+    server = server!(scope)
+    %{ports: [psu1, psu2]} = Power.list_device_endpoints(scope, server.id)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    assert has_element?(view, "#power-redundancy[data-status=not_redundant]", "No port reaches")
+
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_feed_id: a1.id})
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_feed_id: a2.id})
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    assert has_element?(view, "#power-redundancy", "Every fed port reaches side A")
+
+    # Moving PSU2 to side B makes the device redundant.
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_feed_id: b1.id})
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    assert has_element?(view, "#power-redundancy[data-status=redundant]", "sides A and B")
+    assert has_element?(view, "#power-redundancy", "A1 (A), B1 (B)")
+  end
+
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
     server = server!(scope)
     {member_conn, _scope} = sign_in(conn, organization, "member")
