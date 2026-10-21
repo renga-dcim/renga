@@ -113,6 +113,22 @@ defmodule Renga.Power.CablesTest do
     assert connections(scope) == [{psu2.id, outlet2.id}]
   end
 
+  test "disconnecting by current cable id cannot retract a replacement", context do
+    %{scope: scope, psu1: psu1, outlet1: outlet1, outlet2: outlet2} = context
+
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet1.id})
+    [old_cable] = Cables.list_cables(scope)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: outlet2.id})
+
+    assert {:error, :power_connection_stale} = Cables.disconnect_current(scope, old_cable.id)
+    assert connections(scope) == [{psu1.id, outlet2.id}]
+
+    [current] = Cables.list_cables(scope)
+    assert {:ok, _} = Cables.disconnect_current(scope, current.id)
+    assert {:error, :power_connection_stale} = Cables.disconnect_current(scope, current.id)
+    assert connections(scope) == [{psu1.id, outlet1.id}]
+  end
+
   test "a port can be fed straight from a panel feed", %{scope: scope, inlet: inlet} do
     feed = feed!(scope)
 
@@ -206,6 +222,61 @@ defmodule Renga.Power.CablesTest do
 
     assert {:ok, _} = Cables.delete_plan(scope, plan)
     assert Cables.list_plans(scope) == []
+  end
+
+  test "string and atom keys persist and validate the same cable attributes", context do
+    %{scope: scope, psu1: psu1, psu2: psu2, outlet1: outlet1, outlet2: outlet2} = context
+    attributes = %{label: "web feed", status: "connected", metadata: %{"source" => "test"}}
+
+    assert {:ok, atom_assertion} =
+             Cables.connect(
+               scope,
+               Map.merge(attributes, %{power_port_id: psu1.id, power_outlet_id: outlet1.id})
+             )
+
+    assert {:ok, string_assertion} =
+             Cables.connect(scope, %{
+               "power_port_id" => psu2.id,
+               "power_outlet_id" => outlet2.id,
+               "label" => attributes.label,
+               "status" => attributes.status,
+               "metadata" => attributes.metadata
+             })
+
+    assert Map.take(atom_assertion, [:label, :status, :metadata]) ==
+             Map.take(string_assertion, [:label, :status, :metadata])
+
+    plan_attributes = Map.put(attributes, :status, "planned")
+
+    assert {:ok, atom_plan} =
+             Cables.put_plan(
+               scope,
+               Map.merge(plan_attributes, %{
+                 power_port_id: psu1.id,
+                 power_outlet_id: outlet1.id
+               })
+             )
+
+    assert {:ok, string_plan} =
+             Cables.put_plan(scope, %{
+               "power_port_id" => psu2.id,
+               "power_outlet_id" => outlet2.id,
+               "label" => plan_attributes.label,
+               "status" => plan_attributes.status,
+               "metadata" => plan_attributes.metadata
+             })
+
+    assert Map.take(atom_plan, [:label, :status, :metadata]) ==
+             Map.take(string_plan, [:label, :status, :metadata])
+
+    assert {:error, changeset} =
+             Cables.connect(scope, %{
+               "power_port_id" => psu1.id,
+               "power_outlet_id" => outlet1.id,
+               "status" => "invalid"
+             })
+
+    assert "is invalid" in errors_on(changeset).status
   end
 
   test "only owners and admins record connections", context do

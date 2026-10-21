@@ -95,17 +95,15 @@ defmodule RengaWeb.ResourcePowerLive do
   end
 
   def handle_event("unplug_port", %{"id" => id}, socket) do
-    cable = socket.assigns.cables_by_port[id]
-
-    result =
-      Cables.disconnect(
-        socket.assigns.current_scope,
-        Map.take(cable, [:power_port_id, :power_outlet_id, :power_feed_id])
-      )
-
-    case result do
+    case Cables.disconnect_current(socket.assigns.current_scope, id) do
       {:ok, _retraction} ->
         {:noreply, socket |> put_flash(:info, "Unplugged") |> load_endpoints()}
+
+      {:error, :power_connection_stale} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That connection has already changed")
+         |> load_endpoints()}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, connection_error(reason))}
@@ -232,7 +230,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     type="button"
                     size="sm"
                     phx-click="unplug_port"
-                    phx-value-id={port.id}
+                    phx-value-id={@cables_by_port[port.id].id}
                   >
                     Unplug
                   </.button>
@@ -260,6 +258,52 @@ defmodule RengaWeb.ResourcePowerLive do
               <:col :let={outlet} label="Powers">
                 <.outlet_connection cable={@cables_by_outlet[outlet.id]} />
               </:col>
+            </.table>
+          </section>
+
+          <section
+            :if={@retired_cables != []}
+            aria-labelledby="retired-power-connections-heading"
+            class="space-y-2"
+          >
+            <div>
+              <h2 id="retired-power-connections-heading" class="text-sm font-semibold">
+                Retired hardware connections
+              </h2>
+              <p class="text-xs text-fg-muted">
+                These connections remain recorded although this hardware type no longer defines the
+                local endpoint.
+              </p>
+            </div>
+            <.table
+              id="retired-power-connections"
+              rows={@retired_cables}
+              row_id={&"retired-power-connection-#{&1.id}"}
+            >
+              <:col :let={cable} label="Retired endpoint">
+                <span class="font-mono">{retired_endpoint_label(cable, @resource.id)}</span>
+              </:col>
+              <:col :let={cable} label="Connected to">
+                <.port_connection
+                  :if={local_port?(cable, @resource.id)}
+                  cable={cable}
+                />
+                <.outlet_connection
+                  :if={!local_port?(cable, @resource.id)}
+                  cable={cable}
+                />
+              </:col>
+              <:action :let={cable} :if={@can_manage?}>
+                <.button
+                  id={"unplug-retired-cable-#{cable.id}"}
+                  type="button"
+                  size="sm"
+                  phx-click="unplug_port"
+                  phx-value-id={cable.id}
+                >
+                  Unplug
+                </.button>
+              </:action>
             </.table>
           </section>
         </div>
@@ -403,6 +447,23 @@ defmodule RengaWeb.ResourcePowerLive do
   defp target_attrs("feed:" <> id), do: %{power_feed_id: id}
   defp target_attrs(_target), do: nil
 
+  defp local_port?(%{power_port: %{resource_id: resource_id}}, resource_id), do: true
+  defp local_port?(_cable, _resource_id), do: false
+
+  defp retired_endpoint_label(cable, resource_id) do
+    if local_port?(cable, resource_id),
+      do: "Port #{cable.power_port.name}",
+      else: "Outlet #{cable.power_outlet.name}"
+  end
+
+  defp retired_for_resource?(cable, resource_id) do
+    (local_port?(cable, resource_id) and not is_nil(cable.power_port.retired_at)) or
+      match?(
+        %{resource_id: ^resource_id, retired_at: retired_at} when not is_nil(retired_at),
+        cable.power_outlet
+      )
+  end
+
   defp connection_error(:forbidden), do: "You are not allowed to manage power inventory"
   defp connection_error(:power_loop), do: "A device's outlet cannot power its own port"
 
@@ -430,6 +491,7 @@ defmodule RengaWeb.ResourcePowerLive do
       cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
       cables_by_outlet:
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
+      retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
       unallocated: unallocated,
       allocated_total: if(unallocated == 0, do: Enum.sum(allocations))
     )

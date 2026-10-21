@@ -26,6 +26,7 @@ defmodule Renga.Power.Cables do
 
   @endpoint_keys ~w(power_port_id power_outlet_id power_feed_id)a
   @attribute_keys ~w(cable_type status label color length_value length_unit description metadata)a
+  @input_keys @endpoint_keys ++ @attribute_keys
 
   @doc """
   Current power cables touching any of `resource_ids`' ports or outlets, or
@@ -81,13 +82,37 @@ defmodule Renga.Power.Cables do
   Records that a port is plugged into an outlet or feed, as the scope's
   user. The port's and the outlet's earlier cables are replaced.
   """
-  def connect(%Scope{} = scope, attrs), do: put_assertion(scope, attrs, "assert")
+  def connect(%Scope{} = scope, attrs),
+    do: put_assertion(scope, normalize_attrs(attrs), "assert")
 
   @doc "Records that the port is no longer plugged into that outlet or feed."
-  def disconnect(%Scope{} = scope, attrs), do: put_assertion(scope, attrs, "retract")
+  def disconnect(%Scope{} = scope, attrs),
+    do: put_assertion(scope, normalize_attrs(attrs), "retract")
+
+  @doc """
+  Retracts the exact current power cable named by `cable_id`.
+
+  Unlike endpoint-based disconnection, this rejects a stale identifier rather
+  than unplugging whichever newer cable now occupies the same port.
+  """
+  def disconnect_current(%Scope{} = scope, cable_id) do
+    transaction(scope, fn ->
+      case current_cable(scope.organization_id, cable_id) do
+        nil ->
+          Repo.rollback(:power_connection_stale)
+
+        cable ->
+          cable
+          |> Map.take(@endpoint_keys)
+          |> insert_assertion(scope, "retract")
+      end
+    end)
+  end
 
   @doc "Records or updates the intended connection for a port and an outlet or feed."
   def put_plan(%Scope{} = scope, attrs) do
+    attrs = normalize_attrs(attrs)
+
     transaction(scope, fn ->
       endpoints = endpoints!(scope, attrs, live?: true)
 
@@ -119,24 +144,28 @@ defmodule Renga.Power.Cables do
   defp put_assertion(scope, attrs, action) do
     transaction(scope, fn ->
       endpoints = endpoints!(scope, attrs, live?: action == "assert")
-      details = if action == "assert", do: Map.take(attrs, @attribute_keys), else: %{}
-
-      assertion =
-        %CableAssertion{organization_id: scope.organization_id, actor_user_id: actor(scope)}
-        |> struct(endpoints)
-        |> CableAssertion.power_changeset(
-          Map.merge(details, %{
-            kind: "operator",
-            action: action,
-            confirmation: "confirmed",
-            asserted_at: Renga.Time.utc_now_ms()
-          })
-        )
-        |> Repo.insert()
-
-      with {:ok, _assertion} <- assertion, do: CableReconciler.reconcile(scope)
-      assertion
+      insert_assertion(endpoints, scope, action, attrs)
     end)
+  end
+
+  defp insert_assertion(endpoints, scope, action, attrs \\ %{}) do
+    details = if action == "assert", do: Map.take(attrs, @attribute_keys), else: %{}
+
+    assertion =
+      %CableAssertion{organization_id: scope.organization_id, actor_user_id: actor(scope)}
+      |> struct(endpoints)
+      |> CableAssertion.power_changeset(
+        Map.merge(details, %{
+          kind: "operator",
+          action: action,
+          confirmation: "confirmed",
+          asserted_at: Renga.Time.utc_now_ms()
+        })
+      )
+      |> Repo.insert()
+
+    with {:ok, _assertion} <- assertion, do: CableReconciler.reconcile(scope)
+    assertion
   end
 
   # The port and exactly one of an outlet or a feed, all in the scope's
@@ -144,8 +173,8 @@ defmodule Renga.Power.Cables do
   # and never loops a device's outlet back into its own port.
   defp endpoints!(scope, attrs, live?: live?) do
     endpoints =
-      @endpoint_keys
-      |> Map.new(&{&1, attrs[&1] || attrs[Atom.to_string(&1)]})
+      attrs
+      |> Map.take(@endpoint_keys)
       |> Map.reject(fn {_key, id} -> id in [nil, ""] end)
 
     port = fetch(Port, scope, endpoints[:power_port_id])
@@ -190,6 +219,38 @@ defmodule Renga.Power.Cables do
 
   defp retired?(%{retired_at: retired_at}), do: not is_nil(retired_at)
   defp retired?(_feed), do: false
+
+  defp current_cable(organization_id, cable_id) do
+    case Ecto.UUID.cast(cable_id) do
+      {:ok, cable_id} ->
+        Repo.get_by(Cable,
+          organization_id: organization_id,
+          cable_kind: "power",
+          id: cable_id
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  # Public context functions accept either form-style string keys or ordinary
+  # atom keys. Normalize only the fixed cable vocabulary; never atomize caller
+  # input dynamically.
+  defp normalize_attrs(attrs) do
+    Enum.reduce(@input_keys, %{}, fn key, normalized ->
+      cond do
+        Map.has_key?(attrs, key) ->
+          Map.put(normalized, key, Map.get(attrs, key))
+
+        Map.has_key?(attrs, to_string(key)) ->
+          Map.put(normalized, key, Map.get(attrs, to_string(key)))
+
+        true ->
+          normalized
+      end
+    end)
+  end
 
   defp maybe_touching(query, nil), do: query
 
