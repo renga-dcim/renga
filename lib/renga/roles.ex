@@ -15,10 +15,12 @@ defmodule Renga.Roles do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Assignments
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
   alias Renga.Repo
+  alias Renga.Roles.Assignment
   alias Renga.Roles.Role
 
   @doc "UI hint for `roles.manage`."
@@ -29,9 +31,7 @@ defmodule Renga.Roles do
   The transaction re-reads the actor's role before relying on it.
   """
   def grantable_permissions(%Scope{} = scope) do
-    if can_manage?(scope),
-      do: scope.roles |> Enum.flat_map(&Authorization.grantable_permissions/1) |> Enum.uniq(),
-      else: []
+    if can_manage?(scope), do: Authorization.grantable_permissions(scope.roles), else: []
   end
 
   @doc "The organization's custom roles by name."
@@ -84,13 +84,19 @@ defmodule Renga.Roles do
     end)
   end
 
-  @doc "Deletes a custom role whose permissions are within the actor's ceiling."
+  @doc """
+  Deletes a custom role whose permissions are within the actor's ceiling,
+  and with it every assignment of the role. Activity records how many
+  assignments went with it.
+  """
   def delete_role(%Scope{} = scope, %Role{} = role) do
     managed(scope, fn ceiling ->
       with {:ok, current} <- lock_role(scope, role.id),
            :ok <- within_ceiling(current.permissions, ceiling),
+           assignments = Repo.aggregate(where(Assignment, role_id: ^current.id), :count),
+           :ok <- Assignments.record_expired_for_role!(scope.organization_id, current.id),
            {:ok, deleted} <- Repo.delete(current) do
-        record!(scope, "role_deleted", current, nil)
+        record!(scope, "role_deleted", current, nil, %{"assignments" => assignments})
         {:ok, deleted}
       end
     end)
@@ -101,7 +107,7 @@ defmodule Renga.Roles do
   defp managed(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "roles.manage")
-      ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_permissions()
+      ceiling = scope |> Authorization.current_roles!() |> Authorization.grantable_permissions()
 
       case mutation.(ceiling) do
         {:ok, result} -> result
@@ -134,14 +140,14 @@ defmodule Renga.Roles do
     end
   end
 
-  defp record!(scope, kind, before, after_role) do
+  defp record!(scope, kind, before, after_role, metadata \\ %{}) do
     %ChangeEvent{organization_id: scope.organization_id, actor_user_id: scope.user.id}
     |> ChangeEvent.changeset(%{
       kind: kind,
       field: "role",
       old_value: role_value(before),
       new_value: role_value(after_role),
-      metadata: %{"role_id" => (after_role || before).id},
+      metadata: Map.put(metadata, "role_id", (after_role || before).id),
       occurred_at: Renga.Time.utc_now_ms()
     })
     |> Repo.insert!()

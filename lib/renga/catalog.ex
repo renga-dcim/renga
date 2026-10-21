@@ -527,7 +527,7 @@ defmodule Renga.Catalog do
   end
 
   def install_module(%Scope{} = scope, module_bay_id, module_id, attrs \\ %{}) do
-    reconciliation_transaction(scope, fn ->
+    reconciliation_transaction(scope, "catalog.author", fn ->
       lock_module_hierarchy(scope.organization_id)
       bay = scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
       module = scoped_lock!(Module, scope.organization_id, module_id)
@@ -540,7 +540,7 @@ defmodule Renga.Catalog do
   end
 
   def remove_module(%Scope{} = scope, module_bay_id, attrs \\ %{}) do
-    reconciliation_transaction(scope, fn ->
+    reconciliation_transaction(scope, "catalog.author", fn ->
       lock_module_hierarchy(scope.organization_id)
       bay = scoped_lock!(ModuleBay, scope.organization_id, module_bay_id)
 
@@ -2630,9 +2630,12 @@ defmodule Renga.Catalog do
     |> Renga.Inventory.Changes.broadcast(scope.organization_id)
   end
 
-  defp reconciliation_transaction(%Scope{} = scope, mutation) do
+  defp reconciliation_transaction(%Scope{} = scope, mutation),
+    do: reconciliation_transaction(scope, "inventory.reconcile", mutation)
+
+  defp reconciliation_transaction(%Scope{} = scope, human_permission, mutation) do
     Repo.transaction(fn ->
-      authorize_reconciler!(scope)
+      authorize_reconciler!(scope, human_permission)
 
       case mutation.() do
         {:ok, result} -> result
@@ -2646,12 +2649,13 @@ defmodule Renga.Catalog do
   defp authorize_catalog_author!(%Scope{} = scope, permission \\ "catalog.author"),
     do: Authorization.authorize!(scope, permission)
 
-  # Agents reconcile as the catalog reconciler; people need catalog.author,
-  # which every role holding inventory.reconcile also holds.
-  defp authorize_reconciler!(%Scope{user: nil} = scope),
+  # Agents retain their dedicated principal. Human reconciliation and module
+  # authoring are separate permissions even though built-in roles bundle them.
+  defp authorize_reconciler!(%Scope{user: nil} = scope, _human_permission),
     do: Authorization.authorize_system!(scope, "catalog_reconciler")
 
-  defp authorize_reconciler!(%Scope{} = scope), do: authorize_catalog_author!(scope)
+  defp authorize_reconciler!(%Scope{} = scope, human_permission),
+    do: authorize_catalog_author!(scope, human_permission)
 
   defp insert_or_rollback(changeset) do
     case Repo.insert(changeset) do

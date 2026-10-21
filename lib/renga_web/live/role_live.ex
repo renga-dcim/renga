@@ -3,13 +3,16 @@ defmodule RengaWeb.RoleLive do
   Settings → Roles: the four built-in roles and the organization's custom
   roles, each with the permissions it grants (RFD 17, "Roles"). Holders of
   `roles.manage` define, change, and delete custom roles in a side panel
-  that offers only the permissions within their grant ceiling. Everyone
-  else reads the list. Renga.Roles re-checks all of it.
+  that offers only the permissions within their grant ceiling. Each role
+  shows how many people hold it, so a change's reach is visible before it
+  is saved. Everyone else reads the list. Renga.Roles re-checks all of it.
   """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Authorization
   alias Renga.Inventory.Changes
   alias Renga.Roles
@@ -26,6 +29,7 @@ defmodule RengaWeb.RoleLive do
        page_title: "Roles",
        can_manage?: Roles.can_manage?(scope),
        grantable: Roles.grantable_permissions(scope),
+       expiry_timer: nil,
        editing: nil
      )
      |> assign_form(%Role{})
@@ -87,13 +91,78 @@ defmodule RengaWeb.RoleLive do
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_roles(socket)}
 
+  def handle_info(:assignment_expiry, socket),
+    do: {:noreply, socket |> assign(:expiry_timer, nil) |> load_roles()}
+
   defp refusal(:forbidden),
     do: "That needs roles.manage, and every permission in the role must be one you may grant."
 
   defp refusal(_reason), do: "That role no longer exists."
 
-  defp load_roles(socket),
-    do: assign(socket, :roles, Roles.list_roles(socket.assigns.current_scope))
+  defp load_roles(socket) do
+    previous = socket.assigns.current_scope
+    scope = Accounts.scope_for_user(previous.user, previous.organization_id)
+
+    if scope.organization_id == previous.organization_id do
+      can_manage? = Roles.can_manage?(scope)
+      roles = Roles.list_roles(scope)
+      editing = selected(socket.assigns.editing, roles, can_manage?)
+
+      socket
+      |> assign(
+        current_scope: scope,
+        can_manage?: can_manage?,
+        grantable: Roles.grantable_permissions(scope),
+        roles: roles,
+        usage: Assignments.role_usage(scope),
+        editing: editing
+      )
+      |> reset_deleted_editor(socket.assigns.editing, editing)
+      |> schedule_expiry(scope)
+    else
+      push_navigate(socket, to: ~p"/organizations")
+    end
+  end
+
+  defp selected(_editing, _roles, false), do: nil
+  defp selected(nil, _roles, true), do: nil
+  defp selected(editing, roles, true), do: Enum.find(roles, &(&1.id == editing.id))
+
+  defp reset_deleted_editor(socket, %Role{}, nil),
+    do: socket |> close_overlay("role-panel") |> assign_form(%Role{})
+
+  defp reset_deleted_editor(socket, _previous, _editing), do: socket
+
+  defp schedule_expiry(socket, scope) do
+    if socket.assigns.expiry_timer, do: Process.cancel_timer(socket.assigns.expiry_timer)
+
+    timer =
+      if connected?(socket) do
+        case Assignments.next_expiry(scope) do
+          nil ->
+            nil
+
+          deadline ->
+            delay =
+              deadline
+              |> DateTime.diff(Renga.Time.utc_now_ms(), :millisecond)
+              |> max(1)
+              |> min(2_147_483_647)
+
+            Process.send_after(self(), :assignment_expiry, delay)
+        end
+      end
+
+    assign(socket, :expiry_timer, timer)
+  end
+
+  defp people(usage, role) do
+    case Map.get(usage, role.id) do
+      nil -> "Nobody"
+      %{people: 1} -> "1 person"
+      %{people: people} -> "#{people} people"
+    end
+  end
 
   defp assign_form(socket, role), do: assign(socket, :form, to_form(Roles.change_role(role)))
 
@@ -146,6 +215,11 @@ defmodule RengaWeb.RoleLive do
             <:col :let={role} label="Permissions">
               <span class="font-mono text-xs text-fg-muted">
                 {Enum.join(role.permissions, ", ")}
+              </span>
+            </:col>
+            <:col :let={role} label="Held by" class="w-28">
+              <span id={"role-#{role.id}-people"} class="text-sm text-fg-muted">
+                {people(@usage, role)}
               </span>
             </:col>
             <:action :let={role} :if={@can_manage?}>
@@ -201,14 +275,19 @@ defmodule RengaWeb.RoleLive do
         confirm_label="Delete role"
         on_confirm={JS.push("delete", value: %{id: role.id})}
       >
-        Nobody can hold it afterwards.
+        {people(@usage, role)} with it will lose it, and nobody can hold it afterwards.
       </.confirm_dialog>
 
       <.side_panel
         :if={@can_manage?}
         id="role-panel"
         title={if @editing, do: "Edit #{@editing.name}", else: "New role"}
-        description="Changing a role changes access for everyone who holds it."
+        description={
+          if @editing,
+            do:
+              "Changing this role changes access for #{String.downcase(people(@usage, @editing))} who hold it.",
+            else: "Give it to people from Settings → Members."
+        }
       >
         <.form for={@form} id="role-form" phx-submit="save">
           <.input field={@form[:name]} type="text" label="Name" required autocomplete="off" />

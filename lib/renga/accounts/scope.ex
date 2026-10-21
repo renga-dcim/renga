@@ -24,7 +24,8 @@ defmodule Renga.Accounts.Scope do
             organization: nil,
             organization_id: nil,
             membership_id: nil,
-            roles: []
+            roles: [],
+            permissions: []
 
   @doc """
   Creates a scope for the given user.
@@ -58,18 +59,23 @@ defmodule Renga.Accounts.Scope do
 
   Web requests should prefer this shape after organization selection so context
   calls have both the human actor and the tenant boundary available.
+
+  `assigned` carries what the membership's current assignments add: further
+  built-in roles, and the permissions of custom roles.
   """
   def for_membership(
         %User{} = user,
         %Organization{} = organization,
-        %OrganizationMembership{} = membership
+        %OrganizationMembership{} = membership,
+        {assigned_roles, assigned_permissions} \\ {[], []}
       ) do
     %__MODULE__{
       user: user,
       organization: organization,
       organization_id: organization.id,
       membership_id: membership.id,
-      roles: [membership.role]
+      roles: Enum.uniq([membership.role | assigned_roles]),
+      permissions: assigned_permissions
     }
   end
 end

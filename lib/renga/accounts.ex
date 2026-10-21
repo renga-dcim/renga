@@ -127,14 +127,16 @@ defmodule Renga.Accounts do
   end
 
   @doc """
-  Active members of the caller's organization with one of `roles`, users
-  preloaded and ordered by email, for pickers such as a finding's assignee.
+  Active members of the caller's organization who hold `permission`, through
+  their base role or an assignment, users preloaded and ordered by email, for
+  pickers such as a finding's assignee.
   """
-  def list_active_members(%Scope{organization_id: organization_id}, roles) when is_list(roles) do
+  def list_active_members(%Scope{organization_id: organization_id}, permission) do
     OrganizationMembership
     |> join(:inner, [membership], user in assoc(membership, :user))
     |> where([membership], membership.organization_id == ^organization_id)
-    |> where([membership], membership.status == "active" and membership.role in ^roles)
+    |> where([membership], membership.status == "active")
+    |> Authorization.holding(permission)
     |> order_by([_membership, user], asc: user.email)
     |> preload([_membership, user], user: user)
     |> Repo.all()
@@ -234,7 +236,8 @@ defmodule Renga.Accounts do
 
     case membership do
       %OrganizationMembership{organization: %Organization{} = organization} ->
-        Scope.for_membership(user, organization, membership)
+        assigned = Authorization.assigned_access(membership.id)
+        Scope.for_membership(user, organization, membership, assigned)
 
       _ ->
         Scope.for_user(user)

@@ -73,7 +73,7 @@ defmodule Renga.Findings do
   @doc "People a finding can be assigned to: active members who hold `findings.act`."
   def assignable_users(%Scope{} = scope) do
     scope
-    |> Accounts.list_active_members(Authorization.roles_granting("findings.act"))
+    |> Accounts.list_active_members("findings.act")
     |> Enum.map(& &1.user)
   end
 
@@ -493,7 +493,7 @@ defmodule Renga.Findings do
     |> where([membership], membership.organization_id == ^organization_id)
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^Authorization.roles_granting("findings.act"))
+    |> Authorization.holding("findings.act")
     |> Repo.exists?()
     |> if(do: :ok, else: {:error, :invalid_assignee})
   end

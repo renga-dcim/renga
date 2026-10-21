@@ -94,6 +94,78 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     end
   end
 
+  test "member role assignments remain usable by touch and keyboard", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    member = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    membership = organization_membership_fixture(member, organization, %{role: "viewer"})
+    conn = authenticated_conn(conn, owner, organization)
+
+    conn
+    |> visit("/settings/members")
+    |> assert_has("body .phx-connected")
+    |> click_button("#member-#{membership.id}-roles", "Roles")
+    |> assert_has("#assign-panel [role=dialog]", text: "No further roles")
+    |> evaluate(
+      """
+      (() => {
+        const panel = document.querySelector('#assign-panel [role=dialog]')
+        const controls = [...panel.querySelectorAll('button, input, select, textarea')]
+          .filter(control => control.offsetParent !== null)
+          .map(control => control.getBoundingClientRect().height)
+
+        return {
+          focused: panel.contains(document.activeElement),
+          fits: panel.scrollWidth <= panel.clientWidth,
+          tappable: controls.every(height => Math.round(height) >= 44)
+        }
+      })()
+      """,
+      &assert(&1 == %{"focused" => true, "fits" => true, "tappable" => true})
+    )
+    |> press("#assign-panel [role=dialog]", "Escape")
+    |> refute_has("#assign-panel [role=dialog]")
+    |> assert_has("#member-#{membership.id}-roles:focus")
+    |> click_button("#member-#{membership.id}-roles", "Roles")
+    |> click_button("#assign-save", "Give role")
+    |> assert_has("#assign-form [role=alert]", text: "choose a role")
+    |> select("#assign-form select", "Give role", option: "Admin", exact: false)
+    |> fill_in("Reason (optional)", with: "Incident response")
+    |> click_button("#assign-save", "Give role")
+    |> assert_has("#assign-current", text: "Admin")
+    |> assert_has("#assign-current", text: "Incident response")
+    |> select("#assign-form select", "Give role", option: "Admin", exact: false)
+    |> click_button("#assign-save", "Give role")
+    |> assert_has("#flash-error", text: "already hold that role")
+    |> click_button("#assign-current button", "Remove")
+    |> assert_has("#assign-current", text: "No further roles")
+    |> evaluate(@fits, &assert(&1 == true))
+  end
+
+  test "connected member management authority expires without a reload", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    member = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    membership = organization_membership_fixture(member, organization, %{role: "viewer"})
+    owner_scope = Renga.Accounts.scope_for_user(owner, organization.id)
+
+    {:ok, _assignment} =
+      Renga.Assignments.assign(owner_scope, membership.id, %{
+        "role" => "admin",
+        "valid_until" => DateTime.add(Renga.Time.utc_now_ms(), 2, :second)
+      })
+
+    conn
+    |> authenticated_conn(member, organization)
+    |> visit("/settings/members")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#invite-member")
+    |> refute_has("#invite-member", timeout: 5_000)
+    |> assert_has("#members-read-only")
+  end
+
   test "collectors fit the screen without scrolling and key controls are 44px in both dimensions",
        %{conn: conn} do
     %{agent: agent, conn: conn, key: key} = collector_context(conn)
@@ -275,5 +347,18 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       long_capability: long_capability,
       resource: resource
     }
+  end
+
+  defp authenticated_conn(conn, user, organization) do
+    add_session_cookie(
+      conn,
+      [
+        value: %{
+          user_token: Renga.Accounts.generate_user_session_token(user),
+          current_organization_id: organization.id
+        }
+      ],
+      RengaWeb.Endpoint.session_options()
+    )
   end
 end
