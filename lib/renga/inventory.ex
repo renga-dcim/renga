@@ -51,7 +51,7 @@ defmodule Renga.Inventory do
   @intake_api_key_prefix "renga_intake_"
   @intake_api_key_bytes 32
   @operational_resource_page_size 50
-  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf ip_address)
+  @managed_resource_kinds ~w(manufacturer hardware_type module_type module vlan_group vlan prefix vrf ip_address power_panel power_feed)
 
   @doc """
   Lists sources visible inside the caller's organization scope.
@@ -441,6 +441,15 @@ defmodule Renga.Inventory do
     %Resource{organization_id: organization_id}
     |> Resource.changeset(attrs)
     |> Ecto.Changeset.add_error(:kind, "must be created through the IPAM context")
+    |> Repo.rollback()
+  end
+
+  # A panel or feed is its typed row; Renga.Power creates both together.
+  defp reject_context_managed_resource_creation!(organization_id, kind, attrs)
+       when kind in ~w(power_panel power_feed) do
+    %Resource{organization_id: organization_id}
+    |> Resource.changeset(attrs)
+    |> Ecto.Changeset.add_error(:kind, "must be created through the power context")
     |> Repo.rollback()
   end
 
