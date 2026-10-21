@@ -50,6 +50,12 @@ defmodule Renga.Jobs.Job do
     field :output_limit_bytes, :integer
     field :timeout_ms, :integer
     field :last_sequence, :integer, default: 0
+    # Privileged jobs only (RFD 13): the binding requested under, and the
+    # current signed-lease offer.
+    field :target_binding_version, :integer
+    field :offer_token_hash, :binary, redact: true
+    field :offer_nonce, :string
+    field :offer_expires_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :agent, Agent
@@ -57,6 +63,7 @@ defmodule Renga.Jobs.Job do
     # target.
     belongs_to :resource, Resource
     belongs_to :requested_by_user, User
+    belongs_to :target_binding, Renga.Jobs.TargetBinding
     has_many :events, JobEvent, preload_order: [asc: :sequence]
 
     timestamps()
@@ -70,6 +77,9 @@ defmodule Renga.Jobs.Job do
   @doc "The `name@version` key that identifies the job's capability."
   def capability_key(%__MODULE__{capability: name, capability_version: version}),
     do: "#{name}@#{version}"
+
+  @doc "Whether leasing the job needs a request signed with an approved key (RFD 13)."
+  def privileged?(%__MODULE__{risk_class: risk_class}), do: risk_class != "observe"
 
   def finished?(%__MODULE__{state: state}), do: state in @finished_states
   def open?(%__MODULE__{state: state}), do: state in @open_states
