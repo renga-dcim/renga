@@ -2,10 +2,11 @@ defmodule RengaWeb.MemberLive do
   @moduledoc """
   Settings → Members: everyone in the organization with their base role and
   whether they are active (RFD 17, "Administration"). Holders of
-  `members.manage` change a member's role, or disable and re-enable them,
-  in a side panel that asks why; the reason goes to Activity. The role
-  picker offers only roles within the actor's grant ceiling, and members
-  above it are read-only. Renga.Members re-checks all of it.
+  `members.manage` invite people by email and revoke pending invitations,
+  and change a member's role or disable and re-enable them in a side panel
+  that asks why; the reason goes to Activity. Pickers offer only roles
+  within the actor's grant ceiling, and members above it are read-only.
+  Renga.Members re-checks all of it.
   """
   use RengaWeb, :live_view
 
@@ -33,7 +34,8 @@ defmodule RengaWeb.MemberLive do
        can_manage?: Members.can_manage?(scope),
        grantable: Members.grantable_roles(scope),
        editing: nil,
-       form: nil
+       form: nil,
+       invite_form: to_form(Members.change_invitation(%{"role" => "member"}), as: :invitation)
      )
      |> load_members()}
   end
@@ -74,9 +76,66 @@ defmodule RengaWeb.MemberLive do
     end
   end
 
+  def handle_event("invite", %{"invitation" => attrs}, socket) do
+    scope = socket.assigns.current_scope
+
+    case Members.invite(scope, attrs, &url(~p"/invitations/#{&1}")) do
+      {:ok, invitation} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Invitation sent to #{invitation.email}")
+         |> close_overlay("invite-panel")
+         |> assign(
+           :invite_form,
+           to_form(Members.change_invitation(%{"role" => "member"}), as: :invitation)
+         )
+         |> load_members()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         assign(socket, :invite_form, to_form(changeset, as: :invitation, action: :insert))}
+
+      {:error, {:delivery_failed, invitation}} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :error,
+           "Invitation saved, but the email could not be delivered. Try sending it again."
+         )
+         |> assign(
+           :invite_form,
+           to_form(
+             Members.change_invitation(%{"email" => invitation.email, "role" => invitation.role}),
+             as: :invitation
+           )
+         )
+         |> load_members()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, refusal(reason))}
+    end
+  end
+
+  def handle_event("revoke", %{"id" => id}, socket) do
+    case Members.revoke_invitation(socket.assigns.current_scope, id) do
+      {:ok, invitation} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Invitation for #{invitation.email} revoked")
+         |> load_members()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, refusal(reason)) |> load_members()}
+    end
+  end
+
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_members(socket)}
+
+  # Sending an invitation delivers mail from this process, and the test
+  # mailer reports deliveries back to it.
+  def handle_info(_message, socket), do: {:noreply, socket}
 
   defp respond({:ok, _member}, socket, message) do
     {:noreply,
@@ -101,8 +160,16 @@ defmodule RengaWeb.MemberLive do
 
   defp refusal(_reason), do: "That member is no longer in this organization."
 
-  defp load_members(socket),
-    do: assign(socket, :members, Members.list_members(socket.assigns.current_scope))
+  defp load_members(socket) do
+    scope = socket.assigns.current_scope
+
+    assign(socket,
+      members: Members.list_members(scope),
+      invitations: if(socket.assigns.can_manage?, do: Members.list_invitations(scope), else: [])
+    )
+  end
+
+  defp expired?(invitation), do: DateTime.before?(invitation.expires_at, DateTime.utc_now())
 
   defp manageable?(member, grantable), do: member.role in grantable
 
@@ -122,6 +189,16 @@ defmodule RengaWeb.MemberLive do
         title="Members"
         description="Everyone who can open this organization, and the role that decides what they may do."
       >
+        <:actions>
+          <.button
+            :if={@can_manage?}
+            id="invite-member"
+            variant="primary"
+            phx-click={show_overlay("invite-panel")}
+          >
+            Invite
+          </.button>
+        </:actions>
         <.table
           id="member-list"
           rows={@members}
@@ -168,10 +245,71 @@ defmodule RengaWeb.MemberLive do
           </:action>
         </.table>
 
+        <section :if={@invitations != []} id="invitations" class="space-y-2">
+          <h2 class="text-sm font-medium text-fg">Pending invitations</h2>
+          <.table
+            id="invitation-list"
+            rows={@invitations}
+            row_id={&"invitation-#{&1.id}"}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={invitation} label="Email" class="py-2">
+              <span class="block truncate text-fg">{invitation.email}</span>
+              <span :if={invitation.invited_by_user} class="block truncate text-xs text-fg-muted">
+                Invited by {invitation.invited_by_user.email}
+              </span>
+            </:col>
+            <:col :let={invitation} label="Role" class="w-28">
+              <span class="capitalize text-fg">{invitation.role}</span>
+            </:col>
+            <:col :let={invitation} label="Expires" class="w-36 text-fg-muted">
+              <%= if expired?(invitation) do %>
+                Expired
+              <% else %>
+                {Calendar.strftime(invitation.expires_at, "%Y-%m-%d")}
+              <% end %>
+            </:col>
+            <:action :let={invitation}>
+              <button
+                :if={invitation.role in @grantable}
+                id={"invitation-#{invitation.id}-revoke"}
+                type="button"
+                phx-click={JS.push("revoke", value: %{id: invitation.id})}
+                class="min-h-tap cursor-pointer text-sm text-crit hover:underline"
+              >
+                Revoke
+              </button>
+            </:action>
+          </.table>
+        </section>
+
         <p :if={!@can_manage?} id="members-read-only" class="text-sm text-fg-muted">
           Owners and admins manage members.
         </p>
       </.settings_page>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="invite-panel"
+        title="Invite a member"
+        description="They get an emailed link that works for 7 days, only for an account with this address."
+      >
+        <.form for={@invite_form} id="invite-form" phx-submit="invite">
+          <.input field={@invite_form[:email]} type="email" label="Email" required autocomplete="off" />
+          <.input
+            field={@invite_form[:role]}
+            type="select"
+            label="Role"
+            options={for role <- @grantable, do: {String.capitalize(role), role}}
+          />
+          <div class="mt-4 flex justify-end gap-2">
+            <.button type="button" phx-click={hide_overlay("invite-panel")}>Cancel</.button>
+            <.button id="invite-send" variant="primary" phx-disable-with="Sending…">
+              Send invitation
+            </.button>
+          </div>
+        </.form>
+      </.side_panel>
 
       <.side_panel
         :if={@can_manage?}

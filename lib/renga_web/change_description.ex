@@ -84,6 +84,15 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "member_enabled", metadata: metadata}),
     do: "#{metadata["member"]} re-enabled" <> reason(metadata)
 
+  def describe(%{kind: "member_invited", metadata: metadata, new_value: %{"value" => role}}),
+    do: "Invited #{metadata["member"]} as #{role}"
+
+  def describe(%{kind: "invitation_revoked", metadata: metadata}),
+    do: "Revoked the invitation for #{metadata["member"]}"
+
+  def describe(%{kind: "member_joined", metadata: metadata, new_value: %{"value" => role}}),
+    do: "#{metadata["member"]} joined as #{role}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
