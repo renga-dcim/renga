@@ -22,6 +22,18 @@ defmodule RengaWeb.UserAuth do
   ]
   @current_organization_key :current_organization_id
 
+  # The organization this browser last opened, so signing in again returns
+  # to it. It only suggests: sign-in still checks the user may open it. The
+  # value names the user who opened it, so someone else signing in on a
+  # shared browser is not steered into that person's organization, and is
+  # encrypted so it does not reveal either id to the next person.
+  @last_organization_cookie "_renga_web_last_organization"
+  @last_organization_options [
+    encrypt: true,
+    max_age: 365 * 24 * 60 * 60,
+    same_site: "Lax"
+  ]
+
   # How old the session token should be before a new one is issued. When a request is made
   # with a session token older than this value, then a new session token will be created
   # and the session and remember-me cookies (if set) will be updated with the new token.
@@ -35,14 +47,66 @@ defmodule RengaWeb.UserAuth do
   Logs the user in.
 
   Redirects to the session's `:user_return_to` path
-  or falls back to the `signed_in_path/1`.
+  or falls back to the `signed_in_path/1`. A fresh session opens the
+  organization this browser last opened, or the user's only one, so they
+  skip the organization picker (`Renga.Accounts.default_organization_id/2`).
+  A return-to link that could name a record opens only a sole organization.
   """
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
 
     conn
     |> create_or_extend_session(user, params)
+    |> put_default_organization(user, user_return_to)
     |> redirect(to: user_return_to || signed_in_path(conn))
+  end
+
+  defp put_default_organization(conn, user, user_return_to) do
+    if get_session(conn, @current_organization_key) do
+      conn
+    else
+      conn = fetch_cookies(conn, encrypted: [@last_organization_cookie])
+      remembered_id = remembered_organization_id(conn, user, user_return_to)
+
+      case Accounts.default_organization_id(user, remembered_id) do
+        nil -> conn
+        organization_id -> put_session(conn, @current_organization_key, organization_id)
+      end
+    end
+  end
+
+  defp remembered_organization_id(conn, %Accounts.User{id: user_id}, user_return_to) do
+    case conn.cookies[@last_organization_cookie] do
+      {^user_id, organization_id} ->
+        if names_no_record?(conn, user_return_to), do: organization_id
+
+      _absent_or_someone_elses ->
+        nil
+    end
+  end
+
+  # Whether a return-to path cannot name a record. One that can, through a
+  # path parameter or the query string, may belong to another of the user's
+  # organizations than the remembered one, and opening it there would not
+  # find the record; so for it sign-in opens only a sole organization, and
+  # anyone with several chooses. Pages such as /inbox are left behind as the
+  # return-to path whenever logging out reloads another tab, or a bookmark
+  # outlives the session, so they still reopen the remembered organization.
+  defp names_no_record?(_conn, nil), do: true
+
+  defp names_no_record?(conn, return_to) do
+    case URI.parse(return_to) do
+      %URI{scheme: nil, host: nil, path: "/" <> _ = path, query: nil, fragment: nil} ->
+        segments = path |> String.split("/", trim: true) |> Enum.map(&URI.decode/1)
+
+        case Phoenix.Router.route_info(RengaWeb.Router, "GET", segments, conn.host) do
+          %{path_params: path_params} -> map_size(path_params) == 0
+          :error -> false
+        end
+
+      _ ->
+        false
+    end
   end
 
   @doc """
@@ -84,7 +148,8 @@ defmodule RengaWeb.UserAuth do
   end
 
   @doc """
-  Stores the current organization in the session and refreshes `current_scope`.
+  Stores the current organization in the session and refreshes `current_scope`,
+  and remembers it in this browser for the next sign-in.
   """
   def put_current_organization(conn, organization_id) when is_binary(organization_id) do
     with %Scope{user: %Accounts.User{} = user} <- conn.assigns[:current_scope],
@@ -92,6 +157,11 @@ defmodule RengaWeb.UserAuth do
            Accounts.scope_for_user(user, organization_id) do
       conn
       |> put_session(@current_organization_key, organization_id)
+      |> put_resp_cookie(
+        @last_organization_cookie,
+        {user.id, organization_id},
+        @last_organization_options
+      )
       |> assign(:current_scope, scope)
     else
       _ -> conn

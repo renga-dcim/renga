@@ -220,6 +220,23 @@ defmodule Renga.Accounts do
   def get_user_organization_membership(%User{}, _organization_id), do: nil
 
   @doc """
+  The organization to open when `user` signs in: `remembered_id`, the one
+  this browser last opened, if they can still open it, or else their only
+  organization. Returns nil when they have several and none remembered, so
+  they choose.
+  """
+  def default_organization_id(%User{} = user, remembered_id) do
+    if get_user_organization_membership(user, remembered_id) do
+      remembered_id
+    else
+      case list_user_organization_memberships(user) do
+        [membership] -> membership.organization_id
+        _none_or_several -> nil
+      end
+    end
+  end
+
+  @doc """
   Builds the request scope from the signed-in user and selected organization.
 
   An invalid or absent organization id intentionally falls back to user-only
