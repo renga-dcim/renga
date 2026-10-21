@@ -705,6 +705,7 @@ mod tests {
             max_retry_attempts: 1,
             labels: BTreeMap::new(),
             jobs: Default::default(),
+            snmp: Vec::new(),
         }
     }
 

@@ -3,6 +3,7 @@
 use crate::{
     identity,
     jobs::{JobPolicy, Selector},
+    snmp::config::{self as snmp_config, RawSnmpCollector, SnmpCollector},
 };
 use serde::Deserialize;
 use std::{
@@ -48,6 +49,8 @@ pub struct Config {
     pub labels: BTreeMap<String, String>,
     /// Which compiled-in job capabilities the operator lets Renga request.
     pub jobs: JobPolicy,
+    /// SNMP switch poller modules (RFD 11), each its own collector stream.
+    pub snmp: Vec<SnmpCollector>,
 }
 
 impl fmt::Debug for Config {
@@ -65,6 +68,7 @@ impl fmt::Debug for Config {
             .field("max_retry_attempts", &self.max_retry_attempts)
             .field("labels", &self.labels)
             .field("jobs", &self.jobs)
+            .field("snmp", &self.snmp)
             .finish()
     }
 }
@@ -93,6 +97,13 @@ struct RawConfig {
     max_retry_attempts: Option<u32>,
     labels: Option<BTreeMap<String, String>>,
     jobs: Option<RawJobs>,
+    collectors: Option<RawCollectors>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCollectors {
+    snmp: Option<Vec<RawSnmpCollector>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -235,6 +246,12 @@ impl Config {
         }
         let labels = validate_labels(raw.labels.unwrap_or_default())?;
         let jobs = job_policy(raw.jobs.unwrap_or_default())?;
+        let snmp = snmp_config::from_raw(
+            raw.collectors
+                .and_then(|collectors| collectors.snmp)
+                .unwrap_or_default(),
+        )
+        .map_err(ConfigError)?;
         Ok(Self {
             config_path,
             renga_url,
@@ -256,6 +273,7 @@ impl Config {
             max_retry_attempts,
             labels,
             jobs,
+            snmp,
         })
     }
 }
@@ -467,6 +485,32 @@ mod tests {
         env::remove_var("RENGA_URL");
         fs::remove_file(path).unwrap();
         assert_eq!(c.renga_url, "https://environment.test");
+    }
+
+    #[test]
+    fn reads_snmp_collector_modules_from_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        fs::write(
+            &path,
+            "renga_url='https://renga.test'\nintake_api_key='file-key'\n\
+             [[collectors.snmp]]\nid='core'\ntargets=['10.0.0.1']\nusername='renga'\n\
+             auth_password_file='/etc/renga/snmp-auth'\nprivacy_password_file='/etc/renga/snmp-priv'\n",
+        )
+        .unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.snmp.len(), 1);
+        assert_eq!(config.snmp[0].id, "core");
+
+        fs::write(
+            &path,
+            "renga_url='https://renga.test'\nintake_api_key='file-key'\n[[collectors.snmp]]\nid='core'\n",
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        fs::remove_file(path).unwrap();
+        assert!(error.contains("collectors.snmp[0]: targets"), "{error}");
     }
 
     #[test]
