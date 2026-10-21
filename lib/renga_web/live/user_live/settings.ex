@@ -63,7 +63,7 @@ defmodule RengaWeb.UserLive.Settings do
         <.settings_section
           id="account-password"
           title="Password"
-          description="Signing in with an emailed link always works; a password is optional."
+          description="Optional. With a passkey you can sign in without one."
         >
           <.form
             for={@password_form}
@@ -96,11 +96,25 @@ defmodule RengaWeb.UserLive.Settings do
               autocomplete="new-password"
               spellcheck="false"
             />
-            <.button variant="primary" phx-disable-with="Saving...">
-              Save Password
-            </.button>
+            <div class="flex flex-wrap gap-2">
+              <.button variant="primary" phx-disable-with="Saving...">
+                Save Password
+              </.button>
+              <.button
+                :if={@has_password and @passkeys != []}
+                id="password_remove"
+                type="button"
+                variant="danger"
+                phx-click="remove_password"
+              >
+                Remove password
+              </.button>
+            </div>
           </.form>
-          <.recheck_panel :if={@recheck && @recheck.action == :set_password} recheck={@recheck} />
+          <.recheck_panel
+            :if={@recheck && @recheck.action in [:set_password, :remove_password]}
+            recheck={@recheck}
+          />
         </.settings_section>
 
         <.settings_section
@@ -634,6 +648,10 @@ defmodule RengaWeb.UserLive.Settings do
     {:noreply, put_flash(socket, :error, "The passkey wasn't added.")}
   end
 
+  def handle_event("remove_password", _params, socket) do
+    {:noreply, with_recheck(socket, :remove_password, %{})}
+  end
+
   def handle_event("remove_passkey", %{"id" => id}, socket) do
     {:noreply, with_recheck(socket, :remove_passkey, %{"id" => id})}
   end
@@ -739,6 +757,7 @@ defmodule RengaWeb.UserLive.Settings do
 
   defp guarded_change(action) when action in [:add_totp, :add_passkey], do: :add_factor
   defp guarded_change(action) when action in [:remove_totp, :remove_passkey], do: :remove_factor
+  defp guarded_change(:remove_password), do: :set_password
   defp guarded_change(action), do: action
 
   defp apply_change(socket, :change_email, user_params) do
@@ -792,8 +811,26 @@ defmodule RengaWeb.UserLive.Settings do
         |> assign_mfa()
         |> put_flash(:info, "Passkey “#{passkey.name}” removed.")
 
+      {:error, :last_passkey} ->
+        put_flash(socket, :error, "Set a password before removing your last passkey.")
+
       {:error, _reason} ->
         put_flash(socket, :error, "The passkey could not be removed.")
+    end
+  end
+
+  defp apply_change(socket, :remove_password, _params) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.remove_user_password(user, session_token) do
+      {:ok, user} ->
+        socket
+        |> update(:current_scope, &%{&1 | user: user})
+        |> assign_mfa()
+        |> put_flash(:info, "Password removed. Sign in with your passkey from now on.")
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "The password could not be removed.")
     end
   end
 
@@ -830,6 +867,7 @@ defmodule RengaWeb.UserLive.Settings do
     user = socket.assigns.current_scope.user
 
     socket
+    |> assign(:has_password, not is_nil(user.hashed_password))
     |> assign(:passkeys, Accounts.list_passkeys(user))
     |> assign(:mfa, MFA.mfa?(user))
     |> assign(:totp_available, MFA.totp_available?())

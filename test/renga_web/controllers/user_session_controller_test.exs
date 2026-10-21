@@ -386,6 +386,41 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "registering with only a passkey" do
+    test "confirming the email can grant the bootstrap to add a passkey", %{
+      conn: conn,
+      unconfirmed_user: user
+    } do
+      {token, _hashed} = generate_user_magic_link_token(user)
+
+      conn =
+        post(conn, ~p"/users/log-in?_action=confirmed", %{
+          "user" => %{"token" => token, "add_passkey" => "true"}
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings#passkey_register"
+      session_token = get_session(conn, :user_token)
+      assert Accounts.authorized_account_change?(user, session_token, :add_factor)
+      refute Accounts.authorized_account_change?(user, session_token, :change_email)
+    end
+
+    test "an account that already has a credential gets no bootstrap", %{conn: conn, user: user} do
+      user = set_password(user)
+      {token, _hashed} = generate_user_magic_link_token(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{"user" => %{"token" => token, "add_passkey" => "true"}})
+
+      assert redirected_to(conn) == ~p"/"
+
+      refute Accounts.authorized_account_change?(
+               user,
+               get_session(conn, :user_token),
+               :add_factor
+             )
+    end
+  end
+
   describe "POST /users/update-password" do
     setup %{conn: conn, user: user} do
       user = set_password(user)

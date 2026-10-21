@@ -22,6 +22,13 @@ defmodule RengaWeb.UserLive.Confirmation do
           phx-trigger-action={@trigger_submit}
         >
           <input type="hidden" name={@form[:token].name} value={@form[:token].value} />
+          <input
+            :for={field <- [:remember_me, :add_passkey]}
+            :if={@form[field].value}
+            type="hidden"
+            name={@form[field].name}
+            value={@form[field].value}
+          />
           <.button
             name={@form[:remember_me].name}
             value="true"
@@ -33,6 +40,14 @@ defmodule RengaWeb.UserLive.Confirmation do
           </.button>
           <.button phx-disable-with="Confirming..." class="mt-2 w-full">
             Confirm and log in only this time
+          </.button>
+          <.button
+            name={@form[:add_passkey].name}
+            value="true"
+            phx-disable-with="Confirming..."
+            class="mt-2 w-full"
+          >
+            <.icon name="hero-finger-print" class="size-4" /> Confirm and add a passkey
           </.button>
         </.form>
 
@@ -46,6 +61,13 @@ defmodule RengaWeb.UserLive.Confirmation do
           phx-trigger-action={@trigger_submit}
         >
           <input type="hidden" name={@form[:token].name} value={@form[:token].value} />
+          <input
+            :for={field <- [:remember_me, :add_passkey]}
+            :if={@form[field].value}
+            type="hidden"
+            name={@form[field].name}
+            value={@form[field].value}
+          />
           <%= if @current_scope do %>
             <.button phx-disable-with="Logging in..." variant="primary" class="w-full">
               Log in
@@ -67,7 +89,8 @@ defmodule RengaWeb.UserLive.Confirmation do
         </.form>
 
         <:footer :if={!@user.confirmed_at}>
-          Prefer a password? You can set one in your account settings.
+          A passkey lets you sign in without a password. You can also set a password later
+          in your account settings.
         </:footer>
       </.auth_card>
     </Layouts.app>

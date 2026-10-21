@@ -17,7 +17,12 @@ defmodule RengaWeb.UserSessionController do
     case Accounts.login_user_by_magic_link(token) do
       {:ok, {user, tokens_to_disconnect}} ->
         UserAuth.disconnect_sessions(tokens_to_disconnect)
-        sign_in(conn, user, user_params, info)
+
+        if user_params["add_passkey"] == "true" and Accounts.recheck_methods(user) == [] do
+          sign_in_to_add_passkey(conn, user, user_params)
+        else
+          sign_in(conn, user, user_params, info)
+        end
 
       _ ->
         conn
@@ -39,6 +44,21 @@ defmodule RengaWeb.UserSessionController do
       |> put_flash(:email, String.slice(email, 0, 160))
       |> redirect(to: ~p"/users/log-in")
     end
+  end
+
+  # The link just proved control of the account's email, for the purpose of
+  # adding its first credential, so it also grants RFD 19's five-minute
+  # bootstrap in this browser: a new account can register with only a
+  # passkey.
+  defp sign_in_to_add_passkey(conn, user, params) do
+    conn =
+      conn
+      |> put_session(:user_return_to, ~p"/users/settings#passkey_register")
+      |> put_flash(:info, "Email confirmed. Add your passkey now.")
+      |> UserAuth.log_in_user(user, Map.put(params, "remember_me", "true"))
+
+    :ok = Accounts.start_bootstrap(user, get_session(conn, :user_token))
+    conn
   end
 
   # A password or magic link is the whole sign-in only for an account without

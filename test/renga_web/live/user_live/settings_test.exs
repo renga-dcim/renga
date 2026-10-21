@@ -629,4 +629,41 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert Renga.Accounts.list_passkeys(user) == []
     end
   end
+
+  describe "passwordless" do
+    alias Renga.FakeAuthenticator
+
+    test "an account with a passkey can remove its password", %{conn: conn} do
+      user = user_fixture() |> set_password()
+      authenticator = FakeAuthenticator.new()
+      options = Renga.Accounts.passkey_registration_options(user)
+
+      {:ok, _passkey} =
+        Renga.Accounts.Passkeys.register(user, FakeAuthenticator.register(authenticator, options))
+
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+      lv |> element("#password_remove") |> render_click()
+      lv |> element("#recheck_passkey_start") |> render_click()
+
+      assert_push_event(lv, "passkey:start", %{target: "recheck_passkey", options: options})
+
+      html =
+        lv
+        |> element("#recheck_passkey")
+        |> render_hook("recheck_passkey", %{
+          "response" => FakeAuthenticator.assert(authenticator, options)
+        })
+
+      assert html =~ "Password removed."
+      refute has_element?(lv, "#password_remove")
+      refute Renga.Accounts.get_user!(user.id).hashed_password
+    end
+
+    test "without a passkey there is no password removal", %{conn: conn} do
+      user = user_fixture() |> set_password()
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+
+      refute has_element?(lv, "#password_remove")
+    end
+  end
 end
