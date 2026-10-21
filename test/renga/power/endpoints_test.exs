@@ -184,13 +184,14 @@ defmodule Renga.Power.EndpointsTest do
           attributes: %{
             "connector" => surrounding_whitespace <> long_connector <> surrounding_whitespace,
             "maximum_draw_w" => surrounding_whitespace <> "+7360" <> surrounding_whitespace,
-            "allocated_draw_w" => "\t350\n"
+            "allocated_draw_w" => "\t350\n",
+            "power_factor" => surrounding_whitespace <> "0.950" <> surrounding_whitespace
           }
         },
         %{
           kind: "power_port",
           name: "1",
-          attributes: %{"connector" => 123, "allocated_draw_w" => 1.5}
+          attributes: %{"connector" => 123, "allocated_draw_w" => 1.5, "power_factor" => 0.9}
         },
         %{
           kind: "power_port",
@@ -198,7 +199,8 @@ defmodule Renga.Power.EndpointsTest do
           attributes: %{
             "connector" => surrounding_whitespace,
             "maximum_draw_w" => oversized_watts,
-            "allocated_draw_w" => leading_zero_watts
+            "allocated_draw_w" => leading_zero_watts,
+            "power_factor" => "0.9999"
           }
         },
         %{
@@ -222,6 +224,9 @@ defmodule Renga.Power.EndpointsTest do
     assert runtime.ports["bounded"].connector == nil
     assert runtime.ports["bounded"].maximum_draw_w == nil
     assert runtime.ports["bounded"].default_allocated_draw_w == 42
+    assert Decimal.eq?(runtime.ports["Inlet A"].default_power_factor, "0.95")
+    assert Decimal.eq?(runtime.ports["1"].default_power_factor, "0.9")
+    assert runtime.ports["bounded"].default_power_factor == nil
     assert runtime.outlets["trimmed"].connector == long_connector
 
     Repo.delete_all(Renga.Power.Outlet)
@@ -231,6 +236,11 @@ defmodule Renga.Power.EndpointsTest do
       Code.compile_file("priv/repo/migrations/20261030173000_create_power_ports_and_outlets.exs")
 
     Enum.each(migration.backfill_statements(), &Repo.query!/1)
+
+    [{power_factors, _bytecode}] =
+      Code.compile_file("priv/repo/migrations/20261030180000_add_power_factors.exs")
+
+    Enum.each(power_factors.backfill_statements(), &Repo.query!/1)
     assert normalized_endpoints(scope, pdu.id) == runtime
   end
 
@@ -244,7 +254,8 @@ defmodule Renga.Power.EndpointsTest do
            %{
              connector: port.connector,
              maximum_draw_w: port.maximum_draw_w,
-             default_allocated_draw_w: port.default_allocated_draw_w
+             default_allocated_draw_w: port.default_allocated_draw_w,
+             default_power_factor: port.default_power_factor
            }}
         end),
       outlets:

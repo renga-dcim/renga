@@ -11,7 +11,10 @@ defmodule Renga.Power do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
+  alias Renga.Accounts.User
   alias Renga.DCIM.Location
   alias Renga.DCIM.Rack
   alias Renga.DCIM.Site
@@ -225,23 +228,76 @@ defmodule Renga.Power do
       changeset = Port.allocation_changeset(stored, attrs)
       port = update_or_rollback(changeset)
 
-      if Map.has_key?(changeset.changes, :allocated_draw_w) do
-        {:ok, _event} =
-          Inventory.create_change_event(scope, %{
-            kind: "updated",
-            field: "power_allocation",
-            resource_id: port.resource_id,
-            old_value: allocation_value(port, stored.allocated_draw_w),
-            new_value: allocation_value(port, port.allocated_draw_w)
-          })
-      end
-
+      record_port_change!(scope, changeset, stored, port, :allocated_draw_w, "power_allocation")
+      record_port_change!(scope, changeset, stored, port, :power_factor, "power_factor")
       port
     end)
   end
 
   defp allocation_value(_port, nil), do: nil
-  defp allocation_value(port, watts), do: %{"port" => port.name, "value" => watts}
+  defp allocation_value(port, value), do: %{"port" => port.name, "value" => value}
+
+  defp record_port_change!(scope, changeset, stored, port, field, event_field) do
+    if Map.has_key?(changeset.changes, field) do
+      {:ok, _event} =
+        Inventory.create_change_event(scope, %{
+          kind: "updated",
+          field: event_field,
+          resource_id: port.resource_id,
+          old_value: allocation_value(port, change_value(Map.fetch!(stored, field))),
+          new_value: allocation_value(port, change_value(Map.fetch!(port, field)))
+        })
+    end
+  end
+
+  defp change_value(%Decimal{} = value), do: Decimal.to_string(value)
+  defp change_value(value), do: value
+
+  @doc """
+  The organization's default power factor, or `nil` while no owner has set
+  one (RFD 10, "Capacity and utilization").
+  """
+  def default_power_factor(%Scope{organization_id: organization_id}) do
+    Organization
+    |> where([organization], organization.id == ^organization_id)
+    |> select([organization], organization.default_power_factor)
+    |> Repo.one()
+  end
+
+  @doc """
+  Sets or clears (`nil`) the organization's default power factor. Only an
+  active owner may: every load without its own power factor converts with it.
+  """
+  def set_default_power_factor(
+        %Scope{user: %User{id: user_id}, organization_id: organization_id},
+        value
+      )
+      when is_binary(organization_id) do
+    fn ->
+      unless owner?(organization_id, user_id), do: Repo.rollback(:forbidden)
+
+      Organization
+      |> Repo.get!(organization_id)
+      |> Organization.default_power_factor_changeset(%{default_power_factor: value})
+      |> update_or_rollback()
+    end
+    |> Repo.transaction()
+    |> Changes.broadcast(organization_id)
+  end
+
+  def set_default_power_factor(_scope, _value), do: {:error, :forbidden}
+
+  def change_default_power_factor(%Organization{} = organization, attrs \\ %{}),
+    do: Organization.default_power_factor_changeset(organization, attrs)
+
+  defp owner?(organization_id, user_id) do
+    OrganizationMembership
+    |> where([membership], membership.organization_id == ^organization_id)
+    |> where([membership], membership.user_id == ^user_id and membership.role == "owner")
+    |> where([membership], membership.status == "active")
+    |> lock("FOR UPDATE")
+    |> Repo.exists?()
+  end
 
   def change_port_allocation(%Port{} = port, attrs \\ %{}),
     do: Port.allocation_changeset(port, attrs)
