@@ -50,7 +50,7 @@ defmodule RengaWeb.UserAuth do
   or falls back to the `signed_in_path/1`. A fresh session opens the
   organization this browser last opened, or the user's only one, so they
   skip the organization picker (`Renga.Accounts.default_organization_id/2`).
-  With a return-to path pending, only their sole organization is opened.
+  A return-to link that could name a record opens only a sole organization.
   """
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
@@ -61,27 +61,51 @@ defmodule RengaWeb.UserAuth do
     |> redirect(to: user_return_to || signed_in_path(conn))
   end
 
-  # A return-to link may belong to another of the user's organizations than
-  # the remembered one, and opening it there would not find its record, so
-  # with one pending only a user's sole organization is opened. Others reach
-  # the organization picker, as before.
   defp put_default_organization(conn, user, user_return_to) do
     if get_session(conn, @current_organization_key) do
       conn
     else
       conn = fetch_cookies(conn, encrypted: [@last_organization_cookie])
-      user_id = user.id
-
-      remembered_id =
-        case {user_return_to, conn.cookies[@last_organization_cookie]} do
-          {nil, {^user_id, organization_id}} -> organization_id
-          _return_to_pending_or_no_hint_for_this_user -> nil
-        end
+      remembered_id = remembered_organization_id(conn, user, user_return_to)
 
       case Accounts.default_organization_id(user, remembered_id) do
         nil -> conn
         organization_id -> put_session(conn, @current_organization_key, organization_id)
       end
+    end
+  end
+
+  defp remembered_organization_id(conn, %Accounts.User{id: user_id}, user_return_to) do
+    case conn.cookies[@last_organization_cookie] do
+      {^user_id, organization_id} ->
+        if names_no_record?(conn, user_return_to), do: organization_id
+
+      _absent_or_someone_elses ->
+        nil
+    end
+  end
+
+  # Whether a return-to path cannot name a record. One that can, through a
+  # path parameter or the query string, may belong to another of the user's
+  # organizations than the remembered one, and opening it there would not
+  # find the record; so for it sign-in opens only a sole organization, and
+  # anyone with several chooses. Pages such as /inbox are left behind as the
+  # return-to path whenever logging out reloads another tab, or a bookmark
+  # outlives the session, so they still reopen the remembered organization.
+  defp names_no_record?(_conn, nil), do: true
+
+  defp names_no_record?(conn, return_to) do
+    case URI.parse(return_to) do
+      %URI{scheme: nil, host: nil, path: "/" <> _ = path, query: nil, fragment: nil} ->
+        segments = path |> String.split("/", trim: true) |> Enum.map(&URI.decode/1)
+
+        case Phoenix.Router.route_info(RengaWeb.Router, "GET", segments, conn.host) do
+          %{path_params: path_params} -> map_size(path_params) == 0
+          :error -> false
+        end
+
+      _ ->
+        false
     end
   end
 

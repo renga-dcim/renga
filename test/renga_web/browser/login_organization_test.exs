@@ -3,8 +3,8 @@ defmodule RengaWeb.Browser.LoginOrganizationTest do
   Signing in again after logging out with a second tab open, in a real
   browser. Logging out disconnects the other tab, which reloads its page,
   finds no session, and leaves that page as the return-to path. The next
-  sign-in still opens the user's only organization there instead of
-  stopping at the organization picker.
+  sign-in still opens the user's organization there instead of stopping
+  at the organization picker.
   """
   use PhoenixTest.Playwright.Case, async: true
 
@@ -48,6 +48,42 @@ defmodule RengaWeb.Browser.LoginOrganizationTest do
 
   # A magic link, so no typed field can be lost to the sign-in page
   # reconnecting while the other tab settles.
+  test "a tab reloaded by logging out reopens the organization last opened", %{conn: conn} do
+    user = user_fixture()
+
+    organization_membership_fixture(user, organization_fixture(%{name: "Alpha"}), %{role: "owner"})
+
+    beta = organization_fixture(%{name: "Beta"})
+    organization_membership_fixture(user, beta, %{role: "owner"})
+
+    conn
+    |> log_in(user)
+    |> assert_path("/organizations")
+    |> click_button("#select-organization-#{beta.id} button", "Open")
+    |> assert_path("/inbox")
+
+    other_tab =
+      conn
+      |> new_tab()
+      |> visit("/inbox")
+      |> assert_has("body .phx-connected")
+
+    conn
+    |> click("a[aria-label='Log out']:visible")
+    |> assert_path("/users/log-in")
+    |> assert_has("body .phx-connected")
+
+    other_tab
+    |> assert_path("/users/log-in")
+    |> assert_has("body .phx-connected")
+
+    conn
+    |> log_in(user)
+    |> assert_path("/inbox")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#organization-switcher", text: "Beta")
+  end
+
   defp log_in(conn, user) do
     {token, _hashed_token} = generate_user_magic_link_token(user)
 

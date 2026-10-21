@@ -39,10 +39,10 @@ defmodule RengaWeb.UserAuthTest do
       end)
     end
 
-    defp logged_in_organization(user, previous \\ nil) do
+    defp logged_in_organization(user, previous \\ nil, return_to \\ nil) do
       previous
       |> browser()
-      |> init_test_session(%{})
+      |> init_test_session(%{user_return_to: return_to})
       |> UserAuth.log_in_user(user)
       |> get_session(:current_organization_id)
     end
@@ -86,6 +86,7 @@ defmodule RengaWeb.UserAuthTest do
 
       # Both belong to it, but it was the colleague's choice, not this user's.
       assert logged_in_organization(user, opened) == nil
+      assert logged_in_organization(user, opened, "/inbox") == nil
       assert logged_in_organization(colleague, opened) == shared.id
     end
 
@@ -115,6 +116,7 @@ defmodule RengaWeb.UserAuthTest do
       {:ok, _} = Accounts.update_organization_membership(membership, %{status: "disabled"})
 
       assert logged_in_organization(user, opened) == first.id
+      assert logged_in_organization(user, opened, "/inbox") == first.id
     end
 
     test "falls back when the remembered organization was disabled", %{conn: conn, user: user} do
@@ -125,6 +127,44 @@ defmodule RengaWeb.UserAuthTest do
       {:ok, _} = Accounts.update_organization(second, %{status: "disabled"})
 
       assert logged_in_organization(user, opened) == first.id
+    end
+
+    test "reopens the remembered organization for a return-to page that names no record", %{
+      conn: conn,
+      user: user
+    } do
+      _first = join(user)
+      second = join(user)
+      opened = open(conn, user, second)
+
+      for path <-
+            ~w(/inbox /places /inventory /network/vlans /settings/members /organizations /users/settings /in%62ox) do
+        assert logged_in_organization(user, opened, path) == second.id, path
+      end
+    end
+
+    test "leaves the choice to people with several organizations when the return-to can name a record",
+         %{conn: conn, user: user} do
+      _first = join(user)
+      second = join(user)
+      opened = open(conn, user, second)
+      id = Ecto.UUID.generate()
+
+      for path <- [
+            "/inventory/#{id}",
+            "/places/sites/#{id}",
+            "/invitations/some-token",
+            "/in%62ox/#{id}",
+            "/inventory?selected=#{id}",
+            "/inbox?finding=#{id}",
+            "/network/topology?resource=#{id}",
+            "/activity/jobs?id=#{id}",
+            "/inbox?state=closed",
+            "/inbox?",
+            "/no-such-page"
+          ] do
+        assert logged_in_organization(user, opened, path) == nil, path
+      end
     end
 
     test "keeps the organization of a signed-in user who signs in again", %{

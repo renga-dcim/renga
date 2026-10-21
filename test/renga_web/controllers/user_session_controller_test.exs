@@ -184,16 +184,19 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(get(conn, path)) == ~p"/organizations"
     end
 
-    test "a link to a page leaves several organizations to the picker", %{
-      conn: conn,
-      user: user,
-      first: first
-    } do
-      conn = conn |> open_then_log_out(user, first) |> get(~p"/inbox")
-      conn = log_in_with_password(conn, user)
+    for method <- [:password, :magic_link] do
+      test "a link to a page reopens the remembered organization (#{method})", %{
+        conn: conn,
+        user: user,
+        second: second
+      } do
+        conn = conn |> open_then_log_out(user, second) |> get(~p"/inbox")
+        conn = log_in(conn, user, unquote(method))
 
-      assert redirected_to(conn) == ~p"/inbox"
-      assert redirected_to(get(conn, ~p"/inbox")) == ~p"/organizations"
+        assert redirected_to(conn) == ~p"/inbox"
+        assert get_session(conn, :current_organization_id) == second.id
+        assert html_response(get(conn, ~p"/inbox"), 200)
+      end
     end
 
     for method <- [:password, :magic_link] do
