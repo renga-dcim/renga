@@ -106,6 +106,7 @@ defmodule RengaWeb.JobComponents do
   @doc "Why a job failed, in words. Agent reasons are shown as they came."
   def failure("capability_not_allowed"), do: "No longer allowed in this organization"
   def failure("resolved_failed"), do: "Recorded as not taking effect"
+  def failure("binding_changed"), do: "The resource was bound elsewhere before it ran"
   def failure(nil), do: nil
   def failure(reason), do: reason
 

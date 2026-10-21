@@ -189,22 +189,38 @@ defmodule Renga.JobsTest do
     } do
       allow(organization, ["test.restart@1"])
       agent = agent_fixture(organization, ["test.restart@1"])
+      %{resource: resource, binding: binding} = target_binding_fixture(organization, agent)
 
       assert {:ok, job} =
-               Jobs.create_system_job(organization.id, agent.id, "test.restart@1", %{
-                 "service" => "sshd"
-               })
+               Jobs.create_system_job(
+                 organization.id,
+                 agent.id,
+                 "test.restart@1",
+                 %{"service" => "sshd"},
+                 resource_id: resource.id
+               )
 
+      assert job.target_binding_id == binding.id
+      assert job.target_binding_version == binding.version
       assert job.requested_by_type == "system"
       assert job.requested_by_user_id == nil
       assert job.parameters == %{"service" => "sshd"}
 
-      allow(organization, [])
-
-      assert {:error, :capability_not_allowed} =
+      assert {:error, :target_not_bound} =
                Jobs.create_system_job(organization.id, agent.id, "test.restart@1", %{
                  "service" => "sshd"
                })
+
+      allow(organization, [])
+
+      assert {:error, :capability_not_allowed} =
+               Jobs.create_system_job(
+                 organization.id,
+                 agent.id,
+                 "test.restart@1",
+                 %{"service" => "sshd"},
+                 resource_id: resource.id
+               )
     end
   end
 

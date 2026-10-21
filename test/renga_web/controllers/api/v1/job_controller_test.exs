@@ -116,10 +116,16 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => [@restart]}})
       |> Repo.update!()
 
+      bound = target_binding_fixture(context.organization, context.agent)
+
       {:ok, _job} =
-        Jobs.create_system_job(context.organization.id, context.agent.id, @restart, %{
-          "service" => "nginx"
-        })
+        Jobs.create_system_job(
+          context.organization.id,
+          context.agent.id,
+          @restart,
+          %{"service" => "nginx"},
+          resource_id: bound.resource.id
+        )
 
       assert %{"jobs" => []} =
                valid_api_response(lease(context, %{"capabilities" => [@restart]}), 200)

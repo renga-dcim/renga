@@ -55,9 +55,7 @@ defmodule RengaWeb.Api.V1.JobController do
     with {:ok, keys, limit} <- validate_lease(params),
          {:ok, leased} <-
            with_calling_agent(conn, fn agent ->
-             Jobs.lease_jobs(conn.assigns.current_scope, agent, keys, limit,
-               risk_classes: ["observe"]
-             )
+             Jobs.lease_jobs(conn.assigns.current_scope, agent, keys, limit)
            end) do
       json(conn, %{jobs: Enum.map(leased, &leased_job/1)})
     else

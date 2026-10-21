@@ -267,10 +267,14 @@ defmodule RengaWeb.JobsLiveTest do
 
     agent = agent_fixture(organization, [restart])
 
-    {:ok, _job} =
-      Jobs.create_system_job(organization.id, agent.id, restart, %{"service" => "sshd"})
+    bound = target_binding_fixture(organization, agent)
 
-    {:ok, [{job, token}]} = Jobs.lease_jobs(system_scope, agent, [restart], 1)
+    {:ok, _job} =
+      Jobs.create_system_job(organization.id, agent.id, restart, %{"service" => "sshd"},
+        resource_id: bound.resource.id
+      )
+
+    {:ok, [{job, token}]} = lease_privileged(system_scope, agent, [restart], bound.private_key)
     {:ok, _} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
     Jobs.sweep(DateTime.add(DateTime.utc_now(), 120))
 
