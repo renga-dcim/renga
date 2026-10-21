@@ -108,6 +108,9 @@ defmodule RengaWeb.ResourcePowerLiveTest do
              "pdu-1"
            )
 
+    # The PDU's own inlet has no feed yet, so the path says where it stops.
+    assert has_element?(view, "#power-port-#{psu1.id}", "Inlet not connected")
+
     {:ok, pdu_view, _html} = live(conn, ~p"/inventory/#{pdu}/power")
     assert has_element?(pdu_view, "#power-outlet-#{outlet.id}", "web-1")
 

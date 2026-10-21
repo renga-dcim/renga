@@ -7,8 +7,9 @@ defmodule RengaWeb.ResourcePowerLive do
   defaults from the catalog template; owners and admins can override it per
   port in a side panel, and clearing the override restores the default.
 
-  Each port and outlet shows what it is plugged into: an outlet on another
-  device or a panel feed. Owners and admins record a connection or unplug
+  Each port shows its power path: the outlets and PDUs it passes through on
+  the way to a panel feed, or where that path stops. Each outlet shows what
+  it powers. Owners and admins record a connection or unplug
   one; both are confirmed power cable claims (RFD 10 phase 2b).
   """
   use RengaWeb, :live_view
@@ -22,6 +23,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Inventory.Changes
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.Paths
   alias Renga.Power.Port
 
   @impl true
@@ -205,8 +207,8 @@ defmodule RengaWeb.ResourcePowerLive do
                   set here
                 </span>
               </:col>
-              <:col :let={port} label="Plugged into">
-                <.port_connection cable={@cables_by_port[port.id]} />
+              <:col :let={port} label="Power path">
+                <.power_path path={@paths_by_port[port.id]} />
               </:col>
               <:action :let={port} :if={@can_manage?}>
                 <div class="flex justify-end gap-2">
@@ -375,31 +377,44 @@ defmodule RengaWeb.ResourcePowerLive do
     """
   end
 
-  attr :cable, :any, required: true
+  attr :path, Paths.Path, required: true
 
-  defp port_connection(%{cable: nil} = assigns),
-    do: ~H"""
-    <span class="text-fg-muted">Not recorded</span>
-    """
-
-  defp port_connection(%{cable: %{power_outlet: %{}}} = assigns) do
+  # Each hop names the device and the outlet; the path ends in a feed or in
+  # a warning naming where it stops (RFD 10, "Power path").
+  defp power_path(assigns) do
     ~H"""
-    <.link
-      navigate={~p"/inventory/#{@cable.power_outlet.resource}/power"}
-      class="text-link hover:underline"
-    >
-      {@cable.power_outlet.resource.name}
-    </.link>
-    <span class="font-mono">{@cable.power_outlet.name}</span>
+    <span class="inline-flex flex-wrap items-center gap-x-1.5">
+      <span :for={outlet <- @path.outlets} class="contents">
+        <.link
+          navigate={~p"/inventory/#{outlet.resource}/power"}
+          class="text-link hover:underline"
+        >
+          {outlet.resource.name}
+        </.link>
+        <span class="font-mono">{outlet.name}</span>
+        <span class="text-fg-muted" aria-hidden="true">→</span>
+      </span>
+      <span :if={@path.feed}>
+        {@path.feed.panel.name} <span class="font-mono">{@path.feed.name}</span>
+        <span :if={@path.feed.side} class="ml-1 text-xs text-fg-muted">
+          side {String.upcase(@path.feed.side)}
+        </span>
+      </span>
+      <span :if={@path.stop == :not_connected} class="text-fg-muted">Not recorded</span>
+      <span :if={@path.stop not in [nil, :not_connected]} class="text-warn-text">
+        {stop_label(@path)}
+      </span>
+    </span>
     """
   end
 
-  defp port_connection(assigns) do
-    ~H"""
-    <span>{@cable.power_feed.panel.name}</span>
-    <span class="font-mono">{@cable.power_feed.name}</span>
-    """
-  end
+  defp stop_label(%{stop: :inlet_unknown}), do: "No inlet mapped for this outlet"
+
+  defp stop_label(%{stop: :inlet_not_connected, outlets: outlets}),
+    do: "#{List.last(outlets).inlet_port.name} not connected"
+
+  defp stop_label(%{stop: :loop}), do: "Loops back on itself"
+  defp stop_label(%{stop: :too_deep}), do: "Too many hops to follow"
 
   attr :cable, :any, required: true
 
@@ -499,6 +514,7 @@ defmodule RengaWeb.ResourcePowerLive do
     cables =
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
+    paths = Paths.for_ports(socket.assigns.current_scope, ports)
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
 
@@ -506,6 +522,7 @@ defmodule RengaWeb.ResourcePowerLive do
       ports: ports,
       outlets: outlets,
       cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
+      paths_by_port: Map.new(paths, &{&1.port.id, &1}),
       cables_by_outlet:
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
       retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
