@@ -89,7 +89,7 @@ pub struct Identifiers {
 }
 
 /// Only fields projected by `AgentPayload` belong here; hardware detail is a component.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct HostAttributes {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
@@ -103,7 +103,7 @@ pub struct HostAttributes {
     pub asset_tag: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Interface {
     pub name: String,
     pub kind: String,
@@ -154,7 +154,7 @@ pub struct Neighbor {
     pub ttl_seconds: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Address {
     pub address: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -294,7 +294,7 @@ pub enum CollectorKind {
 
 /// A switch or VM a collector reports. The server matches it only by `serial_number`,
 /// `dmi_uuid`, or `machine_id`, so one of them is required.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CollectorResource {
     pub kind: CollectorResourceKind,
     /// The address of the reachable target it was polled from; `targets` scope only.
@@ -314,7 +314,7 @@ pub enum CollectorResourceKind {
     Vm,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CollectorIdentifiers {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
