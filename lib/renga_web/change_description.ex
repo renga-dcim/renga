@@ -37,6 +37,19 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "updated", field: "power_allocation", old_value: %{} = old}),
     do: "Cleared the allocated draw of power port #{old["port"]}"
 
+  # RFD 10: a power port's power factor override, and the organization default.
+  def describe(%{kind: "updated", field: "power_factor", new_value: %{} = new}),
+    do: "Set the power factor of power port #{new["port"]} to #{new["value"]}"
+
+  def describe(%{kind: "updated", field: "power_factor", old_value: %{} = old}),
+    do: "Cleared the power factor of power port #{old["port"]}"
+
+  def describe(%{kind: "updated", field: "default_power_factor", new_value: %{"value" => value}}),
+    do: "Set the organization's default power factor to #{value}"
+
+  def describe(%{kind: "updated", field: "default_power_factor"}),
+    do: "Cleared the organization's default power factor"
+
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
   def describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
 

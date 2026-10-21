@@ -3,9 +3,11 @@ defmodule RengaWeb.ResourcePowerLive do
   A device's Power tab (RFD 10 phase 2): the power ports where power comes
   in and the outlets where it goes out, as its hardware type defines them.
 
-  A port shows its maximum draw and allocated draw in W. The allocation
-  defaults from the catalog template; owners and admins can override it per
-  port in a side panel, and clearing the override restores the default.
+  A port shows its maximum draw and allocated draw in W, and the power
+  factor its load converts to VA with, labelled by where it comes from
+  (RFD 10 phase 3). Both default from the catalog template; owners and
+  admins can override them per port in a side panel, and clearing an
+  override restores the default.
 
   Each port shows its power path: the outlets and PDUs it passes through on
   the way to a panel feed, or where that path stops. Each outlet shows what
@@ -25,6 +27,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Cables
   alias Renga.Power.Paths
   alias Renga.Power.Port
+  alias Renga.Power.PowerFactor
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -38,7 +41,8 @@ defmodule RengaWeb.ResourcePowerLive do
        resource: resource,
        page_title: "#{resource.name} power",
        hardware?: Catalog.hardware_assignable_resource?(resource),
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Renga.Authorization.allowed?(scope, "dcim.edit"),
+       can_connect?: Renga.Authorization.allowed?(scope, "topology.edit"),
        editing_port: nil,
        allocation_form: allocation_form(nil),
        connecting_port: nil,
@@ -121,9 +125,15 @@ defmodule RengaWeb.ResourcePowerLive do
     end
   end
 
-  def handle_event("save_allocation", %{"allocation" => params}, socket) do
-    watts = params |> Map.get("allocated_draw_w", "") |> String.trim()
-    attrs = %{allocated_draw_w: if(watts == "", do: nil, else: watts)}
+  # Form fields arrive as text; any other shape is a malformed event and
+  # changes nothing rather than clearing an override.
+  def handle_event(
+        "save_allocation",
+        %{"allocation" => %{"allocated_draw_w" => watts, "power_factor" => power_factor}},
+        socket
+      )
+      when is_binary(watts) and is_binary(power_factor) do
+    attrs = %{allocated_draw_w: blank_to_nil(watts), power_factor: blank_to_nil(power_factor)}
 
     case Power.update_port_allocation(
            socket.assigns.current_scope,
@@ -148,6 +158,8 @@ defmodule RengaWeb.ResourcePowerLive do
         {:noreply, put_flash(socket, :error, "The allocation could not be saved")}
     end
   end
+
+  def handle_event("save_allocation", _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -229,6 +241,16 @@ defmodule RengaWeb.ResourcePowerLive do
                   set here
                 </span>
               </:col>
+              <:col
+                :let={port}
+                label="Power factor"
+                class="w-32 text-right"
+                hide_below="5xl"
+              >
+                <span id={"power-factor-#{port.id}"}>
+                  <.power_factor power_factor={PowerFactor.for_port(port, @default_power_factor)} />
+                </span>
+              </:col>
               <:col :let={port} label="Path" class="w-20 @3xl:w-auto" clip={false}>
                 <button
                   id={"power-path-#{port.id}"}
@@ -250,9 +272,10 @@ defmodule RengaWeb.ResourcePowerLive do
                   <.icon name="hero-chevron-right-mini" class="size-4 shrink-0 text-fg-muted" />
                 </button>
               </:col>
-              <:action :let={port} :if={@can_manage?}>
+              <:action :let={port} :if={@can_manage? or @can_connect?}>
                 <div class="flex justify-end gap-2">
                   <.button
+                    :if={@can_manage?}
                     id={"power-port-#{port.id}-edit"}
                     type="button"
                     size="sm"
@@ -266,6 +289,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     <span class="hidden @3xl:inline">Edit</span>
                   </.button>
                   <.button
+                    :if={@can_connect?}
                     id={"connect-port-#{port.id}"}
                     type="button"
                     size="sm"
@@ -291,7 +315,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     </span>
                   </.button>
                   <.button
-                    :if={@cables_by_port[port.id]}
+                    :if={@can_connect? and @cables_by_port[port.id]}
                     id={"unplug-port-#{port.id}"}
                     type="button"
                     size="sm"
@@ -363,7 +387,7 @@ defmodule RengaWeb.ResourcePowerLive do
                   cable={cable}
                 />
               </:col>
-              <:action :let={cable} :if={@can_manage?}>
+              <:action :let={cable} :if={@can_connect?}>
                 <.button
                   id={"unplug-retired-cable-#{cable.id}"}
                   type="button"
@@ -465,6 +489,20 @@ defmodule RengaWeb.ResourcePowerLive do
           <p :if={@editing_port} class="text-xs text-fg-muted">
             Leave empty to use the hardware type's {watts(@editing_port.default_allocated_draw_w)}.
           </p>
+          <div class="pt-3">
+            <.input
+              field={@allocation_form[:power_factor]}
+              type="number"
+              min="0.001"
+              max="1"
+              step="0.001"
+              label="Power factor"
+              autocomplete="off"
+            />
+          </div>
+          <p :if={@editing_port} id="power-factor-fallback" class="text-xs text-fg-muted">
+            {power_factor_fallback(@editing_port, @default_power_factor)}
+          </p>
           <div class="mt-4 flex justify-end gap-2">
             <.button type="button" phx-click={hide_overlay("allocation-panel")}>Cancel</.button>
             <.button id="save-allocation" variant="primary" phx-disable-with="Saving…">
@@ -475,7 +513,7 @@ defmodule RengaWeb.ResourcePowerLive do
       </.side_panel>
 
       <.side_panel
-        :if={@can_manage?}
+        :if={@can_connect?}
         id="connect-panel"
         title={connection_title(@connecting_port, @cables_by_port)}
       >
@@ -648,6 +686,7 @@ defmodule RengaWeb.ResourcePowerLive do
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
     paths = Paths.for_ports(socket.assigns.current_scope, ports)
+    default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
@@ -662,14 +701,59 @@ defmodule RengaWeb.ResourcePowerLive do
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
       retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
       unallocated: unallocated,
-      allocated_total: if(unallocated == 0, do: Enum.sum(allocations))
+      allocated_total: if(unallocated == 0, do: Enum.sum(allocations)),
+      default_power_factor: default_power_factor
     )
   end
 
-  defp allocation_form(nil), do: to_form(%{"allocated_draw_w" => ""}, as: :allocation)
+  defp allocation_form(nil),
+    do: to_form(%{"allocated_draw_w" => "", "power_factor" => ""}, as: :allocation)
 
-  defp allocation_form(%Port{} = port),
-    do: to_form(%{"allocated_draw_w" => port.allocated_draw_w || ""}, as: :allocation)
+  defp allocation_form(%Port{} = port) do
+    to_form(
+      %{
+        "allocated_draw_w" => port.allocated_draw_w || "",
+        "power_factor" => port.power_factor || ""
+      },
+      as: :allocation
+    )
+  end
+
+  defp blank_to_nil(value) do
+    case String.trim(value) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  attr :power_factor, PowerFactor, default: nil
+
+  defp power_factor(%{power_factor: nil} = assigns) do
+    ~H"""
+    <span class="text-fg-muted" title="Volt-amperes for this load stay unknown">Not set</span>
+    """
+  end
+
+  defp power_factor(assigns) do
+    ~H"""
+    <span class="font-mono tabular-nums">{Decimal.to_string(@power_factor.value)}</span>
+    <span class="ml-1 text-xs text-fg-muted">{PowerFactor.source_label(@power_factor.source)}</span>
+    """
+  end
+
+  # What clearing the override falls back to.
+  defp power_factor_fallback(port, default) do
+    case PowerFactor.for_port(%{port | power_factor: nil}, default) do
+      nil ->
+        "Leave empty to leave it unknown: neither the hardware type nor the organization sets one."
+
+      %PowerFactor{source: :hardware_type, value: value} ->
+        "Leave empty to use the hardware type's #{value}."
+
+      %PowerFactor{source: :organization_default, value: value} ->
+        "Leave empty to use the organization default of #{value}."
+    end
+  end
 
   defp watts(nil), do: "—"
   defp watts(watts), do: "#{watts} W"

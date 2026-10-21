@@ -128,4 +128,44 @@ defmodule RengaWeb.SitePowerLiveTest do
     refute has_element?(view, "#new-feed-#{panel.id}")
     refute has_element?(view, "#feed-panel")
   end
+
+  test "an owner sets and clears the default power factor", %{
+    conn: conn,
+    organization: organization,
+    site: site,
+    scope: scope
+  } do
+    {:ok, admin_view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+    assert has_element?(admin_view, "#default-power-factor", "Not set")
+    refute has_element?(admin_view, "#edit-default-power-factor")
+    refute has_element?(admin_view, "#power-factor-form")
+
+    {owner_conn, _owner} = sign_in(conn, organization, "owner")
+    {:ok, view, _html} = live(owner_conn, ~p"/places/sites/#{site.id}/power")
+
+    assert view
+           |> form("#power-factor-form", organization: %{default_power_factor: "0"})
+           |> render_submit() =~ "must be greater than 0"
+
+    view
+    |> form("#power-factor-form", organization: %{default_power_factor: "0.9"})
+    |> render_submit()
+
+    assert has_element?(view, "#default-power-factor", "0.900")
+    assert Decimal.eq?(Power.default_power_factor(scope), "0.9")
+
+    # A value that is not text is rejected, never read as clearing the default.
+    render_submit(view, "save_power_factor", %{
+      "organization" => %{"default_power_factor" => %{"value" => "0.5"}}
+    })
+
+    assert Decimal.eq?(Power.default_power_factor(scope), "0.9")
+    assert render(view) =~ "0.900"
+
+    view
+    |> form("#power-factor-form", organization: %{default_power_factor: ""})
+    |> render_submit()
+
+    assert has_element?(view, "#default-power-factor", "Not set")
+  end
 end

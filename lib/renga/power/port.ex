@@ -6,6 +6,11 @@ defmodule Renga.Power.Port do
   `default_allocated_draw_w` comes from the template's `allocated_draw_w`
   attribute and `allocated_draw_w` is an operator's override; the port's
   allocation is the override when set. All draws are real power in W.
+
+  `default_power_factor` comes from the template's `power_factor` attribute
+  and `power_factor` is an operator's override, both configured values
+  between 0 and 1 that turn the port's watts into volt-amperes (RFD 10
+  phase 3). See `Renga.Power.PowerFactor` for the organization default.
   """
 
   use Ecto.Schema
@@ -26,6 +31,8 @@ defmodule Renga.Power.Port do
     field :maximum_draw_w, :integer
     field :default_allocated_draw_w, :integer
     field :allocated_draw_w, :integer
+    field :default_power_factor, :decimal
+    field :power_factor, :decimal
 
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :resource, Renga.Inventory.Resource
@@ -39,11 +46,13 @@ defmodule Renga.Power.Port do
 
   def allocated_draw_w(%__MODULE__{allocated_draw_w: watts}), do: watts
 
-  @doc "An operator's change: only the allocated draw override."
+  @doc "An operator's change: the allocated draw and power factor overrides."
   def allocation_changeset(port, attrs) do
     port
-    |> cast(attrs, [:allocated_draw_w])
+    |> cast(attrs, [:allocated_draw_w, :power_factor])
     |> validate_number(:allocated_draw_w, greater_than: 0, less_than_or_equal_to: @max_watts)
+    |> Renga.Power.PowerFactor.validate(:power_factor)
     |> check_constraint(:allocated_draw_w, name: :power_ports_draws)
+    |> check_constraint(:power_factor, name: :power_ports_power_factors)
   end
 end

@@ -32,6 +32,7 @@ defmodule Renga.Accounts.Organization do
     field :status, :string, default: "active"
     field :settings, :map, default: %{}
     field :default_accent, :string, default: "copper"
+    field :default_power_factor, :decimal
 
     has_many :memberships, OrganizationMembership
     has_many :addresses, Address
@@ -57,6 +58,17 @@ defmodule Renga.Accounts.Organization do
     )
     |> validate_inclusion(:status, @statuses)
     |> unique_constraint(:slug)
+  end
+
+  @doc """
+  Sets or clears the power factor loads without their own convert with
+  (RFD 10 phase 3).
+  """
+  def default_power_factor_changeset(organization, attrs) do
+    organization
+    |> cast(attrs, [:default_power_factor])
+    |> Renga.Power.PowerFactor.validate(:default_power_factor)
+    |> check_constraint(:default_power_factor, name: :organizations_default_power_factor)
   end
 
   @doc "Changes the accent members see until they choose their own."

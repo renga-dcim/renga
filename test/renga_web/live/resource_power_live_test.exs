@@ -69,6 +69,58 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#power-allocated-total", "750")
   end
 
+  test "shows each port's power factor and where it comes from", %{conn: conn, scope: scope} do
+    {server, _expected} =
+      assigned_server_fixture(scope, "web-pf", [
+        %{kind: "power_port", name: "PSU1", attributes: %{"power_factor" => "0.95"}},
+        %{kind: "power_port", name: "PSU2"}
+      ])
+
+    %{ports: [psu1, psu2]} = Power.list_device_endpoints(scope, server.id)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+
+    assert has_element?(view, "#power-factor-#{psu1.id}", "0.950 from hardware type")
+    assert has_element?(view, "#power-factor-#{psu2.id}", "Not set")
+
+    render_click(view, "edit_port", %{"id" => psu2.id})
+    assert has_element?(view, "#power-factor-fallback", "Leave empty to leave it unknown")
+
+    view
+    |> form("#allocation-form", allocation: %{allocated_draw_w: "", power_factor: "0.9"})
+    |> render_submit()
+
+    assert has_element?(view, "#power-factor-#{psu2.id}", "0.900 set here")
+
+    # A field that is not text is a malformed event: nothing is cleared.
+    render_click(view, "edit_port", %{"id" => psu2.id})
+
+    render_submit(view, "save_allocation", %{
+      "allocation" => %{"allocated_draw_w" => "", "power_factor" => ["0.5"]}
+    })
+
+    assert has_element?(view, "#power-factor-#{psu2.id}", "0.900 set here")
+
+    render_click(view, "edit_port", %{"id" => psu1.id})
+
+    assert view
+           |> form("#allocation-form", allocation: %{power_factor: "1.5"})
+           |> render_submit() =~ "must be less than or equal to 1"
+  end
+
+  test "a port without its own power factor shows the organization default", %{
+    conn: conn,
+    organization: organization,
+    scope: scope
+  } do
+    server = server!(scope)
+    {_owner_conn, owner} = sign_in(conn, organization, "owner")
+    {:ok, _organization} = Power.set_default_power_factor(owner, "0.9")
+    %{ports: [psu1, _psu2]} = Power.list_device_endpoints(scope, server.id)
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    assert has_element?(view, "#power-factor-#{psu1.id}", "0.900 organization default")
+  end
+
   test "connects a port to another device's outlet and unplugs it", %{conn: conn, scope: scope} do
     server = server!(scope)
 

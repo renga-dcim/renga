@@ -8,6 +8,9 @@ defmodule Renga.Power.Cables do
   claims, and the same reconciliation selects the newest claim for each
   endpoint as its current cable. A plan is intent and never occupies an
   endpoint.
+
+  Recording or removing a connection needs `topology.edit`, the RFD 17
+  permission for cables of every kind.
   """
 
   import Ecto.Query, warn: false
@@ -318,7 +321,7 @@ defmodule Renga.Power.Cables do
 
   defp transaction(scope, mutation) do
     scope
-    |> Inventory.organization_management_transaction(fn ->
+    |> Inventory.organization_management_transaction("topology.edit", fn ->
       CableReconciler.lock_state!(scope.organization_id)
 
       case mutation.() do

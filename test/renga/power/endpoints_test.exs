@@ -184,13 +184,14 @@ defmodule Renga.Power.EndpointsTest do
           attributes: %{
             "connector" => surrounding_whitespace <> long_connector <> surrounding_whitespace,
             "maximum_draw_w" => surrounding_whitespace <> "+7360" <> surrounding_whitespace,
-            "allocated_draw_w" => "\t350\n"
+            "allocated_draw_w" => "\t350\n",
+            "power_factor" => surrounding_whitespace <> "0.950" <> surrounding_whitespace
           }
         },
         %{
           kind: "power_port",
           name: "1",
-          attributes: %{"connector" => 123, "allocated_draw_w" => 1.5}
+          attributes: %{"connector" => 123, "allocated_draw_w" => 1.5, "power_factor" => 0.9}
         },
         %{
           kind: "power_port",
@@ -198,7 +199,8 @@ defmodule Renga.Power.EndpointsTest do
           attributes: %{
             "connector" => surrounding_whitespace,
             "maximum_draw_w" => oversized_watts,
-            "allocated_draw_w" => leading_zero_watts
+            "allocated_draw_w" => leading_zero_watts,
+            "power_factor" => "0.9999"
           }
         },
         %{
@@ -222,6 +224,9 @@ defmodule Renga.Power.EndpointsTest do
     assert runtime.ports["bounded"].connector == nil
     assert runtime.ports["bounded"].maximum_draw_w == nil
     assert runtime.ports["bounded"].default_allocated_draw_w == 42
+    assert Decimal.eq?(runtime.ports["Inlet A"].default_power_factor, "0.95")
+    assert Decimal.eq?(runtime.ports["1"].default_power_factor, "0.9")
+    assert runtime.ports["bounded"].default_power_factor == nil
     assert runtime.outlets["trimmed"].connector == long_connector
 
     Repo.delete_all(Renga.Power.Outlet)
@@ -231,7 +236,74 @@ defmodule Renga.Power.EndpointsTest do
       Code.compile_file("priv/repo/migrations/20261030173000_create_power_ports_and_outlets.exs")
 
     Enum.each(migration.backfill_statements(), &Repo.query!/1)
+
+    [{power_factors, _bytecode}] =
+      Code.compile_file("priv/repo/migrations/20261030180000_add_power_factors.exs")
+
+    Enum.each(power_factors.backfill_statements(), &Repo.query!/1)
     assert normalized_endpoints(scope, pdu.id) == runtime
+  end
+
+  test "power factor parsing matches the backfill at every boundary", %{scope: scope} do
+    # name => {template value, what both the runtime and the backfill read}
+    cases = %{
+      "plain" => {"0.9", "0.9"},
+      "trimmed" => {"\u00A0 0.950\t", "0.95"},
+      "one" => {"1", "1"},
+      "one-places" => {"1.000", "1"},
+      "sixteen-places" => {"0.9990000000000000", "0.999"},
+      "seventeen-places" => {"0.99900000000000000", nil},
+      "sixteen-digits" => {"0000000000000001", "1"},
+      "seventeen-digits" => {"00000000000000001", nil},
+      "four-places" => {"0.0001", nil},
+      "over-one" => {"1.0001", nil},
+      "zero" => {"0", nil},
+      "negative" => {"-0.5", nil},
+      "exponent-text" => {"1e-1", nil},
+      "plus" => {"+0.9", nil},
+      "bare-point" => {".9", nil},
+      "mongolian-space" => {"\u180E0.9", nil},
+      "number" => {0.9, "0.9"},
+      "integer" => {1, "1"},
+      "trailing-zero-number" => {Renga.JSON.decode!("0.9500"), "0.95"},
+      "exponent-number" => {Renga.JSON.decode!("9e-1"), "0.9"},
+      "tiny-number" => {Renga.JSON.decode!("1e-7000"), nil},
+      "huge-number" => {Renga.JSON.decode!("1e7000"), nil},
+      "boolean" => {true, nil},
+      "object" => {%{"value" => "0.9"}, nil}
+    }
+
+    templates =
+      for {name, {value, _expected}} <- cases,
+          do: %{kind: "power_port", name: name, attributes: %{"power_factor" => value}}
+
+    {device, _expected} = assigned_server_fixture(scope, "pf-parity", templates)
+    expected = Map.new(cases, fn {name, {_value, read}} -> {name, read && Decimal.new(read)} end)
+    runtime = power_factors(scope, device.id)
+
+    assert_same = fn read ->
+      for {name, want} <- expected do
+        got = Map.fetch!(read, name)
+        assert (want == nil and got == nil) or (want && got && Decimal.eq?(want, got)), name
+      end
+    end
+
+    assert_same.(runtime)
+
+    Repo.update_all(Port, set: [default_power_factor: nil])
+
+    [{power_factors, _bytecode}] =
+      Code.compile_file("priv/repo/migrations/20261030180000_add_power_factors.exs")
+
+    Enum.each(power_factors.backfill_statements(), &Repo.query!/1)
+    assert_same.(power_factors(scope, device.id))
+  end
+
+  defp power_factors(scope, resource_id) do
+    Map.new(
+      Power.list_device_endpoints(scope, resource_id).ports,
+      &{&1.name, &1.default_power_factor}
+    )
   end
 
   defp normalized_endpoints(scope, resource_id) do
@@ -244,7 +316,8 @@ defmodule Renga.Power.EndpointsTest do
            %{
              connector: port.connector,
              maximum_draw_w: port.maximum_draw_w,
-             default_allocated_draw_w: port.default_allocated_draw_w
+             default_allocated_draw_w: port.default_allocated_draw_w,
+             default_power_factor: port.default_power_factor
            }}
         end),
       outlets:

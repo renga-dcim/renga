@@ -16,6 +16,7 @@ defmodule Renga.Power.Endpoints do
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Power.Outlet
   alias Renga.Power.Port
+  alias Renga.Power.PowerFactor
   alias Renga.Repo
   alias Renga.Topology.CableAssertion
 
@@ -55,6 +56,7 @@ defmodule Renga.Power.Endpoints do
           connector: text(component.attributes["connector"]),
           maximum_draw_w: watts(component.attributes["maximum_draw_w"]),
           default_allocated_draw_w: watts(component.attributes["allocated_draw_w"]),
+          default_power_factor: PowerFactor.parse(component.attributes["power_factor"]),
           retired_at: nil,
           inserted_at: now,
           updated_at: now
@@ -69,6 +71,7 @@ defmodule Renga.Power.Endpoints do
            :connector,
            :maximum_draw_w,
            :default_allocated_draw_w,
+           :default_power_factor,
            :retired_at,
            :updated_at
          ]},
