@@ -224,16 +224,17 @@ defmodule Renga.Accounts.IdentityProviders do
       |> where([revision], revision.client_secret_key_id != ^current)
       |> lock("FOR UPDATE")
       |> Repo.all()
-      |> then(fn revisions ->
-        with {:ok, count} <-
-               Enum.reduce_while(revisions, {:ok, 0}, &reencrypt_next(&1, &2, actor)) do
-          # A resealed provider is a changed provider: one new version each.
-          provider_ids = revisions |> Enum.map(& &1.provider_id) |> Enum.uniq()
-          Repo.update_all(where(IdentityProvider, [p], p.id in ^provider_ids), inc: [version: 1])
-          {:ok, count}
-        end
-      end)
+      |> reencrypt_all(actor)
     end)
+  end
+
+  defp reencrypt_all(revisions, actor) do
+    with {:ok, count} <- Enum.reduce_while(revisions, {:ok, 0}, &reencrypt_next(&1, &2, actor)) do
+      # A resealed provider is a changed provider: one new version each.
+      provider_ids = revisions |> Enum.map(& &1.provider_id) |> Enum.uniq()
+      Repo.update_all(where(IdentityProvider, [p], p.id in ^provider_ids), inc: [version: 1])
+      {:ok, count}
+    end
   end
 
   defp reencrypt_next(revision, {:ok, count}, actor) do
