@@ -118,21 +118,31 @@ defmodule Renga.Power.Redundancy do
     survivors = Enum.filter(paths, &(&1.feed && &1.feed.id != feed.id))
     remaining = of(survivors).feeds
 
+    case consequence(paths, survivors, feed) do
+      nil -> {:keeps, {resource, remaining}}
+      {kind, true} -> {:uncertain, {resource, remaining, kind}}
+      {:supply, false} -> {:loses_supply, {resource, remaining}}
+      {:redundancy, false} -> {:loses_redundancy, {resource, remaining}}
+    end
+  end
+
+  # What the device loses if `feed` fails, and whether that rests on paths
+  # that cannot be traced.
+  defp consequence(paths, survivors, feed) do
+    untraced? = Enum.any?(paths, &untraced?/1)
+
     cond do
-      survivors == [] and Enum.any?(paths, &untraced?/1) ->
-        {:uncertain, {resource, remaining, :supply}}
-
       survivors == [] ->
-        {:loses_supply, {resource, remaining}}
+        {:supply, untraced?}
 
-      Enum.any?(paths, &untraced?/1) and may_lose_redundancy?(paths, survivors, feed) ->
-        {:uncertain, {resource, remaining, :redundancy}}
+      untraced? and may_lose_redundancy?(paths, survivors, feed) ->
+        {:redundancy, true}
 
       of(paths).status == :redundant and of(survivors).status != :redundant ->
-        {:loses_redundancy, {resource, remaining}}
+        {:redundancy, false}
 
       true ->
-        {:keeps, {resource, remaining}}
+        nil
     end
   end
 

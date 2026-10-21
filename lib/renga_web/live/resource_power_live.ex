@@ -732,15 +732,12 @@ defmodule RengaWeb.ResourcePowerLive do
   defp redundancy_note(%Redundancy{status: status} = redundancy)
        when status in [:not_redundant, :unknown] do
     [
-      redundancy.untraced != [] &&
-        "#{Enum.map_join(redundancy.untraced, ", ", & &1.name)} #{if match?([_], redundancy.untraced), do: "has a path", else: "have paths"} that cannot be traced to a feed",
+      named(redundancy.untraced, "has a path", "have paths", "that cannot be traced to a feed"),
       redundancy.feeds == [] && redundancy.untraced == [] && "No port reaches a feed yet",
       match?([_], redundancy.sides) &&
         "Every feed with a recorded side is on side #{String.upcase(hd(redundancy.sides))}",
-      redundancy.feeds != [] && redundancy.unfed != [] &&
-        "#{Enum.map_join(redundancy.unfed, ", ", & &1.name)} #{if match?([_], redundancy.unfed), do: "reaches", else: "reach"} no feed",
-      redundancy.sideless != [] &&
-        "#{Enum.map_join(redundancy.sideless, ", ", & &1.name)} #{if match?([_], redundancy.sideless), do: "has", else: "have"} no side"
+      redundancy.feeds != [] && named(redundancy.unfed, "reaches", "reach", "no feed"),
+      named(redundancy.sideless, "has", "have", "no side")
     ]
     |> Enum.filter(& &1)
     |> Enum.join("; ")
@@ -748,6 +745,14 @@ defmodule RengaWeb.ResourcePowerLive do
   end
 
   defp redundancy_note(%Redundancy{}), do: nil
+
+  # "PSU2 reaches no feed", or nil when there is nothing to name.
+  defp named([], _one, _many, _rest), do: nil
+
+  defp named(items, one, many, rest) do
+    verb = if match?([_], items), do: one, else: many
+    "#{Enum.map_join(items, ", ", & &1.name)} #{verb} #{rest}"
+  end
 
   defp feed_with_side(%{side: nil} = feed), do: feed.name
   defp feed_with_side(feed), do: "#{feed.name} (#{String.upcase(feed.side)})"
