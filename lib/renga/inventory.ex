@@ -1158,7 +1158,7 @@ defmodule Renga.Inventory do
 
       unless changeset.valid?, do: Repo.rollback(changeset)
 
-      revision = ResourceStore.next_revision!()
+      revision = ResourceStore.next_revision!(organization_id)
 
       resource =
         changeset
@@ -1192,7 +1192,7 @@ defmodule Renga.Inventory do
     if stored.owner_team_id == team_id and (is_nil(team_id) or stored.owner_source == source) do
       {:unchanged, stored}
     else
-      revision = ResourceStore.next_revision!()
+      revision = ResourceStore.next_revision!(organization_id)
 
       resource =
         stored
@@ -1225,7 +1225,7 @@ defmodule Renga.Inventory do
     if stored.owner_team_id do
       :skipped
     else
-      revision = ResourceStore.next_revision!()
+      revision = ResourceStore.next_revision!(organization_id)
 
       resource =
         stored

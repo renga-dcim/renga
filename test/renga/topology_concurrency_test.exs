@@ -6,6 +6,7 @@ defmodule Renga.TopologyConcurrencyTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
   alias Renga.Topology
 
@@ -350,7 +351,10 @@ defmodule Renga.TopologyConcurrencyTest do
 
       revision_lock_available =
         try do
-          Repo.query!("SELECT pg_try_advisory_xact_lock($1)", [1_380_271_687])
+          Repo.query!(
+            "SELECT pg_try_advisory_xact_lock($1, hashtext($2::text))",
+            ResourceStore.revision_lock_args(scope.organization_id)
+          )
         after
           send(row_blocker.pid, :release_organization_row)
         end
