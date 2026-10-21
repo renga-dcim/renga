@@ -664,7 +664,14 @@ defmodule Renga.Catalog do
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
 
-      if assignment, do: delete_hardware_assignment(scope, assignment)
+      if assignment do
+        delete_hardware_assignment(scope, assignment)
+
+        # Explicit clearing is the only assignment transition that leaves the
+        # device with no expected power endpoints.
+        :ok =
+          Renga.Power.Endpoints.sync!(scope.organization_id, resource.id, assignment.id)
+      end
 
       nil
     end)
@@ -2440,6 +2447,10 @@ defmodule Renga.Catalog do
       |> added_expectation_attrs()
       |> insert_expected_component(scope, assignment, nil, exception)
     end)
+
+    # RFD 10: power ports and outlets follow the expectations.
+    :ok =
+      Renga.Power.Endpoints.sync!(scope.organization_id, assignment.resource_id, assignment.id)
   end
 
   @doc false
