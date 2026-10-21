@@ -5,7 +5,8 @@ defmodule RengaWeb.SitePowerLive do
 
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
   together. Owners and admins add panels and add or edit feeds in side
-  panels; everyone else reads.
+  panels; everyone else reads. Owners also set the organization's default
+  power factor here, which loads without their own convert to VA with.
   """
   use RengaWeb, :live_view
 
@@ -29,6 +30,7 @@ defmodule RengaWeb.SitePowerLive do
        site: site,
        page_title: "#{site.resource.name} power",
        can_manage?: Renga.Inventory.organization_manager?(scope),
+       owner?: "owner" in (scope.roles || []),
        locations: DCIM.list_locations(scope, site.id),
        panel_form: panel_form(%{}),
        feed_form: feed_form(%{}),
@@ -92,6 +94,27 @@ defmodule RengaWeb.SitePowerLive do
         scope
         |> Power.update_feed(feed, attrs)
         |> after_mutation(socket, "Feed updated", "feed-panel")
+    end
+  end
+
+  def handle_event("save_power_factor", %{"organization" => params}, socket) do
+    case Power.set_default_power_factor(
+           socket.assigns.current_scope,
+           blank_to_nil(String.trim(params["default_power_factor"] || ""))
+         ) do
+      {:ok, _organization} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Default power factor saved")
+         |> close_overlay("power-factor-panel")
+         |> load_panels()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, power_factor_form: to_form(changeset, as: :organization))}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         put_flash(socket, :error, "Only owners change the organization's default power factor")}
     end
   end
 
@@ -230,6 +253,23 @@ defmodule RengaWeb.SitePowerLive do
             <:item label="Usable DC" blank={is_nil(@totals[:w])} placeholder="No DC feeds">
               <span id="site-usable-w">{@totals[:w] && Capacity.format(@totals[:w], :w)}</span>
             </:item>
+            <:item label="Default power factor">
+              <span id="default-power-factor" class="inline-flex items-baseline gap-2">
+                <span :if={@default_power_factor} class="font-mono tabular-nums">
+                  {Decimal.to_string(@default_power_factor)}
+                </span>
+                <span :if={!@default_power_factor} class="text-fg-muted">Not set</span>
+                <button
+                  :if={@owner?}
+                  id="edit-default-power-factor"
+                  type="button"
+                  class="min-h-tap cursor-pointer text-xs text-link hover:underline"
+                  phx-click={show_overlay("power-factor-panel")}
+                >
+                  {if @default_power_factor, do: "Change", else: "Set"}
+                </button>
+              </span>
+            </:item>
           </.properties>
           <p class="text-xs text-fg-muted">
             AC capacity is apparent power: volts × amps, or √3 × line-to-line volts × amps for
@@ -238,6 +278,31 @@ defmodule RengaWeb.SitePowerLive do
           </p>
         </:aside>
       </.object_page>
+
+      <.side_panel :if={@owner?} id="power-factor-panel" title="Default power factor">
+        <.form
+          for={@power_factor_form}
+          id="power-factor-form"
+          phx-submit="save_power_factor"
+          class="space-y-1"
+        >
+          <.input
+            field={@power_factor_form[:default_power_factor]}
+            type="number"
+            min="0.001"
+            max="1"
+            step="0.001"
+            label="Power factor"
+            autocomplete="off"
+          />
+          <p class="text-xs text-fg-muted">
+            Loads with no power factor of their own, from their hardware type or set on the port,
+            convert watts to volt-amperes with this. Headroom that rests on it is labelled. Leave
+            empty to assume nothing: those loads' volt-amperes stay unknown.
+          </p>
+          <.panel_actions panel="power-factor-panel" id="save-power-factor" label="Save" />
+        </.form>
+      </.side_panel>
 
       <.side_panel :if={@can_manage?} id="panel-panel" title="New panel">
         <.form for={@panel_form} id="new-panel-form" phx-submit="create_panel" class="space-y-1">
@@ -362,7 +427,16 @@ defmodule RengaWeb.SitePowerLive do
   defp load_panels(socket) do
     panels = Power.list_panels(socket.assigns.current_scope, socket.assigns.site.id)
     feeds = Enum.flat_map(panels, & &1.feeds)
-    assign(socket, panels: panels, feeds: feeds, totals: Power.capacity_totals(feeds))
+    default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
+
+    assign(socket,
+      panels: panels,
+      feeds: feeds,
+      totals: Power.capacity_totals(feeds),
+      default_power_factor: default_power_factor,
+      power_factor_form:
+        to_form(%{"default_power_factor" => default_power_factor || ""}, as: :organization)
+    )
   end
 
   defp panel_form(params) do

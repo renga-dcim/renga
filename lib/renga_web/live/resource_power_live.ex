@@ -3,9 +3,11 @@ defmodule RengaWeb.ResourcePowerLive do
   A device's Power tab (RFD 10 phase 2): the power ports where power comes
   in and the outlets where it goes out, as its hardware type defines them.
 
-  A port shows its maximum draw and allocated draw in W. The allocation
-  defaults from the catalog template; owners and admins can override it per
-  port in a side panel, and clearing the override restores the default.
+  A port shows its maximum draw and allocated draw in W, and the power
+  factor its load converts to VA with, labelled by where it comes from
+  (RFD 10 phase 3). Both default from the catalog template; owners and
+  admins can override them per port in a side panel, and clearing an
+  override restores the default.
 
   Each port shows its power path: the outlets and PDUs it passes through on
   the way to a panel feed, or where that path stops. Each outlet shows what
@@ -25,6 +27,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Cables
   alias Renga.Power.Paths
   alias Renga.Power.Port
+  alias Renga.Power.PowerFactor
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -122,8 +125,10 @@ defmodule RengaWeb.ResourcePowerLive do
   end
 
   def handle_event("save_allocation", %{"allocation" => params}, socket) do
-    watts = params |> Map.get("allocated_draw_w", "") |> String.trim()
-    attrs = %{allocated_draw_w: if(watts == "", do: nil, else: watts)}
+    attrs = %{
+      allocated_draw_w: blank_to_nil(params["allocated_draw_w"]),
+      power_factor: blank_to_nil(params["power_factor"])
+    }
 
     case Power.update_port_allocation(
            socket.assigns.current_scope,
@@ -227,6 +232,16 @@ defmodule RengaWeb.ResourcePowerLive do
                   title="Set on this device instead of from its hardware type"
                 >
                   set here
+                </span>
+              </:col>
+              <:col
+                :let={port}
+                label="Power factor"
+                class="w-32 text-right"
+                hide_below="5xl"
+              >
+                <span id={"power-factor-#{port.id}"}>
+                  <.power_factor power_factor={PowerFactor.for_port(port, @default_power_factor)} />
                 </span>
               </:col>
               <:col :let={port} label="Path" class="w-20 @3xl:w-auto" clip={false}>
@@ -465,6 +480,20 @@ defmodule RengaWeb.ResourcePowerLive do
           <p :if={@editing_port} class="text-xs text-fg-muted">
             Leave empty to use the hardware type's {watts(@editing_port.default_allocated_draw_w)}.
           </p>
+          <div class="pt-3">
+            <.input
+              field={@allocation_form[:power_factor]}
+              type="number"
+              min="0.001"
+              max="1"
+              step="0.001"
+              label="Power factor"
+              autocomplete="off"
+            />
+          </div>
+          <p :if={@editing_port} id="power-factor-fallback" class="text-xs text-fg-muted">
+            {power_factor_fallback(@editing_port, @default_power_factor)}
+          </p>
           <div class="mt-4 flex justify-end gap-2">
             <.button type="button" phx-click={hide_overlay("allocation-panel")}>Cancel</.button>
             <.button id="save-allocation" variant="primary" phx-disable-with="Saving…">
@@ -648,6 +677,7 @@ defmodule RengaWeb.ResourcePowerLive do
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
     paths = Paths.for_ports(socket.assigns.current_scope, ports)
+    default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
@@ -662,14 +692,61 @@ defmodule RengaWeb.ResourcePowerLive do
         for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
       retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
       unallocated: unallocated,
-      allocated_total: if(unallocated == 0, do: Enum.sum(allocations))
+      allocated_total: if(unallocated == 0, do: Enum.sum(allocations)),
+      default_power_factor: default_power_factor
     )
   end
 
-  defp allocation_form(nil), do: to_form(%{"allocated_draw_w" => ""}, as: :allocation)
+  defp allocation_form(nil),
+    do: to_form(%{"allocated_draw_w" => "", "power_factor" => ""}, as: :allocation)
 
-  defp allocation_form(%Port{} = port),
-    do: to_form(%{"allocated_draw_w" => port.allocated_draw_w || ""}, as: :allocation)
+  defp allocation_form(%Port{} = port) do
+    to_form(
+      %{
+        "allocated_draw_w" => port.allocated_draw_w || "",
+        "power_factor" => port.power_factor || ""
+      },
+      as: :allocation
+    )
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp blank_to_nil(_value), do: nil
+
+  attr :power_factor, PowerFactor, default: nil
+
+  defp power_factor(%{power_factor: nil} = assigns) do
+    ~H"""
+    <span class="text-fg-muted" title="Volt-amperes for this load stay unknown">Not set</span>
+    """
+  end
+
+  defp power_factor(assigns) do
+    ~H"""
+    <span class="font-mono tabular-nums">{Decimal.to_string(@power_factor.value)}</span>
+    <span class="ml-1 text-xs text-fg-muted">{PowerFactor.source_label(@power_factor.source)}</span>
+    """
+  end
+
+  # What clearing the override falls back to.
+  defp power_factor_fallback(port, default) do
+    case PowerFactor.for_port(%{port | power_factor: nil}, default) do
+      nil ->
+        "Leave empty to leave it unknown: neither the hardware type nor the organization sets one."
+
+      %PowerFactor{source: :hardware_type, value: value} ->
+        "Leave empty to use the hardware type's #{value}."
+
+      %PowerFactor{source: :organization_default, value: value} ->
+        "Leave empty to use the organization default of #{value}."
+    end
+  end
 
   defp watts(nil), do: "—"
   defp watts(watts), do: "#{watts} W"
