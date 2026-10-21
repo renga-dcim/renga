@@ -7,6 +7,7 @@ defmodule Renga.Power.EndpointsTest do
 
   alias Renga.Accounts
   alias Renga.Catalog
+  alias Renga.Inventory
   alias Renga.Power
   alias Renga.Power.Port
 
@@ -83,6 +84,64 @@ defmodule Renga.Power.EndpointsTest do
     assert %{ports: [], outlets: []} = Power.list_device_endpoints(scope, pdu.id)
   end
 
+  test "assignment replacement preserves matching endpoint identities and overrides", %{
+    scope: scope
+  } do
+    {:ok, server} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "replacement",
+        lifecycle_state: "active"
+      })
+
+    first_type =
+      catalog_hardware_type_fixture(scope, "replacement-first", [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 300}},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, server.id, first_type.id)
+
+    %{ports: [first_port], outlets: [first_outlet]} =
+      Power.list_device_endpoints(scope, server.id)
+
+    {:ok, _port} = Power.update_port_allocation(scope, first_port, %{allocated_draw_w: 500})
+
+    {:ok, _revision} =
+      Catalog.create_hardware_type_revision(scope, first_type, %{}, [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 350}},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, server.id, first_type.id)
+
+    %{ports: [revised_port], outlets: [revised_outlet]} =
+      Power.list_device_endpoints(scope, server.id)
+
+    assert {revised_port.id, revised_port.default_allocated_draw_w, revised_port.allocated_draw_w} ==
+             {first_port.id, 350, 500}
+
+    assert {revised_outlet.id, revised_outlet.inlet_port_id} == {first_outlet.id, revised_port.id}
+
+    second_type =
+      catalog_hardware_type_fixture(scope, "replacement-second", [
+        %{kind: "power_port", name: "Inlet", attributes: %{"allocated_draw_w" => 400}},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    {:ok, _assignment} = Catalog.assign_hardware_type(scope, server.id, second_type.id)
+
+    %{ports: [replaced_port], outlets: [replaced_outlet]} =
+      Power.list_device_endpoints(scope, server.id)
+
+    assert {replaced_port.id, replaced_port.default_allocated_draw_w,
+            replaced_port.allocated_draw_w} ==
+             {first_port.id, 400, 500}
+
+    assert {replaced_outlet.id, replaced_outlet.inlet_port_id} ==
+             {first_outlet.id, replaced_port.id}
+  end
+
   test "only owners and admins change allocations", %{organization: organization, scope: scope} do
     {server, _expected} =
       assigned_server_fixture(scope, "web-2", [%{kind: "power_port", name: "PSU1"}])
@@ -109,5 +168,79 @@ defmodule Renga.Power.EndpointsTest do
 
     assert {one.inlet_port.name, one.feed_leg} == {"Inlet A", "a"}
     assert {two.inlet_port, two.feed_leg} == {nil, nil}
+  end
+
+  test "migration backfill matches runtime normalization", %{scope: scope} do
+    long_connector = String.duplicate("IEC-C13-", 40)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-normalized", [
+        %{
+          kind: "power_port",
+          name: "Inlet A",
+          attributes: %{
+            "connector" => long_connector,
+            "maximum_draw_w" => "+7360",
+            "allocated_draw_w" => " 350 "
+          }
+        },
+        %{
+          kind: "power_port",
+          name: "1",
+          attributes: %{"connector" => 123, "allocated_draw_w" => 1.5}
+        },
+        %{
+          kind: "power_outlet",
+          name: "trimmed",
+          attributes: %{
+            "connector" => long_connector,
+            "inlet" => " Inlet A ",
+            "feed_leg" => " A "
+          }
+        },
+        %{
+          kind: "power_outlet",
+          name: "typed",
+          attributes: %{"connector" => 123, "inlet" => 1, "feed_leg" => true}
+        }
+      ])
+
+    runtime = normalized_endpoints(scope, pdu.id)
+    assert runtime.ports["Inlet A"].connector == long_connector
+    assert runtime.outlets["trimmed"].connector == long_connector
+
+    Repo.delete_all(Renga.Power.Outlet)
+    Repo.delete_all(Port)
+
+    [{migration, _bytecode}] =
+      Code.compile_file("priv/repo/migrations/20261030173000_create_power_ports_and_outlets.exs")
+
+    Enum.each(migration.backfill_statements(), &Repo.query!/1)
+    assert normalized_endpoints(scope, pdu.id) == runtime
+  end
+
+  defp normalized_endpoints(scope, resource_id) do
+    %{ports: ports, outlets: outlets} = Power.list_device_endpoints(scope, resource_id)
+
+    %{
+      ports:
+        Map.new(ports, fn port ->
+          {port.name,
+           %{
+             connector: port.connector,
+             maximum_draw_w: port.maximum_draw_w,
+             default_allocated_draw_w: port.default_allocated_draw_w
+           }}
+        end),
+      outlets:
+        Map.new(outlets, fn outlet ->
+          {outlet.name,
+           %{
+             connector: outlet.connector,
+             feed_leg: outlet.feed_leg,
+             inlet: outlet.inlet_port && outlet.inlet_port.name
+           }}
+        end)
+    }
   end
 end

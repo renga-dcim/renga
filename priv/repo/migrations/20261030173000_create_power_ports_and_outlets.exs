@@ -22,7 +22,7 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
 
       add :name, :string, null: false
       add :label, :string
-      add :connector, :string
+      add :connector, :text
       add :maximum_draw_w, :integer
       add :default_allocated_draw_w, :integer
       add :allocated_draw_w, :integer
@@ -66,7 +66,7 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
 
       add :name, :string, null: false
       add :label, :string
-      add :connector, :string
+      add :connector, :text
       add :feed_leg, :string
 
       timestamps(type: :"timestamp(3)")
@@ -93,7 +93,7 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
       INSERT INTO power_ports (id, organization_id, resource_id, name, label, connector,
                                maximum_draw_w, default_allocated_draw_w, inserted_at, updated_at)
       SELECT gen_random_uuid(), expected.organization_id, assignment.resource_id, expected.name,
-             expected.label, NULLIF(btrim(expected.attributes->>'connector'), ''),
+             expected.label, #{text("connector")},
              #{watts("maximum_draw_w")}, #{watts("allocated_draw_w")}, now(), now()
       FROM expected_components AS expected
       JOIN hardware_assignments AS assignment ON assignment.id = expected.hardware_assignment_id
@@ -104,16 +104,17 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
       INSERT INTO power_outlets (id, organization_id, resource_id, inlet_port_id, name, label,
                                  connector, feed_leg, inserted_at, updated_at)
       SELECT gen_random_uuid(), expected.organization_id, assignment.resource_id, inlet.id,
-             expected.name, expected.label, NULLIF(btrim(expected.attributes->>'connector'), ''),
-             CASE WHEN lower(expected.attributes->>'feed_leg') IN ('a', 'b', 'c')
-                  THEN lower(expected.attributes->>'feed_leg') END,
+             expected.name, expected.label, #{text("connector")},
+             CASE WHEN jsonb_typeof(expected.attributes->'feed_leg') = 'string'
+                        AND lower(btrim(expected.attributes->>'feed_leg')) IN ('a', 'b', 'c')
+                  THEN lower(btrim(expected.attributes->>'feed_leg')) END,
              now(), now()
       FROM expected_components AS expected
       JOIN hardware_assignments AS assignment ON assignment.id = expected.hardware_assignment_id
       LEFT JOIN power_ports AS inlet
         ON inlet.organization_id = expected.organization_id
        AND inlet.resource_id = assignment.resource_id
-       AND inlet.name = expected.attributes->>'inlet'
+       AND inlet.name = #{text("inlet")}
       WHERE expected.kind = 'power_outlet' AND NOT expected.suppressed
       ON CONFLICT DO NOTHING
       """
@@ -128,9 +129,19 @@ defmodule Renga.Repo.Migrations.CreatePowerPortsAndOutlets do
   # A positive whole number of watts small enough for an integer, or NULL.
   defp watts(key) do
     """
-    CASE WHEN expected.attributes->>'#{key}' ~ '^[0-9]{1,9}$'
-              AND (expected.attributes->>'#{key}')::integer > 0
-         THEN (expected.attributes->>'#{key}')::integer END
+    CASE WHEN jsonb_typeof(expected.attributes->'#{key}') IN ('number', 'string')
+              AND btrim(expected.attributes->>'#{key}') ~ '^\\+?[0-9]+$'
+         THEN CASE WHEN (btrim(expected.attributes->>'#{key}'))::numeric BETWEEN 1 AND 999999999
+                   THEN (btrim(expected.attributes->>'#{key}'))::integer END
+         END
+    """
+  end
+
+  # Only JSON strings are text attributes; JSON numbers and booleans stay unset.
+  defp text(key) do
+    """
+    CASE WHEN jsonb_typeof(expected.attributes->'#{key}') = 'string'
+         THEN NULLIF(btrim(expected.attributes->>'#{key}'), '') END
     """
   end
 end

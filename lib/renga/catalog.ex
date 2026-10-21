@@ -664,7 +664,14 @@ defmodule Renga.Catalog do
       resource = lock_physical_resource!(scope, resource_id)
       assignment = locked_assignment(scope.organization_id, resource.id)
 
-      if assignment, do: delete_hardware_assignment(scope, assignment)
+      if assignment do
+        delete_hardware_assignment(scope, assignment)
+
+        # Explicit clearing is the only assignment transition that leaves the
+        # device with no expected power endpoints.
+        :ok =
+          Renga.Power.Endpoints.sync!(scope.organization_id, resource.id, assignment.id)
+      end
 
       nil
     end)
@@ -2241,10 +2248,6 @@ defmodule Renga.Catalog do
         component.hardware_assignment_id == ^assignment.id
     )
     |> Repo.delete_all()
-
-    # A device without a hardware type expects no power endpoints.
-    :ok =
-      Renga.Power.Endpoints.sync!(scope.organization_id, assignment.resource_id, assignment.id)
 
     Repo.delete!(assignment)
   end
