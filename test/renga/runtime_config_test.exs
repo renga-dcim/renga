@@ -151,8 +151,9 @@ defmodule Renga.RuntimeConfigTest do
     assert https[:port] == 4443
     assert https[:ip] == {10, 0, 0, 5}
     assert https[:certfile] == "/etc/renga/operator.pem"
-    assert https[:cacertfile] == "/etc/renga/clients.pem"
-    assert https[:fail_if_no_peer_cert]
+    transport = https[:thousand_island_options][:transport_options]
+    assert transport[:cacertfile] == "/etc/renga/clients.pem"
+    assert transport[:fail_if_no_peer_cert]
     refute Keyword.has_key?(endpoint, :http)
   end
 

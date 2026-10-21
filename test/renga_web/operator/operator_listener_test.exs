@@ -53,23 +53,18 @@ defmodule RengaWeb.OperatorListenerTest do
     %{pki: dir, plaintext: plaintext}
   end
 
+  # Starts the listener the way the endpoint does in production, from the
+  # same `https:` options.
   defp start_listener(settings) do
     https = OperatorListener.https_options(Map.merge(%{ip: {127, 0, 0, 1}, port: 0}, settings))
-    {transport_options, bandit_options} = Keyword.split(https, [:ip, :port])
 
-    pid =
-      start_supervised!(
-        {Bandit,
-         plug: RengaWeb.OperatorEndpoint,
-         scheme: :https,
-         ip: transport_options[:ip],
-         port: 0,
-         thousand_island_options: [
-           transport_options: Keyword.drop(bandit_options, [:cipher_suite])
-         ],
-         startup_log: false}
+    [spec] =
+      Bandit.PhoenixAdapter.child_specs(RengaWeb.OperatorEndpoint,
+        otp_app: :renga,
+        https: Keyword.put(https, :startup_log, false)
       )
 
+    pid = start_supervised!(spec)
     {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
     port
   end
@@ -143,10 +138,11 @@ defmodule RengaWeb.OperatorListenerTest do
           client_ca_file: "ca.pem"
         })
 
-      assert options[:cacertfile] == "ca.pem"
-      assert options[:verify] == :verify_peer
-      assert options[:fail_if_no_peer_cert]
-      refute Keyword.has_key?(options, :cacerts)
+      transport = options[:thousand_island_options][:transport_options]
+      assert transport[:cacertfile] == "ca.pem"
+      assert transport[:verify] == :verify_peer
+      assert transport[:fail_if_no_peer_cert]
+      refute Keyword.has_key?(transport, :cacerts)
     end
   end
 end

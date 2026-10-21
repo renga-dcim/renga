@@ -16,6 +16,10 @@ defmodule RengaWeb.OperatorListener do
   Takes `:port`, `:ip`, `:certfile`, and `:keyfile`, and optionally
   `:client_ca_file` to require client certificates and `:client_crl_file`
   with that authority's revocation list.
+
+  Bandit accepts only its own keys at the top level, so the client
+  certificate checks go to the TLS transport through
+  `:thousand_island_options`.
   """
   def https_options(settings) do
     [
@@ -24,8 +28,11 @@ defmodule RengaWeb.OperatorListener do
       cipher_suite: :strong,
       certfile: Map.fetch!(settings, :certfile),
       keyfile: Map.fetch!(settings, :keyfile)
-    ] ++ client_certificate_options(settings)
+    ] ++ transport_options(client_certificate_options(settings))
   end
+
+  defp transport_options([]), do: []
+  defp transport_options(options), do: [thousand_island_options: [transport_options: options]]
 
   defp client_certificate_options(%{client_ca_file: ca_file} = settings)
        when is_binary(ca_file) do
