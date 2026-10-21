@@ -740,8 +740,7 @@ defmodule RengaWeb.ResourcePowerLive do
       named(redundancy.sideless, "has", "have", "no side")
     ]
     |> Enum.filter(& &1)
-    |> Enum.join("; ")
-    |> Kernel.<>(".")
+    |> Enum.map_join(" ", &(&1 <> "."))
   end
 
   defp redundancy_note(%Redundancy{}), do: nil
