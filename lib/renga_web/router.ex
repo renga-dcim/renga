@@ -165,6 +165,7 @@ defmodule RengaWeb.Router do
       live "/inventory/:id", ResourceLive.Show, :show
       live "/inventory/:id/hardware", ResourceHardwareLive, :show
       live "/inventory/:id/ports", ResourcePortsLive, :show
+      live "/inventory/:id/power", ResourcePowerLive, :show
       live "/inventory/:id/network", ResourceLive.Show, :network
       live "/inventory/:id/sources", ResourceLive.Show, :sources
       live "/inventory/:id/activity", ResourceLive.Show, :activity

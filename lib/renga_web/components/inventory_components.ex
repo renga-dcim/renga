@@ -72,7 +72,7 @@ defmodule RengaWeb.InventoryComponents do
 
   attr :tab, :atom,
     required: true,
-    values: [:overview, :hardware, :ports, :network, :sources, :activity]
+    values: [:overview, :hardware, :ports, :power, :network, :sources, :activity]
 
   attr :hardware?, :boolean, required: true
   slot :inner_block, required: true
@@ -93,6 +93,8 @@ defmodule RengaWeb.InventoryComponents do
                nonzero(resource.drift_count)},
             resource.kind == "switch" &&
               {:ports, "Ports", ~p"/inventory/#{resource}/ports", port_count(resource)},
+            # RFD 10: power endpoints come from the hardware type.
+            assigns.hardware? && {:power, "Power", ~p"/inventory/#{resource}/power", nil},
             {:network, "Network", ~p"/inventory/#{resource}/network",
              nonzero(length(resource.interfaces))},
             {:sources, "Sources", ~p"/inventory/#{resource}/sources",
@@ -138,7 +140,7 @@ defmodule RengaWeb.InventoryComponents do
       else: Format.humanize(resource.kind)
   end
 
-  defp separate_page?(tab), do: tab in [:hardware, :ports]
+  defp separate_page?(tab), do: tab in [:hardware, :ports, :power]
 
   defp port_count(resource),
     do: resource.interfaces |> Enum.count(&(&1.kind in Ports.port_kinds())) |> nonzero()
