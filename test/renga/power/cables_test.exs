@@ -121,6 +121,16 @@ defmodule Renga.Power.CablesTest do
     assert {cable.power_feed.name, cable.power_feed.panel.name} == {"A1", "PDP-1"}
   end
 
+  test "a port is offered other devices' outlets and every feed", context do
+    %{scope: scope, pdu: pdu, server: server, outlet1: outlet1} = context
+    feed = feed!(scope)
+
+    assert %{outlets: [], feeds: [%{id: feed_id}]} = Cables.connectable(scope, pdu.id)
+    assert feed_id == feed.id
+    assert %{outlets: [%{id: id} | _]} = Cables.connectable(scope, server.id)
+    assert id == outlet1.id
+  end
+
   test "rejects malformed and looping connections", context do
     %{scope: scope, inlet: inlet, psu1: psu1, outlet1: outlet1} = context
     feed = feed!(scope)

@@ -49,6 +49,35 @@ defmodule Renga.Power.Cables do
   end
 
   @doc """
+  What a port on `resource_id` can be plugged into: the organization's
+  outlets on other devices, by device, and its feeds, by panel. Retired
+  outlets are left out.
+  """
+  def connectable(%Scope{organization_id: organization_id}, resource_id) do
+    outlets =
+      Outlet
+      |> join(:inner, [outlet], resource in assoc(outlet, :resource))
+      |> where([outlet], outlet.organization_id == ^organization_id)
+      |> where([outlet], outlet.resource_id != ^resource_id and is_nil(outlet.retired_at))
+      |> order_by([outlet, resource],
+        asc: resource.name,
+        asc: fragment(~s(? COLLATE "C"), outlet.name)
+      )
+      |> preload([_outlet, resource], resource: resource)
+      |> Repo.all()
+
+    feeds =
+      Feed
+      |> join(:inner, [feed], panel in assoc(feed, :panel))
+      |> where([feed], feed.organization_id == ^organization_id)
+      |> order_by([feed, panel], asc: panel.name, asc: feed.name)
+      |> preload([_feed, panel], panel: panel)
+      |> Repo.all()
+
+    %{outlets: outlets, feeds: feeds}
+  end
+
+  @doc """
   Records that a port is plugged into an outlet or feed, as the scope's
   user. The port's and the outlet's earlier cables are replaced.
   """
