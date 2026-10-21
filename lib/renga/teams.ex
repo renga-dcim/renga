@@ -2,8 +2,8 @@ defmodule Renga.Teams do
   @moduledoc """
   Teams and the resources they own (RFD 8, "Triage").
 
-  Owners and admins manage teams and set owners; members request an owner
-  change through `Renga.Requests`. Every owner change is a resource revision
+  Holders of `teams.manage` manage teams, who is on them, and owners;
+  members request an owner change through `Renga.Requests`. Every owner change is a resource revision
   and an Activity entry with its actor. A team can be deleted while it owns
   resources: they become unowned, each with its own Activity entry, and so
   return to triage.
@@ -11,6 +11,7 @@ defmodule Renga.Teams do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Inventory
@@ -18,13 +19,17 @@ defmodule Renga.Teams do
   alias Renga.Inventory.Resource
   alias Renga.Repo
   alias Renga.Teams.Team
+  alias Renga.Teams.TeamMembership
 
   @doc "UI hint: `teams.manage` covers teams and resource owners."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "teams.manage")
 
   ## Teams
 
-  @doc "The organization's teams by name, each with the number of resources it owns."
+  @doc """
+  The organization's teams by name, each with the number of resources it
+  owns and of people on it.
+  """
   def list_teams(%Scope{organization_id: organization_id}) do
     owned =
       from resource in Resource,
@@ -33,11 +38,22 @@ defmodule Renga.Teams do
         group_by: resource.owner_team_id,
         select: %{team_id: resource.owner_team_id, count: count(resource.id)}
 
+    people =
+      from member in TeamMembership,
+        where: member.organization_id == ^organization_id,
+        group_by: member.team_id,
+        select: %{team_id: member.team_id, count: count(member.id)}
+
     Team
     |> where([team], team.organization_id == ^organization_id)
     |> join(:left, [team], owned in subquery(owned), on: owned.team_id == team.id)
+    |> join(:left, [team], people in subquery(people), on: people.team_id == team.id)
     |> order_by([team], asc: fragment("lower(?)", team.name))
-    |> select([team, owned], %{team | resource_count: coalesce(owned.count, 0)})
+    |> select([team, owned, people], %{
+      team
+      | resource_count: coalesce(owned.count, 0),
+        member_count: coalesce(people.count, 0)
+    })
     |> Repo.all()
   end
 
@@ -88,6 +104,107 @@ defmodule Renga.Teams do
 
       Repo.delete(team)
     end)
+  end
+
+  ## Members
+
+  @doc "The people on a team, as organization memberships with users, by email."
+  def list_team_members(%Scope{organization_id: organization_id}, %Team{id: team_id}) do
+    OrganizationMembership
+    |> join(:inner, [membership], team_member in TeamMembership,
+      on: team_member.membership_id == membership.id
+    )
+    |> join(:inner, [membership], user in assoc(membership, :user))
+    |> where([_membership, team_member], team_member.organization_id == ^organization_id)
+    |> where([_membership, team_member], team_member.team_id == ^team_id)
+    |> order_by([_membership, _team_member, user], asc: user.email)
+    |> preload([_membership, _team_member, user], user: user)
+    |> Repo.all()
+  end
+
+  @doc """
+  Puts an active member of the organization on a team, recorded in
+  Activity. Needs `teams.manage`. Adding someone already on it changes
+  nothing.
+
+  Team membership is a grant transition in RFD 17: once assignments can be
+  conditioned on `$subject_teams`, this is where the actor's grant ceiling
+  must also cover what the person gains. No assignment can name a team yet,
+  so joining one grants nothing today.
+  """
+  def add_member(%Scope{} = scope, %Team{} = team, membership_id) do
+    managed(scope, fn ->
+      team = lock_team!(scope, team.id)
+      membership = lock_membership!(scope, membership_id)
+
+      # The team lock serializes changes to its members.
+      if on_team?(team, membership) do
+        {:ok, :unchanged}
+      else
+        Repo.insert!(%TeamMembership{
+          organization_id: scope.organization_id,
+          team_id: team.id,
+          membership_id: membership.id,
+          added_by_user_id: scope.user.id
+        })
+
+        record_team_member!(scope, "team_member_added", team, membership)
+        {:ok, :added}
+      end
+    end)
+  end
+
+  defp on_team?(team, membership) do
+    TeamMembership
+    |> where([team_member], team_member.team_id == ^team.id)
+    |> where([team_member], team_member.membership_id == ^membership.id)
+    |> Repo.exists?()
+  end
+
+  @doc "Takes a person off a team, recorded in Activity. Needs `teams.manage`."
+  def remove_member(%Scope{} = scope, %Team{} = team, membership_id) do
+    managed(scope, fn ->
+      team = lock_team!(scope, team.id)
+
+      with id when is_binary(id) <- cast_id(membership_id),
+           {1, _deleted} <-
+             TeamMembership
+             |> where([team_member], team_member.organization_id == ^scope.organization_id)
+             |> where([team_member], team_member.team_id == ^team.id)
+             |> where([team_member], team_member.membership_id == ^id)
+             |> Repo.delete_all() do
+        membership = OrganizationMembership |> Repo.get!(id) |> Repo.preload(:user)
+        record_team_member!(scope, "team_member_removed", team, membership)
+        {:ok, :removed}
+      else
+        _not_on_team -> {:ok, :unchanged}
+      end
+    end)
+  end
+
+  defp lock_membership!(%Scope{organization_id: organization_id}, id) do
+    with id when is_binary(id) <- cast_id(id),
+         %OrganizationMembership{} = membership <-
+           OrganizationMembership
+           |> where([membership], membership.organization_id == ^organization_id)
+           |> where([membership], membership.id == ^id and membership.status == "active")
+           |> lock("FOR UPDATE")
+           |> Repo.one() do
+      Repo.preload(membership, :user)
+    else
+      _missing_or_disabled -> Repo.rollback(:invalid_member)
+    end
+  end
+
+  defp record_team_member!(scope, kind, team, membership) do
+    {:ok, _event} =
+      Inventory.create_change_event(scope, %{
+        kind: kind,
+        field: "team",
+        new_value: team_value(team),
+        metadata: %{"member" => membership.user.email, "membership_id" => membership.id},
+        occurred_at: Renga.Time.utc_now_ms()
+      })
   end
 
   ## Owners

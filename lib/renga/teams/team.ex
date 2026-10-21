@@ -19,6 +19,8 @@ defmodule Renga.Teams.Team do
     field :description, :string
     # Resources the team owns, filled by `Renga.Teams.list_teams/1`.
     field :resource_count, :integer, virtual: true, default: 0
+    # People on the team, filled by `Renga.Teams.list_teams/1`.
+    field :member_count, :integer, virtual: true, default: 0
 
     belongs_to :organization, Organization
 
