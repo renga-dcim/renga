@@ -2,6 +2,7 @@ defmodule Renga.Inventory.ReconcilerTest do
   use Renga.DataCase, async: true
 
   alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Catalog
   alias Renga.Catalog.ActualComponentEvidenceMatch
   alias Renga.Catalog.ComponentFinding
@@ -11,6 +12,7 @@ defmodule Renga.Inventory.ReconcilerTest do
   alias Renga.Inventory.InterfaceEvidence
   alias Renga.Inventory.ResourceIdentifierClaim
   alias Renga.Topology
+  alias Renga.Roles
 
   defp context do
     suffix = System.unique_integer([:positive])
@@ -295,6 +297,42 @@ defmodule Renga.Inventory.ReconcilerTest do
              Inventory.reconcile_observation(context.scope, observation.id)
 
     assert Repo.aggregate(ComponentEvidence, :count) == 4
+  end
+
+  test "an independently assigned inventory.reconcile role projects real components" do
+    context = context()
+    user = Renga.AccountsFixtures.user_fixture()
+
+    membership =
+      Renga.InventoryFixtures.organization_membership_fixture(
+        user,
+        context.scope.organization,
+        %{role: "viewer"}
+      )
+
+    {:ok, role} =
+      Roles.create_role(context.scope, %{
+        "name" => "Observation reconciler",
+        "permissions" => ["inventory.reconcile"]
+      })
+
+    {:ok, _assignment} = Assignments.assign(context.scope, membership.id, %{"role" => role.id})
+    reconciler = Accounts.scope_for_user(user, context.scope.organization_id)
+
+    observation =
+      observation(
+        context,
+        "991",
+        %{"machine_id" => "assigned-reconciler"},
+        %{},
+        [],
+        [%{"kind" => "cpu", "model" => "Assigned CPU", "logical_count" => 4}]
+      )
+
+    assert {:ok, resource, true} = Inventory.reconcile_observation(reconciler, observation.id)
+
+    assert [%{kind: "cpu", model: "Assigned CPU"}] =
+             Inventory.list_component_evidence(reconciler, resource.id)
   end
 
   test "module evidence requires stable identity and a normalized bay address" do

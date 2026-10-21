@@ -5,6 +5,7 @@ defmodule Renga.CatalogTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Catalog
   alias Renga.Catalog.ComponentFinding
   alias Renga.Catalog.ComponentTemplate
@@ -19,6 +20,7 @@ defmodule Renga.CatalogTest do
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceRevision
   alias Renga.Repo
+  alias Renga.Roles
 
   setup do
     user = user_fixture()
@@ -624,6 +626,37 @@ defmodule Renga.CatalogTest do
              }
              |> ComponentTemplate.changeset(%{kind: "interface", name: "foreign"})
              |> Repo.insert()
+  end
+
+  test "human component reconciliation requires inventory.reconcile independently", %{
+    scope: scope,
+    organization: organization
+  } do
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "capability-test"})
+    {:ok, resource} = Inventory.create_resource(scope, %{kind: "server", name: "capability-host"})
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        idempotency_key: "component-capability",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{}
+      })
+
+    reconciler = custom_role_member(scope, organization, "Reconciler", ["inventory.reconcile"])
+    author = custom_role_member(scope, organization, "Author", ["catalog.author"])
+
+    assert :ok = Catalog.reconcile_component_findings(reconciler, observation, resource)
+
+    assert {:error, :forbidden} =
+             Catalog.reconcile_component_findings(author, observation, resource)
+  end
+
+  defp custom_role_member(scope, organization, name, permissions) do
+    user = user_fixture()
+    membership = organization_membership_fixture(user, organization, %{role: "viewer"})
+    {:ok, role} = Roles.create_role(scope, %{"name" => name, "permissions" => permissions})
+    {:ok, _assignment} = Assignments.assign(scope, membership.id, %{"role" => role.id})
+    Accounts.scope_for_user(user, organization.id)
   end
 
   test "published revisions and templates reject changesets", %{scope: scope} do

@@ -5,6 +5,7 @@ defmodule Renga.CatalogModuleTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Catalog
   alias Renga.Catalog.CurrentModuleInstallation
   alias Renga.Catalog.DesiredModuleAssignment
@@ -12,6 +13,7 @@ defmodule Renga.CatalogModuleTest do
   alias Renga.Catalog.ModuleBay
   alias Renga.Inventory
   alias Renga.Repo
+  alias Renga.Roles
 
   setup do
     user = user_fixture()
@@ -238,6 +240,27 @@ defmodule Renga.CatalogModuleTest do
 
     assert [%{action: "installed", actor_user_id: nil}] =
              Catalog.list_module_installation_events(reconciler_scope, bay.id)
+  end
+
+  test "human module operations retain catalog.author independently", %{
+    scope: scope,
+    organization: organization
+  } do
+    module_type = module_type_fixture(scope, "CAPABILITY")
+    {:ok, _revision} = Catalog.create_module_type_revision(scope, module_type, %{})
+    owner = resource_fixture(scope, "capability-owner")
+    {:ok, bay} = Catalog.create_module_bay(scope, owner.id, %{name: "Slot 1"}, [module_type.id])
+    module = module_fixture(scope, module_type, "Capability module")
+
+    author = custom_role_member(scope, organization, "Module author", ["catalog.author"])
+
+    reconciler =
+      custom_role_member(scope, organization, "Only reconcile", ["inventory.reconcile"])
+
+    assert {:error, :forbidden} = Catalog.install_module(reconciler, bay.id, module.id)
+    assert {:ok, _installation} = Catalog.install_module(author, bay.id, module.id)
+    assert {:error, :forbidden} = Catalog.remove_module(reconciler, bay.id)
+    assert {:ok, nil} = Catalog.remove_module(author, bay.id)
   end
 
   test "install, replacement, and removal are atomic and retain ordered history", %{scope: scope} do
@@ -472,5 +495,13 @@ defmodule Renga.CatalogModuleTest do
       )
 
     module
+  end
+
+  defp custom_role_member(scope, organization, name, permissions) do
+    user = user_fixture()
+    membership = organization_membership_fixture(user, organization, %{role: "viewer"})
+    {:ok, role} = Roles.create_role(scope, %{"name" => name, "permissions" => permissions})
+    {:ok, _assignment} = Assignments.assign(scope, membership.id, %{"role" => role.id})
+    Accounts.scope_for_user(user, organization.id)
   end
 end
