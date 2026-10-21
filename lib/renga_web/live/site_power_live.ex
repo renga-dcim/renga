@@ -4,8 +4,8 @@ defmodule RengaWeb.SitePowerLive do
   much of every feed may be used.
 
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
-  together. Owners and admins add panels and add or edit feeds in side
-  panels; everyone else reads.
+  together. People holding `dcim.edit` (owners and admins) add panels and
+  add or edit feeds in side panels; everyone else reads.
   """
   use RengaWeb, :live_view
 
@@ -28,7 +28,7 @@ defmodule RengaWeb.SitePowerLive do
      |> assign(
        site: site,
        page_title: "#{site.resource.name} power",
-       can_manage?: Renga.Inventory.organization_manager?(scope),
+       can_manage?: Renga.Authorization.allowed?(scope, "dcim.edit"),
        locations: DCIM.list_locations(scope, site.id),
        panel_form: panel_form(%{}),
        feed_form: feed_form(%{}),

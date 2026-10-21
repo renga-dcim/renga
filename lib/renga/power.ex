@@ -249,9 +249,11 @@ defmodule Renga.Power do
   def change_panel(%Panel{} = panel, attrs \\ %{}), do: Panel.changeset(panel, attrs)
   def change_feed(%Feed{} = feed, attrs \\ %{}), do: Feed.changeset(feed, attrs)
 
+  # Panels, feeds, and the ports' planning values are DCIM objects, so their
+  # changes need RFD 17's `dcim.edit`, like sites and racks.
   defp power_transaction(scope, mutation) do
     scope
-    |> Inventory.organization_management_transaction(mutation)
+    |> Inventory.organization_management_transaction("dcim.edit", mutation)
     |> Changes.broadcast(scope.organization_id)
   end
 

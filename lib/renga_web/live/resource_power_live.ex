@@ -38,7 +38,8 @@ defmodule RengaWeb.ResourcePowerLive do
        resource: resource,
        page_title: "#{resource.name} power",
        hardware?: Catalog.hardware_assignable_resource?(resource),
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Renga.Authorization.allowed?(scope, "dcim.edit"),
+       can_connect?: Renga.Authorization.allowed?(scope, "topology.edit"),
        editing_port: nil,
        allocation_form: allocation_form(nil),
        connecting_port: nil,
@@ -250,9 +251,10 @@ defmodule RengaWeb.ResourcePowerLive do
                   <.icon name="hero-chevron-right-mini" class="size-4 shrink-0 text-fg-muted" />
                 </button>
               </:col>
-              <:action :let={port} :if={@can_manage?}>
+              <:action :let={port} :if={@can_manage? or @can_connect?}>
                 <div class="flex justify-end gap-2">
                   <.button
+                    :if={@can_manage?}
                     id={"power-port-#{port.id}-edit"}
                     type="button"
                     size="sm"
@@ -266,6 +268,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     <span class="hidden @3xl:inline">Edit</span>
                   </.button>
                   <.button
+                    :if={@can_connect?}
                     id={"connect-port-#{port.id}"}
                     type="button"
                     size="sm"
@@ -291,7 +294,7 @@ defmodule RengaWeb.ResourcePowerLive do
                     </span>
                   </.button>
                   <.button
-                    :if={@cables_by_port[port.id]}
+                    :if={@can_connect? and @cables_by_port[port.id]}
                     id={"unplug-port-#{port.id}"}
                     type="button"
                     size="sm"
@@ -363,7 +366,7 @@ defmodule RengaWeb.ResourcePowerLive do
                   cable={cable}
                 />
               </:col>
-              <:action :let={cable} :if={@can_manage?}>
+              <:action :let={cable} :if={@can_connect?}>
                 <.button
                   id={"unplug-retired-cable-#{cable.id}"}
                   type="button"
@@ -475,7 +478,7 @@ defmodule RengaWeb.ResourcePowerLive do
       </.side_panel>
 
       <.side_panel
-        :if={@can_manage?}
+        :if={@can_connect?}
         id="connect-panel"
         title={connection_title(@connecting_port, @cables_by_port)}
       >
