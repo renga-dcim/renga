@@ -10,7 +10,6 @@ defmodule RengaWeb.UserAuth do
 
   alias Renga.Accounts
   alias Renga.Accounts.Scope
-  alias Renga.Accounts.SignInPolicy
 
   # Make the remember me cookie valid for 14 days. This should match
   # the session validity setting in UserToken.
@@ -555,22 +554,15 @@ defmodule RengaWeb.UserAuth do
   def on_mount(:require_authenticated, _params, session, socket) do
     socket = mount_current_scope(socket, session)
 
-    cond do
-      # A LiveView socket connects without the browser pipeline, so recovery
-      # mode is checked here too (RFD 15).
-      not SignInPolicy.configured_local_sign_in?() and SignInPolicy.recovery_mode?() ->
-        {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/recovery")}
+    if socket.assigns.current_scope && socket.assigns.current_scope.user do
+      {:cont, socket}
+    else
+      socket =
+        socket
+        |> Phoenix.LiveView.put_flash(:error, "You must log in to access this page.")
+        |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
 
-      socket.assigns.current_scope && socket.assigns.current_scope.user ->
-        {:cont, socket}
-
-      true ->
-        socket =
-          socket
-          |> Phoenix.LiveView.put_flash(:error, "You must log in to access this page.")
-          |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
-
-        {:halt, socket}
+      {:halt, socket}
     end
   end
 

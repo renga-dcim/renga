@@ -8,6 +8,7 @@ defmodule RengaWeb.SignInPolicyTest do
   alias Renga.Accounts.IdentityProviders
   alias Renga.Accounts.SignInPolicy
   alias Renga.FakeOIDCProvider
+  alias Renga.Repo
 
   setup do
     on_exit(fn ->
@@ -142,6 +143,39 @@ defmodule RengaWeb.SignInPolicyTest do
 
       {:ok, lv, _html} = live(build_conn(), ~p"/users/log-in")
       assert has_element?(lv, "#provider-first")
+    end
+
+    test "live navigation from the recovery page reaches nothing else", %{conn: conn} do
+      for path <- [~p"/users/register", ~p"/users/log-in"] do
+        {:ok, lv, _html} = live(conn, ~p"/recovery")
+        # Registration never mounts, so it has no form to submit.
+        assert {:error, {:redirect, %{to: "/recovery"}}} = live_redirect(lv, to: path)
+      end
+    end
+
+    test "an open page stops working once recovery mode begins", %{conn: conn} do
+      {:ok, _} = SignInPolicy.recover_local(30, "jane")
+      conn = log_in_user(conn, user_fixture())
+
+      {:ok, lv, _html} = live(conn, ~p"/organizations")
+      {:ok, 1} = SignInPolicy.revoke_overrides("jane")
+
+      assert {:error, {:redirect, %{to: "/recovery"}}} =
+               lv
+               |> form("#organization-form", organization: %{name: "After recovery"})
+               |> render_submit()
+
+      refute Repo.exists?(Renga.Accounts.Organization)
+
+      # Expiry ends it the same way, for messages as well as events.
+      {:ok, _} = SignInPolicy.recover_local(30, "jane")
+      {:ok, lv, _html} = live(conn, ~p"/organizations")
+
+      Renga.Accounts.LocalSignInOverride
+      |> Repo.update_all(set: [expires_at: DateTime.add(Renga.Time.utc_now_ms(), -1, :second)])
+
+      send(lv.pid, :refresh)
+      assert_redirect(lv, ~p"/recovery")
     end
 
     test "the recovery page sends people to log in once recovery ends", %{conn: conn} do

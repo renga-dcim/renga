@@ -152,6 +152,7 @@ defmodule RengaWeb.Router do
     live_session :require_authenticated_user,
       on_mount: [
         RengaWeb.SQLSandbox,
+        RengaWeb.RecoveryMode,
         {RengaWeb.UserAuth, :require_authenticated},
         RengaWeb.SidebarViews,
         RengaWeb.AppearanceHook
@@ -219,6 +220,7 @@ defmodule RengaWeb.Router do
     live_session :current_user,
       on_mount: [
         RengaWeb.SQLSandbox,
+        RengaWeb.RecoveryMode,
         {RengaWeb.UserAuth, :mount_current_scope},
         RengaWeb.AppearanceHook
       ] do
