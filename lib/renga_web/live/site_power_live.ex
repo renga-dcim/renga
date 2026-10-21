@@ -887,7 +887,7 @@ defmodule RengaWeb.SitePowerLive do
 
   defp uncertain_note(:redundancy, feeds),
     do:
-      "Still supplied by #{Enum.map_join(feeds, ", ", &feed_with_side/1)}; loses redundancy unless a path that cannot be traced reaches another side."
+      "Still supplied by #{Enum.map_join(feeds, ", ", &feed_with_side/1)}. Paths that cannot be traced leave whether it loses redundancy unknown."
 
   defp feed_with_side(%{side: nil} = feed), do: feed.name
   defp feed_with_side(feed), do: "#{feed.name} (side #{String.upcase(feed.side)})"

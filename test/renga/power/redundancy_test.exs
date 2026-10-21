@@ -231,6 +231,32 @@ defmodule Renga.Power.RedundancyTest do
     assert {failure.loses_redundancy, failure.untraced?} == {[], true}
   end
 
+  test "an untraced path may cost redundancy only when the failed feed held the one traced side",
+       context do
+    %{scope: scope, a1: a1, a2: a2, b1: b1, n1: n1} = context
+    {[one, two], unmapped_a} = mixed_pdu!(scope, "pdu-a", a1)
+    {_mapped, unmapped_b} = mixed_pdu!(scope, "pdu-b", b1)
+
+    # A1, the sideless N1, and an untraced path: had that path reached side
+    # B, losing A1 leaves only N1 and side B, so redundancy might be lost.
+    [psu1, psu2, psu3] = ports!(scope, "web-1", 3)
+    plug!(scope, psu1, one)
+    plug!(scope, psu2, n1)
+    plug!(scope, psu3, unmapped_a)
+
+    # A1, A2, and an untraced path: whatever side that path reaches, A2
+    # keeps the same redundancy A1 gave.
+    [psu1, psu2, psu3] = ports!(scope, "web-2", 3)
+    plug!(scope, psu1, two)
+    plug!(scope, psu2, a2)
+    plug!(scope, psu3, unmapped_b)
+
+    failure = Redundancy.feed_failure(scope, a1)
+    assert [{%{name: "web-1"}, [%{name: "N1"}], :redundancy}] = failure.uncertain
+    assert [{%{name: "pdu-a"}, []}] = failure.loses_supply
+    assert {failure.loses_redundancy, failure.keeps} == {[], 1}
+  end
+
   test "a retired port that keeps its cable still counts in what fails", context do
     %{scope: scope, a1: a1, b1: b1} = context
     [a_1 | _] = pdu!(scope, "pdu-a", a1)

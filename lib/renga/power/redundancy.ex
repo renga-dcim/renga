@@ -116,17 +116,38 @@ defmodule Renga.Power.Redundancy do
 
   defp classify(resource, paths, feed) do
     survivors = Enum.filter(paths, &(&1.feed && &1.feed.id != feed.id))
-    untraced? = Enum.any?(paths, &untraced?/1)
     remaining = of(survivors).feeds
-    lost_redundancy? = of(paths).status == :redundant and of(survivors).status != :redundant
 
     cond do
-      survivors == [] and untraced? -> {:uncertain, {resource, remaining, :supply}}
-      survivors == [] -> {:loses_supply, {resource, remaining}}
-      lost_redundancy? and untraced? -> {:uncertain, {resource, remaining, :redundancy}}
-      lost_redundancy? -> {:loses_redundancy, {resource, remaining}}
-      true -> {:keeps, {resource, remaining}}
+      survivors == [] and Enum.any?(paths, &untraced?/1) ->
+        {:uncertain, {resource, remaining, :supply}}
+
+      survivors == [] ->
+        {:loses_supply, {resource, remaining}}
+
+      Enum.any?(paths, &untraced?/1) and may_lose_redundancy?(paths, survivors, feed) ->
+        {:uncertain, {resource, remaining, :redundancy}}
+
+      of(paths).status == :redundant and of(survivors).status != :redundant ->
+        {:loses_redundancy, {resource, remaining}}
+
+      true ->
+        {:keeps, {resource, remaining}}
     end
+  end
+
+  # With paths that cannot be traced, each may reach any feed. The device
+  # may have been redundant and not be once `feed` fails only when its
+  # survivors trace fewer than two sides, and either its traced paths
+  # already reached two sides, or no survivor traces a side and the failed
+  # feed has one: an untraced path on the other side would have made it
+  # redundant and leave it on one side. In any other case an untraced path
+  # that made it redundant still does afterwards.
+  defp may_lose_redundancy?(paths, survivors, feed) do
+    survivor_sides = of(survivors).sides
+
+    length(survivor_sides) < 2 and
+      (match?([_, _ | _], of(paths).sides) or (survivor_sides == [] and not is_nil(feed.side)))
   end
 
   # A device's ports from its hardware type, and any port retired from it

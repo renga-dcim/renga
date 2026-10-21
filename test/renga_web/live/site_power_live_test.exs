@@ -395,6 +395,13 @@ defmodule RengaWeb.SitePowerLiveTest do
              "#failure-redundancy-#{redundant.id}",
              "Still supplied by A1 (side A)"
            )
+
+    # The open panel follows inventory changes without a reload: unplugged
+    # from B1, db-1 has nothing left to lose when B1 fails.
+    {:ok, _} = Cables.disconnect(scope, %{power_port_id: psu2.id, power_feed_id: b1.id})
+    _ = render(view)
+    refute has_element?(view, "#failure-redundancy-#{redundant.id}")
+    assert has_element?(view, "#failure-summary", "No devices are recorded below B1")
   end
 
   test "lists devices that might fail when a path below the feed cannot be traced",
