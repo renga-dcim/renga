@@ -68,7 +68,7 @@ defmodule Renga.Members do
         member.role == role ->
           {:ok, member}
 
-        role not in actor_ceiling ->
+        role not in actor_ceiling.roles ->
           {:error, :forbidden}
 
         last_active_owner?(member) ->
@@ -395,15 +395,22 @@ defmodule Renga.Members do
   end
 
   # Checks members.manage and locks the target. Administering a member is
-  # bounded by the ceiling of the actor's current role, re-read here rather
-  # than trusted from the scope: the target's current role must be within it.
+  # bounded by the ceiling of the actor's current roles, re-read here rather
+  # than trusted from the scope. The target's base role and every current
+  # assignment must fit, because disabling or enabling takes away or restores
+  # all of that access at once.
   defp administer(%Scope{} = scope, membership_id, change) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "members.manage")
-      ceiling = scope |> Authorization.current_roles!() |> Authorization.grantable_roles()
+      roles = Authorization.current_roles!(scope)
+
+      ceiling = %{
+        roles: Authorization.grantable_roles(roles),
+        permissions: Authorization.grantable_permissions(roles)
+      }
 
       with {:ok, member} <- lock_member(scope, membership_id),
-           true <- member.role in ceiling || {:error, :forbidden},
+           :ok <- member_within_ceiling(member, ceiling),
            {:ok, member} <- change.(ceiling, member) do
         Repo.preload(member, :user)
       else
@@ -411,6 +418,26 @@ defmodule Renga.Members do
       end
     end)
     |> Changes.broadcast(scope.organization_id)
+  end
+
+  defp member_within_ceiling(member, ceiling) do
+    now = Renga.Time.utc_now_ms()
+
+    assignments =
+      Renga.Roles.Assignment
+      |> where([assignment], assignment.membership_id == ^member.id)
+      |> where([assignment], is_nil(assignment.valid_until) or assignment.valid_until > ^now)
+      |> preload(:role)
+      |> Repo.all()
+
+    allowed? =
+      member.role in ceiling.roles and
+        Enum.all?(assignments, fn
+          %{built_in_role: role} when is_binary(role) -> role in ceiling.roles
+          %{role: %{permissions: permissions}} -> permissions -- ceiling.permissions == []
+        end)
+
+    if allowed?, do: :ok, else: {:error, :forbidden}
   end
 
   defp lock_member(%Scope{organization_id: organization_id}, membership_id) do

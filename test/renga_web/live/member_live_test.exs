@@ -164,6 +164,71 @@ defmodule RengaWeb.MemberLiveTest do
       assert has_element?(view, "#member-list", "+ viewer")
       refute has_element?(view, "#assign-panel")
     end
+
+    test "connected pages refresh roles, authority, expiry, and disabled membership", context do
+      {:ok, admin_view, _html} = live(context.admin_conn, ~p"/settings/members")
+      admin_view |> element("#member-#{context.member.membership_id}-roles") |> render_click()
+
+      {:ok, network} =
+        Roles.create_role(context.owner, %{
+          "name" => "Network live",
+          "permissions" => ["ipam.edit"]
+        })
+
+      send(admin_view.pid, {:inventory_changed, context.owner.organization_id})
+
+      assert eventually(fn ->
+               has_element?(admin_view, "#assign-form option[value='#{network.id}']")
+             end)
+
+      {:ok, _deleted} = Roles.delete_role(context.owner, network)
+      send(admin_view.pid, {:inventory_changed, context.owner.organization_id})
+
+      assert eventually(fn ->
+               not has_element?(admin_view, "#assign-form option[value='#{network.id}']")
+             end)
+
+      {:ok, member_view, _html} = live(context.member_conn, ~p"/settings/members")
+      refute has_element?(member_view, "#invite-member")
+
+      expires_at = DateTime.add(Renga.Time.utc_now_ms(), 500, :millisecond)
+
+      {:ok, _assignment} =
+        Assignments.assign(context.owner, context.member.membership_id, %{
+          "role" => "admin",
+          "valid_until" => expires_at
+        })
+
+      send(member_view.pid, {:inventory_changed, context.owner.organization_id})
+      assert eventually(fn -> has_element?(member_view, "#invite-member") end)
+      Process.sleep(700)
+
+      assert eventually(fn ->
+               not has_element?(member_view, "#invite-member") and
+                 has_element?(member_view, "#members-read-only")
+             end)
+
+      assert {:ok, _disabled} =
+               Members.disable_member(context.owner, context.member.membership_id)
+
+      send(member_view.pid, {:inventory_changed, context.owner.organization_id})
+      assert_redirect(member_view, ~p"/organizations")
+    end
+
+    test "management controls honor the target's assigned access ceiling", context do
+      {:ok, owner_only} =
+        Roles.create_role(context.owner, %{
+          "name" => "Owner operations",
+          "permissions" => ["organization.manage"]
+        })
+
+      {:ok, _assignment} =
+        Assignments.assign(context.owner, context.member.membership_id, %{"role" => owner_only.id})
+
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/members")
+      refute has_element?(view, "#member-#{context.member.membership_id}-edit")
+      assert has_element?(view, "#member-#{context.member.membership_id}-roles")
+    end
   end
 
   describe "invitations" do
@@ -248,5 +313,17 @@ defmodule RengaWeb.MemberLiveTest do
       |> put_session(:current_organization_id, organization.id)
 
     {conn, Accounts.scope_for_user(user, organization.id)}
+  end
+
+  defp eventually(check, attempts \\ 20)
+  defp eventually(_check, 0), do: false
+
+  defp eventually(check, attempts) do
+    if check.() do
+      true
+    else
+      Process.sleep(25)
+      eventually(check, attempts - 1)
+    end
   end
 end

@@ -17,6 +17,7 @@ defmodule Renga.Assignments do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
@@ -24,6 +25,8 @@ defmodule Renga.Assignments do
   alias Renga.Repo
   alias Renga.Roles.Assignment
   alias Renga.Roles.Role
+
+  @expiry_batch 500
 
   @doc "UI hint for giving and taking away assignments."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "members.manage")
@@ -79,6 +82,58 @@ defmodule Renga.Assignments do
     |> Map.new()
   end
 
+  @doc "The next assignment deadline in an organization, for live UI refreshes."
+  def next_expiry(%Scope{organization_id: organization_id}) do
+    now = Renga.Time.utc_now_ms()
+
+    Assignment
+    |> where([assignment], assignment.organization_id == ^organization_id)
+    |> where([assignment], is_nil(assignment.expired_at))
+    |> where([assignment], assignment.valid_until > ^now)
+    |> select([assignment], min(assignment.valid_until))
+    |> Repo.one()
+  end
+
+  @doc """
+  Records each elapsed assignment deadline in Activity exactly once.
+
+  Authorization continues to use `valid_until` directly; this sweep only
+  makes that already-effective expiry durable and visible. Rows are claimed
+  with `SKIP LOCKED`, so retries and workers on several nodes are safe.
+  """
+  def sweep_expired(now \\ Renga.Time.utc_now_ms()) do
+    Assignment
+    |> where([assignment], is_nil(assignment.expired_at))
+    |> where([assignment], not is_nil(assignment.valid_until) and assignment.valid_until <= ^now)
+    |> order_by([assignment], asc: assignment.valid_until, asc: assignment.id)
+    |> limit(@expiry_batch)
+    |> select([assignment], {assignment.id, assignment.organization_id})
+    |> Repo.all()
+    |> Enum.count(&expire_one(&1, now))
+  end
+
+  @doc false
+  # Called from the organization-locked role deletion transaction before its
+  # cascade removes assignment rows. This closes the gap between the deadline
+  # taking effect and the periodic audit sweep observing it.
+  def record_expired_for_role!(organization_id, role_id, now \\ Renga.Time.utc_now_ms()) do
+    assignments =
+      Assignment
+      |> where([assignment], assignment.organization_id == ^organization_id)
+      |> where([assignment], assignment.role_id == ^role_id)
+      |> where([assignment], is_nil(assignment.expired_at))
+      |> where(
+        [assignment],
+        not is_nil(assignment.valid_until) and assignment.valid_until <= ^now
+      )
+      |> order_by([assignment], asc: assignment.valid_until, asc: assignment.id)
+      |> lock("FOR UPDATE")
+      |> Repo.all()
+
+    Enum.each(assignments, &expire_assignment!(&1, now))
+    :ok
+  end
+
   def change_assignment(attrs \\ %{}),
     do: Assignment.changeset(%Assignment{}, attrs, Renga.Time.utc_now_ms())
 
@@ -126,7 +181,12 @@ defmodule Renga.Assignments do
       with {:ok, assignment} <- lock_assignment(scope, assignment_id),
            :ok <- within_ceiling(assignment.role || assignment.built_in_role, ceiling),
            {:ok, deleted} <- Repo.delete(assignment) do
-        record!(scope, "role_unassigned", assignment, nil, opts[:reason])
+        if Assignment.current?(assignment, Renga.Time.utc_now_ms()) do
+          record!(scope, "role_unassigned", assignment, nil, opts[:reason])
+        else
+          if is_nil(assignment.expired_at), do: record_expiry!(assignment)
+        end
+
         {:ok, deleted}
       end
     end)
@@ -238,6 +298,50 @@ defmodule Renga.Assignments do
     end
   end
 
+  defp expire_one({assignment_id, organization_id}, now) do
+    Repo.transaction(fn ->
+      # Authorization-changing writers lock the organization first. Following
+      # the same order keeps expiry from deadlocking with assignment removal or
+      # a cascading role deletion.
+      Organization
+      |> where([organization], organization.id == ^organization_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+      assignment =
+        Assignment
+        |> where([assignment], assignment.id == ^assignment_id)
+        |> where([assignment], is_nil(assignment.expired_at))
+        |> where(
+          [assignment],
+          not is_nil(assignment.valid_until) and assignment.valid_until <= ^now
+        )
+        |> lock("FOR UPDATE SKIP LOCKED")
+        |> Repo.one()
+
+      if assignment do
+        expire_assignment!(assignment, now)
+      end
+    end)
+    |> case do
+      {:ok, nil} ->
+        false
+
+      {:ok, assignment} ->
+        Changes.broadcast({:ok, assignment}, assignment.organization_id)
+        true
+    end
+  end
+
+  defp expire_assignment!(assignment, now) do
+    assignment = Repo.preload(assignment, [:role, membership: :user])
+    record_expiry!(assignment)
+
+    assignment
+    |> Ecto.Changeset.change(expired_at: now)
+    |> Repo.update!()
+  end
+
   defp record!(scope, kind, before, after_assignment, reason) do
     assignment = after_assignment || before
     value = %{"value" => Assignment.role_name(assignment)}
@@ -261,6 +365,26 @@ defmodule Renga.Assignments do
       new_value: after_assignment && value,
       metadata: metadata,
       occurred_at: Renga.Time.utc_now_ms()
+    })
+    |> Repo.insert!()
+  end
+
+  defp record_expiry!(assignment) do
+    value = %{"value" => Assignment.role_name(assignment)}
+
+    %ChangeEvent{organization_id: assignment.organization_id}
+    |> ChangeEvent.changeset(%{
+      kind: "role_expired",
+      field: "role",
+      old_value: value,
+      metadata: %{
+        "assignment_id" => assignment.id,
+        "membership_id" => assignment.membership_id,
+        "member" => assignment.membership.user.email,
+        "role_id" => assignment.role_id,
+        "valid_until" => DateTime.to_iso8601(assignment.valid_until)
+      },
+      occurred_at: assignment.valid_until
     })
     |> Repo.insert!()
   end

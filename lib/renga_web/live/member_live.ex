@@ -12,6 +12,7 @@ defmodule RengaWeb.MemberLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts
   alias Renga.Assignments
   alias Renga.Inventory.Changes
   alias Renga.Members
@@ -40,6 +41,7 @@ defmodule RengaWeb.MemberLive do
        form: nil,
        assigning: nil,
        assign_form: nil,
+       expiry_timer: nil,
        invite_form: to_form(Members.change_invitation(%{"role" => "member"}), as: :invitation)
      )
      |> load_members()}
@@ -178,6 +180,9 @@ defmodule RengaWeb.MemberLive do
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_members(socket)}
 
+  def handle_info(:assignment_expiry, socket),
+    do: {:noreply, socket |> assign(:expiry_timer, nil) |> load_members()}
+
   # Sending an invitation delivers mail from this process, and the test
   # mailer reports deliveries back to it.
   def handle_info(_message, socket), do: {:noreply, socket}
@@ -208,13 +213,60 @@ defmodule RengaWeb.MemberLive do
   defp refusal(_reason), do: "That member is no longer in this organization."
 
   defp load_members(socket) do
-    scope = socket.assigns.current_scope
+    previous = socket.assigns.current_scope
+    scope = Accounts.scope_for_user(previous.user, previous.organization_id)
 
-    assign(socket,
-      members: Members.list_members(scope),
-      assignments: Assignments.list_assignments(scope) |> Enum.group_by(& &1.membership_id),
-      invitations: if(socket.assigns.can_manage?, do: Members.list_invitations(scope), else: [])
-    )
+    if scope.organization_id == previous.organization_id do
+      members = Members.list_members(scope)
+      assignments = Assignments.list_assignments(scope) |> Enum.group_by(& &1.membership_id)
+      can_manage? = Members.can_manage?(scope)
+
+      socket
+      |> assign(
+        current_scope: scope,
+        can_manage?: can_manage?,
+        grantable: Members.grantable_roles(scope),
+        assignable: Assignments.assignable_roles(scope),
+        members: members,
+        assignments: assignments,
+        invitations: if(can_manage?, do: Members.list_invitations(scope), else: []),
+        editing: selected(socket.assigns.editing, members),
+        assigning: selected(socket.assigns.assigning, members)
+      )
+      |> maybe_clear_management(can_manage?)
+      |> schedule_expiry(scope)
+    else
+      push_navigate(socket, to: ~p"/organizations")
+    end
+  end
+
+  defp selected(nil, _members), do: nil
+  defp selected(member, members), do: Enum.find(members, &(&1.id == member.id))
+
+  defp maybe_clear_management(socket, true), do: socket
+
+  defp maybe_clear_management(socket, false),
+    do: assign(socket, editing: nil, form: nil, assigning: nil, assign_form: nil)
+
+  defp schedule_expiry(socket, scope) do
+    if socket.assigns.expiry_timer, do: Process.cancel_timer(socket.assigns.expiry_timer)
+
+    timer =
+      if connected?(socket) do
+        case Assignments.next_expiry(scope) do
+          nil -> nil
+          deadline -> Process.send_after(self(), :assignment_expiry, expiry_delay(deadline))
+        end
+      end
+
+    assign(socket, :expiry_timer, timer)
+  end
+
+  defp expiry_delay(deadline) do
+    deadline
+    |> DateTime.diff(Renga.Time.utc_now_ms(), :millisecond)
+    |> max(1)
+    |> min(2_147_483_647)
   end
 
   defp assign_form,
@@ -237,7 +289,12 @@ defmodule RengaWeb.MemberLive do
 
   defp expired?(invitation), do: DateTime.before?(invitation.expires_at, DateTime.utc_now())
 
-  defp manageable?(member, grantable), do: member.role in grantable
+  defp manageable?(member, grantable, assignments, assignable) do
+    member.role in grantable and
+      assignments
+      |> Map.get(member.id, [])
+      |> Enum.all?(&(not current?(&1) or removable?(&1, assignable)))
+  end
 
   @impl true
   def render(assigns) do
@@ -323,7 +380,7 @@ defmodule RengaWeb.MemberLive do
               Roles
             </button>
             <button
-              :if={manageable?(member, @grantable)}
+              :if={manageable?(member, @grantable, @assignments, @assignable)}
               id={"member-#{member.id}-edit"}
               type="button"
               phx-click={JS.push("edit", value: %{id: member.id}) |> show_overlay("member-panel")}

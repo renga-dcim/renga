@@ -11,6 +11,7 @@ defmodule RengaWeb.RoleLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts
   alias Renga.Assignments
   alias Renga.Authorization
   alias Renga.Inventory.Changes
@@ -28,6 +29,7 @@ defmodule RengaWeb.RoleLive do
        page_title: "Roles",
        can_manage?: Roles.can_manage?(scope),
        grantable: Roles.grantable_permissions(scope),
+       expiry_timer: nil,
        editing: nil
      )
      |> assign_form(%Role{})
@@ -89,14 +91,69 @@ defmodule RengaWeb.RoleLive do
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_roles(socket)}
 
+  def handle_info(:assignment_expiry, socket),
+    do: {:noreply, socket |> assign(:expiry_timer, nil) |> load_roles()}
+
   defp refusal(:forbidden),
     do: "That needs roles.manage, and every permission in the role must be one you may grant."
 
   defp refusal(_reason), do: "That role no longer exists."
 
   defp load_roles(socket) do
-    scope = socket.assigns.current_scope
-    assign(socket, roles: Roles.list_roles(scope), usage: Assignments.role_usage(scope))
+    previous = socket.assigns.current_scope
+    scope = Accounts.scope_for_user(previous.user, previous.organization_id)
+
+    if scope.organization_id == previous.organization_id do
+      can_manage? = Roles.can_manage?(scope)
+      roles = Roles.list_roles(scope)
+      editing = selected(socket.assigns.editing, roles, can_manage?)
+
+      socket
+      |> assign(
+        current_scope: scope,
+        can_manage?: can_manage?,
+        grantable: Roles.grantable_permissions(scope),
+        roles: roles,
+        usage: Assignments.role_usage(scope),
+        editing: editing
+      )
+      |> reset_deleted_editor(socket.assigns.editing, editing)
+      |> schedule_expiry(scope)
+    else
+      push_navigate(socket, to: ~p"/organizations")
+    end
+  end
+
+  defp selected(_editing, _roles, false), do: nil
+  defp selected(nil, _roles, true), do: nil
+  defp selected(editing, roles, true), do: Enum.find(roles, &(&1.id == editing.id))
+
+  defp reset_deleted_editor(socket, %Role{}, nil),
+    do: socket |> close_overlay("role-panel") |> assign_form(%Role{})
+
+  defp reset_deleted_editor(socket, _previous, _editing), do: socket
+
+  defp schedule_expiry(socket, scope) do
+    if socket.assigns.expiry_timer, do: Process.cancel_timer(socket.assigns.expiry_timer)
+
+    timer =
+      if connected?(socket) do
+        case Assignments.next_expiry(scope) do
+          nil ->
+            nil
+
+          deadline ->
+            delay =
+              deadline
+              |> DateTime.diff(Renga.Time.utc_now_ms(), :millisecond)
+              |> max(1)
+              |> min(2_147_483_647)
+
+            Process.send_after(self(), :assignment_expiry, delay)
+        end
+      end
+
+    assign(socket, :expiry_timer, timer)
   end
 
   defp people(usage, role) do

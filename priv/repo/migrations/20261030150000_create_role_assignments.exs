@@ -33,6 +33,7 @@ defmodule Renga.Repo.Migrations.CreateRoleAssignments do
           )
 
       add :valid_until, :utc_datetime_usec
+      add :expired_at, :utc_datetime_usec
       add :source, :string, null: false, default: "manual"
       add :reason, :text
       add :created_by_user_id, references(:users, type: :binary_id, on_delete: :nilify_all)
@@ -50,5 +51,9 @@ defmodule Renga.Repo.Migrations.CreateRoleAssignments do
 
     create index(:role_assignments, [:organization_id, :membership_id])
     create index(:role_assignments, [:role_id])
+
+    create index(:role_assignments, [:valid_until],
+             where: "valid_until IS NOT NULL AND expired_at IS NULL"
+           )
   end
 end

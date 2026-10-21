@@ -15,6 +15,7 @@ defmodule Renga.Roles do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Assignments
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
@@ -93,6 +94,7 @@ defmodule Renga.Roles do
       with {:ok, current} <- lock_role(scope, role.id),
            :ok <- within_ceiling(current.permissions, ceiling),
            assignments = Repo.aggregate(where(Assignment, role_id: ^current.id), :count),
+           :ok <- Assignments.record_expired_for_role!(scope.organization_id, current.id),
            {:ok, deleted} <- Repo.delete(current) do
         record!(scope, "role_deleted", current, nil, %{"assignments" => assignments})
         {:ok, deleted}

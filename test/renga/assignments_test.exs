@@ -71,6 +71,23 @@ defmodule Renga.AssignmentsTest do
     assert {:ok, _} = Members.change_role(member, context.viewer.membership_id, "member")
   end
 
+  test "a temporary built-in ceiling may make a separate base-role grant permanent", context do
+    future = DateTime.add(Renga.Time.utc_now_ms(), 1, :hour)
+    {:ok, assignment} = assign(context.owner, context.member, "admin", %{"valid_until" => future})
+
+    # Assignments raise the current grant ceiling. A base-role change is a
+    # separate durable grant and is not rolled back when its source expires.
+    assert {:ok, %{role: "admin"}} =
+             Members.change_role(context.member, context.member.membership_id, "admin")
+
+    Repo.update_all(
+      where(Assignment, id: ^assignment.id),
+      set: [valid_until: DateTime.add(Renga.Time.utc_now_ms(), -1, :second)]
+    )
+
+    assert reload(context.member).roles == ["admin"]
+  end
+
   test "expired and disabled assignments grant nothing", context do
     {:ok, assignment} = assign(context.admin, context.viewer, "member")
     assert authorized?(context.viewer, "findings.act")
@@ -85,6 +102,62 @@ defmodule Renga.AssignmentsTest do
     assert {:ok, _} = assign(context.admin, context.viewer, "member")
     {:ok, _} = Members.disable_member(context.owner, context.viewer.membership_id)
     refute authorized?(context.viewer, "findings.act")
+  end
+
+  test "expiry is recorded once without delaying authorization", context do
+    future = DateTime.add(Renga.Time.utc_now_ms(), 1, :hour)
+
+    {:ok, assignment} =
+      assign(context.admin, context.viewer, "member", %{"valid_until" => future})
+
+    assert authorized?(context.viewer, "findings.act")
+
+    deadline = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+    Repo.update_all(where(Assignment, id: ^assignment.id), set: [valid_until: deadline])
+
+    # The deadline is authoritative even before the audit worker catches up.
+    refute authorized?(context.viewer, "findings.act")
+    assert Assignments.sweep_expired() == 1
+    assert Assignments.sweep_expired() == 0
+
+    assert [%{kind: "role_expired", actor_user_id: nil} = event] =
+             context.owner
+             |> Inventory.list_activity()
+             |> Enum.filter(&(&1.kind == "role_expired"))
+
+    assert event.occurred_at == deadline
+    assert event.metadata["assignment_id"] == assignment.id
+    assert Repo.get!(Assignment, assignment.id).expired_at
+  end
+
+  test "member status changes cannot take away or restore assignments above the actor ceiling",
+       context do
+    owner_only = role(context.owner, "Organization operator", ~w(organization.manage))
+    {:ok, owner_assignment} = assign(context.owner, context.viewer, "owner")
+
+    assert {:error, :forbidden} =
+             Members.disable_member(context.admin, context.viewer.membership_id)
+
+    assert {:ok, _} = Members.disable_member(context.owner, context.viewer.membership_id)
+
+    assert {:error, :forbidden} =
+             Members.enable_member(context.admin, context.viewer.membership_id)
+
+    assert {:ok, _} = Members.enable_member(context.owner, context.viewer.membership_id)
+    assert {:ok, _} = Assignments.unassign(context.owner, owner_assignment.id)
+
+    {:ok, custom_assignment} = assign(context.owner, context.viewer, owner_only.id)
+
+    assert {:error, :forbidden} =
+             Members.disable_member(context.admin, context.viewer.membership_id)
+
+    assert {:ok, _} = Assignments.unassign(context.owner, custom_assignment.id)
+    {:ok, assignment} = assign(context.owner, context.viewer, "owner")
+    expired = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+    Repo.update_all(where(Assignment, id: ^assignment.id), set: [valid_until: expired])
+
+    assert {:ok, _} = Members.disable_member(context.admin, context.viewer.membership_id)
+    assert {:ok, _} = Members.enable_member(context.admin, context.viewer.membership_id)
   end
 
   test "validates the role, deadline, and duplicates", context do
@@ -157,5 +230,47 @@ defmodule Renga.AssignmentsTest do
     assert unassigned.kind == "role_unassigned"
     assert unassigned.metadata["reason"] == "Done"
     assert assigned.kind == "role_assigned"
+  end
+
+  test "role deletion records elapsed assignment deadlines before cascading", context do
+    elapsed = role(context.owner, "Elapsed role", ~w(dcim.edit))
+    {:ok, assignment} = assign(context.owner, context.viewer, elapsed.id)
+    deadline = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+    Repo.update_all(where(Assignment, id: ^assignment.id), set: [valid_until: deadline])
+
+    assert {:ok, _role} = Roles.delete_role(context.owner, elapsed)
+    assert Assignments.sweep_expired() == 0
+    assert [event] = expiry_events(context.owner, assignment.id)
+    assert event.occurred_at == deadline
+
+    recorded = role(context.owner, "Recorded role", ~w(ipam.edit))
+    {:ok, recorded_assignment} = assign(context.owner, context.viewer, recorded.id)
+
+    Repo.update_all(
+      where(Assignment, id: ^recorded_assignment.id),
+      set: [valid_until: deadline]
+    )
+
+    assert Assignments.sweep_expired() == 1
+    assert {:ok, _role} = Roles.delete_role(context.owner, recorded)
+    assert [_event] = expiry_events(context.owner, recorded_assignment.id)
+  end
+
+  test "the expiry worker schedules repeated sweeps" do
+    parent = self()
+
+    start_supervised!(
+      {Renga.Assignments.ExpiryWorker,
+       name: nil, interval: 10, sweep: fn -> send(parent, :swept) end}
+    )
+
+    assert_receive :swept, 100
+    assert_receive :swept, 100
+  end
+
+  defp expiry_events(scope, assignment_id) do
+    scope
+    |> Inventory.list_activity()
+    |> Enum.filter(&(&1.kind == "role_expired" and &1.metadata["assignment_id"] == assignment_id))
   end
 end

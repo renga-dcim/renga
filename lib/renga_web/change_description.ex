@@ -111,6 +111,9 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "role_unassigned", metadata: metadata, old_value: %{"value" => role}}),
     do: "Took the #{role} role from #{metadata["member"]}"
 
+  def describe(%{kind: "role_expired", metadata: metadata, old_value: %{"value" => role}}),
+    do: "The #{role} role expired for #{metadata["member"]}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),

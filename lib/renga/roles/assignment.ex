@@ -26,6 +26,7 @@ defmodule Renga.Roles.Assignment do
   schema "role_assignments" do
     field :built_in_role, :string
     field :valid_until, :utc_datetime_usec
+    field :expired_at, :utc_datetime_usec
     field :source, :string, default: "manual"
     field :reason, :string
 
