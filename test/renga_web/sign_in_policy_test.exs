@@ -90,6 +90,7 @@ defmodule RengaWeb.SignInPolicyTest do
 
       {:ok, _lv, html} = live(build_conn(), ~p"/recovery")
       assert html =~ "Renga is in recovery mode"
+      assert html =~ "bin/providers recover-local --actor NAME --minutes 60"
     end
 
     test "a signed-in session cannot reach protected pages", %{conn: conn} do

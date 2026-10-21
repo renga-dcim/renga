@@ -18,11 +18,11 @@ defmodule RengaWeb.RecoveryLive do
           <p>An operator can restore access with a release command on the server:</p>
           <ul class="list-disc space-y-1 pl-5">
             <li>
-              <code class="font-mono">renga providers test ID</code>
+              <code class="font-mono">bin/providers test ID --actor NAME</code>
               prints a link that tests a provider and activates it.
             </li>
             <li>
-              <code class="font-mono">renga providers recover-local --minutes 60</code>
+              <code class="font-mono">bin/providers recover-local --actor NAME --minutes 60</code>
               turns local sign-in on for a while.
             </li>
           </ul>
