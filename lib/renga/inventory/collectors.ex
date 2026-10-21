@@ -70,7 +70,7 @@ defmodule Renga.Inventory.Collectors do
       Enum.group_by(
         results,
         fn {derived, _result} -> derived.payload["target"] end,
-        fn {_derived, result} -> result end
+        fn {derived, result} -> {result, reported_domain(derived)} end
       )
 
     complete? = AgentPayload.complete_report?(report.payload)
@@ -86,15 +86,15 @@ defmodule Renga.Inventory.Collectors do
         outcomes = Map.get(resources_by_target, reported.key, [])
 
         members =
-          for {:ok, resource, _discovered?} <- outcomes, uniq: true do
-            put_member!(scope, target, resource, report.observed_at)
+          for {{:ok, resource, _discovered?}, domain} <- outcomes, uniq: true do
+            put_member!(scope, target, resource, domain, report.observed_at)
           end
 
         # A failed resource leaves the target's contents unknown, so nothing
         # under it can be called gone.
         snapshot? =
           complete? and reported.status == "reachable" and current_report?(target, report) and
-            Enum.all?(outcomes, &match?({:ok, _resource, _discovered?}, &1))
+            Enum.all?(outcomes, &match?({{:ok, _resource, _discovered?}, _domain}, &1))
 
         {target, members, snapshot?}
       end)
@@ -171,7 +171,12 @@ defmodule Renga.Inventory.Collectors do
 
   defp current_report?(target, report), do: target.last_observation_id == report.id
 
-  defp put_member!(scope, target, %Resource{} = resource, observed_at) do
+  defp reported_domain(%Observation{payload: %{"resources" => [%{"domain" => %{} = domain}]}}),
+    do: domain
+
+  defp reported_domain(%Observation{}), do: nil
+
+  defp put_member!(scope, target, %Resource{} = resource, domain, observed_at) do
     member =
       CollectorTargetResource
       |> where([member], member.organization_id == ^scope.organization_id)
@@ -187,24 +192,50 @@ defmodule Renga.Inventory.Collectors do
 
     case member do
       nil ->
-        Repo.insert!(%CollectorTargetResource{
-          organization_id: scope.organization_id,
-          source_id: target.source_id,
-          target_id: target.id,
-          resource_id: resource.id,
-          first_reported_at: observed_at,
-          last_reported_at: observed_at,
-          withdrawn_at: withdrawn_at
-        })
+        Repo.insert!(
+          %CollectorTargetResource{
+            organization_id: scope.organization_id,
+            source_id: target.source_id,
+            target_id: target.id,
+            resource_id: resource.id,
+            first_reported_at: observed_at,
+            last_reported_at: observed_at,
+            withdrawn_at: withdrawn_at
+          }
+          |> struct(domain_changes(%CollectorTargetResource{}, domain, observed_at))
+        )
 
       member ->
         member
         |> Ecto.Changeset.change(
-          first_reported_at: earliest(member.first_reported_at, observed_at),
-          last_reported_at: latest(member.last_reported_at, observed_at),
-          withdrawn_at: latest(member.withdrawn_at, withdrawn_at)
+          [
+            first_reported_at: earliest(member.first_reported_at, observed_at),
+            last_reported_at: latest(member.last_reported_at, observed_at),
+            withdrawn_at: latest(member.withdrawn_at, withdrawn_at)
+          ] ++ domain_changes(member, domain, observed_at)
         )
         |> Repo.update!()
+    end
+  end
+
+  # The domain view advances only with newer reports, so a late replay cannot
+  # revive an active claim. A domain stays active across reports from when
+  # its latest run of active reports began; a withdrawn member starts over.
+  defp domain_changes(_member, nil, _observed_at), do: []
+
+  defp domain_changes(member, domain, observed_at) do
+    if member.domain_reported_at &&
+         DateTime.compare(observed_at, member.domain_reported_at) != :gt do
+      []
+    else
+      active_since =
+        cond do
+          not CollectorTargetResource.active_domain_state?(domain["state"]) -> nil
+          member.active_since && CollectorTargetResource.present?(member) -> member.active_since
+          true -> observed_at
+        end
+
+      [domain: domain, domain_reported_at: observed_at, active_since: active_since]
     end
   end
 

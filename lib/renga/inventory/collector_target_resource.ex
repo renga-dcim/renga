@@ -6,6 +6,10 @@ defmodule Renga.Inventory.CollectorTargetResource do
   a complete report that reached the target withdraws a resource it no longer
   contains; partial, failed, and unreachable reports leave it alone, and an
   older report replayed late cannot bring it back.
+
+  For a hypervisor, `domain` is the latest libvirt view of the VM and
+  `active_since` when its latest run of active reports began; an inactive
+  definition has none. Only an active domain claims to be running there.
   """
 
   use Ecto.Schema
@@ -23,6 +27,9 @@ defmodule Renga.Inventory.CollectorTargetResource do
     field :first_reported_at, :utc_datetime_usec
     field :last_reported_at, :utc_datetime_usec
     field :withdrawn_at, :utc_datetime_usec
+    field :domain, :map
+    field :domain_reported_at, :utc_datetime_usec
+    field :active_since, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source, Source
@@ -31,6 +38,12 @@ defmodule Renga.Inventory.CollectorTargetResource do
 
     timestamps()
   end
+
+  # Running, idle, paused, and shutting-down domains occupy their hypervisor.
+  @active_domain_states ~w(running idle paused shutting_down)
+
+  @doc "Whether a reported domain state occupies the hypervisor."
+  def active_domain_state?(state), do: state in @active_domain_states
 
   @doc "Whether the target still reports the resource."
   def present?(%__MODULE__{withdrawn_at: nil}), do: true
