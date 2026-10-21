@@ -14,7 +14,7 @@ defmodule RengaWeb.JobsLive do
 
   import RengaWeb.JobComponents
 
-  alias Renga.Inventory
+  alias Renga.Authorization
   alias Renga.Jobs
   alias Renga.Jobs.Changes
   alias Renga.Jobs.Job
@@ -38,7 +38,7 @@ defmodule RengaWeb.JobsLive do
      assign(socket,
        page_title: "Jobs",
        groups: @groups,
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "jobs.request"),
        retention_days: Jobs.get_settings(scope.organization).retention_days,
        reload_timer: nil,
        job: nil,

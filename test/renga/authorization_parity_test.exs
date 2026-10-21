@@ -63,7 +63,7 @@ defmodule Renga.AuthorizationParityTest do
 
   # {hint, roles it shows controls to}
   @hints [
-    {&Inventory.organization_manager?/1, @managers},
+    {&Inventory.collector_manager?/1, @managers},
     {&Catalog.catalog_author?/1, @workers},
     {&Catalog.can_change_expectations?/1, @managers},
     {&Findings.can_change_workflow?/1, @workers},

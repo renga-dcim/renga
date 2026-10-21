@@ -3,8 +3,8 @@ defmodule RengaWeb.VlanGroupLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.DCIM
-  alias Renga.Inventory
   alias Renga.Topology
 
   @impl true
@@ -15,7 +15,7 @@ defmodule RengaWeb.VlanGroupLive do
      socket
      |> assign(
        page_title: "VLAN groups",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "topology.edit"),
        scope_options: scope_options(scope),
        group_form: group_form()
      )

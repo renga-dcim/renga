@@ -11,6 +11,7 @@ defmodule RengaWeb.VlanDetailLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.IPAM
@@ -31,7 +32,7 @@ defmodule RengaWeb.VlanDetailLive do
      |> assign(
        vlan: vlan,
        page_title: "VLAN #{vlan.vid} #{vlan.name}",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "topology.edit"),
        prefix_form: prefix_form(),
        reload_timer: nil
      )

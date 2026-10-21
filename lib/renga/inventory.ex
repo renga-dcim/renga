@@ -114,12 +114,7 @@ defmodule Renga.Inventory do
     |> Repo.insert()
   end
 
-  @doc """
-  Returns whether the current human organization scope can manage organization inventory.
-  """
-  def organization_manager?(%Scope{} = scope),
-    do: Authorization.allowed?(scope, "inventory.edit")
-
+  @doc "UI hint for `intake_keys.manage`."
   def collector_manager?(%Scope{} = scope),
     do: Authorization.allowed?(scope, "intake_keys.manage")
 

@@ -27,6 +27,7 @@ defmodule RengaWeb.ResourceLive.Show do
   import RengaWeb.RequestComponents, only: [pending_request: 1]
   import RengaWeb.JobComponents, only: [collect_notice: 1, job_change: 1, job_change?: 1]
 
+  alias Renga.Authorization
   alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Findings
@@ -79,7 +80,7 @@ defmodule RengaWeb.ResourceLive.Show do
        lifecycle_options: @lifecycle_options,
        lifecycle_form: lifecycle_form(resource),
        hardware_assignable?: Catalog.hardware_assignable_resource?(resource),
-       can_manage_lifecycle?: Inventory.organization_manager?(scope),
+       can_manage_lifecycle?: Authorization.allowed?(scope, "inventory.edit"),
        host_fields: @host_fields,
        can_request?: Requests.can_request?(scope),
        teams: Teams.list_teams(scope),
@@ -1282,7 +1283,7 @@ defmodule RengaWeb.ResourceLive.Show do
       job && Job.open?(job) ->
         "A collection is already in progress."
 
-      !Inventory.organization_manager?(scope) ->
+      !Authorization.allowed?(scope, "jobs.request") ->
         "Only owners and admins can request a collection."
 
       agent.status != "active" ->

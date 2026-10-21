@@ -14,6 +14,7 @@ defmodule RengaWeb.ResourceLive.Index do
 
   import RengaWeb.InventoryComponents
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.SavedViews
@@ -43,7 +44,9 @@ defmodule RengaWeb.ResourceLive.Index do
     {:ok,
      assign(socket,
        page_title: "Inventory",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_edit?: Authorization.allowed?(scope, "inventory.edit"),
+       can_set_owners?: Teams.can_manage?(scope),
+       can_share_views?: Authorization.allowed?(scope, "views.share"),
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
        teams: Teams.list_teams(scope),
@@ -526,12 +529,13 @@ defmodule RengaWeb.ResourceLive.Index do
           <span :if={!@has_next_page?} />
         </nav>
 
-        <.save_view_panel form={@view_form} can_share?={@can_manage?} />
+        <.save_view_panel form={@view_form} can_share?={@can_share_views?} />
 
         <.bulk_bar
           :if={@query.selected != []}
           count={length(@query.selected)}
-          can_manage?={@can_manage?}
+          can_edit?={@can_edit?}
+          can_set_owners?={@can_set_owners?}
           lifecycle_editable?={@lifecycle_editable?}
           teams={@teams}
         />
@@ -695,7 +699,8 @@ defmodule RengaWeb.ResourceLive.Index do
   # Floats over the list while rows are selected (RFD 8: bulk actions appear
   # in a floating bar). Each lifecycle choice confirms with the count first.
   attr :count, :integer, required: true
-  attr :can_manage?, :boolean, required: true
+  attr :can_edit?, :boolean, required: true
+  attr :can_set_owners?, :boolean, required: true
   attr :lifecycle_editable?, :boolean, required: true
   attr :teams, :list, required: true
 
@@ -713,7 +718,7 @@ defmodule RengaWeb.ResourceLive.Index do
         {count_label(@count)} selected
       </span>
       <span class="flex-1" />
-      <%= if @can_manage? do %>
+      <%= if @can_edit? do %>
         <details :if={@lifecycle_editable?} id="bulk-lifecycle-menu" class="relative">
           <summary class="inline-flex h-control min-h-tap cursor-pointer list-none items-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-accent-fg hover:bg-accent-hover">
             Set lifecycle <.icon name="hero-chevron-up-mini" class="size-4" />
@@ -739,23 +744,6 @@ defmodule RengaWeb.ResourceLive.Index do
         <span :if={!@lifecycle_editable?} id="bulk-lifecycle-ipam" class="text-xs text-fg-muted">
           Release IP addresses through IPAM
         </span>
-        <form
-          :if={@teams != []}
-          id="bulk-owner-form"
-          phx-submit="bulk_owner"
-          class="flex items-center gap-1.5"
-        >
-          <label for="bulk-owner-team" class="sr-only">Owner</label>
-          <select
-            id="bulk-owner-team"
-            name="team"
-            class="h-control min-h-tap max-w-36 rounded-md border border-edge bg-surface px-2 text-sm text-fg"
-          >
-            <option value="">No owner</option>
-            <option :for={team <- @teams} value={team.id}>{team.name}</option>
-          </select>
-          <.button id="bulk-owner-submit" size="sm">Set owner</.button>
-        </form>
       <% else %>
         <span
           id="bulk-lifecycle-unavailable"
@@ -765,11 +753,28 @@ defmodule RengaWeb.ResourceLive.Index do
           Set lifecycle <span class="text-xs">· Requires the owner or admin role</span>
         </span>
       <% end %>
+      <form
+        :if={@can_set_owners? and @teams != []}
+        id="bulk-owner-form"
+        phx-submit="bulk_owner"
+        class="flex items-center gap-1.5"
+      >
+        <label for="bulk-owner-team" class="sr-only">Owner</label>
+        <select
+          id="bulk-owner-team"
+          name="team"
+          class="h-control min-h-tap max-w-36 rounded-md border border-edge bg-surface px-2 text-sm text-fg"
+        >
+          <option value="">No owner</option>
+          <option :for={team <- @teams} value={team.id}>{team.name}</option>
+        </select>
+        <.button id="bulk-owner-submit" size="sm">Set owner</.button>
+      </form>
       <.button id="bulk-clear" size="sm" variant="ghost" phx-click="clear_selection">Clear</.button>
 
       <.confirm_dialog
         :for={{state, label, _meaning} <- @lifecycles}
-        :if={@can_manage? && @lifecycle_editable?}
+        :if={@can_edit? && @lifecycle_editable?}
         id={"bulk-lifecycle-#{state}"}
         title={"Set #{count_label(@count)} to #{label}?"}
         confirm_label={"Set to #{label}"}

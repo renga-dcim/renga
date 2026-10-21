@@ -18,6 +18,7 @@ defmodule RengaWeb.TopologyLive do
 
   import RengaWeb.TopologyComponents
 
+  alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Topology
@@ -36,7 +37,7 @@ defmodule RengaWeb.TopologyLive do
     {:ok,
      assign(socket,
        page_title: "Topology",
-       can_manage?: Inventory.organization_manager?(scope),
+       can_manage?: Authorization.allowed?(scope, "topology.edit"),
        filters: nil,
        link_key: nil,
        selected: nil,

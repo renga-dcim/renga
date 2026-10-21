@@ -22,9 +22,9 @@ defmodule RengaWeb.InboxLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Findings
   alias Renga.DCIM
-  alias Renga.Inventory
   alias Renga.IPAM
   alias Renga.Requests
   alias Renga.Requests.Request
@@ -74,7 +74,7 @@ defmodule RengaWeb.InboxLive do
        decision_form: decision_form(),
        can_triage?: Teams.can_manage?(scope),
        selected_triage: nil,
-       can_adopt?: Inventory.organization_manager?(scope),
+       can_adopt?: Authorization.allowed?(scope, "ipam.edit"),
        can_request?: Requests.can_request?(scope),
        adoption_request: nil,
        adoption_form: adoption_form()
