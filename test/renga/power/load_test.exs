@@ -133,6 +133,15 @@ defmodule Renga.Power.LoadTest do
     assert Decimal.eq?(load.known, 400)
   end
 
+  test "the default is not what an unallocated load rests on", context do
+    %{scope: scope, panel: panel} = context
+    feed = feed!(scope, panel, "A1", %{})
+    plug!(scope, port!(scope, "lab-1", %{}), feed)
+
+    load = load!(scope, feed, Decimal.new("0.9"))
+    assert {load.unallocated, load.uses_default?, load.status} == {1, false, :unknown}
+  end
+
   test "what is known can already prove a feed over its limit", context do
     %{scope: scope, panel: panel} = context
     feed = feed!(scope, panel, "A1", %{})

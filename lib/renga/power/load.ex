@@ -244,11 +244,14 @@ defmodule Renga.Power.Load do
       legs: legs(feed, draws, complete? and unassigned_legs == 0),
       uses_default?:
         capacity.unit == :va and
-          Enum.any?(draws, &match?(%PowerFactor{source: :organization_default}, &1.power_factor)),
+          Enum.any?(draws, &(&1.watts && default?(&1.power_factor))),
       untraced?: untraced?
     }
     |> put_status()
   end
+
+  defp default?(power_factor),
+    do: match?(%PowerFactor{source: :organization_default}, power_factor)
 
   # A DC feed needs no conversion.
   defp unconverted(_draws, :w), do: 0
