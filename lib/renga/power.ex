@@ -250,7 +250,8 @@ defmodule Renga.Power do
     end
   end
 
-  defp change_value(%Decimal{} = value), do: Decimal.to_string(value)
+  # Audit values read the same whether they came from input or the database.
+  defp change_value(%Decimal{} = value), do: power_factor_text(value)
   defp change_value(value), do: value
 
   @doc """
@@ -268,7 +269,7 @@ defmodule Renga.Power do
   Sets or clears (`nil`) the organization's default power factor. Every load
   without its own power factor converts with it, so it is an organization
   setting: RFD 10 gives it to owners, which RFD 17 grants as
-  `organization.manage`.
+  `organization.manage`. A change is recorded on the organization's activity.
   """
   def set_default_power_factor(
         %Scope{user: %User{}, organization_id: organization_id} = scope,
@@ -277,17 +278,35 @@ defmodule Renga.Power do
       when is_binary(organization_id) do
     fn ->
       Authorization.authorize!(scope, "organization.manage")
+      stored = Repo.get!(Organization, organization_id)
 
-      Organization
-      |> Repo.get!(organization_id)
-      |> Organization.default_power_factor_changeset(%{default_power_factor: value})
-      |> update_or_rollback()
+      changeset =
+        Organization.default_power_factor_changeset(stored, %{default_power_factor: value})
+
+      organization = update_or_rollback(changeset)
+
+      if Map.has_key?(changeset.changes, :default_power_factor) do
+        {:ok, _event} =
+          Inventory.create_change_event(scope, %{
+            kind: "updated",
+            field: "default_power_factor",
+            old_value: power_factor_value(stored.default_power_factor),
+            new_value: power_factor_value(organization.default_power_factor)
+          })
+      end
+
+      organization
     end
     |> Repo.transaction()
     |> Changes.broadcast(organization_id)
   end
 
   def set_default_power_factor(_scope, _value), do: {:error, :forbidden}
+
+  defp power_factor_value(nil), do: nil
+  defp power_factor_value(value), do: %{"value" => power_factor_text(value)}
+
+  defp power_factor_text(value), do: value |> Decimal.normalize() |> Decimal.to_string(:normal)
 
   def change_default_power_factor(%Organization{} = organization, attrs \\ %{}),
     do: Organization.default_power_factor_changeset(organization, attrs)

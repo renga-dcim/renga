@@ -108,6 +108,16 @@ defmodule Renga.Power.PowerFactorTest do
     assert {:error, %Ecto.Changeset{}} = Power.set_default_power_factor(scope, "1.2")
     assert {:ok, _organization} = Power.set_default_power_factor(scope, nil)
     assert Power.default_power_factor(scope) == nil
+    # Clearing an unset default changes nothing and records nothing.
+    assert {:ok, _organization} = Power.set_default_power_factor(scope, nil)
+
+    changes =
+      for event <- Inventory.list_activity(scope),
+          event.field == "default_power_factor",
+          do: {event.old_value, event.new_value}
+
+    assert Enum.sort(changes) ==
+             Enum.sort([{nil, %{"value" => "0.9"}}, {%{"value" => "0.9"}, nil}])
   end
 
   test "RFD 17 permissions: organization.manage sets the default, dcim.edit the port, topology.edit the cable",
