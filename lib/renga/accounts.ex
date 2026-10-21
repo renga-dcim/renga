@@ -363,6 +363,9 @@ defmodule Renga.Accounts do
   @doc "Emails the first-password or first-factor bootstrap code."
   defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
 
+  @doc "Grants the bootstrap to a session that just proved its email for that purpose."
+  defdelegate start_bootstrap(user, session_token), to: Recheck
+
   @doc "Spends a bootstrap code for this session."
   defdelegate verify_bootstrap_code(user, session_token, code), to: Recheck
 
@@ -416,9 +419,39 @@ defmodule Renga.Accounts do
 
   @doc "Removes a passkey if this session passed the re-check."
   def remove_passkey(%User{} = user, session_token, passkey_id) do
-    MFA.remove_factor(user, fn -> Passkeys.delete(user, passkey_id) end, fn ->
-      Recheck.authorized?(user, session_token, :remove_factor)
-    end)
+    MFA.remove_factor(
+      user,
+      fn ->
+        # A passwordless account keeps a credential it can sign in with.
+        # Read under the account lock, so a concurrent password removal or
+        # passkey removal cannot leave it with none.
+        if is_nil(Repo.get!(User, user.id).hashed_password) and length(Passkeys.list(user)) == 1,
+          do: {:error, :last_passkey},
+          else: Passkeys.delete(user, passkey_id)
+      end,
+      fn -> Recheck.authorized?(user, session_token, :remove_factor) end
+    )
+  end
+
+  @doc """
+  Removes the password from an account that has a passkey, after the
+  re-check (RFD 19, "Passwordless accounts").
+  """
+  def remove_user_password(%User{} = user, session_token) do
+    cond do
+      not Recheck.authorized?(user, session_token, :set_password) ->
+        {:error, :recheck_required}
+
+      not Passkeys.any?(user) ->
+        {:error, :no_passkey}
+
+      true ->
+        Repo.transact(fn ->
+          user = user |> Ecto.Changeset.change(hashed_password: nil) |> Repo.update!()
+          Repo.insert!(%Renga.Accounts.SecurityEvent{user_id: user.id, kind: "password_removed"})
+          {:ok, user}
+        end)
+    end
   end
 
   @doc "Options for signing in with any of this site's passkeys, including autofill."
