@@ -30,6 +30,13 @@ defmodule RengaWeb.ChangeDescription do
       when is_binary(interface),
       do: "Unassigned from #{interface}"
 
+  # RFD 10: an operator's allocated draw for one power port.
+  def describe(%{kind: "updated", field: "power_allocation", new_value: %{} = new}),
+    do: "Allocated #{new["value"]} W to power port #{new["port"]}"
+
+  def describe(%{kind: "updated", field: "power_allocation", old_value: %{} = old}),
+    do: "Cleared the allocated draw of power port #{old["port"]}"
+
   def describe(%{kind: "updated", field: field}), do: with_field("Updated", field)
   def describe(%{kind: "conflict", field: field}), do: with_field("Conflict on", field)
 

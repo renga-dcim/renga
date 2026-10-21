@@ -1,6 +1,7 @@
 defmodule Renga.Power do
   @moduledoc """
-  Power inventory (RFD 10): the panels at a site and the feeds they supply.
+  Power inventory (RFD 10): the panels at a site and the feeds they supply,
+  and the power ports and outlets on devices.
 
   Nothing on the network knows a building's electrical layout, so panels and
   feeds are always entered. Each has a resource envelope created with its
@@ -19,7 +20,9 @@ defmodule Renga.Power do
   alias Renga.Inventory.ResourceStore
   alias Renga.Power.Capacity
   alias Renga.Power.Feed
+  alias Renga.Power.Outlet
   alias Renga.Power.Panel
+  alias Renga.Power.Port
   alias Renga.Repo
 
   @display_name_limit 255
@@ -192,6 +195,54 @@ defmodule Renga.Power do
       Repo.preload(feed, [:resource, :panel, rack: :resource], force: true)
     end)
   end
+
+  @doc """
+  A device's power ports and outlets by name, each outlet with its inlet.
+  They come from the device's hardware type (RFD 10 phase 2).
+  """
+  def list_device_endpoints(%Scope{organization_id: organization_id}, resource_id) do
+    by_name = fn schema ->
+      schema
+      |> where([row], row.organization_id == ^organization_id and row.resource_id == ^resource_id)
+      |> order_by([row], fragment(~s(? COLLATE "C"), row.name))
+    end
+
+    %{
+      ports: Repo.all(by_name.(Port)),
+      outlets: Outlet |> by_name.() |> preload(:inlet_port) |> Repo.all()
+    }
+  end
+
+  @doc """
+  Sets or clears (`nil`) a port's allocated draw override, recorded on its
+  device's activity.
+  """
+  def update_port_allocation(%Scope{} = scope, %Port{id: id}, attrs) do
+    power_transaction(scope, fn ->
+      stored = lock!(Port, scope.organization_id, id)
+      changeset = Port.allocation_changeset(stored, attrs)
+      port = update_or_rollback(changeset)
+
+      if Map.has_key?(changeset.changes, :allocated_draw_w) do
+        {:ok, _event} =
+          Inventory.create_change_event(scope, %{
+            kind: "updated",
+            field: "power_allocation",
+            resource_id: port.resource_id,
+            old_value: allocation_value(port, stored.allocated_draw_w),
+            new_value: allocation_value(port, port.allocated_draw_w)
+          })
+      end
+
+      port
+    end)
+  end
+
+  defp allocation_value(_port, nil), do: nil
+  defp allocation_value(port, watts), do: %{"port" => port.name, "value" => watts}
+
+  def change_port_allocation(%Port{} = port, attrs \\ %{}),
+    do: Port.allocation_changeset(port, attrs)
 
   def change_panel(%Panel{} = panel, attrs \\ %{}), do: Panel.changeset(panel, attrs)
   def change_feed(%Feed{} = feed, attrs \\ %{}), do: Feed.changeset(feed, attrs)

@@ -2242,6 +2242,10 @@ defmodule Renga.Catalog do
     )
     |> Repo.delete_all()
 
+    # A device without a hardware type expects no power endpoints.
+    :ok =
+      Renga.Power.Endpoints.sync!(scope.organization_id, assignment.resource_id, assignment.id)
+
     Repo.delete!(assignment)
   end
 
@@ -2440,6 +2444,10 @@ defmodule Renga.Catalog do
       |> added_expectation_attrs()
       |> insert_expected_component(scope, assignment, nil, exception)
     end)
+
+    # RFD 10: power ports and outlets follow the expectations.
+    :ok =
+      Renga.Power.Endpoints.sync!(scope.organization_id, assignment.resource_id, assignment.id)
   end
 
   @doc false
