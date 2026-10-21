@@ -4,14 +4,15 @@
 //! The server generates `priv/openapi/v1.json` from its own validator and fails its tests when the
 //! file is stale, so a payload change on either side that breaks the contract fails here.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use renga_agent::{
     cancellation::Cancellation,
     collectors,
     installation_key::InstallationKey,
     payload::{
-        Address, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface, JobReport,
-        KeyApproval, LeaseRequest, LeaseResponse, Observation, PresentedKey, QueueReport,
-        ReportAck, ReportType, ResourceKind, ServerResource,
+        Address, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface, JobClaim,
+        JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Observation, PresentedKey,
+        QueueReport, ReportAck, ReportType, ResourceKind, ServerResource,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -216,6 +217,18 @@ fn job_requests_match_the_contract() {
         },
     );
 
+    // The client signs claims of privileged offers with the installation key.
+    let state = std::env::temp_dir().join(format!("renga-contract-{}", uuid::Uuid::new_v4()));
+    let key = InstallationKey::load_or_create(&state).unwrap();
+    assert_conforms(
+        "JobClaim",
+        &JobClaim {
+            lease_token: "lease-token",
+            nonce: "nonce",
+            signature: URL_SAFE_NO_PAD.encode(key.sign(b"offer")),
+        },
+    );
+
     // The payloads the job worker sends for each report type.
     let reports = [
         (ReportType::Started, json!({})),
@@ -318,6 +331,41 @@ fn the_agent_decodes_documented_responses() {
         }),
     );
     assert_eq!(leased.jobs.len(), 1);
+    assert!(leased.offers.is_empty());
+
+    let offered: LeaseResponse = assert_decodes(
+        "JobLease",
+        json!({
+            "jobs": [],
+            "offers": [{
+                "job_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "capability": "service.restart@1",
+                "lease_token": "lease-token",
+                "nonce": "nonce",
+                "resource_id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e",
+                "binding_version": 1,
+                "expires_at": "2026-10-14T12:01:00.000Z"
+            }]
+        }),
+    );
+    assert_eq!(offered.offers[0].binding_version, 1);
+
+    // A successful claim answers with the leased job.
+    let claimed: LeasedJob = assert_decodes(
+        "LeasedJob",
+        json!({
+            "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+            "capability": "service.restart@1",
+            "parameters": {"service": "sshd"},
+            "attempt": 1,
+            "lease_token": "lease-token",
+            "lease_expires_at": "2026-10-14T12:01:00.000Z",
+            "not_after": "2026-10-14T13:00:00.000Z",
+            "timeout_ms": 300000,
+            "output_limit_bytes": 65536
+        }),
+    );
+    assert_eq!(claimed.parameters["service"], "sshd");
 
     // A finished job has no lease left to report.
     let ack: ReportAck = assert_decodes(

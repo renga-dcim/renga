@@ -265,6 +265,61 @@ pub struct LeaseRequest<'a> {
 #[derive(Debug, Deserialize)]
 pub struct LeaseResponse {
     pub jobs: Vec<LeasedJob>,
+    /// Privileged jobs this installation may claim with a signature (RFD 13).
+    #[serde(default)]
+    pub offers: Vec<JobOffer>,
+}
+
+/// A privileged job Renga offers without its parameters. Claiming it with
+/// the installation key's signature over `JobOffer::message` leases it.
+#[derive(Clone, Deserialize)]
+pub struct JobOffer {
+    pub job_id: Uuid,
+    pub capability: String,
+    pub lease_token: String,
+    pub nonce: String,
+    pub resource_id: Uuid,
+    pub binding_version: u64,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl JobOffer {
+    /// The bytes the installation key signs to claim this offer. Matches
+    /// `Renga.Jobs.SignedLeases.message/6`.
+    pub fn message(&self, installation_id: Uuid) -> Vec<u8> {
+        format!(
+            "renga-job-lease-v1\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            self.job_id,
+            self.lease_token,
+            self.nonce,
+            installation_id,
+            self.resource_id,
+            self.binding_version
+        )
+        .into_bytes()
+    }
+}
+
+impl fmt::Debug for JobOffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JobOffer")
+            .field("job_id", &self.job_id)
+            .field("capability", &self.capability)
+            .field("lease_token", &"[REDACTED]")
+            .field("resource_id", &self.resource_id)
+            .field("binding_version", &self.binding_version)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Claims a `JobOffer` with the installation key's signature.
+#[derive(Debug, Serialize)]
+pub struct JobClaim<'a> {
+    pub lease_token: &'a str,
+    pub nonce: &'a str,
+    /// The Ed25519 signature in unpadded base64url.
+    pub signature: String,
 }
 
 /// A job Renga leased to this agent. Matches `RengaWeb.Api.V1.JobController`.
@@ -464,6 +519,31 @@ mod tests {
     }
 
     #[test]
+    fn offers_sign_the_same_lines_renga_verifies() {
+        let leased: LeaseResponse = serde_json::from_value(serde_json::json!({
+            "jobs": [],
+            "offers": [{
+                "job_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "capability": "service.restart@1",
+                "lease_token": "secret-token",
+                "nonce": "nonce",
+                "resource_id": "1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b",
+                "binding_version": 3,
+                "expires_at": "2026-10-14T12:00:00.000Z"
+            }]
+        }))
+        .unwrap();
+        let offer = &leased.offers[0];
+        let installation = Uuid::parse_str("7d444840-9dc0-11d1-b245-5ffdce74fad2").unwrap();
+        assert_eq!(
+            String::from_utf8(offer.message(installation)).unwrap(),
+            "renga-job-lease-v1\n67e55044-10b1-426f-9247-bb680e5fe0c8\nsecret-token\nnonce\n\
+             7d444840-9dc0-11d1-b245-5ffdce74fad2\n1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b\n3\n"
+        );
+        assert!(!format!("{offer:?}").contains("secret-token"));
+    }
+
+    #[test]
     fn job_contract_round_trips_and_redacts_the_lease_token() {
         let leased: LeaseResponse = serde_json::from_value(serde_json::json!({
             "jobs": [{
@@ -480,6 +560,7 @@ mod tests {
         }))
         .unwrap();
         let job = &leased.jobs[0];
+        assert!(leased.offers.is_empty(), "older servers send no offers");
         assert_eq!(job.capability, "inventory.collect@1");
         assert_eq!(job.attempt, 2);
         assert!(!format!("{job:?}").contains("secret-token"));
