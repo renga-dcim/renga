@@ -35,6 +35,20 @@ defmodule Renga.Accounts.RecoveryReplacementTest do
     end)
   end
 
+  test "a passkey with a key Renga did not offer leaves the grant unspent" do
+    with_recovering_user(fn user, token ->
+      response =
+        Renga.FakeAuthenticator.register(
+          Renga.FakeAuthenticator.new(alg: -8),
+          Accounts.passkey_registration_options(user)
+        )
+
+      assert {:error, :invalid_response} = Accounts.add_passkey(user, token, response, "Key")
+      assert Accounts.recovering?(user, token)
+      assert Accounts.list_passkeys(user) == []
+    end)
+  end
+
   test "two concurrent replacements use the grant once" do
     with_recovering_user(fn user, token ->
       first = MFA.new_totp_secret()

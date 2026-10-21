@@ -5,7 +5,15 @@ defmodule Renga.FakeAuthenticator do
   browser would, with base64url-encoded fields.
   """
 
-  defstruct [:credential_id, :private_key, :public_point, sign_count: 0, user_verified: true]
+  defstruct [
+    :credential_id,
+    :private_key,
+    :public_point,
+    :user_handle,
+    sign_count: 0,
+    user_verified: true,
+    alg: -7
+  ]
 
   @doc "A new authenticator holding one credential."
   def new(opts \\ []) do
@@ -16,7 +24,9 @@ defmodule Renga.FakeAuthenticator do
       private_key: private_key,
       public_point: public_point,
       sign_count: Keyword.get(opts, :sign_count, 0),
-      user_verified: Keyword.get(opts, :user_verified, true)
+      user_verified: Keyword.get(opts, :user_verified, true),
+      alg: Keyword.get(opts, :alg, -7),
+      user_handle: Keyword.get(opts, :user_handle)
     }
   end
 
@@ -25,14 +35,19 @@ defmodule Renga.FakeAuthenticator do
     client_data = client_data("webauthn.create", options.challenge, origin)
     <<4, x::binary-size(32), y::binary-size(32)>> = authenticator.public_point
 
+    # Like a real authenticator, remember which account the credential was
+    # created for, and return its handle in assertions.
+    Process.put({__MODULE__, authenticator.credential_id}, options.user.id)
+
     cose_key =
-      CBOR.encode(%{
+      %{
         1 => 2,
-        3 => -7,
         -1 => 1,
         -2 => %CBOR.Tag{tag: :bytes, value: x},
         -3 => %CBOR.Tag{tag: :bytes, value: y}
-      })
+      }
+      |> then(&if(authenticator.alg, do: Map.put(&1, 3, authenticator.alg), else: &1))
+      |> CBOR.encode()
 
     attested =
       <<0::128, byte_size(authenticator.credential_id)::16>> <>
@@ -72,9 +87,18 @@ defmodule Renga.FakeAuthenticator do
       "rawId" => encode(authenticator.credential_id),
       "authenticatorData" => encode(auth_data),
       "signature" => encode(signature),
-      "clientDataJSON" => encode(client_data)
+      "clientDataJSON" => encode(client_data),
+      "userHandle" => user_handle(authenticator)
     }
   end
+
+  # `user_handle: :omit` sends none, a binary sends that handle (already
+  # base64url), and otherwise the handle the credential was created for.
+  defp user_handle(%{user_handle: :omit}), do: nil
+  defp user_handle(%{user_handle: handle}) when is_binary(handle), do: handle
+
+  defp user_handle(authenticator),
+    do: Process.get({__MODULE__, authenticator.credential_id})
 
   defp auth_data(authenticator, rp_id, extra_flags) do
     import Bitwise

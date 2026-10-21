@@ -72,9 +72,15 @@ defmodule Renga.Accounts.Passkeys do
          {:ok, attestation_object} <- decode_field(response, "attestationObject"),
          {:ok, challenge} <- take_challenge(client_data_json, "register", user),
          {:ok, {auth_data, _attestation}} <-
-           Wax.register(attestation_object, client_data_json, wax_challenge(challenge, :register)) do
-      credential = auth_data.attested_credential_data
-
+           verify(fn ->
+             Wax.register(
+               attestation_object,
+               client_data_json,
+               wax_challenge(challenge, :register)
+             )
+           end),
+         credential = auth_data.attested_credential_data,
+         :ok <- check_algorithm(credential.credential_public_key) do
       %UserPasskey{
         user_id: user.id,
         credential_id: credential.credential_id,
@@ -132,15 +138,18 @@ defmodule Renga.Accounts.Passkeys do
          {:ok, challenge} <- take_challenge(client_data_json, purpose, user),
          %UserPasskey{} = passkey <- passkey_for(credential_id, user) || {:error, :unknown},
          cose_key = :erlang.binary_to_term(passkey.public_key, [:safe]),
+         :ok <- check_user_handle(purpose, response, passkey),
          {:ok, auth_data} <-
-           Wax.authenticate(
-             credential_id,
-             auth_data_bin,
-             signature,
-             client_data_json,
-             wax_challenge(challenge, :authenticate),
-             [{credential_id, cose_key}]
-           ),
+           verify(fn ->
+             Wax.authenticate(
+               credential_id,
+               auth_data_bin,
+               signature,
+               client_data_json,
+               wax_challenge(challenge, :authenticate),
+               [{credential_id, cose_key}]
+             )
+           end),
          :ok <- record_use(passkey, auth_data) do
       {:ok, Repo.get!(User, passkey.user_id), Repo.get!(UserPasskey, passkey.id)}
     else
@@ -199,7 +208,8 @@ defmodule Renga.Accounts.Passkeys do
   # Deletes the challenge the response signed, so it can be used only once,
   # and checks it was issued for this purpose and user.
   defp take_challenge(client_data_json, purpose, user) do
-    with {:ok, %{"challenge" => encoded}} <- Jason.decode(client_data_json),
+    with {:ok, %{"challenge" => encoded}} when is_binary(encoded) <-
+           Jason.decode(client_data_json),
          {:ok, bytes} <- Base.url_decode64(encoded, padding: false) do
       now = Renga.Time.utc_now_ms()
       user_id = user && user.id
@@ -241,6 +251,39 @@ defmodule Renga.Accounts.Passkeys do
 
   defp passkey_for(credential_id, %User{id: user_id}),
     do: Repo.get_by(UserPasskey, credential_id: credential_id, user_id: user_id)
+
+  # Wax raises on some malformed client data and attestation shapes; those
+  # are refused like any other invalid response. Nothing here touches the
+  # database, so only parsing errors can arrive.
+  defp verify(fun) do
+    fun.()
+  rescue
+    _exception -> {:error, :invalid_response}
+  end
+
+  # WebAuthn §7.1 step 16: the new key must use an algorithm Renga offered.
+  defp check_algorithm(%{3 => alg}) when alg in @algorithms, do: :ok
+  defp check_algorithm(_cose_key), do: {:error, :invalid_response}
+
+  # WebAuthn §7.2 step 6: the user handle names the passkey's owner. A
+  # discoverable sign-in must send it; with a known user it may be absent.
+  defp check_user_handle(purpose, response, %UserPasskey{user_id: user_id}) do
+    expected = user_handle(%User{id: user_id})
+
+    case response["userHandle"] do
+      nil when purpose != "sign_in" ->
+        :ok
+
+      handle when is_binary(handle) ->
+        case Base.url_decode64(handle, padding: false) do
+          {:ok, ^expected} -> :ok
+          _ -> {:error, :user_handle}
+        end
+
+      _ ->
+        {:error, :user_handle}
+    end
+  end
 
   # A counter that stops increasing suggests a cloned authenticator. Synced
   # passkeys always report zero, which is allowed. The check and the update

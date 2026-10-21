@@ -61,6 +61,18 @@ defmodule Renga.Accounts.PasskeysTest do
       assert {:error, :invalid_challenge} = Passkeys.register(user, response)
     end
 
+    test "refuses a key algorithm Renga did not offer" do
+      user = user_fixture()
+
+      for alg <- [-8, nil] do
+        authenticator = FakeAuthenticator.new(alg: alg)
+        response = FakeAuthenticator.register(authenticator, Passkeys.registration_options(user))
+        assert {:error, :invalid_response} = Passkeys.register(user, response)
+      end
+
+      refute Passkeys.any?(user)
+    end
+
     test "a credential belongs to one account" do
       authenticator = FakeAuthenticator.new()
       register(user_fixture(), authenticator)
@@ -131,6 +143,51 @@ defmodule Renga.Accounts.PasskeysTest do
       assert {:error, _reason} = Passkeys.authenticate("sign_in", response)
     end
 
+    test "a discoverable sign-in needs the owner's user handle", %{
+      user: user,
+      authenticator: authenticator
+    } do
+      other = user_fixture()
+      other_handle = Base.url_encode64(Ecto.UUID.dump!(other.id), padding: false)
+
+      for handle <- [:omit, other_handle, "not base64!"] do
+        response =
+          FakeAuthenticator.assert(
+            %{authenticator | user_handle: handle},
+            Passkeys.authentication_options("sign_in")
+          )
+
+        assert {:error, _} = Passkeys.authenticate("sign_in", response)
+      end
+
+      # With the user already known, the handle may be absent but not wrong.
+      response =
+        FakeAuthenticator.assert(
+          %{authenticator | user_handle: :omit},
+          Passkeys.authentication_options("second_step", user)
+        )
+
+      assert {:ok, _user, _passkey} = Passkeys.authenticate("second_step", response, user)
+
+      response =
+        FakeAuthenticator.assert(
+          %{authenticator | user_handle: other_handle},
+          Passkeys.authentication_options("second_step", user)
+        )
+
+      assert {:error, _} = Passkeys.authenticate("second_step", response, user)
+    end
+
+    test "malformed client data is refused, not raised", %{authenticator: authenticator} do
+      response =
+        FakeAuthenticator.assert(authenticator, Passkeys.authentication_options("sign_in"))
+
+      for client_data <- [%{"challenge" => 42}, %{"type" => "other", "challenge" => "x"}] do
+        response = %{response | "clientDataJSON" => encode(Jason.encode!(client_data))}
+        assert {:error, _} = Passkeys.authenticate("sign_in", response)
+      end
+    end
+
     test "rejects a counter that went backwards" do
       user = user_fixture()
       {authenticator, _passkey} = register(user, FakeAuthenticator.new(sign_count: 5))
@@ -166,4 +223,6 @@ defmodule Renga.Accounts.PasskeysTest do
       assert {:error, _reason} = Passkeys.authenticate("sign_in", response)
     end
   end
+
+  defp encode(bytes), do: Base.url_encode64(bytes, padding: false)
 end
