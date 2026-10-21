@@ -35,7 +35,7 @@ defmodule Renga.Accounts.MFATest do
       user = user_fixture()
       secret = MFA.new_totp_secret()
 
-      assert {:error, :invalid_code} = MFA.enable_totp(user, secret, "000000")
+      assert {:error, :invalid_code} = MFA.enable_totp(user, secret, wrong_totp_code(secret))
       refute MFA.mfa?(user)
     end
 
@@ -46,6 +46,38 @@ defmodule Renga.Accounts.MFATest do
 
       other = MFA.new_totp_secret()
       assert {:error, :already_enabled} = MFA.enable_totp(user, other, code_for(other))
+    end
+  end
+
+  describe "secret storage" do
+    setup do
+      user = user_fixture()
+      secret = MFA.new_totp_secret()
+      {:ok, _codes} = MFA.enable_totp(user, secret, code_for(secret, -1))
+      %{user: user, secret: secret, totp: Repo.one!(where(UserTOTP, user_id: ^user.id))}
+    end
+
+    test "stores the secret encrypted and bound to its account", %{totp: totp, secret: secret} do
+      assert totp.secret_key_id == Renga.Vault.current_key_id()
+      refute :binary.match(totp.secret_ciphertext, secret) != :nomatch
+      refute totp.secret_ciphertext =~ Base.encode32(secret, padding: false)
+    end
+
+    test "a secret moved to another account accepts nothing", %{totp: totp, secret: secret} do
+      other = user_fixture()
+      other_secret = MFA.new_totp_secret()
+      {:ok, _codes} = MFA.enable_totp(other, other_secret, code_for(other_secret, -1))
+
+      Repo.update_all(where(UserTOTP, user_id: ^other.id),
+        set: [secret_ciphertext: totp.secret_ciphertext, secret_key_id: totp.secret_key_id]
+      )
+
+      assert {:error, :unavailable} = MFA.verify_totp(other, code_for(secret))
+    end
+
+    test "an unknown key accepts nothing", %{user: user, secret: secret} do
+      Repo.update_all(where(UserTOTP, user_id: ^user.id), set: [secret_key_id: "retired"])
+      assert {:error, :unavailable} = MFA.verify_totp(user, code_for(secret))
     end
   end
 
@@ -74,10 +106,22 @@ defmodule Renga.Accounts.MFATest do
     end
 
     test "records every failure and stops after ten", %{user: user, secret: secret} do
-      for _ <- 1..10, do: assert({:error, :invalid_code} = MFA.verify_totp(user, "000000"))
+      for _ <- 1..10,
+          do: assert({:error, :invalid_code} = MFA.verify_totp(user, wrong_totp_code(secret)))
 
       assert events(user, "totp_failed") == 10
       assert {:error, :rate_limited} = MFA.verify_totp(user, code_for(secret))
+    end
+
+    test "a rejection while rate limited is recorded but does not extend the limit", %{
+      user: user,
+      secret: secret
+    } do
+      for _ <- 1..10, do: MFA.verify_totp(user, wrong_totp_code(secret))
+      assert {:error, :rate_limited} = MFA.verify_totp(user, wrong_totp_code(secret))
+
+      assert events(user, "totp_failed") == 10
+      assert events(user, "second_factor_rate_limited") == 1
     end
 
     test "an account without an app has nothing to verify" do

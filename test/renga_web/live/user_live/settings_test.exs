@@ -415,6 +415,16 @@ defmodule RengaWeb.UserLive.SettingsTest do
       refute has_element?(lv, "#recovery_codes")
     end
 
+    test "a turn-on event with no setup open does nothing", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      render_hook(lv, "enable_totp", %{"totp" => %{"code" => "123456"}})
+      render_hook(lv, "recheck_totp", %{"recheck" => %{"code" => "123456"}})
+
+      assert render(lv) =~ "Set up authenticator app"
+      refute Renga.Accounts.MFA.totp_enabled?(user)
+    end
+
     test "a wrong code does not turn it on", %{conn: conn, user: user} do
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
 
@@ -424,7 +434,8 @@ defmodule RengaWeb.UserLive.SettingsTest do
       |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
       |> render_submit()
 
-      result = lv |> form("#totp_form", %{"totp" => %{"code" => "000000"}}) |> render_submit()
+      code = wrong_totp_code(secret_from(lv))
+      result = lv |> form("#totp_form", %{"totp" => %{"code" => code}}) |> render_submit()
 
       assert result =~ "That code isn&#39;t right."
       refute Renga.Accounts.MFA.totp_enabled?(user)

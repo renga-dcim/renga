@@ -62,8 +62,10 @@ defmodule Renga.Accounts.RecheckTest do
       end
     end
 
-    test "a wrong code authorizes nothing", %{user: user, token: token} do
-      assert {:error, :invalid_code} = Recheck.recheck_with_totp(user, token, "000000")
+    test "a wrong code authorizes nothing", %{user: user, secret: secret, token: token} do
+      assert {:error, :invalid_code} =
+               Recheck.recheck_with_totp(user, token, wrong_totp_code(secret))
+
       refute Recheck.authorized?(user, token, :remove_factor)
     end
   end

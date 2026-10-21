@@ -11,6 +11,15 @@ defmodule Renga.Accounts.MFA do
   the last accepted 30-second step is stored, and only a later step passes.
   Every failure is recorded in the account's security log.
 
+  Every check and change of an account's second factors and recovery codes
+  runs under a lock on the account's row, so concurrent requests see each
+  other's failures, spent steps, and replaced code sets.
+
+  Authenticator secrets are encrypted with `Renga.Vault` and bound to their
+  account, so a database dump alone cannot produce codes. A secret sealed by
+  an older key is resealed with the current one when it is next used, and
+  `reencrypt_totp_secrets/0` reseals the rest before an old key is retired.
+
   Callers check the account re-check (`Renga.Accounts.Recheck`) before
   changing a credential; this module only enforces the credential rules.
   """
@@ -22,6 +31,9 @@ defmodule Renga.Accounts.MFA do
   alias Renga.Accounts.UserRecoveryCode
   alias Renga.Accounts.UserTOTP
   alias Renga.Repo
+  alias Renga.Vault
+
+  require Logger
 
   @period 30
   # Accept the neighbouring steps too, for clocks that drift.
@@ -38,6 +50,9 @@ defmodule Renga.Accounts.MFA do
 
   @doc "A new random authenticator secret, not yet saved."
   def new_totp_secret, do: NimbleTOTP.secret()
+
+  @doc "Whether authenticator secrets can be stored: `Renga.Vault` has a key."
+  def totp_available?, do: not is_nil(Vault.current_key_id())
 
   @doc "The `otpauth://` URI an authenticator app scans to add `secret`."
   def totp_uri(%User{email: email}, secret) do
@@ -59,36 +74,45 @@ defmodule Renga.Accounts.MFA do
   first factor, otherwise `nil`.
   """
   def enable_totp(%User{} = user, secret, code) when is_binary(secret) and is_binary(code) do
-    case matching_step(secret, code, nil) do
-      nil ->
-        record_event(user, "totp_enable_failed")
-        {:error, :invalid_code}
+    with_account_lock(user, fn ->
+      if totp_enabled?(user) do
+        {:error, :already_enabled}
+      else
+        case matching_step(secret, code, nil) do
+          nil ->
+            record_event(user, "totp_enable_failed")
+            {:ok, {:error, :invalid_code}}
 
-      step ->
-        Repo.transact(fn -> insert_totp(user, secret, step) end)
-    end
+          step ->
+            insert_totp(user, secret, step)
+        end
+      end
+    end)
   end
 
   defp insert_totp(user, secret, step) do
     first_factor? = not mfa?(user)
 
-    %UserTOTP{user_id: user.id, secret: secret, last_used_step: step}
-    |> Ecto.Changeset.change()
-    |> Ecto.Changeset.unique_constraint(:user_id)
-    |> Repo.insert()
-    |> case do
-      {:ok, _totp} ->
+    case Vault.encrypt(secret, secret_aad(user.id)) do
+      {:ok, key_id, ciphertext} ->
+        Repo.insert!(%UserTOTP{
+          user_id: user.id,
+          secret_ciphertext: ciphertext,
+          secret_key_id: key_id,
+          last_used_step: step
+        })
+
         record_event(user, "totp_added")
         {:ok, if(first_factor?, do: replace_recovery_codes(user))}
 
-      {:error, _changeset} ->
-        {:error, :already_enabled}
+      {:error, :no_key} ->
+        {:error, :no_encryption_key}
     end
   end
 
   @doc "Removes the authenticator app, and the recovery codes with the last factor."
   def disable_totp(%User{} = user) do
-    Repo.transact(fn ->
+    with_account_lock(user, fn ->
       Repo.delete_all(where(UserTOTP, user_id: ^user.id))
       unless mfa?(user), do: Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
       record_event(user, "totp_removed")
@@ -98,43 +122,102 @@ defmodule Renga.Accounts.MFA do
 
   @doc """
   Checks an authenticator code and, if it is good, spends its time step.
+
+  A secret that cannot be decrypted, because its key is gone or the row was
+  tampered with, accepts nothing.
   """
   def verify_totp(%User{} = user, code) when is_binary(code) do
-    Repo.transact(fn ->
-      totp =
-        UserTOTP
-        |> where(user_id: ^user.id)
-        |> lock("FOR UPDATE")
-        |> Repo.one()
+    with_account_lock(user, fn ->
+      totp = Repo.one(where(UserTOTP, user_id: ^user.id))
 
       cond do
         is_nil(totp) ->
           {:error, :not_enabled}
 
         rate_limited?(user) ->
-          {:error, :rate_limited}
-
-        step = matching_step(totp.secret, code, totp.last_used_step) ->
-          Repo.update_all(where(UserTOTP, id: ^totp.id), set: [last_used_step: step])
-          {:ok, step}
+          record_event(user, "second_factor_rate_limited", %{"method" => "totp"})
+          {:ok, {:error, :rate_limited}}
 
         true ->
-          {:ok, :invalid}
+          check_totp(user, totp, code)
       end
     end)
-    |> case do
-      {:ok, :invalid} ->
-        # Recorded outside the locked transaction's result so it always
-        # counts towards the limit.
-        record_event(user, "totp_failed")
-        {:error, :invalid_code}
+  end
 
-      {:ok, _step} ->
-        :ok
+  defp check_totp(user, totp, code) do
+    case decrypt_secret(totp) do
+      {:ok, secret} ->
+        if step = matching_step(secret, code, totp.last_used_step) do
+          Repo.update_all(where(UserTOTP, id: ^totp.id),
+            set: [last_used_step: step] ++ resealed(user, totp, secret)
+          )
 
-      error ->
-        error
+          :ok
+        else
+          record_event(user, "totp_failed")
+          {:ok, {:error, :invalid_code}}
+        end
+
+      {:error, reason} ->
+        Logger.error("Authenticator secret for user #{user.id} cannot be decrypted: #{reason}")
+        {:error, :unavailable}
     end
+  end
+
+  # Moves a secret sealed by an older key to the current one while it is
+  # decrypted anyway.
+  defp resealed(user, totp, secret) do
+    with current when not is_nil(current) and current != totp.secret_key_id <-
+           Vault.current_key_id(),
+         {:ok, key_id, ciphertext} <- Vault.encrypt(secret, secret_aad(user.id)) do
+      [secret_ciphertext: ciphertext, secret_key_id: key_id]
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  Reseals every authenticator secret not yet under the current key, so the
+  operator can then retire the old one. Returns how many were resealed, or
+  the first secret that could not be decrypted.
+  """
+  def reencrypt_totp_secrets do
+    current = Vault.current_key_id()
+
+    if is_nil(current) do
+      {:error, :no_key}
+    else
+      UserTOTP
+      |> where([totp], totp.secret_key_id != ^current)
+      |> Repo.all()
+      |> Enum.reduce_while({:ok, 0}, fn totp, {:ok, count} ->
+        case reencrypt_totp(totp.user_id) do
+          {:ok, :resealed} -> {:cont, {:ok, count + 1}}
+          {:ok, :current} -> {:cont, {:ok, count}}
+          {:error, reason} -> {:halt, {:error, {totp.user_id, reason}}}
+        end
+      end)
+    end
+  end
+
+  defp reencrypt_totp(user_id) do
+    with_account_lock(%User{id: user_id}, fn ->
+      with %UserTOTP{} = totp <- Repo.one(where(UserTOTP, user_id: ^user_id)),
+           {:ok, secret} <- decrypt_secret(totp) do
+        # A sign-in may have resealed it since it was listed.
+        case resealed(%User{id: user_id}, totp, secret) do
+          [] ->
+            {:ok, :current}
+
+          changes ->
+            Repo.update_all(where(UserTOTP, id: ^totp.id), set: changes)
+            {:ok, :resealed}
+        end
+      else
+        nil -> {:ok, :current}
+        {:error, _reason} = error -> error
+      end
+    end)
   end
 
   @doc """
@@ -142,15 +225,15 @@ defmodule Renga.Accounts.MFA do
   codes, which are never shown again. Only an account with MFA has codes.
   """
   def regenerate_recovery_codes(%User{} = user) do
-    if mfa?(user) do
-      Repo.transact(fn ->
+    with_account_lock(user, fn ->
+      if mfa?(user) do
         codes = replace_recovery_codes(user)
         record_event(user, "recovery_codes_generated")
         {:ok, codes}
-      end)
-    else
-      {:error, :no_mfa}
-    end
+      else
+        {:error, :no_mfa}
+      end
+    end)
   end
 
   @doc "How many unused recovery codes the account has left."
@@ -166,25 +249,56 @@ defmodule Renga.Accounts.MFA do
   lost; recovery codes are rate limited with authenticator codes.
   """
   def spend_recovery_code(%User{} = user, code) when is_binary(code) do
-    if rate_limited?(user) do
-      {:error, :rate_limited}
-    else
-      now = Renga.Time.utc_now_ms()
-
-      {count, _} =
-        UserRecoveryCode
-        |> where(user_id: ^user.id, code_hash: ^hash_recovery_code(code))
-        |> where([code], is_nil(code.used_at))
-        |> Repo.update_all(set: [used_at: now])
-
-      if count == 1 do
-        record_event(user, "recovery_code_used")
-        :ok
+    with_account_lock(user, fn ->
+      if rate_limited?(user) do
+        record_event(user, "second_factor_rate_limited", %{"method" => "recovery_code"})
+        {:ok, {:error, :rate_limited}}
       else
-        record_event(user, "recovery_code_failed")
-        {:error, :invalid_code}
+        {count, _} =
+          UserRecoveryCode
+          |> where(user_id: ^user.id, code_hash: ^hash_recovery_code(code))
+          |> where([code], is_nil(code.used_at))
+          |> Repo.update_all(set: [used_at: Renga.Time.utc_now_ms()])
+
+        if count == 1 do
+          record_event(user, "recovery_code_used")
+          :ok
+        else
+          record_event(user, "recovery_code_failed")
+          {:ok, {:error, :invalid_code}}
+        end
       end
+    end)
+  end
+
+  # Runs `fun` in a transaction holding the account's row lock, which every
+  # second-factor check and change takes first. `fun` returns `{:ok, error}`
+  # to commit what it recorded, such as a failure, and still report `error`.
+  defp with_account_lock(%User{id: user_id}, fun) do
+    Repo.transact(fn ->
+      User
+      |> where(id: ^user_id)
+      |> lock("FOR NO KEY UPDATE")
+      |> select([user], user.id)
+      |> Repo.one()
+
+      case fun.() do
+        :ok -> {:ok, :ok}
+        {:ok, _value} = ok -> ok
+        {:error, _reason} = error -> error
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:ok, {:error, _reason} = error} -> error
+      other -> other
     end
+  end
+
+  defp secret_aad(user_id), do: "renga:user_totp:" <> user_id
+
+  defp decrypt_secret(%UserTOTP{} = totp) do
+    Vault.decrypt(totp.secret_key_id, totp.secret_ciphertext, secret_aad(totp.user_id))
   end
 
   defp replace_recovery_codes(user) do
@@ -213,7 +327,9 @@ defmodule Renga.Accounts.MFA do
     code = String.replace(code, ~r/\s/, "")
     current = div(System.os_time(:second), @period)
 
-    Enum.find((current - @drift_steps)..(current + @drift_steps), fn step ->
+    # Newest first: if two neighbouring steps share digits, a code spends
+    # the later one, so it cannot be accepted again for the earlier.
+    Enum.find((current + @drift_steps)..(current - @drift_steps)//-1, fn step ->
       (is_nil(last_used_step) or step > last_used_step) and
         Plug.Crypto.secure_compare(
           NimbleTOTP.verification_code(secret, time: step * @period),

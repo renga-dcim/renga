@@ -1,7 +1,8 @@
 defmodule Renga.Vault do
   @moduledoc """
-  Encrypts secrets Renga must read back, such as identity provider client
-  secrets (RFD 15, "Storage and changes"), with AES-256-GCM.
+  Encrypts secrets Renga must read back, such as authenticator app secrets
+  (RFD 19) and identity provider client secrets (RFD 15, "Storage and
+  changes"), with AES-256-GCM.
 
   Keys come from the environment at boot (`ENCRYPTION_KEYS`) as a
   comma-separated list of `id:base64-key` pairs. The first key encrypts; every

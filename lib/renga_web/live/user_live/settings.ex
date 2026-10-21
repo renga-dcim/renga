@@ -98,8 +98,16 @@ defmodule RengaWeb.UserLive.Settings do
           description="A six-digit code from an app such as 1Password or Google Authenticator, asked for after your password or emailed link."
         >
           <div :if={!@totp_enabled and !@totp_setup} class="space-y-3">
-            <p class="text-sm text-fg-muted">Off.</p>
-            <.button id="totp_setup" variant="primary" phx-click="start_totp">
+            <p :if={@totp_available} class="text-sm text-fg-muted">Off.</p>
+            <p :if={!@totp_available} id="totp_unavailable" class="text-sm text-fg-muted">
+              Off. This server has no encryption key for authenticator secrets yet.
+            </p>
+            <.button
+              :if={@totp_available}
+              id="totp_setup"
+              variant="primary"
+              phx-click="start_totp"
+            >
               Set up authenticator app
             </.button>
           </div>
@@ -421,7 +429,15 @@ defmodule RengaWeb.UserLive.Settings do
   end
 
   def handle_event("start_totp", _params, socket) do
-    {:noreply, with_recheck(socket, :add_factor, %{})}
+    if MFA.totp_available?(),
+      do: {:noreply, with_recheck(socket, :add_factor, %{})},
+      else: {:noreply, socket}
+  end
+
+  # A submission with no setup open, from a stale or crafted event, does
+  # nothing.
+  def handle_event("enable_totp", _params, %{assigns: %{totp_setup: nil}} = socket) do
+    {:noreply, socket}
   end
 
   def handle_event("enable_totp", %{"totp" => %{"code" => code}}, socket) do
@@ -442,6 +458,12 @@ defmodule RengaWeb.UserLive.Settings do
 
       {:error, :already_enabled} ->
         {:noreply, socket |> assign(:totp_setup, nil) |> assign_mfa()}
+
+      {:error, :no_encryption_key} ->
+        {:noreply,
+         socket
+         |> assign(:totp_setup, nil)
+         |> put_flash(:error, "Authenticator apps aren't available on this server yet.")}
 
       {:error, :invalid_code} ->
         form =
@@ -602,11 +624,14 @@ defmodule RengaWeb.UserLive.Settings do
     user = socket.assigns.current_scope.user
 
     socket
+    |> assign(:totp_available, MFA.totp_available?())
     |> assign(:totp_enabled, MFA.totp_enabled?(user))
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
   end
 
   defp recheck_form, do: to_form(%{}, as: "recheck")
+
+  defp recheck_error(%{assigns: %{recheck: nil}} = socket, _field, _message), do: socket
 
   defp recheck_error(socket, field, message) do
     form = to_form(%{to_string(field) => ""}, as: "recheck", errors: [{field, {message, []}}])

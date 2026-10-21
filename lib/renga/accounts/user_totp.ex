@@ -2,7 +2,8 @@ defmodule Renga.Accounts.UserTOTP do
   @moduledoc """
   An account's authenticator app (RFD 19): an RFC 6238 secret with 30-second
   steps and six digits, and the last step Renga accepted so no code works
-  twice.
+  twice. The secret is stored encrypted by `Renga.Vault` under
+  `secret_key_id`; see `Renga.Accounts.MFA`.
   """
 
   use Ecto.Schema
@@ -10,7 +11,8 @@ defmodule Renga.Accounts.UserTOTP do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   schema "user_totps" do
-    field :secret, :binary, redact: true
+    field :secret_ciphertext, :binary, redact: true
+    field :secret_key_id, :string
     field :last_used_step, :integer
 
     belongs_to :user, Renga.Accounts.User

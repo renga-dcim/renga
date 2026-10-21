@@ -8,7 +8,10 @@ defmodule Renga.Repo.Migrations.CreateUserMfa do
     create table(:user_totps, primary_key: false) do
       add :id, :binary_id, primary_key: true
       add :user_id, references(:users, type: :binary_id, on_delete: :delete_all), null: false
-      add :secret, :binary, null: false
+      # The secret, encrypted by Renga.Vault under secret_key_id and bound to
+      # the account, so a database dump alone cannot produce codes.
+      add :secret_ciphertext, :binary, null: false
+      add :secret_key_id, :string, null: false
       # The last accepted 30-second step, so a code is never accepted twice.
       add :last_used_step, :bigint
 
