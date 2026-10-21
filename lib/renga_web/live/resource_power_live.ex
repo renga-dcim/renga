@@ -191,6 +191,8 @@ defmodule RengaWeb.ResourcePowerLive do
             </.link>
           </p>
 
+          <.redundancy redundancy={@redundancy} />
+
           <section :if={@ports != []} aria-labelledby="power-ports-heading" class="space-y-2">
             <div class="flex items-baseline justify-between gap-4">
               <h2 id="power-ports-heading" class="text-sm font-semibold">Power ports</h2>
@@ -203,7 +205,6 @@ defmodule RengaWeb.ResourcePowerLive do
                 </span>
               </p>
             </div>
-            <.redundancy redundancy={@redundancy} />
             <.table
               id="power-ports"
               rows={@ports}
@@ -735,7 +736,7 @@ defmodule RengaWeb.ResourcePowerLive do
         "#{Enum.map_join(redundancy.untraced, ", ", & &1.name)} #{if match?([_], redundancy.untraced), do: "has a path", else: "have paths"} that cannot be traced to a feed",
       redundancy.feeds == [] && redundancy.untraced == [] && "No port reaches a feed yet",
       match?([_], redundancy.sides) &&
-        "Every fed port reaches side #{String.upcase(hd(redundancy.sides))}",
+        "Every feed with a recorded side is on side #{String.upcase(hd(redundancy.sides))}",
       redundancy.feeds != [] && redundancy.unfed != [] &&
         "#{Enum.map_join(redundancy.unfed, ", ", & &1.name)} #{if match?([_], redundancy.unfed), do: "reaches", else: "reach"} no feed",
       redundancy.sideless != [] &&
@@ -761,7 +762,15 @@ defmodule RengaWeb.ResourcePowerLive do
     cables =
       Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
 
-    paths = Paths.for_ports(socket.assigns.current_scope, ports)
+    # A port retired from the hardware type keeps its cable, and with it its
+    # supply, so redundancy follows it until it is unplugged.
+    retired_cabled =
+      for %{power_port: %Port{retired_at: retired_at} = port} <- cables,
+          retired_at,
+          port.resource_id == socket.assigns.resource.id,
+          do: port
+
+    paths = Paths.for_ports(socket.assigns.current_scope, ports ++ retired_cabled)
     default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
