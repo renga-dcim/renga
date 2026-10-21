@@ -4,7 +4,7 @@ defmodule Renga.Findings do
   to them (RFD 8, "Inbox").
 
   Reconciliation opens and closes findings in each domain's own table; this
-  context never does. It reads the five finding tables through one query and
+  context never does. It reads the six finding tables through one query and
   lets people record judgment on top: an assignee, a snooze until a time, or
   an exception accepted with a reason and optional expiry. Snoozes and
   exceptions only move a finding out of the open queue while they last, so
@@ -30,6 +30,7 @@ defmodule Renga.Findings do
   alias Renga.Inventory
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.CollectorFinding
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
   alias Renga.IPAM.AddressFinding
@@ -532,7 +533,7 @@ defmodule Renga.Findings do
           workflow.resolution_key == finding.resolution_key
   end
 
-  # The five finding tables in one shape. Topology and address findings
+  # The six finding tables in one shape. Topology and address findings
   # belong to an interface; their resource is the interface's resource.
   defp findings_union(organization_id) do
     component =
@@ -636,11 +637,32 @@ defmodule Renga.Findings do
           resolved_at: finding.resolved_at
         }
 
+    collector =
+      from finding in CollectorFinding,
+        where: finding.organization_id == ^organization_id,
+        select: %{
+          domain: type(^"collector", :string),
+          id: finding.id,
+          resource_id: finding.resource_id,
+          subject_id: finding.resource_id,
+          interface_id: type(^nil, :binary_id),
+          kind: finding.kind,
+          # One resource can be reported by several installations.
+          resolution_key: type(finding.agent_id, :string),
+          status: finding.status,
+          message: finding.message,
+          details: finding.details,
+          opened_at: finding.inserted_at,
+          last_observed_at: finding.last_observed_at,
+          resolved_at: finding.resolved_at
+        }
+
     component
     |> union_all(^hardware_match)
     |> union_all(^placement)
     |> union_all(^topology)
     |> union_all(^address)
+    |> union_all(^collector)
   end
 
   defp state_filter("snoozed", now) do
