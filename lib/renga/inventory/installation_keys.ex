@@ -136,9 +136,33 @@ defmodule Renga.Inventory.InstallationKeys do
     record_event!(scope, agent.id, current.fingerprint, key.fingerprint, "pending")
 
     if current.status == "approved",
-      do: open_findings!(agent, current, key, now)
+      do: open_findings!(agent, current, key, now),
+      else: retarget_open_findings!(agent, key, now)
 
     key
+  end
+
+  # A finding opened by an earlier change must name the key now awaiting
+  # approval, or the Inbox would ask people to compare a fingerprint that is
+  # no longer current. `previous_fingerprint` stays the last approved key.
+  defp retarget_open_findings!(agent, key, now) do
+    CollectorFinding
+    |> where([finding], finding.organization_id == ^agent.organization_id)
+    |> where([finding], finding.agent_id == ^agent.id and finding.status == "open")
+    |> where([finding], finding.kind == "installation_key_changed")
+    |> update([finding],
+      set: [
+        details:
+          fragment(
+            "jsonb_set(?, '{fingerprint}', to_jsonb(?::text))",
+            finding.details,
+            ^key.fingerprint
+          ),
+        last_observed_at: ^now,
+        updated_at: ^now
+      ]
+    )
+    |> Repo.update_all([])
   end
 
   defp open_findings!(agent, previous, key, now) do

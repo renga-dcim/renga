@@ -125,10 +125,15 @@ defmodule Renga.Inventory.InstallationKeysTest do
     {:ok, _key} = InstallationKeys.approve(scope, approved.id, approved.fingerprint)
 
     _second = present(agent, public_key())
-    _third = present(agent, public_key())
+    third = present(agent, public_key())
 
     assert [finding] = findings(agent)
     assert finding.status == "open"
     assert finding.details["previous_fingerprint"] == approved.fingerprint
+    # The Inbox names the key that now awaits approval, not the one it replaced.
+    assert finding.details["fingerprint"] == third.fingerprint
+
+    {:ok, _key} = InstallationKeys.approve(scope, third.id, third.fingerprint)
+    assert [%{status: "resolved"}] = findings(agent)
   end
 end
