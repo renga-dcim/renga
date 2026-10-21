@@ -140,6 +140,11 @@ defmodule Renga.Accounts.IdentityProviders do
       %IdentityProvider{pending_revision: nil} ->
         {:error, :nothing_pending}
 
+      # The first revision is all a new provider has; a new edit replaces
+      # it, and removing the provider cancels it.
+      %IdentityProvider{active_revision: nil} ->
+        {:error, :no_active_revision}
+
       provider ->
         provider
         |> Ecto.Changeset.change(pending_revision: nil)
@@ -217,7 +222,15 @@ defmodule Renga.Accounts.IdentityProviders do
       |> where([revision], revision.client_secret_key_id != ^current)
       |> lock("FOR UPDATE")
       |> Repo.all()
-      |> Enum.reduce_while({:ok, 0}, &reencrypt_next(&1, &2, actor))
+      |> then(fn revisions ->
+        with {:ok, count} <-
+               Enum.reduce_while(revisions, {:ok, 0}, &reencrypt_next(&1, &2, actor)) do
+          # A resealed provider is a changed provider: one new version each.
+          provider_ids = revisions |> Enum.map(& &1.provider_id) |> Enum.uniq()
+          Repo.update_all(where(IdentityProvider, [p], p.id in ^provider_ids), inc: [version: 1])
+          {:ok, count}
+        end
+      end)
     end)
   end
 
@@ -264,15 +277,20 @@ defmodule Renga.Accounts.IdentityProviders do
     |> where([provider], provider.enabled and not is_nil(provider.active_revision))
   end
 
-  # Runs a change under the provider lock, then refuses it if it left the
-  # deployment with no way to sign in. Every change takes the lock, so the
-  # guard sees each one's result before the next begins.
+  # Runs a change under the provider lock, then refuses it if it took away
+  # the deployment's last way to sign in. A deployment that has none yet,
+  # such as one bootstrapping its first provider with local sign-in off,
+  # can still be set up. Every change takes the lock, so the guard sees each
+  # one's result before the next begins.
   defp serialized(fun) do
     Repo.transaction(fn ->
       Repo.query!("SELECT pg_advisory_xact_lock(hashtext('renga.identity_providers'))")
+      available_before? = sign_in_available?()
 
       with {:ok, result} <- fun.(),
-           true <- sign_in_available?() || {:error, :last_sign_in_method} do
+           true <-
+             sign_in_available?() or not available_before? or
+               {:error, :last_sign_in_method} do
         result
       else
         {:error, reason} -> Repo.rollback(reason)

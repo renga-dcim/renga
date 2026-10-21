@@ -216,6 +216,17 @@ defmodule Renga.Accounts.IdentityProvidersTest do
     end
   end
 
+  test "discard_pending/2 keeps a new provider's only revision" do
+    {provider, _} = create()
+
+    assert {:error, :no_active_revision} = IdentityProviders.discard_pending(provider, @operator)
+    assert IdentityProviders.get(provider.id).pending_revision == 1
+    refute "revision_discarded" in event_kinds(provider)
+
+    assert {:ok, {_provider, %{number: 2}}} =
+             IdentityProviders.propose_revision(provider, %{"client_id" => "renga-2"}, @operator)
+  end
+
   test "discard_pending/2 keeps the active revision" do
     {provider, _} = create()
     provider = activate(provider)
@@ -297,6 +308,19 @@ defmodule Renga.Accounts.IdentityProvidersTest do
                IdentityProviders.client_secret(IdentityProviders.active_revision(provider))
     end
 
+    test "lets a deployment with no way to sign in set up its first provider" do
+      without_local_sign_in(fn ->
+        {provider, _} = create()
+        refute IdentityProviders.usable?(provider)
+
+        assert {:ok, _} =
+                 IdentityProviders.update_display(provider, %{"display_name" => "SSO"}, @operator)
+
+        assert {:ok, _} =
+                 IdentityProviders.propose_revision(provider, %{"client_id" => "x"}, @operator)
+      end)
+    end
+
     test "allows it while another provider can sign people in" do
       {first, _} = create()
       {second, _} = create()
@@ -329,7 +353,13 @@ defmodule Renga.Accounts.IdentityProvidersTest do
 
         Application.put_env(:renga, Renga.Vault, keys: "new:#{new},old:#{old}")
         assert {:ok, 1} = IdentityProviders.reencrypt_secrets(@operator)
+        version = IdentityProviders.get(provider.id).version
+        assert version == provider.version + 1
+
+        # Nothing left to reseal changes nothing.
         assert {:ok, 0} = IdentityProviders.reencrypt_secrets(@operator)
+        assert IdentityProviders.get(provider.id).version == version
+        assert Enum.count(event_kinds(provider), &(&1 == "secret_reencrypted")) == 1
 
         Application.put_env(:renga, Renga.Vault, keys: "new:#{new}")
         revision = Repo.get!(IdentityProviderRevision, revision.id)
