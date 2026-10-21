@@ -97,6 +97,25 @@ defmodule Renga.RuntimeConfigTest do
     end
   end
 
+  test "DEPLOYMENT_ID sets the deployment identifier when well formed" do
+    config =
+      with_env(%{"DEPLOYMENT_ID" => "eu1"}, fn ->
+        Config.Reader.read!(@runtime_config, env: :dev)
+      end)
+
+    assert config |> Keyword.fetch!(:renga) |> Keyword.fetch!(:deployment_id) == "eu1"
+  end
+
+  test "DEPLOYMENT_ID refuses to boot with a malformed identifier" do
+    for id <- ["EU1", "eu_1", String.duplicate("a", 17)] do
+      assert_raise RuntimeError, ~r/DEPLOYMENT_ID is invalid/, fn ->
+        with_env(%{"DEPLOYMENT_ID" => id}, fn ->
+          Config.Reader.read!(@runtime_config, env: :dev)
+        end)
+      end
+    end
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)

@@ -87,6 +87,7 @@ runtime server and database settings with environment variables:
 | `ECTO_IPV6` | no | `true` to reach the database over IPv6 |
 | `DNS_CLUSTER_QUERY` | no | DNS name that resolves to every node, for clustering |
 | `PORT` | no | HTTP port (default 4000) |
+| `DEPLOYMENT_ID` | no | A short, non-secret name for this deployment, such as `eu1`: at most 16 lowercase letters, digits, and hyphens. New intake keys carry it so a resolver can route agents here (RFD 23); existing keys keep working |
 
 Run `/app/bin/migrate` once per deploy, before new nodes start, then run
 `/app/bin/server`. Put the server behind a TLS-terminating reverse proxy; the

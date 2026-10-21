@@ -21,6 +21,8 @@ defmodule Renga.Inventory.IntakeApiKey do
     field :name, :string
     field :status, :string, default: "active"
     field :token_hash, :binary
+    # The deployment identifier embedded in the key when it was issued (RFD 23).
+    field :deployment_id, :string
 
     belongs_to :organization, Organization
 

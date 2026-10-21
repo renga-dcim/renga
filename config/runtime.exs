@@ -35,6 +35,28 @@ for {variable, key, values} <- [
   config :renga, key, String.to_atom(value)
 end
 
+# An optional, non-secret name for this deployment, such as `eu1`. Intake
+# keys issued while it is set carry it so a resolver can find the deployment
+# (RFD 23).
+case System.get_env("DEPLOYMENT_ID") do
+  nil ->
+    :ok
+
+  "" ->
+    :ok
+
+  deployment_id ->
+    unless Renga.Deployment.valid_id?(deployment_id) do
+      raise """
+      environment variable DEPLOYMENT_ID is invalid.
+      Use at most 16 lowercase letters, digits, and hyphens, starting and
+      ending with a letter or digit, such as eu1.
+      """
+    end
+
+    config :renga, :deployment_id, deployment_id
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
