@@ -4,9 +4,11 @@ defmodule Renga.Authorization do
 
   A permission names one kind of action, such as `"inventory.edit"`. The
   catalogue is defined here, in code; organizations cannot add to it. A role
-  is a named set of permissions, and today every membership holds exactly one
-  of the four built-in roles, which reproduce the behavior of the role lists
-  the contexts used to check.
+  is a named set of permissions: one of the four built-in roles, which
+  reproduce the behavior of the role lists the contexts used to check, or a
+  custom role an organization defines (`Renga.Roles`). Every membership holds
+  a built-in base role, and assignments (`Renga.Assignments`) add further
+  roles until they expire. What a person may do is the union of all of them.
 
   Two entry points answer the question:
 
@@ -14,8 +16,9 @@ defmodule Renga.Authorization do
       never a boundary.
     * `authorize!/3` runs inside the context transaction that performs the
       change. It locks the organization (which must be active) and then the
-      membership, re-reading the role from the database, and rolls the
-      transaction back with `:forbidden` when the permission is missing.
+      membership, re-reading the base role and current assignments from the
+      database, and rolls the transaction back with `:forbidden` when the
+      permission is missing.
       Every context takes those two locks in that order so concurrent
       mutations cannot deadlock.
 
@@ -24,9 +27,8 @@ defmodule Renga.Authorization do
   and are checked with `authorize_system!/2`, so a principal can only run the
   paths that name it.
 
-  Conditions and custom roles arrive later; until then every grant covers the
-  whole organization, so `allowed?/3` accepts a target but does not consult
-  it.
+  Conditions arrive later; until then every grant covers the whole
+  organization, so `allowed?/3` accepts a target but does not consult it.
   """
 
   import Ecto.Query
@@ -35,6 +37,7 @@ defmodule Renga.Authorization do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Repo
+  alias Renga.Roles.Assignment
 
   @permissions [
     "inventory.read",
@@ -137,6 +140,11 @@ defmodule Renga.Authorization do
   `member`, and with it `requests.create`, without holding it. Only an owner
   may grant `owner`, and so the owner-only organization permissions.
   """
+  def grantable_roles(roles) when is_list(roles) do
+    grantable = Enum.flat_map(roles, &grantable_roles/1)
+    Enum.filter(@role_order, &(&1 in grantable))
+  end
+
   def grantable_roles("owner"), do: @role_order
   def grantable_roles("admin"), do: ~w(admin member viewer)
   def grantable_roles(_role), do: []
@@ -152,6 +160,11 @@ defmodule Renga.Authorization do
   grant (RFD 17's grant ceiling). Only owners may grant the owner-only
   organization permissions.
   """
+  def grantable_permissions(roles) when is_list(roles) do
+    grantable = Enum.flat_map(roles, &grantable_permissions/1)
+    Enum.filter(custom_role_permissions(), &(&1 in grantable))
+  end
+
   def grantable_permissions("owner"), do: custom_role_permissions()
   def grantable_permissions("admin"), do: custom_role_permissions() -- @organization
   def grantable_permissions(_role), do: []
@@ -160,16 +173,17 @@ defmodule Renga.Authorization do
   def machine_principals, do: @machine_principals
 
   @doc """
-  Whether the scope's cached roles grant `permission`.
+  Whether the scope's cached roles and assigned permissions grant
+  `permission`.
 
   Only people hold permissions; a machine scope is never allowed. Use this for
   UI hints only: the transaction check in `authorize!/3` is authoritative.
   """
   def allowed?(scope, permission, target \\ nil)
 
-  def allowed?(%Scope{user: %{}, roles: roles}, permission, _target) do
+  def allowed?(%Scope{user: %{}, roles: roles, permissions: permissions}, permission, _target) do
     granting = roles_granting(permission)
-    Enum.any?(roles || [], &(&1 in granting))
+    Enum.any?(roles || [], &(&1 in granting)) or permission in (permissions || [])
   end
 
   def allowed?(_scope, permission, _target) do
@@ -181,8 +195,9 @@ defmodule Renga.Authorization do
   Requires `permission` inside the current transaction.
 
   Locks the scope's organization, requiring it to be active, then the
-  scope's own active membership, and checks the membership's current role.
-  Rolls the transaction back with `:forbidden` otherwise.
+  scope's own active membership, and checks the membership's current base
+  role and assignments. Rolls the transaction back with `:forbidden`
+  otherwise.
 
   Options:
 
@@ -199,7 +214,6 @@ defmodule Renga.Authorization do
         opts
       )
       when not is_nil(membership_id) do
-    granting = roles_granting(permission)
     mode = Keyword.get(opts, :lock, :update)
     lock_active_organization!(scope.organization_id, mode)
 
@@ -208,7 +222,7 @@ defmodule Renga.Authorization do
     |> where([membership], membership.user_id == ^user_id)
     |> where([membership], membership.organization_id == ^scope.organization_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^granting)
+    |> holding(permission)
     |> select([membership], membership.id)
     |> row_lock(mode)
     |> Repo.one()
@@ -224,16 +238,75 @@ defmodule Renga.Authorization do
   end
 
   @doc """
-  The built-in role of the scope's membership as stored now. Call it after
-  `authorize!/3` in the same transaction, which holds the membership's lock,
-  to bound what the actor may grant by their current role rather than the
-  one cached in the scope.
+  Narrows an `OrganizationMembership` query to memberships whose base role
+  or a current assignment grants `permission`. It does not check status.
+  For `authorize!/3` and for pickers that choose people by what they may
+  do, such as a finding's assignee.
   """
-  def current_role!(%Scope{membership_id: membership_id}) when not is_nil(membership_id) do
-    OrganizationMembership
-    |> where([membership], membership.id == ^membership_id)
-    |> select([membership], membership.role)
-    |> Repo.one!()
+  def holding(query, permission) do
+    granting = roles_granting(permission)
+    now = Renga.Time.utc_now_ms()
+
+    holders =
+      from assignment in current_assignments(now),
+        left_join: role in assoc(assignment, :role),
+        where:
+          assignment.built_in_role in ^granting or
+            fragment("? = ANY(?)", ^permission, role.permissions),
+        select: assignment.membership_id
+
+    where(
+      query,
+      [membership],
+      membership.role in ^granting or membership.id in subquery(holders)
+    )
+  end
+
+  @doc """
+  The built-in roles the scope's membership holds now: its base role and
+  current built-in assignments. Call it after `authorize!/3` in the same
+  transaction, which holds the membership's lock, to bound what the actor
+  may grant by their current roles rather than those cached in the scope.
+  Custom roles never raise the ceiling.
+  """
+  def current_roles!(%Scope{membership_id: membership_id}) when not is_nil(membership_id),
+    do: current_roles!(membership_id)
+
+  def current_roles!(membership_id) when is_binary(membership_id) do
+    base =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> select([membership], membership.role)
+      |> Repo.one!()
+
+    {assigned, _permissions} = assigned_access(membership_id)
+    Enum.uniq([base | assigned])
+  end
+
+  @doc """
+  What a membership's current assignments add to its base role: the
+  built-in roles they give, and the permissions of the custom roles they
+  give. For building a scope.
+  """
+  def assigned_access(membership_id) do
+    Renga.Time.utc_now_ms()
+    |> current_assignments()
+    |> where([assignment], assignment.membership_id == ^membership_id)
+    |> join(:left, [assignment], role in assoc(assignment, :role))
+    |> select([assignment, role], {assignment.built_in_role, role.permissions})
+    |> Repo.all()
+    |> Enum.reduce({[], []}, fn
+      {nil, permissions}, {roles, acc} -> {roles, acc ++ permissions}
+      {role, nil}, {roles, acc} -> {[role | roles], acc}
+    end)
+    |> then(fn {roles, permissions} ->
+      {Enum.uniq(roles), permissions |> Enum.uniq() |> Enum.sort()}
+    end)
+  end
+
+  defp current_assignments(now) do
+    from assignment in Assignment,
+      where: is_nil(assignment.valid_until) or assignment.valid_until > ^now
   end
 
   @doc """

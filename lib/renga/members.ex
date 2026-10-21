@@ -35,13 +35,11 @@ defmodule Renga.Members do
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "members.manage")
 
   @doc """
-  The roles the scope's cached role may grant, for pickers. The transaction
-  re-reads the actor's role before relying on it.
+  The roles the scope's cached roles may grant, for pickers. The transaction
+  re-reads the actor's roles before relying on them.
   """
   def grantable_roles(%Scope{} = scope) do
-    if can_manage?(scope),
-      do: scope.roles |> Enum.flat_map(&Authorization.grantable_roles/1) |> Enum.uniq(),
-      else: []
+    if can_manage?(scope), do: Authorization.grantable_roles(scope.roles), else: []
   end
 
   @doc "Every member of the organization, active and disabled, by email."
@@ -135,7 +133,7 @@ defmodule Renga.Members do
     result =
       Repo.transaction(fn ->
         Authorization.authorize!(scope, "members.manage")
-        ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
+        ceiling = scope |> Authorization.current_roles!() |> Authorization.grantable_roles()
         now = Renga.Time.utc_now_ms()
 
         changeset =
@@ -231,7 +229,7 @@ defmodule Renga.Members do
   def revoke_invitation(%Scope{} = scope, invitation_id) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "members.manage")
-      ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
+      ceiling = scope |> Authorization.current_roles!() |> Authorization.grantable_roles()
 
       with {:ok, id} <- Ecto.UUID.cast(invitation_id),
            %OrganizationInvitation{accepted_at: nil, revoked_at: nil} = invitation <-
@@ -366,16 +364,21 @@ defmodule Renga.Members do
     |> where([membership], membership.organization_id == ^invitation.organization_id)
     |> where([membership], membership.user_id == ^invitation.invited_by_user_id)
     |> where([membership], membership.status == "active")
-    |> where([membership], membership.role in ^Authorization.roles_granting("members.manage"))
-    |> select([membership], membership.role)
+    |> Authorization.holding("members.manage")
+    |> select([membership], membership.id)
     |> lock("FOR SHARE")
     |> Repo.one()
     |> case do
       nil ->
         {:error, :forbidden}
 
-      role ->
-        if invitation.role in Authorization.grantable_roles(role),
+      inviter_membership_id ->
+        ceiling =
+          inviter_membership_id
+          |> Authorization.current_roles!()
+          |> Authorization.grantable_roles()
+
+        if invitation.role in ceiling,
           do: :ok,
           else: {:error, :forbidden}
     end
@@ -397,7 +400,7 @@ defmodule Renga.Members do
   defp administer(%Scope{} = scope, membership_id, change) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "members.manage")
-      ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
+      ceiling = scope |> Authorization.current_roles!() |> Authorization.grantable_roles()
 
       with {:ok, member} <- lock_member(scope, membership_id),
            true <- member.role in ceiling || {:error, :forbidden},
