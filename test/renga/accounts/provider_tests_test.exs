@@ -120,6 +120,29 @@ defmodule Renga.Accounts.ProviderTestsTest do
     assert {:error, :test_expired} = IdentityProviders.activate_tested(test)
   end
 
+  test "a test's state is spent by the first callback, even one that fails", %{fake: fake} do
+    provider = new_provider(fake)
+    {test, params} = run_test(fake, provider)
+
+    assert {:error, :denied} =
+             ProviderTests.finish(
+               test,
+               Map.put(params, "error", "access_denied"),
+               redirect_uri(provider.id)
+             )
+
+    assert ProviderTests.for_state(params["state"]) == nil
+
+    # A second callback with the same, valid code is never exchanged.
+    assert {:error, :test_expired} =
+             ProviderTests.finish(test, params, redirect_uri(provider.id))
+
+    assert IdentityProviders.get(provider.id).active_revision == nil
+
+    assert %{nonce: nil, verifier: nil} =
+             Renga.Repo.get!(Renga.Accounts.IdentityProviderTest, test.id)
+  end
+
   test "a test callback for another provider fails", %{fake: fake} do
     provider = new_provider(fake)
     other = new_provider(fake)

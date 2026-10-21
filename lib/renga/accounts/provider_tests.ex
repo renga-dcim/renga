@@ -61,14 +61,35 @@ defmodule Renga.Accounts.ProviderTests do
   the pending revision, then activates it. Returns the activated provider.
   """
   def finish(%IdentityProviderTest{} = test, %{"provider" => id} = params, redirect_uri) do
-    attempt = %{"nonce" => test.nonce, "verifier" => test.verifier}
-
     with true <- id == test.provider_id || {:error, :provider_mismatch},
+         {:ok, test} <- spend_state(test),
          {:ok, provider, revision} <- pending(test),
+         attempt = %{"nonce" => test.nonce, "verifier" => test.verifier},
          {:ok, _validated} <- OIDC.exchange(provider, revision, attempt, params, redirect_uri) do
       IdentityProviders.activate_tested(test)
     end
   end
+
+  # Clears the test's state, nonce, and verifier before the code is
+  # exchanged, so one callback at most is ever exchanged for a test, and its
+  # secrets do not outlive it. A failed exchange leaves the test unusable.
+  # The row's nonce and verifier never change after `start/2`, so the copy
+  # read for the callback holds the values the winning claim cleared.
+  defp spend_state(%IdentityProviderTest{id: id, state_hash: state_hash} = test)
+       when is_binary(state_hash) do
+    now = Renga.Time.utc_now_ms()
+
+    IdentityProviderTest
+    |> where(id: ^id, state_hash: ^state_hash)
+    |> where([test], is_nil(test.completed_at) and test.expires_at > ^now)
+    |> Repo.update_all(set: [state_hash: nil, nonce: nil, verifier: nil])
+    |> case do
+      {1, _} -> {:ok, test}
+      _other -> {:error, :test_expired}
+    end
+  end
+
+  defp spend_state(_test), do: {:error, :test_expired}
 
   # Marks the token used, so a link opens at most one test.
   defp claim(token) do

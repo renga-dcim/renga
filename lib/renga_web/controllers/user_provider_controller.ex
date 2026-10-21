@@ -69,7 +69,8 @@ defmodule RengaWeb.UserProviderController do
         |> redirect(to: ~p"/users/log-in")
 
       error ->
-        Logger.info("Test sign-in through #{id} failed: #{inspect(error)}")
+        # Only the reason: never the test's secrets, a token, or a changeset.
+        Logger.info("Test sign-in through #{id} failed: #{log_reason(error)}")
 
         conn
         |> put_flash(:error, test_message(error))
@@ -97,6 +98,9 @@ defmodule RengaWeb.UserProviderController do
         |> redirect(to: ~p"/users/log-in")
     end
   end
+
+  defp log_reason({:error, reason}) when is_atom(reason), do: reason
+  defp log_reason(_error), do: :failed
 
   defp callback_url(id), do: url(~p"/users/auth/#{id}/callback")
 
