@@ -232,13 +232,27 @@ defmodule RengaWeb.UserAuth do
   # function will clear the session to avoid fixation attacks. See the
   # renew_session function to customize this behaviour.
   defp create_or_extend_session(conn, user, params) do
+    replaced_token = get_session(conn, :user_token)
     token = Accounts.generate_user_session_token(user)
     remember_me = get_session(conn, :user_remember_me)
+
+    revoke_replaced_token(replaced_token)
 
     conn
     |> renew_session(user)
     |> put_token_in_session(token)
     |> maybe_write_remember_me_cookie(token, params, remember_me)
+  end
+
+  # A browser holds one session token at a time. Replacing it, by signing in
+  # again or by reissue, revokes the old one: evidence bound to it, such as
+  # the account re-check (RFD 19), must not outlive it, and LiveViews still
+  # connected with it would otherwise keep acting after the browser signs out.
+  defp revoke_replaced_token(nil), do: :ok
+
+  defp revoke_replaced_token(token) do
+    Accounts.delete_user_session_token(token)
+    RengaWeb.Endpoint.broadcast(user_session_topic(token), "disconnect", %{})
   end
 
   # Do not renew session if the user is already logged in

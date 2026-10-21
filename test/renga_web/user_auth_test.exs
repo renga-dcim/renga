@@ -210,6 +210,31 @@ defmodule RengaWeb.UserAuthTest do
       assert get_session(conn, :to_be_removed)
     end
 
+    # Re-check evidence lives on the session token (RFD 19), so a replaced
+    # token must stop working rather than linger beside its replacement.
+    test "revokes the token it replaces and disconnects its LiveViews", %{
+      conn: conn,
+      user: user
+    } do
+      user = set_password(user)
+      old_token = Accounts.generate_user_session_token(user)
+      :ok = Accounts.recheck_with_password(user, old_token, valid_user_password())
+      RengaWeb.Endpoint.subscribe("users_sessions:#{Base.url_encode64(old_token)}")
+
+      conn =
+        conn
+        |> put_session(:user_token, old_token)
+        |> assign(:current_scope, Scope.for_user(user))
+        |> UserAuth.log_in_user(user)
+
+      new_token = get_session(conn, :user_token)
+      assert new_token != old_token
+      refute Accounts.get_user_by_session_token(old_token)
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}
+      refute Accounts.authorized_account_change?(user, old_token, :change_email)
+      refute Accounts.authorized_account_change?(user, new_token, :change_email)
+    end
+
     test "clears session when user does not match when re-authenticating", %{
       conn: conn,
       user: user
@@ -429,6 +454,7 @@ defmodule RengaWeb.UserAuthTest do
       assert conn.assigns.current_scope.membership_id == membership.id
       assert get_session(conn, :current_organization_id) == organization.id
       assert get_session(conn, :user_token) != user_token
+      refute Accounts.get_user_by_session_token(user_token)
     end
   end
 

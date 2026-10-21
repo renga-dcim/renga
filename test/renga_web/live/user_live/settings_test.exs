@@ -2,6 +2,7 @@ defmodule RengaWeb.UserLive.SettingsTest do
   use RengaWeb.ConnCase, async: true
 
   alias Renga.Accounts
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
 
@@ -112,6 +113,44 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert result =~ "Set a password first."
       refute has_element?(lv, "#recheck_form")
       refute has_element?(lv, "#bootstrap_send")
+    end
+
+    # The bootstrap authorizes only the first password. Crafted events, or a
+    # code asked for under the password form and spent under the email form,
+    # must not send an email-change link.
+    test "an emailed bootstrap code never authorizes an email change", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      email_change = %{"user" => %{"email" => unique_user_email()}}
+
+      lv |> form("#email_form", email_change) |> render_submit()
+      render_hook(lv, "send_bootstrap_code", %{})
+      refute_received {:email, %{subject: "Your Renga confirmation code"}}
+
+      lv
+      |> form("#password_form", %{
+        "user" => %{
+          "password" => valid_user_password(),
+          "password_confirmation" => valid_user_password()
+        }
+      })
+      |> render_submit()
+
+      lv |> element("#bootstrap_send") |> render_click()
+      assert_received {:email, %{subject: "Your Renga confirmation code", text_body: body}}
+      [code] = Regex.run(~r/[A-Z0-9]{5}-[A-Z0-9]{5}/, body)
+
+      lv |> form("#email_form", email_change) |> render_submit()
+      result = render_hook(lv, "verify_bootstrap_code", %{"recheck" => %{"code" => code}})
+
+      refute result =~ "A link to confirm your email"
+      refute_received {:email, %{subject: "Update email instructions"}}
+
+      refute Renga.Repo.exists?(
+               from t in Renga.Accounts.UserToken,
+                 where: t.user_id == ^user.id and like(t.context, "change:%")
+             )
     end
 
     test "renders errors with invalid data (phx-change)", %{conn: conn} do

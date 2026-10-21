@@ -289,27 +289,32 @@ defmodule RengaWeb.UserLive.Settings do
     end
   end
 
+  # The email bootstrap only stands in for a change it can authorize. Its
+  # controls are hidden otherwise, and a crafted event does nothing.
   def handle_event("send_bootstrap_code", _params, socket) do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
 
-    case Accounts.deliver_bootstrap_code(user, session_token) do
-      {:ok, _email} ->
-        {:noreply,
-         socket
-         |> update(:recheck, &%{&1 | code_sent: true, form: recheck_form()})
-         |> put_flash(:info, "We emailed a code to #{user.email}.")}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "The code could not be sent.")}
+    with true <- bootstrap?(socket.assigns.recheck),
+         {:ok, _email} <- Accounts.deliver_bootstrap_code(user, session_token) do
+      {:noreply,
+       socket
+       |> update(:recheck, &%{&1 | code_sent: true, form: recheck_form()})
+       |> put_flash(:info, "We emailed a code to #{user.email}.")}
+    else
+      false -> {:noreply, socket}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, "The code could not be sent.")}
     end
   end
 
   def handle_event("verify_bootstrap_code", %{"recheck" => %{"code" => code}}, socket) do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
 
-    case Accounts.verify_bootstrap_code(user, session_token, code) do
-      :ok ->
-        {:noreply, resume(socket)}
+    with true <- bootstrap?(socket.assigns.recheck),
+         :ok <- Accounts.verify_bootstrap_code(user, session_token, code) do
+      {:noreply, resume(socket)}
+    else
+      false ->
+        {:noreply, socket}
 
       {:error, :invalid_code} ->
         {:noreply, recheck_error(socket, :code, "That code isn't right.")}
@@ -341,11 +346,16 @@ defmodule RengaWeb.UserLive.Settings do
     end
   end
 
+  # A passed check only resumes the pending change through the same
+  # authorization test that asked for it, so evidence that cannot authorize
+  # that change, such as the email bootstrap for an email change, asks again.
   defp resume(%{assigns: %{recheck: %{change: change, params: params}}} = socket) do
     socket
     |> assign(:recheck, nil)
-    |> apply_change(change, params)
+    |> with_recheck(change, params)
   end
+
+  defp resume(socket), do: socket
 
   defp apply_change(socket, :change_email, user_params) do
     user = socket.assigns.current_scope.user
