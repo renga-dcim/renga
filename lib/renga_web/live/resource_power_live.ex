@@ -72,6 +72,8 @@ defmodule RengaWeb.ResourcePowerLive do
 
   def handle_event("save_connection", %{"connection" => %{"target" => target}}, socket) do
     port = socket.assigns.connecting_port
+    action = connection_action(port, socket.assigns.cables_by_port)
+    result_label = if action == "Move", do: "moved", else: "connected"
 
     result =
       case target_attrs(target) do
@@ -86,7 +88,7 @@ defmodule RengaWeb.ResourcePowerLive do
       {:ok, _assertion} ->
         {:noreply,
          socket
-         |> put_flash(:info, "#{port.name} connected")
+         |> put_flash(:info, "#{port.name} #{result_label}")
          |> assign(connecting_port: nil, connect_error: nil)
          |> close_overlay("connect-panel")
          |> load_endpoints()}
@@ -344,7 +346,7 @@ defmodule RengaWeb.ResourcePowerLive do
       <.side_panel
         :if={@can_manage?}
         id="connect-panel"
-        title={if @connecting_port, do: "Connect #{@connecting_port.name}", else: "Connect"}
+        title={connection_title(@connecting_port, @cables_by_port)}
       >
         <.form for={@connect_form} id="connect-form" phx-submit="save_connection" class="space-y-1">
           <.input
@@ -364,7 +366,7 @@ defmodule RengaWeb.ResourcePowerLive do
           <div class="mt-4 flex justify-end gap-2">
             <.button type="button" phx-click={hide_overlay("connect-panel")}>Cancel</.button>
             <.button id="save-connection" variant="primary" phx-disable-with="Saving…">
-              Connect
+              {connection_action(@connecting_port, @cables_by_port)}
             </.button>
           </div>
         </.form>
@@ -420,6 +422,16 @@ defmodule RengaWeb.ResourcePowerLive do
 
   defp connect_port(port),
     do: "connect_port" |> JS.push(value: %{id: port.id}) |> show_overlay("connect-panel")
+
+  defp connection_title(nil, _cables_by_port), do: "Connect"
+
+  defp connection_title(port, cables_by_port),
+    do: "#{connection_action(port, cables_by_port)} #{port.name}"
+
+  defp connection_action(nil, _cables_by_port), do: "Connect"
+
+  defp connection_action(port, cables_by_port),
+    do: if(Map.has_key?(cables_by_port, port.id), do: "Move", else: "Connect")
 
   # Outlets grouped by device, then feeds grouped by panel; a value names
   # its kind so one select covers both.
