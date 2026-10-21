@@ -229,6 +229,13 @@ defmodule RengaWeb.UserAuth do
       end
     end
 
+    # The browser's earlier session ends first, committed and announced on
+    # its own: revoked inside the sign-in transaction, its disconnect would
+    # go out before the deletion commits, and a page mounted in between
+    # would keep the old session. A sign-in that then fails leaves the
+    # browser signed out.
+    revoke_browser_session(conn)
+
     with {:ok, conn} <- Accounts.finish_provider_sign_in(result, issue),
          do: {:ok, conn, return_to}
   end
@@ -549,7 +556,10 @@ defmodule RengaWeb.UserAuth do
   # A connected LiveView outlives the request that checked its session, so
   # one whose session has a deadline (a provider sign-in) leaves at it.
   defp end_at_session_deadline(socket, token) when is_binary(token) do
+    # Both the authentication and the organization hooks get here; the
+    # deadline is set up once per socket.
     with true <- Phoenix.LiveView.connected?(socket),
+         false <- Map.has_key?(socket.assigns, :session_deadline),
          %Scope{user: %Accounts.User{}} <- socket.assigns.current_scope,
          %DateTime{} = deadline <- Accounts.session_deadline(token) do
       Process.send_after(
@@ -558,7 +568,9 @@ defmodule RengaWeb.UserAuth do
         max(DateTime.diff(deadline, Renga.Time.utc_now_ms(), :millisecond), 0)
       )
 
-      Phoenix.LiveView.attach_hook(socket, :session_deadline, :handle_info, fn
+      socket
+      |> Phoenix.Component.assign(:session_deadline, deadline)
+      |> Phoenix.LiveView.attach_hook(:session_deadline, :handle_info, fn
         :session_deadline, socket ->
           {:halt,
            socket

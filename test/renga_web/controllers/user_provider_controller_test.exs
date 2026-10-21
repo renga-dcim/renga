@@ -166,6 +166,47 @@ defmodule RengaWeb.UserProviderControllerTest do
     assert_redirect(lv, ~p"/users/log-in", 3_000)
   end
 
+  test "an organization page with a provider session mounts and leaves at its end", %{
+    conn: conn
+  } do
+    user = user_fixture()
+    organization = Renga.InventoryFixtures.organization_fixture()
+    Renga.InventoryFixtures.organization_membership_fixture(user, organization, %{role: "owner"})
+    token = Accounts.generate_user_session_token(user, nil, DateTime.add(DateTime.utc_now(), 1))
+
+    conn =
+      init_test_session(conn, user_token: token, current_organization_id: organization.id)
+
+    # Both the authentication and the organization hooks run here.
+    {:ok, lv, _html} = live(conn, ~p"/places")
+    assert_redirect(lv, ~p"/users/log-in", 3_000)
+  end
+
+  test "a failed provider sign-in still ends the browser's earlier session", %{
+    conn: conn,
+    fake: fake,
+    provider: provider
+  } do
+    user = user_fixture()
+    conn = log_in_user(conn, user)
+    old_token = get_session(conn, :user_token)
+
+    {conn, url} = start(conn, provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+
+    {:ok, result} =
+      Renga.Accounts.OIDC.finish(
+        get_session(conn, :provider_attempt),
+        params,
+        "http://localhost:4002/users/auth/#{provider.id}/callback"
+      )
+
+    {:ok, _} = Accounts.IdentityProviders.disable(provider, {:operator, "test"})
+
+    assert {:error, :inactive} = RengaWeb.UserAuth.log_in_user_with_provider(conn, result)
+    refute Accounts.get_user_by_session_token(old_token)
+  end
+
   test "explains an email that another account uses", %{
     conn: conn,
     fake: fake,
