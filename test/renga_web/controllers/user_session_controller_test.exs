@@ -120,6 +120,121 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "second step for an account with MFA" do
+    setup %{user: user} do
+      user = set_password(user)
+      {secret, codes} = totp_fixture(user)
+      %{user: user, secret: secret, codes: codes}
+    end
+
+    defp sign_in_with_password(conn, user, extra \\ %{}) do
+      post(conn, ~p"/users/log-in", %{
+        "user" => Map.merge(%{"email" => user.email, "password" => valid_user_password()}, extra)
+      })
+    end
+
+    test "a password is only the first step", %{conn: conn, user: user} do
+      conn = sign_in_with_password(conn, user)
+
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+      refute get_session(conn, :user_token)
+    end
+
+    test "a magic link is only the first step", %{conn: conn, user: user} do
+      {token, _hashed_token} = generate_user_magic_link_token(user)
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+      refute get_session(conn, :user_token)
+    end
+
+    test "an authenticator code finishes signing in", %{conn: conn, user: user, secret: secret} do
+      conn = sign_in_with_password(conn, user, %{"remember_me" => "true"})
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
+        })
+
+      assert get_session(conn, :user_token)
+      refute get_session(conn, :pending_second_step)
+      assert redirected_to(conn) == ~p"/"
+      assert conn.resp_cookies["_renga_web_user_remember_me"]
+    end
+
+    test "a wrong code signs nobody in", %{conn: conn, user: user} do
+      conn = sign_in_with_password(conn, user)
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => "000000"}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+      refute get_session(conn, :user_token)
+    end
+
+    test "the half-finished sign-in expires", %{conn: conn, user: user, secret: secret} do
+      conn = sign_in_with_password(conn, user)
+      pending = get_session(conn, :pending_second_step)
+
+      conn =
+        conn
+        |> recycle()
+        |> init_test_session(%{pending_second_step: %{pending | "expires_at" => 0}})
+        |> post(~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+    end
+
+    test "a recovery code signs in to replace the app", %{
+      conn: conn,
+      user: user,
+      codes: [code | _]
+    } do
+      conn = sign_in_with_password(conn, user)
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{"second_step" => %{"code" => code}})
+
+      token = get_session(conn, :user_token)
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Accounts.recovering?(user, token)
+      refute Accounts.authorized_account_change?(user, token, :remove_factor)
+      assert Accounts.MFA.recovery_codes_left(user) == 9
+    end
+
+    test "changing the password does not ask for the second step again", %{
+      conn: conn,
+      user: user,
+      secret: secret
+    } do
+      conn = log_in_user(conn, user)
+
+      :ok =
+        Accounts.recheck_with_totp(
+          user,
+          get_session(conn, :user_token),
+          NimbleTOTP.verification_code(secret)
+        )
+
+      conn =
+        post(conn, ~p"/users/update-password", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => "a brand new password",
+            "password_confirmation" => "a brand new password"
+          }
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert get_session(conn, :user_token)
+    end
+  end
+
   describe "POST /users/update-password" do
     setup %{conn: conn, user: user} do
       user = set_password(user)

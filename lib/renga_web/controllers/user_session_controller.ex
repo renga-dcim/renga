@@ -17,10 +17,7 @@ defmodule RengaWeb.UserSessionController do
     case Accounts.login_user_by_magic_link(token) do
       {:ok, {user, tokens_to_disconnect}} ->
         UserAuth.disconnect_sessions(tokens_to_disconnect)
-
-        conn
-        |> put_flash(:info, info)
-        |> UserAuth.log_in_user(user, user_params)
+        sign_in(conn, user, user_params, info)
 
       _ ->
         conn
@@ -34,9 +31,7 @@ defmodule RengaWeb.UserSessionController do
     %{"email" => email, "password" => password} = user_params
 
     if user = Accounts.get_user_by_email_and_password(email, password) do
-      conn
-      |> put_flash(:info, info)
-      |> UserAuth.log_in_user(user, user_params)
+      sign_in(conn, user, user_params, info)
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       conn
@@ -46,9 +41,56 @@ defmodule RengaWeb.UserSessionController do
     end
   end
 
+  # A password or magic link is the whole sign-in only for an account without
+  # MFA; otherwise it is the first step (RFD 19).
+  defp sign_in(conn, user, params, info) do
+    if Accounts.mfa?(user) do
+      UserAuth.begin_second_step(conn, user, params)
+    else
+      conn
+      |> put_flash(:info, info)
+      |> UserAuth.log_in_user(user, params)
+    end
+  end
+
+  def second_step(conn, %{"second_step" => %{"code" => code}}) do
+    case UserAuth.pending_second_step_user(conn) do
+      nil ->
+        conn
+        |> put_flash(:error, "That sign-in expired. Sign in again.")
+        |> redirect(to: ~p"/users/log-in")
+
+      user ->
+        case Accounts.verify_second_step(user, code) do
+          {:ok, :totp} ->
+            conn
+            |> put_flash(:info, "Welcome back!")
+            |> UserAuth.complete_second_step(user, :totp)
+
+          {:ok, :recovery_code} ->
+            conn
+            |> put_flash(
+              :info,
+              "You used a recovery code. Add a new authenticator app now; you have five minutes."
+            )
+            |> UserAuth.complete_second_step(user, :recovery_code)
+
+          {:error, :rate_limited} ->
+            conn
+            |> put_flash(:error, "Too many wrong codes. Try again later.")
+            |> redirect(to: ~p"/users/log-in/second-step")
+
+          {:error, _reason} ->
+            conn
+            |> put_flash(:error, "That code isn't right.")
+            |> redirect(to: ~p"/users/log-in/second-step")
+        end
+    end
+  end
+
   # The settings page runs the account re-check before it submits here; this
   # checks again because the form post is its own request.
-  def update_password(conn, %{"user" => user_params} = params) do
+  def update_password(conn, %{"user" => user_params}) do
     user = conn.assigns.current_scope.user
 
     with true <-
@@ -57,13 +99,16 @@ defmodule RengaWeb.UserSessionController do
              get_session(conn, :user_token),
              :set_password
            ),
-         {:ok, {_user, expired_tokens}} <- Accounts.update_user_password(user, user_params) do
+         {:ok, {user, expired_tokens}} <- Accounts.update_user_password(user, user_params) do
       # disconnect all existing LiveViews with old sessions
       UserAuth.disconnect_sessions(expired_tokens)
 
+      # This browser already finished signing in, second step included, so
+      # it signs straight back in rather than through `create/2`.
       conn
       |> put_session(:user_return_to, ~p"/users/settings")
-      |> create(params, "Password updated successfully!")
+      |> put_flash(:info, "Password updated successfully!")
+      |> UserAuth.log_in_user(user, user_params)
     else
       false ->
         conn

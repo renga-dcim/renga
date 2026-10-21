@@ -21,6 +21,8 @@ defmodule RengaWeb.UserAuth do
     same_site: "Lax"
   ]
   @current_organization_key :current_organization_id
+  @second_step_key :pending_second_step
+  @second_step_seconds 5 * 60
 
   # The organization this browser last opened, so signing in again returns
   # to it. It only suggests: sign-in still checks the user may open it. The
@@ -107,6 +109,71 @@ defmodule RengaWeb.UserAuth do
       _ ->
         false
     end
+  end
+
+  @doc """
+  Starts the second step of signing in for an account with MFA (RFD 19).
+
+  A password or magic link only proves the first factor. The half-finished
+  sign-in is kept in a fresh session for this browser, expires after five
+  minutes, and grants nothing until `complete_second_step/3`.
+  """
+  def begin_second_step(conn, user, params \\ %{}) do
+    pending = %{
+      "user_id" => user.id,
+      "expires_at" => System.system_time(:second) + @second_step_seconds,
+      "remember_me" => params["remember_me"] == "true",
+      "return_to" => get_session(conn, :user_return_to)
+    }
+
+    conn
+    |> renew_session(nil)
+    |> put_session(@second_step_key, pending)
+    |> redirect(to: ~p"/users/log-in/second-step")
+  end
+
+  @doc """
+  The user a half-finished sign-in belongs to, if it has not expired. Takes
+  a conn or a LiveView session.
+  """
+  def pending_second_step_user(%Plug.Conn{} = conn),
+    do:
+      pending_second_step_user(%{
+        to_string(@second_step_key) => get_session(conn, @second_step_key)
+      })
+
+  def pending_second_step_user(session) when is_map(session) do
+    with %{"user_id" => user_id, "expires_at" => expires_at} <-
+           session[to_string(@second_step_key)],
+         true <- System.system_time(:second) < expires_at do
+      Accounts.get_user(user_id)
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Finishes a sign-in whose second step passed. A recovery code signs the
+  person in to add a replacement factor first.
+  """
+  def complete_second_step(conn, user, method) do
+    pending = get_session(conn, @second_step_key)
+    params = if pending["remember_me"], do: %{"remember_me" => "true"}, else: %{}
+
+    return_to =
+      if method == :recovery_code, do: ~p"/users/settings", else: pending["return_to"]
+
+    conn =
+      conn
+      |> delete_session(@second_step_key)
+      |> put_session(:user_return_to, return_to)
+      |> log_in_user(user, params)
+
+    if method == :recovery_code do
+      :ok = Accounts.start_recovery(user, get_session(conn, :user_token))
+    end
+
+    conn
   end
 
   @doc """

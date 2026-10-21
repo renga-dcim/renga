@@ -484,4 +484,40 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert Renga.Accounts.MFA.totp_enabled?(user)
     end
   end
+
+  describe "recovery" do
+    test "a recovery code sign-in can replace the lost app once", %{conn: conn} do
+      user = user_fixture()
+      {_lost_secret, [code | _]} = totp_fixture(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"token" => elem(generate_user_magic_link_token(user), 0)}
+        })
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{"second_step" => %{"code" => code}})
+
+      {:ok, lv, _html} = live(recycle(conn), ~p"/users/settings")
+      assert has_element?(lv, "#recovery_notice")
+
+      lv |> element("#totp_replace") |> render_click()
+      refute has_element?(lv, "#recheck")
+
+      secret = secret_from(lv)
+
+      lv
+      |> form("#totp_form", %{"totp" => %{"code" => NimbleTOTP.verification_code(secret)}})
+      |> render_submit()
+
+      refute has_element?(lv, "#recovery_notice")
+      refute has_element?(lv, "#totp_replace")
+
+      assert :ok =
+               Renga.Accounts.MFA.verify_totp(
+                 user,
+                 NimbleTOTP.verification_code(secret, time: System.os_time(:second) + 30)
+               )
+    end
+  end
 end
