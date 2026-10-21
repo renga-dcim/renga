@@ -492,6 +492,28 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                context |> claim(offer, signature) |> valid_api_response(409)
     end
 
+    test "a capability withdrawn after the offer fails the job at the claim", context do
+      offer = offered(context)
+
+      context.organization
+      |> Repo.reload!()
+      |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => []}})
+      |> Repo.update!()
+
+      response =
+        context
+        |> claim(offer, signature(context, offer, context.bound.private_key))
+        |> valid_api_response(409)
+
+      assert %{"errors" => [%{"path" => "id"}]} = response
+      refute Map.has_key?(response, "parameters")
+
+      job = Repo.reload!(context.job)
+      assert job.state == "failed"
+      assert job.failure_reason == "capability_not_allowed"
+      assert is_nil(job.lease_token_hash)
+    end
+
     test "a replaced offer is a conflict", context do
       first = offered(context)
       _second = offered(context)

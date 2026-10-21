@@ -1462,7 +1462,7 @@
                 }
               }
             },
-            "description": "The offer expired or was replaced, or the job's binding changed and it failed. Lease again."
+            "description": "The offer expired or was replaced, or the job failed because its binding changed or its capability is no longer allowed. Lease again."
           },
           "422": {
             "content": {

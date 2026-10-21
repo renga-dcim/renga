@@ -100,8 +100,8 @@ defmodule RengaWeb.Api.V1.JobController do
       conflict:
         {Schemas.Rejected,
          description:
-           "The offer expired or was replaced, or the job's binding changed and it failed. " <>
-             "Lease again."},
+           "The offer expired or was replaced, or the job failed because its binding " <>
+             "changed or its capability is no longer allowed. Lease again."},
       unprocessable_entity: {Schemas.Rejected, description: "The claim is invalid."}
     ]
 
@@ -340,6 +340,9 @@ defmodule RengaWeb.Api.V1.JobController do
 
   defp rejection(:offer_invalid),
     do: {:conflict, "lease_token", "does not match a current offer; lease again"}
+
+  defp rejection(:capability_not_allowed),
+    do: {:conflict, "id", "uses a capability the organization no longer allows and has failed"}
 
   defp rejection(:binding_changed),
     do: {:conflict, "id", "was bound to a different target and has failed"}

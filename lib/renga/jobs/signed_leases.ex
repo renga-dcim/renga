@@ -125,8 +125,12 @@ defmodule Renga.Jobs.SignedLeases do
   @doc """
   Leases an offered job when `signature` is the agent's approved key's
   Ed25519 signature over `message/6`. Returns `{:ok, {job, lease_token}}`
-  like `Renga.Jobs.lease_jobs/4`, or `{:ok, {:failed, :binding_changed}}`
-  when the job failed instead, which commits.
+  like `Renga.Jobs.lease_jobs/4`, or `{:ok, {:failed, reason}}` when the job
+  failed instead (`:binding_changed` or `:capability_not_allowed`), which
+  commits.
+
+  Callers run this inside `Renga.Inventory.with_intake_agent/4`, whose
+  agent row lock serializes the claim with a check-in replacing the key.
   """
   def claim(
         %Scope{organization_id: organization_id},
@@ -143,13 +147,22 @@ defmodule Renga.Jobs.SignedLeases do
 
   defp claim_transaction(organization_id, agent, job_id, token, nonce, signature) do
     Repo.transaction(fn ->
-      Jobs.lock_active_organization!(organization_id)
+      organization = Jobs.lock_active_organization!(organization_id)
       now = Renga.Time.utc_now_ms()
       job = lock_job(organization_id, agent, job_id) || Repo.rollback(:not_found)
 
       unless current_offer?(job, token, nonce, now), do: Repo.rollback(:offer_invalid)
 
-      case TargetBindings.check(job) do
+      # Policy applies when the job leases, not when it was offered, so a
+      # capability withdrawn since the offer fails the job as a plain lease
+      # would.
+      allowed? = Job.capability_key(job) in Settings.allowed_capabilities(organization)
+
+      case allowed? && TargetBindings.check(job) do
+        false ->
+          Jobs.refuse!(job, "capability_not_allowed", now)
+          {:failed, :capability_not_allowed}
+
         {:ok, binding} ->
           verify!(job, agent, token, nonce, signature, binding.installation_key)
 
