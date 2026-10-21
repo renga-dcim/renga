@@ -1581,7 +1581,9 @@ defmodule RengaWeb.ResourceLive.Show do
   defp assign_signals(socket),
     do: assign(socket, signals: [], target_binding: nil, binding_candidates: [])
 
-  defp binding_error(:forbidden), do: "Only owners and admins can bind privileged jobs"
+  defp binding_error(:forbidden),
+    do: "You need permission to manage intake keys to change this binding"
+
   defp binding_error(:key_changed), do: "That installation's key changed; compare it again"
 
   defp binding_error(:agent_not_for_resource),
