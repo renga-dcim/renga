@@ -242,14 +242,18 @@ defmodule RengaWeb.SitePowerLive do
                 </span>
               </:col>
               <:col :let={feed} label="Supply" class="text-fg-muted">{supply_label(feed)}</:col>
-              <:col :let={feed} label="Rating" class="font-mono text-xs tabular-nums">
+              <:col
+                :let={feed}
+                label="Rating"
+                class="whitespace-nowrap font-mono text-xs tabular-nums"
+              >
                 {rating_label(feed)}
               </:col>
               <:col :let={feed} label="Side" class="w-14">{side_label(feed.side)}</:col>
               <:col :let={feed} label="Rack" class="text-fg-muted" hide_below="2xl">
                 {if feed.rack, do: feed.rack.resource.name, else: "—"}
               </:col>
-              <:col :let={feed} label="Usable" class="text-right">
+              <:col :let={feed} label="Usable" class="whitespace-nowrap text-right">
                 <span id={"feed-#{feed.id}-usable"} class="font-mono text-xs tabular-nums text-fg">
                   {usable_label(feed)}
                 </span>
@@ -257,7 +261,7 @@ defmodule RengaWeb.SitePowerLive do
                   {feed.max_utilization}% of {rated_label(feed)}
                 </span>
               </:col>
-              <:col :let={feed} label="Allocated" class="w-44">
+              <:col :let={feed} label="Allocated" class="w-36">
                 <.feed_load feed={feed} load={Map.fetch!(@loads, feed.id)} />
               </:col>
               <:action :let={feed}>
@@ -267,6 +271,7 @@ defmodule RengaWeb.SitePowerLive do
                   size="sm"
                   variant="ghost"
                   aria-label={"What fails if #{feed.name} fails"}
+                  class="whitespace-nowrap"
                   phx-click={
                     JS.push("show_failure", value: %{id: feed.id}) |> show_overlay("failure-panel")
                   }
