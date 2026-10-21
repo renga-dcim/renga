@@ -92,6 +92,19 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "team_member_removed", metadata: metadata, new_value: %{"name" => team}}),
     do: "Removed #{metadata["member"]} from #{team}"
 
+  def describe(%{kind: "role_created", new_value: %{"name" => name}}),
+    do: "Defined the #{name} role"
+
+  def describe(%{kind: "role_updated", old_value: %{"name" => old}, new_value: %{"name" => new}})
+      when old != new,
+      do: "Renamed the #{old} role to #{new}"
+
+  def describe(%{kind: "role_updated", new_value: %{"name" => name}}),
+    do: "Changed the #{name} role's permissions"
+
+  def describe(%{kind: "role_deleted", old_value: %{"name" => name}}),
+    do: "Deleted the #{name} role"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),

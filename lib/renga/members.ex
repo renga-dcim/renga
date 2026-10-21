@@ -135,7 +135,7 @@ defmodule Renga.Members do
     result =
       Repo.transaction(fn ->
         Authorization.authorize!(scope, "members.manage")
-        ceiling = scope |> actor_role() |> Authorization.grantable_roles()
+        ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
         now = Renga.Time.utc_now_ms()
 
         changeset =
@@ -231,7 +231,7 @@ defmodule Renga.Members do
   def revoke_invitation(%Scope{} = scope, invitation_id) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "members.manage")
-      ceiling = scope |> actor_role() |> Authorization.grantable_roles()
+      ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
 
       with {:ok, id} <- Ecto.UUID.cast(invitation_id),
            %OrganizationInvitation{accepted_at: nil, revoked_at: nil} = invitation <-
@@ -397,7 +397,7 @@ defmodule Renga.Members do
   defp administer(%Scope{} = scope, membership_id, change) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, "members.manage")
-      ceiling = scope |> actor_role() |> Authorization.grantable_roles()
+      ceiling = scope |> Authorization.current_role!() |> Authorization.grantable_roles()
 
       with {:ok, member} <- lock_member(scope, membership_id),
            true <- member.role in ceiling || {:error, :forbidden},
@@ -408,14 +408,6 @@ defmodule Renga.Members do
       end
     end)
     |> Changes.broadcast(scope.organization_id)
-  end
-
-  # authorize!/3 has already locked the actor's membership.
-  defp actor_role(%Scope{membership_id: membership_id}) do
-    OrganizationMembership
-    |> where([membership], membership.id == ^membership_id)
-    |> select([membership], membership.role)
-    |> Repo.one!()
   end
 
   defp lock_member(%Scope{organization_id: organization_id}, membership_id) do

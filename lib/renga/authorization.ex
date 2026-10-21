@@ -64,6 +64,7 @@ defmodule Renga.Authorization do
                  topology.edit jobs.request views.share teams.manage triage_rules.manage
                  intake_keys.manage members.manage roles.manage)
   @organization ~w(organization.manage organization.export)
+  @reserved ~w(members.manage roles.manage)
 
   # Built-in roles keep the behavior of the hard-coded role lists exactly.
   # `requests.create` is member-only: owners and admins make the change
@@ -113,6 +114,21 @@ defmodule Renga.Authorization do
   def grantable_roles("owner"), do: @role_order
   def grantable_roles("admin"), do: ~w(admin member viewer)
   def grantable_roles(_role), do: []
+
+  @doc """
+  The permissions a custom role may carry. `members.manage` and
+  `roles.manage` are reserved to the built-in owner and admin roles.
+  """
+  def custom_role_permissions, do: @permissions -- @reserved
+
+  @doc """
+  The permissions a holder of built-in `role` may put in a custom role or
+  grant (RFD 17's grant ceiling). Only owners may grant the owner-only
+  organization permissions.
+  """
+  def grantable_permissions("owner"), do: custom_role_permissions()
+  def grantable_permissions("admin"), do: custom_role_permissions() -- @organization
+  def grantable_permissions(_role), do: []
 
   @doc "The fixed internal principals machine scopes run as."
   def machine_principals, do: @machine_principals
@@ -179,6 +195,19 @@ defmodule Renga.Authorization do
   def authorize!(%Scope{}, permission, _opts) do
     validate!(permission)
     Repo.rollback(:forbidden)
+  end
+
+  @doc """
+  The built-in role of the scope's membership as stored now. Call it after
+  `authorize!/3` in the same transaction, which holds the membership's lock,
+  to bound what the actor may grant by their current role rather than the
+  one cached in the scope.
+  """
+  def current_role!(%Scope{membership_id: membership_id}) when not is_nil(membership_id) do
+    OrganizationMembership
+    |> where([membership], membership.id == ^membership_id)
+    |> select([membership], membership.role)
+    |> Repo.one!()
   end
 
   @doc """
