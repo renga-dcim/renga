@@ -379,6 +379,7 @@ defmodule Renga.Accounts do
       if Recheck.methods(user) == [] do
         token = generate_user_session_token(user, browser_session_id)
         :ok = Recheck.start_bootstrap(user, token)
+        record_sign_in(user, "magic_link")
         {:ok, token}
       else
         {:error, :not_available}
@@ -650,6 +651,9 @@ defmodule Renga.Accounts do
       if count == 1 do
         session_token = generate_user_session_token(user, browser_session_id)
         :ok = start_recovery_after(method, user, session_token)
+        # Logged with the session it records, so a spent or expired
+        # pending sign-in logs nothing.
+        record_sign_in(user, to_string(method))
         {:ok, session_token}
       else
         {:error, :expired}

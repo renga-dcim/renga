@@ -151,6 +151,20 @@ defmodule Renga.Accounts.SecurityLogTest do
     end
   end
 
+  describe "sign-ins after a second step" do
+    test "are logged once, with the session they create" do
+      user = user_fixture()
+      totp_fixture(user)
+      pending = Accounts.create_pending_second_step(user)
+
+      assert {:ok, _session} = Accounts.finish_pending_second_step(user, pending, nil, :totp)
+      assert :error = Accounts.finish_pending_second_step(user, pending, nil, :totp)
+
+      assert [%{metadata: %{"method" => "totp"}}] =
+               user |> SecurityLog.list() |> Enum.filter(&(&1.kind == "signed_in"))
+    end
+  end
+
   describe "remove_mfa_by_operator/2" do
     test "removes every factor and code and names the operator" do
       user = set_password(user_fixture())

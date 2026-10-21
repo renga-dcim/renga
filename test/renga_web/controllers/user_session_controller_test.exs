@@ -10,6 +10,12 @@ defmodule RengaWeb.UserSessionControllerTest do
     %{unconfirmed_user: unconfirmed_user_fixture(), user: user_fixture()}
   end
 
+  defp sign_in_methods(user) do
+    for %{kind: "signed_in", metadata: %{"method" => method}} <-
+          Accounts.list_security_events(user),
+        do: method
+  end
+
   describe "POST /users/log-in - email and password" do
     test "logs the user in", %{conn: conn, user: user} do
       user = set_password(user)
@@ -21,6 +27,7 @@ defmodule RengaWeb.UserSessionControllerTest do
 
       assert get_session(conn, :user_token)
       assert redirected_to(conn) == ~p"/"
+      assert sign_in_methods(user) == ["password"]
 
       # Root dispatches the new session into organization onboarding.
       conn = get(conn, ~p"/")
@@ -140,6 +147,7 @@ defmodule RengaWeb.UserSessionControllerTest do
 
       assert redirected_to(conn) == ~p"/users/log-in/second-step"
       refute get_session(conn, :user_token)
+      assert sign_in_methods(user) == []
     end
 
     # A browser that was signed in, as anyone, holds no live session while
@@ -177,6 +185,7 @@ defmodule RengaWeb.UserSessionControllerTest do
 
       assert get_session(conn, :user_token)
       refute get_session(conn, :pending_second_step)
+      assert sign_in_methods(user) == ["totp"]
       assert redirected_to(conn) == ~p"/"
       assert conn.resp_cookies["_renga_web_user_remember_me"]
     end
@@ -225,6 +234,7 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(replay) == ~p"/users/log-in"
       refute get_session(replay, :user_token)
       assert Accounts.MFA.recovery_codes_left(user) == 9
+      assert sign_in_methods(user) == ["recovery_code"]
     end
 
     test "a password change ends a half-finished sign-in", %{
@@ -336,6 +346,7 @@ defmodule RengaWeb.UserSessionControllerTest do
                Accounts.get_user_by_session_token(get_session(conn, :user_token))
 
       assert signed_in.id == user.id
+      assert sign_in_methods(user) == ["passkey"]
     end
 
     test "a bad passkey response signs nobody in", %{conn: conn} do
@@ -399,6 +410,7 @@ defmodule RengaWeb.UserSessionControllerTest do
         })
 
       assert redirected_to(conn) == ~p"/users/settings#passkey_register"
+      assert sign_in_methods(user) == ["magic_link"]
       session_token = get_session(conn, :user_token)
       assert Accounts.authorized_account_change?(user, session_token, :add_factor)
       refute Accounts.authorized_account_change?(user, session_token, :change_email)
