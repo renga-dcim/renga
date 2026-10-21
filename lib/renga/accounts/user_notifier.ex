@@ -116,4 +116,27 @@ defmodule Renga.Accounts.UserNotifier do
     ==============================
     """)
   end
+
+  @doc """
+  Deliver the code that lets an account with no password or second factor
+  set its first one (RFD 19).
+  """
+  def deliver_bootstrap_code(user, code) do
+    deliver(user.email, "Your Renga confirmation code", """
+
+    ==============================
+
+    Hi #{user.email},
+
+    Enter this code in Renga to set your first password or add your first
+    sign-in factor:
+
+    #{code}
+
+    It expires in #{Renga.Accounts.Recheck.window_minutes()} minutes and works only in the browser where
+    you asked for it. If you didn't ask for it, you can ignore this email.
+
+    ==============================
+    """)
+  end
 end
