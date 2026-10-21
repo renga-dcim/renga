@@ -17,6 +17,7 @@ use renga_agent::{
     },
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
+    snmp::worker::{Modules, Sink},
     transport::{encode_observation, FailureKind, HttpClient},
 };
 use std::{
@@ -348,6 +349,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // delivery thread like every later one instead of holding up lease check-ins.
     let mut delivery_worker = None;
     spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
+    let mut snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -364,6 +366,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                 previous.stop();
             }
             listener = start_listener(&client, &config, &queue, &notices, &stopped);
+            // Modules keep polling through a reload unless their own settings changed.
+            if snmp.collectors() != config.snmp.as_slice() {
+                snmp.stop();
+                snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
+            }
             scheduler.refresh_intervals(
                 Instant::now(),
                 old_checkin_interval,
@@ -784,6 +791,27 @@ fn send_inventory(
         return Err("observation delivery cancelled".into());
     }
     deliver_observation(client, stopped, queue, observation_id, &body)
+}
+
+/// Queues collector module reports on disk; the inventory and flush passes deliver them with the
+/// current credentials, so a module never holds an HTTP client across reloads.
+fn queue_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink {
+    let queue = Arc::clone(queue);
+    let stopped = stopped.clone();
+    Arc::new(move |observation_id, body| {
+        let Some(mut delivery) = lock_until_cancelled(&queue, &stopped) else {
+            return;
+        };
+        match delivery
+            .ready()
+            .and_then(|queue| queue.enqueue(observation_id, body, SystemTime::now()))
+        {
+            Ok(_) => info!(%observation_id, "collector report queued"),
+            Err(error) => {
+                warn!(%error, %observation_id, "cannot queue collector report; dropping it")
+            }
+        }
+    })
 }
 
 fn deliver_observation(

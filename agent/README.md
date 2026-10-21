@@ -207,6 +207,47 @@ server that does not answer `/api/v1/agent/home` yet gets `404` and does not
 start, because it never sends its intake key to an address that has not named
 itself as the home.
 
+## Switch polling over SNMP
+
+An installation can also poll network switches read-only over SNMP (RFD 11).
+Each `[[collectors.snmp]]` table is one poller with its own collector stream in
+Renga, identified by its `id`; changing its targets or credentials keeps the
+same stream.
+
+```toml
+[[collectors.snmp]]
+id = "core-switches"
+targets = ["10.0.0.1", "10.0.0.2:1161"]
+username = "renga"
+auth_protocol = "sha256"            # md5, sha, sha224, sha256 (default), sha384, sha512
+auth_password_file = "/etc/renga/snmp-auth"
+privacy_protocol = "aes128"         # des, aes128 (default), aes192, aes256
+privacy_password_file = "/etc/renga/snmp-priv"
+interval_seconds = 900              # default 15 minutes, at least 60
+timeout_seconds = 5                 # per request
+max_concurrent_targets = 4
+```
+
+SNMPv3 with authentication and privacy is the default and the only v3 level
+used. SNMPv2c sends its community in clear text, so it needs both
+`version = "2c"` and `allow_v2c = true`, with the community in
+`community_file`. Keep those files readable only by the `renga-agent`
+account. The poller reads them before every poll, so a rotated password needs
+no restart, and never sends them to Renga or logs them.
+
+Each poll reads the switch's identity (`SNMPv2-MIB`, and its chassis serial,
+vendor, and model from `ENTITY-MIB`), interfaces (`IF-MIB`), LLDP neighbors
+(`LLDP-MIB`), and VLAN membership (`Q-BRIDGE-MIB`). Renga identifies a switch
+by its chassis serial, so two pollers reaching the same switch report one
+resource. A target that does not answer, or has no chassis serial, is reported
+unreachable: its switch stays as Renga last saw it instead of disappearing.
+Neighbors and VLANs count as complete only when every reached switch answered
+that MIB.
+
+Pollers run on their own threads, so a slow switch never delays host inventory
+or job check-ins. Reports go through the same on-disk queue as host
+observations, split by target to stay within the observation size limit.
+
 ## Jobs
 
 Renga can ask an agent to run a job, such as collecting inventory now instead
