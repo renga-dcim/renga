@@ -20,6 +20,21 @@ if System.get_env("PHX_SERVER") do
   config :renga, RengaWeb.Endpoint, server: true
 end
 
+# Local sign-in policy (RFD 15): REGISTRATION=open|closed and
+# LOCAL_SIGN_IN=enabled|disabled. Anything else stops the boot rather than
+# guessing.
+for {variable, key, values} <- [
+      {"REGISTRATION", :registration, ~w(open closed)},
+      {"LOCAL_SIGN_IN", :local_sign_in, ~w(enabled disabled)}
+    ],
+    value = System.get_env(variable) do
+  unless value in values do
+    raise "#{variable} must be one of #{Enum.join(values, ", ")}, got: #{inspect(value)}"
+  end
+
+  config :renga, key, String.to_atom(value)
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
