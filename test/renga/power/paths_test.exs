@@ -117,4 +117,32 @@ defmodule Renga.Power.PathsTest do
 
     assert [%{stop: :loop}] = Paths.for_ports(scope, [inlet_a])
   end
+
+  test "accepts the depth boundary and stops a longer chain", context do
+    %{scope: scope, feed: feed} = context
+
+    pdus =
+      Enum.map(1..8, fn number ->
+        {inlet, [outlet | _]} = pdu!(scope, "pdu-#{number}")
+        {inlet, outlet}
+      end)
+
+    Enum.chunk_every(pdus, 2, 1, :discard)
+    |> Enum.each(fn [{inlet, _outlet}, {_next_inlet, next_outlet}] ->
+      plug!(scope, inlet, next_outlet)
+    end)
+
+    {last_inlet, _last_outlet} = List.last(pdus)
+    plug!(scope, last_inlet, feed)
+
+    [server_port | _] = server_ports!(scope)
+    {_first_inlet, first_outlet} = hd(pdus)
+    plug!(scope, server_port, first_outlet)
+
+    {first_inlet, _first_outlet} = hd(pdus)
+    assert [within_limit, beyond_limit] = Paths.for_ports(scope, [first_inlet, server_port])
+    assert %{feed: %{id: feed_id}, stop: nil} = within_limit
+    assert feed_id == feed.id
+    assert %{feed: nil, stop: :too_deep} = beyond_limit
+  end
 end
