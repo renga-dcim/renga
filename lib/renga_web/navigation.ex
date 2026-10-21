@@ -134,6 +134,9 @@ defmodule RengaWeb.Navigation do
         section(:collectors, "Collectors", ~p"/settings/collectors", "hero-circle-stack",
           keywords: ~w(agents enrollment keys)
         ),
+        section(:members, "Members", ~p"/settings/members", "hero-users",
+          keywords: ~w(people roles invite disable permissions)
+        ),
         section(:teams, "Teams", ~p"/settings/teams", "hero-user-group",
           keywords: ~w(owners ownership)
         ),
