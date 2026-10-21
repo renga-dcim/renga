@@ -25,6 +25,28 @@ defmodule RengaWeb.UserLive.Login do
           </p>
         </div>
 
+        <form
+          :if={@passkey_options}
+          id="passkey_login_form"
+          action={~p"/users/log-in/passkey"}
+          method="post"
+          phx-hook="Passkey"
+          phx-update="ignore"
+          data-mode="get"
+          data-conditional
+          data-options={Jason.encode!(@passkey_options)}
+          class="space-y-2"
+        >
+          <input type="hidden" name="_csrf_token" value={Phoenix.Controller.get_csrf_token()} />
+          <input type="hidden" name="passkey[response]" data-passkey-response />
+          <.button type="button" variant="primary" class="w-full" data-passkey-start>
+            <.icon name="hero-finger-print" class="size-4" /> Log in with a passkey
+          </.button>
+          <p data-passkey-status class="text-xs text-crit" role="status"></p>
+        </form>
+
+        <.divider :if={@passkey_options} label="or use your email" />
+
         <.form
           :let={f}
           for={@form}
@@ -36,7 +58,7 @@ defmodule RengaWeb.UserLive.Login do
             field={f[:email]}
             type="email"
             label="Email"
-            autocomplete="username"
+            autocomplete="username webauthn"
             spellcheck="false"
             required
             phx-mounted={JS.focus()}
@@ -104,7 +126,11 @@ defmodule RengaWeb.UserLive.Login do
 
     form = to_form(%{"email" => email}, as: "user")
 
-    {:ok, assign(socket, form: form, trigger_submit: false)}
+    # The challenge is single-use and stored, so only the connected render
+    # asks for one.
+    passkey_options = if connected?(socket), do: Accounts.passkey_sign_in_options()
+
+    {:ok, assign(socket, form: form, trigger_submit: false, passkey_options: passkey_options)}
   end
 
   @impl true

@@ -27,6 +27,7 @@ import topbar from "../vendor/topbar"
 import {ListKeys} from "./list_keys"
 import {RackDrag} from "./rack_drag"
 import {CenterScroll} from "./center_scroll"
+import {Passkey} from "./passkeys"
 import {hooks as uiHooks, install as installUI} from "renga_ui"
 
 const CommandPalette = {
@@ -223,7 +224,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, ...uiHooks, CenterScroll, CommandPalette, CopyToClipboard, ListKeys, RackDrag},
+  hooks: {...colocatedHooks, ...uiHooks, CenterScroll, CommandPalette, CopyToClipboard, ListKeys, Passkey, RackDrag},
 })
 
 // Show progress bar on live navigation and form submits

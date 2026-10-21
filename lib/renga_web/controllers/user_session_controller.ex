@@ -53,7 +53,32 @@ defmodule RengaWeb.UserSessionController do
     end
   end
 
-  def second_step(conn, %{"second_step" => %{"code" => code}}) do
+  # A passkey is two factors by itself (RFD 19), so it signs in directly.
+  def passkey(conn, %{"passkey" => %{"response" => response}}) do
+    with {:ok, response} when is_map(response) <- Jason.decode(response),
+         %Accounts.User{} = user <- Accounts.get_user_by_passkey(response) do
+      conn
+      |> put_flash(:info, "Welcome back!")
+      |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
+    else
+      _ ->
+        conn
+        |> put_flash(:error, "That passkey didn't work.")
+        |> redirect(to: ~p"/users/log-in")
+    end
+  end
+
+  def second_step(conn, %{"second_step" => %{"passkey" => response}}) do
+    case Jason.decode(response) do
+      {:ok, response} when is_map(response) -> finish_second_step(conn, {:passkey, response})
+      _ -> finish_second_step(conn, :invalid)
+    end
+  end
+
+  def second_step(conn, %{"second_step" => %{"code" => code}}),
+    do: finish_second_step(conn, code)
+
+  defp finish_second_step(conn, credential) do
     case UserAuth.pending_second_step_user(conn) do
       nil ->
         conn
@@ -61,11 +86,11 @@ defmodule RengaWeb.UserSessionController do
         |> redirect(to: ~p"/users/log-in")
 
       user ->
-        case Accounts.verify_second_step(user, code) do
-          {:ok, :totp} ->
+        case verify_second_step(user, credential) do
+          {:ok, method} when method in [:totp, :passkey] ->
             conn
             |> put_flash(:info, "Welcome back!")
-            |> finish_second_step(user, :totp)
+            |> complete_sign_in(user, method)
 
           {:ok, :recovery_code} ->
             conn
@@ -73,7 +98,7 @@ defmodule RengaWeb.UserSessionController do
               :info,
               "You used a recovery code. Add a new authenticator app now; you have five minutes."
             )
-            |> finish_second_step(user, :recovery_code)
+            |> complete_sign_in(user, :recovery_code)
 
           {:error, :rate_limited} ->
             conn
@@ -82,13 +107,16 @@ defmodule RengaWeb.UserSessionController do
 
           {:error, _reason} ->
             conn
-            |> put_flash(:error, "That code isn't right.")
+            |> put_flash(:error, "That didn't work. Try again.")
             |> redirect(to: ~p"/users/log-in/second-step")
         end
     end
   end
 
-  defp finish_second_step(conn, user, method) do
+  defp verify_second_step(_user, :invalid), do: {:error, :invalid_response}
+  defp verify_second_step(user, credential), do: Accounts.verify_second_step(user, credential)
+
+  defp complete_sign_in(conn, user, method) do
     case UserAuth.complete_second_step(conn, user, method) do
       {:ok, conn} ->
         conn
