@@ -63,6 +63,40 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#power-allocated-total", "750")
   end
 
+  test "connects a port to another device's outlet and unplugs it", %{conn: conn, scope: scope} do
+    server = server!(scope)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-1", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    %{outlets: [outlet]} = Renga.Power.list_device_endpoints(scope, pdu.id)
+    [psu1 | _] = Renga.Power.list_device_endpoints(scope, server.id).ports
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+
+    assert has_element?(view, "#power-port-#{psu1.id}", "Not recorded")
+    view |> element("#connect-port-#{psu1.id}") |> render_click()
+    assert has_element?(view, "#connect-form option[value='outlet:#{outlet.id}']", "Outlet 7")
+
+    view
+    |> form("#connect-form", connection: %{target: "outlet:#{outlet.id}"})
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "#power-port-#{psu1.id} a[href='/inventory/#{pdu.id}/power']",
+             "pdu-1"
+           )
+
+    {:ok, pdu_view, _html} = live(conn, ~p"/inventory/#{pdu}/power")
+    assert has_element?(pdu_view, "#power-outlet-#{outlet.id}", "web-1")
+
+    view |> element("#unplug-port-#{psu1.id}") |> render_click()
+    assert has_element?(view, "#power-port-#{psu1.id}", "Not recorded")
+  end
+
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
     server = server!(scope)
     {member_conn, _scope} = sign_in(conn, organization, "member")
@@ -70,5 +104,6 @@ defmodule RengaWeb.ResourcePowerLiveTest do
 
     assert has_element?(view, "#power-ports tr", "PSU2")
     refute has_element?(view, "#allocation-form")
+    refute has_element?(view, "#connect-form")
   end
 end
