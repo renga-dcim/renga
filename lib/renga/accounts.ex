@@ -774,12 +774,9 @@ defmodule Renga.Accounts do
   def update_user_password(user, attrs) do
     user
     |> User.password_changeset(attrs)
-    |> update_user_and_delete_all_tokens()
+    |> update_user_and_delete_all_tokens(&SecurityLog.record(&1, "password_changed"))
     |> tap(fn result ->
-      with {:ok, {user, _tokens}} <- result do
-        SecurityLog.record(user, "password_changed")
-        SecurityLog.notify(user, "password_changed")
-      end
+      with {:ok, {user, _tokens}} <- result, do: SecurityLog.notify(user, "password_changed")
     end)
   end
 
@@ -986,9 +983,12 @@ defmodule Renga.Accounts do
 
   ## Token helper
 
-  defp update_user_and_delete_all_tokens(changeset) do
+  # `on_update` runs in the same transaction, so what it records commits
+  # or rolls back with the change.
+  defp update_user_and_delete_all_tokens(changeset, on_update \\ fn _user -> :ok end) do
     Repo.transact(fn ->
       with {:ok, user} <- Repo.update(changeset) do
+        on_update.(user)
         tokens_to_expire = Repo.all_by(UserToken, user_id: user.id)
 
         Repo.delete_all(from(t in UserToken, where: t.id in ^Enum.map(tokens_to_expire, & &1.id)))

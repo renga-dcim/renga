@@ -134,10 +134,10 @@ defmodule Renga.Accounts.SecurityLogTest do
 
     test "a failed change sends nothing" do
       user = user_fixture()
-      totp_fixture(user)
+      {secret, _codes} = totp_fixture(user)
       flush_emails()
       assert {:error, _} = Accounts.update_user_email(user, "oops")
-      assert {:error, :invalid_code} = Accounts.verify_second_step(user, "000000")
+      assert {:error, :invalid_code} = Accounts.verify_second_step(user, wrong_totp_code(secret))
 
       assert_no_email_sent()
     end
