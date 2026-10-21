@@ -207,6 +207,94 @@ defmodule RengaWeb.UserProviderControllerTest do
     refute Accounts.get_user_by_session_token(old_token)
   end
 
+  # A sign-in finishing alongside this one can issue this browser a token
+  # after the provider sign-in revoked the old one. The provider sign-in
+  # deletes that token too, and announces it only once its transaction
+  # has committed, so no page can mount on it in between.
+  test "a token issued meanwhile is disconnected only after the sign-in commits", %{
+    conn: conn,
+    fake: fake,
+    provider: provider
+  } do
+    user = user_fixture()
+    browser_session_id = Ecto.UUID.generate()
+    token = Accounts.generate_user_session_token(user, browser_session_id)
+    conn = init_test_session(conn, user_token: token, browser_session_id: browser_session_id)
+
+    {started, url} = start(conn, provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+
+    {:ok, result} =
+      Renga.Accounts.OIDC.finish(
+        get_session(started, :provider_attempt),
+        params,
+        "http://localhost:4002/users/auth/#{provider.id}/callback"
+      )
+
+    # The callback request, signed in as before.
+    conn =
+      build_conn()
+      |> init_test_session(user_token: token, browser_session_id: browser_session_id)
+      |> Plug.Conn.assign(:current_scope, Accounts.scope_for_user(user, nil))
+
+    test_pid = self()
+    handler = "token-issued-meanwhile-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:renga, :repo, :query],
+      fn _event, _measure, meta, _config ->
+        if self() == test_pid, do: on_query(meta.query, user, browser_session_id)
+      end,
+      nil
+    )
+
+    try do
+      assert {:ok, _conn, _return_to} = RengaWeb.UserAuth.log_in_user_with_provider(conn, result)
+    after
+      :telemetry.detach(handler)
+    end
+
+    {:inserted, meanwhile, _topic} = Process.get(:meanwhile)
+    refute Process.get(:announced_early)
+    refute Accounts.get_user_by_session_token(meanwhile)
+    assert_received %Phoenix.Socket.Broadcast{event: "disconnect"}
+  end
+
+  # The first deletion of this browser's tokens is the revocation before the
+  # sign-in transaction; a token issued right after it stands for one issued
+  # by a concurrent sign-in. Any query after the second deletion runs inside
+  # the transaction, where its disconnect must not have gone out yet.
+  defp on_query(query, user, browser_session_id) do
+    deletes_tokens? = query =~ ~r/^DELETE FROM "users_tokens"/
+
+    case Process.get(:meanwhile) do
+      nil when deletes_tokens? ->
+        Process.put(:meanwhile, :inserting)
+        meanwhile = Accounts.generate_user_session_token(user, browser_session_id)
+        topic = "users_sessions:#{Base.url_encode64(meanwhile)}"
+        RengaWeb.Endpoint.subscribe(topic)
+        Process.put(:meanwhile, {:inserted, meanwhile, topic})
+
+      {:inserted, _meanwhile, _topic} when deletes_tokens? ->
+        Process.put(:inner_deleted, true)
+
+      {:inserted, _meanwhile, topic} ->
+        if Process.get(:inner_deleted) do
+          receive do
+            %Phoenix.Socket.Broadcast{topic: ^topic} = message ->
+              Process.put(:announced_early, true)
+              send(self(), message)
+          after
+            0 -> :ok
+          end
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
   test "explains an email that another account uses", %{
     conn: conn,
     fake: fake,

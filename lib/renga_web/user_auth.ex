@@ -217,15 +217,17 @@ defmodule RengaWeb.UserAuth do
     deadline =
       DateTime.add(Renga.Time.utc_now_ms(), revision.session_lifetime_seconds, :second)
 
+    # Runs inside the sign-in transaction, so the tokens it deletes are only
+    # announced once that commits; a rolled-back deletion announces nothing.
     issue = fn user ->
-      case create_or_extend_session(
+      case issue_session(
              conn,
              user,
              %{},
              &Accounts.create_signed_in_session(user, &1, method, deadline)
            ) do
-        {:ok, conn} -> {:ok, conn}
-        {:error, _conn} -> {:error, :session_failed}
+        {:ok, conn, revoked} -> {:ok, {conn, revoked}}
+        {:error, _conn, _revoked} -> {:error, :session_failed}
       end
     end
 
@@ -236,8 +238,12 @@ defmodule RengaWeb.UserAuth do
     # browser signed out.
     revoke_browser_session(conn)
 
-    with {:ok, conn} <- Accounts.finish_provider_sign_in(result, issue),
-         do: {:ok, conn, return_to}
+    with {:ok, {conn, revoked}} <- Accounts.finish_provider_sign_in(result, issue) do
+      # Tokens issued to this browser after the revocation above, such as
+      # by a sign-in finishing alongside this one.
+      disconnect_tokens(revoked)
+      {:ok, conn, return_to}
+    end
   end
 
   @doc """
@@ -382,8 +388,23 @@ defmodule RengaWeb.UserAuth do
   # `issue` creates the token for the browser session id; the second step
   # passes one that issues it only while the pending sign-in is unspent.
   defp create_or_extend_session(conn, user, params, issue) do
+    # Outside any transaction the deletion has committed by now, so the
+    # disconnect can go out.
+    {result, conn, revoked} =
+      case issue_session(conn, user, params, issue) do
+        {:ok, conn, revoked} -> {:ok, conn, revoked}
+        {:error, conn, revoked} -> {:error, conn, revoked}
+      end
+
+    disconnect_tokens(revoked)
+    {result, conn}
+  end
+
+  # Revokes the browser's session and issues the new one, returning the
+  # revoked tokens for the caller to disconnect once their deletion commits.
+  defp issue_session(conn, user, params, issue) do
     issue = issue || (&{:ok, Accounts.generate_user_session_token(user, &1)})
-    revoke_browser_session(conn)
+    revoked = delete_browser_session(conn)
     remember_me = get_session(conn, :user_remember_me)
     conn = renew_session(conn, user)
     browser_session_id = get_session(conn, :browser_session_id) || Ecto.UUID.generate()
@@ -394,24 +415,33 @@ defmodule RengaWeb.UserAuth do
          conn
          |> put_session(:browser_session_id, browser_session_id)
          |> put_token_in_session(token)
-         |> maybe_write_remember_me_cookie(token, params, remember_me)}
+         |> maybe_write_remember_me_cookie(token, params, remember_me), revoked}
 
       :error ->
-        {:error, conn}
+        {:error, conn, revoked}
     end
   end
 
   defp revoke_browser_session(conn) do
+    conn |> delete_browser_session() |> disconnect_tokens()
+    :ok
+  end
+
+  # Deletes every token of this browser's session and returns them, without
+  # telling their LiveViews yet.
+  defp delete_browser_session(conn) do
     token = get_session(conn, :user_token)
     browser_session_id = get_session(conn, :browser_session_id)
 
     if token || browser_session_id do
       {:ok, tokens} = Accounts.delete_browser_session_tokens(token, browser_session_id)
-      disconnect_sessions(Enum.map(Enum.uniq(List.wrap(token) ++ tokens), &%{token: &1}))
+      Enum.uniq(List.wrap(token) ++ tokens)
+    else
+      []
     end
-
-    :ok
   end
+
+  defp disconnect_tokens(tokens), do: disconnect_sessions(Enum.map(tokens, &%{token: &1}))
 
   # Do not renew session if the user is already logged in
   # to prevent CSRF errors or data being lost in tabs that are still open
