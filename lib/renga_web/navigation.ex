@@ -137,6 +137,9 @@ defmodule RengaWeb.Navigation do
         section(:members, "Members", ~p"/settings/members", "hero-users",
           keywords: ~w(people roles invite disable permissions)
         ),
+        section(:roles, "Roles", ~p"/settings/roles", "hero-key",
+          keywords: ~w(permissions access custom)
+        ),
         section(:teams, "Teams", ~p"/settings/teams", "hero-user-group",
           keywords: ~w(owners ownership)
         ),

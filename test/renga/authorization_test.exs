@@ -52,6 +52,11 @@ defmodule Renga.AuthorizationTest do
       assert Authorization.grantable_roles("viewer") == []
     end
 
+    test "every permission is described" do
+      for permission <- Authorization.permissions(),
+          do: assert(Authorization.describe(permission) =~ ~r/^[A-Z]/)
+    end
+
     test "an unknown permission is a programming error" do
       assert_raise ArgumentError, ~r/unknown permission/, fn ->
         Authorization.roles_granting("inventory.delete")
