@@ -153,4 +153,44 @@ defmodule Renga.Release.CLITest do
 
     assert Repo.one(from event in Event, select: event.actor) == "operator: " <> actor
   end
+
+  describe "limits" do
+    setup do
+      %{organization: Renga.InventoryFixtures.organization_fixture()}
+    end
+
+    test "sets, shows, and clears an organization's overrides", %{organization: organization} do
+      slug = organization.slug
+
+      {0, stdout, ""} = run(~w(limits set --organization #{slug} --job-creation-rate 600))
+      assert stdout =~ "Set job-creation-rate to 600 for #{slug}."
+      assert Renga.Limits.get(organization.id, :job_creation_rate) == 600
+
+      {0, stdout, ""} = run(~w(limits show --organization #{slug}))
+      assert stdout =~ "job-creation-rate\t600\tjobs per minute\toverride"
+
+      {0, _stdout, ""} = run(~w(limits clear --organization #{slug} --limit job-creation-rate))
+      {0, stdout, ""} = run(~w(limits show --organization #{slug}))
+      assert stdout =~ "job-creation-rate\t10000\tjobs per minute\tdefault"
+    end
+
+    test "refuses unknown organizations, limits, and values", %{organization: organization} do
+      {1, "", stderr} = run(~w(limits set --organization missing --job-creation-rate 1))
+      assert stderr =~ "--organization"
+
+      {1, "", stderr} = run(~w(limits set --organization #{organization.slug}))
+      assert stderr =~ "name at least one limit"
+
+      {1, "", stderr} =
+        run(~w(limits set --organization #{organization.slug} --job-creation-rate -1))
+
+      assert stderr =~ "must not be negative"
+
+      {1, "", stderr} = run(~w(limits set --organization #{organization.slug} --intake-rate 1))
+      assert stderr =~ "Usage:"
+
+      {1, "", stderr} = run(~w(limits clear --organization #{organization.slug} --limit nope))
+      assert stderr =~ "unknown limit nope"
+    end
+  end
 end

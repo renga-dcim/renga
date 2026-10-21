@@ -204,6 +204,23 @@ defmodule Renga.RuntimeConfigTest do
     )
   end
 
+  test "LIMIT_* variables set deployment-wide limit defaults" do
+    config =
+      with_env(%{"LIMIT_JOB_CREATION_RATE" => "600"}, fn ->
+        Config.Reader.read!(@runtime_config, env: :dev)
+      end)
+
+    assert config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Limits) == [
+             job_creation_rate: 600
+           ]
+
+    assert_raise RuntimeError, ~r/LIMIT_JOB_CREATION_RATE must be a non-negative integer/, fn ->
+      with_env(%{"LIMIT_JOB_CREATION_RATE" => "lots"}, fn ->
+        Config.Reader.read!(@runtime_config, env: :dev)
+      end)
+    end
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)

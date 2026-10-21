@@ -499,25 +499,25 @@ defmodule Renga.Jobs do
   # Job creation is bounded per organization rather than per batch, so a large
   # fan-out spreads over time instead of arriving at once.
   defp enforce_rate_limit!(organization_id, now) do
-    limit = creation_rate_per_minute()
-    since = DateTime.add(now, -60)
-
-    recent =
-      Job
-      |> where([job], job.organization_id == ^organization_id and job.inserted_at > ^since)
-      |> limit(^limit)
-      |> select([job], job.id)
-      |> subquery()
-      |> select([recent], count(recent.id))
-      |> Repo.one!()
-
-    if recent >= limit, do: Repo.rollback(:rate_limited)
+    limit = Renga.Limits.get(organization_id, :job_creation_rate)
+    if recent_creations(organization_id, now, limit) >= limit, do: Repo.rollback(:rate_limited)
   end
 
-  defp creation_rate_per_minute do
-    :renga
-    |> Application.get_env(__MODULE__, [])
-    |> Keyword.get(:creation_rate_per_minute, 10_000)
+  @doc """
+  How many jobs the organization created in the minute before `now`, the
+  usage its job creation limit (RFD 21) is measured against. Counting stops
+  at `cap`, since the limit only needs to know whether it is reached.
+  """
+  def recent_creations(organization_id, now \\ Renga.Time.utc_now_ms(), cap \\ nil) do
+    since = DateTime.add(now, -60)
+
+    Job
+    |> where([job], job.organization_id == ^organization_id and job.inserted_at > ^since)
+    |> then(fn query -> if cap, do: limit(query, ^cap), else: query end)
+    |> select([job], job.id)
+    |> subquery()
+    |> select([recent], count(recent.id))
+    |> Repo.one!()
   end
 
   ## Cancelling

@@ -146,6 +146,9 @@ defmodule RengaWeb.Navigation do
         section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
           keywords: ~w(rules triage automation subnet hostname labels)
         ),
+        section(:limits, "Limits", ~p"/settings/limits", "hero-scale",
+          keywords: ~w(quota usage rate capacity)
+        ),
         section(:organizations, "Organizations", ~p"/organizations", "hero-building-office",
           keywords: ~w(switch workspace)
         ),
