@@ -46,6 +46,34 @@ defmodule Renga.Accounts.UserNotifier do
   end
 
   @doc """
+  Deliver an invitation to join an organization. The link only works for a
+  signed-in account that has confirmed this address.
+  """
+  def deliver_organization_invitation(email, organization_name, role, url) do
+    deliver(email, "You're invited to #{organization_name} on Renga", """
+
+    ==============================
+
+    Hi #{email},
+
+    You've been invited to join #{organization_name} on Renga as #{article(role)} #{role}.
+
+    Accept the invitation by visiting the URL below. Sign in, or create an
+    account with this email address, first:
+
+    #{url}
+
+    The invitation expires in #{Renga.Accounts.OrganizationInvitation.validity_days()} days. If you weren't expecting it, please ignore this.
+
+    ==============================
+    """)
+  end
+
+  defp article("owner"), do: "an"
+  defp article("admin"), do: "an"
+  defp article(_role), do: "a"
+
+  @doc """
   Deliver instructions to log in with a magic link.
   """
   def deliver_login_instructions(user, url) do

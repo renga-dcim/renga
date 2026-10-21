@@ -24,7 +24,8 @@ defmodule Renga.Inventory.ChangeEvent do
              finding_assigned finding_snoozed finding_exception finding_exception_removed
              request_created request_approved request_rejected request_withdrawn
              owner_changed rule_applied job_requested job_outcome
-             member_role_changed member_disabled member_enabled)
+             member_role_changed member_disabled member_enabled
+             member_invited invitation_revoked member_joined)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do
