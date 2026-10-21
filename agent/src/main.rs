@@ -3,6 +3,7 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
+    home::{self, Home},
     installation_key::InstallationKey,
     jobs::{
         inventory_collect::InventoryCollect,
@@ -35,6 +36,9 @@ const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
 /// Queue ownership is polled so a cancelled job never waits behind a long flush.
 const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
+/// Backoff between startup home resolutions while the resolver is unreachable.
+const HOME_RETRY_INITIAL: Duration = Duration::from_secs(5);
+const HOME_RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// Queue failure degrades durability, not lease renewal or direct delivery. Only delivery
 /// work retries opening it, so filesystem recovery cannot hold up periodic check-ins.
@@ -193,7 +197,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let installation_key = Arc::new(InstallationKey::load_or_create(&args.state_directory)?);
     info!(fingerprint = %installation_key.fingerprint(), "installation key loaded");
     let presented_key = PresentedKey::ed25519(installation_key.public_key());
-    let mut client = HttpClient::new(&config, stopped.clone())?
+    let Some(mut home) = resolve_home(&config, &args.state_directory, &stopped, !args.once)? else {
+        return Ok(());
+    };
+    log_home(&config, &home);
+    let mut client = HttpClient::for_home(&config, &home.home, stopped.clone())?
         .with_installation_key(Arc::clone(&installation_key));
     let queue = DeliveryQueue::new(args.state_directory.clone());
     let monitor = queue.monitor.clone();
@@ -324,8 +332,12 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     let old_checkin_interval = config.checkin_interval;
                     let old_inventory_interval = config.inventory_interval;
                     match reload(&args.config, &args.state_directory, stopped.clone()) {
-                        Ok((new_config, new_client)) => {
+                        Ok((new_config, new_home, new_client)) => {
+                            if new_home != home {
+                                log_home(&new_config, &new_home);
+                            }
                             config = new_config;
+                            home = new_home;
                             client =
                                 new_client.with_installation_key(Arc::clone(&installation_key));
                             policy_generation.advance();
@@ -735,10 +747,51 @@ fn reload(
     path: &PathBuf,
     state_directory: &PathBuf,
     cancellation: Cancellation,
-) -> Result<(Config, HttpClient), Box<dyn Error>> {
+) -> Result<(Config, Home, HttpClient), Box<dyn Error>> {
     let config = Config::load(path, state_directory)?;
-    let client = HttpClient::new(&config, cancellation)?;
-    Ok((config, client))
+    // A changed `renga_url` or rotated key resolves again; a failure keeps the previous home.
+    let home = home::resolve(&config, state_directory, &cancellation)?;
+    let client = HttpClient::for_home(&config, &home.home, cancellation)?;
+    Ok((config, home, client))
+}
+
+/// Resolves where authenticated requests go before any is sent. A daemon keeps asking while
+/// the resolver is unreachable, as it would keep retrying a check-in; a single run reports the
+/// failure. `None` means the agent was stopped first.
+fn resolve_home(
+    config: &Config,
+    state_directory: &Path,
+    stopped: &Cancellation,
+    keep_trying: bool,
+) -> Result<Option<Home>, Box<dyn Error>> {
+    let mut delay = HOME_RETRY_INITIAL;
+    loop {
+        match home::resolve(config, state_directory, stopped) {
+            Ok(home) => return Ok(Some(home)),
+            Err(_) if stopped.cancelled() => return Ok(None),
+            Err(failure) if keep_trying && failure.transient() => {
+                warn!(error = %failure, retry_in = ?delay, "home resolution failed");
+                let until = Instant::now() + delay;
+                while let Some(left) = until.checked_duration_since(Instant::now()) {
+                    if stopped.cancelled() {
+                        return Ok(None);
+                    }
+                    thread::sleep(left.min(Duration::from_millis(250)));
+                }
+                delay = (delay * 2).min(HOME_RETRY_MAX);
+            }
+            Err(failure) => return Err(failure.into()),
+        }
+    }
+}
+
+fn log_home(config: &Config, home: &Home) {
+    info!(
+        renga_url = %config.renga_url,
+        home = %home.home,
+        resolved_at = %home.resolved_at.to_rfc3339(),
+        "home deployment"
+    );
 }
 
 #[cfg(test)]
@@ -848,6 +901,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
+        let home = json!({ "home": origin }).to_string();
         let first_lease_started = Arc::new(AtomicBool::new(false));
         let overlapping_leases = Arc::new(AtomicBool::new(false));
         let active_leases = Arc::new(AtomicUsize::new(0));
@@ -865,6 +919,7 @@ mod tests {
                         let lease_count = Arc::clone(&lease_count);
                         let leases = leases.clone();
                         let stopped = stopped.clone();
+                        let home = home.clone();
                         connections.push(thread::spawn(move || {
                             let mut peek = [0; 256];
                             let bytes = stream.peek(&mut peek).unwrap();
@@ -914,7 +969,9 @@ mod tests {
                             }
 
                             let (request, mut reader) = read_http_request(stream);
-                            if request.contains("/api/v1/agent/checkins") {
+                            if request.contains("/api/v1/agent/home") {
+                                answer(&mut reader, 200, &home);
+                            } else if request.contains("/api/v1/agent/checkins") {
                                 answer(
                                     &mut reader,
                                     202,
@@ -962,6 +1019,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
+        let home = json!({ "home": origin }).to_string();
         let checkins = Arc::new(AtomicUsize::new(0));
         let (leased, received) = mpsc::channel();
         let server = thread::spawn(move || {
@@ -972,6 +1030,7 @@ mod tests {
                         let checkins = Arc::clone(&checkins);
                         let leased = leased.clone();
                         let stopped = stopped.clone();
+                        let home = home.clone();
                         connections.push(thread::spawn(move || {
                             let mut peek = [0; 256];
                             let bytes = stream.peek(&mut peek).unwrap();
@@ -987,7 +1046,9 @@ mod tests {
                             }
 
                             let (request, mut reader) = read_http_request(stream);
-                            if request.contains("/api/v1/agent/checkins") {
+                            if request.contains("/api/v1/agent/home") {
+                                answer(&mut reader, 200, &home);
+                            } else if request.contains("/api/v1/agent/checkins") {
                                 let checkin = checkins.fetch_add(1, Ordering::SeqCst);
                                 let body = if checkin == 0 {
                                     r#"{"status":"accepted","jobs_waiting":false}"#
@@ -1031,6 +1092,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
+        let home = json!({ "home": origin }).to_string();
         let checkins = Arc::new(AtomicUsize::new(0));
         let checkin_result = Arc::clone(&checkins);
         let sockets = Arc::new(AtomicUsize::new(0));
@@ -1045,6 +1107,7 @@ mod tests {
                         let sockets = Arc::clone(&sockets);
                         let protocols = protocols.clone();
                         let closed = closed.clone();
+                        let home = home.clone();
                         connections.push(thread::spawn(move || {
                             let mut peek = [0; 256];
                             let bytes = stream.peek(&mut peek).unwrap();
@@ -1080,7 +1143,9 @@ mod tests {
                             }
 
                             let (request, mut reader) = read_http_request(stream);
-                            if request.contains("/api/v1/agent/checkins") {
+                            if request.contains("/api/v1/agent/home") {
+                                answer(&mut reader, 200, &home);
+                            } else if request.contains("/api/v1/agent/checkins") {
                                 checkins.fetch_add(1, Ordering::SeqCst);
                                 answer(
                                     &mut reader,
@@ -1452,6 +1517,18 @@ mod tests {
         let identity = renga_agent::identity::load_or_create(&state, None).unwrap();
         std::fs::write(state.join("observations"), b"not a directory").unwrap();
         let (origin, server) = stub_server(vec![200, 202]);
+        // A persisted home answers without asking the stub, which serves only intake routes.
+        std::fs::write(
+            state.join("home.json"),
+            json!({
+                "renga_url": origin,
+                "deployment": "",
+                "home": format!("{origin}/"),
+                "resolved_at": "2026-10-21T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
         let config = state.join("agent.toml");
         std::fs::write(&config, format!(
             "renga_url = {origin:?}\nallow_insecure_http = true\nintake_api_key = \"test-token\"\nmax_retry_attempts = 1\n"

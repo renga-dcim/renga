@@ -5,8 +5,8 @@ use crate::{
     config::{Config, DELIVERY_BUDGET},
     installation_key::InstallationKey,
     payload::{
-        CheckIn, CheckInAck, JobClaim, JobOffer, JobReport, LeaseRequest, LeaseResponse, LeasedJob,
-        Observation, ReportAck, MAX_OBSERVATION_BYTES,
+        AgentHome, CheckIn, CheckInAck, JobClaim, JobOffer, JobReport, LeaseRequest, LeaseResponse,
+        LeasedJob, Observation, ReportAck, MAX_OBSERVATION_BYTES,
     },
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -24,6 +24,7 @@ const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
 const JOB_LEASE_PATH: &str = "/api/v1/agent/jobs/lease";
+const HOME_PATH: &str = "/api/v1/agent/home";
 const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
 const BACKOFF_SLICE: Duration = Duration::from_millis(25);
 /// Ten leased jobs with their parameters fit well inside this; anything
@@ -114,37 +115,23 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
+    /// A client that sends every request to the configured `renga_url` itself.
     pub fn new(config: &Config, cancellation: Cancellation) -> Result<Self, TransportError> {
-        let has_explicit_authority = config
-            .renga_url
-            .split_once("://")
-            .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
-        let base_url = Url::parse(&config.renga_url).map_err(|_| {
-            TransportError::new("invalid Renga server URL".into(), FailureKind::Permanent)
-        })?;
-        if base_url.scheme() == "http" && !config.allow_insecure_http {
-            return Err(TransportError::new(
-                "Renga server URL must use HTTPS unless insecure HTTP is explicitly enabled".into(),
-                FailureKind::Permanent,
-            ));
-        }
-        // The agent API is rooted at the origin. Rejecting base paths avoids silently
-        // discarding an operator-supplied path when joining absolute API routes.
-        if !has_explicit_authority
-            || !matches!(base_url.scheme(), "http" | "https")
-            || base_url.host_str().is_none()
-            || !base_url.username().is_empty()
-            || base_url.password().is_some()
-            || base_url.query().is_some()
-            || base_url.fragment().is_some()
-            || base_url.path() != "/"
-        {
-            return Err(TransportError::new(
-                "Renga server URL must be an HTTP(S) origin without credentials, path, query, or fragment"
-                    .into(),
-                FailureKind::Permanent,
-            ));
-        }
+        let base_url = origin_url(
+            &config.renga_url,
+            config.allow_insecure_http,
+            "Renga server URL",
+        )?;
+        Self::for_home(config, &base_url, cancellation)
+    }
+
+    /// A client that sends every request to `home`, the deployment `renga_url` resolved to.
+    pub fn for_home(
+        config: &Config,
+        home: &Url,
+        cancellation: Cancellation,
+    ) -> Result<Self, TransportError> {
+        let base_url = origin_url(home.as_str(), config.allow_insecure_http, "home URL")?;
         let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
         let lease_url = endpoint_url(&base_url, JOB_LEASE_PATH)?;
@@ -157,22 +144,7 @@ impl HttpClient {
             HeaderValue::from_str(&config.installation_id.to_string()).map_err(|_| {
                 TransportError::new("invalid installation ID".into(), FailureKind::Permanent)
             })?;
-        // Pin both the provider and roots so static installations neither depend on a host CA
-        // store nor inherit a process-global Rustls provider selected by another library.
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|error| {
-            TransportError::new(
-                format!("cannot configure TLS protocol versions: {error}"),
-                FailureKind::Permanent,
-            )
-        })?
-        .with_root_certificates(rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-        ))
-        .with_no_client_auth();
+        let tls = pinned_tls()?;
         // The notice socket shares the same pinned TLS settings and credentials.
         let notices = NoticeEndpoint {
             base_url: base_url.clone(),
@@ -181,19 +153,8 @@ impl HttpClient {
             tls: Arc::new(tls.clone()),
             timeout: config.request_timeout,
         };
-        let client = Client::builder()
-            .tls_backend_preconfigured(tls)
-            .timeout(config.request_timeout)
-            .redirect(Policy::none())
-            .build()
-            .map_err(|e| {
-                TransportError::new(
-                    format!("cannot build HTTP client: {e}"),
-                    FailureKind::Permanent,
-                )
-            })?;
         Ok(Self {
-            client,
+            client: build_client(tls, config.request_timeout)?,
             base_url,
             checkin_url,
             observation_url,
@@ -217,6 +178,10 @@ impl HttpClient {
         }
     }
 
+    /// The origin every request goes to.
+    pub fn home(&self) -> &Url {
+        &self.base_url
+    }
     /// Where and how to open the job notice socket (see `crate::notices`).
     pub fn notice_endpoint(&self) -> NoticeEndpoint {
         self.notices.clone()
@@ -409,6 +374,110 @@ pub fn encode_observation(value: &Observation) -> Result<Vec<u8>, TransportError
         ));
     }
     Ok(body)
+}
+
+/// Asks `renga_url` where this agent's home deployment is (RFD 23). The request carries no
+/// credential, so the intake key never reaches an address that is only a resolver.
+pub fn fetch_home(
+    config: &Config,
+    deployment: &str,
+    cancellation: &Cancellation,
+) -> Result<Url, TransportError> {
+    let base_url = origin_url(
+        &config.renga_url,
+        config.allow_insecure_http,
+        "Renga server URL",
+    )?;
+    let mut url = endpoint_url(&base_url, HOME_PATH)?;
+    url.query_pairs_mut().append_pair("deployment", deployment);
+    let client = build_client(pinned_tls()?, config.request_timeout)?;
+    let body = retry(
+        config.max_retry_attempts,
+        config.request_timeout,
+        || {
+            let response = client.get(url.clone()).send().map_err(request_error)?;
+            response_body(response)
+        },
+        thread::sleep,
+        || cancellation.cancelled(),
+    )?;
+    let response: AgentHome = serde_json::from_slice(&body).map_err(|error| {
+        TransportError::new(
+            format!("cannot parse home response: {error}"),
+            FailureKind::Permanent,
+        )
+    })?;
+    origin_url(&response.home, config.allow_insecure_http, "home URL")
+}
+
+/// Parses an HTTP(S) origin. The agent API is rooted at the origin, so rejecting base paths
+/// avoids silently discarding an operator-supplied path when joining absolute API routes.
+pub(crate) fn origin_url(
+    value: &str,
+    allow_insecure_http: bool,
+    name: &str,
+) -> Result<Url, TransportError> {
+    let has_explicit_authority = value
+        .split_once("://")
+        .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
+    let url = Url::parse(value)
+        .map_err(|_| TransportError::new(format!("invalid {name}"), FailureKind::Permanent))?;
+    if url.scheme() == "http" && !allow_insecure_http {
+        return Err(TransportError::new(
+            format!("{name} must use HTTPS unless insecure HTTP is explicitly enabled"),
+            FailureKind::Permanent,
+        ));
+    }
+    if !has_explicit_authority
+        || !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(TransportError::new(
+            format!(
+                "{name} must be an HTTP(S) origin without credentials, path, query, or fragment"
+            ),
+            FailureKind::Permanent,
+        ));
+    }
+    Ok(url)
+}
+
+/// Pins both the provider and roots so static installations neither depend on a host CA store
+/// nor inherit a process-global Rustls provider selected by another library.
+fn pinned_tls() -> Result<rustls::ClientConfig, TransportError> {
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| {
+        TransportError::new(
+            format!("cannot configure TLS protocol versions: {error}"),
+            FailureKind::Permanent,
+        )
+    })?
+    .with_root_certificates(rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    ))
+    .with_no_client_auth())
+}
+
+fn build_client(tls: rustls::ClientConfig, timeout: Duration) -> Result<Client, TransportError> {
+    Client::builder()
+        .tls_backend_preconfigured(tls)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .map_err(|e| {
+            TransportError::new(
+                format!("cannot build HTTP client: {e}"),
+                FailureKind::Permanent,
+            )
+        })
 }
 
 fn request_error(error: reqwest::Error) -> TransportError {

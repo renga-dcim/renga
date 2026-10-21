@@ -1,4 +1,6 @@
-# Renga server base URL. Required; no default. Replace this placeholder.
+# Where the agent asks for its home deployment: a Renga deployment, which
+# answers with itself, or a resolver. Required; no default. Replace this
+# placeholder.
 renga_url = "https://renga.example.invalid"
 
 # SECURITY: Keep false in production. Setting true permits plaintext HTTP, which

@@ -10,9 +10,9 @@ use renga_agent::{
     collectors,
     installation_key::InstallationKey,
     payload::{
-        Address, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface, JobClaim,
-        JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Observation, PresentedKey,
-        QueueReport, ReportAck, ReportType, ResourceKind, ServerResource,
+        Address, AgentHome, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface,
+        JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Observation,
+        PresentedKey, QueueReport, ReportAck, ReportType, ResourceKind, ServerResource,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -262,6 +262,23 @@ fn assert_decodes<T: DeserializeOwned>(schema: &str, body: Value) -> T {
     assert!(errors.is_empty(), "{schema} example is invalid: {errors:?}");
     serde_json::from_value(body)
         .unwrap_or_else(|error| panic!("the agent cannot decode a valid {schema}: {error}"))
+}
+
+#[test]
+fn the_agent_asks_for_its_home_as_documented() {
+    let spec: Value = serde_json::from_str(SPEC).unwrap();
+    let operation = &spec["paths"]["/api/v1/agent/home"]["get"];
+    assert_eq!(operation["operationId"], "getAgentHome");
+    // The request carries no credential, so the document must not demand one.
+    assert!(operation.get("security").is_none() && spec.get("security").is_none());
+    let parameters = operation["parameters"].as_array().unwrap();
+    assert!(parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "deployment" && parameter["in"] == "query"));
+
+    let home: AgentHome = assert_decodes("AgentHome", json!({ "home": "https://renga.example" }));
+    assert_eq!(home.home, "https://renga.example");
+    assert!(!violations("AgentHome", &json!({})).is_empty());
 }
 
 #[test]

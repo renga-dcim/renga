@@ -54,12 +54,25 @@ install -o root -g renga-agent -m 0640 "${work_dir}/agent.toml" /etc/renga/agent
 
 cat >"${work_dir}/stub.py" <<'EOF'
 import http.server
+import json
 import sys
 
 port, requests, observation = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    # A deployment is its own home (RFD 23).
+    def do_GET(self):
+        if not self.path.startswith("/api/v1/agent/home?"):
+            self.send_error(404)
+            return
+        body = json.dumps({"home": f"http://127.0.0.1:{port}"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if self.path == "/api/v1/observations":

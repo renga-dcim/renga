@@ -168,6 +168,28 @@ is currently no signal-triggered reload, so edit the file atomically or restart
 the service when an immediate change is required. Logs are structured JSON on
 stderr; systemd records them in the journal.
 
+### Home deployment
+
+`renga_url` is where the agent asks for its _home_, the deployment it sends
+every authenticated request to (RFD 23). A Renga deployment answers with its own
+public URL, so pointing `renga_url` at a deployment works as before. An operator
+running several deployments can instead point every agent at one resolver
+address, which answers with the deployment that owns the intake key.
+
+Before its first check-in, the agent sends `GET /api/v1/agent/home` to
+`renga_url` with the deployment identifier read from its intake key (empty for a
+key that carries none). That request carries no credential, so the intake key
+only ever reaches the resolved home. The home must be an `https` origin unless
+`allow_insecure_http` is set, and redirects are not followed. The agent stores
+the answer in `home.json` under the state directory and reuses it on later
+starts. It asks again when `renga_url` or the key's deployment identifier
+changes, or when the file is deleted. While the address cannot be reached at
+startup, the daemon keeps retrying, backing off from 5 seconds to 5 minutes;
+`--once` fails instead. A reload that changes `renga_url` or the key resolves
+again before it takes effect, and keeps the previous configuration if it
+cannot. The agent logs `renga_url`, the home, and when the home was resolved at
+startup and whenever the home changes.
+
 ## Jobs
 
 Renga can ask an agent to run a job, such as collecting inventory now instead

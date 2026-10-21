@@ -255,6 +255,13 @@ pub enum KeyApproval {
     Approved,
 }
 
+/// Where an agent's home deployment is (RFD 23), answered without a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentHome {
+    /// The home's origin, validated before any request is sent to it.
+    pub home: String,
+}
+
 /// Asks Renga to lease queued jobs for the capabilities the agent runs now.
 #[derive(Debug, Serialize)]
 pub struct LeaseRequest<'a> {
