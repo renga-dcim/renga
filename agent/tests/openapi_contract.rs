@@ -78,6 +78,7 @@ fn interface(name: &str, kind: &str, mac_address: Option<&str>) -> Interface {
             kind: Some("ipv4".into()),
             scope: Some("global".into()),
         }]),
+        ..Default::default()
     }
 }
 

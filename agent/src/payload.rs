@@ -103,7 +103,7 @@ pub struct HostAttributes {
     pub asset_tag: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Interface {
     pub name: String,
     pub kind: String,
@@ -116,6 +116,42 @@ pub struct Interface {
     pub speed_mbps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<Address>>,
+    /// `access` or `trunk`; switch pollers report it with `vlans`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlans: Option<Vec<VlanMembership>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neighbors: Option<Vec<Neighbor>>,
+}
+
+/// A VLAN an interface carries, by VID within the reporting source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VlanMembership {
+    pub vid: u16,
+    pub tagging_mode: TaggingMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaggingMode {
+    Tagged,
+    Untagged,
+}
+
+/// A device seen on the other end of an interface (RFD 7 neighbor evidence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Neighbor {
+    pub protocol: &'static str,
+    pub remote_chassis_id: String,
+    pub remote_chassis_id_kind: &'static str,
+    pub remote_port_id: String,
+    pub remote_port_id_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_system_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_port_description: Option<String>,
+    pub ttl_seconds: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -166,6 +202,23 @@ pub struct ScopedReport {
     /// target no longer reports. Partial reports never withdraw anything.
     pub complete: bool,
     pub resources: Vec<CollectorResource>,
+    /// Interface sections every resource reports in full, so what is missing from them is gone.
+    #[serde(skip_serializing_if = "SectionCompleteness::is_empty")]
+    pub section_completeness: SectionCompleteness,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SectionCompleteness {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interface_vlans: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub interface_neighbors: bool,
+}
+
+impl SectionCompleteness {
+    fn is_empty(&self) -> bool {
+        !self.interface_vlans && !self.interface_neighbors
+    }
 }
 
 impl ScopedReport {
@@ -182,6 +235,14 @@ impl ScopedReport {
             collector,
             complete,
             resources,
+            section_completeness: SectionCompleteness::default(),
+        }
+    }
+
+    pub fn with_section_completeness(self, section_completeness: SectionCompleteness) -> Self {
+        Self {
+            section_completeness,
+            ..self
         }
     }
 }
