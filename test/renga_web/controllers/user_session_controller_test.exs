@@ -1,6 +1,8 @@
 defmodule RengaWeb.UserSessionControllerTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query
+
   import Renga.AccountsFixtures
   alias Renga.Accounts
 
@@ -193,13 +195,70 @@ defmodule RengaWeb.UserSessionControllerTest do
 
     test "the half-finished sign-in expires", %{conn: conn, user: user, secret: secret} do
       conn = sign_in_with_password(conn, user)
-      pending = get_session(conn, :pending_second_step)
+      age_pending_sign_ins(user, -6)
 
       conn =
-        conn
-        |> recycle()
-        |> init_test_session(%{pending_second_step: %{pending | "expires_at" => 0}})
-        |> post(~p"/users/log-in/second-step", %{
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+    end
+
+    # The pending sign-in lives in the signed cookie, which a browser can
+    # replay. Its server-side record is spent on completion, so a saved copy
+    # finishes nothing, and does not spend the code it is given.
+    test "a copied half-finished sign-in cannot finish twice", %{
+      conn: conn,
+      user: user,
+      codes: [first, second | _]
+    } do
+      pending = sign_in_with_password(conn, user) |> recycle()
+
+      done = post(pending, ~p"/users/log-in/second-step", %{"second_step" => %{"code" => first}})
+      assert get_session(done, :user_token)
+
+      replay =
+        post(pending, ~p"/users/log-in/second-step", %{"second_step" => %{"code" => second}})
+
+      assert redirected_to(replay) == ~p"/users/log-in"
+      refute get_session(replay, :user_token)
+      assert Accounts.MFA.recovery_codes_left(user) == 9
+    end
+
+    test "a password change ends a half-finished sign-in", %{
+      conn: conn,
+      user: user,
+      secret: secret
+    } do
+      pending = sign_in_with_password(conn, user) |> recycle()
+
+      {:ok, _} =
+        Accounts.update_user_password(user, %{
+          password: "a brand new password",
+          password_confirmation: "a brand new password"
+        })
+
+      conn =
+        post(pending, ~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
+        })
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+    end
+
+    test "changing the account's factors ends a half-finished sign-in", %{
+      conn: conn,
+      user: user
+    } do
+      pending = sign_in_with_password(conn, user) |> recycle()
+      {:ok, _user} = Accounts.MFA.disable_totp(user)
+      {secret, _codes} = totp_fixture(user)
+
+      conn =
+        post(pending, ~p"/users/log-in/second-step", %{
           "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
         })
 
@@ -454,5 +513,12 @@ defmodule RengaWeb.UserSessionControllerTest do
       refute get_session(conn, :user_token)
       assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Logged out successfully"
     end
+  end
+
+  defp age_pending_sign_ins(user, minutes) do
+    Renga.Repo.update_all(
+      from(t in Accounts.UserToken, where: t.user_id == ^user.id and t.context == "second_step"),
+      set: [inserted_at: DateTime.add(Renga.Time.utc_now_ms(), minutes, :minute)]
+    )
   end
 end

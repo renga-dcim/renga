@@ -97,15 +97,25 @@ defmodule Renga.Accounts.Recheck do
     end
   end
 
-  @doc "Ends the recovery authorization once its replacement factor is added."
-  def end_recovery(%User{} = user, session_token) do
+  @doc """
+  Spends this session's recovery authorization, if it is still active.
+  Called inside the transaction that adds the replacement factor, so only
+  one replacement can use it and a failed one leaves it in place.
+  """
+  def spend_recovery(%User{} = user, session_token) do
     with {:ok, session} <- fetch_session(user, session_token) do
-      Repo.delete_all(
-        where(AccountAuthorization, session_token_id: ^session.id, purpose: "recovery")
-      )
-    end
+      now = Renga.Time.utc_now_ms()
 
-    :ok
+      {count, _} =
+        AccountAuthorization
+        |> where(session_token_id: ^session.id, purpose: "recovery")
+        |> where([authorization], authorization.expires_at > ^now)
+        |> Repo.delete_all()
+
+      count == 1
+    else
+      :error -> false
+    end
   end
 
   @doc """

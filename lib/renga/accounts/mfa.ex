@@ -74,7 +74,12 @@ defmodule Renga.Accounts.MFA do
   first factor, otherwise `nil`.
 
   With `replace: true` the new app takes the place of an existing one, for
-  recovery when the old app is lost.
+  recovery when the old app is lost. A replacement keeps the remaining
+  recovery codes and returns none: new codes need the ordinary re-check.
+
+  `authorize`, if given, runs under the account lock once the code is proved
+  and must return true for the app to be saved; a recovery grant is spent
+  there, so it is spent exactly when the replacement is saved.
   """
   def enable_totp(%User{} = user, secret, code, opts \\ [])
       when is_binary(secret) and is_binary(code) do
@@ -82,7 +87,10 @@ defmodule Renga.Accounts.MFA do
   end
 
   defp enable_totp_locked(user, secret, code, opts) do
-    if totp_enabled?(user) and not Keyword.get(opts, :replace, false) do
+    replace? = Keyword.get(opts, :replace, false)
+    authorize = Keyword.get(opts, :authorize, fn -> true end)
+
+    if totp_enabled?(user) and not replace? do
       {:error, :already_enabled}
     else
       case matching_step(secret, code, nil) do
@@ -91,14 +99,22 @@ defmodule Renga.Accounts.MFA do
           {:ok, {:error, :invalid_code}}
 
         step ->
-          insert_totp(user, secret, step, opts[:replace])
+          # Checked under the lock, once the code proved the app.
+          insert_authorized_totp(authorize.(), user, secret, step, replace?)
       end
     end
   end
 
+  defp insert_authorized_totp(authorized?, user, secret, step, replace?) do
+    if authorized?,
+      do: insert_totp(user, secret, step, replace?),
+      else: {:error, :recheck_required}
+  end
+
   defp insert_totp(user, secret, step, replace?) do
+    first_factor? = not replace? and not mfa?(user)
     if replace?, do: Repo.delete_all(where(UserTOTP, user_id: ^user.id))
-    first_factor? = not mfa?(user)
+    end_pending_sign_ins(user)
 
     case Vault.encrypt(secret, secret_aad(user.id)) do
       {:ok, key_id, ciphertext} ->
@@ -122,6 +138,7 @@ defmodule Renga.Accounts.MFA do
     with_account_lock(user, fn ->
       Repo.delete_all(where(UserTOTP, user_id: ^user.id))
       unless mfa?(user), do: Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
+      end_pending_sign_ins(user)
       record_event(user, "totp_removed")
       {:ok, user}
     end)
@@ -306,6 +323,15 @@ defmodule Renga.Accounts.MFA do
       {:ok, {:error, _reason} = error} -> error
       other -> other
     end
+  end
+
+  # A sign-in that started before the account's factors changed must start
+  # again against the factors it has now.
+  defp end_pending_sign_ins(user) do
+    Repo.delete_all(
+      from token in Renga.Accounts.UserToken,
+        where: token.user_id == ^user.id and token.context == "second_step"
+    )
   end
 
   defp secret_aad(user_id), do: "renga:user_totp:" <> user_id

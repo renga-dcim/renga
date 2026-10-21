@@ -65,7 +65,7 @@ defmodule RengaWeb.UserSessionController do
           {:ok, :totp} ->
             conn
             |> put_flash(:info, "Welcome back!")
-            |> UserAuth.complete_second_step(user, :totp)
+            |> finish_second_step(user, :totp)
 
           {:ok, :recovery_code} ->
             conn
@@ -73,7 +73,7 @@ defmodule RengaWeb.UserSessionController do
               :info,
               "You used a recovery code. Add a new authenticator app now; you have five minutes."
             )
-            |> UserAuth.complete_second_step(user, :recovery_code)
+            |> finish_second_step(user, :recovery_code)
 
           {:error, :rate_limited} ->
             conn
@@ -85,6 +85,18 @@ defmodule RengaWeb.UserSessionController do
             |> put_flash(:error, "That code isn't right.")
             |> redirect(to: ~p"/users/log-in/second-step")
         end
+    end
+  end
+
+  defp finish_second_step(conn, user, method) do
+    case UserAuth.complete_second_step(conn, user, method) do
+      {:ok, conn} ->
+        conn
+
+      {:error, conn} ->
+        conn
+        |> put_flash(:error, "That sign-in expired. Sign in again.")
+        |> redirect(to: ~p"/users/log-in")
     end
   end
 
