@@ -3,6 +3,7 @@
 use crate::{
     identity,
     jobs::{JobPolicy, Selector},
+    libvirt::config::{self as libvirt_config, LibvirtCollector, RawLibvirtCollector},
     snmp::config::{self as snmp_config, RawSnmpCollector, SnmpCollector},
 };
 use serde::Deserialize;
@@ -51,6 +52,7 @@ pub struct Config {
     pub jobs: JobPolicy,
     /// SNMP switch poller modules (RFD 11), each its own collector stream.
     pub snmp: Vec<SnmpCollector>,
+    pub libvirt: Option<LibvirtCollector>,
 }
 
 impl fmt::Debug for Config {
@@ -69,6 +71,7 @@ impl fmt::Debug for Config {
             .field("labels", &self.labels)
             .field("jobs", &self.jobs)
             .field("snmp", &self.snmp)
+            .field("libvirt", &self.libvirt)
             .finish()
     }
 }
@@ -104,6 +107,7 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawCollectors {
     snmp: Option<Vec<RawSnmpCollector>>,
+    libvirt: Option<RawLibvirtCollector>,
 }
 
 #[derive(Default, Deserialize)]
@@ -246,12 +250,19 @@ impl Config {
         }
         let labels = validate_labels(raw.labels.unwrap_or_default())?;
         let jobs = job_policy(raw.jobs.unwrap_or_default())?;
-        let snmp = snmp_config::from_raw(
-            raw.collectors
-                .and_then(|collectors| collectors.snmp)
-                .unwrap_or_default(),
-        )
-        .map_err(ConfigError)?;
+        let collectors = raw.collectors.unwrap_or_default();
+        let snmp =
+            snmp_config::from_raw(collectors.snmp.unwrap_or_default()).map_err(ConfigError)?;
+        let libvirt = libvirt_config::from_raw(collectors.libvirt).map_err(ConfigError)?;
+        if let Some(libvirt) = &libvirt {
+            // A stream's kind never changes, so one ID cannot name both a poller and a hypervisor.
+            if snmp.iter().any(|collector| collector.id == libvirt.id) {
+                return Err(ConfigError(format!(
+                    "collectors.libvirt: id {:?} is already used by an SNMP module",
+                    libvirt.id
+                )));
+            }
+        }
         Ok(Self {
             config_path,
             renga_url,
@@ -274,6 +285,7 @@ impl Config {
             labels,
             jobs,
             snmp,
+            libvirt,
         })
     }
 }
@@ -511,6 +523,29 @@ mod tests {
         let error = Config::load(&path, &state).unwrap_err().to_string();
         fs::remove_file(path).unwrap();
         assert!(error.contains("collectors.snmp[0]: targets"), "{error}");
+    }
+
+    #[test]
+    fn reads_the_libvirt_module_and_keeps_stream_ids_distinct() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        let base = "renga_url='https://renga.test'\nintake_api_key='file-key'\n";
+        fs::write(&path, format!("{base}[collectors.libvirt]\n")).unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.libvirt.unwrap().uri, "qemu:///system");
+
+        fs::write(
+            &path,
+            format!(
+                "{base}[[collectors.snmp]]\nid='libvirt'\ntargets=['10.0.0.1']\nusername='renga'\n\
+                 auth_password_file='/a'\nprivacy_password_file='/p'\n[collectors.libvirt]\n"
+            ),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        fs::remove_file(path).unwrap();
+        assert!(error.contains("already used by an SNMP module"), "{error}");
     }
 
     #[test]
