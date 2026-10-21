@@ -102,9 +102,19 @@ defmodule Renga.Repo.Migrations.CreateInstallationKeys do
              """
            )
 
+    # Rolling back drops collector workflows (assignments, snoozes,
+    # exceptions) first, as the address domain's rollback does, or the
+    # narrower constraint would refuse them.
     execute(
-      workflow_domains(~w(component hardware_match placement topology address collector)),
-      workflow_domains(~w(component hardware_match placement topology address))
+      fn ->
+        repo().query!(
+          workflow_domains(~w(component hardware_match placement topology address collector))
+        )
+      end,
+      fn ->
+        repo().query!("DELETE FROM finding_workflows WHERE domain = 'collector'")
+        repo().query!(workflow_domains(~w(component hardware_match placement topology address)))
+      end
     )
   end
 
