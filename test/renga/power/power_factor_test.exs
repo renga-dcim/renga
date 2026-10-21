@@ -109,4 +109,41 @@ defmodule Renga.Power.PowerFactorTest do
     assert {:ok, _organization} = Power.set_default_power_factor(scope, nil)
     assert Power.default_power_factor(scope) == nil
   end
+
+  test "RFD 17 permissions: organization.manage sets the default, dcim.edit the port, topology.edit the cable",
+       %{organization: organization, scope: owner} do
+    [psu1] = ports!(owner, [%{kind: "power_port", name: "PSU1"}])
+    {:ok, site} = Renga.DCIM.create_site(owner, %{name: "DC1"}, %{slug: "dc1"})
+    {:ok, panel} = Power.create_panel(owner, %{site_id: site.id, name: "PDP-1"})
+
+    {:ok, feed} =
+      Power.create_feed(owner, panel.id, %{name: "A1", voltage: "230", amperage: "16"})
+
+    {:ok, role} =
+      Renga.Roles.create_role(owner, %{
+        "name" => "Facilities",
+        "permissions" => ["dcim.edit", "organization.manage"]
+      })
+
+    facilities = scope_with_role(organization, "viewer")
+
+    {:ok, _assignment} =
+      Renga.Assignments.assign(owner, facilities.membership_id, %{"role" => role.id})
+
+    facilities = Accounts.scope_for_user(facilities.user, organization.id)
+
+    assert {:ok, _organization} = Power.set_default_power_factor(facilities, "0.95")
+    assert {:ok, %Port{}} = Power.update_port_allocation(facilities, psu1, %{power_factor: "0.9"})
+
+    assert {:error, :forbidden} =
+             Renga.Power.Cables.connect(facilities, %{
+               power_port_id: psu1.id,
+               power_feed_id: feed.id
+             })
+
+    # An admin holds dcim.edit but not the owner-only organization.manage.
+    admin = scope_with_role(organization, "admin")
+    assert {:error, :forbidden} = Power.set_default_power_factor(admin, "0.8")
+    assert {:ok, %Port{}} = Power.update_port_allocation(admin, psu1, %{power_factor: nil})
+  end
 end

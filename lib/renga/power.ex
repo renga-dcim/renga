@@ -12,9 +12,9 @@ defmodule Renga.Power do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Organization
-  alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
+  alias Renga.Authorization
   alias Renga.DCIM.Location
   alias Renga.DCIM.Rack
   alias Renga.DCIM.Site
@@ -265,16 +265,18 @@ defmodule Renga.Power do
   end
 
   @doc """
-  Sets or clears (`nil`) the organization's default power factor. Only an
-  active owner may: every load without its own power factor converts with it.
+  Sets or clears (`nil`) the organization's default power factor. Every load
+  without its own power factor converts with it, so it is an organization
+  setting: RFD 10 gives it to owners, which RFD 17 grants as
+  `organization.manage`.
   """
   def set_default_power_factor(
-        %Scope{user: %User{id: user_id}, organization_id: organization_id},
+        %Scope{user: %User{}, organization_id: organization_id} = scope,
         value
       )
       when is_binary(organization_id) do
     fn ->
-      unless owner?(organization_id, user_id), do: Repo.rollback(:forbidden)
+      Authorization.authorize!(scope, "organization.manage")
 
       Organization
       |> Repo.get!(organization_id)
@@ -290,24 +292,17 @@ defmodule Renga.Power do
   def change_default_power_factor(%Organization{} = organization, attrs \\ %{}),
     do: Organization.default_power_factor_changeset(organization, attrs)
 
-  defp owner?(organization_id, user_id) do
-    OrganizationMembership
-    |> where([membership], membership.organization_id == ^organization_id)
-    |> where([membership], membership.user_id == ^user_id and membership.role == "owner")
-    |> where([membership], membership.status == "active")
-    |> lock("FOR UPDATE")
-    |> Repo.exists?()
-  end
-
   def change_port_allocation(%Port{} = port, attrs \\ %{}),
     do: Port.allocation_changeset(port, attrs)
 
   def change_panel(%Panel{} = panel, attrs \\ %{}), do: Panel.changeset(panel, attrs)
   def change_feed(%Feed{} = feed, attrs \\ %{}), do: Feed.changeset(feed, attrs)
 
+  # Panels, feeds, and the ports' planning values are DCIM objects, so their
+  # changes need RFD 17's `dcim.edit`, like sites and racks.
   defp power_transaction(scope, mutation) do
     scope
-    |> Inventory.organization_management_transaction(mutation)
+    |> Inventory.organization_management_transaction("dcim.edit", mutation)
     |> Changes.broadcast(scope.organization_id)
   end
 

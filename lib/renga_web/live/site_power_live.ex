@@ -29,8 +29,8 @@ defmodule RengaWeb.SitePowerLive do
      |> assign(
        site: site,
        page_title: "#{site.resource.name} power",
-       can_manage?: Renga.Inventory.organization_manager?(scope),
-       owner?: "owner" in (scope.roles || []),
+       can_manage?: Renga.Authorization.allowed?(scope, "dcim.edit"),
+       owner?: Renga.Authorization.allowed?(scope, "organization.manage"),
        locations: DCIM.list_locations(scope, site.id),
        panel_form: panel_form(%{}),
        feed_form: feed_form(%{}),
