@@ -6,6 +6,8 @@ defmodule RengaWeb.SitePowerLive do
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
   together. Each feed shows the allocated load on it (`Renga.Power.Load`),
   or why it is unknown, and opens a breakdown by load and three-phase leg.
+  Its "What fails" action lists the devices that would lose all supply or
+  their redundancy if it failed (`Renga.Power.Redundancy`).
   People holding `dcim.edit` (owners and admins) add panels and add or edit
   feeds in side panels; everyone else reads. Those holding
   `organization.manage` (owners) also set the organization's default power
@@ -22,6 +24,7 @@ defmodule RengaWeb.SitePowerLive do
   alias Renga.Power.Feed
   alias Renga.Power.Load
   alias Renga.Power.PowerFactor
+  alias Renga.Power.Redundancy
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -41,7 +44,8 @@ defmodule RengaWeb.SitePowerLive do
        feed_form: feed_form(%{}),
        feed_panel: nil,
        editing_feed: nil,
-       load_feed_id: nil
+       load_feed_id: nil,
+       failure: nil
      )
      |> load_panels()}
   end
@@ -84,6 +88,11 @@ defmodule RengaWeb.SitePowerLive do
 
   def handle_event("show_load", %{"id" => id}, socket),
     do: {:noreply, assign(socket, load_feed_id: id)}
+
+  def handle_event("show_failure", %{"id" => id}, socket) do
+    feed = Enum.find(socket.assigns.feeds, &(&1.id == id))
+    {:noreply, assign(socket, failure: feed && failure(socket, feed))}
+  end
 
   # The phase field follows the supply.
   def handle_event("feed_change", %{"feed" => params}, socket),
@@ -251,8 +260,21 @@ defmodule RengaWeb.SitePowerLive do
               <:col :let={feed} label="Allocated" class="w-44">
                 <.feed_load feed={feed} load={Map.fetch!(@loads, feed.id)} />
               </:col>
-              <:action :let={feed} :if={@can_manage?}>
+              <:action :let={feed}>
                 <.button
+                  id={"feed-#{feed.id}-failure"}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-label={"What fails if #{feed.name} fails"}
+                  phx-click={
+                    JS.push("show_failure", value: %{id: feed.id}) |> show_overlay("failure-panel")
+                  }
+                >
+                  What fails
+                </.button>
+                <.button
+                  :if={@can_manage?}
                   id={"feed-#{feed.id}-edit"}
                   type="button"
                   size="sm"
@@ -314,6 +336,13 @@ defmodule RengaWeb.SitePowerLive do
           load={@loads[@load_feed_id]}
           default_power_factor={@default_power_factor}
         />
+      </.side_panel>
+
+      <.side_panel
+        id="failure-panel"
+        title={if @failure, do: "If #{@failure.feed.name} fails", else: "If this feed fails"}
+      >
+        <.failure_details :if={@failure} failure={@failure} />
       </.side_panel>
 
       <.side_panel
@@ -498,6 +527,84 @@ defmodule RengaWeb.SitePowerLive do
     """
   end
 
+  attr :failure, Redundancy.Failure, required: true
+
+  defp failure_details(assigns) do
+    ~H"""
+    <div id="failure-details" class="space-y-5 text-sm">
+      <p id="failure-summary" class="text-fg">
+        {failure_summary(@failure)}
+      </p>
+
+      <p
+        :if={@failure.untraced?}
+        id="failure-untraced"
+        class="rounded-md border border-warn-line bg-warn-fill px-3 py-2 text-xs text-warn-text"
+      >
+        Part of the chain below this feed cannot be followed, so devices there are missing from
+        this list. Check outlets whose hardware type does not name the inlet that feeds them.
+      </p>
+
+      <section id="failure-loses-supply" aria-labelledby="failure-loses-supply-title">
+        <h3 id="failure-loses-supply-title" class="mb-1 text-xs font-semibold text-fg">
+          Lose all supply ({length(@failure.loses_supply)})
+        </h3>
+        <p :if={@failure.loses_supply == []} class="text-xs text-fg-muted">None.</p>
+        <ul
+          :if={@failure.loses_supply != []}
+          class="divide-y divide-line rounded-md border border-crit-line"
+        >
+          <li
+            :for={{resource, _feeds} <- @failure.loses_supply}
+            id={"failure-supply-#{resource.id}"}
+            class="px-3 py-2"
+          >
+            <.link
+              navigate={~p"/inventory/#{resource.id}/power"}
+              class="font-medium text-link hover:underline"
+            >
+              {resource.name}
+            </.link>
+            <span class="block text-xs text-fg-muted">No other feed reaches it.</span>
+          </li>
+        </ul>
+      </section>
+
+      <section id="failure-loses-redundancy" aria-labelledby="failure-loses-redundancy-title">
+        <h3 id="failure-loses-redundancy-title" class="mb-1 text-xs font-semibold text-fg">
+          Lose redundancy ({length(@failure.loses_redundancy)})
+        </h3>
+        <p :if={@failure.loses_redundancy == []} class="text-xs text-fg-muted">None.</p>
+        <ul
+          :if={@failure.loses_redundancy != []}
+          class="divide-y divide-line rounded-md border border-warn-line"
+        >
+          <li
+            :for={{resource, feeds} <- @failure.loses_redundancy}
+            id={"failure-redundancy-#{resource.id}"}
+            class="px-3 py-2"
+          >
+            <.link
+              navigate={~p"/inventory/#{resource.id}/power"}
+              class="font-medium text-link hover:underline"
+            >
+              {resource.name}
+            </.link>
+            <span class="block text-xs text-fg-muted">
+              Still supplied by {Enum.map_join(feeds, ", ", &feed_with_side/1)}.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <p class="text-xs text-fg-muted">
+        From recorded power paths: a device is redundant when its ports reach feeds on two sides.
+        Live supply state from readings is not part of this.
+      </p>
+    </div>
+    """
+  end
+
   attr :load, Load, required: true
   attr :default_power_factor, Decimal, default: nil
 
@@ -621,9 +728,16 @@ defmodule RengaWeb.SitePowerLive do
     feeds = Enum.flat_map(panels, & &1.feeds)
     default_power_factor = Power.default_power_factor(socket.assigns.current_scope)
 
+    # An open "What fails" panel follows changes like the rest of the page.
+    failure =
+      with %Redundancy.Failure{feed: %{id: id}} <- socket.assigns[:failure],
+           %Feed{} = feed <- Enum.find(feeds, &(&1.id == id)),
+           do: failure(socket, feed)
+
     assign(socket,
       panels: panels,
       feeds: feeds,
+      failure: failure,
       loads: Load.for_feeds(socket.assigns.current_scope, feeds, default_power_factor),
       totals: Power.capacity_totals(feeds),
       default_power_factor: default_power_factor,
@@ -713,6 +827,27 @@ defmodule RengaWeb.SitePowerLive do
     capacity = Capacity.of(feed)
     Capacity.format(capacity.rated, capacity.unit)
   end
+
+  defp failure(socket, feed), do: Redundancy.feed_failure(socket.assigns.current_scope, feed)
+
+  defp failure_summary(failure) do
+    supply = length(failure.loses_supply)
+    redundancy = length(failure.loses_redundancy)
+
+    cond do
+      supply + redundancy + failure.keeps == 0 ->
+        "No devices are recorded below #{failure.feed.name}."
+
+      supply + redundancy == 0 ->
+        "Every device below #{failure.feed.name} keeps supply without losing redundancy."
+
+      true ->
+        "#{supply} #{plural(supply, "device")} would lose all supply and #{redundancy} would lose redundancy."
+    end
+  end
+
+  defp feed_with_side(%{side: nil} = feed), do: feed.name
+  defp feed_with_side(feed), do: "#{feed.name} (side #{String.upcase(feed.side)})"
 
   defp load_panel_title(loads, id) do
     case loads[id] do
