@@ -12,7 +12,9 @@ defmodule Renga.Accounts.MFAConcurrencyTest do
   import Renga.MutationRace, only: [race: 2]
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Renga.Accounts
   alias Renga.Accounts.MFA
+  alias Renga.Accounts.Passkeys
   alias Renga.Accounts.SecurityEvent
   alias Renga.Repo
 
@@ -87,6 +89,40 @@ defmodule Renga.Accounts.MFAConcurrencyTest do
         Application.put_env(:renga, Renga.Vault, previous)
       end
     end)
+  end
+
+  test "removing the password and the last passkey cannot both succeed" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    user = set_password(user_fixture())
+
+    try do
+      authenticator = Renga.FakeAuthenticator.new()
+
+      response =
+        Renga.FakeAuthenticator.register(authenticator, Passkeys.registration_options(user))
+
+      {:ok, passkey} = Passkeys.register(user, response, "Laptop")
+      token = Accounts.generate_user_session_token(user)
+      options = Accounts.passkey_options(user, "recheck")
+
+      :ok =
+        Accounts.recheck_with_passkey(
+          user,
+          token,
+          Renga.FakeAuthenticator.assert(authenticator, options)
+        )
+
+      # The password removal must wait to see the passkey gone.
+      assert {{:ok, _passkey}, {:error, :no_passkey}} =
+               race(fn -> Accounts.remove_passkey(user, token, passkey.id) end, fn ->
+                 Accounts.remove_user_password(user, token)
+               end)
+
+      assert Repo.get!(Accounts.User, user.id).hashed_password
+    after
+      Repo.delete!(user)
+      Sandbox.checkin(Repo)
+    end
   end
 
   defp with_totp_user(fun) do

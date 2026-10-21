@@ -352,10 +352,13 @@ defmodule Renga.Accounts.MFA do
     end
   end
 
-  # Runs `fun` in a transaction holding the account's row lock, which every
-  # second-factor check and change takes first. `fun` returns `{:ok, error}`
-  # to commit what it recorded, such as a failure, and still report `error`.
-  defp with_account_lock(%User{id: user_id}, fun) do
+  @doc """
+  Runs `fun` in a transaction holding the account's row lock, which every
+  second-factor check and credential change takes first. `fun` returns
+  `{:ok, error}` to commit what it recorded, such as a failure, and still
+  report `error`.
+  """
+  def with_account_lock(%User{id: user_id}, fun) do
     Repo.transact(fn ->
       User
       |> where(id: ^user_id)

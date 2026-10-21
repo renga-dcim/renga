@@ -438,20 +438,27 @@ defmodule Renga.Accounts do
   re-check (RFD 19, "Passwordless accounts").
   """
   def remove_user_password(%User{} = user, session_token) do
-    cond do
-      not Recheck.authorized?(user, session_token, :set_password) ->
-        {:error, :recheck_required}
+    # Under the account lock, like removing a passkey, so the two cannot
+    # race to leave the account with neither.
+    MFA.with_account_lock(user, fn ->
+      cond do
+        not Recheck.authorized?(user, session_token, :set_password) ->
+          {:error, :recheck_required}
 
-      not Passkeys.any?(user) ->
-        {:error, :no_passkey}
+        not Passkeys.any?(user) ->
+          {:error, :no_passkey}
 
-      true ->
-        Repo.transact(fn ->
-          user = user |> Ecto.Changeset.change(hashed_password: nil) |> Repo.update!()
+        true ->
+          user =
+            User
+            |> Repo.get!(user.id)
+            |> Ecto.Changeset.change(hashed_password: nil)
+            |> Repo.update!()
+
           Repo.insert!(%Renga.Accounts.SecurityEvent{user_id: user.id, kind: "password_removed"})
           {:ok, user}
-        end)
-    end
+      end
+    end)
   end
 
   @doc "Options for signing in with any of this site's passkeys, including autofill."
