@@ -80,9 +80,21 @@ if config_env() == :prod do
       false
     end
 
+  # Every application connection gets a baseline statement timeout, so a
+  # standalone read is bounded as well as a transaction (RFD 21). Approved
+  # background work may raise it per transaction with
+  # Renga.Repo.with_statement_timeout/2, up to the background timeout.
+  config :renga,
+         :background_statement_timeout_ms,
+         String.to_integer(System.get_env("DATABASE_BACKGROUND_STATEMENT_TIMEOUT") || "300000")
+
   config :renga, Renga.Repo,
     ssl: database_ssl,
     url: database_url,
+    parameters: [
+      statement_timeout:
+        "#{String.to_integer(System.get_env("DATABASE_STATEMENT_TIMEOUT") || "30000")}ms"
+    ],
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,

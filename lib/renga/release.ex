@@ -12,6 +12,7 @@ defmodule Renga.Release do
 
   def migrate do
     load_app()
+    without_statement_timeout()
 
     for repo <- repos() do
       {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
@@ -20,6 +21,7 @@ defmodule Renga.Release do
 
   def rollback(repo, version) do
     load_app()
+    without_statement_timeout()
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
   end
 
@@ -111,6 +113,17 @@ defmodule Renga.Release do
       {:error, message} ->
         IO.puts(:stderr, message)
         System.halt(1)
+    end
+  end
+
+  # Migrations may rewrite large tables, so they run without the baseline
+  # statement timeout that bounds application queries (RFD 21). This only
+  # changes the configuration of the migrating process's own repos.
+  defp without_statement_timeout do
+    for repo <- repos() do
+      config = Application.get_env(@app, repo, [])
+      parameters = config |> Keyword.get(:parameters, []) |> Keyword.put(:statement_timeout, "0")
+      Application.put_env(@app, repo, Keyword.put(config, :parameters, parameters))
     end
   end
 

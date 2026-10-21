@@ -1103,26 +1103,30 @@ defmodule Renga.Jobs do
   first; nothing else can remove history.
   """
   def purge_history(now \\ Renga.Time.utc_now_ms()) do
-    %{num_rows: deleted} =
-      Repo.query!(
-        """
-        DELETE FROM jobs
-        WHERE id IN (
-          SELECT job.id
-          FROM jobs AS job
-          JOIN organizations AS organization ON organization.id = job.organization_id
-          WHERE job.finished_at IS NOT NULL
-            AND job.finished_at < $1::timestamp - make_interval(days => GREATEST(1,
-              CASE
-                WHEN jsonb_typeof(organization.settings -> 'jobs' -> 'retention_days') = 'number'
-                THEN floor((organization.settings -> 'jobs' ->> 'retention_days')::numeric)::integer
-                ELSE $2::integer
-              END))
-          LIMIT $3
+    # The purge query spans every organization, so it runs with the
+    # background statement timeout rather than the request baseline (RFD 21).
+    {:ok, %{num_rows: deleted}} =
+      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn ->
+        Repo.query!(
+          """
+          DELETE FROM jobs
+          WHERE id IN (
+            SELECT job.id
+            FROM jobs AS job
+            JOIN organizations AS organization ON organization.id = job.organization_id
+            WHERE job.finished_at IS NOT NULL
+              AND job.finished_at < $1::timestamp - make_interval(days => GREATEST(1,
+                CASE
+                  WHEN jsonb_typeof(organization.settings -> 'jobs' -> 'retention_days') = 'number'
+                  THEN floor((organization.settings -> 'jobs' ->> 'retention_days')::numeric)::integer
+                  ELSE $2::integer
+                END))
+            LIMIT $3
+          )
+          """,
+          [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch]
         )
-        """,
-        [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch]
-      )
+      end)
 
     deleted
   end

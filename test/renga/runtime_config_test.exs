@@ -42,6 +42,39 @@ defmodule Renga.RuntimeConfigTest do
     end
   end
 
+  test "application connections get a baseline statement timeout" do
+    repo_config = fn environment ->
+      config =
+        with_env(
+          Map.merge(
+            %{
+              "DATABASE_URL" => database_url(nil),
+              "SECRET_KEY_BASE" => @secret,
+              "PHX_HOST" => "renga.example.com"
+            },
+            environment
+          ),
+          fn -> Config.Reader.read!(@runtime_config, env: :prod) end
+        )
+
+      {config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo),
+       config |> Keyword.fetch!(:renga) |> Keyword.fetch!(:background_statement_timeout_ms)}
+    end
+
+    {repo, background} = repo_config.(%{})
+    assert repo[:parameters][:statement_timeout] == "30000ms"
+    assert background == 300_000
+
+    {repo, background} =
+      repo_config.(%{
+        "DATABASE_STATEMENT_TIMEOUT" => "5000",
+        "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => "60000"
+      })
+
+    assert repo[:parameters][:statement_timeout] == "5000ms"
+    assert background == 60_000
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)
