@@ -6,8 +6,10 @@ defmodule RengaWeb.MemberLiveTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Inventory
   alias Renga.Members
+  alias Renga.Roles
 
   setup do
     organization = organization_fixture()
@@ -106,6 +108,61 @@ defmodule RengaWeb.MemberLiveTest do
       assert has_element?(view, "#members-read-only")
       refute has_element?(view, "#member-panel")
       refute has_element?(view, "[id$=-edit]")
+    end
+  end
+
+  describe "assignments" do
+    test "admins give a member a further role and take it away", context do
+      {:ok, network} =
+        Roles.create_role(context.owner, %{
+          "name" => "Network",
+          "permissions" => ["ipam.edit"]
+        })
+
+      {:ok, exporter} =
+        Roles.create_role(context.owner, %{
+          "name" => "Exporter",
+          "permissions" => ["organization.export"]
+        })
+
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/members")
+      id = context.member.membership_id
+
+      view |> element("#member-#{id}-roles") |> render_click()
+      assert has_element?(view, "#assign-current", "No further roles")
+
+      # Only roles within an admin's ceiling are offered.
+      assert has_element?(view, "#assign-form option[value='#{network.id}']")
+      refute has_element?(view, "#assign-form option[value='#{exporter.id}']")
+      refute has_element?(view, "#assign-form option[value=owner]")
+
+      view
+      |> form("#assign-form",
+        assignment: %{role: network.id, valid_until: "2999-01-01T09:00", reason: "On call"}
+      )
+      |> render_submit()
+
+      [assignment] = Assignments.list_assignments(context.admin)
+      assert has_element?(view, "#assignment-#{assignment.id}", "Until 2999-01-01 09:00 UTC")
+      assert has_element?(view, "#member-#{id}-assignment-#{assignment.id}", "Network")
+
+      view |> form("#assign-form", assignment: %{role: network.id}) |> render_submit()
+      assert render(view) =~ "They already hold that role."
+
+      view |> element("#assignment-#{assignment.id}-remove") |> render_click()
+      refute has_element?(view, "#assignment-#{assignment.id}")
+      assert Assignments.list_assignments(context.admin) == []
+    end
+
+    test "members see further roles but cannot change them", context do
+      {:ok, _} =
+        Assignments.assign(context.admin, context.member.membership_id, %{
+          "role" => "viewer"
+        })
+
+      {:ok, view, _html} = live(context.member_conn, ~p"/settings/members")
+      assert has_element?(view, "#member-list", "+ viewer")
+      refute has_element?(view, "#assign-panel")
     end
   end
 

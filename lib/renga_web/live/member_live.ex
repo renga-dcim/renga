@@ -12,8 +12,10 @@ defmodule RengaWeb.MemberLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Assignments
   alias Renga.Inventory.Changes
   alias Renga.Members
+  alias Renga.Roles.Assignment
 
   @role_meanings %{
     "owner" => "Everything, including organization settings and export",
@@ -33,8 +35,11 @@ defmodule RengaWeb.MemberLive do
        page_title: "Members",
        can_manage?: Members.can_manage?(scope),
        grantable: Members.grantable_roles(scope),
+       assignable: Assignments.assignable_roles(scope),
        editing: nil,
        form: nil,
+       assigning: nil,
+       assign_form: nil,
        invite_form: to_form(Members.change_invitation(%{"role" => "member"}), as: :invitation)
      )
      |> load_members()}
@@ -73,6 +78,46 @@ defmodule RengaWeb.MemberLive do
         scope
         |> Members.change_role(member.id, params["role"], opts)
         |> respond(socket, "#{member.user.email} is now #{params["role"]}")
+    end
+  end
+
+  def handle_event("assignments", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.members, &(&1.id == id)) do
+      nil -> {:noreply, load_members(socket)}
+      member -> {:noreply, assign(socket, assigning: member, assign_form: assign_form())}
+    end
+  end
+
+  def handle_event("assign", %{"assignment" => attrs}, socket) do
+    %{current_scope: scope, assigning: member} = socket.assigns
+
+    case Assignments.assign(scope, member.id, attrs) do
+      {:ok, assignment} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{member.user.email} now holds #{Assignment.role_name(assignment)}")
+         |> assign(:assign_form, assign_form())
+         |> load_members()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         assign(socket, :assign_form, to_form(changeset, as: :assignment, action: :insert))}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, refusal(reason)) |> load_members()}
+    end
+  end
+
+  def handle_event("unassign", %{"id" => id}, socket) do
+    case Assignments.unassign(socket.assigns.current_scope, id) do
+      {:ok, assignment} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{Assignment.role_name(assignment)} taken away")
+         |> load_members()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, refusal(reason)) |> load_members()}
     end
   end
 
@@ -155,6 +200,8 @@ defmodule RengaWeb.MemberLive do
 
   defp refusal(:self), do: "You can't disable yourself."
 
+  defp refusal(:already_assigned), do: "They already hold that role."
+
   defp refusal(:forbidden),
     do: "That change needs members.manage and a role that may grant both roles involved."
 
@@ -165,9 +212,28 @@ defmodule RengaWeb.MemberLive do
 
     assign(socket,
       members: Members.list_members(scope),
+      assignments: Assignments.list_assignments(scope) |> Enum.group_by(& &1.membership_id),
       invitations: if(socket.assigns.can_manage?, do: Members.list_invitations(scope), else: [])
     )
   end
+
+  defp assign_form,
+    do: to_form(Assignments.change_assignment(), as: :assignment)
+
+  defp role_options(%{built_in: built_in, custom: custom}) do
+    [
+      {"Built-in", for(role <- built_in, do: {String.capitalize(role), role})},
+      {"Custom", for(role <- custom, do: {role.name, role.id})}
+    ]
+    |> Enum.reject(fn {_group, options} -> options == [] end)
+  end
+
+  defp removable?(%Assignment{built_in_role: nil, role_id: id}, assignable),
+    do: Enum.any?(assignable.custom, &(&1.id == id))
+
+  defp removable?(%Assignment{built_in_role: role}, assignable), do: role in assignable.built_in
+
+  defp current?(assignment), do: Assignment.current?(assignment, DateTime.utc_now())
 
   defp expired?(invitation), do: DateTime.before?(invitation.expires_at, DateTime.utc_now())
 
@@ -214,8 +280,21 @@ defmodule RengaWeb.MemberLive do
               You
             </span>
           </:col>
-          <:col :let={member} label="Role" class="w-28">
+          <:col :let={member} label="Role" class="w-48">
             <span class="capitalize text-fg">{member.role}</span>
+            <span
+              :for={assignment <- Map.get(@assignments, member.id, [])}
+              id={"member-#{member.id}-assignment-#{assignment.id}"}
+              class={[
+                "block truncate text-xs",
+                if(current?(assignment), do: "text-fg-muted", else: "text-fg-muted line-through")
+              ]}
+            >
+              + {Assignment.role_name(assignment)}
+              <span :if={assignment.valid_until}>
+                until {Calendar.strftime(assignment.valid_until, "%Y-%m-%d %H:%M")} UTC
+              </span>
+            </span>
           </:col>
           <:col :let={member} label="Status" class="w-28">
             <span
@@ -233,6 +312,16 @@ defmodule RengaWeb.MemberLive do
             </span>
           </:col>
           <:action :let={member} :if={@can_manage?}>
+            <button
+              id={"member-#{member.id}-roles"}
+              type="button"
+              phx-click={
+                JS.push("assignments", value: %{id: member.id}) |> show_overlay("assign-panel")
+              }
+              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+            >
+              Roles
+            </button>
             <button
               :if={manageable?(member, @grantable)}
               id={"member-#{member.id}-edit"}
@@ -306,6 +395,84 @@ defmodule RengaWeb.MemberLive do
             <.button type="button" phx-click={hide_overlay("invite-panel")}>Cancel</.button>
             <.button id="invite-send" variant="primary" phx-disable-with="Sending…">
               Send invitation
+            </.button>
+          </div>
+        </.form>
+      </.side_panel>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="assign-panel"
+        title={if @assigning, do: "Roles for #{@assigning.user.email}", else: "Roles"}
+        description="Further roles add to the base role. Access changes at once and is recorded in Activity."
+      >
+        <div :if={@assigning} id="assign-current" class="mb-4 space-y-1">
+          <p class="text-sm text-fg">
+            Base role: <span class="font-medium capitalize">{@assigning.role}</span>
+          </p>
+          <p
+            :if={Map.get(@assignments, @assigning.id, []) == []}
+            class="text-sm text-fg-muted"
+          >
+            No further roles.
+          </p>
+          <div
+            :for={assignment <- Map.get(@assignments, @assigning.id, [])}
+            id={"assignment-#{assignment.id}"}
+            class="flex min-h-tap items-center justify-between gap-2 border-t border-edge py-1"
+          >
+            <span class="min-w-0 text-sm">
+              <span class="block truncate font-medium text-fg">
+                {Assignment.role_name(assignment)}
+              </span>
+              <span class="block truncate text-xs text-fg-muted">
+                <%= cond do %>
+                  <% !current?(assignment) -> %>
+                    Expired
+                  <% assignment.valid_until -> %>
+                    Until {Calendar.strftime(assignment.valid_until, "%Y-%m-%d %H:%M")} UTC
+                  <% true -> %>
+                    No end date
+                <% end %>
+                <span :if={assignment.reason}>· {assignment.reason}</span>
+              </span>
+            </span>
+            <button
+              :if={removable?(assignment, @assignable)}
+              id={"assignment-#{assignment.id}-remove"}
+              type="button"
+              phx-click={JS.push("unassign", value: %{id: assignment.id})}
+              class="min-h-tap shrink-0 cursor-pointer text-sm text-crit hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+        <.form :if={@assign_form} for={@assign_form} id="assign-form" phx-submit="assign">
+          <.input
+            field={@assign_form[:built_in_role]}
+            name="assignment[role]"
+            type="select"
+            label="Give role"
+            prompt="Choose a role"
+            options={role_options(@assignable)}
+          />
+          <.input
+            field={@assign_form[:valid_until]}
+            type="datetime-local"
+            label="Until (UTC, optional)"
+          />
+          <.input
+            field={@assign_form[:reason]}
+            type="textarea"
+            label="Reason (optional)"
+            rows="2"
+            placeholder="Shown in Activity"
+          />
+          <div class="mt-4 flex justify-end gap-2">
+            <.button type="button" phx-click={hide_overlay("assign-panel")}>Close</.button>
+            <.button id="assign-save" variant="primary" phx-disable-with="Saving…">
+              Give role
             </.button>
           </div>
         </.form>

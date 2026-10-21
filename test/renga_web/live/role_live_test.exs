@@ -6,6 +6,7 @@ defmodule RengaWeb.RoleLiveTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Roles
 
   setup do
@@ -38,6 +39,14 @@ defmodule RengaWeb.RoleLiveTest do
     [role] = Roles.list_roles(context.admin)
     assert role.permissions == ["ipam.edit", "topology.edit"]
     assert has_element?(view, "#role-#{role.id}", "ipam.edit, topology.edit")
+    assert has_element?(view, "#role-#{role.id}-people", "Nobody")
+
+    {:ok, _} =
+      Assignments.assign(context.admin, context.admin.membership_id, %{"role" => role.id})
+
+    {:ok, view, _html} = live(context.admin_conn, ~p"/settings/roles")
+    assert has_element?(view, "#role-#{role.id}-people", "1 person")
+    assert has_element?(view, "#delete-role-#{role.id}", "1 person with it will lose it")
 
     view |> element("#role-#{role.id}-edit") |> render_click()
 
