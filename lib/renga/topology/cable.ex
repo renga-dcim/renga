@@ -18,6 +18,7 @@ defmodule Renga.Topology.Cable do
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "cables" do
+    field :cable_kind, :string, default: "data"
     field :cable_type, :string
     field :status, :string, default: "connected"
     field :label, :string
@@ -30,6 +31,10 @@ defmodule Renga.Topology.Cable do
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :interface_a, Renga.Inventory.Interface
     belongs_to :interface_b, Renga.Inventory.Interface
+    # RFD 10: a power cable joins a power port to an outlet or a feed.
+    belongs_to :power_port, Renga.Power.Port
+    belongs_to :power_outlet, Renga.Power.Outlet
+    belongs_to :power_feed, Renga.Power.Feed
     belongs_to :primary_assertion, Renga.Topology.CableAssertion
     timestamps()
   end
@@ -61,5 +66,30 @@ defmodule Renga.Topology.Cable do
     |> unique_constraint([:organization_id, :interface_a_id, :interface_b_id],
       name: :cables_endpoints_index
     )
+  end
+
+  @doc "The current power cable a confirmed power assertion selects (RFD 10)."
+  def power_changeset(cable, attrs) do
+    cable
+    |> CableAttributes.cast_attributes(attrs)
+    |> put_change(:cable_kind, "power")
+    |> validate_required([
+      :organization_id,
+      :power_port_id,
+      :primary_assertion_id,
+      :status,
+      :metadata,
+      :last_asserted_at
+    ])
+    |> check_constraint(:power_port_id, name: :cables_endpoint_shape)
+    |> check_constraint(:status, name: :cables_valid_status)
+    |> check_constraint(:length_unit, name: :cables_valid_length_unit)
+    |> check_constraint(:length_value, name: :cables_length_pair)
+    |> check_constraint(:length_value, name: :cables_positive_length)
+    |> check_constraint(:color, name: :cables_color_format)
+    |> assoc_constraint(:primary_assertion, name: :cables_tenant_assertion_fkey)
+    |> unique_constraint(:power_port_id, name: :cables_power_port_index)
+    |> unique_constraint(:power_outlet_id, name: :cables_power_outlet_index)
+    |> unique_constraint(:power_feed_id, name: :cables_power_feed_index)
   end
 end

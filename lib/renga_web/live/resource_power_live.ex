@@ -6,6 +6,10 @@ defmodule RengaWeb.ResourcePowerLive do
   A port shows its maximum draw and allocated draw in W. The allocation
   defaults from the catalog template; owners and admins can override it per
   port in a side panel, and clearing the override restores the default.
+
+  Each port and outlet shows what it is plugged into: an outlet on another
+  device or a panel feed. Owners and admins record a connection or unplug
+  one; both are confirmed power cable claims (RFD 10 phase 2b).
   """
   use RengaWeb, :live_view
 
@@ -17,6 +21,7 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Power
+  alias Renga.Power.Cables
   alias Renga.Power.Port
 
   @impl true
@@ -33,7 +38,11 @@ defmodule RengaWeb.ResourcePowerLive do
        hardware?: Catalog.hardware_assignable_resource?(resource),
        can_manage?: Inventory.organization_manager?(scope),
        editing_port: nil,
-       allocation_form: allocation_form(nil)
+       allocation_form: allocation_form(nil),
+       connecting_port: nil,
+       connect_form: to_form(%{"target" => ""}, as: :connection),
+       connect_error: nil,
+       connect_options: []
      )
      |> load_endpoints()}
   end
@@ -46,6 +55,63 @@ defmodule RengaWeb.ResourcePowerLive do
   def handle_event("edit_port", %{"id" => id}, socket) do
     port = Enum.find(socket.assigns.ports, &(&1.id == id))
     {:noreply, assign(socket, editing_port: port, allocation_form: allocation_form(port))}
+  end
+
+  def handle_event("connect_port", %{"id" => id}, socket) do
+    port = Enum.find(socket.assigns.ports, &(&1.id == id))
+    current = socket.assigns.cables_by_port[id]
+
+    {:noreply,
+     assign(socket,
+       connecting_port: port,
+       connect_form: to_form(%{"target" => target_value(current)}, as: :connection),
+       connect_error: nil,
+       connect_options: connect_options(socket)
+     )}
+  end
+
+  def handle_event("save_connection", %{"connection" => %{"target" => target}}, socket) do
+    port = socket.assigns.connecting_port
+    action = connection_action(port, socket.assigns.cables_by_port)
+    result_label = if action == "Move", do: "moved", else: "connected"
+
+    result =
+      case target_attrs(target) do
+        nil ->
+          {:error, :power_cable_endpoints}
+
+        attrs ->
+          Cables.connect(socket.assigns.current_scope, Map.put(attrs, :power_port_id, port.id))
+      end
+
+    case result do
+      {:ok, _assertion} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{port.name} #{result_label}")
+         |> assign(connecting_port: nil, connect_error: nil)
+         |> close_overlay("connect-panel")
+         |> load_endpoints()}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, connect_error: connection_error(reason))}
+    end
+  end
+
+  def handle_event("unplug_port", %{"id" => id}, socket) do
+    case Cables.disconnect_current(socket.assigns.current_scope, id) do
+      {:ok, _retraction} ->
+        {:noreply, socket |> put_flash(:info, "Unplugged") |> load_endpoints()}
+
+      {:error, :power_connection_stale} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That connection has already changed")
+         |> load_endpoints()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, connection_error(reason))}
+    end
   end
 
   def handle_event("save_allocation", %{"allocation" => params}, socket) do
@@ -139,17 +205,40 @@ defmodule RengaWeb.ResourcePowerLive do
                   set here
                 </span>
               </:col>
+              <:col :let={port} label="Plugged into">
+                <.port_connection cable={@cables_by_port[port.id]} />
+              </:col>
               <:action :let={port} :if={@can_manage?}>
-                <.button
-                  id={"power-port-#{port.id}-edit"}
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  aria-label={"Edit allocation for #{port.name}"}
-                  phx-click={edit_port(port)}
-                >
-                  Edit
-                </.button>
+                <div class="flex justify-end gap-2">
+                  <.button
+                    id={"power-port-#{port.id}-edit"}
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={"Edit allocation for #{port.name}"}
+                    phx-click={edit_port(port)}
+                  >
+                    Edit
+                  </.button>
+                  <.button
+                    id={"connect-port-#{port.id}"}
+                    type="button"
+                    size="sm"
+                    phx-click={connect_port(port)}
+                  >
+                    {if @cables_by_port[port.id], do: "Move", else: "Connect"}
+                  </.button>
+                  <.button
+                    :if={@cables_by_port[port.id]}
+                    id={"unplug-port-#{port.id}"}
+                    type="button"
+                    size="sm"
+                    phx-click="unplug_port"
+                    phx-value-id={@cables_by_port[port.id].id}
+                  >
+                    Unplug
+                  </.button>
+                </div>
               </:action>
             </.table>
           </section>
@@ -170,6 +259,55 @@ defmodule RengaWeb.ResourcePowerLive do
               <:col :let={outlet} label="Leg" class="w-14">
                 {if outlet.feed_leg, do: String.upcase(outlet.feed_leg), else: "—"}
               </:col>
+              <:col :let={outlet} label="Powers">
+                <.outlet_connection cable={@cables_by_outlet[outlet.id]} />
+              </:col>
+            </.table>
+          </section>
+
+          <section
+            :if={@retired_cables != []}
+            aria-labelledby="retired-power-connections-heading"
+            class="space-y-2"
+          >
+            <div>
+              <h2 id="retired-power-connections-heading" class="text-sm font-semibold">
+                Retired hardware connections
+              </h2>
+              <p class="text-xs text-fg-muted">
+                These connections remain recorded although this hardware type no longer defines the
+                local endpoint.
+              </p>
+            </div>
+            <.table
+              id="retired-power-connections"
+              rows={@retired_cables}
+              row_id={&"retired-power-connection-#{&1.id}"}
+            >
+              <:col :let={cable} label="Retired endpoint">
+                <span class="font-mono">{retired_endpoint_label(cable, @resource.id)}</span>
+              </:col>
+              <:col :let={cable} label="Connected to">
+                <.port_connection
+                  :if={local_port?(cable, @resource.id)}
+                  cable={cable}
+                />
+                <.outlet_connection
+                  :if={!local_port?(cable, @resource.id)}
+                  cable={cable}
+                />
+              </:col>
+              <:action :let={cable} :if={@can_manage?}>
+                <.button
+                  id={"unplug-retired-cable-#{cable.id}"}
+                  type="button"
+                  size="sm"
+                  phx-click="unplug_port"
+                  phx-value-id={cable.id}
+                >
+                  Unplug
+                </.button>
+              </:action>
             </.table>
           </section>
         </div>
@@ -204,9 +342,152 @@ defmodule RengaWeb.ResourcePowerLive do
           </div>
         </.form>
       </.side_panel>
+
+      <.side_panel
+        :if={@can_manage?}
+        id="connect-panel"
+        title={connection_title(@connecting_port, @cables_by_port)}
+      >
+        <.form for={@connect_form} id="connect-form" phx-submit="save_connection" class="space-y-1">
+          <.input
+            field={@connect_form[:target]}
+            type="select"
+            label="Plugged into"
+            prompt="Choose an outlet or feed"
+            options={@connect_options}
+          />
+          <p :if={@connect_error} id="connect-error" role="alert" class="text-sm text-crit">
+            {@connect_error}
+          </p>
+          <p class="text-xs text-fg-muted">
+            Recorded as a confirmed connection by you. Whatever this port or that outlet
+            was plugged into before is replaced.
+          </p>
+          <div class="mt-4 flex justify-end gap-2">
+            <.button type="button" phx-click={hide_overlay("connect-panel")}>Cancel</.button>
+            <.button id="save-connection" variant="primary" phx-disable-with="Saving…">
+              {connection_action(@connecting_port, @cables_by_port)}
+            </.button>
+          </div>
+        </.form>
+      </.side_panel>
     </Layouts.app>
     """
   end
+
+  attr :cable, :any, required: true
+
+  defp port_connection(%{cable: nil} = assigns),
+    do: ~H"""
+    <span class="text-fg-muted">Not recorded</span>
+    """
+
+  defp port_connection(%{cable: %{power_outlet: %{}}} = assigns) do
+    ~H"""
+    <.link
+      navigate={~p"/inventory/#{@cable.power_outlet.resource}/power"}
+      class="text-link hover:underline"
+    >
+      {@cable.power_outlet.resource.name}
+    </.link>
+    <span class="font-mono">{@cable.power_outlet.name}</span>
+    """
+  end
+
+  defp port_connection(assigns) do
+    ~H"""
+    <span>{@cable.power_feed.panel.name}</span>
+    <span class="font-mono">{@cable.power_feed.name}</span>
+    """
+  end
+
+  attr :cable, :any, required: true
+
+  defp outlet_connection(%{cable: nil} = assigns),
+    do: ~H"""
+    <span class="text-fg-muted">—</span>
+    """
+
+  defp outlet_connection(assigns) do
+    ~H"""
+    <.link
+      navigate={~p"/inventory/#{@cable.power_port.resource}/power"}
+      class="text-link hover:underline"
+    >
+      {@cable.power_port.resource.name}
+    </.link>
+    <span class="font-mono">{@cable.power_port.name}</span>
+    """
+  end
+
+  defp connect_port(port),
+    do: "connect_port" |> JS.push(value: %{id: port.id}) |> show_overlay("connect-panel")
+
+  defp connection_title(nil, _cables_by_port), do: "Connect"
+
+  defp connection_title(port, cables_by_port),
+    do: "#{connection_action(port, cables_by_port)} #{port.name}"
+
+  defp connection_action(nil, _cables_by_port), do: "Connect"
+
+  defp connection_action(port, cables_by_port),
+    do: if(Map.has_key?(cables_by_port, port.id), do: "Move", else: "Connect")
+
+  # Outlets grouped by device, then feeds grouped by panel; a value names
+  # its kind so one select covers both.
+  defp connect_options(socket) do
+    %{outlets: outlets, feeds: feeds} =
+      Cables.connectable(socket.assigns.current_scope, socket.assigns.resource.id)
+
+    outlet_groups =
+      outlets
+      |> Enum.chunk_by(& &1.resource_id)
+      |> Enum.map(fn [first | _] = group ->
+        {first.resource.name, Enum.map(group, &{"Outlet #{&1.name}", "outlet:#{&1.id}"})}
+      end)
+
+    feed_groups =
+      feeds
+      |> Enum.chunk_by(& &1.panel_id)
+      |> Enum.map(fn [first | _] = group ->
+        {"Panel #{first.panel.name}", Enum.map(group, &{"Feed #{&1.name}", "feed:#{&1.id}"})}
+      end)
+
+    outlet_groups ++ feed_groups
+  end
+
+  defp target_value(nil), do: ""
+  defp target_value(%{power_outlet_id: id}) when is_binary(id), do: "outlet:#{id}"
+  defp target_value(%{power_feed_id: id}), do: "feed:#{id}"
+
+  defp target_attrs("outlet:" <> id), do: %{power_outlet_id: id}
+  defp target_attrs("feed:" <> id), do: %{power_feed_id: id}
+  defp target_attrs(_target), do: nil
+
+  defp local_port?(%{power_port: %{resource_id: resource_id}}, resource_id), do: true
+  defp local_port?(_cable, _resource_id), do: false
+
+  defp retired_endpoint_label(cable, resource_id) do
+    if local_port?(cable, resource_id),
+      do: "Port #{cable.power_port.name}",
+      else: "Outlet #{cable.power_outlet.name}"
+  end
+
+  defp retired_for_resource?(cable, resource_id) do
+    (local_port?(cable, resource_id) and not is_nil(cable.power_port.retired_at)) or
+      match?(
+        %{resource_id: ^resource_id, retired_at: retired_at} when not is_nil(retired_at),
+        cable.power_outlet
+      )
+  end
+
+  defp connection_error(:forbidden), do: "You are not allowed to manage power inventory"
+  defp connection_error(:power_loop), do: "A device's outlet cannot power its own port"
+
+  defp connection_error(:power_endpoint_retired),
+    do: "That port or outlet is no longer part of its hardware type"
+
+  defp connection_error(_reason), do: "Choose an outlet or feed to connect"
 
   defp edit_port(port),
     do: "edit_port" |> JS.push(value: %{id: port.id}) |> show_overlay("allocation-panel")
@@ -215,12 +496,19 @@ defmodule RengaWeb.ResourcePowerLive do
     %{ports: ports, outlets: outlets} =
       Power.list_device_endpoints(socket.assigns.current_scope, socket.assigns.resource.id)
 
+    cables =
+      Cables.list_cables(socket.assigns.current_scope, resource_ids: [socket.assigns.resource.id])
+
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
 
     assign(socket,
       ports: ports,
       outlets: outlets,
+      cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
+      cables_by_outlet:
+        for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
+      retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
       unallocated: unallocated,
       allocated_total: if(unallocated == 0, do: Enum.sum(allocations))
     )

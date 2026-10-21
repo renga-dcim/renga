@@ -5,6 +5,11 @@ defmodule Renga.Topology.CableReconciler do
   # assertions, then explains disagreement with plans and neighbor evidence.
   # Proposed assertions are deliberately invisible here: evidence may suggest a
   # cable but only an operator or trusted import can create, move, or remove one.
+  #
+  # Data cables (two interfaces) and RFD 10 power cables (a power port and an
+  # outlet or feed) select their current cables by the same rules, each kind
+  # among its own claims. Plan, infeasibility, and neighbor findings are about
+  # interfaces, so they cover data cables only.
 
   import Ecto.Query, warn: false
 
@@ -54,7 +59,8 @@ defmodule Renga.Topology.CableReconciler do
   def reconcile(%Scope{organization_id: organization_id}) do
     lock_state!(organization_id)
     now = Renga.Time.utc_now_ms()
-    {cables, conflict_findings} = rebuild_current_cables(organization_id, now)
+    {cables, conflict_findings} = rebuild_current_cables(organization_id, "data", now)
+    {_power_cables, _power_conflicts} = rebuild_current_cables(organization_id, "power", now)
 
     findings =
       conflict_findings ++
@@ -66,13 +72,26 @@ defmodule Renga.Topology.CableReconciler do
     list_cables(organization_id)
   end
 
+  @doc "Current data cables; `kind: \"power\"` lists power cables instead."
   def list_cables(organization_id, opts \\ []) do
-    Cable
-    |> where([cable], cable.organization_id == ^organization_id)
-    |> maybe_where_interface(Keyword.get(opts, :interface_id))
-    |> order_by([cable], asc: cable.interface_a_id, asc: cable.interface_b_id)
-    |> preload([:interface_a, :interface_b, :primary_assertion])
-    |> Repo.all()
+    case Keyword.get(opts, :kind, "data") do
+      "data" ->
+        Cable
+        |> where([cable], cable.organization_id == ^organization_id)
+        |> where([cable], cable.cable_kind == "data")
+        |> maybe_where_interface(Keyword.get(opts, :interface_id))
+        |> order_by([cable], asc: cable.interface_a_id, asc: cable.interface_b_id)
+        |> preload([:interface_a, :interface_b, :primary_assertion])
+        |> Repo.all()
+
+      "power" ->
+        Cable
+        |> where([cable], cable.organization_id == ^organization_id)
+        |> where([cable], cable.cable_kind == "power")
+        |> order_by([cable], asc: cable.power_port_id)
+        |> preload([:primary_assertion])
+        |> Repo.all()
+    end
   end
 
   @doc "Only physically connectable interfaces can terminate a direct cable."
@@ -150,8 +169,8 @@ defmodule Renga.Topology.CableReconciler do
       else: Map.put(attrs, Atom.to_string(key), value)
   end
 
-  defp rebuild_current_cables(organization_id, now) do
-    claims_by_pair = effective_claims(organization_id)
+  defp rebuild_current_cables(organization_id, kind, now) do
+    claims_by_pair = effective_claims(organization_id, kind)
 
     {selected, blocked} =
       claims_by_pair
@@ -159,7 +178,7 @@ defmodule Renga.Topology.CableReconciler do
       |> Enum.filter(&(&1.action == "assert"))
       |> select_claims()
 
-    existing = list_cables(organization_id)
+    existing = list_cables(organization_id, kind: kind)
     existing_by_pair = Map.new(existing, &{pair_key(&1), &1})
     selected_pairs = MapSet.new(selected, &pair_key/1)
     selected_by_endpoint = endpoint_index(selected)
@@ -180,13 +199,15 @@ defmodule Renga.Topology.CableReconciler do
         end
       end)
 
-    {cables, conflict_findings(blocked, selected, now)}
+    conflicts = if kind == "data", do: conflict_findings(blocked, selected, now), else: []
+    {cables, conflicts}
   end
 
-  defp effective_claims(organization_id) do
+  defp effective_claims(organization_id, kind) do
     CableAssertion
     |> where([assertion], assertion.organization_id == ^organization_id)
     |> where([assertion], assertion.kind in ^@confirmed_kinds)
+    |> where([assertion], assertion.cable_kind == ^kind)
     |> order_by([assertion], asc: assertion.asserted_at, asc: assertion.sequence)
     |> Repo.all()
     |> Enum.reduce(%{}, fn assertion, claims ->
@@ -206,7 +227,7 @@ defmodule Renga.Topology.CableReconciler do
 
       _claim_or_nil ->
         cable
-        |> cable_endpoints()
+        |> endpoint_keys()
         |> Enum.map(&Map.get(selected_by_endpoint, &1))
         |> Enum.reject(&is_nil/1)
         |> Enum.max_by(&{DateTime.to_unix(&1.asserted_at, :microsecond), &1.sequence}, fn ->
@@ -223,7 +244,7 @@ defmodule Renga.Topology.CableReconciler do
     claims
     |> Enum.sort_by(&{DateTime.to_unix(&1.asserted_at, :microsecond), &1.sequence}, :desc)
     |> Enum.reduce({[], [], MapSet.new()}, fn claim, {selected, blocked, occupied} ->
-      endpoints = MapSet.new([claim.interface_a_id, claim.interface_b_id])
+      endpoints = MapSet.new(endpoint_keys(claim))
 
       if MapSet.disjoint?(occupied, endpoints) do
         {[claim | selected], blocked, MapSet.union(occupied, endpoints)}
@@ -240,12 +261,16 @@ defmodule Renga.Topology.CableReconciler do
     cable =
       %Cable{
         organization_id: organization_id,
+        cable_kind: assertion.cable_kind,
         interface_a_id: assertion.interface_a_id,
         interface_b_id: assertion.interface_b_id,
+        power_port_id: assertion.power_port_id,
+        power_outlet_id: assertion.power_outlet_id,
+        power_feed_id: assertion.power_feed_id,
         primary_assertion_id: assertion.id
       }
       |> Ecto.Changeset.change(last_asserted_at: assertion.asserted_at)
-      |> Cable.changeset(cable_attributes(assertion))
+      |> cable_changeset(cable_attributes(assertion))
       |> insert_or_rollback()
 
     record_event(cable, "created", %{}, assertion, now)
@@ -262,7 +287,7 @@ defmodule Renga.Topology.CableReconciler do
         primary_assertion_id: assertion.id,
         last_asserted_at: assertion.asserted_at
       )
-      |> Cable.changeset(attrs)
+      |> cable_changeset(attrs)
       |> update_or_rollback()
 
     if changes != %{}, do: record_event(cable, "updated", changes, assertion, now)
@@ -286,6 +311,10 @@ defmodule Renga.Topology.CableReconciler do
       assertion_id: cause && cause.id,
       interface_a_id: cable.interface_a_id,
       interface_b_id: cable.interface_b_id,
+      cable_kind: cable.cable_kind,
+      power_port_id: cable.power_port_id,
+      power_outlet_id: cable.power_outlet_id,
+      power_feed_id: cable.power_feed_id,
       source_id: cause && cause.source_id,
       actor_user_id: cause && cause.actor_user_id
     }
@@ -349,6 +378,7 @@ defmodule Renga.Topology.CableReconciler do
     plans =
       CablePlan
       |> where([plan], plan.organization_id == ^organization_id)
+      |> where([plan], plan.cable_kind == "data")
       |> Repo.all()
 
     if plans == [] do
@@ -576,11 +606,31 @@ defmodule Renga.Topology.CableReconciler do
 
   defp endpoint_index(claims) do
     Enum.reduce(claims, %{}, fn claim, index ->
-      index
-      |> Map.put(claim.interface_a_id, claim)
-      |> Map.put(claim.interface_b_id, claim)
+      Enum.reduce(endpoint_keys(claim), index, &Map.put(&2, &1, claim))
     end)
   end
+
+  # What a claim or cable occupies. Interface IDs for data cables, so the
+  # data findings keep indexing by interface; tagged IDs for power cables,
+  # whose endpoints live in three tables.
+  defp endpoint_keys(%{cable_kind: "power"} = claim) do
+    far =
+      if claim.power_outlet_id,
+        do: {:power_outlet, claim.power_outlet_id},
+        else: {:power_feed, claim.power_feed_id}
+
+    [{:power_port, claim.power_port_id}, far]
+  end
+
+  defp endpoint_keys(claim), do: [claim.interface_a_id, claim.interface_b_id]
+
+  defp cable_changeset(%Ecto.Changeset{data: %Cable{cable_kind: "power"}} = cable, attrs),
+    do: Cable.power_changeset(cable, attrs)
+
+  defp cable_changeset(%Cable{cable_kind: "power"} = cable, attrs),
+    do: Cable.power_changeset(cable, attrs)
+
+  defp cable_changeset(cable, attrs), do: Cable.changeset(cable, attrs)
 
   defp cable_endpoint_index(cables) do
     Enum.reduce(cables, %{}, fn cable, index ->
@@ -634,6 +684,9 @@ defmodule Renga.Topology.CableReconciler do
       end
     end)
   end
+
+  defp pair_key(%{cable_kind: "power"} = claim),
+    do: "power:#{claim.power_port_id}:#{claim.power_outlet_id || claim.power_feed_id}"
 
   defp pair_key(%{interface_a_id: interface_a_id, interface_b_id: interface_b_id}),
     do: "#{interface_a_id}:#{interface_b_id}"

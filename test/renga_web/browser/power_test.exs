@@ -10,6 +10,7 @@ defmodule RengaWeb.Browser.PowerTest do
   alias Renga.Power
 
   @moduletag :playwright
+  @phone [has_touch: true, is_mobile: true, viewport: %{width: 390, height: 844}]
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -33,7 +34,15 @@ defmodule RengaWeb.Browser.PowerTest do
         %{kind: "power_port", name: "PSU1", attributes: %{"allocated_draw_w" => 350}}
       ])
 
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-1", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}},
+        %{kind: "power_outlet", name: "8", attributes: %{"inlet" => "Inlet"}}
+      ])
+
     %{ports: [port]} = Power.list_device_endpoints(scope, server.id)
+    %{outlets: [_outlet7, _outlet8]} = Power.list_device_endpoints(scope, pdu.id)
 
     conn =
       add_session_cookie(
@@ -86,5 +95,79 @@ defmodule RengaWeb.Browser.PowerTest do
     |> press("#allocation-panel [role=dialog]", "Escape")
     |> refute_has("#allocation-panel [role=dialog]")
     |> assert_has("#{edit}:focus")
+  end
+
+  test "a connection editor works from the keyboard and restores focus", context do
+    connect = "#connect-port-#{context.port.id}"
+
+    context.conn
+    |> visit("/inventory/#{context.server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> evaluate("document.querySelector(#{Jason.encode!(connect)}).focus()")
+    |> assert_has("#{connect}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#connect-panel [role=dialog]", text: "Connect PSU1")
+    |> evaluate(
+      "document.querySelector('#connect-panel [role=dialog]').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> select("Plugged into", option: "Outlet 7", exact: false)
+    |> click_button("#save-connection", "Connect")
+    |> assert_has("#flash-info", text: "PSU1 connected")
+    |> assert_has("#power-port-#{context.port.id}", text: "pdu-1")
+    |> assert_has(connect, text: "Move")
+    |> evaluate("document.querySelector(#{Jason.encode!(connect)}).focus()")
+    |> press(":focus", "Enter")
+    |> assert_has("#connect-panel [role=dialog]", text: "Move PSU1")
+    |> select("Plugged into", option: "Outlet 8", exact: false)
+    |> click_button("#save-connection", "Move")
+    |> refute_has("#connect-panel [role=dialog]")
+    |> assert_has("#flash-info", text: "PSU1 moved")
+    |> assert_has("#power-port-#{context.port.id} .font-mono", text: "8", exact: true)
+    |> assert_has("#{connect}:focus")
+    |> click_button("#unplug-port-#{context.port.id}", "Unplug")
+    |> assert_has("#power-port-#{context.port.id}", text: "Not recorded")
+  end
+
+  @tag browser_context_opts: @phone
+  test "the Power tab and connection panel fit a phone with tappable controls", context do
+    context.conn
+    |> visit("/inventory/#{context.server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
+    |> evaluate(tap_heights_js("#power-ports button"), &assert_tappable/1)
+    |> click_button("#connect-port-#{context.port.id}", "Connect")
+    |> assert_has("#connect-panel [role=dialog]")
+    |> evaluate(panel_fits_js("connect-panel"), &assert(&1 == true))
+    |> evaluate(
+      tap_heights_js("#connect-form select, #connect-form button"),
+      &assert_tappable/1
+    )
+  end
+
+  defp assert_tappable(heights) do
+    assert heights != []
+    assert Enum.all?(heights, &(round(&1) >= 44)), "tap targets under 44px: #{inspect(heights)}"
+  end
+
+  defp panel_fits_js(id) do
+    """
+    (() => {
+      const box = document.getElementById('#{id}-container').getBoundingClientRect();
+      return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+    })()
+    """
+  end
+
+  defp tap_heights_js(selector) do
+    """
+    [...document.querySelectorAll(#{Renga.JSON.encode!(selector)})]
+      .filter(element => element.offsetParent !== null)
+      .map(element => element.getBoundingClientRect().height)
+    """
   end
 end

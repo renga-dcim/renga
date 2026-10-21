@@ -765,6 +765,7 @@ defmodule Renga.Topology do
   def list_cable_plans(%Scope{organization_id: organization_id}, opts \\ []) do
     CablePlan
     |> where([plan], plan.organization_id == ^organization_id)
+    |> where([plan], plan.cable_kind == "data")
     |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
     |> order_by([plan], asc: plan.interface_a_id, asc: plan.interface_b_id)
     |> preload(interface_a: :resource, interface_b: :resource)
@@ -831,6 +832,7 @@ defmodule Renga.Topology do
   def list_cable_assertions(%Scope{organization_id: organization_id}, opts \\ []) do
     CableAssertion
     |> where([assertion], assertion.organization_id == ^organization_id)
+    |> where([assertion], assertion.cable_kind == "data")
     |> maybe_where_cable_interface(Keyword.get(opts, :interface_id))
     |> order_by([assertion], desc: assertion.asserted_at, desc: assertion.sequence)
     |> preload(interface_a: :resource, interface_b: :resource)
