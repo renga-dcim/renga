@@ -38,6 +38,19 @@ defmodule Renga.Inventory.AgentPayload do
   @neighbor_port_id_kinds ~w(mac_address local name)
   @completeness_sections ~w(components interface_vlans interface_neighbors interface_relationships placement)
   @prohibited_resource_keys ~w(id organization_id resource_id source_id sync_run_id)
+  # RFD 11, "Observation payload": what a report is authoritative for. Each
+  # collector kind reports one scope and one resource kind.
+  @observation_scopes ~w(host targets hypervisor)
+  @collector_kinds %{
+    "switch_poller" => %{scope: "targets", resource_kind: "switch"},
+    "vm_provider" => %{scope: "hypervisor", resource_kind: "vm"}
+  }
+  @target_statuses ~w(reachable unreachable)
+  @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
+  @max_scope_resources 1_000
+  @max_scope_targets 1_000
+  @max_collector_id_length 64
+  @collector_id_pattern ~r/\A[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\z/
   # Mirrors the agent's own label validation (agent/src/config.rs).
   @max_labels 32
   @max_label_key_length 63
@@ -85,6 +98,14 @@ defmodule Renga.Inventory.AgentPayload do
       neighbor_chassis_id_kinds: @neighbor_chassis_id_kinds,
       neighbor_port_id_kinds: @neighbor_port_id_kinds,
       completeness_sections: @completeness_sections,
+      observation_scopes: @observation_scopes,
+      collector_kinds: @collector_kinds,
+      target_statuses: @target_statuses,
+      strong_identifier_kinds: @strong_identifier_kinds,
+      max_scope_resources: @max_scope_resources,
+      max_scope_targets: @max_scope_targets,
+      max_collector_id_length: @max_collector_id_length,
+      collector_id_pattern: @collector_id_pattern,
       max_labels: @max_labels,
       max_label_key_length: @max_label_key_length,
       max_label_value_length: @max_label_value_length,
@@ -131,7 +152,7 @@ defmodule Renga.Inventory.AgentPayload do
       |> validate_source_identity(params, source)
       |> validate_observation_id(params)
       |> validate_section_completeness(params)
-      |> validate_resources(params)
+      |> validate_scope(params)
 
     case errors do
       [] ->
@@ -399,6 +420,351 @@ defmodule Renga.Inventory.AgentPayload do
     end
   end
 
+  @doc """
+  The scope an observation reports: `"host"` for the agent's own host, or a
+  collector stream's `"targets"` or `"hypervisor"` (RFD 11).
+  """
+  def observation_scope(%{"scope" => scope}) when scope in @observation_scopes, do: scope
+  def observation_scope(_payload), do: "host"
+
+  @doc "Whether the payload is a collector stream's multi-resource report."
+  def scoped_report?(payload), do: observation_scope(payload) != "host"
+
+  @doc """
+  The collector stream a validated report names, as `{collector_id, kind}`,
+  or `nil` for a host report.
+  """
+  def collector(%{"collector" => %{"id" => id, "kind" => kind}}) when is_binary(id),
+    do: {String.trim(id), kind}
+
+  def collector(_payload), do: nil
+
+  @doc """
+  The targets a validated report covers, as `%{key, status, error}` maps: a
+  switch poller's target addresses or the one hypervisor.
+  """
+  def report_targets(%{"scope" => "targets", "targets" => targets}),
+    do: Enum.map(targets, &report_target(&1, "address"))
+
+  def report_targets(%{"scope" => "hypervisor", "hypervisor" => hypervisor}),
+    do: [report_target(hypervisor, "id")]
+
+  def report_targets(_payload), do: []
+
+  defp report_target(target, key_field) do
+    %{
+      key: String.trim(Map.fetch!(target, key_field)),
+      status: Map.fetch!(target, "status"),
+      error: blank_to_nil(Map.get(target, "error"))
+    }
+  end
+
+  @doc "Whether the report says it is the whole of each reachable target it covers."
+  def complete_report?(payload), do: Map.get(payload, "complete") == true
+
+  @doc """
+  Splits a validated report into one single-resource payload per resource,
+  each naming the target it belongs to under `"target"`. The derived payloads
+  keep the report's scope, collector, time, and section completeness, so they
+  reconcile like host observations.
+  """
+  def derived_resource_payloads(%{"resources" => resources} = payload) do
+    shared =
+      Map.take(payload, ~w(observation_id observed_at scope collector section_completeness))
+
+    resources
+    |> Enum.with_index()
+    |> Enum.map(fn {resource, index} ->
+      {index,
+       shared
+       |> Map.put("target", resource_target(payload, resource))
+       |> Map.put("resources", [Map.delete(resource, "target")])}
+    end)
+  end
+
+  defp resource_target(%{"scope" => "hypervisor", "hypervisor" => %{"id" => id}}, _resource),
+    do: String.trim(id)
+
+  defp resource_target(_payload, %{"target" => target}), do: String.trim(target)
+
+  defp validate_scope(errors, params) do
+    case Map.get(params, "scope") do
+      scope when scope in [nil, "host"] ->
+        errors
+        |> validate_absent(params, "collector", "is only allowed for targets or hypervisor scope")
+        |> validate_absent(params, "targets", "is only allowed for targets scope")
+        |> validate_absent(params, "hypervisor", "is only allowed for hypervisor scope")
+        |> validate_absent(params, "complete", "is only allowed for targets or hypervisor scope")
+        |> validate_resources(params)
+
+      scope when scope in ["targets", "hypervisor"] ->
+        validate_scoped_report(errors, params, scope)
+
+      _invalid ->
+        [error("scope", "must be one of #{Enum.join(@observation_scopes, ", ")}") | errors]
+    end
+  end
+
+  defp validate_absent(errors, params, key, message) do
+    if Map.get(params, key) == nil, do: errors, else: [error(key, message) | errors]
+  end
+
+  defp validate_scoped_report(errors, params, scope) do
+    {errors, resource_kind} = validate_collector(errors, Map.get(params, "collector"), scope)
+
+    {errors, targets} =
+      case scope do
+        "targets" ->
+          errors
+          |> validate_absent(params, "hypervisor", "is only allowed for hypervisor scope")
+          |> validate_targets(Map.get(params, "targets"))
+
+        "hypervisor" ->
+          errors
+          |> validate_absent(params, "targets", "is only allowed for targets scope")
+          |> validate_hypervisor(Map.get(params, "hypervisor"))
+      end
+
+    errors =
+      case Map.get(params, "complete") do
+        value when is_boolean(value) or is_nil(value) -> errors
+        _invalid -> [error("complete", "must be a boolean") | errors]
+      end
+
+    validate_scoped_resources(errors, Map.get(params, "resources"), scope, resource_kind, targets)
+  end
+
+  defp validate_collector(errors, %{} = collector, scope) do
+    errors = validate_collector_id(errors, Map.get(collector, "id"))
+
+    case Map.fetch(@collector_kinds, Map.get(collector, "kind")) do
+      {:ok, %{scope: ^scope, resource_kind: resource_kind}} ->
+        {errors, resource_kind}
+
+      {:ok, _other_scope} ->
+        {[error("collector.kind", "does not report #{scope} scope") | errors], nil}
+
+      :error ->
+        kinds = @collector_kinds |> Map.keys() |> Enum.sort() |> Enum.join(", ")
+        {[error("collector.kind", "must be one of #{kinds}") | errors], nil}
+    end
+  end
+
+  defp validate_collector(errors, nil, _scope),
+    do: {[error("collector", "is required for a scoped report") | errors], nil}
+
+  defp validate_collector(errors, _invalid, _scope),
+    do: {[error("collector", "must be an object") | errors], nil}
+
+  defp validate_collector_id(errors, id) when is_binary(id) do
+    id = String.trim(id)
+
+    cond do
+      String.length(id) > @max_collector_id_length ->
+        [error("collector.id", "must be at most #{@max_collector_id_length} characters") | errors]
+
+      not Regex.match?(@collector_id_pattern, id) ->
+        [
+          error(
+            "collector.id",
+            "must start and end with a letter or digit and contain only letters, " <>
+              "digits, '.', '_', and '-'"
+          )
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp validate_collector_id(errors, nil), do: [error("collector.id", "is required") | errors]
+
+  defp validate_collector_id(errors, _invalid),
+    do: [error("collector.id", "must be a string") | errors]
+
+  defp validate_targets(errors, targets) when is_list(targets) do
+    cond do
+      targets == [] ->
+        {[error("targets", "must not be empty") | errors], %{}}
+
+      length(targets) > @max_scope_targets ->
+        {[error("targets", "must have at most #{@max_scope_targets} entries") | errors], %{}}
+
+      true ->
+        targets
+        |> Enum.with_index()
+        |> Enum.reduce({errors, %{}}, &validate_target_entry/2)
+    end
+  end
+
+  defp validate_targets(errors, nil), do: {[error("targets", "is required") | errors], %{}}
+
+  defp validate_targets(errors, _invalid),
+    do: {[error("targets", "must be a list") | errors], %{}}
+
+  defp validate_target_entry({target, index}, {errors, statuses}) do
+    path = "targets.#{index}"
+    errors = validate_target(errors, target, "address", path)
+
+    with %{"address" => address, "status" => status} when is_binary(address) <- target,
+         address = String.trim(address),
+         false <- Map.has_key?(statuses, address) do
+      {errors, Map.put(statuses, address, status)}
+    else
+      true -> {[error("#{path}.address", "must be unique") | errors], statuses}
+      _invalid -> {errors, statuses}
+    end
+  end
+
+  defp validate_hypervisor(errors, %{} = hypervisor) do
+    errors = validate_target(errors, hypervisor, "id", "hypervisor")
+
+    case hypervisor do
+      %{"id" => id, "status" => status} when is_binary(id) ->
+        {errors, %{String.trim(id) => status}}
+
+      _invalid ->
+        {errors, %{}}
+    end
+  end
+
+  defp validate_hypervisor(errors, nil), do: {[error("hypervisor", "is required") | errors], %{}}
+
+  defp validate_hypervisor(errors, _invalid),
+    do: {[error("hypervisor", "must be an object") | errors], %{}}
+
+  defp validate_target(errors, %{} = target, key_field, path) do
+    errors
+    |> validate_target_string(target, key_field, path, required: true)
+    |> validate_target_string(target, "error", path, required: false)
+    |> then(fn errors ->
+      if Map.get(target, "status") in @target_statuses,
+        do: errors,
+        else: [
+          error("#{path}.status", "must be one of #{Enum.join(@target_statuses, ", ")}")
+          | errors
+        ]
+    end)
+  end
+
+  defp validate_target(errors, _invalid, _key_field, path),
+    do: [error(path, "must be an object") | errors]
+
+  defp validate_target_string(errors, target, field, path, required: required?) do
+    case Map.get(target, field) do
+      nil when required? ->
+        [error("#{path}.#{field}", "is required") | errors]
+
+      nil ->
+        errors
+
+      value when is_binary(value) ->
+        cond do
+          required? and String.trim(value) == "" ->
+            [error("#{path}.#{field}", "can't be blank") | errors]
+
+          String.length(value) > @max_agent_string_length ->
+            [
+              error("#{path}.#{field}", "must be at most #{@max_agent_string_length} characters")
+              | errors
+            ]
+
+          true ->
+            errors
+        end
+
+      _invalid ->
+        [error("#{path}.#{field}", "must be a string") | errors]
+    end
+  end
+
+  defp validate_scoped_resources(errors, resources, scope, resource_kind, targets)
+       when is_list(resources) do
+    if length(resources) > @max_scope_resources do
+      [error("resources", "must have at most #{@max_scope_resources} entries") | errors]
+    else
+      resources
+      |> Enum.with_index()
+      |> Enum.reduce(errors, fn
+        {%{} = resource, index}, errors ->
+          path = "resources.#{index}"
+
+          errors
+          |> validate_resource(resource, path, resource_kind)
+          |> validate_strong_identity(resource, path)
+          |> validate_resource_target(resource, path, scope, targets)
+
+        {_invalid, index}, errors ->
+          [error("resources.#{index}", "must be an object") | errors]
+      end)
+    end
+  end
+
+  defp validate_scoped_resources(errors, nil, _scope, _resource_kind, _targets),
+    do: [error("resources", "is required") | errors]
+
+  defp validate_scoped_resources(errors, _invalid, _scope, _resource_kind, _targets),
+    do: [error("resources", "must be a list") | errors]
+
+  # Collector resources are matched only by stable identifiers: a switch's or
+  # VM's name is no evidence that it is the host of the same name.
+  defp validate_strong_identity(errors, resource, path) do
+    identifiers =
+      case Map.get(resource, "identifiers") do
+        %{} = identifiers -> identifiers
+        _invalid -> %{}
+      end
+
+    strong? =
+      Enum.any?(@strong_identifier_kinds, fn kind ->
+        identifiers |> Map.get(kind) |> List.wrap() |> Enum.any?(&non_empty_string?/1)
+      end)
+
+    if strong?,
+      do: errors,
+      else: [
+        error(
+          "#{path}.identifiers",
+          "must include one of #{Enum.join(@strong_identifier_kinds, ", ")}"
+        )
+        | errors
+      ]
+  end
+
+  defp validate_resource_target(errors, resource, path, "targets", targets) do
+    case Map.get(resource, "target") do
+      target when is_binary(target) ->
+        case Map.fetch(targets, String.trim(target)) do
+          {:ok, "reachable"} ->
+            errors
+
+          {:ok, _unreachable} ->
+            [error("#{path}.target", "must be a reachable target") | errors]
+
+          :error ->
+            [error("#{path}.target", "must name one of the report's targets") | errors]
+        end
+
+      nil ->
+        [error("#{path}.target", "is required") | errors]
+
+      _invalid ->
+        [error("#{path}.target", "must be a string") | errors]
+    end
+  end
+
+  defp validate_resource_target(errors, resource, path, "hypervisor", targets) do
+    errors =
+      if Map.get(resource, "target") != nil,
+        do: [error("#{path}.target", "is only allowed for targets scope") | errors],
+        else: errors
+
+    if Enum.any?(targets, fn {_id, status} -> status == "unreachable" end),
+      do: [error(path, "must not be reported for an unreachable hypervisor") | errors],
+      else: errors
+  end
+
   defp validate_resources(errors, params) do
     case Map.get(params, "resources") do
       [%{} = resource] ->
@@ -415,10 +781,10 @@ defmodule Renga.Inventory.AgentPayload do
     end
   end
 
-  defp validate_resource(errors, resource, path) do
+  defp validate_resource(errors, resource, path, kind \\ "server") do
     errors
     |> validate_no_prohibited_keys(resource, path, @prohibited_resource_keys)
-    |> validate_resource_kind(resource, path)
+    |> validate_resource_kind(resource, path, kind)
     |> validate_identifiers(resource, path)
     |> validate_current_mac_identity(resource, path)
     |> validate_attributes(resource, path)
@@ -470,11 +836,15 @@ defmodule Renga.Inventory.AgentPayload do
 
   defp label_key?(_key), do: false
 
-  defp validate_resource_kind(errors, resource, path) do
+  # A scoped report whose collector kind is invalid has no expected kind; the
+  # collector error already rejects it.
+  defp validate_resource_kind(errors, _resource, _path, nil), do: errors
+
+  defp validate_resource_kind(errors, resource, path, kind) do
     case Map.get(resource, "kind") do
-      "server" -> errors
+      ^kind -> errors
       nil -> [error("#{path}.kind", "is required") | errors]
-      _other -> [error("#{path}.kind", "must be server") | errors]
+      _other -> [error("#{path}.kind", "must be #{kind}") | errors]
     end
   end
 

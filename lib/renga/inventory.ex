@@ -268,6 +268,11 @@ defmodule Renga.Inventory do
 
   @doc """
   Automatically registers an intake-authenticated installation and stores its observation.
+
+  A collector stream's report (RFD 11) is stored under the stream's own
+  source, which the installation's agent and the report's collector ID
+  resolve, and is split into one derived observation per resource. Contact
+  and the lease still belong to the installation.
   """
   def ingest_intake_observation(
         %Scope{} = scope,
@@ -281,19 +286,18 @@ defmodule Renga.Inventory do
       intake_api_key,
       installation_id,
       agent_attrs,
-      fn agent, lease, source ->
+      fn agent, lease, host_source ->
         observation_attrs = Map.put(observation_attrs, :intake_api_key_id, intake_api_key.id)
+        payload = Map.get(observation_attrs, :payload, %{})
 
-        case accept_observation(scope, source.id, observation_attrs) do
-          {:ok, observation, disposition} ->
-            {agent, lease, observation, disposition}
+        source =
+          case AgentPayload.collector(payload) do
+            nil -> host_source
+            collector -> resolve_collector_stream!(agent, collector)
+          end
 
-          {:error, :idempotency_conflict, observation} ->
-            Repo.rollback({:idempotency_conflict, observation})
-
-          {:error, reason} ->
-            Repo.rollback(reason)
-        end
+        {observation, disposition} = accept_intake_observation!(scope, source, observation_attrs)
+        {agent, lease, observation, disposition}
       end
     )
     |> case do
@@ -303,6 +307,91 @@ defmodule Renga.Inventory do
       result ->
         result
     end
+  end
+
+  defp accept_intake_observation!(scope, source, attrs) do
+    case accept_observation(scope, source.id, attrs) do
+      {:ok, observation, :created} ->
+        if AgentPayload.scoped_report?(observation.payload),
+          do: create_derived_observations!(scope, observation)
+
+        {observation, :created}
+
+      {:ok, observation, disposition} ->
+        {observation, disposition}
+
+      {:error, :idempotency_conflict, observation} ->
+        Repo.rollback({:idempotency_conflict, observation})
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # Runs under the installation lock taken by `with_intake_installation/5`, so
+  # concurrent first reports from one module converge on one stream.
+  defp resolve_collector_stream!(%Agent{} = agent, {collector_id, kind}) do
+    Source
+    |> where([source], source.organization_id == ^agent.organization_id)
+    |> where([source], source.agent_id == ^agent.id and source.collector_id == ^collector_id)
+    |> Repo.one()
+    |> case do
+      %Source{kind: ^kind, status: "active"} = source ->
+        source
+
+      %Source{kind: ^kind} ->
+        Repo.rollback(:collector_disabled)
+
+      %Source{} ->
+        Repo.rollback(:collector_kind_conflict)
+
+      nil ->
+        %Source{
+          organization_id: agent.organization_id,
+          agent_id: agent.id,
+          collector_id: collector_id
+        }
+        |> Source.changeset(%{
+          kind: kind,
+          name: "#{kind}-#{agent.installation_id}-#{collector_id}",
+          status: "active"
+        })
+        |> insert_or_rollback()
+    end
+  end
+
+  defp create_derived_observations!(%Scope{organization_id: organization_id}, report) do
+    report.payload
+    |> AgentPayload.derived_resource_payloads()
+    |> Enum.each(fn {index, payload} ->
+      %Observation{
+        organization_id: organization_id,
+        source_id: report.source_id,
+        parent_observation_id: report.id,
+        resource_index: index,
+        reported_from: report.reported_from,
+        intake_api_key_id: report.intake_api_key_id
+      }
+      |> Observation.changeset(%{
+        idempotency_key: "#{report.id}:#{index}",
+        observed_at: report.observed_at,
+        payload_digest: digest_payload(payload),
+        payload: payload
+      })
+      |> insert_or_rollback()
+    end)
+  end
+
+  @doc """
+  Lists the derived single-resource observations of a collector report, in
+  report order.
+  """
+  def list_derived_observations(%Scope{organization_id: organization_id}, report_id) do
+    Observation
+    |> where([observation], observation.organization_id == ^organization_id)
+    |> where([observation], observation.parent_observation_id == ^report_id)
+    |> order_by([observation], asc: observation.resource_index)
+    |> Repo.all()
   end
 
   @doc """
@@ -2158,6 +2247,12 @@ defmodule Renga.Inventory do
   # Triage rules fill facts for what a collector just reported, after the
   # report is committed so rules see its signals. A rule failing never fails
   # the report: the resource stays in triage for a person instead.
+  defp apply_triage_rules({:ok, resources, _discovered?} = result, scope)
+       when is_list(resources) do
+    Enum.each(resources, &apply_triage_rules({:ok, &1, false}, scope))
+    result
+  end
+
   defp apply_triage_rules({:ok, %Resource{} = resource, _discovered?} = result, scope) do
     case Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id) do
       {:ok, _applied} ->
@@ -2183,7 +2278,7 @@ defmodule Renga.Inventory do
   # What a collector reports opens and resolves address findings, after the
   # report is committed. As with triage rules, a failure never fails the
   # report; the next report or IPAM change reconciles again.
-  defp reconcile_address_findings({:ok, %Resource{}, _discovered?} = result, scope) do
+  defp reconcile_address_findings({:ok, _resource_or_resources, _discovered?} = result, scope) do
     {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
     result
   rescue
@@ -2381,6 +2476,42 @@ defmodule Renga.Inventory do
       condition
     end)
     |> Changes.broadcast(scope.organization_id)
+  end
+
+  @doc """
+  Marks a resource's inventory not current because a complete collector
+  report no longer contains it and nothing else reports it (RFD 11). Runs
+  inside the caller's reconciliation transaction.
+  """
+  def mark_inventory_withdrawn!(%Scope{} = scope, resource_id, withdrawn_at) do
+    resource = get_resource!(scope, resource_id)
+
+    previous =
+      Repo.get_by(ResourceCondition,
+        organization_id: scope.organization_id,
+        resource_id: resource.id,
+        type: "InventoryCurrent"
+      )
+
+    now = Renga.Time.utc_now_ms()
+
+    transition_at =
+      if previous && DateTime.compare(now, previous.last_transition_at) != :gt,
+        do: DateTime.add(previous.last_transition_at, 1, :millisecond),
+        else: now
+
+    {:ok, _condition} =
+      put_resource_condition(scope, resource.id, %{
+        type: "InventoryCurrent",
+        status: "false",
+        reason: "Withdrawn",
+        message: "The collector that reported this resource no longer reports it",
+        observed_generation: resource.generation,
+        last_transition_at: transition_at,
+        details: %{"withdrawn_at" => withdrawn_at}
+      })
+
+    :ok
   end
 
   @doc """
