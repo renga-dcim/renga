@@ -329,14 +329,16 @@ defmodule RengaWeb.UserAuth do
     conn = renew_session(conn, user)
     browser_session_id = get_session(conn, :browser_session_id) || Ecto.UUID.generate()
 
-    with {:ok, token} <- issue.(browser_session_id) do
-      {:ok,
-       conn
-       |> put_session(:browser_session_id, browser_session_id)
-       |> put_token_in_session(token)
-       |> maybe_write_remember_me_cookie(token, params, remember_me)}
-    else
-      :error -> {:error, conn}
+    case issue.(browser_session_id) do
+      {:ok, token} ->
+        {:ok,
+         conn
+         |> put_session(:browser_session_id, browser_session_id)
+         |> put_token_in_session(token)
+         |> maybe_write_remember_me_cookie(token, params, remember_me)}
+
+      :error ->
+        {:error, conn}
     end
   end
 

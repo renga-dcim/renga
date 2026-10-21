@@ -103,18 +103,20 @@ defmodule Renga.Accounts.Recheck do
   one replacement can use it and a failed one leaves it in place.
   """
   def spend_recovery(%User{} = user, session_token) do
-    with {:ok, session} <- fetch_session(user, session_token) do
-      now = Renga.Time.utc_now_ms()
+    case fetch_session(user, session_token) do
+      {:ok, session} ->
+        now = Renga.Time.utc_now_ms()
 
-      {count, _} =
-        AccountAuthorization
-        |> where(session_token_id: ^session.id, purpose: "recovery")
-        |> where([authorization], authorization.expires_at > ^now)
-        |> Repo.delete_all()
+        {count, _} =
+          AccountAuthorization
+          |> where(session_token_id: ^session.id, purpose: "recovery")
+          |> where([authorization], authorization.expires_at > ^now)
+          |> Repo.delete_all()
 
-      count == 1
-    else
-      :error -> false
+        count == 1
+
+      :error ->
+        false
     end
   end
 

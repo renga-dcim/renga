@@ -465,7 +465,7 @@ defmodule Renga.Accounts do
 
       if count == 1 do
         session_token = generate_user_session_token(user, browser_session_id)
-        if method == :recovery_code, do: :ok = Recheck.start_recovery(user, session_token)
+        :ok = start_recovery_after(method, user, session_token)
         {:ok, session_token}
       else
         {:error, :expired}
@@ -476,6 +476,11 @@ defmodule Renga.Accounts do
       {:error, _reason} -> :error
     end
   end
+
+  defp start_recovery_after(:recovery_code, user, session_token),
+    do: Recheck.start_recovery(user, session_token)
+
+  defp start_recovery_after(_method, _user, _session_token), do: :ok
 
   @doc "Grants a session that signed in with a recovery code its recovery window."
   defdelegate start_recovery(user, session_token), to: Recheck
