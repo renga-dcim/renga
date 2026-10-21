@@ -59,6 +59,29 @@ defmodule Renga.Authorization do
     "organization.export"
   ]
 
+  @descriptions %{
+    "inventory.read" => "See resources and what they report",
+    "inventory.reconcile" => "Reconcile observations and accept reconciliation results",
+    "inventory.edit" => "Change lifecycle, set field overrides, and edit managed kinds",
+    "findings.act" => "Assign, snooze, and accept exceptions on findings",
+    "requests.create" => "Propose changes they cannot make directly",
+    "requests.decide" => "Approve or reject proposed changes",
+    "catalog.author" => "Edit catalog types, drafts, modules, and inventory items",
+    "catalog.expectations" => "Change what a resource expects and automatic moves",
+    "dcim.edit" => "Edit sites, locations, racks, and placement",
+    "ipam.edit" => "Edit VRFs, prefixes, addresses, plans, and source mappings",
+    "topology.edit" => "Edit VLANs, cables, cable plans, and import contracts",
+    "jobs.request" => "Request, cancel, and resolve observe jobs",
+    "views.share" => "Save and change views shared with the organization",
+    "teams.manage" => "Manage teams, who is on them, and resource owners",
+    "triage_rules.manage" => "Manage triage rules",
+    "intake_keys.manage" => "Manage intake API keys",
+    "members.manage" => "Invite and disable members and change their roles",
+    "roles.manage" => "Define custom roles",
+    "organization.manage" => "Change organization settings",
+    "organization.export" => "Export the whole organization"
+  }
+
   @workflow ~w(inventory.reconcile findings.act catalog.author)
   @management ~w(inventory.edit requests.decide catalog.expectations dcim.edit ipam.edit
                  topology.edit jobs.request views.share teams.manage triage_rules.manage
@@ -84,6 +107,9 @@ defmodule Renga.Authorization do
 
   @doc "Every permission in the catalogue."
   def permissions, do: @permissions
+
+  @doc "What `permission` allows, in a phrase for people."
+  def describe(permission), do: Map.fetch!(@descriptions, validate!(permission))
 
   @doc "The built-in role names, most privileged first."
   def built_in_roles, do: @role_order
