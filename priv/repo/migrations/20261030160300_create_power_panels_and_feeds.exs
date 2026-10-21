@@ -103,7 +103,7 @@ defmodule Renga.Repo.Migrations.CreatePowerPanelsAndFeeds do
     create constraint(:power_feeds, :power_feeds_electrical,
              check: """
              supply IN ('ac', 'dc')
-             AND ((supply = 'ac' AND phase IN ('single', 'three'))
+             AND ((supply = 'ac' AND phase IS NOT NULL AND phase IN ('single', 'three'))
                   OR (supply = 'dc' AND phase IS NULL))
              AND voltage > 0
              AND amperage > 0

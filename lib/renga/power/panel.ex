@@ -31,7 +31,7 @@ defmodule Renga.Power.Panel do
     |> cast(attrs, [:site_id, :location_id, :name, :description, :metadata])
     |> update_change(:name, &String.trim/1)
     |> validate_required([:organization_id, :resource_id, :site_id, :name])
-    |> validate_length(:name, max: 255)
+    |> validate_length(:name, max: 255, count: :codepoints)
     |> assoc_constraint(:resource, name: :power_panels_organization_resource_fkey)
     |> assoc_constraint(:site, name: :power_panels_organization_site_fkey)
     |> assoc_constraint(:location, name: :power_panels_site_location_fkey)

@@ -81,7 +81,7 @@ defmodule Renga.Power.Feed do
       :amperage,
       :max_utilization
     ])
-    |> validate_length(:name, max: 255)
+    |> validate_length(:name, max: 255, count: :codepoints)
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:supply, @supplies)
     |> validate_inclusion(:side, @sides)

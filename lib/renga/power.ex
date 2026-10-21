@@ -229,19 +229,21 @@ defmodule Renga.Power do
   defp feed_label(%Panel{name: panel_name}, name), do: feed_label(panel_name, name)
 
   defp feed_label(panel_name, name) do
-    available = @display_name_limit - String.length(@feed_label_separator)
+    available = @display_name_limit - codepoint_length(@feed_label_separator)
     half = div(available, 2)
+    panel_length = codepoint_length(panel_name)
+    name_length = codepoint_length(name)
 
     {panel_limit, name_limit} =
       cond do
-        String.length(panel_name) + String.length(name) <= available ->
-          {String.length(panel_name), String.length(name)}
+        panel_length + name_length <= available ->
+          {panel_length, name_length}
 
-        String.length(panel_name) <= half ->
-          {String.length(panel_name), available - String.length(panel_name)}
+        panel_length <= half ->
+          {panel_length, available - panel_length}
 
-        String.length(name) <= half ->
-          {available - String.length(name), String.length(name)}
+        name_length <= half ->
+          {available - name_length, name_length}
 
         true ->
           {half, available - half}
@@ -252,10 +254,25 @@ defmodule Renga.Power do
   end
 
   defp truncate_label_part(value, limit) do
-    if String.length(value) <= limit,
-      do: value,
-      else: String.slice(value, 0, limit - 1) <> "…"
+    if codepoint_length(value) <= limit do
+      value
+    else
+      {graphemes, _length} =
+        value
+        |> String.graphemes()
+        |> Enum.reduce_while({[], 0}, fn grapheme, {graphemes, length} ->
+          next_length = length + codepoint_length(grapheme)
+
+          if next_length < limit,
+            do: {:cont, {[grapheme | graphemes], next_length}},
+            else: {:halt, {graphemes, length}}
+        end)
+
+      graphemes |> Enum.reverse() |> Enum.join() |> Kernel.<>("…")
+    end
   end
+
+  defp codepoint_length(value), do: value |> String.codepoints() |> length()
 
   defp rename_envelope!(scope, resource_id, display_name) do
     resource = lock!(Renga.Inventory.Resource, scope.organization_id, resource_id)

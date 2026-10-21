@@ -152,6 +152,30 @@ defmodule Renga.PowerTest do
       assert String.length(renamed_panel_label) == 255
       assert String.starts_with?(renamed_panel_label, "Q")
       assert renamed_panel_label =~ "… / F"
+
+      combining_name = String.duplicate("e\u0301", 100)
+      unicode_panel = panel!(scope, site, combining_name)
+
+      {:ok, unicode_feed} =
+        Power.create_feed(scope, unicode_panel.id, feed_attrs(%{name: combining_name}))
+
+      created_unicode_label =
+        Inventory.get_resource!(scope, unicode_feed.resource_id).display_name
+
+      assert codepoint_length(created_unicode_label) <= 255
+      assert created_unicode_label =~ "… / "
+
+      renamed_name = String.duplicate("o\u0308", 100)
+      {:ok, unicode_feed} = Power.update_feed(scope, unicode_feed, %{name: renamed_name})
+
+      renamed_unicode_label =
+        Inventory.get_resource!(scope, unicode_feed.resource_id).display_name
+
+      assert codepoint_length(renamed_unicode_label) <= 255
+
+      {:ok, _panel} = Power.update_panel(scope, unicode_panel, %{name: renamed_name})
+      relabelled_unicode = Inventory.get_resource!(scope, unicode_feed.resource_id).display_name
+      assert codepoint_length(relabelled_unicode) <= 255
     end
 
     test "DC feeds have no phase and AC feeds need one", %{scope: scope, site: site} do
@@ -170,6 +194,12 @@ defmodule Renga.PowerTest do
                Power.create_feed(scope, panel.id, feed_attrs(%{name: "A2", phase: nil}))
 
       assert "is required for AC" in errors_on(changeset).phase
+
+      assert_raise Postgrex.Error, ~r/power_feeds_electrical/, fn ->
+        Feed
+        |> where([feed], feed.id == ^dc.id)
+        |> Renga.Repo.update_all(set: [supply: "ac"])
+      end
     end
 
     test "rejects ratings and utilization out of range", %{scope: scope, site: site} do
@@ -268,4 +298,5 @@ defmodule Renga.PowerTest do
   end
 
   defp d(value), do: Decimal.new(value)
+  defp codepoint_length(value), do: value |> String.codepoints() |> length()
 end
