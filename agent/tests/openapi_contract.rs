@@ -7,10 +7,11 @@
 use renga_agent::{
     cancellation::Cancellation,
     collectors,
+    installation_key::InstallationKey,
     payload::{
         Address, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface, JobReport,
-        LeaseRequest, LeaseResponse, Observation, QueueReport, ReportAck, ReportType, ResourceKind,
-        ServerResource,
+        KeyApproval, LeaseRequest, LeaseResponse, Observation, PresentedKey, QueueReport,
+        ReportAck, ReportType, ResourceKind, ServerResource,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -149,6 +150,13 @@ fn check_ins_match_the_contract() {
     assert_conforms("CheckIn", &CheckIn::new(capabilities, None));
     assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(Some(90)))));
     assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(None))));
+
+    let state = std::env::temp_dir().join(format!("renga-contract-{}", uuid::Uuid::new_v4()));
+    let key = InstallationKey::load_or_create(&state).unwrap();
+    assert_conforms(
+        "CheckIn",
+        &CheckIn::new(vec![], None).with_installation_key(PresentedKey::ed25519(key.public_key())),
+    );
 }
 
 #[test]
@@ -264,6 +272,34 @@ fn the_agent_decodes_documented_responses() {
         }),
     );
     assert_eq!(ack.jobs_waiting, Some(true));
+    assert_eq!(ack.installation_key, None);
+
+    let ack: CheckInAck = assert_decodes(
+        "CheckInAccepted",
+        json!({
+            "status": "accepted",
+            "source": {
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "kind": "host_agent",
+                "name": "host-agent-67e55044",
+                "last_seen_at": "2026-10-14T12:00:00.000Z"
+            },
+            "agent": {
+                "id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e",
+                "name": "db-01",
+                "lease_expires_at": "2026-10-14T12:05:00.000Z"
+            },
+            "jobs_waiting": false,
+            "installation_key": {
+                "fingerprint": "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU",
+                "status": "pending"
+            }
+        }),
+    );
+    assert_eq!(
+        ack.installation_key.map(|key| key.status),
+        Some(KeyApproval::Pending)
+    );
 
     let leased: LeaseResponse = assert_decodes(
         "JobLease",

@@ -62,7 +62,7 @@ fn ensure_override_matches(
     }
 }
 
-fn prepare_state_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn prepare_state_directory(path: &Path) -> Result<(), IdentityError> {
     fs::create_dir_all(path).map_err(|error| {
         IdentityError(format!(
             "cannot create state directory {}: {error}",
@@ -141,7 +141,7 @@ fn persist_new_identity(
 }
 
 #[cfg(unix)]
-fn sync_state_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn sync_state_directory(path: &Path) -> Result<(), IdentityError> {
     fs::File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
@@ -153,11 +153,11 @@ fn sync_state_directory(path: &Path) -> Result<(), IdentityError> {
 }
 
 #[cfg(not(unix))]
-fn sync_state_directory(_path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn sync_state_directory(_path: &Path) -> Result<(), IdentityError> {
     Ok(())
 }
 
-fn create_private_file(path: &Path) -> Result<fs::File, IdentityError> {
+pub(crate) fn create_private_file(path: &Path) -> Result<fs::File, IdentityError> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -174,7 +174,7 @@ fn create_private_file(path: &Path) -> Result<fs::File, IdentityError> {
 }
 
 #[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> Result<(), IdentityError> {
+pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<(), IdentityError> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| {
         IdentityError(format!(
@@ -185,7 +185,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), IdentityError> {
 }
 
 #[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> Result<(), IdentityError> {
+pub(crate) fn set_mode(_path: &Path, _mode: u32) -> Result<(), IdentityError> {
     Ok(())
 }
 

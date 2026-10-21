@@ -3,6 +3,7 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
+    installation_key::InstallationKey,
     jobs::{
         inventory_collect::InventoryCollect,
         worker::{PolicyGeneration, Worker},
@@ -10,7 +11,9 @@ use renga_agent::{
     },
     logging,
     notices::{Listener, Notices},
-    payload::{CheckIn, CheckInAck, Observation, QueueReport},
+    payload::{
+        CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
+    },
     queue::{Drained, ObservationQueue, QueueError, QueueLimits, QueueMonitor},
     scheduler::{Job, Scheduler},
     transport::{encode_observation, FailureKind, HttpClient},
@@ -123,6 +126,8 @@ enum Command {
     // cannot point the privileged copy anywhere else.
     /// Copy the root-only SMBIOS tables into a snapshot the agent can read
     SnapshotSmbios,
+    /// Print the installation key's fingerprint to compare on the Collectors page
+    Fingerprint,
 }
 
 fn main() {
@@ -138,8 +143,18 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    if let Some(Command::SnapshotSmbios) = args.command {
-        return snapshot_smbios();
+    match args.command {
+        Some(Command::SnapshotSmbios) => return snapshot_smbios(),
+        // Reads only: run as another user, it must not create a key the
+        // service then cannot read.
+        Some(Command::Fingerprint) => {
+            println!(
+                "{}",
+                InstallationKey::load(&args.state_directory)?.fingerprint()
+            );
+            return Ok(());
+        }
+        None => {}
     }
     if args.dry_run {
         let observation = Observation::new(collectors::collect(&Cancellation::default())?);
@@ -175,6 +190,9 @@ fn install_shutdown_handler() -> Result<Cancellation, ctrlc::Error> {
 
 fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error>> {
     let mut config = Config::load(&args.config, &args.state_directory)?;
+    let installation_key = InstallationKey::load_or_create(&args.state_directory)?;
+    info!(fingerprint = %installation_key.fingerprint(), "installation key loaded");
+    let presented_key = PresentedKey::ed25519(installation_key.public_key());
     let mut client = HttpClient::new(&config, stopped.clone())?;
     let queue = DeliveryQueue::new(args.state_directory.clone());
     let monitor = queue.monitor.clone();
@@ -192,6 +210,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             capabilities: job_capabilities(&Catalog::default(), &config.jobs),
             queue: &queue,
             monitor: &monitor,
+            presented_key: &presented_key,
         };
         return aggregated_result(deliver_startup(&operations));
     }
@@ -199,6 +218,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         &client,
         &monitor,
         advertised_capabilities(&config, &client, &queue),
+        &presented_key,
     );
     if let Err(failure) = &checkin {
         warn!(error = %failure, "startup delivery failed: check-in");
@@ -244,6 +264,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         &client,
                         &monitor,
                         advertised_capabilities(&config, &client, &queue),
+                        &presented_key,
                     );
                     if let Err(failure) = &checkin {
                         warn!(error = %failure, "check-in failed");
@@ -403,12 +424,23 @@ fn send_checkin(
     client: &HttpClient,
     monitor: &QueueMonitor,
     capabilities: Vec<String>,
+    presented_key: &PresentedKey,
 ) -> Result<CheckInAck, Box<dyn Error>> {
     let queue = monitor
         .latest()
         .map(|health| QueueReport::new(&health, SystemTime::now()));
-    let ack = client.post_checkin(&CheckIn::new(capabilities, queue))?;
-    info!("check-in posted");
+    let checkin = CheckIn::new(capabilities, queue).with_installation_key(presented_key.clone());
+    let ack = client.post_checkin(&checkin)?;
+    match &ack.installation_key {
+        Some(KeyStatus {
+            fingerprint,
+            status: KeyApproval::Pending,
+        }) => info!(
+            %fingerprint,
+            "check-in posted; installation key awaits approval on the Collectors page"
+        ),
+        _ => info!("check-in posted"),
+    }
     Ok(ack)
 }
 
@@ -661,11 +693,18 @@ struct RuntimeOperations<'a> {
     capabilities: Vec<String>,
     queue: &'a Mutex<DeliveryQueue>,
     monitor: &'a QueueMonitor,
+    presented_key: &'a PresentedKey,
 }
 
 impl Operations for RuntimeOperations<'_> {
     fn checkin(&self) -> Result<(), Box<dyn Error>> {
-        send_checkin(self.client, self.monitor, self.capabilities.clone()).map(|_| ())
+        send_checkin(
+            self.client,
+            self.monitor,
+            self.capabilities.clone(),
+            self.presented_key,
+        )
+        .map(|_| ())
     }
     fn inventory(&self) -> Result<(), Box<dyn Error>> {
         send_inventory(self.client, self.stopped, self.labels, self.queue).map(|_| ())
@@ -1493,7 +1532,12 @@ mod tests {
 
     #[test]
     fn leases_unless_renga_says_nothing_is_waiting() {
-        let ack = |jobs_waiting| Ok(CheckInAck { jobs_waiting });
+        let ack = |jobs_waiting| {
+            Ok(CheckInAck {
+                jobs_waiting,
+                ..CheckInAck::default()
+            })
+        };
         assert!(leases_now(&ack(Some(true))));
         assert!(!leases_now(&ack(Some(false))));
         assert!(leases_now(&ack(None)), "an older server gives no hint");

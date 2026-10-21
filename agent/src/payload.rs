@@ -155,6 +155,25 @@ pub struct CheckIn {
     /// entries are job capabilities it will run on request (RFD 9).
     pub capabilities: Vec<String>,
     pub metadata: AgentMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_key: Option<PresentedKey>,
+}
+
+/// The installation's public key, presented on every check-in (RFD 13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PresentedKey {
+    pub algorithm: &'static str,
+    /// The raw 32-byte Ed25519 public key in unpadded base64url.
+    pub public_key: String,
+}
+
+impl PresentedKey {
+    pub fn ed25519(public_key: String) -> Self {
+        Self {
+            algorithm: "ed25519",
+            public_key,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -172,7 +191,13 @@ impl CheckIn {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
                 observation_queue,
             },
+            installation_key: None,
         }
+    }
+
+    pub fn with_installation_key(mut self, key: PresentedKey) -> Self {
+        self.installation_key = Some(key);
+        self
     }
 }
 
@@ -212,6 +237,22 @@ pub struct CheckInAck {
     /// `true` when Renga holds queued jobs for this installation (RFD 9).
     #[serde(default)]
     pub jobs_waiting: Option<bool>,
+    /// Whether an owner or admin approved the presented key (RFD 13).
+    #[serde(default)]
+    pub installation_key: Option<KeyStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct KeyStatus {
+    pub fingerprint: String,
+    pub status: KeyApproval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyApproval {
+    Pending,
+    Approved,
 }
 
 /// Asks Renga to lease queued jobs for the capabilities the agent runs now.
