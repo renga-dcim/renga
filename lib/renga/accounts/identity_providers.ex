@@ -204,8 +204,13 @@ defmodule Renga.Accounts.IdentityProviders do
   so an operator can then retire the old key. Returns how many it rewrote.
   """
   def reencrypt_secrets(actor) do
-    current = Vault.current_key_id()
+    case Vault.current_key_id() do
+      nil -> {:error, :no_key}
+      current -> reencrypt_secrets(current, actor)
+    end
+  end
 
+  defp reencrypt_secrets(current, actor) do
     serialized(fn ->
       Revision
       |> where([revision], not is_nil(revision.client_secret_ciphertext))

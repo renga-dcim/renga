@@ -335,6 +335,37 @@ defmodule Renga.Accounts.IdentityProvidersTest do
         Application.put_env(:renga, Renga.Vault, previous)
       end
     end
+
+    test "the release command reseals provider secrets too" do
+      previous = Application.get_env(:renga, Renga.Vault)
+      old = Base.encode64(:crypto.strong_rand_bytes(32))
+      new = Base.encode64(:crypto.strong_rand_bytes(32))
+
+      try do
+        Application.put_env(:renga, Renga.Vault, keys: "old:#{old}")
+        {_provider, revision} = create()
+
+        Application.put_env(:renga, Renga.Vault, keys: "new:#{new},old:#{old}")
+
+        assert ExUnit.CaptureIO.capture_io(fn -> Renga.Release.reencrypt_secrets() end) =~
+                 "1 identity provider secrets"
+
+        assert Repo.get!(IdentityProviderRevision, revision.id).client_secret_key_id == "new"
+      after
+        Application.put_env(:renga, Renga.Vault, previous)
+      end
+    end
+
+    test "refuses without a key instead of crashing" do
+      previous = Application.get_env(:renga, Renga.Vault)
+      Application.put_env(:renga, Renga.Vault, keys: nil)
+
+      try do
+        assert {:error, :no_key} = IdentityProviders.reencrypt_secrets(@operator)
+      after
+        Application.put_env(:renga, Renga.Vault, previous)
+      end
+    end
   end
 
   test "a secret copied to another provider does not decrypt" do
