@@ -277,6 +277,27 @@ defmodule RengaWeb.UserLive.Settings do
 
           <.recheck_panel :if={@recheck && @recheck.action == :recovery_codes} recheck={@recheck} />
         </.settings_section>
+        <.settings_section
+          id="account-security-log"
+          title="Security log"
+          description="Recent sign-ins and changes to how you sign in. We also email you about every change."
+        >
+          <p :if={@security_events == []} class="text-sm text-fg-muted">Nothing yet.</p>
+          <ul :if={@security_events != []} id="security_events" class="divide-y divide-line">
+            <li
+              :for={event <- @security_events}
+              class="flex items-baseline justify-between gap-3 py-1.5 text-sm"
+            >
+              <span class="min-w-0 truncate text-fg">{Accounts.describe_security_event(event)}</span>
+              <time
+                datetime={DateTime.to_iso8601(event.inserted_at)}
+                class="shrink-0 text-xs text-fg-muted tabular-nums"
+              >
+                {Calendar.strftime(event.inserted_at, "%b %-d, %H:%M UTC")}
+              </time>
+            </li>
+          </ul>
+        </.settings_section>
       </.settings_page>
     </Layouts.app>
     """
@@ -874,6 +895,7 @@ defmodule RengaWeb.UserLive.Settings do
     |> assign(:totp_enabled, MFA.totp_enabled?(user))
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
     |> assign(:recovering, Accounts.recovering?(user, socket.assigns.session_token))
+    |> assign(:security_events, Accounts.list_security_events(user))
   end
 
   # With an authenticator app too, a passkey error shows on the code field;

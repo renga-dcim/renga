@@ -35,6 +35,17 @@ defmodule RengaWeb.UserLive.SettingsTest do
 
       assert html =~ "Change Email"
     end
+
+    test "lists the security log", %{conn: conn} do
+      user = user_fixture()
+      {:ok, _lv, html} = conn |> log_in_user(user) |> live(~p"/users/settings")
+      assert html =~ "Nothing yet."
+
+      Accounts.record_sign_in(user, "passkey")
+      {:ok, lv, _html} = conn |> log_in_user(user) |> live(~p"/users/settings")
+
+      assert lv |> element("#security_events li") |> render() =~ "Signed in with a passkey"
+    end
   end
 
   describe "update email form" do
