@@ -15,7 +15,7 @@ defmodule Renga.Accounts.Passkeys do
 
   import Ecto.Query
 
-  alias Renga.Accounts.SecurityEvent
+  alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.User
   alias Renga.Accounts.UserPasskey
   alias Renga.Accounts.WebAuthnChallenge
@@ -95,7 +95,7 @@ defmodule Renga.Accounts.Passkeys do
       |> Repo.insert()
       |> case do
         {:ok, passkey} ->
-          record_event(user, "passkey_added", %{"passkey_id" => passkey.id})
+          SecurityLog.record(user, "passkey_added", %{"passkey_id" => passkey.id})
           {:ok, passkey}
 
         {:error, _changeset} ->
@@ -168,7 +168,7 @@ defmodule Renga.Accounts.Passkeys do
   defp fail(nil), do: {:error, :invalid_response}
 
   defp fail(%User{} = user) do
-    record_event(user, "passkey_failed")
+    SecurityLog.record(user, "passkey_failed")
     {:error, :invalid_response}
   end
 
@@ -188,7 +188,7 @@ defmodule Renga.Accounts.Passkeys do
 
       passkey ->
         Repo.delete!(passkey)
-        record_event(user, "passkey_removed", %{"passkey_id" => passkey.id})
+        SecurityLog.record(user, "passkey_removed", %{"passkey_id" => passkey.id})
         {:ok, passkey}
     end
   end
@@ -335,8 +335,4 @@ defmodule Renga.Accounts.Passkeys do
   end
 
   defp encode(bytes), do: Base.url_encode64(bytes, padding: false)
-
-  defp record_event(user, kind, metadata \\ %{}) do
-    Repo.insert!(%SecurityEvent{user_id: user.id, kind: kind, metadata: metadata})
-  end
 end

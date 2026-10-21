@@ -139,4 +139,24 @@ defmodule Renga.Accounts.UserNotifier do
     ==============================
     """)
   end
+
+  @doc """
+  Tells an address about a change to the account's sign-in (RFD 19). It
+  links nowhere, so a forged notice cannot lead anywhere either.
+  """
+  def deliver_security_notice(email, text) do
+    deliver(email, "Security notice from Renga", """
+
+    ==============================
+
+    Hi #{email},
+
+    #{text}
+
+    If this was you, there is nothing to do. If it wasn't, sign in to Renga
+    and review your account settings, or ask your administrator for help.
+
+    ==============================
+    """)
+  end
 end
