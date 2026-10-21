@@ -28,6 +28,14 @@ defmodule RengaWeb.Router do
     get "/", PageController, :home
   end
 
+  # Unauthenticated: an agent asks where its home deployment is before it
+  # sends its intake key anywhere (RFD 23).
+  scope "/api/v1", RengaWeb.Api.V1 do
+    pipe_through :api
+
+    get "/agent/home", AgentHomeController, :show
+  end
+
   scope "/api/v1", RengaWeb.Api.V1 do
     pipe_through [:api, :intake_api]
 

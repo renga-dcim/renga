@@ -7,6 +7,22 @@
   },
   "components": {
     "schemas": {
+      "AgentHome": {
+        "title": "AgentHome",
+        "additionalProperties": false,
+        "description": "Where the agent sends every authenticated request.",
+        "properties": {
+          "home": {
+            "description": "The home deployment's public URL. The agent persists it and resolves again only when its home answers `410` with `moved`.",
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "home"
+        ],
+        "type": "object"
+      },
       "CheckIn": {
         "title": "CheckIn",
         "description": "A collector's periodic check-in. Every field is optional.",
@@ -1312,6 +1328,39 @@
           "required": false
         },
         "summary": "Record a collector check-in"
+      }
+    },
+    "/api/v1/agent/home": {
+      "get": {
+        "tags": [
+          "Agent home"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentHome"
+                }
+              }
+            },
+            "description": "The agent's home deployment."
+          }
+        },
+        "description": "Tells an agent which deployment to send its authenticated requests to (RFD 23). A deployment is its own home, so it answers with its configured public URL whatever identifier is asked for. A resolver serving the same request at a well-known address looks the identifier up instead. The request carries no credential.",
+        "operationId": "getAgentHome",
+        "parameters": [
+          {
+            "description": "The deployment identifier read from the intake key's prefix, or empty when the key has none.",
+            "in": "query",
+            "name": "deployment",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Resolve an agent's home deployment"
       }
     },
     "/api/v1/agent/jobs/lease": {
