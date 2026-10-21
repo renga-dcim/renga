@@ -74,20 +74,22 @@ defmodule Renga.Accounts.MFA do
   first factor, otherwise `nil`.
   """
   def enable_totp(%User{} = user, secret, code) when is_binary(secret) and is_binary(code) do
-    with_account_lock(user, fn ->
-      if totp_enabled?(user) do
-        {:error, :already_enabled}
-      else
-        case matching_step(secret, code, nil) do
-          nil ->
-            record_event(user, "totp_enable_failed")
-            {:ok, {:error, :invalid_code}}
+    with_account_lock(user, fn -> enable_totp_locked(user, secret, code) end)
+  end
 
-          step ->
-            insert_totp(user, secret, step)
-        end
+  defp enable_totp_locked(user, secret, code) do
+    if totp_enabled?(user) do
+      {:error, :already_enabled}
+    else
+      case matching_step(secret, code, nil) do
+        nil ->
+          record_event(user, "totp_enable_failed")
+          {:ok, {:error, :invalid_code}}
+
+        step ->
+          insert_totp(user, secret, step)
       end
-    end)
+    end
   end
 
   defp insert_totp(user, secret, step) do
@@ -190,34 +192,38 @@ defmodule Renga.Accounts.MFA do
       UserTOTP
       |> where([totp], totp.secret_key_id != ^current)
       |> Repo.all()
-      |> Enum.reduce_while({:ok, 0}, fn totp, {:ok, count} ->
-        case reencrypt_totp(totp.user_id) do
-          {:ok, :resealed} -> {:cont, {:ok, count + 1}}
-          {:ok, :current} -> {:cont, {:ok, count}}
-          {:error, reason} -> {:halt, {:error, {totp.user_id, reason}}}
-        end
-      end)
+      |> Enum.reduce_while({:ok, 0}, &reencrypt_next/2)
+    end
+  end
+
+  defp reencrypt_next(totp, {:ok, count}) do
+    case reencrypt_totp(totp.user_id) do
+      {:ok, :resealed} -> {:cont, {:ok, count + 1}}
+      {:ok, :current} -> {:cont, {:ok, count}}
+      {:error, reason} -> {:halt, {:error, {totp.user_id, reason}}}
     end
   end
 
   defp reencrypt_totp(user_id) do
-    with_account_lock(%User{id: user_id}, fn ->
-      with %UserTOTP{} = totp <- Repo.one(where(UserTOTP, user_id: ^user_id)),
-           {:ok, secret} <- decrypt_secret(totp) do
-        # A sign-in may have resealed it since it was listed.
-        case resealed(%User{id: user_id}, totp, secret) do
-          [] ->
-            {:ok, :current}
+    with_account_lock(%User{id: user_id}, fn -> reencrypt_totp_locked(user_id) end)
+  end
 
-          changes ->
-            Repo.update_all(where(UserTOTP, id: ^totp.id), set: changes)
-            {:ok, :resealed}
-        end
-      else
-        nil -> {:ok, :current}
-        {:error, _reason} = error -> error
+  defp reencrypt_totp_locked(user_id) do
+    with %UserTOTP{} = totp <- Repo.one(where(UserTOTP, user_id: ^user_id)),
+         {:ok, secret} <- decrypt_secret(totp) do
+      # A sign-in may have resealed it since it was listed.
+      case resealed(%User{id: user_id}, totp, secret) do
+        [] ->
+          {:ok, :current}
+
+        changes ->
+          Repo.update_all(where(UserTOTP, id: ^totp.id), set: changes)
+          {:ok, :resealed}
       end
-    end)
+    else
+      nil -> {:ok, :current}
+      {:error, _reason} = error -> error
+    end
   end
 
   @doc """
@@ -249,26 +255,28 @@ defmodule Renga.Accounts.MFA do
   lost; recovery codes are rate limited with authenticator codes.
   """
   def spend_recovery_code(%User{} = user, code) when is_binary(code) do
-    with_account_lock(user, fn ->
-      if rate_limited?(user) do
-        record_event(user, "second_factor_rate_limited", %{"method" => "recovery_code"})
-        {:ok, {:error, :rate_limited}}
-      else
-        {count, _} =
-          UserRecoveryCode
-          |> where(user_id: ^user.id, code_hash: ^hash_recovery_code(code))
-          |> where([code], is_nil(code.used_at))
-          |> Repo.update_all(set: [used_at: Renga.Time.utc_now_ms()])
+    with_account_lock(user, fn -> spend_recovery_code_locked(user, code) end)
+  end
 
-        if count == 1 do
-          record_event(user, "recovery_code_used")
-          :ok
-        else
-          record_event(user, "recovery_code_failed")
-          {:ok, {:error, :invalid_code}}
-        end
+  defp spend_recovery_code_locked(user, code) do
+    if rate_limited?(user) do
+      record_event(user, "second_factor_rate_limited", %{"method" => "recovery_code"})
+      {:ok, {:error, :rate_limited}}
+    else
+      {count, _} =
+        UserRecoveryCode
+        |> where(user_id: ^user.id, code_hash: ^hash_recovery_code(code))
+        |> where([code], is_nil(code.used_at))
+        |> Repo.update_all(set: [used_at: Renga.Time.utc_now_ms()])
+
+      if count == 1 do
+        record_event(user, "recovery_code_used")
+        :ok
+      else
+        record_event(user, "recovery_code_failed")
+        {:ok, {:error, :invalid_code}}
       end
-    end)
+    end
   end
 
   # Runs `fun` in a transaction holding the account's row lock, which every
