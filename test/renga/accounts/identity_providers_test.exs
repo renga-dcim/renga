@@ -170,8 +170,10 @@ defmodule Renga.Accounts.IdentityProvidersTest do
       # An empty secret keeps the saved one.
       assert {:ok, "s3cret"} = IdentityProviders.client_secret(revision)
 
-      assert [%{kind: "revision_pending", revision: 2, changed: ["client_id"]} | _] =
-               IdentityProviders.list_events(provider)
+      assert Enum.any?(
+               IdentityProviders.list_events(provider),
+               &match?(%{kind: "revision_pending", revision: 2, changed: ["client_id"]}, &1)
+             )
     end
 
     test "a new edit replaces the pending revision" do
@@ -242,8 +244,11 @@ defmodule Renga.Accounts.IdentityProvidersTest do
     assert updated.pending_revision == 1
     assert updated.version == provider.version + 1
 
-    assert [%{kind: "updated", changed: ["display_name", "hidden"]} | _] =
-             IdentityProviders.list_events(updated)
+    # It may share a millisecond with "created", so look for it.
+    assert Enum.any?(
+             IdentityProviders.list_events(updated),
+             &match?(%{kind: "updated", changed: ["display_name", "hidden"]}, &1)
+           )
   end
 
   test "every change increments the version" do
