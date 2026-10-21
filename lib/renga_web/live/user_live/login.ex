@@ -8,10 +8,7 @@ defmodule RengaWeb.UserLive.Login do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
       <.auth_card id="login" title="Log in">
-        <:subtitle :if={@current_scope}>
-          You need to reauthenticate to perform sensitive actions on your account.
-        </:subtitle>
-        <:subtitle :if={!@current_scope}>
+        <:subtitle>
           We'll email you a link, or you can use your password.
         </:subtitle>
 
@@ -36,7 +33,6 @@ defmodule RengaWeb.UserLive.Login do
           phx-submit="submit_magic"
         >
           <.input
-            readonly={!!@current_scope}
             field={f[:email]}
             type="email"
             label="Email"
@@ -61,7 +57,6 @@ defmodule RengaWeb.UserLive.Login do
           phx-trigger-action={@trigger_submit}
         >
           <.input
-            readonly={!!@current_scope}
             field={f[:email]}
             type="email"
             label="Email"
@@ -89,7 +84,7 @@ defmodule RengaWeb.UserLive.Login do
           </div>
         </.form>
 
-        <:footer :if={!@current_scope}>
+        <:footer>
           Don't have an account?
           <.link
             navigate={~p"/users/register"}
@@ -105,9 +100,7 @@ defmodule RengaWeb.UserLive.Login do
 
   @impl true
   def mount(_params, _session, socket) do
-    email =
-      Phoenix.Flash.get(socket.assigns.flash, :email) ||
-        get_in(socket.assigns, [:current_scope, Access.key(:user), Access.key(:email)])
+    email = Phoenix.Flash.get(socket.assigns.flash, :email)
 
     form = to_form(%{"email" => email}, as: "user")
 

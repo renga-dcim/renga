@@ -120,6 +120,51 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "POST /users/update-password" do
+    setup %{conn: conn, user: user} do
+      user = set_password(user)
+      %{conn: log_in_user(conn, user), user: user}
+    end
+
+    @new_password "a brand new password"
+
+    test "refuses a change without the account re-check", %{conn: conn, user: user} do
+      conn =
+        post(conn, ~p"/users/update-password", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => @new_password,
+            "password_confirmation" => @new_password
+          }
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Confirm it's you"
+      refute Accounts.get_user_by_email_and_password(user.email, @new_password)
+    end
+
+    test "changes the password after the re-check", %{conn: conn, user: user} do
+      :ok =
+        Accounts.recheck_with_password(
+          user,
+          get_session(conn, :user_token),
+          valid_user_password()
+        )
+
+      conn =
+        post(conn, ~p"/users/update-password", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => @new_password,
+            "password_confirmation" => @new_password
+          }
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Accounts.get_user_by_email_and_password(user.email, @new_password)
+    end
+  end
+
   describe "organization after log in" do
     import Renga.InventoryFixtures
 

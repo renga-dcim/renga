@@ -225,8 +225,8 @@ defmodule RengaWeb.UserAuth do
 
   # This function is the one responsible for creating session tokens
   # and storing them safely in the session and cookies. It may be called
-  # either when logging in, during sudo mode, or to renew a session which
-  # will soon expire.
+  # either when logging in, after a password change, or to renew a session
+  # which will soon expire.
   #
   # When the session is created, rather than extended, the renew_session
   # function will clear the session to avoid fixation attacks. See the
@@ -363,21 +363,6 @@ defmodule RengaWeb.UserAuth do
         socket
         |> Phoenix.LiveView.put_flash(:error, "Select an organization to view inventory.")
         |> Phoenix.LiveView.redirect(to: ~p"/organizations")
-
-      {:halt, socket}
-    end
-  end
-
-  def on_mount(:require_sudo_mode, _params, session, socket) do
-    socket = mount_current_scope(socket, session)
-
-    if Accounts.sudo_mode?(socket.assigns.current_scope.user, -10) do
-      {:cont, socket}
-    else
-      socket =
-        socket
-        |> Phoenix.LiveView.put_flash(:error, "You must re-authenticate to access this page.")
-        |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
 
       {:halt, socket}
     end

@@ -46,17 +46,35 @@ defmodule RengaWeb.UserSessionController do
     end
   end
 
+  # The settings page runs the account re-check before it submits here; this
+  # checks again because the form post is its own request.
   def update_password(conn, %{"user" => user_params} = params) do
     user = conn.assigns.current_scope.user
-    true = Accounts.sudo_mode?(user)
-    {:ok, {_user, expired_tokens}} = Accounts.update_user_password(user, user_params)
 
-    # disconnect all existing LiveViews with old sessions
-    UserAuth.disconnect_sessions(expired_tokens)
+    with true <-
+           Accounts.authorized_account_change?(
+             user,
+             get_session(conn, :user_token),
+             :set_password
+           ),
+         {:ok, {_user, expired_tokens}} <- Accounts.update_user_password(user, user_params) do
+      # disconnect all existing LiveViews with old sessions
+      UserAuth.disconnect_sessions(expired_tokens)
 
-    conn
-    |> put_session(:user_return_to, ~p"/users/settings")
-    |> create(params, "Password updated successfully!")
+      conn
+      |> put_session(:user_return_to, ~p"/users/settings")
+      |> create(params, "Password updated successfully!")
+    else
+      false ->
+        conn
+        |> put_flash(:error, "Confirm it's you before changing your password.")
+        |> redirect(to: ~p"/users/settings")
+
+      {:error, _changeset} ->
+        conn
+        |> put_flash(:error, "The password could not be saved.")
+        |> redirect(to: ~p"/users/settings")
+    end
   end
 
   def delete(conn, _params) do

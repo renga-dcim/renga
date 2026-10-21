@@ -7,6 +7,7 @@ defmodule Renga.Accounts do
 
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
@@ -338,18 +339,24 @@ defmodule Renga.Accounts do
   ## Settings
 
   @doc """
-  Checks whether the user is in sudo mode.
-
-  The user is in sudo mode when the last authentication was done no further
-  than 20 minutes ago. The limit can be given as second argument in minutes.
+  Whether the browser session may make an account-takeover `change` now. See
+  `Renga.Accounts.Recheck`.
   """
-  def sudo_mode?(user, minutes \\ -20)
+  defdelegate authorized_account_change?(user, session_token, change),
+    to: Recheck,
+    as: :authorized?
 
-  def sudo_mode?(%User{authenticated_at: ts}, minutes) when is_struct(ts, DateTime) do
-    DateTime.after?(ts, DateTime.utc_now() |> DateTime.add(minutes, :minute))
-  end
+  @doc "The ways `user` can pass the account re-check."
+  defdelegate recheck_methods(user), to: Recheck, as: :methods
 
-  def sudo_mode?(_user, _minutes), do: false
+  @doc "Records an account re-check for this session if `password` is correct."
+  defdelegate recheck_with_password(user, session_token, password), to: Recheck
+
+  @doc "Emails the first-password or first-factor bootstrap code."
+  defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
+
+  @doc "Spends a bootstrap code for this session."
+  defdelegate verify_bootstrap_code(user, session_token, code), to: Recheck
 
   @doc """
   Returns an `%Ecto.Changeset{}` for changing the user email.

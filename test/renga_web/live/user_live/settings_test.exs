@@ -24,39 +24,94 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert %{"error" => "You must log in to access this page."} = flash
     end
 
-    test "redirects if user is not in sudo mode", %{conn: conn} do
-      {:ok, conn} =
+    test "opens long after signing in, without signing in again", %{conn: conn} do
+      {:ok, _lv, html} =
         conn
         |> log_in_user(user_fixture(),
-          token_authenticated_at: DateTime.add(Renga.Time.utc_now_ms(), -11, :minute)
+          token_authenticated_at: DateTime.add(Renga.Time.utc_now_ms(), -3, :day)
         )
         |> live(~p"/users/settings")
-        |> follow_redirect(conn, ~p"/users/log-in")
 
-      assert conn.resp_body =~ "You must re-authenticate to access this page."
+      assert html =~ "Change Email"
     end
   end
 
   describe "update email form" do
     setup %{conn: conn} do
-      user = user_fixture()
+      user = user_fixture() |> set_password()
       %{conn: log_in_user(conn, user), user: user}
     end
 
-    test "updates the user email", %{conn: conn, user: user} do
+    test "asks for the password in place, then sends the confirmation link", %{
+      conn: conn,
+      user: user
+    } do
       new_email = unique_user_email()
 
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
 
       result =
         lv
-        |> form("#email_form", %{
-          "user" => %{"email" => new_email}
-        })
+        |> form("#email_form", %{"user" => %{"email" => new_email}})
+        |> render_submit()
+
+      assert result =~ "Confirm it&#39;s you"
+      refute result =~ "A link to confirm your email"
+
+      result =
+        lv
+        |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
         |> render_submit()
 
       assert result =~ "A link to confirm your email"
+      refute has_element?(lv, "#recheck")
       assert Accounts.get_user_by_email(user.email)
+    end
+
+    test "a passing check covers the next change without asking again", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv |> form("#email_form", %{"user" => %{"email" => unique_user_email()}}) |> render_submit()
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      result =
+        lv
+        |> form("#email_form", %{"user" => %{"email" => unique_user_email()}})
+        |> render_submit()
+
+      assert result =~ "A link to confirm your email"
+      refute has_element?(lv, "#recheck")
+    end
+
+    test "a wrong password changes nothing", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv |> form("#email_form", %{"user" => %{"email" => unique_user_email()}}) |> render_submit()
+
+      result =
+        lv
+        |> form("#recheck_form", %{"recheck" => %{"password" => "not the password"}})
+        |> render_submit()
+
+      assert result =~ "That password isn&#39;t right."
+      refute result =~ "A link to confirm your email"
+    end
+
+    test "an account without a password must set one first", %{conn: conn} do
+      conn = log_in_user(conn, user_fixture())
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      result =
+        lv
+        |> form("#email_form", %{"user" => %{"email" => unique_user_email()}})
+        |> render_submit()
+
+      assert result =~ "Set a password first."
+      refute has_element?(lv, "#recheck_form")
+      refute has_element?(lv, "#bootstrap_send")
     end
 
     test "renders errors with invalid data (phx-change)", %{conn: conn} do
@@ -95,7 +150,7 @@ defmodule RengaWeb.UserLive.SettingsTest do
       %{conn: log_in_user(conn, user), user: user}
     end
 
-    test "updates the user password", %{conn: conn, user: user} do
+    test "sets the first password after an emailed code", %{conn: conn, user: user} do
       new_password = valid_user_password()
 
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
@@ -109,7 +164,15 @@ defmodule RengaWeb.UserLive.SettingsTest do
           }
         })
 
-      render_submit(form)
+      assert render_submit(form) =~ "Your account has no password yet."
+
+      lv |> element("#bootstrap_send") |> render_click()
+      assert_received {:email, %{subject: "Your Renga confirmation code", text_body: body}}
+      [code] = Regex.run(~r/[A-Z0-9]{5}-[A-Z0-9]{5}/, body)
+
+      lv
+      |> form("#bootstrap_form", %{"recheck" => %{"code" => String.downcase(code)}})
+      |> render_submit()
 
       new_password_conn = follow_trigger_action(form, conn)
 
@@ -120,6 +183,57 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert Phoenix.Flash.get(new_password_conn.assigns.flash, :info) =~
                "Password updated successfully"
 
+      assert Accounts.get_user_by_email_and_password(user.email, new_password)
+    end
+
+    test "a wrong code does not set the password", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv
+      |> form("#password_form", %{
+        "user" => %{
+          "password" => valid_user_password(),
+          "password_confirmation" => valid_user_password()
+        }
+      })
+      |> render_submit()
+
+      lv |> element("#bootstrap_send") |> render_click()
+
+      result =
+        lv
+        |> form("#bootstrap_form", %{"recheck" => %{"code" => "AAAAA-AAAAA"}})
+        |> render_submit()
+
+      assert result =~ "That code isn&#39;t right."
+      refute Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+    end
+
+    test "changing an existing password asks for the current one", %{conn: conn} do
+      user = user_fixture() |> set_password()
+      conn = log_in_user(conn, user)
+      new_password = "a brand new password"
+
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      form =
+        form(lv, "#password_form", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => new_password,
+            "password_confirmation" => new_password
+          }
+        })
+
+      render_submit(form)
+      refute has_element?(lv, "#bootstrap_send")
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      new_password_conn = follow_trigger_action(form, conn)
+      assert redirected_to(new_password_conn) == ~p"/users/settings"
       assert Accounts.get_user_by_email_and_password(user.email, new_password)
     end
 
