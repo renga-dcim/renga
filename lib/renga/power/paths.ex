@@ -19,17 +19,13 @@ defmodule Renga.Power.Paths do
 
   alias Renga.Accounts.Scope
   alias Renga.Power.Port
+  alias Renga.Power.Paths.Path
   alias Renga.Repo
   alias Renga.Topology.Cable
 
   # Server to rack PDU to floor PDU to feed is three hops; anything far
   # beyond that is a data error rather than a power train.
   @max_hops 8
-
-  defmodule Path do
-    @moduledoc "One port's chain: the outlets it passes, then a feed or a stop."
-    defstruct [:port, outlets: [], feed: nil, stop: nil]
-  end
 
   @doc "The power path of each of `ports`, in the same order."
   def for_ports(%Scope{}, []), do: []
