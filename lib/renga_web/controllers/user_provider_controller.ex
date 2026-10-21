@@ -10,7 +10,6 @@ defmodule RengaWeb.UserProviderController do
 
   require Logger
 
-  alias Renga.Accounts
   alias Renga.Accounts.Identities
   alias Renga.Accounts.IdentityProviders
   alias Renga.Accounts.OIDC
@@ -39,11 +38,10 @@ defmodule RengaWeb.UserProviderController do
     with %{"provider" => ^id} <- attempt || {:error, :no_attempt},
          {:ok, result} <- OIDC.finish(attempt, params, callback_url(id)),
          {:ok, user} <- Identities.resolve(result) do
-      Accounts.record_sign_in(user, "provider:#{id}")
-
+      # The session and its security log entry commit together.
       conn
       |> put_flash(:info, "Welcome back!")
-      |> UserAuth.log_in_user(user)
+      |> UserAuth.log_in_user(user, %{}, "provider:#{id}")
     else
       error ->
         Logger.info("Provider sign-in through #{id} failed: #{inspect(error)}")
