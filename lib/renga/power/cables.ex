@@ -148,23 +148,38 @@ defmodule Renga.Power.Cables do
       |> Map.new(&{&1, attrs[&1] || attrs[Atom.to_string(&1)]})
       |> Map.reject(fn {_key, id} -> id in [nil, ""] end)
 
-    port = endpoints[:power_port_id] && fetch(Port, scope, endpoints.power_port_id)
+    port = fetch(Port, scope, endpoints[:power_port_id])
 
-    far =
-      case {endpoints[:power_outlet_id], endpoints[:power_feed_id]} do
-        {nil, nil} -> nil
-        {outlet_id, nil} -> fetch(Outlet, scope, outlet_id)
-        {nil, feed_id} -> fetch(Feed, scope, feed_id)
-        {_outlet_id, _feed_id} -> Repo.rollback(:power_cable_endpoints)
-      end
-
-    cond do
-      is_nil(port) or is_nil(far) -> Repo.rollback(:power_cable_endpoints)
-      live? and (retired?(port) or retired?(far)) -> Repo.rollback(:power_endpoint_retired)
-      match?(%Outlet{}, far) and far.resource_id == port.resource_id -> Repo.rollback(:power_loop)
-      true -> endpoints
+    case check_endpoints(port, far_endpoint(scope, endpoints), live?) do
+      :ok -> endpoints
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  # Exactly one of an outlet or a feed; both, or neither, is no endpoint.
+  defp far_endpoint(scope, endpoints) do
+    case {endpoints[:power_outlet_id], endpoints[:power_feed_id]} do
+      {outlet_id, nil} -> fetch(Outlet, scope, outlet_id)
+      {nil, feed_id} -> fetch(Feed, scope, feed_id)
+      {_outlet_id, _feed_id} -> nil
+    end
+  end
+
+  defp check_endpoints(port, far, _live?) when is_nil(port) or is_nil(far),
+    do: {:error, :power_cable_endpoints}
+
+  defp check_endpoints(port, far, live?) do
+    cond do
+      live? and (retired?(port) or retired?(far)) -> {:error, :power_endpoint_retired}
+      loop?(port, far) -> {:error, :power_loop}
+      true -> :ok
+    end
+  end
+
+  defp loop?(port, %Outlet{resource_id: resource_id}), do: resource_id == port.resource_id
+  defp loop?(_port, _feed), do: false
+
+  defp fetch(_schema, _scope, nil), do: nil
 
   defp fetch(schema, scope, id) do
     case Ecto.UUID.cast(id) do
