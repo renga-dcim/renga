@@ -140,4 +140,30 @@ defmodule RengaWeb.Browser.JobsTest do
       &assert(Enum.all?(&1, fn h -> h >= 44 end), inspect(&1))
     )
   end
+
+  # Bind and Unbind are short words, so their targets need a minimum width
+  # as well as height.
+  test "a resource's privileged-job binding is tappable on a phone", %{
+    conn: conn,
+    agent: agent,
+    scope: scope
+  } do
+    bound = target_binding_fixture(scope.organization, agent)
+
+    sizes =
+      "[...document.querySelectorAll('#target-binding button')].filter(b => b.offsetParent !== null).map(b => { const r = b.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)] })"
+
+    conn
+    |> visit("/inventory/#{bound.resource.id}/sources")
+    |> assert_has("#target-binding-current")
+    |> evaluate(@fits, &assert(&1 == true, "the Sources tab scrolls sideways"))
+    |> evaluate(sizes, fn sizes ->
+      assert sizes != []
+      assert Enum.all?(sizes, fn [w, h] -> w >= 44 and h >= 44 end), inspect(sizes)
+    end)
+    |> click_button("#revoke-target-binding-button", "Unbind")
+    |> assert_has("#revoke-target-binding [role=alertdialog]")
+    |> click_button("#revoke-target-binding-confirm", "Unbind")
+    |> assert_has("#target-binding-none")
+  end
 end

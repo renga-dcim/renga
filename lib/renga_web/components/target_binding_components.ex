@@ -41,7 +41,7 @@ defmodule RengaWeb.TargetBindingComponents do
           id="revoke-target-binding-button"
           type="button"
           phx-click={show_overlay("revoke-target-binding")}
-          class="ml-auto min-h-tap cursor-pointer text-xs text-crit hover:underline"
+          class="ml-auto min-h-tap min-w-tap cursor-pointer text-xs text-crit hover:underline"
         >
           Unbind
         </button>
@@ -73,7 +73,7 @@ defmodule RengaWeb.TargetBindingComponents do
             id={"bind-target-#{agent.id}-button"}
             type="button"
             phx-click={show_overlay("bind-target-#{agent.id}")}
-            class="ml-auto min-h-tap cursor-pointer text-xs text-link hover:underline"
+            class="ml-auto min-h-tap min-w-tap cursor-pointer text-xs text-link hover:underline"
           >
             {if @binding, do: "Bind here instead", else: "Bind"}
           </button>
