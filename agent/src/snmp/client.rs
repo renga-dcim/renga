@@ -56,9 +56,16 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
                 break;
             }
             for (oid, value) in batch {
-                // Past the column, past the MIB, or not advancing: the walk is done.
-                if !oid.starts_with(column) || value == SnmpValue::Missing || oid <= cursor {
+                // Past the MIB or past the column: the walk is done.
+                if value == SnmpValue::Missing || !oid.starts_with(column) {
                     break 'walk;
+                }
+                // An agent that stops advancing inside the column has not shown the rest of
+                // it, and a shortened table would read as interfaces or neighbors gone.
+                if oid <= cursor {
+                    return Err(PollError(
+                        "the device returned a variable out of order".into(),
+                    ));
                 }
                 total += 1;
                 bytes += oid.len() * 4 + value_bytes(&value);
@@ -169,11 +176,11 @@ impl Session for WireSession {
     }
 }
 
+/// SNMPv2c and v3 agents end a walk with exception values, not error statuses, so any error
+/// status leaves the answers incomplete.
 fn check_status(status: u32) -> Result<(), PollError> {
     match status {
         0 => Ok(()),
-        // noSuchName from a v1-style agent: the rest of the walk is empty.
-        2 => Ok(()),
         status => Err(PollError(format!(
             "the device answered with error status {status}"
         ))),
@@ -331,6 +338,31 @@ pub(crate) mod tests {
         let mut session = Recorded::new(&answers);
         let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
         assert!(error.0.contains("bytes"), "{error}");
+    }
+
+    /// Answers one variable at a time, but inside `ifName` repeats the cursor instead of
+    /// moving past it.
+    struct Stalling(Recorded);
+
+    impl Session for Stalling {
+        fn get(&mut self, oids: &[&[u32]]) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            self.0.get(oids)
+        }
+
+        fn next(&mut self, oid: &[u32], _count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            if oid.starts_with(IF_NAME) && oid.len() > IF_NAME.len() {
+                return Ok(vec![(oid.to_vec(), SnmpValue::Octets(b"eth0".to_vec()))]);
+            }
+            self.0.next(oid, 1)
+        }
+    }
+
+    #[test]
+    fn fails_a_walk_that_stops_advancing() {
+        let mut session = Stalling(Recorded::new(&mibs::tests::answers()));
+        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        assert!(error.0.contains("out of order"), "{error}");
+        assert!(check_status(2).is_err());
     }
 
     #[test]
