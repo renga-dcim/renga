@@ -107,7 +107,7 @@ defmodule RengaWeb.UserProviderController do
       {:error, reason} ->
         conn
         |> put_flash(:error, test_message({:error, reason}))
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(ProviderTests.provider_for_token(token)))
     end
   end
 

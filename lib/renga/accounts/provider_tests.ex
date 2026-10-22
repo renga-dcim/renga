@@ -43,6 +43,18 @@ defmodule Renga.Accounts.ProviderTests do
     end
   end
 
+  @doc "The provider a test link was made for, or nil, whatever became of the test."
+  def provider_for_token(token) when is_binary(token) do
+    IdentityProviderTest
+    |> where(token_hash: ^hash(token))
+    |> select([test], test.provider_id)
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      id -> IdentityProviders.get_any(id)
+    end
+  end
+
   @doc "The started, unfinished test a callback's `state` belongs to, or nil."
   def for_state(state) when is_binary(state) do
     now = Renga.Time.utc_now_ms()

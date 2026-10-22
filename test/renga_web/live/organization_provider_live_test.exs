@@ -204,4 +204,21 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
     assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "now uses revision 1"
     assert IdentityProviders.usable?(OrganizationProviders.get(scope, provider.id))
   end
+
+  test "a test sign-in that can't start returns to this page", %{conn: conn} do
+    {conn, scope} = member_conn(conn, "owner")
+
+    # A loopback issuer fails the destination policy before any request.
+    provider = provider_fixture(scope, %{"issuer" => "https://127.0.0.1"})
+    {:ok, view, _html} = live(conn, ~p"/settings/identity-providers")
+
+    assert {:error, {:redirect, %{to: "/users/providers/test/" <> token}}} =
+             view |> element("#provider-#{provider.id}-test") |> render_click()
+
+    conn = get(recycle(conn), ~p"/users/providers/test/#{token}")
+
+    assert redirected_to(conn) == ~p"/settings/identity-providers"
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "test sign-in didn't work"
+    refute IdentityProviders.usable?(OrganizationProviders.get(scope, provider.id))
+  end
 end
