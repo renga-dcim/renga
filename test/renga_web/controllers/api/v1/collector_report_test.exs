@@ -85,7 +85,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert length(Collectors.list_streams(scope)) == 3
     end
 
-    test "a stream's kind never changes", %{token: token} do
+    test "a stream's kind never changes", %{scope: scope, token: token} do
       assert %{"status" => "accepted"} =
                token
                |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
@@ -98,6 +98,17 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         )
 
       assert %{"errors" => [%{"path" => "collector.kind"}]} = valid_api_response(conflict, 409)
+
+      # Nor can an update retype it, which would misfile its queued reports.
+      [stream] = Collectors.list_streams(scope)
+
+      assert {:error, changeset} =
+               Inventory.update_source(scope, stream, %{kind: "vm_provider"})
+
+      assert %{kind: ["can't change for a collector stream"]} =
+               Renga.DataCase.errors_on(changeset)
+
+      assert {:ok, _renamed} = Inventory.update_source(scope, stream, %{name: "core switches"})
     end
 
     test "a disabled stream rejects reports", %{scope: scope, token: token} do

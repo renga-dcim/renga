@@ -77,8 +77,20 @@ defmodule Renga.Inventory.Source do
       name: :sources_agent_collector_index
     )
     |> check_constraint(:collector_id, name: :sources_collector_stream)
+    |> validate_stream_kind_unchanged()
     |> put_default_routing_domain_authority()
   end
+
+  # A queued report replays into the stream that produced it, so the stream
+  # must still be the kind of collector that wrote it.
+  defp validate_stream_kind_unchanged(%{data: %{collector_id: id, kind: kind}} = changeset)
+       when is_binary(id) and is_binary(kind) do
+    if get_field(changeset, :kind) == kind,
+      do: changeset,
+      else: add_error(changeset, :kind, "can't change for a collector stream")
+  end
+
+  defp validate_stream_kind_unchanged(changeset), do: changeset
 
   @doc "Whether the source is a collector stream rather than a host or manual source."
   def collector_stream?(%__MODULE__{collector_id: collector_id}), do: not is_nil(collector_id)
