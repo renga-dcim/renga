@@ -6,6 +6,9 @@ defmodule RengaWeb.SitePowerLive do
   Capacity keeps its unit: AC feeds in VA and DC feeds in W, never summed
   together. Each feed shows the allocated load on it (`Renga.Power.Load`),
   or why it is unknown, and opens a breakdown by load and three-phase leg.
+  Beside it is the measured load from current power readings
+  (`Renga.Power.Measured`), which counts only fresh, valid readings that
+  cover the whole feed and otherwise says why it is unknown.
   Its "What fails" action lists the devices that would lose all supply or
   their redundancy if it failed (`Renga.Power.Redundancy`).
   People holding `dcim.edit` (owners and admins) add panels and add or edit
@@ -23,6 +26,7 @@ defmodule RengaWeb.SitePowerLive do
   alias Renga.Power.Capacity
   alias Renga.Power.Feed
   alias Renga.Power.Load
+  alias Renga.Power.Measured
   alias Renga.Power.PowerFactor
   alias Renga.Power.Redundancy
 
@@ -264,6 +268,9 @@ defmodule RengaWeb.SitePowerLive do
               <:col :let={feed} label="Allocated" class="w-36">
                 <.feed_load feed={feed} load={Map.fetch!(@loads, feed.id)} />
               </:col>
+              <:col :let={feed} label="Measured" class="w-36">
+                <.feed_measured feed={feed} measured={Map.fetch!(@measured, feed.id)} />
+              </:col>
               <:action :let={feed}>
                 <.button
                   id={"feed-#{feed.id}-failure"}
@@ -332,6 +339,10 @@ defmodule RengaWeb.SitePowerLive do
             Allocated load sums the allocated draw of the devices downstream of each feed. It is
             planning data, not a measurement.
           </p>
+          <p class="text-xs text-fg-muted">
+            Measured load comes from power readings. It counts only fresh, valid readings that cover
+            everything on the feed, and is unknown otherwise.
+          </p>
         </:aside>
       </.object_page>
 
@@ -339,6 +350,7 @@ defmodule RengaWeb.SitePowerLive do
         <.load_details
           :if={@loads[@load_feed_id]}
           load={@loads[@load_feed_id]}
+          measured={@measured[@load_feed_id]}
           default_power_factor={@default_power_factor}
         />
       </.side_panel>
@@ -532,6 +544,53 @@ defmodule RengaWeb.SitePowerLive do
     """
   end
 
+  attr :feed, Feed, required: true
+  attr :measured, Measured, required: true
+
+  # The measured load in a feed's row, like the allocated load beside it.
+  defp feed_measured(assigns) do
+    assigns = assign(assigns, :percent, Measured.percent(assigns.measured))
+
+    ~H"""
+    <button
+      id={"feed-#{@feed.id}-measured"}
+      type="button"
+      data-status={@measured.status}
+      aria-label={"#{@feed.name} measured load: #{measured_status_label(@measured)}"}
+      class="block min-h-tap w-full cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+      phx-click={JS.push("show_load", value: %{id: @feed.id}) |> show_overlay("load-panel")}
+    >
+      <span class="flex items-baseline justify-between gap-2 font-mono text-xs tabular-nums">
+        <span class={[@measured.status == :over && "font-medium text-crit", "text-fg"]}>
+          {measured_label(@measured)}
+        </span>
+        <span :if={@percent} class={[@measured.status == :over && "text-crit", "text-fg-muted"]}>
+          {@percent}%
+        </span>
+      </span>
+      <span
+        :if={@percent}
+        class="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-sunken"
+        aria-hidden="true"
+      >
+        <span
+          class={[
+            "block h-full rounded-full",
+            if(@measured.status == :over, do: "bg-crit", else: "bg-accent")
+          ]}
+          style={"width: #{min(@percent, 100)}%"}
+        />
+      </span>
+      <span class={[
+        "block text-[11px]",
+        if(@measured.status == :over, do: "text-crit", else: "text-fg-muted")
+      ]}>
+        {measured_note(@measured)}
+      </span>
+    </button>
+    """
+  end
+
   attr :failure, Redundancy.Failure, required: true
 
   defp failure_details(assigns) do
@@ -638,6 +697,7 @@ defmodule RengaWeb.SitePowerLive do
   end
 
   attr :load, Load, required: true
+  attr :measured, Measured, default: nil
   attr :default_power_factor, Decimal, default: nil
 
   defp load_details(assigns) do
@@ -734,11 +794,84 @@ defmodule RengaWeb.SitePowerLive do
         </ul>
       </section>
 
+      <.measured_details :if={@measured} measured={@measured} />
+
       <p class="text-xs text-fg-muted">
-        Measured load needs power readings, which Renga does not collect yet. Until then this is
-        allocated load only, which is not proof that another device can safely be connected.
+        Allocated load is planning data. Neither it nor a watt total alone proves that another
+        device can safely be connected.
       </p>
     </div>
+    """
+  end
+
+  attr :measured, Measured, required: true
+
+  defp measured_details(assigns) do
+    ~H"""
+    <section id="measured-details" class="space-y-3">
+      <.properties id="measured-summary" title="Measured load">
+        <:item label="Status">
+          <span id="measured-status" class={@measured.status == :over && "font-medium text-crit"}>
+            {measured_status_label(@measured)}
+          </span>
+        </:item>
+        <:item label="Measured">
+          <span id="measured-load" class="font-mono tabular-nums">
+            {measured_label(@measured)}
+          </span>
+        </:item>
+        <:item label="Headroom" blank={is_nil(@measured.headroom)} placeholder="Unknown">
+          <span
+            id="measured-headroom"
+            class={[
+              "font-mono tabular-nums",
+              @measured.headroom && Decimal.negative?(@measured.headroom) && "text-crit"
+            ]}
+          >
+            {@measured.headroom && headroom(@measured.headroom, @measured.capacity.unit)}
+          </span>
+        </:item>
+        <:item :if={@measured.current} label="Current">
+          <span id="measured-current" class="font-mono tabular-nums">
+            {amps(@measured.current, :ceiling)} of {amps(@measured.current_limit, :floor)}
+          </span>
+        </:item>
+        <:item label="Measured at" blank={is_nil(@measured.basis)} placeholder="—">
+          <span id="measured-basis">{basis_label(@measured)}</span>
+        </:item>
+        <:item label="As of" blank={is_nil(@measured.as_of)} placeholder="—">
+          <time
+            :if={@measured.as_of}
+            id="measured-as-of"
+            datetime={DateTime.to_iso8601(@measured.as_of)}
+          >
+            {RengaWeb.Format.datetime(@measured.as_of)}
+          </time>
+        </:item>
+      </.properties>
+
+      <ul :if={@measured.gaps != []} id="measured-gaps" class="space-y-1 text-xs">
+        <li :for={gap <- @measured.gaps} class="text-fg-muted">{gap_reason(gap)}</li>
+      </ul>
+
+      <ul
+        :if={@measured.legs != []}
+        id="measured-legs"
+        class="divide-y divide-line rounded-md border border-edge"
+      >
+        <li
+          :for={leg <- @measured.legs}
+          id={"measured-leg-#{leg.leg}"}
+          class="flex items-baseline justify-between gap-3 px-3 py-2 font-mono text-xs tabular-nums"
+        >
+          <span class="font-sans font-medium text-fg">Leg {String.upcase(leg.leg)}</span>
+          <span :if={leg.current} class={measured_leg_class(leg)}>
+            {amps(leg.current, :ceiling)} of {amps(leg.limit, :floor)}
+          </span>
+          <span :if={!leg.current} class="text-fg-muted">Not measured</span>
+        </li>
+      </ul>
+    </section>
     """
   end
 
@@ -771,6 +904,7 @@ defmodule RengaWeb.SitePowerLive do
       feeds: feeds,
       failure: failure,
       loads: Load.for_feeds(socket.assigns.current_scope, feeds, default_power_factor),
+      measured: Measured.for_feeds(socket.assigns.current_scope, feeds),
       totals: Power.capacity_totals(feeds),
       default_power_factor: default_power_factor,
       power_factor_form:
@@ -941,6 +1075,81 @@ defmodule RengaWeb.SitePowerLive do
     ]
     |> Enum.filter(& &1)
   end
+
+  defp measured_label(%Measured{load: %Decimal{} = load, capacity: capacity}),
+    do: Capacity.format(load, capacity.unit, :ceiling)
+
+  defp measured_label(%Measured{known: %Decimal{} = known, capacity: capacity}),
+    do: "#{Capacity.format(known, capacity.unit)} or more"
+
+  defp measured_label(%Measured{status: :over, current: %Decimal{} = current}),
+    do: amps(current, :ceiling)
+
+  defp measured_label(%Measured{}), do: "Unknown"
+
+  defp measured_status_label(%Measured{status: :ok}), do: "Within capacity"
+  defp measured_status_label(%Measured{status: :unknown}), do: "Unknown"
+
+  defp measured_status_label(%Measured{status: :over} = measured) do
+    cond do
+      measured.known && Decimal.gt?(measured.known, measured.capacity.usable) ->
+        "Over capacity"
+
+      measured.current && Decimal.gt?(measured.current, measured.current_limit) ->
+        "Current over its limit"
+
+      true ->
+        "A leg is over its limit"
+    end
+  end
+
+  defp measured_note(%Measured{status: :over} = measured), do: measured_status_label(measured)
+  defp measured_note(%Measured{status: :ok} = measured), do: basis_label(measured)
+  defp measured_note(%Measured{gaps: [gap | _rest]}), do: short_gap(gap)
+  defp measured_note(%Measured{}), do: "No readings"
+
+  defp basis_label(%Measured{basis: :aggregate}), do: "PDU inlet meter"
+  defp basis_label(%Measured{basis: :outlets}), do: "Sum of PDU outlets"
+  defp basis_label(%Measured{basis: :supply}), do: "Power supply input"
+  defp basis_label(%Measured{}), do: nil
+
+  defp short_gap(:no_cable), do: "Nothing connected"
+  defp short_gap(:no_readings), do: "No readings"
+  defp short_gap(:ineligible), do: "Readings stale or failed"
+  defp short_gap(:partial_coverage), do: "Partial coverage"
+  defp short_gap(:unconverted), do: "No measured power factor"
+  defp short_gap(:legs_unmeasured), do: "Legs not all measured"
+
+  defp short_gap({:outlets_unmeasured, count}),
+    do: "#{count} #{plural(count, "outlet")} unmeasured"
+
+  defp gap_reason(:no_cable), do: "Nothing is connected to this feed."
+
+  defp gap_reason(:no_readings),
+    do: "No power readings cover what this feed supplies."
+
+  defp gap_reason(:ineligible),
+    do:
+      "Some readings are stale, failed, or unusable. Only fresh, valid readings count, and missing ones are never read as zero."
+
+  defp gap_reason(:partial_coverage),
+    do:
+      "The PDU's inlet meter does not declare that it covers every outlet, so it is not used for the feed."
+
+  defp gap_reason(:unconverted),
+    do:
+      "Real power was measured but not apparent power or a power factor, so the volt-amperes this AC feed is rated in are unknown."
+
+  defp gap_reason(:legs_unmeasured),
+    do:
+      "Not every leg's current is measured. A three-phase total cannot show any one leg's headroom."
+
+  defp gap_reason({:outlets_unmeasured, count}),
+    do:
+      "#{count} #{plural(count, "outlet")} on the PDU #{verb(count, "has", "have")} no fresh, valid reading, so the sum of outlets is only a lower bound."
+
+  defp measured_leg_class(%Measured.Leg{} = leg),
+    do: if(Decimal.gt?(leg.current, leg.limit), do: "font-medium text-crit", else: "text-fg")
 
   defp status_label(%Load{status: :ok}), do: "Within capacity"
 
