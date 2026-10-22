@@ -63,7 +63,7 @@ defmodule RengaWeb.QueryBatchLive do
       jobs = Enum.sort_by(jobs, &resource_name/1)
 
       assign(socket,
-        page_title: "#{module.title()} across #{length(jobs)} hosts",
+        page_title: "#{module.title()} across #{hosts(length(jobs))}",
         module: module,
         first: first,
         jobs: jobs,
@@ -127,6 +127,9 @@ defmodule RengaWeb.QueryBatchLive do
   defp table_rows({:scalars, columns}, answered),
     do: {columns, for({job, parts} <- answered, do: {job, Map.new(parts.scalars)})}
 
+  defp hosts(1), do: "1 host"
+  defp hosts(count), do: "#{count} hosts"
+
   defp resource_name(%Job{resource: %{} = resource}), do: resource.display_name || resource.name
   defp resource_name(%Job{}), do: "A removed resource"
 
@@ -145,7 +148,7 @@ defmodule RengaWeb.QueryBatchLive do
     >
       <div id="query-batch" class="mx-auto max-w-6xl space-y-6">
         <.header>
-          {@module.title()} across {length(@jobs)} hosts
+          {@module.title()} across {hosts(length(@jobs))}
           <:subtitle>
             <span :if={asked(@first)}>{asked(@first)} · </span>
             ran by {requester(@first, @current_scope.user.id)} · {when_label(@first.inserted_at)}

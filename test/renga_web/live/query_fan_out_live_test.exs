@@ -151,6 +151,8 @@ defmodule RengaWeb.QueryFanOutLiveTest do
     conn = conn_for(context.conn, context.runner, context.organization)
     {:ok, view, _html} = live(conn, ~p"/activity/queries/#{batch_id}")
 
+    assert has_element?(view, "#query-batch", "Time sync across 1 host")
+    refute has_element?(view, "#query-batch", "1 hosts")
     assert has_element?(view, "#query-batch-row-0", "web-01")
     assert has_element?(view, "#query-batch-row-0", "chronyd")
     assert has_element?(view, "#query-batch-row-0", "-12 µs")
