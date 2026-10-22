@@ -23,7 +23,7 @@ defmodule Renga.FindingsFixtures do
       kind: kind,
       resolution_key: Keyword.get(opts, :key, "assignment:1:template:1"),
       status: status,
-      message: "Finding #{kind}",
+      message: Keyword.get(opts, :message, "Finding #{kind}"),
       last_observed_at: at,
       resolved_at: if(status == "resolved", do: at)
     })
