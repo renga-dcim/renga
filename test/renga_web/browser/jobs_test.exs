@@ -155,6 +155,7 @@ defmodule RengaWeb.Browser.JobsTest do
 
     conn
     |> visit("/inventory/#{bound.resource.id}/sources")
+    |> assert_has("body .phx-connected")
     |> assert_has("#target-binding-current")
     |> evaluate(@fits, &assert(&1 == true, "the Sources tab scrolls sideways"))
     |> evaluate(sizes, fn sizes ->
