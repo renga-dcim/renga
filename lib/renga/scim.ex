@@ -138,25 +138,27 @@ defmodule Renga.Scim do
   `nil` or `""`.
   """
   def update_default_role(%Scope{} = scope, connection_id, role) do
-    managed(scope, fn ->
-      with {:ok, connection} <- lock_connection(scope, connection_id),
-           {:ok, updated} <-
+    with_connection(scope, connection_id, fn connection ->
+      with {:ok, updated} <-
              connection
              |> Connection.default_role_changeset(%{default_role: role})
              |> Repo.update() do
-        if updated.default_role != connection.default_role do
-          record!(
-            scope,
-            "scim_default_role_changed",
-            updated,
-            connection.default_role && %{"value" => connection.default_role},
-            updated.default_role && %{"value" => updated.default_role}
-          )
-        end
-
+        record_default_role!(scope, connection, updated)
         {:ok, updated}
       end
     end)
+  end
+
+  defp record_default_role!(_scope, %{default_role: role}, %{default_role: role}), do: :ok
+
+  defp record_default_role!(scope, connection, updated) do
+    record!(
+      scope,
+      "scim_default_role_changed",
+      updated,
+      connection.default_role && %{"value" => connection.default_role},
+      updated.default_role && %{"value" => updated.default_role}
+    )
   end
 
   @doc """
@@ -164,19 +166,17 @@ defmodule Renga.Scim do
   connection stays as history, and its tokens stay revocable.
   """
   def disable_connection(%Scope{} = scope, connection_id) do
-    managed(scope, fn ->
-      with {:ok, connection} <- lock_connection(scope, connection_id) do
-        if Connection.enabled?(connection) do
-          disabled =
-            connection
-            |> Ecto.Changeset.change(disabled_at: Renga.Time.utc_now_ms())
-            |> Repo.update!()
+    with_connection(scope, connection_id, fn connection ->
+      if Connection.enabled?(connection) do
+        disabled =
+          connection
+          |> Ecto.Changeset.change(disabled_at: Renga.Time.utc_now_ms())
+          |> Repo.update!()
 
-          record!(scope, "scim_connection_disabled", disabled)
-          {:ok, disabled}
-        else
-          {:ok, connection}
-        end
+        record!(scope, "scim_connection_disabled", disabled)
+        {:ok, disabled}
+      else
+        {:ok, connection}
       end
     end)
   end
@@ -186,27 +186,25 @@ defmodule Renga.Scim do
   another one since or its provider is no longer eligible.
   """
   def enable_connection(%Scope{} = scope, connection_id) do
-    managed(scope, fn ->
-      with {:ok, connection} <- lock_connection(scope, connection_id) do
-        cond do
-          Connection.enabled?(connection) ->
-            {:ok, connection}
+    with_connection(scope, connection_id, fn connection ->
+      cond do
+        Connection.enabled?(connection) ->
+          {:ok, connection}
 
-          enabled_connection?(scope.organization_id) ->
-            {:error, :already_connected}
+        enabled_connection?(scope.organization_id) ->
+          {:error, :already_connected}
 
-          not eligible_provider?(connection.provider_id, scope.organization_id) ->
-            {:error, :provider_unavailable}
+        not eligible_provider?(connection.provider_id, scope.organization_id) ->
+          {:error, :provider_unavailable}
 
-          true ->
-            enabled =
-              connection
-              |> Ecto.Changeset.change(disabled_at: nil)
-              |> Repo.update!()
+        true ->
+          enabled =
+            connection
+            |> Ecto.Changeset.change(disabled_at: nil)
+            |> Repo.update!()
 
-            record!(scope, "scim_connection_enabled", enabled)
-            {:ok, enabled}
-        end
+          record!(scope, "scim_connection_enabled", enabled)
+          {:ok, enabled}
       end
     end)
   end
@@ -217,23 +215,21 @@ defmodule Renga.Scim do
   connection already holds two unrevoked tokens.
   """
   def create_token(%Scope{} = scope, connection_id, attrs) do
-    managed(scope, fn ->
-      with {:ok, connection} <- lock_connection(scope, connection_id),
-           :ok <- check_token_room(connection) do
-        value = generate_token()
+    with_connection(scope, connection_id, fn connection ->
+      value = generate_token()
 
-        changeset =
-          %Token{
-            organization_id: scope.organization_id,
-            connection_id: connection.id,
-            created_by_user_id: scope.user.id
-          }
-          |> Token.create_changeset(attrs, hash_token(value))
+      changeset =
+        %Token{
+          organization_id: scope.organization_id,
+          connection_id: connection.id,
+          created_by_user_id: scope.user.id
+        }
+        |> Token.create_changeset(attrs, hash_token(value))
 
-        with {:ok, token} <- Repo.insert(changeset) do
-          record!(scope, "scim_token_created", connection, nil, nil, token_metadata(token))
-          {:ok, {token, value}}
-        end
+      with :ok <- check_token_room(connection),
+           {:ok, token} <- Repo.insert(changeset) do
+        record!(scope, "scim_token_created", connection, nil, nil, token_metadata(token))
+        {:ok, {token, value}}
       end
     end)
   end
@@ -241,24 +237,24 @@ defmodule Renga.Scim do
   @doc "Revokes a token at once. Revoking a revoked token changes nothing."
   def revoke_token(%Scope{} = scope, token_id) do
     managed(scope, fn ->
-      with {:ok, token} <- lock_token(scope, token_id) do
-        if token.revoked_at do
-          {:ok, token}
-        else
-          revoked =
-            token
-            |> Ecto.Changeset.change(
-              revoked_at: Renga.Time.utc_now_ms(),
-              revoked_by_user_id: scope.user.id
-            )
-            |> Repo.update!()
-
-          connection = Repo.get!(Connection, token.connection_id)
-          record!(scope, "scim_token_revoked", connection, nil, nil, token_metadata(revoked))
-          {:ok, revoked}
-        end
-      end
+      with {:ok, token} <- lock_token(scope, token_id), do: revoke!(scope, token)
     end)
+  end
+
+  defp revoke!(_scope, %Token{revoked_at: %DateTime{}} = token), do: {:ok, token}
+
+  defp revoke!(scope, token) do
+    revoked =
+      token
+      |> Ecto.Changeset.change(
+        revoked_at: Renga.Time.utc_now_ms(),
+        revoked_by_user_id: scope.user.id
+      )
+      |> Repo.update!()
+
+    connection = Repo.get!(Connection, token.connection_id)
+    record!(scope, "scim_token_revoked", connection, nil, nil, token_metadata(revoked))
+    {:ok, revoked}
   end
 
   @doc """
@@ -324,6 +320,12 @@ defmodule Renga.Scim do
       end
     end)
     |> Changes.broadcast(scope.organization_id)
+  end
+
+  defp with_connection(scope, connection_id, mutation) do
+    managed(scope, fn ->
+      with {:ok, connection} <- lock_connection(scope, connection_id), do: mutation.(connection)
+    end)
   end
 
   defp lock_connection(%Scope{organization_id: organization_id}, connection_id) do
