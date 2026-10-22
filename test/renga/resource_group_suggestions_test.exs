@@ -107,6 +107,10 @@ defmodule Renga.ResourceGroupSuggestionsTest do
 
     assert event.actor_user_id == context.admin.user.id
     assert metadata["reason"] == "Suggested by the triage rule Staging hosts"
+
+    assert RengaWeb.ChangeDescription.describe(event) ==
+             "Added to Staging · Suggested by the triage rule Staging hosts"
+
     assert ResourceGroups.list_suggestions(context.admin) == []
 
     # Already decided.
