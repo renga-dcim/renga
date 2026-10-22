@@ -82,7 +82,9 @@ impl From<TransportError> for HomeError {
 pub fn deployment_id(intake_api_key: &str) -> Option<&str> {
     let rest = intake_api_key.strip_prefix(INTAKE_KEY_PREFIX)?;
     let separator = rest.len().checked_sub(SECRET_LENGTH + 1)?;
-    let (identifier, secret) = rest.split_at(separator);
+    // A malformed key may put a multi-byte character across the offset; slicing there must
+    // not panic, since a panic message would print the key.
+    let (identifier, secret) = rest.split_at_checked(separator)?;
     (secret.starts_with('_') && valid_deployment_id(identifier)).then_some(identifier)
 }
 
@@ -268,6 +270,11 @@ mod tests {
         assert_eq!(deployment_id(&format!("renga_intake_-x_{SECRET}")), None);
         assert_eq!(deployment_id(&format!("renga_intake_eu-1x{SECRET}")), None);
         assert_eq!(deployment_id("renga_intake_short"), None);
+        // The fixed-length offset lands inside the multi-byte character.
+        assert_eq!(
+            deployment_id(&format!("renga_intake_é{}", "a".repeat(SECRET_LENGTH))),
+            None
+        );
         assert_eq!(deployment_id(&format!("other_eu-1_{SECRET}")), None);
     }
 
