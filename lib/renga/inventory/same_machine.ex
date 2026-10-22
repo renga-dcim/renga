@@ -37,18 +37,23 @@ defmodule Renga.Inventory.SameMachine do
   Re-evaluates what a reconciled observation may have changed: the machine a
   host agent reported, or the machines a hypervisor's domains could match.
   Runs after reconciliation commits, under the organization lock.
+
+  The evaluation reads current evidence, so it is judged by the server's
+  clock rather than the report's: an old report replayed late must not find
+  evidence fresh that has since gone stale.
   """
   def refresh_after!(%Scope{} = scope, %Observation{} = observation, result) do
     Repo.transaction(fn ->
       Inventory.lock_organization!(scope.organization_id)
-      refresh_observation!(scope, observation, result)
+      refresh_observation!(scope, observation, result, Renga.Time.utc_now_ms())
     end)
   end
 
   defp refresh_observation!(
          scope,
          %Observation{payload: %{"scope" => "hypervisor"} = payload} = observation,
-         {:ok, resources, _discovered?}
+         {:ok, resources, _discovered?},
+         now
        )
        when is_list(resources) do
     macs =
@@ -66,16 +71,21 @@ defmodule Renga.Inventory.SameMachine do
       scope,
       macs,
       Enum.map(resources, & &1.id) ++ withdrawn,
-      observation.observed_at
+      now
     )
   end
 
-  defp refresh_observation!(scope, %Observation{} = observation, {:ok, %Resource{} = resource, _}) do
+  defp refresh_observation!(
+         scope,
+         %Observation{} = observation,
+         {:ok, %Resource{} = resource, _discovered?},
+         now
+       ) do
     if Inventory.get_source!(scope, observation.source_id).kind == "host_agent",
-      do: refresh_guest!(scope, resource.id, observation.observed_at)
+      do: refresh_guest!(scope, resource.id, now)
   end
 
-  defp refresh_observation!(_scope, _observation, _result), do: :ok
+  defp refresh_observation!(_scope, _observation, _result, _now), do: :ok
 
   @doc """
   Re-evaluates the machines that could match the given domains: those with
