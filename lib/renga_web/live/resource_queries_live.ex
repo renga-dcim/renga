@@ -331,9 +331,11 @@ defmodule RengaWeb.ResourceQueriesLive do
           class="space-y-4"
         >
           <p class="-mt-2 text-sm text-fg-muted">{@choice.module.summary()}</p>
+          <%!-- Names come from the query's own schema, so the atoms are
+                bounded; they may not exist yet on a fresh node. --%>
           <div :for={{name, type, required?} <- Query.parameter_fields(@choice.module)}>
             <.parameter_input
-              field={@run_form[String.to_existing_atom(name)]}
+              field={@run_form[String.to_atom(name)]}
               type={unwrap(type)}
               required?={required?}
             />
