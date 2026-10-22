@@ -51,29 +51,12 @@ defmodule Renga.Inventory.SameMachine do
 
   defp refresh_observation!(
          scope,
-         %Observation{payload: %{"scope" => "hypervisor"} = payload} = observation,
+         %Observation{payload: %{"scope" => "hypervisor"}},
          {:ok, resources, _discovered?},
          now
        )
-       when is_list(resources) do
-    macs =
-      for %{"domain" => %{"interfaces" => [_ | _] = interfaces}} <- payload["resources"] || [],
-          %{"mac_address" => mac} <- interfaces,
-          do: mac
-
-    withdrawn =
-      case scope |> Inventory.list_observation_reconciliations(observation.id) |> List.last() do
-        %{metadata: %{"withdrawn_resource_ids" => ids}} -> ids
-        _none -> []
-      end
-
-    refresh_for_domains!(
-      scope,
-      macs,
-      Enum.map(resources, & &1.id) ++ withdrawn,
-      now
-    )
-  end
+       when is_list(resources),
+       do: refresh_all!(scope, now)
 
   defp refresh_observation!(
          scope,
@@ -88,12 +71,16 @@ defmodule Renga.Inventory.SameMachine do
   defp refresh_observation!(_scope, _observation, _result, _now), do: :ok
 
   @doc """
-  Re-evaluates the machines that could match the given domains: those with
-  an interface carrying one of `macs`, and those whose open finding names
-  one of `vm_resource_ids`.
+  Re-evaluates every machine the organization's domain evidence could
+  concern as of `now`: those carrying a MAC of a domain still eligible, and
+  those with an open finding. A hypervisor report can change what any
+  guest matches, even one whose MACs it never named: an unreachable target
+  ages out every claim it made, and a withdrawn clone leaves its twin
+  unique. The evidence is loaded once for all of them.
   """
-  def refresh_for_domains!(%Scope{} = scope, macs, vm_resource_ids, now) do
-    macs = Enum.flat_map(macs, &cast_mac/1)
+  def refresh_all!(%Scope{} = scope, now) do
+    domains = eligible_domains(scope, now)
+    macs = domains |> Enum.flat_map(fn {_member, macs} -> MapSet.to_list(macs) end) |> Enum.uniq()
 
     by_mac =
       Interface
@@ -102,47 +89,43 @@ defmodule Renga.Inventory.SameMachine do
       |> present_interfaces()
       |> select([interface], interface.resource_id)
 
-    vm_ids = Enum.map(vm_resource_ids, &to_string/1)
-
     by_finding =
       CollectorFinding
       |> where([finding], finding.organization_id == ^scope.organization_id)
       |> where([finding], finding.kind == @kind and finding.status == "open")
-      |> where([finding], fragment("?->>'vm_resource_id'", finding.details) in ^vm_ids)
       |> select([finding], finding.resource_id)
 
     by_mac
     |> union(^by_finding)
     |> Repo.all()
     |> Enum.uniq()
-    |> Enum.each(&refresh_guest!(scope, &1, now))
+    |> Enum.each(&refresh_guest!(scope, &1, now, domains))
   end
 
   @doc "Opens, updates, or resolves the finding for one machine as of `now`."
-  def refresh_guest!(%Scope{} = scope, guest_id, now) do
+  def refresh_guest!(%Scope{} = scope, guest_id, now, domains \\ nil) do
     case guest_agents(scope, guest_id) do
       [] ->
         resolve_where!(scope, guest_id, now, & &1)
 
       agents ->
-        case candidate(scope, guest_id, now) do
+        case candidate(scope, guest_id, domains || eligible_domains(scope, now)) do
           nil -> resolve_where!(scope, guest_id, now, & &1)
           {vm_id, members, macs} -> open!(scope, guest_id, agents, vm_id, members, macs, now)
         end
     end
   end
 
-  defp candidate(scope, guest_id, now) do
+  defp candidate(scope, guest_id, domains) do
     guest_macs = guest_macs(scope, guest_id)
 
     if guest_macs == MapSet.new() or uuid?(scope, guest_id) do
       nil
     else
       matches =
-        scope
-        |> fresh_domains(guest_id, now)
-        |> Enum.filter(fn {_member, macs} ->
-          macs != MapSet.new() and MapSet.subset?(macs, guest_macs)
+        Enum.filter(domains, fn {member, macs} ->
+          member.resource_id != guest_id and macs != MapSet.new() and
+            MapSet.subset?(macs, guest_macs)
         end)
 
       case Enum.group_by(matches, fn {member, _macs} -> member.resource_id end) do
@@ -196,10 +179,13 @@ defmodule Renga.Inventory.SameMachine do
     |> Repo.exists?()
   end
 
-  defp fresh_domains(scope, guest_id, now) do
+  # Domains whose current, fresh view can single a machine out, with their MACs.
+  defp eligible_domains(scope, now) do
+    oldest = VmPlacements.oldest_fresh(now)
+
     CollectorTargetResource
     |> where([member], member.organization_id == ^scope.organization_id)
-    |> where([member], not is_nil(member.domain) and member.resource_id != ^guest_id)
+    |> where([member], not is_nil(member.domain) and member.domain_reported_at >= ^oldest)
     |> preload(:target)
     |> Repo.all()
     |> Enum.filter(

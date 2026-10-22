@@ -95,7 +95,7 @@ defmodule Renga.Inventory.VmPlacements do
   the freshness window.
   """
   def fresh?(target, reported_at, now) do
-    oldest = DateTime.add(now, -@freshness_seconds)
+    oldest = oldest_fresh(now)
 
     target.status == "reachable" and
       not is_nil(target.last_reachable_at) and
@@ -103,6 +103,9 @@ defmodule Renga.Inventory.VmPlacements do
       not is_nil(reported_at) and
       DateTime.compare(reported_at, oldest) != :lt
   end
+
+  @doc "The oldest report time still fresh at `now`."
+  def oldest_fresh(now), do: DateTime.add(now, -@freshness_seconds)
 
   # A hypervisor that last said "active" before another began saying so has
   # not said anything since the VM moved. Streams reading one hypervisor are

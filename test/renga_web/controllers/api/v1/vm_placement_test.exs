@@ -276,6 +276,33 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert findings(with_uuid) == []
     end
 
+    test "any hypervisor report can change what a guest matches", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      clone = %{
+        vm("running", macs: ["52:54:00:00:00:01"])
+        | "identifiers" => %{"dmi_uuid" => "0d8f6f2c-3a4b-4c5d-8e9f-0a1b2c3d4e5f"}
+      }
+
+      post!(token, hypervisor_report("hv-b", [clone], at: recent.(0)))
+      guest_id = guest!(token, ["52:54:00:00:00:01"], at: recent.(1))
+      assert findings(guest_id) == []
+
+      # The clone is withdrawn, so the remaining domain is unique.
+      post!(token, hypervisor_report("hv-b", [], at: recent.(2), complete: true))
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+
+      # The remaining domain's hypervisor becomes unreachable: no fresh claim.
+      post!(token, hypervisor_report("hv-a", [], at: recent.(3), status: "unreachable"))
+      assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
+    end
+
     test "withdrawn evidence on either side is not evidence", %{token: token, recent: recent} do
       post!(
         token,
