@@ -24,6 +24,10 @@ defmodule Renga.Accounts.User do
     field :accent, :string
     field :density, :string, default: "comfortable"
     field :authenticated_at, :utc_datetime_usec, virtual: true
+    # For a user loaded from a session that signed in through an
+    # organization's identity provider, the only organization that session
+    # may open (RFD 15). See `Renga.Accounts.scope_for_user/2`.
+    field :session_organization_id, :binary_id, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
     has_many :created_resource_overrides, ResourceOverride, foreign_key: :created_by_user_id

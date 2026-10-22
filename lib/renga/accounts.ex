@@ -64,7 +64,13 @@ defmodule Renga.Accounts do
 
   This is the browser onboarding boundary: a signed-in user cannot enter an
   organization-scoped inventory view until they own or join an organization.
+  A session scoped to one organization (RFD 15) cannot create another:
+  `{:error, :scoped_session}`.
   """
+  def create_organization_for_user(%User{session_organization_id: id}, _attrs)
+      when is_binary(id),
+      do: {:error, :scoped_session}
+
   def create_organization_for_user(%User{} = user, attrs) do
     Repo.transaction(fn ->
       with {:ok, organization} <- create_organization(attrs),
@@ -195,7 +201,9 @@ defmodule Renga.Accounts do
   end
 
   @doc """
-  Lists active organization memberships a signed-in user can select.
+  Lists active organization memberships a signed-in user can select. A
+  user loaded from an organization-scoped session (RFD 15) can select only
+  that organization.
   """
   def list_user_organization_memberships(%User{} = user) do
     OrganizationMembership
@@ -203,6 +211,7 @@ defmodule Renga.Accounts do
     |> where([membership, organization], membership.user_id == ^user.id)
     |> where([membership, organization], membership.status == "active")
     |> where([membership, organization], organization.status == "active")
+    |> within_session_organization(user)
     |> preload([membership, organization], organization: organization)
     |> order_by([membership, organization], asc: organization.name)
     |> Repo.all()
@@ -219,11 +228,17 @@ defmodule Renga.Accounts do
     |> where([membership, organization], membership.organization_id == ^organization_id)
     |> where([membership, organization], membership.status == "active")
     |> where([membership, organization], organization.status == "active")
+    |> within_session_organization(user)
     |> preload([membership, organization], organization: organization)
     |> Repo.one()
   end
 
   def get_user_organization_membership(%User{}, _organization_id), do: nil
+
+  defp within_session_organization(query, %User{session_organization_id: nil}), do: query
+
+  defp within_session_organization(query, %User{session_organization_id: organization_id}),
+    do: where(query, [membership], membership.organization_id == ^organization_id)
 
   @doc """
   The organization to open when `user` signs in: `remembered_id`, the one

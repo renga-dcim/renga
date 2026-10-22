@@ -31,6 +31,9 @@ defmodule Renga.Accounts.UserToken do
     # When a session from a provider sign-in ends (RFD 15); nil otherwise.
     field :expires_at, :utc_datetime_usec
     belongs_to :user, Renga.Accounts.User
+    # The only organization a session from an organization provider's
+    # sign-in may open (RFD 15); nil for every other session.
+    belongs_to :scoped_organization, Renga.Accounts.Organization
 
     timestamps(
       type: :utc_datetime_usec,
@@ -58,6 +61,8 @@ defmodule Renga.Accounts.UserToken do
   and devices in the UI and allow users to explicitly expire any
   session they deem invalid.
   """
+  # A session issued for a user loaded from an organization-scoped session,
+  # such as when signing back in after a change, keeps that scope.
   def build_session_token(user, browser_session_id \\ nil) do
     token = :crypto.strong_rand_bytes(@rand_size)
     dt = user.authenticated_at || Renga.Time.utc_now_ms()
@@ -68,7 +73,8 @@ defmodule Renga.Accounts.UserToken do
        context: "session",
        user_id: user.id,
        authenticated_at: dt,
-       browser_session_id: browser_session_id
+       browser_session_id: browser_session_id,
+       scoped_organization_id: user.session_organization_id
      }}
   end
 
@@ -86,7 +92,12 @@ defmodule Renga.Accounts.UserToken do
         join: user in assoc(token, :user),
         where: token.inserted_at > ago(@session_validity_in_days, "day"),
         where: is_nil(token.expires_at) or token.expires_at > ^Renga.Time.utc_now_ms(),
-        select: {%{user | authenticated_at: token.authenticated_at}, token.inserted_at}
+        select:
+          {%{
+             user
+             | authenticated_at: token.authenticated_at,
+               session_organization_id: token.scoped_organization_id
+           }, token.inserted_at}
 
     {:ok, query}
   end
