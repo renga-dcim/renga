@@ -6,10 +6,12 @@ defmodule Renga.Inventory.ResourceStore do
   alias Renga.Repo
 
   # Before RFD 21 every allocation took this one bigint advisory lock
-  # exclusively. Allocations now take it shared, so they never wait on each
-  # other, and an older node still taking it exclusively cannot run alongside
-  # them: during a rolling deploy, old and new allocators exclude each other
-  # instead of committing one organization's revisions out of order.
+  # exclusively. Allocations now take it shared, so they do not wait on each
+  # other, and an older node or a migration still taking it exclusively cannot
+  # run alongside them: during a rolling deploy, old and new allocators exclude
+  # each other instead of committing one organization's revisions out of
+  # order. While an exclusive request is held or queued, new allocators in
+  # every organization wait behind it.
   @legacy_revision_lock_key 1_380_271_687
   # Namespace of the per-organization lock, in the two-int4 key space, which
   # never overlaps the single-bigint key space above.
@@ -56,23 +58,31 @@ defmodule Renga.Inventory.ResourceStore do
   organizations.
   """
   def next_revision!(organization_id) when is_binary(organization_id) do
+    # Outside a transaction each lock would be released before the revision
+    # is even allocated.
+    unless Repo.in_transaction?() do
+      raise ArgumentError, "resource revision allocation requires an enclosing transaction"
+    end
+
     Repo.query!("SELECT pg_advisory_xact_lock_shared($1)", [@legacy_revision_lock_key])
 
-    Repo.query!("SELECT pg_advisory_xact_lock($1, hashtext($2::text))", [
-      @organization_revision_lock_namespace,
-      organization_id
-    ])
+    Repo.query!(
+      "SELECT pg_advisory_xact_lock($1, hashtext($2::text))",
+      revision_lock_args(organization_id)
+    )
 
     %{rows: [[revision]]} = Repo.query!("SELECT nextval('resource_revision_sequence')")
     revision
   end
 
   @doc """
-  The SQL arguments of `organization_id`'s revision lock, for tests that
-  check lock ordering: `pg_try_advisory_xact_lock($1, hashtext($2::text))`.
+  The SQL arguments of `organization_id`'s revision lock,
+  `pg_advisory_xact_lock($1, hashtext($2::text))`, also for tests that check
+  lock ordering. The ID is canonicalized so that every spelling of it takes
+  the same lock.
   """
   def revision_lock_args(organization_id),
-    do: [@organization_revision_lock_namespace, organization_id]
+    do: [@organization_revision_lock_namespace, Ecto.UUID.cast!(organization_id)]
 
   defp insert_revision(resource, revision, action) do
     %ResourceRevision{

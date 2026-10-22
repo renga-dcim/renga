@@ -281,12 +281,14 @@ defmodule Renga.IPAMTest do
       # managed address.
       assert {:error, %Ecto.Changeset{}} = IPAM.adopt_address(scope, second.id)
 
-      {:ok, envelope} =
-        Renga.Inventory.ResourceStore.insert(scope.organization_id, %{
-          kind: "ip_address",
-          name: "duplicate-#{mask}",
-          lifecycle_state: "active"
-        })
+      {:ok, {:ok, envelope}} =
+        Repo.transaction(fn ->
+          Renga.Inventory.ResourceStore.insert(scope.organization_id, %{
+            kind: "ip_address",
+            name: "duplicate-#{mask}",
+            lifecycle_state: "active"
+          })
+        end)
 
       duplicate =
         %IpAddress{
