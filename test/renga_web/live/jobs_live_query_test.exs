@@ -65,7 +65,7 @@ defmodule RengaWeb.JobsLiveQueryTest do
     assert has_element?(view, "#job-panel-facts", @packages)
     assert html =~ "Result withheld"
     refute html =~ "openssl"
-    refute html =~ "1 packages"
+    refute html =~ "1 package"
   end
 
   test "a holder of both permissions reads the result", context do
@@ -74,6 +74,6 @@ defmodule RengaWeb.JobsLiveQueryTest do
     {:ok, view, html} = live(conn, ~p"/activity/jobs/#{context.job}")
 
     refute has_element?(view, "#job-payload-hidden")
-    assert html =~ "1 packages"
+    assert html =~ "1 package"
   end
 end
