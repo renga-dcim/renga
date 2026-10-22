@@ -39,6 +39,13 @@ defmodule Renga.Accounts.User do
   end
 
   @doc """
+  How to name the account to its owner: its global email, or a placeholder
+  for an account an organization's provider created without one (RFD 15).
+  """
+  def label(%__MODULE__{email: email}) when is_binary(email), do: email
+  def label(%__MODULE__{}), do: "Account without an email"
+
+  @doc """
   A user changeset for registering or changing the email.
 
   It requires the email to change otherwise an error is added.

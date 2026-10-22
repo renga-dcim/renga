@@ -134,17 +134,20 @@ defmodule RengaWeb.Layouts do
           <div class="flex items-center gap-1 px-1">
             <.link
               navigate={~p"/users/settings"}
-              title={@current_scope.user.email}
-              aria-label={"Account settings for #{@current_scope.user.email}"}
+              title={Renga.Accounts.User.label(@current_scope.user)}
+              aria-label={"Account settings for #{Renga.Accounts.User.label(@current_scope.user)}"}
               class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1.5 transition hover:bg-surface"
             >
               <span class="grid size-7 shrink-0 place-items-center rounded-full border border-edge bg-surface text-[11px] font-semibold uppercase text-fg">
-                {String.first(@current_scope.user.email)}
+                {String.first(Renga.Accounts.User.label(@current_scope.user))}
               </span>
               <%!-- The sidebar is 14rem wide, so a long email is truncated on purpose; the
               title and aria-label carry the full address without leaking anything else. --%>
-              <span class="min-w-0 truncate text-xs text-fg-muted" title={@current_scope.user.email}>
-                {@current_scope.user.email}
+              <span
+                class="min-w-0 truncate text-xs text-fg-muted"
+                title={Renga.Accounts.User.label(@current_scope.user)}
+              >
+                {Renga.Accounts.User.label(@current_scope.user)}
               </span>
             </.link>
             <.theme_toggle
