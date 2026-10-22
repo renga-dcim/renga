@@ -6,7 +6,10 @@ use crate::{
     identity,
     jobs::{JobPolicy, Selector},
     libvirt::config::{self as libvirt_config, LibvirtCollector, RawLibvirtCollector},
-    power::pdu::POWER_INTERVALS,
+    power::{
+        bmc::config::{self as bmc_config, BmcCollector, RawBmcCollector},
+        pdu::POWER_INTERVALS,
+    },
     snmp::config::{self as snmp_config, RawSnmpCollector, SnmpCollector},
 };
 use serde::Deserialize;
@@ -60,6 +63,8 @@ pub struct Config {
     pub libvirt: Option<LibvirtCollector>,
     /// SNMP PDU power modules (RFD 10), each its own `power_poller` collector stream.
     pub power: Vec<SnmpCollector>,
+    /// Redfish BMC power modules (RFD 10), each its own `bmc_power` collector stream.
+    pub bmc: Vec<BmcCollector>,
     /// Local Prometheus exporters to read power from (RFD 10).
     pub exporters: Vec<Exporter>,
 }
@@ -83,6 +88,7 @@ impl fmt::Debug for Config {
             .field("gnmi", &self.gnmi)
             .field("libvirt", &self.libvirt)
             .field("power", &self.power)
+            .field("bmc", &self.bmc)
             .field("exporters", &self.exporters)
             .finish()
     }
@@ -123,6 +129,7 @@ struct RawCollectors {
     gnmi: Option<Vec<RawGnmiCollector>>,
     libvirt: Option<RawLibvirtCollector>,
     power: Option<Vec<RawSnmpCollector>>,
+    bmc: Option<Vec<RawBmcCollector>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -314,6 +321,20 @@ impl Config {
                 collector.id
             )));
         }
+        let bmc = bmc_config::from_raw(collectors.bmc.unwrap_or_default()).map_err(ConfigError)?;
+        if let Some(collector) = bmc.iter().find(|collector| {
+            snmp.iter()
+                .chain(&power)
+                .any(|other| other.id == collector.id)
+                || libvirt
+                    .as_ref()
+                    .is_some_and(|other| other.id == collector.id)
+        }) {
+            return Err(ConfigError(format!(
+                "collectors.bmc: id {:?} is already used by another collector module",
+                collector.id
+            )));
+        }
         Ok(Self {
             config_path,
             renga_url,
@@ -339,6 +360,7 @@ impl Config {
             gnmi,
             libvirt,
             power,
+            bmc,
             exporters: exporters::from_raw(raw.exporters.unwrap_or_default())
                 .map_err(ConfigError)?,
         })
@@ -665,6 +687,38 @@ mod tests {
         fs::remove_file(path).unwrap();
         assert!(
             error.contains("already used by another collector module"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reads_bmc_power_modules_and_keeps_stream_ids_distinct() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        let base = "renga_url='https://renga.test'\nintake_api_key='file-key'\n";
+        let bmc = "[[collectors.bmc]]\nid='rack'\ntargets=['10.0.1.5']\nusername='renga'\n\
+                   password_file='/etc/renga/bmc-password'\n";
+
+        fs::write(&path, format!("{base}{bmc}")).unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.bmc.len(), 1);
+        assert_eq!(config.bmc[0].targets[0].target.port, 443);
+
+        fs::write(
+            &path,
+            format!(
+                "{base}[[collectors.power]]\nid='rack'\ntargets=['10.0.0.5']\nusername='renga'\n\
+                 auth_password_file='/a'\nprivacy_password_file='/p'\n{bmc}"
+            ),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        fs::remove_file(path).unwrap();
+        assert!(
+            error.contains(
+                "collectors.bmc: id \"rack\" is already used by another collector module"
+            ),
             "{error}"
         );
     }

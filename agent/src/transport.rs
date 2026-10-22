@@ -155,6 +155,7 @@ impl ClientSettings {
             gnmi: _,
             libvirt: _,
             power: _,
+            bmc: _,
             // Scraped by the exporter module's own fetcher, which never sends the intake key.
             exporters: _,
         } = config;
@@ -829,6 +830,7 @@ mod tests {
             gnmi: Vec::new(),
             libvirt: None,
             power: Vec::new(),
+            bmc: Vec::new(),
             exporters: Vec::new(),
         }
     }

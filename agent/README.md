@@ -315,6 +315,48 @@ readings it last sent are sent again as failed so Renga shows them as unknown
 rather than zero. Check-ins report each module as the `power_poller/<id>`
 power source.
 
+## Server power from BMCs over Redfish
+
+A server's BMC reports its power without a host agent's sensors (RFD 10). Each
+`[[collectors.bmc]]` table is its own `bmc_power` collector stream, so its `id`
+must differ from every other module's. The module only reads, so give it a
+read-only BMC account.
+
+```toml
+[[collectors.bmc]]
+id = "rack-bmcs"
+targets = ["10.0.5.11", "bmc-r1-07.example.net:8443"]  # port 443 by default
+username = "renga"
+password_file = "/etc/renga/bmc-password"
+ca_file = "/etc/renga/bmc-ca.pem"   # optional: the CA that signs the BMCs' certificates
+interval_seconds = 60               # default 1 minute, at least 30
+timeout_seconds = 10                # per request
+max_concurrent_targets = 4
+
+[collectors.bmc.pins]               # optional: one BMC's own certificate
+"10.0.5.11" = "3F:2A:...:DD"        # openssl x509 -noout -fingerprint -sha256
+```
+
+Requests use HTTPS with basic authentication, never a proxy or a redirect,
+and only Redfish service paths. A pinned target is trusted by its certificate's
+SHA-256 fingerprint alone, which suits the self-signed certificates most BMCs
+ship with. Other targets must present a certificate for the configured name
+that `ca_file` signs, or that a public CA signs when there is no `ca_file`.
+The password file is read before each poll, so rotating it needs no restart.
+
+Each poll reads the first computer system the BMC lists, its chassis, and the
+chassis's `Power` resource, and sends the system's draw, each installed
+supply's input and output power, and each supply's condition as telemetry
+(`redfish_power`). A supply with no line voltage reports `no_input`, and a
+critical one `failed`. Supplies are named `PSU<n>` as Renga names a server's
+power ports. The newer `PowerSubsystem` resource is not read yet.
+
+The server is reported to inventory by the system UUID SMBIOS also reports,
+so Renga matches it to the server its host agent reports. A BMC that does not
+answer is reported unreachable and its last readings are sent again as failed.
+Check-ins report each module as the `bmc_power/<id>` power source, which says
+`not_permitted` when the BMCs refuse the credentials.
+
 ## Virtual machines over libvirt
 
 On a KVM hypervisor, the agent can also report the virtual machines libvirt

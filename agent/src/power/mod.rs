@@ -3,6 +3,7 @@
 //! A module thread samples the host's power sensors on its own interval and queues each sample
 //! set as one telemetry batch, so a slow sensor never holds up inventory or lease check-ins.
 
+pub mod bmc;
 pub mod collector;
 pub mod hwmon;
 pub mod pdu;

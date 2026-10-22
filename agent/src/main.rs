@@ -18,7 +18,7 @@ use renga_agent::{
     payload::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
-    power::{collector::Sinks, pdu, PowerModule, PowerSources},
+    power::{bmc, collector::Sinks, pdu, PowerModule, PowerSources},
     queue::{
         DiskQueue, Drained, QueueError, QueueKind, QueueMonitor,
         FLUSH_INTERVAL as QUEUE_FLUSH_INTERVAL,
@@ -432,6 +432,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         collector_sinks(),
         power_sources.clone(),
     );
+    let mut bmcs =
+        bmc::Pollers::start(config.bmc.clone(), collector_sinks(), power_sources.clone());
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -477,6 +479,14 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                 drop(pdus);
                 pdus = pdu::Pollers::start(
                     config.power.clone(),
+                    collector_sinks(),
+                    power_sources.clone(),
+                );
+            }
+            if bmcs.collectors() != config.bmc.as_slice() {
+                drop(bmcs);
+                bmcs = bmc::Pollers::start(
+                    config.bmc.clone(),
                     collector_sinks(),
                     power_sources.clone(),
                 );
@@ -852,6 +862,7 @@ fn reload_changes_jobs(
         gnmi: _,
         libvirt: _,
         power: _,
+        bmc: _,
         exporters: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
@@ -3077,6 +3088,7 @@ mod tests {
             gnmi: Vec::new(),
             libvirt: None,
             power: Vec::new(),
+            bmc: Vec::new(),
             exporters: Vec::new(),
         }
     }

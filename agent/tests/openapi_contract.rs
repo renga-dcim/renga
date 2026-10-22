@@ -20,7 +20,7 @@ use renga_agent::{
         TaggingMode, TargetStatus, VlanMembership, VmDomain,
     },
     power::{
-        self,
+        self, bmc,
         collector::{self, Measurement, Outcome, Reading, TargetError},
         hwmon,
         pdu::{self, mibs::Pdu},
@@ -458,6 +458,52 @@ fn pdu_poller_reports_and_batches_match_the_contract() {
     let module = Collector {
         id: "rack-pdus".into(),
         kind: CollectorKind::PowerPoller,
+    };
+
+    for (_, body) in collector::reports(&module, &outcomes) {
+        assert_conforms(
+            "Observation",
+            &serde_json::from_slice::<Value>(&body).unwrap(),
+        );
+    }
+    let mut known = collector::Known::new();
+    for batch in collector::batches(&module, &outcomes, &mut known, 180) {
+        assert_conforms("TelemetryBatch", &batch);
+    }
+}
+
+#[test]
+fn bmc_power_reports_and_batches_match_the_contract() {
+    let system = json!({
+        "UUID": "4C4C4544-0042-3510-8052-B4C04F4C4D32",
+        "HostName": "r1-07",
+        "Manufacturer": "Dell Inc.",
+        "Model": "PowerEdge R650"
+    });
+    let power = json!({
+        "PowerControl": [{"PowerConsumedWatts": 312}],
+        "PowerSupplies": [
+            {"Name": "PS1 Status", "PowerInputWatts": 172, "LastPowerOutputWatts": 156,
+             "Status": {"State": "Enabled", "Health": "OK"}},
+            {"Name": "PS2 Status", "PowerInputWatts": null, "LineInputVoltage": 0,
+             "Status": {"State": "Enabled", "Health": "Critical"}}
+        ]
+    });
+    let outcomes = vec![
+        Outcome {
+            address: "10.0.1.5".into(),
+            read_at: chrono::Utc::now(),
+            result: Ok(bmc::redfish::device(&system, &power).unwrap()),
+        },
+        Outcome {
+            address: "10.0.1.6".into(),
+            read_at: chrono::Utc::now(),
+            result: Err(TargetError::NotPermitted("401 Unauthorized".into())),
+        },
+    ];
+    let module = Collector {
+        id: "rack-bmcs".into(),
+        kind: CollectorKind::BmcPower,
     };
 
     for (_, body) in collector::reports(&module, &outcomes) {
