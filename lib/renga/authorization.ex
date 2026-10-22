@@ -59,7 +59,8 @@ defmodule Renga.Authorization do
     "members.manage",
     "roles.manage",
     "organization.manage",
-    "organization.export"
+    "organization.export",
+    "scim.manage"
   ]
 
   @descriptions %{
@@ -82,15 +83,18 @@ defmodule Renga.Authorization do
     "members.manage" => "Invite and disable members and change their roles",
     "roles.manage" => "Define custom roles",
     "organization.manage" => "Change organization settings",
-    "organization.export" => "Export the whole organization"
+    "organization.export" => "Export the whole organization",
+    "scim.manage" => "Connect SCIM provisioning and manage its tokens and role mappings"
   }
 
   @workflow ~w(inventory.reconcile findings.act catalog.author)
   @management ~w(inventory.edit requests.decide catalog.expectations dcim.edit ipam.edit
                  topology.edit jobs.request views.share teams.manage triage_rules.manage
                  intake_keys.manage members.manage roles.manage)
-  @organization ~w(organization.manage organization.export)
-  @reserved ~w(members.manage roles.manage)
+  @organization ~w(organization.manage organization.export scim.manage)
+  # A SCIM connection's mappings can grant any built-in role, so like
+  # members.manage it never rides on a custom role.
+  @reserved ~w(members.manage roles.manage scim.manage)
 
   # Built-in roles keep the behavior of the hard-coded role lists exactly.
   # `requests.create` is member-only: owners and admins make the change
@@ -150,8 +154,8 @@ defmodule Renga.Authorization do
   def grantable_roles(_role), do: []
 
   @doc """
-  The permissions a custom role may carry. `members.manage` and
-  `roles.manage` are reserved to the built-in owner and admin roles.
+  The permissions a custom role may carry. `members.manage`,
+  `roles.manage`, and `scim.manage` are reserved to the built-in roles.
   """
   def custom_role_permissions, do: @permissions -- @reserved
 
