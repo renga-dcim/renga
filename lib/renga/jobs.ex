@@ -1188,28 +1188,28 @@ defmodule Renga.Jobs do
       when is_binary(key) and is_boolean(allowed?) do
     with {:ok, _actor} <- requesting_user(scope),
          {:ok, capability} <- Registry.fetch(key) do
-      Repo.transaction(fn ->
-        organization = lock_active_organization!(scope.organization_id, :update)
-        authorize_member!(scope, "organization.manage")
-        current = Settings.allowed_capabilities(organization)
+      Repo.transaction(fn -> change_allowed_capability!(scope, capability, key, allowed?) end)
+    end
+  end
 
-        cond do
-          allowed? == key in current ->
-            get_settings(organization)
+  defp change_allowed_capability!(%Scope{} = scope, capability, key, allowed?) do
+    organization = lock_active_organization!(scope.organization_id, :update)
+    authorize_member!(scope, "organization.manage")
+    current = Settings.allowed_capabilities(organization)
 
-          allowed? ->
-            settings = put_settings!(organization, %{allowed_capabilities: current ++ [key]})
-            record_capability_change!(scope, capability, "capability_allowed")
-            settings
+    cond do
+      allowed? == key in current ->
+        get_settings(organization)
 
-          true ->
-            settings =
-              put_settings!(organization, %{allowed_capabilities: List.delete(current, key)})
+      allowed? ->
+        settings = put_settings!(organization, %{allowed_capabilities: current ++ [key]})
+        record_capability_change!(scope, capability, "capability_allowed")
+        settings
 
-            record_capability_change!(scope, capability, "capability_disallowed")
-            settings
-        end
-      end)
+      true ->
+        settings = put_settings!(organization, %{allowed_capabilities: List.delete(current, key)})
+        record_capability_change!(scope, capability, "capability_disallowed")
+        settings
     end
   end
 
