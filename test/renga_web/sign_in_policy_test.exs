@@ -137,7 +137,16 @@ defmodule RengaWeb.SignInPolicyTest do
 
       {:ok, _lv, html} = live(build_conn(), ~p"/recovery")
       assert html =~ "Renga is in recovery mode"
-      assert html =~ "bin/providers recover-local --actor NAME --minutes 60"
+
+      # The text an operator copies is the whole command. Read from the HTML
+      # the server sends: LiveViewTest's tree drops the spaces between the
+      # command's parts.
+      assert build_conn()
+             |> get(~p"/recovery")
+             |> html_response(200)
+             |> LazyHTML.from_document()
+             |> LazyHTML.query("#recovery-recover-local code")
+             |> LazyHTML.text() == "bin/providers recover-local --actor NAME --minutes 60"
     end
 
     test "a signed-in session cannot reach protected pages", %{conn: conn} do
