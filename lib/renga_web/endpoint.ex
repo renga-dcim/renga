@@ -64,7 +64,7 @@ defmodule RengaWeb.Endpoint do
     cookie_key: "request_logger"
 
   plug Plug.RequestId
-  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint], log: {__MODULE__, :log_level, []}
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -75,4 +75,25 @@ defmodule RengaWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
   plug RengaWeb.Router
+
+  @doc """
+  The level the request's start and finish are logged at. A provider test
+  link carries its bearer token in the path, which is logged before the
+  controller can spend it, so those requests are not logged at all. The
+  segments are compared decoded, as the router matches them, so an encoded
+  spelling of the same route is not logged either.
+  """
+  def log_level(%Plug.Conn{path_info: [_, _, _ | _] = path_info}) do
+    if Enum.map(Enum.take(path_info, 3), &decode_segment/1) == ["users", "providers", "test"],
+      do: false,
+      else: :info
+  end
+
+  def log_level(_conn), do: :info
+
+  defp decode_segment(segment) do
+    URI.decode(segment)
+  rescue
+    ArgumentError -> segment
+  end
 end

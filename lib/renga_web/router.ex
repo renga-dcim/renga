@@ -232,6 +232,8 @@ defmodule RengaWeb.Router do
     post "/users/log-in/passkey", UserSessionController, :passkey
     get "/users/log-in/provider/:provider", UserProviderController, :start
     get "/users/auth/:provider/callback", UserProviderController, :callback
+    # Not logged: the path and its parameters are the test's bearer token.
+    get "/users/providers/test/:token", UserProviderController, :test, log: false
     delete "/users/log-out", UserSessionController, :delete
   end
 end

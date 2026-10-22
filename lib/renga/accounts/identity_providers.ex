@@ -23,10 +23,13 @@ defmodule Renga.Accounts.IdentityProviders do
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.IdentityProviderEvent
   alias Renga.Accounts.IdentityProviderRevision, as: Revision
+  alias Renga.Accounts.IdentityProviderTest
   alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
   alias Renga.Repo
   alias Renga.Vault
+
+  @test_minutes 15
 
   @doc "The deployment's providers that have not been removed, by display name."
   def list do
@@ -162,6 +165,73 @@ defmodule Renga.Accounts.IdentityProviders do
         |> save("revision_discarded", actor, revision: provider.pending_revision)
     end)
   end
+
+  @doc """
+  Starts a test sign-in of the pending revision for `actor`. Returns
+  `{:ok, {token, test}}`; the token opens the test once, within 15 minutes.
+  Only a successful test activates a revision (`activate_tested/1`).
+  """
+  def create_test(%IdentityProvider{id: id}, actor) do
+    token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+    serialized(fn ->
+      with {:ok, provider} <- lock(id),
+           number when is_integer(number) <-
+             provider.pending_revision || {:error, :nothing_pending} do
+        test =
+          Repo.insert!(%IdentityProviderTest{
+            provider_id: id,
+            revision: number,
+            token_hash: :crypto.hash(:sha256, token),
+            actor: actor_label(actor),
+            actor_user_id: actor_user_id(actor),
+            expires_at: DateTime.add(Renga.Time.utc_now_ms(), @test_minutes, :minute)
+          })
+
+        {:ok, {token, test}}
+      end
+    end)
+  end
+
+  @doc """
+  Activates the revision a successful test signed in with, in the same
+  transaction that marks the test used. Refused when the test was used or
+  expired, or when another edit replaced the revision it tested.
+  """
+  def activate_tested(%IdentityProviderTest{id: test_id}) do
+    serialized(fn ->
+      with {:ok, test} <- lock_test(test_id),
+           {:ok, provider} <- lock(test.provider_id),
+           :ok <- still_pending(provider, test) do
+        test |> Ecto.Changeset.change(completed_at: Renga.Time.utc_now_ms()) |> Repo.update!()
+
+        provider
+        |> Ecto.Changeset.change(active_revision: test.revision, pending_revision: nil)
+        |> save("activated", {:tester, test}, revision: test.revision)
+      end
+    end)
+  end
+
+  defp lock_test(id) do
+    now = Renga.Time.utc_now_ms()
+
+    IdentityProviderTest
+    |> where(id: ^id)
+    |> where([test], is_nil(test.completed_at) and test.expires_at > ^now)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+    |> case do
+      nil -> {:error, :test_expired}
+      test -> {:ok, test}
+    end
+  end
+
+  defp still_pending(%IdentityProvider{pending_revision: number}, %IdentityProviderTest{
+         revision: number
+       }),
+       do: :ok
+
+  defp still_pending(_provider, _test), do: {:error, :revision_changed}
 
   @doc "Turns sign-in through the provider back on."
   def enable(%IdentityProvider{id: id}, actor), do: set_enabled(id, true, actor)
@@ -410,7 +480,10 @@ defmodule Renga.Accounts.IdentityProviders do
 
   defp actor_label({:user, %User{email: email}}), do: email
   defp actor_label({:operator, name}) when is_binary(name), do: "operator: #{name}"
+  # Whoever asked for a test is the actor of the activation it leads to.
+  defp actor_label({:tester, %IdentityProviderTest{actor: actor}}), do: actor
 
   defp actor_user_id({:user, %User{id: id}}), do: id
   defp actor_user_id({:operator, _name}), do: nil
+  defp actor_user_id({:tester, %IdentityProviderTest{actor_user_id: id}}), do: id
 end
