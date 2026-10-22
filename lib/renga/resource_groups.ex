@@ -106,9 +106,8 @@ defmodule Renga.ResourceGroups do
 
   @doc "Fetches a group set the scope can see, or nil."
   def get_group_set(%Scope{} = scope, id) do
-    with {:ok, id} <- Ecto.UUID.cast(id || "") do
-      scope |> list_group_sets() |> Enum.find(&(&1.id == id))
-    else
+    case Ecto.UUID.cast(id || "") do
+      {:ok, id} -> scope |> list_group_sets() |> Enum.find(&(&1.id == id))
       :error -> nil
     end
   end
@@ -204,9 +203,7 @@ defmodule Renga.ResourceGroups do
       before = lock_group_set!(scope, set.id)
 
       with {:ok, set} <- before |> GroupSet.changeset(attrs) |> Repo.update() do
-        if set.exclusive != before.exclusive do
-          project!(scope, members_of_set(scope, set.id))
-        end
+        reproject_set!(scope, before, set)
 
         record!(scope, "group_set_updated", %{
           old_value: set_value(before),
@@ -265,9 +262,7 @@ defmodule Renga.ResourceGroups do
       with {:ok, group} <- before |> Group.changeset(attrs) |> Repo.update() do
         group = Repo.preload(group, :group_set, force: true)
 
-        if group.group_set_id != before.group_set_id do
-          project!(scope, members_of_group(scope, group.id))
-        end
+        reproject_group!(scope, before, group)
 
         record!(scope, "group_updated", %{
           metadata: %{"group_id" => group.id},
@@ -307,6 +302,15 @@ defmodule Renga.ResourceGroups do
       {:ok, deleted}
     end)
   end
+
+  # Exclusivity applies to a set's members only once a change makes it so.
+  defp reproject_set!(_scope, %{exclusive: same}, %{exclusive: same}), do: :ok
+  defp reproject_set!(scope, _before, set), do: project!(scope, members_of_set(scope, set.id))
+
+  defp reproject_group!(_scope, %{group_set_id: same}, %{group_set_id: same}), do: :ok
+
+  defp reproject_group!(scope, _before, group),
+    do: project!(scope, members_of_group(scope, group.id))
 
   ## Membership
 
