@@ -73,6 +73,26 @@ defmodule Renga.RuntimeConfigTest do
 
     assert repo[:parameters][:statement_timeout] == "5000ms"
     assert background == 60_000
+
+    # A bad value stops the boot instead of disabling or misreading the bound.
+    for {variable, value} <- [
+          {"DATABASE_STATEMENT_TIMEOUT", "0"},
+          {"DATABASE_STATEMENT_TIMEOUT", "30s"},
+          {"DATABASE_STATEMENT_TIMEOUT", "-1"},
+          {"DATABASE_STATEMENT_TIMEOUT", "2147483648"},
+          {"DATABASE_BACKGROUND_STATEMENT_TIMEOUT", ""}
+        ] do
+      assert_raise RuntimeError, ~r/#{variable} must be a whole number/, fn ->
+        repo_config.(%{variable => value})
+      end
+    end
+
+    assert_raise RuntimeError, ~r/must be at least DATABASE_STATEMENT_TIMEOUT/, fn ->
+      repo_config.(%{
+        "DATABASE_STATEMENT_TIMEOUT" => "60000",
+        "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => "30000"
+      })
+    end
   end
 
   defp resolved_repo_config(database_url) do

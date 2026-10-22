@@ -1106,7 +1106,7 @@ defmodule Renga.Jobs do
     # The purge query spans every organization, so it runs with the
     # background statement timeout rather than the request baseline (RFD 21).
     {:ok, %{num_rows: deleted}} =
-      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn ->
+      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn query_options ->
         Repo.query!(
           """
           DELETE FROM jobs
@@ -1124,7 +1124,8 @@ defmodule Renga.Jobs do
             LIMIT $3
           )
           """,
-          [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch]
+          [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch],
+          query_options
         )
       end)
 

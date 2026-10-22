@@ -27,6 +27,8 @@ defmodule Renga.Jobs.RetentionAndSettingsTest do
       recent = finished_job(context, 89)
 
       assert Jobs.purge_history() == 1
+      # The purge's longer timeout ends with it (RFD 21).
+      assert Repo.query!("SHOW statement_timeout").rows == [["1min"]]
 
       refute Repo.reload(old)
       assert Repo.reload(recent)
