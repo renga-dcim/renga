@@ -502,6 +502,14 @@ status, which the Collectors page shows:
 speaks only to the extension manager's `ping`, `query`, and `options`
 methods, and bounds every reply at 16 MiB.
 
+When osquery is available, the named queries answer from its tables with
+fixed SQL: `listening_ports` and `processes` for listening sockets,
+`systemd_units` for services, `mounts` for disk usage, and `deb_packages` or
+`rpm_packages` for packages. The result has the same shape either way. If the
+daemon cannot be reached, a table is missing, or osquery returns an error, the
+agent logs a warning and answers natively instead. Packages also fall back when
+both package tables are empty, since osquery has no table for apk or pacman.
+
 ## Debian/Ubuntu package and smoke test
 
 The `.deb` installs the binary, hardened systemd unit, example configuration,

@@ -20,6 +20,8 @@
 
 pub mod disk_usage;
 pub mod listening_sockets;
+#[cfg(all(test, unix))]
+mod osquery_tests;
 pub mod packages;
 pub mod routes;
 pub mod services;

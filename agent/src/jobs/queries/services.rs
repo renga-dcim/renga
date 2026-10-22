@@ -1,16 +1,21 @@
 //! `query.services@1`: systemd service units with their load, active, sub,
 //! and enablement states, read over systemd's D-Bus interface through
 //! `busctl` with fixed arguments. Sensitive. Matches
-//! `Renga.Jobs.Queries.Services`.
+//! `Renga.Jobs.Queries.Services`. With osquery, its `systemd_units` table
+//! answers instead.
 
-use super::{clip, failed, parameters, run_program, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, jobs::JobFailure};
+use super::{
+    clip, failed, osquery_rows, osquery_text, parameters, run_program, Bounded, Query, Sensitivity,
+};
+use crate::{cancellation::Cancellation, jobs::JobFailure, osquery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, process::Command, time::Duration};
 
 const MAX_UNITS: usize = 4096;
 const BUSCTL_TIMEOUT: Duration = Duration::from_secs(10);
+const OSQUERY_SQL: &str = "SELECT id, description, load_state, active_state, sub_state, \
+     unit_file_state FROM systemd_units WHERE id LIKE '%.service'";
 
 /// `org.freedesktop.systemd1.Manager` calls, each a fixed argument vector.
 const LIST_UNITS: &[&str] = &[
@@ -75,6 +80,35 @@ impl Query for Services {
         let files = busctl(LIST_UNIT_FILES, cancellation).unwrap_or(Value::Null);
         answer(&units, &files, params.failed_only)
     }
+
+    fn uses_osquery(&self) -> bool {
+        true
+    }
+
+    fn answer_with_osquery(
+        &self,
+        osquery: &mut osquery::Client,
+        raw: &Value,
+    ) -> Result<Option<Value>, JobFailure> {
+        let params: Parameters = parameters(raw)?;
+        let Some(rows) = osquery_rows(osquery, OSQUERY_SQL) else {
+            return Ok(None);
+        };
+        let units = rows
+            .iter()
+            .filter_map(|row| {
+                Some(Unit {
+                    name: clip(osquery_text(row, "id")?, 256),
+                    description: osquery_text(row, "description").map(|d| clip(d, 256)),
+                    load_state: clip(osquery_text(row, "load_state")?, 32),
+                    active_state: clip(osquery_text(row, "active_state")?, 32),
+                    sub_state: clip(osquery_text(row, "sub_state")?, 32),
+                    enabled_state: osquery_text(row, "unit_file_state").map(|s| clip(s, 32)),
+                })
+            })
+            .collect();
+        Ok(Some(units_answer(units, params.failed_only)))
+    }
 }
 
 fn busctl(args: &[&str], cancellation: &Cancellation) -> Result<Value, JobFailure> {
@@ -108,8 +142,7 @@ fn answer(units: &Value, files: &Value, failed_only: bool) -> Result<Value, JobF
         })
         .collect();
 
-    let mut list = Bounded::new(MAX_UNITS);
-    let mut units: Vec<Unit> = rows
+    let units: Vec<Unit> = rows
         .iter()
         .filter_map(|row| {
             let field = |index: usize| row[index].as_str().map(str::to_owned);
@@ -123,16 +156,21 @@ fn answer(units: &Value, files: &Value, failed_only: bool) -> Result<Value, JobF
                 sub_state: clip(&field(4)?, 32),
             })
         })
-        .filter(|unit| !failed_only || unit.active_state == "failed")
         .collect();
+    Ok(units_answer(units, failed_only))
+}
+
+fn units_answer(mut units: Vec<Unit>, failed_only: bool) -> Value {
+    units.retain(|unit| !failed_only || unit.active_state == "failed");
     units.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut list = Bounded::new(MAX_UNITS);
     for unit in units {
         if !list.push(unit) {
             break;
         }
     }
     let (units, truncated) = list.into_parts();
-    Ok(serde_json::json!({ "units": units, "truncated": truncated }))
+    serde_json::json!({ "units": units, "truncated": truncated })
 }
 
 #[cfg(test)]

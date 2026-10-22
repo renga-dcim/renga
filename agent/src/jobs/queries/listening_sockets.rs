@@ -4,15 +4,24 @@
 //!
 //! An owner is named only when the agent may read that process's file
 //! descriptors, so on a host where the agent runs unprivileged most sockets
-//! report no process rather than a guess.
+//! report no process rather than a guess. With osquery, its
+//! `listening_ports` and `processes` tables answer instead, with osquery's
+//! own privileges.
 
-use super::{clip, parameters, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, jobs::JobFailure};
+use super::{
+    clip, osquery_rows, osquery_text, osquery_u64, parameters, Bounded, Query, Sensitivity,
+};
+use crate::{cancellation::Cancellation, jobs::JobFailure, osquery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr};
 
 const MAX_SOCKETS: usize = 4096;
+/// IPv4 and IPv6 sockets (families 2 and 10) over TCP and UDP (protocols 6
+/// and 17), with the owning process's name.
+const OSQUERY_SQL: &str = "SELECT lp.protocol, lp.address, lp.port, lp.pid, p.name \
+     FROM listening_ports AS lp LEFT JOIN processes AS p USING (pid) \
+     WHERE lp.family IN (2, 10) AND lp.protocol IN (6, 17)";
 
 pub struct ListeningSockets;
 
@@ -30,7 +39,7 @@ pub struct Listener {
     pub inode: u64,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 struct Socket {
     protocol: &'static str,
     address: String,
@@ -49,44 +58,94 @@ impl Query for ListeningSockets {
     }
 
     fn answer(&self, raw: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure> {
-        let params: Parameters = parameters(raw)?;
-        if params.port == Some(0) {
-            return Err(super::failed("invalid parameters: port must be 1 to 65535"));
-        }
+        let port = port(raw)?;
         let listeners = read_listeners()?;
         if cancellation.cancelled() {
             return Err(JobFailure::Cancelled);
         }
         let owners = read_owners(cancellation);
-        Ok(answer(listeners, &owners, params.port))
+        Ok(answer(listeners, &owners, port))
+    }
+
+    fn uses_osquery(&self) -> bool {
+        true
+    }
+
+    fn answer_with_osquery(
+        &self,
+        osquery: &mut osquery::Client,
+        raw: &Value,
+    ) -> Result<Option<Value>, JobFailure> {
+        let port = port(raw)?;
+        let Some(rows) = osquery_rows(osquery, OSQUERY_SQL) else {
+            return Ok(None);
+        };
+        Ok(Some(sockets_answer(
+            rows.iter().filter_map(socket_from_osquery).collect(),
+            port,
+        )))
     }
 }
 
+fn port(raw: &Value) -> Result<Option<u16>, JobFailure> {
+    let params: Parameters = parameters(raw)?;
+    if params.port == Some(0) {
+        return Err(super::failed("invalid parameters: port must be 1 to 65535"));
+    }
+    Ok(params.port)
+}
+
 fn answer(
-    mut listeners: Vec<Listener>,
+    listeners: Vec<Listener>,
     owners: &HashMap<u64, (i32, String)>,
     port: Option<u16>,
 ) -> Value {
-    listeners.sort_by_key(|l| (l.local.port(), l.protocol, l.local.ip()));
-    listeners.dedup();
-    let mut sockets = Bounded::new(MAX_SOCKETS);
-    for listener in listeners {
-        if port.is_some_and(|port| listener.local.port() != port) {
-            continue;
-        }
-        let owner = owners.get(&listener.inode);
-        let socket = Socket {
-            protocol: listener.protocol,
-            address: listener.local.ip().to_string(),
-            port: listener.local.port(),
-            process: owner.map(|(_, name)| clip(name, 64)),
-            pid: owner.map(|(pid, _)| *pid),
-        };
-        if !sockets.push(socket) {
+    let sockets = listeners
+        .into_iter()
+        .map(|listener| {
+            let owner = owners.get(&listener.inode);
+            Socket {
+                protocol: listener.protocol,
+                address: listener.local.ip().to_string(),
+                port: listener.local.port(),
+                process: owner.map(|(_, name)| clip(name, 64)),
+                pid: owner.map(|(pid, _)| *pid),
+            }
+        })
+        .collect();
+    sockets_answer(sockets, port)
+}
+
+/// One `listening_ports` row; osquery reports an unknown owner as pid -1.
+fn socket_from_osquery(row: &osquery::Row) -> Option<Socket> {
+    let protocol = match row.get("protocol")?.as_str() {
+        "6" => "tcp",
+        "17" => "udp",
+        _ => return None,
+    };
+    let pid = row.get("pid")?.parse::<i32>().ok().filter(|pid| *pid > 0);
+    Some(Socket {
+        protocol,
+        address: clip(osquery_text(row, "address")?, 64),
+        port: u16::try_from(osquery_u64(row, "port")?).ok()?,
+        process: pid
+            .and(osquery_text(row, "name"))
+            .map(|name| clip(name, 64)),
+        pid,
+    })
+}
+
+fn sockets_answer(mut sockets: Vec<Socket>, port: Option<u16>) -> Value {
+    sockets.retain(|socket| port.is_none_or(|port| socket.port == port));
+    sockets.sort_by(|a, b| (a.port, a.protocol, &a.address).cmp(&(b.port, b.protocol, &b.address)));
+    sockets.dedup();
+    let mut list = Bounded::new(MAX_SOCKETS);
+    for socket in sockets {
+        if !list.push(socket) {
             break;
         }
     }
-    let (sockets, truncated) = sockets.into_parts();
+    let (sockets, truncated) = list.into_parts();
     serde_json::json!({ "sockets": sockets, "truncated": truncated })
 }
 
