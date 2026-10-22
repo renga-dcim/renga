@@ -754,22 +754,32 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
   end
 
   describe "switch pollers (RFD 11 phase 2)" do
-    # Written by the agent's mapper from a recorded switch (agent/src/snmp/mod.rs), so the
-    # server's cross-field rules, which the OpenAPI schema cannot state, check real output.
-    test "accepts a switch as the agent's SNMP mapper reports it", %{scope: scope, token: token} do
-      resource =
-        "test/fixtures/collectors/recorded_switch.json" |> File.read!() |> Jason.decode!()
+    # Written by the agent's mappers from recorded switches (agent/src/snmp/mod.rs and
+    # agent/src/gnmi/openconfig.rs), so the server's cross-field rules, which the OpenAPI
+    # schema cannot state, check real output.
+    for {mapper, fixture} <- [
+          {"SNMP", "recorded_switch.json"},
+          {"gNMI", "recorded_gnmi_switch.json"}
+        ] do
+      @fixture fixture
+      test "accepts a switch as the agent's #{mapper} mapper reports it", %{
+        scope: scope,
+        token: token
+      } do
+        resource =
+          "test/fixtures/collectors/#{@fixture}" |> File.read!() |> Jason.decode!()
 
-      assert %{
-               "reconciliation" => %{
-                 "resources" => [%{"status" => "succeeded", "resource_id" => id}]
-               }
-             } =
-               token
-               |> post_observation(switch_report([resource], complete: true))
-               |> valid_api_response(202)
+        assert %{
+                 "reconciliation" => %{
+                   "resources" => [%{"status" => "succeeded", "resource_id" => id}]
+                 }
+               } =
+                 token
+                 |> post_observation(switch_report([resource], complete: true))
+                 |> valid_api_response(202)
 
-      assert Inventory.get_resource!(scope, id).kind == "switch"
+        assert Inventory.get_resource!(scope, id).kind == "switch"
+      end
     end
 
     test "two pollers reporting one chassis serial reconcile to one switch", %{
@@ -795,6 +805,30 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert length(streams) == 2
 
       assert [%{id: ^id}] = Enum.filter(Inventory.list_resources(scope), &(&1.kind == "switch"))
+    end
+
+    test "a report without interfaces preserves the switch's last interface state", %{
+      scope: scope,
+      token: token
+    } do
+      switch =
+        switch("10.0.0.1", "SER-1",
+          interfaces: [%{"name" => "Ethernet1", "kind" => "ethernet", "status" => "up"}]
+        )
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
+               token
+               |> post_observation(switch_report([switch], complete: true))
+               |> valid_api_response(202)
+
+      identity_only = Map.delete(switch, "interfaces")
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
+               token
+               |> post_observation(switch_report([identity_only], complete: true))
+               |> valid_api_response(202)
+
+      assert [%{name: "Ethernet1", status: "up"}] = Inventory.list_interfaces(scope, id)
     end
 
     test "a switch's LLDP neighbors and VLANs become topology evidence", %{

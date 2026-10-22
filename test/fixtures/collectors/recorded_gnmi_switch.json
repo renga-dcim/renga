@@ -1,0 +1,100 @@
+{
+  "attributes": {
+    "hostname": "leaf-02",
+    "model": "EX-7050-48",
+    "vendor": "Example Networks"
+  },
+  "identifiers": {
+    "hostname": "leaf-02",
+    "serial_number": "JPE12345678"
+  },
+  "interfaces": [
+    {
+      "kind": "ethernet",
+      "mac_address": "00:1c:73:aa:bb:01",
+      "mtu": 9214,
+      "name": "Ethernet1",
+      "neighbors": [
+        {
+          "protocol": "lldp",
+          "remote_chassis_id": "52:54:00:12:34:56",
+          "remote_chassis_id_kind": "mac_address",
+          "remote_port_description": "uplink",
+          "remote_port_id": "eno1",
+          "remote_port_id_kind": "name",
+          "remote_system_name": "web-01",
+          "ttl_seconds": 2700
+        }
+      ],
+      "speed_mbps": 25000,
+      "status": "up",
+      "vlan_mode": "access",
+      "vlans": [
+        {
+          "tagging_mode": "untagged",
+          "vid": 10
+        }
+      ]
+    },
+    {
+      "kind": "ethernet",
+      "mac_address": "00:1c:73:aa:bb:02",
+      "name": "Ethernet2",
+      "neighbors": [],
+      "speed_mbps": 2500,
+      "status": "down",
+      "vlan_mode": "trunk",
+      "vlans": [
+        {
+          "tagging_mode": "untagged",
+          "vid": 10
+        },
+        {
+          "tagging_mode": "tagged",
+          "vid": 20
+        },
+        {
+          "tagging_mode": "tagged",
+          "vid": 30
+        },
+        {
+          "tagging_mode": "tagged",
+          "vid": 4001
+        }
+      ]
+    },
+    {
+      "kind": "ethernet",
+      "mtu": 1500,
+      "name": "Management1",
+      "neighbors": [],
+      "status": "up",
+      "vlans": []
+    },
+    {
+      "kind": "bond",
+      "name": "Port-Channel1",
+      "neighbors": [
+        {
+          "protocol": "lldp",
+          "remote_chassis_id": "192.0.2.10",
+          "remote_chassis_id_kind": "network_address",
+          "remote_port_id": "Gi0/1",
+          "remote_port_id_kind": "local",
+          "ttl_seconds": 2700
+        }
+      ],
+      "speed_mbps": 50000,
+      "status": "up",
+      "vlan_mode": "trunk",
+      "vlans": [
+        {
+          "tagging_mode": "tagged",
+          "vid": 20
+        }
+      ]
+    }
+  ],
+  "kind": "switch",
+  "target": "10.0.0.2"
+}
