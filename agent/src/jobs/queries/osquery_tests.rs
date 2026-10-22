@@ -461,3 +461,152 @@ fn a_missing_or_disabled_daemon_reads_natively() {
     let capability = QueryCapability::new(disk_usage::DiskUsage, disabled);
     contract::assert_conforms("query.disk_usage@1", "result", &run(&capability, json!({})));
 }
+
+/// A daemon for `query.sql@1` whose `disable_tables` is `disabled`.
+fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHandle<Vec<String>>) {
+    let (socket, server) = fake::serve(move |method, args| {
+        let sql = args.field(1).and_then(Thrift::as_str).unwrap_or_default();
+        match (method, sql.as_str()) {
+            ("options", _) => fake::options(&[("disable_tables", disabled)]),
+            ("getQueryColumns", "SELECT pid, name FROM processes") => {
+                fake::response(0, "OK", &[&[("pid", "BIGINT")], &[("name", "TEXT")]])
+            }
+            ("query", "EXPLAIN SELECT pid, name FROM processes") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("opcode", "VOpen"), ("p2", "0")],
+                    &[("opcode", "Transaction"), ("p2", "0")],
+                ],
+            ),
+            ("query", "EXPLAIN CREATE TABLE t (a)") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("opcode", "CreateBtree"), ("p2", "2")],
+                    &[("opcode", "Transaction"), ("p2", "1")],
+                ],
+            ),
+            ("query", "SELECT pid, name FROM processes") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("name", "sshd"), ("pid", "812")],
+                    &[("name", "init"), ("pid", "1")],
+                ],
+            ),
+            (_, sql) => fake::response(1, &format!("no such table: {sql}"), &[]),
+        }
+    });
+    let osquery = OsqueryConfig {
+        enabled: true,
+        socket,
+    };
+    (QueryCapability::new(sql::Sql, osquery), server)
+}
+
+const ALL_DENIED: &str = "curl,curl_certificate,carves,yara,file,augeas";
+
+#[test]
+fn ad_hoc_sql_answers_a_table_in_column_order() {
+    let (capability, server) = sql_daemon(ALL_DENIED);
+    let value = run(
+        &capability,
+        json!({"sql": "SELECT pid, name FROM processes"}),
+    );
+    assert_eq!(
+        value,
+        json!({
+            "columns": ["pid", "name"],
+            "rows": [["812", "sshd"], ["1", "init"]],
+            "truncated": false
+        })
+    );
+    contract::assert_conforms("query.sql@1", "result", &value);
+    drop(capability);
+    assert_eq!(
+        server.join().unwrap(),
+        ["options", "query", "getQueryColumns", "query"]
+    );
+}
+
+#[test]
+fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
+    let (capability, server) = sql_daemon("curl,carves");
+    let failure = capability
+        .run(
+            &json!({"sql": "SELECT pid, name FROM processes"}),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
+    match failure {
+        JobFailure::Failed(reason) => {
+            assert!(
+                reason.starts_with("refused by the agent's policy"),
+                "{reason}"
+            );
+            assert!(
+                reason.contains("augeas, curl_certificate, file, yara"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    drop(capability);
+    // Nothing ran: the flags were read and the statement never sent.
+    assert_eq!(server.join().unwrap(), ["options"]);
+}
+
+#[test]
+fn ad_hoc_sql_reports_osquery_s_error() {
+    let (capability, _server) = sql_daemon(ALL_DENIED);
+    match capability.run(
+        &json!({"sql": "SELECT * FROM file"}),
+        &Cancellation::default(),
+    ) {
+        Err(JobFailure::Failed(reason)) => {
+            assert_eq!(reason, "osquery: no such table: EXPLAIN SELECT * FROM file")
+        }
+        other => panic!("expected osquery's error, got {other:?}"),
+    }
+}
+
+#[test]
+fn ad_hoc_sql_needs_osquery() {
+    let missing = OsqueryConfig {
+        enabled: true,
+        socket: PathBuf::from("/nonexistent/osquery.em"),
+    };
+    let capability = QueryCapability::new(sql::Sql, missing);
+    match capability.run(&json!({"sql": "SELECT 1"}), &Cancellation::default()) {
+        Err(JobFailure::Failed(reason)) => assert!(reason.contains("not available"), "{reason}"),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+fn refusal(capability: &QueryCapability, sql: &str) -> String {
+    match capability.run(&json!({ "sql": sql }), &Cancellation::default()) {
+        Err(JobFailure::Failed(reason)) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn ad_hoc_sql_must_be_one_statement() {
+    let (capability, server) = sql_daemon(ALL_DENIED);
+    let reason = refusal(&capability, "SELECT 1; CREATE TABLE t (a)");
+    assert!(reason.contains("one statement"), "{reason}");
+    drop(capability);
+    // osquery runs every statement it is given, so it saw none of them.
+    assert!(server.join().unwrap().is_empty());
+}
+
+#[test]
+fn ad_hoc_sql_must_only_read() {
+    let (capability, server) = sql_daemon(ALL_DENIED);
+    let reason = refusal(&capability, "CREATE TABLE t (a)");
+    assert!(reason.contains("must only read"), "{reason}");
+    drop(capability);
+    // The write was explained, never run.
+    assert_eq!(server.join().unwrap(), ["options", "query"]);
+}

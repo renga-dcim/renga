@@ -16,7 +16,10 @@
 //! Where the host runs osquery and `[osquery]` is enabled, a query with SQL
 //! fixed in the agent answers from osquery's tables instead (RFD 12). The
 //! result has the same shape, request text never reaches the SQL, and any
-//! osquery failure falls back to the native reading.
+//! osquery failure falls back to the native reading. The one exception is
+//! [`sql`], whose SELECT is the request: it runs only through osquery, and
+//! only when the daemon disables the tables that read files, reach the
+//! network, or copy files off the host.
 
 pub mod disk_usage;
 pub mod listening_sockets;
@@ -25,6 +28,7 @@ mod osquery_tests;
 pub mod packages;
 pub mod routes;
 pub mod services;
+pub mod sql;
 pub mod time_sync;
 
 use super::{Capability, JobFailure, RetryClass, RiskClass};
@@ -166,6 +170,7 @@ pub fn catalog(osquery: &OsqueryConfig) -> Vec<Arc<dyn Capability>> {
         Arc::new(QueryCapability::new(routes::Routes, osquery())),
         Arc::new(QueryCapability::new(time_sync::TimeSync, osquery())),
         Arc::new(QueryCapability::new(packages::Packages, osquery())),
+        Arc::new(QueryCapability::new(sql::Sql, osquery())),
     ]
 }
 
@@ -210,15 +215,22 @@ pub const RESULT_BUDGET_BYTES: usize = 48 * 1024;
 pub struct Bounded<T> {
     items: Vec<T>,
     max_items: usize,
+    budget: usize,
     bytes: usize,
     truncated: bool,
 }
 
 impl<T: Serialize> Bounded<T> {
     pub fn new(max_items: usize) -> Self {
+        Self::with_budget(max_items, RESULT_BUDGET_BYTES)
+    }
+
+    /// A list sharing the result with other fields, which take the rest.
+    pub fn with_budget(max_items: usize, budget: usize) -> Self {
         Self {
             items: Vec::new(),
             max_items,
+            budget: budget.min(RESULT_BUDGET_BYTES),
             bytes: 0,
             truncated: false,
         }
@@ -232,9 +244,7 @@ impl<T: Serialize> Bounded<T> {
         }
         // Each item costs its own JSON plus a separating comma.
         let size = serde_json::to_vec(&item).map_or(usize::MAX, |bytes| bytes.len() + 1);
-        if self.items.len() >= self.max_items
-            || self.bytes.saturating_add(size) > RESULT_BUDGET_BYTES
-        {
+        if self.items.len() >= self.max_items || self.bytes.saturating_add(size) > self.budget {
             self.truncated = true;
             return false;
         }
@@ -424,6 +434,7 @@ mod tests {
                     ("query.routes@1".to_owned(), true),
                     ("query.time_sync@1".to_owned(), true),
                     ("query.packages@1".to_owned(), false),
+                    ("query.sql@1".to_owned(), false),
                 ]
             );
         }
