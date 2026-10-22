@@ -428,12 +428,7 @@
           "source_id": false,
           "sync_run_id": false,
           "target": {
-            "description": "For `targets` scope, required: the address of the reachable target this switch was polled from. Not allowed otherwise. Must not be blank. At most 255 characters.",
-            "minLength": 1,
-            "type": [
-              "string",
-              "null"
-            ]
+            "description": "For `targets` scope, required: the address, as a non-blank string, of the reachable target this switch was polled from. Not allowed for `hypervisor` scope, and ignored for `host` scope."
           }
         },
         "required": [

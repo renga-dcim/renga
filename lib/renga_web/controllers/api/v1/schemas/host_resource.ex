@@ -24,13 +24,15 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
             anyOf: Enum.map(["server" | collector_resource_kinds(contract)], &%{const: &1}),
             description: "`server` for a host report, `switch` or `vm` for a scoped report."
           },
-          "target" =>
-            nullable(
-              non_blank_string(
-                "For `targets` scope, required: the address of the reachable target this " <>
-                  "switch was polled from. Not allowed otherwise."
-              )
-            ),
+          # Unconstrained here because host reports ignore it; the scoped rules
+          # are in prose so this shared schema never rejects an accepted host
+          # report.
+          "target" => %{
+            description:
+              "For `targets` scope, required: the address, as a non-blank string, of the " <>
+                "reachable target this switch was polled from. Not allowed for " <>
+                "`hypervisor` scope, and ignored for `host` scope."
+          },
           "identifiers" => identifiers(contract),
           "attributes" => attributes(contract),
           "interfaces" => %{

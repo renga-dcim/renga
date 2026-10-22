@@ -58,5 +58,18 @@
         "components": null
       }
     ]
+  },
+  {
+    "observation_id": "accepted-host-ignores-target",
+    "observed_at": "2026-01-02T03:04:05Z",
+    "resources": [
+      {
+        "kind": "server",
+        "identifiers": {
+          "hostname": "db-02"
+        },
+        "target": 123
+      }
+    ]
   }
 ]
