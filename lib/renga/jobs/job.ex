@@ -56,6 +56,9 @@ defmodule Renga.Jobs.Job do
     field :offer_token_hash, :binary, redact: true
     field :offer_nonce, :string
     field :offer_expires_at, :utc_datetime_usec
+    # Set on reads when the reader may not see this job's parameters,
+    # result, and agent reports, which are then withheld (RFD 12).
+    field :payload_hidden, :boolean, virtual: true, default: false
 
     belongs_to :organization, Organization
     belongs_to :agent, Agent

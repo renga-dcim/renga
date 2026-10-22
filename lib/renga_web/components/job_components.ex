@@ -92,6 +92,8 @@ defmodule RengaWeb.JobComponents do
     end
   end
 
+  def detail(%Job{state: "succeeded", payload_hidden: true}), do: "Result withheld"
+
   def detail(%Job{state: "succeeded", result: %{"observation_id" => id}}),
     do: "Observation #{short_id(id)}"
 

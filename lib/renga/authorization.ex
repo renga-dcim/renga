@@ -218,6 +218,47 @@ defmodule Renga.Authorization do
   end
 
   @doc """
+  Which of `permissions` the scope's membership holds now, read from the
+  database rather than the scope's cache, without locks.
+
+  For read paths that disclose a payload only to current holders, such as
+  query results (RFD 12): a revoked assignment stops disclosure on the next
+  read even while a connected page still carries the old scope. A machine
+  scope, or a disabled membership or inactive organization, holds none.
+  """
+  def held_now(scope, permissions)
+
+  def held_now(
+        %Scope{membership_id: membership_id, user: %{id: user_id}} = scope,
+        permissions
+      )
+      when not is_nil(membership_id) do
+    Enum.each(permissions, &validate!/1)
+
+    active? =
+      Organization
+      |> where([organization], organization.id == ^scope.organization_id)
+      |> where([organization], organization.status == "active")
+      |> Repo.exists?()
+
+    membership =
+      OrganizationMembership
+      |> where([membership], membership.id == ^membership_id)
+      |> where([membership], membership.user_id == ^user_id)
+      |> where([membership], membership.organization_id == ^scope.organization_id)
+      |> where([membership], membership.status == "active")
+
+    if active?,
+      do: Enum.filter(permissions, &(membership |> holding(&1) |> Repo.exists?())),
+      else: []
+  end
+
+  def held_now(_scope, permissions) do
+    Enum.each(permissions, &validate!/1)
+    []
+  end
+
+  @doc """
   Requires `permission` inside the current transaction.
 
   Locks the scope's organization, requiring it to be active, then the

@@ -49,26 +49,84 @@ defmodule Renga.Jobs do
   @work_report_types ~w(started progress output)
 
   ## Reading
+  #
+  # Every read for people withholds the payloads of jobs whose capability
+  # has `sensitive_output?/0` from readers who do not hold its permissions
+  # now (RFD 12): parameters, the result, an agent's failure reason, and the
+  # agent's reports. What the job is, where it ran, who asked, and how it
+  # stands stay visible. Having requested the job grants nothing.
 
   @doc """
-  Fetches a job in the scope's organization, or nil. `:preload` loads
-  associations, such as `[:resource, :agent, :requested_by_user]`.
+  Fetches a job in the scope's organization, or nil, with its payload
+  withheld unless the scope may read it. `:preload` loads associations,
+  such as `[:resource, :agent, :requested_by_user]`.
   """
-  def get_job(%Scope{organization_id: organization_id}, id, opts \\ []) do
+  def get_job(%Scope{organization_id: organization_id} = scope, id, opts \\ []) do
     case Ecto.UUID.cast(id) do
       {:ok, id} ->
         Job
         |> Repo.get_by(id: id, organization_id: organization_id)
         |> Repo.preload(Keyword.get(opts, :preload, []))
+        |> withhold_payload(readable_payloads(scope))
 
       :error ->
         nil
     end
   end
 
-  @doc "Fetches a job in the scope's organization."
-  def get_job!(%Scope{organization_id: organization_id}, id) do
-    Repo.get_by!(Job, id: id, organization_id: organization_id)
+  @doc "Fetches a job in the scope's organization, payload withheld as in `get_job/3`."
+  def get_job!(%Scope{organization_id: organization_id} = scope, id) do
+    Job
+    |> Repo.get_by!(id: id, organization_id: organization_id)
+    |> withhold_payload(readable_payloads(scope))
+  end
+
+  @doc """
+  The `name@version` keys whose job payloads the scope may read now:
+  capabilities without sensitive output, and those whose
+  `required_permissions/0` the scope currently holds.
+  """
+  def readable_payloads(%Scope{} = scope) do
+    sensitive = Enum.filter(Registry.all(), & &1.sensitive_output?())
+
+    held =
+      Authorization.held_now(
+        scope,
+        sensitive |> Enum.flat_map(& &1.required_permissions()) |> Enum.uniq()
+      )
+
+    for module <- Registry.all(),
+        not module.sensitive_output?() or module.required_permissions() -- held == [],
+        into: MapSet.new(),
+        do: Capability.key(module)
+  end
+
+  @doc "The permissions reading `job`'s payload needs, for saying why it is withheld."
+  def payload_permissions(%Job{} = job) do
+    case Registry.fetch(Job.capability_key(job)) do
+      {:ok, capability} -> capability.required_permissions()
+      {:error, _unknown} -> []
+    end
+  end
+
+  # Failure reasons Renga itself records; the agent's own reasons are payload.
+  @system_failure_reasons ~w(capability_not_allowed binding_changed resolved_failed)
+
+  defp withhold_payload(nil, _readable), do: nil
+
+  defp withhold_payload(%Job{} = job, readable) do
+    if MapSet.member?(readable, Job.capability_key(job)) do
+      job
+    else
+      %{
+        job
+        | parameters: nil,
+          result: nil,
+          failure_reason:
+            if(job.failure_reason in @system_failure_reasons, do: job.failure_reason),
+          payload_hidden: true
+      }
+    end
   end
 
   @doc """
@@ -78,7 +136,7 @@ defmodule Renga.Jobs do
   job already shown as `:before` to read the next keyset page. Returns at most
   `:limit` jobs (default 50).
   """
-  def list_jobs(%Scope{organization_id: organization_id}, opts \\ []) do
+  def list_jobs(%Scope{organization_id: organization_id} = scope, opts \\ []) do
     Job
     |> where([job], job.organization_id == ^organization_id)
     |> filter_jobs(opts)
@@ -87,6 +145,14 @@ defmodule Renga.Jobs do
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :agent, :requested_by_user])
     |> Repo.all()
+    |> withhold_payloads(scope)
+  end
+
+  defp withhold_payloads([], _scope), do: []
+
+  defp withhold_payloads(jobs, scope) do
+    readable = readable_payloads(scope)
+    Enum.map(jobs, &withhold_payload(&1, readable))
   end
 
   defp jobs_before(query, nil), do: query
@@ -183,13 +249,45 @@ defmodule Renga.Jobs do
     end
   end
 
-  @doc "A job's history in the order it happened."
-  def list_events(%Scope{organization_id: organization_id}, %Job{id: job_id}) do
-    JobEvent
-    |> where([event], event.organization_id == ^organization_id and event.job_id == ^job_id)
-    |> order_by([event], asc: event.sequence)
-    |> Repo.all()
+  @doc """
+  A job's history in the order it happened. The agent's reports keep their
+  type and time but lose their payload when the scope may not read the
+  job's payload; Renga's and people's events are kept whole.
+  """
+  def list_events(%Scope{organization_id: organization_id} = scope, %Job{id: job_id}) do
+    events =
+      JobEvent
+      |> where([event], event.organization_id == ^organization_id and event.job_id == ^job_id)
+      |> order_by([event], asc: event.sequence)
+      |> Repo.all()
+
+    readable? =
+      case events do
+        [] ->
+          true
+
+        _events ->
+          key =
+            Job
+            |> where([job], job.organization_id == ^organization_id and job.id == ^job_id)
+            |> select(
+              [job],
+              fragment("? || '@' || ?::text", job.capability, job.capability_version)
+            )
+            |> Repo.one()
+
+          MapSet.member?(readable_payloads(scope), key)
+      end
+
+    if readable?,
+      do: events,
+      else: Enum.map(events, &withhold_event_payload/1)
   end
+
+  defp withhold_event_payload(%JobEvent{actor_type: "agent"} = event),
+    do: %{event | payload: %{}, payload_hidden: true}
+
+  defp withhold_event_payload(%JobEvent{} = event), do: event
 
   @doc """
   Names for the people and agents behind `events`, keyed by actor id: a
@@ -1279,21 +1377,30 @@ defmodule Renga.Jobs do
 
   defp activity_actor(_actor), do: %{}
 
-  # Activity is a generic feed anyone who sees the resource reads, and what
-  # it records stays there. A job with sensitive output (every query) records
-  # only what ran and how it ended, never the agent's reason or result.
+  # Activity is a generic feed anyone who sees the resource reads, so a job
+  # with sensitive output contributes only its summary (RFD 12): what ran
+  # and how it ended, never the agent's reason or result.
   defp activity_metadata(%Job{} = job) do
+    summary = %{
+      "job_id" => job.id,
+      "title" => title(job),
+      "noun" => noun(job),
+      "state" => job.state
+    }
+
     details =
-      if sensitive_output?(job),
-        do: %{},
-        else: %{
+      if sensitive_output?(job) do
+        %{"failure_reason" => job.failure_reason in @system_failure_reasons && job.failure_reason}
+      else
+        %{
           "failure_reason" => job.failure_reason,
           "observation_id" => job.result && job.result["observation_id"]
         }
+      end
 
-    %{"job_id" => job.id, "title" => title(job), "noun" => noun(job), "state" => job.state}
+    summary
     |> Map.merge(details)
-    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.reject(fn {_key, value} -> value in [nil, false] end)
   end
 
   # A job whose capability is no longer registered is treated as sensitive.

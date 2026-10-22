@@ -27,6 +27,8 @@ defmodule Renga.Jobs.JobEvent do
     field :actor_type, :string
     field :actor_id, :binary_id
     field :payload, :map, default: %{}
+    # Set on reads when the payload was withheld from the reader (RFD 12).
+    field :payload_hidden, :boolean, virtual: true, default: false
 
     belongs_to :organization, Organization
     belongs_to :job, Job
