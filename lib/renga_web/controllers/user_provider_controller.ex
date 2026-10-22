@@ -128,7 +128,7 @@ defmodule RengaWeb.UserProviderController do
           :info,
           "The test sign-in worked, and #{provider.display_name} now uses revision #{provider.active_revision}."
         )
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(provider))
 
       error ->
         # Only the reason: never the test's secrets, a token, or a changeset.
@@ -136,9 +136,15 @@ defmodule RengaWeb.UserProviderController do
 
         conn
         |> put_flash(:error, test_message(error))
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(IdentityProviders.get_any(id)))
     end
   end
+
+  # An owner testing their organization's provider goes back to its page.
+  defp after_test_path(%{organization_id: organization_id}) when is_binary(organization_id),
+    do: ~p"/settings/identity-providers"
+
+  defp after_test_path(_deployment_or_unknown), do: ~p"/users/log-in"
 
   defp finish_sign_in(conn, params) do
     attempt = get_session(conn, @attempt_key)

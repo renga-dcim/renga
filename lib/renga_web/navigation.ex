@@ -149,6 +149,13 @@ defmodule RengaWeb.Navigation do
         section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
           keywords: ~w(rules triage automation subnet hostname labels)
         ),
+        section(
+          :identity_providers,
+          "Identity providers",
+          ~p"/settings/identity-providers",
+          "hero-identification",
+          keywords: ~w(sso oidc okta entra sign-in login single)
+        ),
         section(:limits, "Limits", ~p"/settings/limits", "hero-scale",
           keywords: ~w(quota usage rate capacity)
         ),
