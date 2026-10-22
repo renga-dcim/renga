@@ -6,7 +6,8 @@ defmodule RengaWeb.ResourceLive.Index do
   the URL through `RengaWeb.InventoryQuery`, so any view can be shared or
   bookmarked. Rows open the resource's object page; there is no second,
   partial view of a resource here. The list re-reads itself when the
-  organization's inventory changes, so it has no refresh control.
+  organization's inventory changes, so it has no refresh control. Holders of
+  `queries.run` can run a query across everything it matches (RFD 12).
   """
   use RengaWeb, :live_view
 
@@ -47,6 +48,7 @@ defmodule RengaWeb.ResourceLive.Index do
        can_edit?: Authorization.allowed?(scope, "inventory.edit"),
        can_set_owners?: Teams.can_manage?(scope),
        can_share_views?: Authorization.allowed?(scope, "views.share"),
+       can_run_queries?: Authorization.allowed?(scope, "queries.run"),
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
        teams: Teams.list_teams(scope),
@@ -366,6 +368,15 @@ defmodule RengaWeb.ResourceLive.Index do
             </span>
           </div>
           <div class="flex items-center gap-2">
+            <.button
+              :if={@can_run_queries?}
+              id="run-query"
+              phx-click={
+                JS.push("open", target: "#query-fan-out") |> show_overlay("query-fan-out-panel")
+              }
+            >
+              <.icon name="hero-question-mark-circle" class="size-4" /> Run query
+            </.button>
             <.display_menu query={@query} column_labels={@column_labels} />
           </div>
         </header>
@@ -530,6 +541,14 @@ defmodule RengaWeb.ResourceLive.Index do
         </nav>
 
         <.save_view_panel form={@view_form} can_share?={@can_share_views?} />
+
+        <.live_component
+          :if={@can_run_queries?}
+          module={RengaWeb.QueryFanOutComponent}
+          id="query-fan-out"
+          current_scope={@current_scope}
+          list_options={InventoryQuery.list_options(@query)}
+        />
 
         <.bulk_bar
           :if={@query.selected != []}
