@@ -35,7 +35,9 @@ defmodule Renga.Accounts.SecurityLog do
     "password_changed" => "Password changed",
     "password_removed" => "Password removed",
     "email_changed" => "Email address changed",
-    "mfa_removed_by_operator" => "Second factors removed by an operator"
+    "mfa_removed_by_operator" => "Second factors removed by an operator",
+    "identity_linked" => "Identity provider connected",
+    "identity_unlinked" => "Identity provider disconnected"
   }
 
   # What each notice says happened. Failures and sign-ins are logged only.
@@ -51,7 +53,11 @@ defmodule Renga.Accounts.SecurityLog do
     "password_removed" => "The password was removed from your Renga account.",
     "email_changed" => "The email address of your Renga account was changed.",
     "mfa_removed_by_operator" =>
-      "An operator removed every passkey, the authenticator app, and the recovery codes from your Renga account."
+      "An operator removed every passkey, the authenticator app, and the recovery codes from your Renga account.",
+    "identity_linked" =>
+      "An identity provider was connected to your Renga account. You can now sign in with it.",
+    "identity_unlinked" =>
+      "An identity provider was disconnected from your Renga account. It no longer signs you in."
   }
 
   @doc "Records an event in the account's security log."
@@ -116,6 +122,9 @@ defmodule Renga.Accounts.SecurityLog do
       %{"actor" => actor} ->
         "#{description} (#{actor})"
 
+      %{"provider" => id} ->
+        "#{description}: #{provider_label(id)}"
+
       _ ->
         description
     end
@@ -126,6 +135,15 @@ defmodule Renga.Accounts.SecurityLog do
   defp method_label("magic_link"), do: "an emailed link"
   defp method_label("totp"), do: "an authenticator code"
   defp method_label("recovery_code"), do: "a recovery code"
-  defp method_label("provider:" <> id), do: "the identity provider #{id}"
+  defp method_label("provider:" <> id), do: "the identity provider #{provider_label(id)}"
   defp method_label(other), do: other
+
+  # A provider's display name can change and its row outlives removal, so
+  # the log stores the ID and names it as it is now.
+  defp provider_label(id) do
+    case Repo.get(Renga.Accounts.IdentityProvider, id) do
+      %{display_name: name} -> name
+      nil -> id
+    end
+  end
 end
