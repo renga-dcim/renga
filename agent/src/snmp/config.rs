@@ -18,6 +18,7 @@ pub(crate) const COLLECTOR_ID_MAX: usize = 64;
 const TARGETS_MAX: usize = 1_000;
 // Renga's string limit; a report naming a longer target would be rejected whole.
 const TARGET_ADDRESS_MAX: usize = 255;
+const SNMP_PORT: u16 = 161;
 
 /// One SNMP poller module instance. Its `id` is the collector stream identity Renga keeps for
 /// it, so changing the targets or credentials keeps the same stream.
@@ -134,7 +135,7 @@ fn collector(raw: RawSnmpCollector) -> Result<SnmpCollector, String> {
             "id must be 1-{COLLECTOR_ID_MAX} letters, digits, '.', '_', or '-', starting and ending with a letter or digit"
         ));
     }
-    let targets = targets(raw.targets.unwrap_or_default())?;
+    let targets = targets(raw.targets.unwrap_or_default(), SNMP_PORT)?;
     let credentials = match raw.version.as_deref().unwrap_or("3") {
         "3" => {
             if raw.community_file.is_some() {
@@ -202,7 +203,8 @@ fn collector(raw: RawSnmpCollector) -> Result<SnmpCollector, String> {
     })
 }
 
-fn targets(raw: Vec<String>) -> Result<Vec<Target>, String> {
+/// Validates a module's `targets` list; any switch module accepts the same addresses.
+pub(crate) fn targets(raw: Vec<String>, default_port: u16) -> Result<Vec<Target>, String> {
     if raw.is_empty() {
         return Err("targets must list at least one address".into());
     }
@@ -212,7 +214,7 @@ fn targets(raw: Vec<String>) -> Result<Vec<Target>, String> {
     let mut seen = BTreeSet::new();
     raw.into_iter()
         .map(|address| {
-            let target = Target::parse(&address)
+            let target = Target::parse_with_default_port(&address, default_port)
                 .ok_or_else(|| format!("target {address:?} must be a host or host:port"))?;
             if !seen.insert((target.host.clone(), target.port)) {
                 return Err(format!("target {address:?} is listed twice"));
@@ -225,6 +227,11 @@ fn targets(raw: Vec<String>) -> Result<Vec<Target>, String> {
 impl Target {
     /// Accepts `host`, `host:port`, an IPv6 literal, or `[ipv6]:port`. The port defaults to 161.
     pub fn parse(address: &str) -> Option<Self> {
+        Self::parse_with_default_port(address, SNMP_PORT)
+    }
+
+    /// As [`Target::parse`], for a protocol whose port is `default_port` when none is given.
+    pub fn parse_with_default_port(address: &str, default_port: u16) -> Option<Self> {
         let trimmed = address.trim();
         if trimmed.is_empty() || trimmed != address || address.chars().count() > TARGET_ADDRESS_MAX
         {
@@ -233,16 +240,16 @@ impl Target {
         let (host, port) = if let Some(rest) = trimmed.strip_prefix('[') {
             let (host, rest) = rest.split_once(']')?;
             let port = match rest {
-                "" => 161,
+                "" => default_port,
                 _ => rest.strip_prefix(':')?.parse().ok()?,
             };
             (host, port)
         } else if trimmed.matches(':').count() > 1 {
-            (trimmed, 161)
+            (trimmed, default_port)
         } else if let Some((host, port)) = trimmed.split_once(':') {
             (host, port.parse().ok()?)
         } else {
-            (trimmed, 161)
+            (trimmed, default_port)
         };
         if host.is_empty() || port == 0 || host.chars().any(char::is_whitespace) {
             return None;

@@ -147,6 +147,7 @@ impl ClientSettings {
             labels: _,
             jobs: _,
             snmp: _,
+            gnmi: _,
             libvirt: _,
         } = config;
         Ok(Self {
@@ -780,6 +781,7 @@ mod tests {
             labels: BTreeMap::new(),
             jobs: Default::default(),
             snmp: Vec::new(),
+            gnmi: Vec::new(),
             libvirt: None,
         }
     }

@@ -741,6 +741,7 @@ fn reload_changes_jobs(
         checkin_interval: _,
         config_refresh_interval: _,
         snmp: _,
+        gnmi: _,
         libvirt: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
@@ -2919,6 +2920,7 @@ mod tests {
             labels: BTreeMap::new(),
             jobs: Default::default(),
             snmp: Vec::new(),
+            gnmi: Vec::new(),
             libvirt: None,
         }
     }
