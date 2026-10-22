@@ -256,6 +256,7 @@ defmodule RengaWeb.Router do
       live "/settings/appearance", AppearanceLive, :index
       live "/settings/limits", LimitsLive, :index
       live "/settings/identity-providers", OrganizationProviderLive, :index
+      live "/settings/queries", QuerySettingsLive, :index
     end
 
     post "/organizations/select", OrganizationSessionController, :create

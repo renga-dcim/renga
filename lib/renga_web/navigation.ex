@@ -156,6 +156,9 @@ defmodule RengaWeb.Navigation do
           "hero-identification",
           keywords: ~w(sso oidc okta entra sign-in login single)
         ),
+        section(:queries, "Queries", ~p"/settings/queries", "hero-question-mark-circle",
+          keywords: ~w(operational osquery sockets services packages)
+        ),
         section(:limits, "Limits", ~p"/settings/limits", "hero-scale",
           keywords: ~w(quota usage rate capacity)
         ),
