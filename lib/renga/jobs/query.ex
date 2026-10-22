@@ -95,6 +95,33 @@ defmodule Renga.Jobs.Query do
   @doc "Every registered query's `name@version` key."
   def keys, do: Enum.map(all(), &Renga.Jobs.Capability.key/1)
 
+  @contract_path "priv/queries/v1.json"
+
+  @doc """
+  Every registered query's contract: sensitivity, timeout, result bound,
+  and its parameters and result as JSON Schema. The agent's tests read the
+  committed copy at `#{@contract_path}`; regenerate it with
+  `mix queries.contract`.
+  """
+  def contract do
+    Map.new(all(), fn module ->
+      {Renga.Jobs.Capability.key(module),
+       %{
+         "sensitivity" => Atom.to_string(module.sensitivity()),
+         "timeout_ms" => module.timeout_ms(),
+         "output_limit_bytes" => module.output_limit_bytes(),
+         "parameters" => Schema.to_json_schema(module.parameters_schema()),
+         "result" => Schema.to_json_schema(module.result_schema())
+       }}
+    end)
+  end
+
+  @doc "The contract as the committed file holds it."
+  def contract_json, do: Jason.encode!(contract(), pretty: true) <> "\n"
+
+  @doc false
+  def contract_path, do: @contract_path
+
   @doc "The fields of a query's parameters, for a form."
   def parameter_fields(module), do: Schema.fields(module.parameters_schema())
 end

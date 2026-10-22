@@ -171,6 +171,48 @@ defmodule Renga.Jobs.Query.Schema do
   defp describe({:object, _fields}), do: "an object"
 
   @doc """
+  The schema as JSON Schema (draft 2020-12), for the agent's contract tests,
+  which check that what the agent reports is what Renga accepts.
+  """
+  def to_json_schema(:string), do: to_json_schema({:string, []})
+
+  def to_json_schema({:string, opts}),
+    do: %{"type" => "string", "maxLength" => Keyword.get(opts, :max, @default_string_max)}
+
+  def to_json_schema(:integer), do: to_json_schema({:integer, []})
+
+  def to_json_schema({:integer, opts}) do
+    %{"type" => "integer"}
+    |> put_present("minimum", Keyword.get(opts, :min))
+    |> put_present("maximum", Keyword.get(opts, :max))
+  end
+
+  def to_json_schema(:boolean), do: %{"type" => "boolean"}
+  def to_json_schema({:enum, values}), do: %{"type" => "string", "enum" => values}
+
+  def to_json_schema({:list, type, opts}),
+    do: %{"type" => "array", "items" => to_json_schema(type), "maxItems" => opts[:max]}
+
+  def to_json_schema({:nullable, type}),
+    do: %{"anyOf" => [to_json_schema(type), %{"type" => "null"}]}
+
+  def to_json_schema({:object, fields} = schema) do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" =>
+        Map.new(fields, fn
+          {name, {:optional, type}} -> {name, to_json_schema(type)}
+          {name, type} -> {name, to_json_schema(type)}
+        end),
+      "required" => for({name, _type, true} <- fields(schema), do: name)
+    }
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
+
+  @doc """
   The fields of an object schema in declared order, each as
   `{name, type, required?}`, for rendering forms and tables.
   """

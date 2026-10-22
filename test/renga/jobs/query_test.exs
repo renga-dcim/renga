@@ -164,6 +164,26 @@ defmodule Renga.Jobs.QueryTest do
     end
   end
 
+  # The agent's tests read the committed copy, so it must match the code.
+  test "priv/queries/v1.json is the current contract" do
+    if File.read!(Query.contract_path()) != Query.contract_json() do
+      flunk("priv/queries/v1.json is out of date; regenerate it with `mix queries.contract`")
+    end
+  end
+
+  test "the contract requires what the schemas require and nothing more" do
+    contract = Query.contract()
+
+    for {module, result} <- @results do
+      json_schema = contract[Capability.key(module)]["result"]
+      assert json_schema["additionalProperties"] == false
+      assert Schema.validate(module.result_schema(), result) == []
+
+      for {name, _type, true} <- Schema.fields(module.result_schema()),
+          do: assert(name in json_schema["required"])
+    end
+  end
+
   describe "Schema" do
     @schema {:object,
              [
