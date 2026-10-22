@@ -11,8 +11,10 @@ defmodule RengaWeb.Api.V1.Schemas.AgentHome do
           type: :string,
           format: :uri,
           description:
-            "The home deployment's public URL. The agent persists it and resolves again " <>
-              "only when its home answers `410` with `moved`."
+            "The home deployment's origin: an `https` URL with no path, query, or " <>
+              "credentials (`http` only for agents configured for insecure development). " <>
+              "The agent persists it and resolves again only when its home answers `410` " <>
+              "with `moved`."
         }
       },
       required: [:home],

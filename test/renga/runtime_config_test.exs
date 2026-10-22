@@ -116,6 +116,25 @@ defmodule Renga.RuntimeConfigTest do
     end
   end
 
+  test "production refuses to boot without PHX_HOST, which agents are sent to" do
+    for host <- [nil, "", "  "] do
+      assert_raise RuntimeError, ~r/PHX_HOST is missing/, fn ->
+        with_env(
+          %{
+            "DATABASE_URL" => database_url(nil),
+            "SECRET_KEY_BASE" => @secret,
+            "PHX_HOST" => host
+          },
+          fn -> Config.Reader.read!(@runtime_config, env: :prod) end
+        )
+      end
+    end
+
+    config = "ecto://user:password@database.example.com/renga" |> read_runtime_config()
+    endpoint = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(RengaWeb.Endpoint)
+    assert endpoint[:url] == [host: "renga.example.com", port: 443, scheme: "https"]
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)

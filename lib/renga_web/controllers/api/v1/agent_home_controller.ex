@@ -30,7 +30,10 @@ defmodule RengaWeb.Api.V1.AgentHomeController do
 
   # The answer is a constant from configuration, never derived from the
   # request, so this endpoint cannot be used to point other agents elsewhere.
+  # It must not outlive a configuration change in any cache.
   def show(conn, _params) do
-    json(conn, %{home: Deployment.public_url()})
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> json(%{home: Deployment.public_url()})
   end
 end

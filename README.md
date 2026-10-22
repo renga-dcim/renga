@@ -79,7 +79,7 @@ runtime server and database settings with environment variables:
 | --- | --- | --- |
 | `DATABASE_URL` | yes | `ecto://USER:PASS@HOST/DATABASE` |
 | `SECRET_KEY_BASE` | yes | Generate with `mix phx.gen.secret` |
-| `PHX_HOST` | yes | Public host name used in generated URLs |
+| `PHX_HOST` | yes | Public host name used in generated URLs, and the home agents are sent to (RFD 23) |
 | `DATABASE_SSL` | no | `true` to require TLS, verifying the server certificate against the OS trust store and the URL's host name; any `ssl` query option in `DATABASE_URL` must also be `true` |
 | `POOL_SIZE` | no | Database connections per node (default 10) |
 | `DATABASE_STATEMENT_TIMEOUT` | no | Longest a single application statement may run, in milliseconds (default 30000), so one organization's slow query cannot hold a connection others need (RFD 21). It is sent as a connection startup parameter, so a PgBouncer in front of the database must accept `statement_timeout` (do not list it in `ignore_startup_parameters`, which would drop the bound). `bin/migrate` runs without it |

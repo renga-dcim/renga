@@ -3,9 +3,11 @@ defmodule RengaWeb.Api.V1.AgentHomeControllerTest do
 
   describe "GET /api/v1/agent/home" do
     test "answers with this deployment's public URL without a credential", %{conn: conn} do
-      body = conn |> get(~p"/api/v1/agent/home?deployment=eu1") |> valid_api_response(200)
+      conn = get(conn, ~p"/api/v1/agent/home?deployment=eu1")
 
-      assert body == %{"home" => RengaWeb.Endpoint.url()}
+      assert valid_api_response(conn, 200) == %{"home" => RengaWeb.Endpoint.url()}
+      # A cached answer could outlive a change of the deployment's URL.
+      assert get_resp_header(conn, "cache-control") == ["no-store"]
     end
 
     test "is its own home whatever identifier is asked for", %{conn: conn} do
