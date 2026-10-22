@@ -9,8 +9,9 @@ use renga_agent::{
     installation_key::InstallationKey,
     jobs::{
         inventory_collect::InventoryCollect,
+        queries,
         worker::{PolicyGeneration, Worker},
-        Catalog, JobPolicy,
+        Capability, Catalog, JobPolicy,
     },
     libvirt::worker::Module as LibvirtModule,
     logging,
@@ -769,7 +770,10 @@ fn job_catalog(
     let collect = move |cancellation: &Cancellation| {
         send_inventory(&client, cancellation, &labels, &queue).map_err(|error| error.to_string())
     };
-    Catalog::new(vec![Arc::new(InventoryCollect::new(Box::new(collect)))])
+    let mut capabilities: Vec<Arc<dyn Capability>> =
+        vec![Arc::new(InventoryCollect::new(Box::new(collect)))];
+    capabilities.extend(queries::catalog());
+    Catalog::new(capabilities)
 }
 
 /// What the agent reports, plus the job capabilities its policy enables. Policy
