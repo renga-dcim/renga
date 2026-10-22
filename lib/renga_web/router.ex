@@ -197,6 +197,7 @@ defmodule RengaWeb.Router do
         RengaWeb.SQLSandbox,
         RengaWeb.RecoveryMode,
         {RengaWeb.UserAuth, :require_authenticated},
+        RengaWeb.AccessHook,
         RengaWeb.SidebarViews,
         RengaWeb.AppearanceHook
       ] do
