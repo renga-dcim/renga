@@ -2299,6 +2299,9 @@ defmodule Renga.Inventory do
 
   # RFD 11: possible-same-machine findings follow the evidence like address
   # findings, after reconciliation commits; a failure is logged, never fatal.
+  # That holds only outside a transaction: a failure rescued inside one would
+  # still leave the enclosing transaction aborted, so callers must not wrap
+  # reconciliation in one.
   defp reconcile_same_machine(
          {:ok, _resource_or_resources, _discovered?} = result,
          scope,
