@@ -357,16 +357,18 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // Puts a reloaded configuration, its home, and the client for it into effect.
     macro_rules! adopt_reload {
         ($new_config:expr, $new_home:expr, $new_client:expr) => {{
-            let (new_config, new_home) = ($new_config, $new_home);
-            let jobs_changed = reload_changes_jobs(&config, &home, &new_config, &new_home);
+            let (new_config, new_client) = ($new_config, $new_client);
+            let jobs_changed = reload_changes_jobs(&config, &client, &new_config, &new_client);
             let old_checkin_interval = config.checkin_interval;
             let old_inventory_interval = config.inventory_interval;
             config = new_config;
-            home = new_home;
-            client = $new_client;
+            home = $new_home;
             // A periodic refresh usually changes nothing, and advancing the generation
-            // abandons a job between its lease and its start until the lease expires.
+            // abandons a job between its lease and its start until the lease expires. An
+            // equivalent client is not adopted either, so passes, the socket, and every later
+            // request keep using the one client they were built from.
             if jobs_changed {
+                client = new_client;
                 policy_generation.advance();
                 // The socket carries the old credentials and policy.
                 if let Some(previous) = listener.take() {
@@ -702,35 +704,37 @@ fn leases_now(checkin: &Result<CheckInAck, Box<dyn Error>>) -> bool {
     }
 }
 
-/// Whether a reload changes what a job pass or the notice socket was built from: the
-/// home and credentials the client sends with, the labels jobs report, or the `[jobs]`
-/// policy. Every field is named, so a new setting has to say whether it matters.
-fn reload_changes_jobs(old: &Config, old_home: &Home, new: &Config, new_home: &Home) -> bool {
+/// Whether adopting a reload has to restart job passes and the notice socket: the new client
+/// sends differently, or the labels or `[jobs]` policy a pass and the socket are built from
+/// changed. Every field is named, so a new setting has to say which side it is on.
+fn reload_changes_jobs(
+    old: &Config,
+    old_client: &HttpClient,
+    new: &Config,
+    new_client: &HttpClient,
+) -> bool {
     let Config {
-        config_path: _,
-        // Only the home it resolves to is sent anything.
+        // Bound into the `inventory.collect` capability a pass runs.
+        labels,
+        // Decides what a pass leases and runs, and whether the socket opens.
+        jobs,
+        // What a client is built from, which `HttpClient::sends_like` compares. `renga_url`
+        // matters only through the home it resolves to.
         renga_url: _,
-        allow_insecure_http,
-        intake_api_key,
-        installation_id,
+        allow_insecure_http: _,
+        intake_api_key: _,
+        installation_id: _,
+        request_timeout: _,
+        max_retry_attempts: _,
+        // Read afresh by the reload, the scheduler, and the collector modules.
+        config_path: _,
         inventory_interval: _,
         checkin_interval: _,
         config_refresh_interval: _,
-        request_timeout,
-        max_retry_attempts,
-        labels,
-        jobs,
         snmp: _,
         libvirt: _,
     } = new;
-    old_home.home != new_home.home
-        || old.allow_insecure_http != *allow_insecure_http
-        || old.intake_api_key != *intake_api_key
-        || old.installation_id != *installation_id
-        || old.request_timeout != *request_timeout
-        || old.max_retry_attempts != *max_retry_attempts
-        || old.labels != *labels
-        || old.jobs != *jobs
+    !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
 }
 
 /// Opens the job notice socket when the policy enables a job capability, so
@@ -1103,7 +1107,9 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
     use renga_agent::{
         jobs::{inventory_collect::InventoryCollect, worker::JobApi},
+        libvirt::config::LibvirtCollector,
         payload::{JobReport, LeasedJob, ReportAck, ReportType},
+        snmp::config::{Credentials, SnmpCollector},
         transport::TransportError,
     };
     use serde_json::json;
@@ -2595,40 +2601,118 @@ mod tests {
     }
 
     #[test]
-    fn only_settings_jobs_use_restart_them_on_reload() {
+    fn only_what_jobs_are_built_from_restarts_them_on_reload() {
+        type Change = dyn Fn(&mut Config, &mut reqwest::Url);
+        let state = std::env::temp_dir().join(format!("renga-restart-{}", uuid::Uuid::new_v4()));
+        let key = Arc::new(InstallationKey::load_or_create(&state.join("key")).unwrap());
+        let other_key = Arc::new(InstallationKey::load_or_create(&state.join("other")).unwrap());
         let config = stub_config("http://renga.test");
-        let home = Home {
-            renga_url: config.renga_url.clone(),
-            deployment: "test".into(),
-            home: "http://home.test".parse().unwrap(),
-            resolved_at: chrono::Utc::now(),
+        let home: reqwest::Url = "http://home.test".parse().unwrap();
+        let client = |config: &Config, home: &reqwest::Url, key: &Arc<InstallationKey>| {
+            HttpClient::for_home(config, home, Cancellation::default())
+                .unwrap()
+                .with_installation_key(Arc::clone(key))
         };
-        let changed = |change: &dyn Fn(&mut Config, &mut Home)| {
+        let current = client(&config, &home, &key);
+        let restarts = |change: &Change| {
             let (mut new_config, mut new_home) = (config.clone(), home.clone());
             change(&mut new_config, &mut new_home);
-            reload_changes_jobs(&config, &home, &new_config, &new_home)
+            let new_client = client(&new_config, &new_home, &key);
+            reload_changes_jobs(&config, &current, &new_config, &new_client)
         };
 
-        assert!(!changed(&|_, _| {}));
-        assert!(!changed(&|_, home| home.resolved_at = chrono::Utc::now()));
-        assert!(!changed(&|config, _| {
-            config.checkin_interval = Duration::from_secs(5);
-            config.inventory_interval = Duration::from_secs(5);
-            config.config_refresh_interval = Duration::from_secs(5);
-        }));
-        assert!(changed(
-            &|_, home| home.home = "http://other.test".parse().unwrap()
-        ));
-        assert!(changed(
-            &|config, _| config.intake_api_key = "rotated".into()
-        ));
-        assert!(changed(
-            &|config, _| config.request_timeout = Duration::from_secs(1)
-        ));
-        assert!(changed(&|config, _| {
-            config.labels.insert("team".into(), "storage".into());
-        }));
-        assert!(changed(&|config, _| config.jobs.enabled = Some(Vec::new())));
+        // A periodic refresh rebuilds an equivalent client, and the scheduler and collector
+        // modules reread their own settings.
+        let independent: [(&str, &Change); 8] = [
+            ("nothing", &|_, _| {}),
+            ("renga_url, resolving to the same home", &|config, _| {
+                config.renga_url = "http://elsewhere.test".into()
+            }),
+            ("config_path", &|config, _| {
+                config.config_path = "elsewhere.toml".into()
+            }),
+            ("inventory_interval", &|config, _| {
+                config.inventory_interval = Duration::from_secs(5)
+            }),
+            ("checkin_interval", &|config, _| {
+                config.checkin_interval = Duration::from_secs(5)
+            }),
+            ("config_refresh_interval", &|config, _| {
+                config.config_refresh_interval = Duration::from_secs(5)
+            }),
+            ("snmp", &|config, _| {
+                config.snmp = vec![SnmpCollector {
+                    id: "switches".into(),
+                    targets: Vec::new(),
+                    credentials: Credentials::V2c {
+                        community_file: "community".into(),
+                    },
+                    interval: Duration::from_secs(60),
+                    timeout: Duration::from_secs(5),
+                    max_concurrent_targets: 1,
+                }]
+            }),
+            ("libvirt", &|config, _| {
+                config.libvirt = Some(LibvirtCollector {
+                    id: "hypervisor".into(),
+                    uri: "qemu:///system".into(),
+                    interval: Duration::from_secs(60),
+                    timeout: Duration::from_secs(5),
+                })
+            }),
+        ];
+        for (what, change) in independent {
+            assert!(!restarts(change), "{what} restarted jobs");
+        }
+
+        let relevant: [(&str, &Change); 7] = [
+            ("the home", &|_, home| {
+                *home = "http://other.test".parse().unwrap()
+            }),
+            ("intake_api_key", &|config, _| {
+                config.intake_api_key = "renga_intake_rotated".into()
+            }),
+            ("installation_id", &|config, _| {
+                config.installation_id = uuid::Uuid::new_v4()
+            }),
+            ("request_timeout", &|config, _| {
+                config.request_timeout = Duration::from_secs(1)
+            }),
+            ("max_retry_attempts", &|config, _| {
+                config.max_retry_attempts = 3
+            }),
+            ("labels", &|config, _| {
+                config.labels.insert("team".into(), "storage".into());
+            }),
+            ("jobs", &|config, _| config.jobs.enabled = Some(Vec::new())),
+        ];
+        for (what, change) in relevant {
+            assert!(restarts(change), "{what} did not restart jobs");
+        }
+        assert!(
+            reload_changes_jobs(
+                &config,
+                &current,
+                &config,
+                &client(&config, &home, &other_key)
+            ),
+            "the installation key did not restart jobs"
+        );
+        // Insecure HTTP only decides whether a home is allowed; an HTTPS home is sent the same.
+        let mut secure = config.clone();
+        let secure_home: reqwest::Url = "https://home.test".parse().unwrap();
+        let secure_client = client(&secure, &secure_home, &key);
+        secure.allow_insecure_http = false;
+        assert!(
+            !reload_changes_jobs(
+                &config,
+                &secure_client,
+                &secure,
+                &client(&secure, &secure_home, &key)
+            ),
+            "allow_insecure_http restarted jobs for an HTTPS home"
+        );
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     #[test]
