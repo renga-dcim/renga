@@ -105,6 +105,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/settings/identity-providers",
              "/settings/queries",
              "/settings/limits",
+             "/settings/export",
              "/organizations",
              "/settings/appearance",
              "/users/settings"

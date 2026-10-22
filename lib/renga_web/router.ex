@@ -262,7 +262,10 @@ defmodule RengaWeb.Router do
       live "/settings/identity-providers", OrganizationProviderLive, :index
       live "/settings/queries", QuerySettingsLive, :index
       live "/settings/security", SecurityLive, :index
+      live "/settings/export", ExportLive, :index
     end
+
+    get "/settings/export/:id/download", ExportController, :download
 
     post "/organizations/select", OrganizationSessionController, :create
     post "/organizations/confirm-mfa", OrganizationSessionController, :confirm_mfa
