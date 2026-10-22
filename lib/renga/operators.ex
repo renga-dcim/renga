@@ -15,6 +15,7 @@ defmodule Renga.Operators do
 
   import Ecto.Query
 
+  alias Renga.DeploymentAudit
   alias Renga.Operators.OperatorToken
   alias Renga.Repo
   alias Renga.Types.Inet
@@ -25,24 +26,33 @@ defmodule Renga.Operators do
   defdelegate scopes, to: OperatorToken
 
   @doc """
-  Creates a token and returns it with its one-time plaintext value.
+  Creates a token and returns it with its one-time plaintext value, which
+  exists only once the token and its audit event are committed.
 
   `attrs` takes `:name`, `:scopes`, and optionally `:expires_at` and
   `:allowed_sources`, a list of CIDR prefixes the token may be used from.
+  `context` names who is creating it (`Renga.DeploymentAudit`).
   """
-  def create_token(attrs) do
+  def create_token(attrs, context) do
     plaintext = generate_token()
 
-    case %OperatorToken{}
-         |> OperatorToken.create_changeset(attrs, hash_token(plaintext))
-         |> Repo.insert() do
-      {:ok, token} -> {:ok, {token, plaintext}}
-      {:error, changeset} -> {:error, changeset}
-    end
+    DeploymentAudit.mutate(context, "operator_token.create", fn ->
+      case %OperatorToken{}
+           |> OperatorToken.create_changeset(attrs, hash_token(plaintext))
+           |> Repo.insert() do
+        {:ok, token} ->
+          {:ok, {token, plaintext},
+           %{target_id: token.id, changed: ~w(name scopes allowed_sources expires_at)}}
+
+        {:error, changeset} ->
+          {:error, changeset, %{}}
+      end
+    end)
   end
 
   @doc """
-  Lists every token, revoked ones included, without credential material.
+  Lists every token, revoked ones included. The schema redacts each token's
+  hash; nothing here holds a plaintext token.
   """
   def list_tokens do
     OperatorToken
@@ -64,11 +74,11 @@ defmodule Renga.Operators do
   end
 
   @doc """
-  Revokes a token. Revoking an already revoked token succeeds and keeps the
-  original revocation time.
+  Revokes a token on behalf of `context`. Revoking an already revoked token
+  succeeds and keeps the original revocation time.
   """
-  def revoke_token(%OperatorToken{id: id}) do
-    Repo.transaction(fn ->
+  def revoke_token(%OperatorToken{id: id}, context) do
+    DeploymentAudit.mutate(context, "operator_token.revoke", fn ->
       token =
         OperatorToken
         |> where([token], token.id == ^id)
@@ -76,9 +86,10 @@ defmodule Renga.Operators do
         |> Repo.one!()
 
       if token.revoked_at do
-        token
+        {:ok, token, %{target_id: id}}
       else
-        token |> OperatorToken.revoke_changeset(Renga.Time.utc_now_ms()) |> Repo.update!()
+        token = token |> OperatorToken.revoke_changeset(Renga.Time.utc_now_ms()) |> Repo.update!()
+        {:ok, token, %{target_id: id, changed: ~w(revoked_at)}}
       end
     end)
   end
@@ -100,8 +111,9 @@ defmodule Renga.Operators do
   Authenticates a bearer token presented from `peer`, the address of the
   connection the request arrived on.
 
-  Every failure returns the same `:error`, so a caller cannot tell an unknown
-  token from a revoked, expired, or misplaced one.
+  Every failure returns the same `:error` from the same single query, so the
+  response does not say whether a token was unknown, revoked, expired, or
+  used from the wrong address.
   """
   def authenticate(@token_prefix <> _rest = plaintext, peer) when is_tuple(peer) do
     now = Renga.Time.utc_now_ms()

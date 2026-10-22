@@ -8,14 +8,18 @@ defmodule Renga.Release.CLI do
   `mix renga.admin` does in development.
   """
 
+  alias Renga.DeploymentAudit
   alias Renga.Operators
 
   @usage """
   Usage:
-    renga-admin operator-tokens create --name NAME --scope SCOPE [--scope SCOPE...]
+    renga-admin operator-tokens create --actor NAME --name NAME --scopes SCOPE[,SCOPE...]
                                        [--expires-at ISO8601] [--source CIDR...]
     renga-admin operator-tokens list
-    renga-admin operator-tokens revoke ID_OR_NAME
+    renga-admin operator-tokens revoke ID_OR_NAME --actor NAME
+
+  Changes need --actor, the person making them, which the deployment audit
+  log records with an invocation ID. --scope SCOPE may also be repeated.
   """
 
   @doc """
@@ -27,19 +31,20 @@ defmodule Renga.Release.CLI do
   def run(["operator-tokens", "create" | args]) do
     {opts, rest, invalid} =
       OptionParser.parse(args,
-        strict: [name: :string, scope: :keep, expires_at: :string, source: :keep]
+        strict: [
+          actor: :string,
+          name: :string,
+          scope: :keep,
+          scopes: :keep,
+          expires_at: :string,
+          source: :keep
+        ]
       )
 
     with :ok <- no_extra_args(rest, invalid),
-         {:ok, expires_at} <- parse_expiry(opts[:expires_at]) do
-      attrs = %{
-        name: opts[:name],
-        scopes: Keyword.get_values(opts, :scope),
-        allowed_sources: Keyword.get_values(opts, :source),
-        expires_at: expires_at
-      }
-
-      case Operators.create_token(attrs) do
+         {:ok, context} <- context(opts),
+         {:ok, attrs} <- token_attrs(opts, context) do
+      case Operators.create_token(attrs, context) do
         {:ok, {token, plaintext}} ->
           IO.puts("Created operator token #{token.name} (#{token.id}).")
           IO.puts("Store it now; it is not shown again:\n")
@@ -77,15 +82,26 @@ defmodule Renga.Release.CLI do
     0
   end
 
-  def run(["operator-tokens", "revoke", id_or_name]) do
-    case Operators.get_token(id_or_name) do
-      nil ->
-        error("no operator token named or with ID #{id_or_name}")
+  def run(["operator-tokens", "revoke" | args]) do
+    {opts, rest, invalid} = OptionParser.parse(args, strict: [actor: :string])
 
-      token ->
-        {:ok, token} = Operators.revoke_token(token)
-        IO.puts("Revoked operator token #{token.name} (#{token.id}).")
-        0
+    with [id_or_name] <- (invalid == [] && rest) || :usage,
+         {:ok, context} <- context(opts) do
+      case Operators.get_token(id_or_name) do
+        nil ->
+          {:error, :not_found} =
+            DeploymentAudit.reject(context, "operator_token.revoke", :not_found)
+
+          error("no operator token named or with ID #{id_or_name}")
+
+        token ->
+          {:ok, token} = Operators.revoke_token(token, context)
+          IO.puts("Revoked operator token #{token.name} (#{token.id}).")
+          0
+      end
+    else
+      1 -> 1
+      _usage -> error(@usage)
     end
   end
 
@@ -97,6 +113,47 @@ defmodule Renga.Release.CLI do
   """
   def main(argv) do
     Renga.Release.with_repos(fn -> run(argv) end) |> System.halt()
+  end
+
+  # Like bin/providers, a change names who made it.
+  defp context(opts) do
+    case opts[:actor] && String.trim(opts[:actor]) do
+      actor when actor in [nil, ""] ->
+        error("--actor NAME is required, so the change records who made it")
+
+      actor ->
+        if String.match?(actor, ~r/[[:cntrl:]]/u),
+          do: error("--actor must not contain control characters"),
+          else: {:ok, DeploymentAudit.operator(actor)}
+    end
+  end
+
+  # Once the actor is known, a refused attempt is recorded too.
+  defp token_attrs(opts, context) do
+    scopes =
+      Keyword.get_values(opts, :scope) ++
+        Enum.flat_map(Keyword.get_values(opts, :scopes), &String.split(&1, ","))
+
+    result =
+      with {:ok, expires_at} <- parse_expiry(opts[:expires_at]),
+           :ok <- no_empty_scopes(scopes) do
+        {:ok,
+         %{
+           name: opts[:name],
+           scopes: scopes,
+           allowed_sources: Keyword.get_values(opts, :source),
+           expires_at: expires_at
+         }}
+      end
+
+    with status when is_integer(status) <- result do
+      {:error, :invalid} = DeploymentAudit.reject(context, "operator_token.create", :invalid)
+      status
+    end
+  end
+
+  defp no_empty_scopes(scopes) do
+    if "" in scopes, do: error("--scopes must not have empty entries"), else: :ok
   end
 
   defp no_extra_args([], []), do: :ok
