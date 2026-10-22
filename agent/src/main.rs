@@ -625,6 +625,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     }
     // A request still in flight at shutdown may have heard `moved` after the loop stopped.
     discard_home_if_moved(&client, &home, &args.state_directory);
+    // A virsh call in flight must be killed and reaped before the agent exits.
+    libvirt.shutdown();
     info!("daemon stopped");
     Ok(())
 }
