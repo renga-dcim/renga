@@ -296,6 +296,24 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert findings(with_uuid) == []
     end
 
+    test "an unset firmware UUID does not stand in for a guest's own", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      guest_id =
+        guest!(token, ["52:54:00:00:00:01"],
+          at: recent.(1),
+          dmi_uuid: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+        )
+
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+    end
+
     test "any hypervisor report can change what a guest matches", %{
       token: token,
       recent: recent

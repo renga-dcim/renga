@@ -172,10 +172,15 @@ defmodule Renga.Inventory.SameMachine do
   defp present_interfaces(query),
     do: where(query, [interface], is_nil(interface.status) or interface.status != "not_present")
 
+  # Firmware that never set a UUID reports all zeros or all ones, as many
+  # unrelated machines do, so such a value does not identify the guest.
+  @unset_uuids ~w(00000000-0000-0000-0000-000000000000 ffffffff-ffff-ffff-ffff-ffffffffffff)
+
   defp uuid?(scope, guest_id) do
     ResourceIdentifier
     |> where([identifier], identifier.organization_id == ^scope.organization_id)
     |> where([identifier], identifier.resource_id == ^guest_id and identifier.kind == "dmi_uuid")
+    |> where([identifier], identifier.normalized_value not in ^@unset_uuids)
     |> Repo.exists?()
   end
 
