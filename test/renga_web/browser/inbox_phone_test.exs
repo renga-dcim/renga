@@ -29,7 +29,14 @@ defmodule RengaWeb.Browser.InboxPhoneTest do
 
     {:ok, resource} = Inventory.create_resource(admin_scope, %{kind: "server", name: "web-01"})
     drift = component_finding_fixture(resource, "component_drift")
-    other = component_finding_fixture(resource, "missing_expected_component", key: "other")
+
+    other =
+      component_finding_fixture(resource, "missing_expected_component",
+        key: "other",
+        message:
+          "Expected a 25GbE network adapter in PCIe slot 3 by the hardware template, " <>
+            "but the last inventory report from this machine listed none there"
+      )
 
     conn =
       add_session_cookie(
@@ -52,6 +59,7 @@ defmodule RengaWeb.Browser.InboxPhoneTest do
     context.conn
     |> visit("/inbox")
     |> assert_has("body .phx-connected")
+    |> evaluate(message_lines_js(other.id), &assert(&1 == 2))
     |> click("#finding-link-component-#{drift.id}")
     |> assert_has("#finding-panel [role=dialog]", text: "Component drift")
     |> evaluate(fits_screen_js("#finding-panel [role=dialog]"), &assert(&1 == true))
@@ -78,6 +86,18 @@ defmodule RengaWeb.Browser.InboxPhoneTest do
       const box = document.querySelector('#{selector}').getBoundingClientRect();
       return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
         document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+    })()
+    """
+  end
+
+  # The lines a finding's message takes in its row; a long one wraps instead of ending at the
+  # first ~40 characters, and the clamp keeps it to two lines.
+  defp message_lines_js(id) do
+    """
+    (() => {
+      const message = document.querySelector('#finding-link-component-#{id} [data-finding-message]');
+      return Math.round(message.getBoundingClientRect().height /
+        parseFloat(getComputedStyle(message).lineHeight));
     })()
     """
   end

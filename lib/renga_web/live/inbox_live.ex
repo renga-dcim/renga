@@ -949,7 +949,13 @@ defmodule RengaWeb.InboxLive do
               data-finding-kind={finding.kind}
             >
               <span class="block truncate font-medium text-fg">{kind_label(finding.kind)}</span>
-              <span class="block truncate text-xs text-fg-muted">{finding.message}</span>
+              <%!-- Phones show only this column, so the message gets a second line there. --%>
+              <span
+                class="line-clamp-2 break-words text-xs text-fg-muted sm:line-clamp-1"
+                data-finding-message
+              >
+                {finding.message}
+              </span>
               <%!-- Phones drop the Resource and Seen columns; the row keeps both here. --%>
               <span class="block truncate text-xs text-fg-subtle sm:hidden">
                 {resource_name(finding.resource)}<span :if={finding.interface_name}> · {finding.interface_name}</span>
