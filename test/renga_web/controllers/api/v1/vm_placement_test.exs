@@ -318,6 +318,19 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
     end
 
+    test "a hypervisor host's macvtap carrying its guest's MAC is not a match", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      host_id = guest!(token, ["52:54:00:00:00:01"], at: recent.(1), kind: "virtual")
+      assert findings(host_id) == []
+    end
+
     test "an unset firmware UUID does not stand in for a guest's own", %{
       token: token,
       recent: recent
@@ -496,7 +509,7 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       macs
       |> Enum.with_index()
       |> Enum.map(fn {mac, index} ->
-        %{"name" => "eth#{index}", "kind" => "ethernet", "mac_address" => mac}
+        %{"name" => "eth#{index}", "kind" => opts[:kind] || "ethernet", "mac_address" => mac}
       end)
 
     %{"reconciliation" => %{"matched_resource_id" => guest_id}} =

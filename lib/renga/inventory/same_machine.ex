@@ -191,11 +191,14 @@ defmodule Renga.Inventory.SameMachine do
     |> Repo.all()
   end
 
+  # Only device-backed interfaces say which MACs the machine itself carries.
+  # A virtual one may carry another's: a macvtap on a hypervisor host has
+  # its guest's MAC, so the host would otherwise match its own VM.
   defp guest_macs(scope, guest_id) do
     Interface
     |> where([interface], interface.organization_id == ^scope.organization_id)
     |> where([interface], interface.resource_id == ^guest_id)
-    |> where([interface], not is_nil(interface.mac_address))
+    |> where([interface], not is_nil(interface.mac_address) and interface.kind != "virtual")
     |> present_interfaces()
     |> select([interface], interface.mac_address)
     |> Repo.all()
