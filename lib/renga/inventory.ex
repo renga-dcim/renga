@@ -856,6 +856,21 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  The ids of every resource matching `options` (the filters
+  `list_operational_resources/2` takes; paging and ordering are ignored), at
+  most `limit` of them, for acting on a whole filtered list.
+  """
+  def list_operational_resource_ids(%Scope{organization_id: organization_id}, options, limit)
+      when is_integer(limit) and limit > 0 do
+    organization_id
+    |> operational_resource_query(options)
+    |> order_by([resource], asc: resource.id)
+    |> limit(^limit)
+    |> select([resource], resource.id)
+    |> Repo.all()
+  end
+
+  @doc """
   Counts the resources matching the same filters as
   `list_operational_resources/2`, per value of `group` (`:kind`,
   `:lifecycle`, or `:freshness`). Group headers use these so a count covers

@@ -376,6 +376,97 @@ defmodule Renga.Jobs do
     end
   end
 
+  @max_batch_size 1000
+
+  @doc "The most resources one `create_batch/5` request may fan out to."
+  def max_batch_size, do: @max_batch_size
+
+  @doc """
+  The agent each resource's job would go to for `capability_key`: the most
+  recently heard-from active agent whose source claims the resource and that
+  advertises the capability. Returns `%{resource_id => agent_id}`; resources
+  no such agent reports on are absent.
+  """
+  def batch_targets(%Scope{organization_id: organization_id}, capability_key, resource_ids)
+      when is_binary(capability_key) and is_list(resource_ids) do
+    ResourceIdentifierClaim
+    |> join(:inner, [claim], agent in Agent,
+      on: agent.source_id == claim.source_id and agent.organization_id == claim.organization_id
+    )
+    |> where([claim], claim.organization_id == ^organization_id)
+    |> where([claim], claim.resource_id in type(^resource_ids, {:array, :binary_id}))
+    |> where([_claim, agent], agent.status == "active")
+    |> where([_claim, agent], ^capability_key in agent.capabilities)
+    |> distinct([claim], claim.resource_id)
+    |> order_by([claim, agent],
+      asc: claim.resource_id,
+      desc_nulls_last: agent.last_contacted_at,
+      asc: agent.id
+    )
+    |> select([claim, agent], {claim.resource_id, agent.id})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  @doc """
+  Requests one capability on many resources as one batch (RFD 12, fan-out):
+  a job per resource that an agent offering it reports on, sharing a
+  `batch_id`, each targeted as `create_job/5` targets one. Resources without
+  such an agent are skipped.
+
+  The batch is created whole or not at all: one refused job, or the
+  organization's job rate limit, refuses the batch. At most
+  `max_batch_size/0` resources, and at least one must have an agent. The
+  only option is `:not_after`, as for `create_job/5`.
+
+  Returns `{:ok, %{batch_id: id, jobs: jobs, skipped: resource_ids}}`.
+  """
+  def create_batch(%Scope{} = scope, capability_key, parameters, resource_ids, opts \\ [])
+      when is_list(resource_ids) do
+    resource_ids = Enum.uniq(resource_ids)
+
+    with :ok <- check_batch_size(resource_ids),
+         {:ok, capability} <- Registry.fetch(capability_key),
+         {:ok, actor} <- requesting_user(scope) do
+      create_announced(scope.organization_id, fn ->
+        authorize_request!(scope, capability)
+        create_batch!(scope, actor, capability, parameters, resource_ids, opts)
+      end)
+    end
+  end
+
+  defp create_batch!(scope, actor, capability, parameters, resource_ids, opts) do
+    batch_id = Ecto.UUID.generate()
+    targets = batch_targets(scope, Capability.key(capability), resource_ids)
+    if targets == %{}, do: Repo.rollback(:no_agents)
+    base_opts = Keyword.take(opts, [:not_after])
+
+    jobs =
+      for resource_id <- resource_ids, agent_id = targets[resource_id] do
+        job_opts = Keyword.merge(base_opts, batch_id: batch_id, resource_id: resource_id)
+
+        do_create!(
+          scope.organization_id,
+          actor,
+          agent_id,
+          capability,
+          parameters,
+          job_opts,
+          scope
+        )
+      end
+
+    skipped = Enum.reject(resource_ids, &Map.has_key?(targets, &1))
+    %{batch_id: batch_id, jobs: jobs, skipped: skipped}
+  end
+
+  defp check_batch_size([]), do: {:error, :no_agents}
+
+  defp check_batch_size(resource_ids) when length(resource_ids) > @max_batch_size,
+    do: {:error, :batch_too_large}
+
+  defp check_batch_size(_resource_ids), do: :ok
+
   # Creates in one transaction and announces the change, and the queued job
   # to its agent, only once it commits.
   defp create_announced(organization_id, create) do
