@@ -1,6 +1,7 @@
 //! Configuration loading without transport-specific policy.
 
 use crate::{
+    exporters::{self, Exporter, RawExporter},
     gnmi::config::{self as gnmi_config, GnmiCollector, RawGnmiCollector},
     identity,
     jobs::{JobPolicy, Selector},
@@ -56,6 +57,8 @@ pub struct Config {
     /// gNMI/OpenConfig switch poller modules, reporting like the SNMP ones.
     pub gnmi: Vec<GnmiCollector>,
     pub libvirt: Option<LibvirtCollector>,
+    /// Local Prometheus exporters to read power from (RFD 10).
+    pub exporters: Vec<Exporter>,
 }
 
 impl fmt::Debug for Config {
@@ -76,6 +79,7 @@ impl fmt::Debug for Config {
             .field("snmp", &self.snmp)
             .field("gnmi", &self.gnmi)
             .field("libvirt", &self.libvirt)
+            .field("exporters", &self.exporters)
             .finish()
     }
 }
@@ -105,6 +109,7 @@ struct RawConfig {
     labels: Option<BTreeMap<String, String>>,
     jobs: Option<RawJobs>,
     collectors: Option<RawCollectors>,
+    exporters: Option<Vec<RawExporter>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -310,6 +315,8 @@ impl Config {
             snmp,
             gnmi,
             libvirt,
+            exporters: exporters::from_raw(raw.exporters.unwrap_or_default())
+                .map_err(ConfigError)?,
         })
     }
 }
@@ -521,6 +528,33 @@ mod tests {
         env::remove_var("RENGA_URL");
         fs::remove_file(path).unwrap();
         assert_eq!(c.renga_url, "https://environment.test");
+    }
+
+    #[test]
+    fn reads_exporters_from_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        let base = "renga_url='https://renga.test'\nintake_api_key='file-key'\n";
+        fs::write(
+            &path,
+            format!(
+                "{base}[[exporters]]\nurl='http://127.0.0.1:9100/metrics'\n\
+                 [[exporters]]\nurl='http://127.0.0.1:9290/metrics'\ninterval_seconds=30\n"
+            ),
+        )
+        .unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.exporters.len(), 2);
+        assert_eq!(config.exporters[1].interval, Duration::from_secs(30));
+
+        fs::write(
+            &path,
+            format!("{base}[[exporters]]\nurl='http://127.0.0.1:9100/metrics'\npassword='x'\n"),
+        )
+        .unwrap();
+        assert!(Config::load(&path, &state).is_err());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

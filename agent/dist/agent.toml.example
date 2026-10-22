@@ -37,3 +37,16 @@ max_retry_attempts = 5
 # enabled by default, and Renga cannot enable them remotely.
 # [jobs]
 # enabled = ["inventory.collect"]
+
+# Optional local Prometheus exporters to read power from, when the host's own
+# hwmon sensors are missing or incomplete. Only a fixed mapping is read: hwmon
+# power from node_exporter, and the DCMI reading plus power supply sensors from
+# ipmi_exporter. Endpoints must resolve to loopback unless allow_remote = true,
+# redirects and proxies are never used, and the intake key is never sent. A
+# remote endpoint may read a bearer token from bearer_token_file. At most 16;
+# interval 10-3600 seconds (default 60), timeout 1-30 (default 10).
+# [[exporters]]
+# url = "http://127.0.0.1:9100/metrics" # node_exporter
+#
+# [[exporters]]
+# url = "http://127.0.0.1:9290/metrics" # ipmi_exporter

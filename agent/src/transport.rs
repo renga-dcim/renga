@@ -154,6 +154,8 @@ impl ClientSettings {
             snmp: _,
             gnmi: _,
             libvirt: _,
+            // Scraped by the exporter module's own fetcher, which never sends the intake key.
+            exporters: _,
         } = config;
         Ok(Self {
             home: origin_url(home.as_str(), *allow_insecure_http, "home URL")?,
@@ -603,7 +605,7 @@ pub(crate) fn origin_url(
 
 /// Pins both the provider and roots so static installations neither depend on a host CA store
 /// nor inherit a process-global Rustls provider selected by another library.
-fn pinned_tls() -> Result<rustls::ClientConfig, TransportError> {
+pub(crate) fn pinned_tls() -> Result<rustls::ClientConfig, TransportError> {
     Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -825,6 +827,7 @@ mod tests {
             snmp: Vec::new(),
             gnmi: Vec::new(),
             libvirt: None,
+            exporters: Vec::new(),
         }
     }
 

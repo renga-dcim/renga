@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use renga_agent::{
     cancellation::Cancellation,
     collectors,
+    exporters::{self, mapping, text},
     installation_key::InstallationKey,
     payload::{
         Address, AgentHome, CheckIn, CheckInAck, Collector, CollectorIdentifiers, CollectorKind,
@@ -344,6 +345,27 @@ fn host_power_batches_match_the_contract() {
     );
 
     assert_conforms("TelemetryBatch", &batch);
+}
+
+#[test]
+fn exporter_batches_match_the_contract() {
+    let text = r#"
+node_hwmon_power_average_interval_seconds{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 0.5
+node_hwmon_power_average_watt{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 245.5
+ipmi_dcmi_power_consumption_watts NaN
+ipmi_power_watts{id="98",name="PSU1 Input"} 151
+ipmi_sensor_state{id="120",name="PS2 Status",type="Power Supply"} 1
+"#;
+    let samples = text::parse(text, text::Limits::default(), mapping::wanted).unwrap();
+    let readings = mapping::map(&samples);
+    assert_eq!(readings.len(), 4);
+
+    for failed in [false, true] {
+        assert_conforms(
+            "TelemetryBatch",
+            &exporters::batch(&readings, failed, chrono::Utc::now()),
+        );
+    }
 }
 
 #[test]

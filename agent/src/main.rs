@@ -3,6 +3,7 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
+    exporters::Scrapers,
     gnmi::worker::Modules as GnmiModules,
     home::{self, Home},
     installation_key::InstallationKey,
@@ -416,6 +417,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let mut libvirt = LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
     // Host power readings need no configuration, so reloads leave the module running.
     let _power = PowerModule::start(telemetry_sink(&queue, &stopped), power_sources.clone());
+    let mut exporters = Scrapers::start(
+        config.exporters.clone(),
+        telemetry_sink(&queue, &stopped),
+        power_sources.clone(),
+    );
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -448,6 +454,14 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             }
             if libvirt.collector() != config.libvirt.as_ref() {
                 libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
+            }
+            if exporters.exporters() != config.exporters.as_slice() {
+                drop(exporters);
+                exporters = Scrapers::start(
+                    config.exporters.clone(),
+                    telemetry_sink(&queue, &stopped),
+                    power_sources.clone(),
+                );
             }
             scheduler.refresh_intervals(
                 Instant::now(),
@@ -819,6 +833,7 @@ fn reload_changes_jobs(
         snmp: _,
         gnmi: _,
         libvirt: _,
+        exporters: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
 }
@@ -3042,6 +3057,7 @@ mod tests {
             snmp: Vec::new(),
             gnmi: Vec::new(),
             libvirt: None,
+            exporters: Vec::new(),
         }
     }
 
