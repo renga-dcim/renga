@@ -48,14 +48,40 @@ defmodule Renga.Operators.OperatorToken do
     |> update_change(:scopes, &Enum.uniq/1)
     |> validate_required([:name, :scopes, :token_hash])
     |> validate_length(:name, min: 1, max: 255)
+    |> validate_name()
     |> validate_length(:scopes, min: 1)
     |> validate_subset(:scopes, @scopes)
     |> validate_future(:expires_at)
+    |> validate_sources()
     |> unique_constraint(:name)
     |> unique_constraint(:token_hash)
   end
 
   def revoke_changeset(token, now), do: change(token, revoked_at: now)
+
+  # Commands accept a token's ID or name, so a name shaped like an ID would
+  # be unreachable by name, or name another token. Control characters would
+  # break the command's tab-separated listing.
+  defp validate_name(changeset) do
+    validate_change(changeset, :name, fn :name, name ->
+      cond do
+        Ecto.UUID.cast(name) != :error -> [name: "must not look like a token ID"]
+        String.match?(name, ~r/[[:cntrl:]]/u) -> [name: "must not contain control characters"]
+        true -> []
+      end
+    end)
+  end
+
+  # Peers are compared as IPv4 when they arrive as IPv4-mapped IPv6, so a
+  # mapped prefix such as ::ffff:10.0.0.0/104 could never match. Ask for the
+  # IPv4 prefix instead.
+  defp validate_sources(changeset) do
+    validate_change(changeset, :allowed_sources, fn :allowed_sources, sources ->
+      if Enum.any?(sources, &match?(%Postgrex.INET{address: {0, 0, 0, 0, 0, 0xFFFF, _, _}}, &1)),
+        do: [allowed_sources: "must use an IPv4 prefix rather than an IPv4-mapped IPv6 one"],
+        else: []
+    end)
+  end
 
   defp validate_future(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->

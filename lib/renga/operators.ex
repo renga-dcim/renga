@@ -139,10 +139,16 @@ defmodule Renga.Operators do
   def authenticate(_plaintext, _peer), do: :error
 
   @doc """
-  Returns whether `token` holds `scope`. Holding one scope never implies an
-  unrelated one.
+  Returns whether `token` holds `scope`. A write scope includes the matching
+  read (RFD 22), and no scope implies an unrelated one.
   """
-  def authorized?(%OperatorToken{scopes: scopes}, scope), do: scope in scopes
+  def authorized?(%OperatorToken{scopes: scopes}, scope) do
+    scope in scopes or
+      case String.split(scope, ":") do
+        [area, "read"] -> "#{area}:write" in scopes
+        _other -> false
+      end
+  end
 
   # A dual-stack listener reports IPv4 peers as IPv4-mapped IPv6 addresses;
   # compare them as IPv4 so `10.0.0.0/8` matches them.

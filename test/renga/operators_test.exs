@@ -76,6 +76,36 @@ defmodule Renga.OperatorsTest do
       assert errors_on(changeset).allowed_sources != []
     end
 
+    test "refuses names that look like token IDs or hold control characters" do
+      {token, _plaintext} = create_token!()
+
+      # Revoking by this name would otherwise revoke `token`.
+      assert {:error, changeset} =
+               Operators.create_token(%{name: token.id, scopes: ["usage:read"]}, context())
+
+      assert "must not look like a token ID" in errors_on(changeset).name
+
+      for name <- ["tab\there", "new\nline", "esc\e[0m"] do
+        assert {:error, changeset} =
+                 Operators.create_token(%{name: name, scopes: ["usage:read"]}, context())
+
+        assert "must not contain control characters" in errors_on(changeset).name
+      end
+    end
+
+    test "refuses IPv4-mapped prefixes, which could never match a peer" do
+      for prefix <- ["::ffff:203.0.113.0/120", "::ffff:0.0.0.0/96", "::ffff:203.0.113.7/128"] do
+        assert {:error, changeset} =
+                 Operators.create_token(
+                   %{name: "x", scopes: ["usage:read"], allowed_sources: [prefix]},
+                   context()
+                 )
+
+        assert [message] = errors_on(changeset).allowed_sources
+        assert message =~ "IPv4 prefix"
+      end
+    end
+
     test "records the creation in the deployment audit log without the token" do
       {token, plaintext} = create_token!()
 
@@ -164,6 +194,21 @@ defmodule Renga.OperatorsTest do
         )
 
       assert Enum.sort(changes) == [{"succeeded", []}, {"succeeded", ["revoked_at"]}]
+    end
+  end
+
+  describe "authorized?/2" do
+    test "a write scope includes its read, and nothing else" do
+      {token, _plaintext} = create_token!(%{scopes: ["policy:write", "usage:read"]})
+
+      assert Operators.authorized?(token, "policy:write")
+      assert Operators.authorized?(token, "policy:read")
+      assert Operators.authorized?(token, "usage:read")
+      refute Operators.authorized?(token, "organizations:read")
+      refute Operators.authorized?(token, "transfers:read")
+
+      {reader, _plaintext} = create_token!(%{scopes: ["policy:read"]})
+      refute Operators.authorized?(reader, "policy:write")
     end
   end
 
