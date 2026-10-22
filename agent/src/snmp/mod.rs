@@ -53,19 +53,28 @@ where
     T: Send,
     F: Fn(&Target) -> T + Sync,
 {
+    each(&collector.targets, collector.max_concurrent_targets, read)
+}
+
+/// Runs `read` on every item, at most `max_concurrent` at once, and returns the results in the
+/// items' order.
+pub fn each<I, T, F>(items: &[I], max_concurrent: usize, read: F) -> Vec<T>
+where
+    I: Sync,
+    T: Send,
+    F: Fn(&I) -> T + Sync,
+{
     let next = AtomicUsize::new(0);
-    let results = Mutex::new(Vec::with_capacity(collector.targets.len()));
-    let workers = collector
-        .max_concurrent_targets
-        .min(collector.targets.len());
+    let results = Mutex::new(Vec::with_capacity(items.len()));
+    let workers = max_concurrent.min(items.len());
     thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {
                 let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(target) = collector.targets.get(index) else {
+                let Some(item) = items.get(index) else {
                     break;
                 };
-                let result = read(target);
+                let result = read(item);
                 results
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

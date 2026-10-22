@@ -224,7 +224,7 @@ fn supply_state(value: f64) -> Option<&'static str> {
 
 /// The supply a sensor name refers to as `PSU<n>`, and whether it measures the supply's input
 /// or output. `PS1`, `PSU 1`, and `PSU1` all name the first supply.
-fn supply_sensor(name: &str) -> Option<(String, Option<Boundary>)> {
+pub(crate) fn supply_sensor(name: &str) -> Option<(String, Option<Boundary>)> {
     let upper = name.trim().to_ascii_uppercase();
     let rest = upper
         .strip_prefix("PSU")
