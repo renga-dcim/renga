@@ -819,8 +819,10 @@ defmodule RengaWeb.ResourceLive.Show do
   attr :candidates, :list, required: true
   attr :can_change?, :boolean, required: true
 
-  # RFD 18: the groups the resource is in. Only direct memberships can be
-  # removed here; the others come through a container.
+  # RFD 18: the groups the resource is in and the containers that pass them
+  # down. Only direct memberships can be removed here. A group reached only
+  # through placement nobody confirmed is shown but grants no read or
+  # operational access.
   defp groups(assigns) do
     ~H"""
     <section
@@ -831,7 +833,7 @@ defmodule RengaWeb.ResourceLive.Show do
       <h2 class="text-xs font-semibold uppercase tracking-wider text-fg-muted">Groups</h2>
       <ul :if={@memberships != []} class="divide-y divide-line">
         <li
-          :for={%{group: group, direct: direct} <- @memberships}
+          :for={%{group: group, direct: direct} = membership <- @memberships}
           id={"resource-group-#{group.id}"}
           class="flex items-center gap-2 py-1.5"
         >
@@ -839,6 +841,17 @@ defmodule RengaWeb.ResourceLive.Show do
             <span class="block truncate text-sm font-medium text-fg">{group.name}</span>
             <span :if={group.group_set} class="block truncate text-xs text-fg-muted">
               {group.group_set.name}
+            </span>
+            <span
+              :for={container <- membership.via}
+              id={"resource-group-#{group.id}-via-#{container.id}"}
+              class="block truncate text-xs text-fg-muted"
+            >
+              Through {Format.humanize(container.kind)}
+              <.link navigate={~p"/inventory/#{container.id}"} class="text-link hover:underline">
+                {container.name}
+              </.link>
+              <span :if={!container.trusted} class="text-warn-text">· placement not confirmed</span>
             </span>
           </span>
           <button
