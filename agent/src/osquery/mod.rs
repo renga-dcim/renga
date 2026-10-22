@@ -127,6 +127,14 @@ impl Client {
     pub fn query(&mut self, _sql: &str) -> Result<Vec<Row>, Error> {
         Err(Error::Io(std::io::ErrorKind::Unsupported.into()))
     }
+
+    pub fn query_columns(&mut self, _sql: &str) -> Result<Vec<String>, Error> {
+        Err(Error::Io(std::io::ErrorKind::Unsupported.into()))
+    }
+
+    pub fn options(&mut self) -> Result<Row, Error> {
+        Err(Error::Io(std::io::ErrorKind::Unsupported.into()))
+    }
 }
 
 #[cfg(unix)]
@@ -213,15 +221,33 @@ mod client {
 
         /// Runs one SQL statement and returns its rows.
         pub fn query(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
-            let result = self.call("query", vec![(1, Value::string(sql))])?;
+            self.response("query", sql)
+        }
+
+        /// The columns `sql` would return, in order, without running it.
+        pub fn query_columns(&mut self, sql: &str) -> Result<Vec<String>, Error> {
+            // Each row is a one-entry map of a column's name to its type.
+            let rows = self.response("getQueryColumns", sql)?;
+            rows.into_iter()
+                .map(|row| {
+                    row.into_keys()
+                        .next()
+                        .ok_or_else(|| Error::Protocol("a column has no name".into()))
+                })
+                .collect()
+        }
+
+        /// Calls a method that takes SQL and returns an `ExtensionResponse`.
+        fn response(&mut self, method: &str, sql: &str) -> Result<Vec<Row>, Error> {
+            let result = self.call(method, vec![(1, Value::string(sql))])?;
             let response = result
                 .field(0)
-                .ok_or_else(|| Error::Protocol("query returned no response".into()))?;
+                .ok_or_else(|| Error::Protocol(format!("{method} returned no response")))?;
             check_status(response.field(1))?;
             let rows = match response.field(2) {
                 Some(rows) => rows
                     .as_list()
-                    .ok_or_else(|| Error::Protocol("query rows are not a list".into()))?,
+                    .ok_or_else(|| Error::Protocol(format!("{method} rows are not a list")))?,
                 None => &[],
             };
             rows.iter().map(row).collect()
@@ -420,6 +446,9 @@ mod tests {
                 None => fake::response(1, "missing sql", &[]),
             },
             "options" => fake::options(&[("disable_tables", "curl,carves"), ("verbose", "false")]),
+            "getQueryColumns" => {
+                fake::response(0, "OK", &[&[("pid", "BIGINT")], &[("name", "TEXT")]])
+            }
             _ => fake::status(1, "unknown"),
         }
     }
@@ -438,11 +467,17 @@ mod tests {
         }
         let options = client.options().unwrap();
         assert_eq!(options["disable_tables"], "curl,carves");
+        assert_eq!(
+            client
+                .query_columns("SELECT pid, name FROM processes")
+                .unwrap(),
+            ["pid", "name"]
+        );
 
         drop(client);
         assert_eq!(
             server.join().unwrap(),
-            ["ping", "query", "query", "options"]
+            ["ping", "query", "query", "options", "getQueryColumns"]
         );
     }
 
