@@ -357,17 +357,23 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // Puts a reloaded configuration, its home, and the client for it into effect.
     macro_rules! adopt_reload {
         ($new_config:expr, $new_home:expr, $new_client:expr) => {{
+            let (new_config, new_home) = ($new_config, $new_home);
+            let jobs_changed = reload_changes_jobs(&config, &home, &new_config, &new_home);
             let old_checkin_interval = config.checkin_interval;
             let old_inventory_interval = config.inventory_interval;
-            config = $new_config;
-            home = $new_home;
+            config = new_config;
+            home = new_home;
             client = $new_client;
-            policy_generation.advance();
-            // The socket carries the old credentials and policy.
-            if let Some(previous) = listener.take() {
-                previous.stop();
+            // A periodic refresh usually changes nothing, and advancing the generation
+            // abandons a job between its lease and its start until the lease expires.
+            if jobs_changed {
+                policy_generation.advance();
+                // The socket carries the old credentials and policy.
+                if let Some(previous) = listener.take() {
+                    previous.stop();
+                }
+                listener = start_listener(&client, &config, &queue, &notices, &stopped);
             }
-            listener = start_listener(&client, &config, &queue, &notices, &stopped);
             // Modules keep polling through a reload unless their own settings changed.
             snmp.reload(config.snmp.clone(), &queue_sink(&queue, &stopped));
             if libvirt.collector() != config.libvirt.as_ref() {
@@ -694,6 +700,37 @@ fn leases_now(checkin: &Result<CheckInAck, Box<dyn Error>>) -> bool {
         Ok(ack) => ack.jobs_waiting != Some(false),
         Err(_) => true,
     }
+}
+
+/// Whether a reload changes what a job pass or the notice socket was built from: the
+/// home and credentials the client sends with, the labels jobs report, or the `[jobs]`
+/// policy. Every field is named, so a new setting has to say whether it matters.
+fn reload_changes_jobs(old: &Config, old_home: &Home, new: &Config, new_home: &Home) -> bool {
+    let Config {
+        config_path: _,
+        // Only the home it resolves to is sent anything.
+        renga_url: _,
+        allow_insecure_http,
+        intake_api_key,
+        installation_id,
+        inventory_interval: _,
+        checkin_interval: _,
+        config_refresh_interval: _,
+        request_timeout,
+        max_retry_attempts,
+        labels,
+        jobs,
+        snmp: _,
+        libvirt: _,
+    } = new;
+    old_home.home != new_home.home
+        || old.allow_insecure_http != *allow_insecure_http
+        || old.intake_api_key != *intake_api_key
+        || old.installation_id != *installation_id
+        || old.request_timeout != *request_timeout
+        || old.max_retry_attempts != *max_retry_attempts
+        || old.labels != *labels
+        || old.jobs != *jobs
 }
 
 /// Opens the job notice socket when the policy enables a job capability, so
@@ -2206,6 +2243,43 @@ mod tests {
         daemon.join().unwrap().unwrap();
         server.join().unwrap();
         std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn only_settings_jobs_use_restart_them_on_reload() {
+        let config = stub_config("http://renga.test");
+        let home = Home {
+            renga_url: config.renga_url.clone(),
+            deployment: "test".into(),
+            home: "http://home.test".parse().unwrap(),
+            resolved_at: chrono::Utc::now(),
+        };
+        let changed = |change: &dyn Fn(&mut Config, &mut Home)| {
+            let (mut new_config, mut new_home) = (config.clone(), home.clone());
+            change(&mut new_config, &mut new_home);
+            reload_changes_jobs(&config, &home, &new_config, &new_home)
+        };
+
+        assert!(!changed(&|_, _| {}));
+        assert!(!changed(&|_, home| home.resolved_at = chrono::Utc::now()));
+        assert!(!changed(&|config, _| {
+            config.checkin_interval = Duration::from_secs(5);
+            config.inventory_interval = Duration::from_secs(5);
+            config.config_refresh_interval = Duration::from_secs(5);
+        }));
+        assert!(changed(
+            &|_, home| home.home = "http://other.test".parse().unwrap()
+        ));
+        assert!(changed(
+            &|config, _| config.intake_api_key = "rotated".into()
+        ));
+        assert!(changed(
+            &|config, _| config.request_timeout = Duration::from_secs(1)
+        ));
+        assert!(changed(&|config, _| {
+            config.labels.insert("team".into(), "storage".into());
+        }));
+        assert!(changed(&|config, _| config.jobs.enabled = Some(Vec::new())));
     }
 
     #[test]
