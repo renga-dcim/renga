@@ -143,7 +143,8 @@ defmodule Renga.Jobs do
   @doc """
   Lists the organization's jobs, newest first, with their resource, agent,
   and requesting user. Filters by `:state`, `:group` (see `state_groups/0`),
-  `:agent_id`, `:resource_id`, `:batch_id`, and `:capability`. Pass the oldest
+  `:agent_id`, `:resource_id`, `:batch_id`, `:capability` (a name and
+  version), and `:capability_names` (any version of these). Pass the oldest
   job already shown as `:before` to read the next keyset page. Returns at most
   `:limit` jobs (default 50).
   """
@@ -223,6 +224,9 @@ defmodule Renga.Jobs do
 
       {:capability, {name, version}}, query ->
         where(query, [job], job.capability == ^name and job.capability_version == ^version)
+
+      {:capability_names, names}, query ->
+        where(query, [job], job.capability in ^names)
 
       _other, query ->
         query
