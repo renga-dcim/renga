@@ -3,11 +3,13 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Authorization
   alias Renga.Deployment
   alias Renga.Inventory
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.CollectionClocks
+  alias Renga.Inventory.CollectorFindings
   alias Renga.Inventory.Collectors
   alias Renga.Inventory.CollectorTarget
   alias Renga.Inventory.InstallationKeys
@@ -116,6 +118,31 @@ defmodule RengaWeb.InventoryOperationsLive do
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Could not approve the installation key")}
+    end
+  end
+
+  def handle_event("set_guest_without_vm", %{"guest_without_vm" => %{"enabled" => value}}, socket) do
+    case CollectorFindings.set_guest_without_vm_findings(
+           socket.assigns.current_scope,
+           value == "true"
+         ) do
+      {:ok, enabled?} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :info,
+           if(enabled?,
+             do: "Guests without a VM will be flagged",
+             else: "Guests without a VM are no longer flagged"
+           )
+         )
+         |> load_operations()}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "You are not allowed to change organization settings")
+         |> load_operations()}
     end
   end
 
@@ -462,6 +489,44 @@ defmodule RengaWeb.InventoryOperationsLive do
         </section>
 
         <section
+          id="collector-findings-settings"
+          class="space-y-3"
+          aria-labelledby="collector-findings-heading"
+        >
+          <div>
+            <h2 id="collector-findings-heading" class="text-sm font-medium text-fg">
+              Collector findings
+            </h2>
+            <p class="mt-1 text-xs text-fg-muted">
+              Unreachable targets and VMs active on two hypervisors always reach the Inbox. Some findings are only useful once collection covers everything.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 rounded-lg border border-edge bg-surface px-4 py-3">
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-medium text-fg">Guests without a VM</p>
+              <p class="text-xs text-fg-muted">
+                Flag KVM guests whose SMBIOS UUID matches no domain on any reporting hypervisor. Turn it on once every hypervisor reports through libvirt, or it flags every guest on the others.
+              </p>
+            </div>
+            <.form
+              :if={@can_manage_organization?}
+              for={@guest_form}
+              id="guest-without-vm-form"
+              phx-change="set_guest_without_vm"
+            >
+              <.input field={@guest_form[:enabled]} type="checkbox" label="Flag them" />
+            </.form>
+            <span
+              :if={!@can_manage_organization?}
+              id="guest-without-vm-state"
+              class="text-xs text-fg-muted"
+            >
+              {if @guest_form[:enabled].value, do: "On", else: "Off"}
+            </span>
+          </div>
+        </section>
+
+        <section
           :if={@target_rows != []}
           id="collector-targets"
           class="space-y-3"
@@ -711,6 +776,13 @@ defmodule RengaWeb.InventoryOperationsLive do
     |> assign(:clocks_by_source, CollectionClocks.by_source(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
     |> assign(:target_rows, target_rows(scope))
+    |> assign(:can_manage_organization?, Authorization.allowed?(scope, "organization.manage"))
+    |> assign(
+      :guest_form,
+      to_form(%{"enabled" => CollectorFindings.guest_without_vm_findings?(scope)},
+        as: :guest_without_vm
+      )
+    )
     |> stream(:intake_api_keys, Inventory.list_intake_api_keys(scope), reset: true)
     |> stream(:sources, sources, reset: true)
   end
