@@ -70,6 +70,7 @@ config :renga, :job_sweeper_enabled, false
 config :renga, :assignment_expiry_worker_enabled, false
 config :renga, :invitation_delivery_worker_enabled, false
 config :renga, :power_finding_sweeper_enabled, false
+config :renga, :telemetry_pruner_enabled, false
 
 # Tests add an imperative capability to exercise retry classes.
 config :renga, Renga.Jobs.Registry,

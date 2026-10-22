@@ -19,6 +19,12 @@ defmodule Renga.Telemetry do
   alias Renga.Power.Readings
   alias Renga.Repo
   alias Renga.Telemetry.Batch
+  alias Renga.Telemetry.Store
+
+  # An agent drops a queued telemetry batch after a day, so a replay ID kept
+  # for a week outlives every redelivery of its batch.
+  @replay_retention_seconds 7 * 86_400
+  @prune_batch 10_000
 
   @doc """
   Accepts a validated batch (see `Renga.Telemetry.Payload.validate/1`) from
@@ -66,5 +72,40 @@ defmodule Renga.Telemetry do
     |> where([batch], batch.organization_id == ^source.organization_id)
     |> where([batch], batch.source_id == ^source.id and batch.replay_id == ^replay_id)
     |> Repo.one()
+  end
+
+  @doc """
+  Drops what telemetry keeps past its retention at `now`: replay IDs older
+  than a week, and history past the store's enforced retention. Returns how
+  many of each were deleted.
+  """
+  def prune(now \\ Renga.Time.utc_now_ms()) do
+    adapter = Store.adapter!()
+
+    %{
+      batches: prune_batches(DateTime.add(now, -@replay_retention_seconds, :second), 0),
+      history: if(function_exported?(adapter, :prune, 1), do: adapter.prune(now), else: 0)
+    }
+  end
+
+  defp prune_batches(before, total) do
+    {:ok, deleted} =
+      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn query_options ->
+        %{num_rows: deleted} =
+          Repo.query!(
+            """
+            DELETE FROM telemetry_batches
+            WHERE id IN (SELECT id FROM telemetry_batches WHERE received_at < $1 LIMIT $2)
+            """,
+            [DateTime.to_naive(before), @prune_batch],
+            query_options
+          )
+
+        deleted
+      end)
+
+    if deleted == @prune_batch,
+      do: prune_batches(before, total + deleted),
+      else: total + deleted
   end
 end

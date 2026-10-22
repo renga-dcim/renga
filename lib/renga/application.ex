@@ -12,6 +12,8 @@ defmodule Renga.Application do
   def start(_type, _args) do
     # A malformed ENCRYPTION_KEYS fails the boot rather than the first secret.
     Renga.Vault.keys()
+    # A telemetry store that cannot serve range reads fails the boot too.
+    Renga.Telemetry.Store.adapter!()
 
     children =
       [
@@ -28,6 +30,7 @@ defmodule Renga.Application do
         job_history_purger(),
         invitation_delivery_worker(),
         power_finding_sweeper(),
+        telemetry_pruner(),
         RengaWeb.Scim.RateLimit.Table,
         # Keep the endpoints last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint,
@@ -74,6 +77,10 @@ defmodule Renga.Application do
   defp power_finding_sweeper do
     if Application.get_env(:renga, :power_finding_sweeper_enabled, true),
       do: Renga.Power.FindingSweeper
+  end
+
+  defp telemetry_pruner do
+    if Application.get_env(:renga, :telemetry_pruner_enabled, true), do: Renga.Telemetry.Pruner
   end
 
   defp assignment_expiry_worker do
