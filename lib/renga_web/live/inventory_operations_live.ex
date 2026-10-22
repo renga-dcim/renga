@@ -834,6 +834,11 @@ defmodule RengaWeb.InventoryOperationsLive do
       "The PDUs answer SNMP but not a supported PDU MIB: Raritan PDU2-MIB or APC " <>
         "PowerNet-MIB rPDU2."
 
+  defp power_source_hint(%{source: "bmc_power/" <> _id, status: "not_present"}),
+    do:
+      "The BMCs answer Redfish, but none lists a computer system whose chassis has " <>
+        "the Power resource the agent reads."
+
   defp power_source_hint(%{status: "unreachable"}),
     do: "The agent cannot reach this source. Check its address and that it is running."
 
