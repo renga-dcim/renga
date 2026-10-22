@@ -105,34 +105,29 @@ defmodule Renga.Scim.UserResource do
   ## PATCH
 
   defp operation(%{} = operation, attrs) do
-    op = operation |> Attributes.get("op") |> then(&(is_binary(&1) && String.downcase(&1)))
-    path = Attributes.get(operation, "path")
-    value = Attributes.get(operation, "value")
-
-    cond do
-      op not in ["add", "replace", "remove"] ->
-        {:error, {:invalid_syntax, "Each operation's op must be add, replace, or remove"}}
-
-      path in [nil, ""] and op == "remove" ->
-        {:error, {:no_target, "A remove operation needs a path"}}
-
-      path in [nil, ""] ->
-        pathless(value, attrs)
-
-      not is_binary(path) ->
-        {:error, {:invalid_path, "The path must be a string"}}
-
-      true ->
-        case Path.parse(path, @core) do
-          {:ok, parsed} -> apply_path(op, parsed, value, attrs)
-          :extension -> {:ok, attrs}
-          :error -> {:error, {:invalid_path, "#{path} is not a valid path"}}
-        end
+    with {:ok, op} <- Attributes.op(operation) do
+      targeted(op, Attributes.get(operation, "path"), Attributes.get(operation, "value"), attrs)
     end
   end
 
   defp operation(_operation, _attrs),
     do: {:error, {:invalid_syntax, "Each operation must be an object"}}
+
+  defp targeted("remove", path, _value, _attrs) when path in [nil, ""],
+    do: {:error, {:no_target, "A remove operation needs a path"}}
+
+  defp targeted(_op, path, value, attrs) when path in [nil, ""], do: pathless(value, attrs)
+
+  defp targeted(_op, path, _value, _attrs) when not is_binary(path),
+    do: {:error, {:invalid_path, "The path must be a string"}}
+
+  defp targeted(op, path, value, attrs) do
+    case Path.parse(path, @core) do
+      {:ok, parsed} -> apply_path(op, parsed, value, attrs)
+      :extension -> {:ok, attrs}
+      :error -> {:error, {:invalid_path, "#{path} is not a valid path"}}
+    end
+  end
 
   # Without a path, the value is an object of attributes to set (Okta sends
   # {"active": false} this way).

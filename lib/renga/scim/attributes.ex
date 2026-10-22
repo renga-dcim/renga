@@ -13,15 +13,17 @@ defmodule Renga.Scim.Attributes do
         {:ok, value}
 
       :error ->
-        wanted = String.downcase(name)
-
-        Enum.find_value(map, :error, fn {key, value} ->
-          if is_binary(key) and String.downcase(key) == wanted, do: {:ok, value}
-        end)
+        fetch_insensitive(map, String.downcase(name))
     end
   end
 
   def fetch(_map, _name), do: :error
+
+  defp fetch_insensitive(map, wanted) do
+    Enum.find_value(map, :error, fn {key, value} ->
+      if is_binary(key) and String.downcase(key) == wanted, do: {:ok, value}
+    end)
+  end
 
   @doc "Like `fetch/2`, with `default` when the attribute is absent."
   def get(map, name, default \\ nil) do
@@ -30,6 +32,22 @@ defmodule Renga.Scim.Attributes do
       :error -> default
     end
   end
+
+  @doc """
+  A PATCH operation's `op`, in lower case, as Entra sends `Replace`. Returns
+  `{:ok, op}` or a SCIM `invalidSyntax` error.
+  """
+  def op(operation) do
+    case get(operation, "op") do
+      op when is_binary(op) and op != "" -> check_op(String.downcase(op))
+      _other -> check_op(nil)
+    end
+  end
+
+  defp check_op(op) when op in ["add", "replace", "remove"], do: {:ok, op}
+
+  defp check_op(_op),
+    do: {:error, {:invalid_syntax, "Each operation's op must be add, replace, or remove"}}
 
   @doc "A boolean, or `:error` for null and any other value."
   def boolean(value) when is_boolean(value), do: {:ok, value}
