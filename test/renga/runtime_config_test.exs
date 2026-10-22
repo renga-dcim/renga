@@ -42,6 +42,61 @@ defmodule Renga.RuntimeConfigTest do
     end
   end
 
+  test "application connections get a baseline statement timeout" do
+    repo_config = fn environment ->
+      config =
+        with_env(
+          Map.merge(
+            %{
+              "DATABASE_URL" => database_url(nil),
+              "SECRET_KEY_BASE" => @secret,
+              "PHX_HOST" => "renga.example.com",
+              "DATABASE_STATEMENT_TIMEOUT" => nil,
+              "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => nil
+            },
+            environment
+          ),
+          fn -> Config.Reader.read!(@runtime_config, env: :prod) end
+        )
+
+      {config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo),
+       config |> Keyword.fetch!(:renga) |> Keyword.fetch!(:background_statement_timeout_ms)}
+    end
+
+    {repo, background} = repo_config.(%{})
+    assert repo[:parameters][:statement_timeout] == "30000ms"
+    assert background == 300_000
+
+    {repo, background} =
+      repo_config.(%{
+        "DATABASE_STATEMENT_TIMEOUT" => "5000",
+        "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => "60000"
+      })
+
+    assert repo[:parameters][:statement_timeout] == "5000ms"
+    assert background == 60_000
+
+    # A bad value stops the boot instead of disabling or misreading the bound.
+    for {variable, value} <- [
+          {"DATABASE_STATEMENT_TIMEOUT", "0"},
+          {"DATABASE_STATEMENT_TIMEOUT", "30s"},
+          {"DATABASE_STATEMENT_TIMEOUT", "-1"},
+          {"DATABASE_STATEMENT_TIMEOUT", "2147483648"},
+          {"DATABASE_BACKGROUND_STATEMENT_TIMEOUT", ""}
+        ] do
+      assert_raise RuntimeError, ~r/#{variable} must be a whole number/, fn ->
+        repo_config.(%{variable => value})
+      end
+    end
+
+    assert_raise RuntimeError, ~r/must be at least DATABASE_STATEMENT_TIMEOUT/, fn ->
+      repo_config.(%{
+        "DATABASE_STATEMENT_TIMEOUT" => "60000",
+        "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => "30000"
+      })
+    end
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)
@@ -69,7 +124,12 @@ defmodule Renga.RuntimeConfigTest do
 
   defp with_env(environment, fun) do
     previous = Map.new(environment, fn {name, _value} -> {name, System.get_env(name)} end)
-    System.put_env(environment)
+
+    # A nil value unsets the variable for the call.
+    Enum.each(environment, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
 
     try do
       fun.()

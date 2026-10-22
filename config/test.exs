@@ -28,6 +28,9 @@ config :renga, Renga.Repo,
   socket_dir: if(database_tcp?, do: nil, else: Path.expand("../tmp/postgres-socket", __DIR__)),
   database: "renga_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
+  # Production sets a baseline from DATABASE_STATEMENT_TIMEOUT (RFD 21); tests
+  # run with one too, generous enough for slow CI machines.
+  parameters: [statement_timeout: "60s"],
   pool_size: System.schedulers_online() * 2
 
 # Browser tests (tagged :playwright) need a running server to visit.

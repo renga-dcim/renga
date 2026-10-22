@@ -23,6 +23,7 @@ defmodule Renga.Application do
         neighbor_expiry_worker(),
         assignment_expiry_worker(),
         job_sweeper(),
+        job_history_purger(),
         # Keep the endpoint last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint
       ]
@@ -45,6 +46,10 @@ defmodule Renga.Application do
 
   defp job_sweeper do
     if Application.get_env(:renga, :job_sweeper_enabled, true), do: Renga.Jobs.Sweeper
+  end
+
+  defp job_history_purger do
+    if Application.get_env(:renga, :job_sweeper_enabled, true), do: Renga.Jobs.HistoryPurger
   end
 
   defp assignment_expiry_worker do

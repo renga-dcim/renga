@@ -80,9 +80,42 @@ if config_env() == :prod do
       false
     end
 
+  # Every application connection gets a baseline statement timeout, so a
+  # standalone read is bounded as well as a transaction (RFD 21). Approved
+  # background work may raise it per transaction with
+  # Renga.Repo.with_statement_timeout/2, up to the background timeout.
+  #
+  # Both are whole milliseconds. A malformed, zero, or out-of-range value
+  # stops the boot rather than silently disabling the bound, as does a
+  # background timeout shorter than the baseline.
+  statement_timeout_ms = fn variable, default ->
+    value = System.get_env(variable) || default
+
+    case Integer.parse(value) do
+      # PostgreSQL's statement_timeout tops out at 2^31 - 1 milliseconds.
+      {timeout_ms, ""} when timeout_ms in 1..2_147_483_647 ->
+        timeout_ms
+
+      _other ->
+        raise "#{variable} must be a whole number of milliseconds from 1 to 2147483647, got: #{inspect(value)}"
+    end
+  end
+
+  statement_timeout = statement_timeout_ms.("DATABASE_STATEMENT_TIMEOUT", "30000")
+
+  background_statement_timeout =
+    statement_timeout_ms.("DATABASE_BACKGROUND_STATEMENT_TIMEOUT", "300000")
+
+  if background_statement_timeout < statement_timeout do
+    raise "DATABASE_BACKGROUND_STATEMENT_TIMEOUT (#{background_statement_timeout}) must be at least DATABASE_STATEMENT_TIMEOUT (#{statement_timeout})"
+  end
+
+  config :renga, :background_statement_timeout_ms, background_statement_timeout
+
   config :renga, Renga.Repo,
     ssl: database_ssl,
     url: database_url,
+    parameters: [statement_timeout: "#{statement_timeout}ms"],
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,

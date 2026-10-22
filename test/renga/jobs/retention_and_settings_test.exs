@@ -27,6 +27,8 @@ defmodule Renga.Jobs.RetentionAndSettingsTest do
       recent = finished_job(context, 89)
 
       assert Jobs.purge_history() == 1
+      # The purge's longer timeout ends with it (RFD 21).
+      assert Repo.query!("SHOW statement_timeout").rows == [["1min"]]
 
       refute Repo.reload(old)
       assert Repo.reload(recent)
@@ -96,18 +98,26 @@ defmodule Renga.Jobs.RetentionAndSettingsTest do
     end
   end
 
-  test "the worker purges on its own interval" do
+  test "the purge runs in its own worker, so a long purge never delays the lease sweep" do
     parent = self()
 
     start_supervised!(
-      {Renga.Jobs.Sweeper,
+      {Renga.Jobs.HistoryPurger,
        name: nil,
-       interval: :timer.hours(1),
-       purge_interval: 10,
-       sweep: fn -> :ok end,
-       purge: fn -> send(parent, :purged) end}
+       interval: 10,
+       purge: fn ->
+         send(parent, :purging)
+         Process.sleep(:infinity)
+       end}
     )
 
-    assert_receive :purged
+    assert_receive :purging
+
+    start_supervised!(
+      {Renga.Jobs.Sweeper, name: nil, interval: 10, sweep: fn -> send(parent, :swept) end}
+    )
+
+    assert_receive :swept
+    assert_receive :swept
   end
 end
