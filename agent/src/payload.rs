@@ -431,6 +431,19 @@ pub struct AgentMetadata {
     /// The telemetry queue, bounded and reported separately (RFD 10, "Measured history").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry_queue: Option<QueueReport>,
+    /// Whether each power source can be read here (RFD 10, "Source status").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_sources: Option<Vec<PowerSourceReport>>,
+}
+
+/// One power source's status as a check-in reports it. Must match
+/// `Renga.Inventory.AgentPayload`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PowerSourceReport {
+    /// The source, such as `hwmon` or an exporter's URL.
+    pub source: String,
+    /// `available`, `not_permitted`, `not_present`, or `unreachable`.
+    pub status: &'static str,
 }
 
 impl CheckIn {
@@ -441,6 +454,7 @@ impl CheckIn {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
                 observation_queue,
                 telemetry_queue: None,
+                power_sources: None,
             },
             installation_key: None,
         }
@@ -448,6 +462,11 @@ impl CheckIn {
 
     pub fn with_telemetry_queue(mut self, report: Option<QueueReport>) -> Self {
         self.metadata.telemetry_queue = report;
+        self
+    }
+
+    pub fn with_power_sources(mut self, reports: Option<Vec<PowerSourceReport>>) -> Self {
+        self.metadata.power_sources = reports;
         self
     }
 

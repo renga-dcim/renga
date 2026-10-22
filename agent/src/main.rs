@@ -343,6 +343,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let queue = DeliveryQueue::new(args.state_directory.clone());
     let monitors = queue.monitors.clone();
     let queue = Arc::new(Mutex::new(queue));
+    let power_sources = PowerSources::default();
     // Anchor periodic deadlines before startup work so a slow startup check-in cannot postpone
     // the first lease renewal by another full check-in interval.
     let scheduler_epoch = Instant::now();
@@ -356,6 +357,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             capabilities: job_capabilities(&Catalog::default(), &config.jobs),
             queue: &queue,
             monitors: &monitors,
+            power_sources: &power_sources,
             presented_key: &presented_key,
         };
         let result = deliver_startup(&operations);
@@ -365,6 +367,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let checkin = send_checkin(
         &client,
         &monitors,
+        &power_sources,
         advertised_capabilities(&config, &client, &queue),
         &presented_key,
     );
@@ -412,7 +415,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let mut gnmi = GnmiModules::start(config.gnmi.clone(), queue_sink(&queue, &stopped));
     let mut libvirt = LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
     // Host power readings need no configuration, so reloads leave the module running.
-    let _power = PowerModule::start(telemetry_sink(&queue, &stopped), PowerSources::default());
+    let _power = PowerModule::start(telemetry_sink(&queue, &stopped), power_sources.clone());
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -466,6 +469,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     let checkin = send_checkin(
                         &client,
                         &monitors,
+                        &power_sources,
                         advertised_capabilities(&config, &client, &queue),
                         &presented_key,
                     );
@@ -747,6 +751,7 @@ fn job_capabilities(catalog: &Catalog, policy: &JobPolicy) -> Vec<String> {
 fn send_checkin(
     client: &HttpClient,
     monitors: &QueueMonitors,
+    power_sources: &PowerSources,
     capabilities: Vec<String>,
     presented_key: &PresentedKey,
 ) -> Result<CheckInAck, Box<dyn Error>> {
@@ -758,6 +763,7 @@ fn send_checkin(
     };
     let checkin = CheckIn::new(capabilities, report(&monitors.observations))
         .with_telemetry_queue(report(&monitors.telemetry))
+        .with_power_sources(power_sources.reports())
         .with_installation_key(presented_key.clone());
     let ack = client.post_checkin(&checkin)?;
     match &ack.installation_key {
@@ -1112,6 +1118,7 @@ struct RuntimeOperations<'a> {
     capabilities: Vec<String>,
     queue: &'a Mutex<DeliveryQueue>,
     monitors: &'a QueueMonitors,
+    power_sources: &'a PowerSources,
     presented_key: &'a PresentedKey,
 }
 
@@ -1120,6 +1127,7 @@ impl Operations for RuntimeOperations<'_> {
         send_checkin(
             self.client,
             self.monitors,
+            self.power_sources,
             self.capabilities.clone(),
             self.presented_key,
         )
