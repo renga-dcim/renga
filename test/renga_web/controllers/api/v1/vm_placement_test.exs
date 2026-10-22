@@ -255,6 +255,23 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert findings(with_uuid) == []
     end
 
+    test "withdrawn evidence on either side is not evidence", %{token: token} do
+      post!(token, hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: 0))
+      post!(token, hypervisor_report("hv-a", [], at: 1, complete: true))
+      # Back by identity alone, so its domain view predates the withdrawal.
+      post!(token, hypervisor_report("hv-a", [identity_only()], at: 2))
+      assert findings(guest!(token, ["52:54:00:00:00:01"], at: 3)) == []
+
+      # A guest that stops reporting the matching NIC no longer carries it.
+      post!(token, hypervisor_report("hv-b", [vm("running", macs: ["52:54:00:00:00:02"])], at: 4))
+      guest = [installation_id: Ecto.UUID.generate(), machine_id: "guest-nic-removed"]
+      guest_id = guest!(token, ["52:54:00:00:00:02"], [at: 5] ++ guest)
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+
+      assert guest!(token, [], [at: 6] ++ guest) == guest_id
+      assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
+    end
+
     test "stale domains are not evidence", %{token: token} do
       post!(token, hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: 0))
       guest_id = guest!(token, ["52:54:00:00:00:01"], at: 30)
@@ -264,7 +281,7 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
 
   defp guest!(token, macs, opts) do
     identifiers =
-      %{"machine_id" => "guest-#{System.unique_integer([:positive])}"}
+      %{"machine_id" => opts[:machine_id] || "guest-#{System.unique_integer([:positive])}"}
       |> then(&if(opts[:dmi_uuid], do: Map.put(&1, "dmi_uuid", opts[:dmi_uuid]), else: &1))
 
     interfaces =
@@ -278,7 +295,7 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       post!(
         token,
         %{
-          :installation_id => Ecto.UUID.generate(),
+          :installation_id => opts[:installation_id] || Ecto.UUID.generate(),
           "observation_id" => "guest-#{System.unique_integer([:positive])}",
           "observed_at" => DateTime.to_iso8601(at(Keyword.fetch!(opts, :at))),
           "resources" => [

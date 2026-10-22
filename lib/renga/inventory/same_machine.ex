@@ -89,6 +89,7 @@ defmodule Renga.Inventory.SameMachine do
       Interface
       |> where([interface], interface.organization_id == ^scope.organization_id)
       |> where([interface], interface.mac_address in ^macs)
+      |> present_interfaces()
       |> select([interface], interface.resource_id)
 
     vm_ids = Enum.map(vm_resource_ids, &to_string/1)
@@ -167,10 +168,16 @@ defmodule Renga.Inventory.SameMachine do
     |> where([interface], interface.organization_id == ^scope.organization_id)
     |> where([interface], interface.resource_id == ^guest_id)
     |> where([interface], not is_nil(interface.mac_address))
+    |> present_interfaces()
     |> select([interface], interface.mac_address)
     |> Repo.all()
     |> MapSet.new()
   end
+
+  # An interface the machine stopped reporting keeps its row, and its MAC, as
+  # not present; that MAC is no longer evidence the machine carries.
+  defp present_interfaces(query),
+    do: where(query, [interface], is_nil(interface.status) or interface.status != "not_present")
 
   defp uuid?(scope, guest_id) do
     ResourceIdentifier
@@ -186,7 +193,7 @@ defmodule Renga.Inventory.SameMachine do
     |> preload(:target)
     |> Repo.all()
     |> Enum.filter(
-      &(CollectorTargetResource.present?(&1) and
+      &(CollectorTargetResource.present?(&1) and CollectorTargetResource.domain_current?(&1) and
           VmPlacements.fresh?(&1.target, &1.domain_reported_at, now))
     )
     |> Enum.map(&{&1, domain_macs(&1.domain)})
