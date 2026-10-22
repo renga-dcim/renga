@@ -15,6 +15,7 @@ defmodule Renga.Scim.Users do
 
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Repo
   alias Renga.Scim.Client
   alias Renga.Scim.Connection
@@ -123,8 +124,10 @@ defmodule Renga.Scim.Users do
 
   defp groups_query, do: order_by(Renga.Scim.DirectoryGroup, [group], asc: group.display_name)
 
+  # Settings pages, the member list, and Activity follow these writes.
   defp write(%Client{connection: connection}, mutation) do
     Grants.announcing(fn -> transact(connection, mutation) end)
+    |> Changes.broadcast(connection.organization_id)
   end
 
   defp transact(connection, mutation) do
