@@ -58,6 +58,62 @@ written as JSON numbers, never as floats.
 - `files` lists every record file in the archive with its checksum, record
   count, and size in bytes. The archive must hold exactly these files.
 
+## Records
+
+`Renga.Transfers.RecordTypes` is the authoritative list of record types and
+their fields for this format version. Each record type is one kind of
+organization-owned record, such as `resources`, `cables`, or
+`organization_memberships`, exported with an allowlist of its fields. Records
+never carry their organization's ID. A test fails until every column of every
+organization-owned table is either exported or excluded with a reason, so a
+new column never reaches an archive by accident.
+
+Values are encoded as follows:
+
+| Value | JSON |
+| --- | --- |
+| IDs, text, addresses, prefixes, MAC addresses | string |
+| integers and decimals | number, at full precision |
+| timestamps | string, ISO 8601 UTC with microseconds, such as `2026-10-22T19:00:00.123000Z` |
+| binary values, such as an installation key's public key | string, base64 |
+| JSON values | as stored |
+| lists | array |
+| absent values | `null` |
+
+Two record types are special:
+
+- `organization` holds one record: the organization's name, slug, and
+  portable settings. Its status and ID are the destination's.
+- `principals` holds one record per person the other records name, with
+  `id` and `email` (`null` once the account was deleted). Fields that name a
+  person, such as `organization_memberships.user_id` or
+  `change_events.actor_user_id`, hold a principal ID. A principal ID is the
+  source deployment's user ID and means nothing in another deployment: an
+  import maps principals to destination accounts, never by ID.
+
+Organization-owned records keep their IDs, and every reference between them
+stays inside the archive. Record types are listed in dependency order, so an
+importer can insert them in that order; a few deferred fields, such as a host
+source's `agent_id`, close a cycle and are set once both records exist.
+
+### Parts
+
+- Current state is always exported. It includes the observations that current
+  evidence and identifier claims point at, with the reports they were split
+  from, so an import reconciles the same way.
+- `history` adds Activity (`change_events`), `resource_revisions`, `jobs` and
+  `job_events`, `cable_change_events`, and `module_installation_events`, and
+  the observations they point at.
+- `raw_observations` adds every other observation still within retention.
+
+### Excluded
+
+An archive never holds a credential: no password hash, passkey, authenticator
+secret, recovery code, session, token, intake key hash, or job lease, report,
+or offer credential. It also leaves out deployment configuration (identity
+providers, limits, the operator audit log), pending invitations, agent leases,
+and rows that triggers maintain from other records.
+
 ## Reading limits
 
 Renga validates an archive completely before it imports anything. Beyond the

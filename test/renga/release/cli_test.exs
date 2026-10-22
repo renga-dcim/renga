@@ -6,6 +6,7 @@ defmodule Renga.Release.CLITest do
   alias Renga.DeploymentAudit.Event
   alias Renga.Operators
   alias Renga.Release.CLI
+  alias Renga.Transfers.Archive
 
   defp run(argv) do
     parent = self()
@@ -231,6 +232,67 @@ defmodule Renga.Release.CLITest do
         )
 
       assert Renga.Limits.get(organization.id, :job_creation_rate) == Renga.Limits.max_value()
+    end
+  end
+
+  describe "export" do
+    @describetag :tmp_dir
+
+    setup do
+      %{organization: Renga.InventoryFixtures.organization_fixture()}
+    end
+
+    test "writes the organization's archive, readable only by its owner, and audits it", %{
+      organization: organization,
+      tmp_dir: tmp
+    } do
+      output = Path.join(tmp, "acme.tar.zst")
+
+      {0, stdout, ""} =
+        run(
+          ~w(export --organization #{organization.slug} --output #{output} --actor alice --history)
+        )
+
+      assert stdout =~ "Exported #{organization.slug}"
+      assert File.stat!(output).access == :read_write
+      assert Bitwise.band(File.stat!(output).mode, 0o077) == 0
+      assert File.ls!(tmp) == ["acme.tar.zst"]
+
+      {:ok, archive} = Archive.open(output, tmp_dir: tmp)
+      assert archive.manifest["organization"]["id"] == organization.id
+      assert archive.manifest["parts"] == ["history"]
+      Archive.close(archive)
+
+      assert [%{operation: "organization.export", outcome: "succeeded", organization_id: id}] =
+               Repo.all(Event)
+
+      assert id == organization.id
+    end
+
+    test "never overwrites a file and needs an actor and an organization", %{
+      organization: organization,
+      tmp_dir: tmp
+    } do
+      existing = Path.join(tmp, "existing.tar.zst")
+      File.write!(existing, "keep me")
+
+      {1, "", stderr} =
+        run(~w(export --organization #{organization.slug} --output #{existing} --actor alice))
+
+      assert stderr =~ "already exists"
+      assert File.read!(existing) == "keep me"
+
+      {1, "", stderr} = run(~w(export --organization #{organization.slug} --output #{existing}))
+      assert stderr =~ "--actor NAME is required"
+
+      {1, "", _stderr} =
+        run(~w(export --organization missing --output #{Path.join(tmp, "x")} --actor alice))
+
+      {1, "", stderr} = run(~w(export --organization #{organization.slug} --actor alice))
+      assert stderr =~ "--output FILE is required"
+
+      assert Repo.all(from event in Event, order_by: event.inserted_at, select: event.reason) ==
+               ~w(invalid not_found invalid)
     end
   end
 end
