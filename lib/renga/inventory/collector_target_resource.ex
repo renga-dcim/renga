@@ -10,6 +10,12 @@ defmodule Renga.Inventory.CollectorTargetResource do
   For a hypervisor, `domain` is the latest libvirt view of the VM and
   `active_since` when its latest run of active reports began; an inactive
   definition has none. Only an active domain claims to be running there.
+
+  A run ends only when the hypervisor reports the domain inactive or a
+  complete report withdraws it. A gap in reports, such as an unreachable
+  target or a stopped agent, does not: libvirt cannot say whether the domain
+  restarted meanwhile, so `active_since` may predate a restart in the gap.
+  Placement freshness already discounts a run whose reports have stopped.
   """
 
   use Ecto.Schema
