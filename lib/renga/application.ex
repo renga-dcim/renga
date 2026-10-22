@@ -26,6 +26,7 @@ defmodule Renga.Application do
         same_machine_sweeper(),
         collector_findings_worker(),
         assignment_expiry_worker(),
+        organization_domain_worker(),
         job_sweeper(),
         job_history_purger(),
         invitation_delivery_worker(),
@@ -81,6 +82,11 @@ defmodule Renga.Application do
 
   defp telemetry_pruner do
     if Application.get_env(:renga, :telemetry_pruner_enabled, true), do: Renga.Telemetry.Pruner
+  end
+
+  defp organization_domain_worker do
+    if Application.get_env(:renga, :organization_domain_worker_enabled, true),
+      do: Renga.Accounts.OrganizationDomains.Worker
   end
 
   defp assignment_expiry_worker do
