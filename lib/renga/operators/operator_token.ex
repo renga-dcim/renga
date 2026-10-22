@@ -65,12 +65,18 @@ defmodule Renga.Operators.OperatorToken do
   defp validate_name(changeset) do
     validate_change(changeset, :name, fn :name, name ->
       cond do
-        Ecto.UUID.cast(name) != :error -> [name: "must not look like a token ID"]
+        id_shaped?(name) -> [name: "must not look like a token ID"]
         String.match?(name, ~r/[[:cntrl:]]/u) -> [name: "must not contain control characters"]
         true -> []
       end
     end)
   end
+
+  @doc """
+  Whether `value` is written as a token ID. Unlike `Ecto.UUID.cast/1`, this
+  does not take any 16-byte string for a raw UUID.
+  """
+  def id_shaped?(value), do: match?({:ok, _raw}, Ecto.UUID.dump(value))
 
   # Peers are compared as IPv4 when they arrive as IPv4-mapped IPv6, so a
   # mapped prefix such as ::ffff:10.0.0.0/104 could never match. Ask for the

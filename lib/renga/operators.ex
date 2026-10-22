@@ -65,10 +65,9 @@ defmodule Renga.Operators do
   """
   def get_token(id_or_name) when is_binary(id_or_name) do
     query =
-      case Ecto.UUID.cast(id_or_name) do
-        {:ok, id} -> where(OperatorToken, [token], token.id == ^id)
-        :error -> where(OperatorToken, [token], token.name == ^id_or_name)
-      end
+      if OperatorToken.id_shaped?(id_or_name),
+        do: where(OperatorToken, [token], token.id == ^id_or_name),
+        else: where(OperatorToken, [token], token.name == ^id_or_name)
 
     Repo.one(query)
   end

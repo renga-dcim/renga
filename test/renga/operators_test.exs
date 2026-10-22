@@ -238,6 +238,12 @@ defmodule Renga.OperatorsTest do
   end
 
   describe "get_token/1" do
+    test "finds a token by a 16-character name, which is not a raw UUID" do
+      {token, _plaintext} = create_token!(%{name: "control-plane-99"})
+
+      assert Operators.get_token("control-plane-99").id == token.id
+    end
+
     test "finds a token by ID or name" do
       {token, _plaintext} = create_token!()
 
