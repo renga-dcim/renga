@@ -223,10 +223,12 @@ defmodule RengaWeb.Router do
       ] do
       live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
+      live "/users/log-in/second-step", UserLive.SecondStep, :new
       live "/users/log-in/:token", UserLive.Confirmation, :new
     end
 
     post "/users/log-in", UserSessionController, :create
+    post "/users/log-in/second-step", UserSessionController, :second_step
     delete "/users/log-out", UserSessionController, :delete
   end
 end

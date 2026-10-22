@@ -67,6 +67,17 @@ defmodule Renga.AccountsFixtures do
     user
   end
 
+  @doc """
+  Turns on an authenticator app for `user` with a code from the previous
+  step, so the current step is still unused. Returns `{secret, recovery_codes}`.
+  """
+  def totp_fixture(user) do
+    secret = Accounts.MFA.new_totp_secret()
+    code = NimbleTOTP.verification_code(secret, time: System.os_time(:second) - 30)
+    {:ok, codes} = Accounts.MFA.enable_totp(user, secret, code)
+    {secret, codes}
+  end
+
   def extract_user_token(fun) do
     {:ok, captured_email} = fun.(&"[TOKEN]#{&1}[TOKEN]")
     [_, token | _] = String.split(captured_email.text_body, "[TOKEN]")

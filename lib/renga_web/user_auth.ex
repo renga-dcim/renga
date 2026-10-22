@@ -21,6 +21,7 @@ defmodule RengaWeb.UserAuth do
     same_site: "Lax"
   ]
   @current_organization_key :current_organization_id
+  @second_step_key :pending_second_step
 
   # The organization this browser last opened, so signing in again returns
   # to it. It only suggests: sign-in still checks the user may open it. The
@@ -55,8 +56,9 @@ defmodule RengaWeb.UserAuth do
   def log_in_user(conn, user, params \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
 
-    conn
-    |> create_or_extend_session(user, params)
+    {:ok, signed_in} = create_or_extend_session(conn, user, params)
+
+    signed_in
     |> put_default_organization(user, user_return_to)
     |> redirect(to: user_return_to || signed_in_path(conn))
   end
@@ -106,6 +108,92 @@ defmodule RengaWeb.UserAuth do
 
       _ ->
         false
+    end
+  end
+
+  @doc """
+  Starts the second step of signing in for an account with MFA (RFD 19).
+
+  A password or magic link only proves the first factor. The half-finished
+  sign-in is kept in a fresh session for this browser, expires after five
+  minutes, and grants nothing until `complete_second_step/3`.
+  """
+  def begin_second_step(conn, user, params \\ %{}) do
+    pending = %{
+      "token" => Base.url_encode64(Accounts.create_pending_second_step(user)),
+      "remember_me" => params["remember_me"] == "true",
+      "return_to" => get_session(conn, :user_return_to)
+    }
+
+    # Starting a sign-in ends whatever this browser was signed in as, so a
+    # half-finished sign-in is never also a session through a leftover
+    # session or remember-me cookie.
+    revoke_browser_session(conn)
+
+    conn
+    |> renew_session(nil)
+    |> delete_resp_cookie(@remember_me_cookie, @remember_me_options)
+    |> put_session(@second_step_key, pending)
+    |> redirect(to: ~p"/users/log-in/second-step")
+  end
+
+  @doc """
+  The user a half-finished sign-in belongs to, while its server-side record
+  is unspent and current. Takes a conn or a LiveView session.
+  """
+  def pending_second_step_user(%Plug.Conn{} = conn),
+    do:
+      pending_second_step_user(%{
+        to_string(@second_step_key) => get_session(conn, @second_step_key)
+      })
+
+  def pending_second_step_user(session) when is_map(session) do
+    with token when is_binary(token) <- pending_second_step_token(session) do
+      Accounts.get_pending_second_step_user(token)
+    end
+  end
+
+  defp pending_second_step_token(session) do
+    with %{"token" => encoded} <- session[to_string(@second_step_key)],
+         {:ok, token} <- Base.url_decode64(encoded) do
+      token
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Finishes a sign-in whose second step passed, spending its pending record
+  first so it finishes once. A recovery code signs the person in to add a
+  replacement factor first. Returns `{:error, conn}` when the pending
+  sign-in was already spent or revoked.
+  """
+  def complete_second_step(conn, user, method) do
+    pending = get_session(conn, @second_step_key)
+    token = pending_second_step_token(%{to_string(@second_step_key) => pending})
+    params = if pending["remember_me"], do: %{"remember_me" => "true"}, else: %{}
+
+    return_to =
+      if method == :recovery_code, do: ~p"/users/settings", else: pending["return_to"]
+
+    # The pending sign-in is spent, and the session issued, in one locked
+    # transaction, so a password change either ends the new session or
+    # leaves nothing to finish.
+    issue = fn browser_session_id ->
+      if token,
+        do: Accounts.finish_pending_second_step(user, token, browser_session_id, method),
+        else: :error
+    end
+
+    case create_or_extend_session(conn, user, params, issue) do
+      {:ok, conn} ->
+        {:ok,
+         conn
+         |> put_default_organization(user, return_to)
+         |> redirect(to: return_to || signed_in_path(conn))}
+
+      {:error, conn} ->
+        {:error, delete_session(conn, @second_step_key)}
     end
   end
 
@@ -237,17 +325,27 @@ defmodule RengaWeb.UserAuth do
   # signs in again, so a late response that writes the earlier token back
   # cannot hide the new one from sign-out. A different user gets a fresh
   # session and id through renew_session, against fixation.
-  defp create_or_extend_session(conn, user, params) do
+  #
+  # `issue` creates the token for the browser session id; the second step
+  # passes one that issues it only while the pending sign-in is unspent.
+  defp create_or_extend_session(conn, user, params, issue \\ nil) do
+    issue = issue || (&{:ok, Accounts.generate_user_session_token(user, &1)})
     revoke_browser_session(conn)
     remember_me = get_session(conn, :user_remember_me)
     conn = renew_session(conn, user)
     browser_session_id = get_session(conn, :browser_session_id) || Ecto.UUID.generate()
-    token = Accounts.generate_user_session_token(user, browser_session_id)
 
-    conn
-    |> put_session(:browser_session_id, browser_session_id)
-    |> put_token_in_session(token)
-    |> maybe_write_remember_me_cookie(token, params, remember_me)
+    case issue.(browser_session_id) do
+      {:ok, token} ->
+        {:ok,
+         conn
+         |> put_session(:browser_session_id, browser_session_id)
+         |> put_token_in_session(token)
+         |> maybe_write_remember_me_cookie(token, params, remember_me)}
+
+      :error ->
+        {:error, conn}
+    end
   end
 
   defp revoke_browser_session(conn) do

@@ -7,6 +7,8 @@ defmodule Renga.Accounts.AccountAuthorization do
   * `bootstrap` - an account with no password and no second factor proved
     control of its email and may set its first password or add its first
     factor, and nothing else.
+  * `recovery` - the person signed in with a recovery code and may add one
+    replacement factor.
 
   The row references the session token, so signing out, rotating the session,
   or expiring every token on a password change also ends the authorization.
@@ -14,7 +16,7 @@ defmodule Renga.Accounts.AccountAuthorization do
 
   use Ecto.Schema
 
-  @purposes ~w(recheck bootstrap)
+  @purposes ~w(recheck bootstrap recovery)
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id

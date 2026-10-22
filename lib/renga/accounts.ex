@@ -317,6 +317,9 @@ defmodule Renga.Accounts do
   """
   def get_user!(id), do: Repo.get!(User, id)
 
+  @doc "Gets a single user, or `nil`."
+  def get_user(id) when is_binary(id), do: Repo.get(User, id)
+
   ## User registration
 
   @doc """
@@ -370,10 +373,120 @@ defmodule Renga.Accounts do
   email bootstrap). Returns new recovery codes when it is the first factor.
   """
   def add_totp(%User{} = user, session_token, secret, code) do
-    if Recheck.authorized?(user, session_token, :add_factor),
-      do: MFA.enable_totp(user, secret, code),
-      else: {:error, :recheck_required}
+    cond do
+      # Recovery replaces a lost app once: the grant is spent in the same
+      # locked transaction that saves the replacement.
+      Recheck.recovering?(user, session_token) ->
+        MFA.enable_totp(user, secret, code,
+          replace: true,
+          authorize: fn -> Recheck.spend_recovery(user, session_token) end
+        )
+
+      Recheck.authorized?(user, session_token, :add_factor) ->
+        MFA.enable_totp(user, secret, code)
+
+      true ->
+        {:error, :recheck_required}
+    end
   end
+
+  @doc "Whether this session signed in with a recovery code and may replace a factor."
+  defdelegate recovering?(user, session_token), to: Recheck
+
+  @doc """
+  Completes the second step of signing in (RFD 19) with an authenticator
+  code or, failing that, a recovery code. Returns `{:ok, :totp}` or
+  `{:ok, :recovery_code}`.
+  """
+  def verify_second_step(%User{} = user, code) when is_binary(code) do
+    if String.match?(String.replace(code, ~r/\s/, ""), ~r/^\d{6}$/) do
+      with :ok <- MFA.verify_totp(user, code), do: {:ok, :totp}
+    else
+      with :ok <- MFA.spend_recovery_code(user, code), do: {:ok, :recovery_code}
+    end
+  end
+
+  @second_step_minutes 5
+
+  @doc """
+  Records a half-finished sign-in for `user`, whose password or magic link
+  passed and who still owes a second factor (RFD 19). Returns the token the
+  browser keeps; only its hash is stored. It lasts five minutes, is spent by
+  `finish_pending_second_step/4`, and ends early when the password or the
+  account's second factors change.
+  """
+  def create_pending_second_step(%User{} = user) do
+    token = :crypto.strong_rand_bytes(32)
+
+    Repo.insert!(%UserToken{
+      token: :crypto.hash(:sha256, token),
+      context: "second_step",
+      user_id: user.id
+    })
+
+    token
+  end
+
+  @doc "The user a pending sign-in `token` belongs to while it is unspent and current, or `nil`."
+  def get_pending_second_step_user(token) when is_binary(token) do
+    Repo.one(
+      from t in UserToken,
+        join: user in assoc(t, :user),
+        where: t.token == ^:crypto.hash(:sha256, token) and t.context == "second_step",
+        where: t.inserted_at > ago(@second_step_minutes, "minute"),
+        select: user
+    )
+  end
+
+  def get_pending_second_step_user(_token), do: nil
+
+  @doc """
+  Spends a pending sign-in once its second factor passed and issues the
+  session for `browser_session_id`, with the recovery authorization when
+  `method` is `:recovery_code`. Only one caller can spend it, so a copied
+  cookie or a concurrent request cannot finish the same sign-in twice.
+
+  It runs under the account's row lock, which a password change also takes
+  when it updates the user: the change either deletes the session issued
+  here or leaves no pending sign-in to finish.
+  """
+  def finish_pending_second_step(%User{id: user_id} = user, token, browser_session_id, method)
+      when is_binary(token) do
+    Repo.transact(fn ->
+      Repo.one(from u in User, where: u.id == ^user_id, lock: "FOR NO KEY UPDATE", select: u.id)
+
+      {count, _} =
+        Repo.delete_all(
+          from t in UserToken,
+            where: t.token == ^:crypto.hash(:sha256, token) and t.context == "second_step",
+            where: t.user_id == ^user_id,
+            where: t.inserted_at > ago(@second_step_minutes, "minute")
+        )
+
+      if count == 1 do
+        session_token = generate_user_session_token(user, browser_session_id)
+        :ok = start_recovery_after(method, user, session_token)
+        {:ok, session_token}
+      else
+        {:error, :expired}
+      end
+    end)
+    |> case do
+      {:ok, session_token} -> {:ok, session_token}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp start_recovery_after(:recovery_code, user, session_token),
+    do: Recheck.start_recovery(user, session_token)
+
+  defp start_recovery_after(_method, _user, _session_token), do: :ok
+
+  @doc "Grants a session that signed in with a recovery code its recovery window."
+  defdelegate start_recovery(user, session_token), to: Recheck
+
+  @doc "Whether signing in as `user` needs a second step after a password or magic link."
+  defdelegate mfa?(user), to: MFA
 
   @doc "Removes the authenticator app if this session passed the re-check."
   def remove_totp(%User{} = user, session_token) do

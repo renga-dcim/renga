@@ -64,7 +64,8 @@ defmodule Renga.Accounts.Recheck do
       {:ok, session} ->
         active?(session, "recheck") or
           (change in @bootstrap_changes and methods(user) == [] and
-             active?(session, "bootstrap"))
+             active?(session, "bootstrap")) or
+          (change == :add_factor and active?(session, "recovery"))
 
       :error ->
         false
@@ -72,6 +73,52 @@ defmodule Renga.Accounts.Recheck do
   end
 
   def authorized?(_user, _session_token, _change), do: false
+
+  @doc """
+  Whether this session is recovering an account after spending a recovery
+  code, and may still add its one replacement factor.
+  """
+  def recovering?(%User{} = user, session_token) do
+    case fetch_session(user, session_token) do
+      {:ok, session} -> active?(session, "recovery")
+      :error -> false
+    end
+  end
+
+  @doc """
+  Starts the five-minute recovery authorization for a session that signed
+  in with a recovery code (RFD 19, "Recovery"). It allows adding one
+  replacement factor and nothing else.
+  """
+  def start_recovery(%User{} = user, session_token) do
+    case fetch_session(user, session_token) do
+      {:ok, session} -> grant(session, "recovery")
+      :error -> {:error, :no_session}
+    end
+  end
+
+  @doc """
+  Spends this session's recovery authorization, if it is still active.
+  Called inside the transaction that adds the replacement factor, so only
+  one replacement can use it and a failed one leaves it in place.
+  """
+  def spend_recovery(%User{} = user, session_token) do
+    case fetch_session(user, session_token) do
+      {:ok, session} ->
+        now = Renga.Time.utc_now_ms()
+
+        {count, _} =
+          AccountAuthorization
+          |> where(session_token_id: ^session.id, purpose: "recovery")
+          |> where([authorization], authorization.expires_at > ^now)
+          |> Repo.delete_all()
+
+        count == 1
+
+      :error ->
+        false
+    end
+  end
 
   @doc """
   Checks `password` and, if it is the account's password, records a re-check

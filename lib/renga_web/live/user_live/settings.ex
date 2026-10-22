@@ -149,7 +149,26 @@ defmodule RengaWeb.UserLive.Settings do
             <p id="totp_status" class="text-sm text-fg">
               On. {recovery_codes_text(@recovery_codes_left)}
             </p>
+            <div
+              :if={@recovering and !@totp_setup}
+              id="recovery_notice"
+              class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
+            >
+              <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
+              <p>
+                You signed in with a recovery code. Replace your authenticator app now; this
+                works only for the next few minutes.
+              </p>
+            </div>
             <div class="flex flex-wrap gap-2">
+              <.button
+                :if={@recovering and !@totp_setup}
+                id="totp_replace"
+                variant="primary"
+                phx-click="start_totp"
+              >
+                Replace authenticator app
+              </.button>
               <.button id="recovery_regenerate" phx-click="regenerate_recovery_codes">
                 Generate new recovery codes
               </.button>
@@ -627,6 +646,7 @@ defmodule RengaWeb.UserLive.Settings do
     |> assign(:totp_available, MFA.totp_available?())
     |> assign(:totp_enabled, MFA.totp_enabled?(user))
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
+    |> assign(:recovering, Accounts.recovering?(user, socket.assigns.session_token))
   end
 
   defp recheck_form, do: to_form(%{}, as: "recheck")
