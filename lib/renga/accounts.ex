@@ -630,6 +630,11 @@ defmodule Renga.Accounts do
   the whole sign-in back, an account it would have created included.
   """
   def finish_provider_sign_in(%{provider: provider, revision: revision} = result, issue) do
+    # A sign-in may link SCIM entries and so change grants (RFD 16).
+    Renga.Scim.Grants.announcing(fn -> provider_sign_in(provider, revision, result, issue) end)
+  end
+
+  defp provider_sign_in(provider, revision, result, issue) do
     Repo.transaction(fn ->
       current =
         Repo.one(
