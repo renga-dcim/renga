@@ -134,5 +134,26 @@ rules above, it refuses an archive that exceeds any of these limits:
 | One record (line) | 16 MiB |
 | Manifest | 1 MiB |
 
+Once the container is sound, `Renga.Transfers.Validation` checks what the
+records say, against the record types above and this release's database
+schema:
+
+- the archive holds exactly the record files its parts call for, including
+  `organization` (one record, matching the manifest) and `principals`;
+- every record has exactly its type's fields, and each value is of its
+  column's type, within its length or range, and not `null` where the column
+  requires a value;
+- no two records of a type share an ID;
+- every reference names a record the archive holds. Where the database pairs
+  fields in one reference, such as an evidence row's `observation_id` and
+  `source_id`, they must match the same record. Every field that names a
+  person names a principal.
+
+A reference to a record outside the archive, including another
+organization's, is a problem, so a valid archive cannot reach beyond the
+organization it describes. Rules the database checks when records are
+inserted, such as allowed status values, are left to the import, which
+lands whole or not at all.
+
 Validation reports up to 100 problems, each naming the file and line where it
 can.
