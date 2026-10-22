@@ -395,6 +395,26 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(get(conn, ~p"/")) == ~p"/inbox"
     end
 
+    test "reopens the remembered organization after a second step", %{
+      conn: conn,
+      user: user,
+      second: second
+    } do
+      conn = open_then_log_out(conn, user, second)
+      {secret, _codes} = totp_fixture(user)
+
+      conn = log_in_with_password(conn, user)
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"code" => NimbleTOTP.verification_code(secret)}
+        })
+
+      assert get_session(conn, :current_organization_id) == second.id
+      assert redirected_to(get(conn, ~p"/")) == ~p"/inbox"
+    end
+
     test "a link into another organization reaches the picker, not the remembered one", %{
       conn: conn,
       user: user,

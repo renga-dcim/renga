@@ -186,8 +186,14 @@ defmodule RengaWeb.UserAuth do
     end
 
     case create_or_extend_session(conn, user, params, issue) do
-      {:ok, conn} -> {:ok, redirect(conn, to: return_to || signed_in_path(conn))}
-      {:error, conn} -> {:error, delete_session(conn, @second_step_key)}
+      {:ok, conn} ->
+        {:ok,
+         conn
+         |> put_default_organization(user, return_to)
+         |> redirect(to: return_to || signed_in_path(conn))}
+
+      {:error, conn} ->
+        {:error, delete_session(conn, @second_step_key)}
     end
   end
 
