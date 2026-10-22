@@ -337,6 +337,11 @@ defmodule Renga.Inventory.Reconciler do
       freshness_advanced?
     )
 
+    # A host agent's report is a claim that keeps a withdrawn resource
+    # current, even when it arrives after the withdrawal (RFD 11).
+    if source.kind == "host_agent",
+      do: :ok = Inventory.keep_claimed_inventory_current!(scope, resource.id, observation)
+
     {:ok, resource, discovered?}
   end
 

@@ -85,10 +85,9 @@ defmodule Renga.Inventory.Collectors do
         target = put_target!(scope, source, report, reported)
         outcomes = Map.get(resources_by_target, reported.key, [])
 
-        reported_ids =
+        members =
           for {:ok, resource, _discovered?} <- outcomes, uniq: true do
             put_member!(scope, target, resource, report.observed_at)
-            resource.id
           end
 
         # A failed resource leaves the target's contents unknown, so nothing
@@ -97,12 +96,30 @@ defmodule Renga.Inventory.Collectors do
           complete? and reported.status == "reachable" and current_report?(target, report) and
             Enum.all?(outcomes, &match?({:ok, _resource, _discovered?}, &1))
 
-        {target, reported_ids, snapshot?}
+        {target, members, snapshot?}
       end)
 
-    for {target, reported_ids, true} <- applied,
-        resource_id <- withdraw_unreported!(scope, source, target, reported_ids, report),
-        do: resource_id
+    withdrawn =
+      for {target, members, true} <- applied,
+          resource_id <-
+            withdraw_unreported!(
+              scope,
+              source,
+              target,
+              Enum.map(members, & &1.resource_id),
+              report
+            ),
+          do: resource_id
+
+    # A present claim keeps a resource current whenever it arrives, so one
+    # that a report withdrew earlier is current again.
+    applied
+    |> Enum.flat_map(fn {_target, members, _snapshot?} -> members end)
+    |> Enum.filter(&CollectorTargetResource.present?/1)
+    |> Enum.uniq_by(& &1.resource_id)
+    |> Enum.each(&Inventory.keep_claimed_inventory_current!(scope, &1.resource_id, report))
+
+    withdrawn
   end
 
   defp put_target!(scope, source, report, reported) do

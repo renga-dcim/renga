@@ -529,6 +529,78 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       end
     end
 
+    for order <- [:claim_first, :claim_late, :snapshot_first] do
+      test "another target's claim keeps a withdrawn switch current (#{order})", %{
+        scope: scope,
+        token: token
+      } do
+        a = %{"address" => "10.0.0.1", "status" => "reachable"}
+        claim = switch_report([switch("10.0.0.2", "SER-1")], observed_at: "2026-08-13T07:00:00Z")
+
+        reports = [
+          switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T08:00:00Z"),
+          switch_report([], targets: [a], complete: true, observed_at: "2026-08-13T09:00:00Z")
+        ]
+
+        # Delivered snapshot first, the switch is found only by superseded
+        # evidence before the other target's claim arrives.
+        reports =
+          case unquote(order) do
+            :claim_first -> [claim | reports]
+            :claim_late -> reports ++ [claim]
+            :snapshot_first -> Enum.reverse(reports) ++ [claim]
+          end
+
+        for report <- reports do
+          token |> post_observation(report) |> valid_api_response(202)
+        end
+
+        [stream] = Collectors.list_streams(scope)
+
+        by_target =
+          Map.new(Collectors.list_target_resources(scope, stream.id), &{&1.target.key, &1})
+
+        refute present?(by_target["10.0.0.1"])
+        assert present?(by_target["10.0.0.2"])
+        assert inventory_current(scope, by_target["10.0.0.2"].resource_id) == "true"
+      end
+    end
+
+    for order <- [:withdrawn_first, :snapshot_first] do
+      test "a host agent's late report keeps a withdrawn VM current (#{order})", %{
+        scope: scope,
+        token: token
+      } do
+        uuid = "4c4c4544-0000-1111-2222-333344445555"
+
+        reports = [
+          hypervisor_report([vm(uuid)], observed_at: "2026-08-13T08:00:00Z"),
+          hypervisor_report([], complete: true, observed_at: "2026-08-13T09:00:00Z")
+        ]
+
+        reports = if unquote(order) == :snapshot_first, do: Enum.reverse(reports), else: reports
+
+        for report <- reports do
+          token |> post_observation(report) |> valid_api_response(202)
+        end
+
+        [stream] = Collectors.list_streams(scope)
+        [member] = Collectors.list_target_resources(scope, stream.id)
+        refute present?(member)
+        refute inventory_current(scope, member.resource_id) == "true"
+
+        assert %{"reconciliation" => %{"matched_resource_id" => resource_id}} =
+                 token
+                 |> post_observation(
+                   host_report(dmi_uuid: uuid, observed_at: "2026-08-13T07:00:00Z")
+                 )
+                 |> valid_api_response(202)
+
+        assert resource_id == member.resource_id
+        assert inventory_current(scope, resource_id) == "true"
+      end
+    end
+
     test "a resource another source still reports stays current when withdrawn", %{
       scope: scope,
       token: token

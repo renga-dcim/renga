@@ -2486,20 +2486,6 @@ defmodule Renga.Inventory do
   def mark_inventory_withdrawn!(%Scope{} = scope, resource_id, withdrawn_at) do
     resource = get_resource!(scope, resource_id)
 
-    previous =
-      Repo.get_by(ResourceCondition,
-        organization_id: scope.organization_id,
-        resource_id: resource.id,
-        type: "InventoryCurrent"
-      )
-
-    now = Renga.Time.utc_now_ms()
-
-    transition_at =
-      if previous && DateTime.compare(now, previous.last_transition_at) != :gt,
-        do: DateTime.add(previous.last_transition_at, 1, :millisecond),
-        else: now
-
     {:ok, _condition} =
       put_resource_condition(scope, resource.id, %{
         type: "InventoryCurrent",
@@ -2507,11 +2493,65 @@ defmodule Renga.Inventory do
         reason: "Withdrawn",
         message: "The collector that reported this resource no longer reports it",
         observed_generation: resource.generation,
-        last_transition_at: transition_at,
+        last_transition_at: next_inventory_transition_at(scope, resource.id),
         details: %{"withdrawn_at" => withdrawn_at}
       })
 
     :ok
+  end
+
+  @doc """
+  Makes a resource's inventory current because a source still claims it:
+  a collector target reports it, or a host agent does (RFD 11). The claim may
+  arrive late, too old to advance freshness, so this undoes only a
+  withdrawal, or records currentness the resource never had because the
+  evidence that found it was already superseded. Other conditions, such as
+  `Stale`, and facts are left to reconciliation. Runs inside the caller's
+  reconciliation transaction.
+  """
+  def keep_claimed_inventory_current!(%Scope{} = scope, resource_id, %Observation{} = observation) do
+    case Repo.get_by(ResourceCondition,
+           organization_id: scope.organization_id,
+           resource_id: resource_id,
+           type: "InventoryCurrent"
+         ) do
+      condition when is_nil(condition) or condition.reason == "Withdrawn" ->
+        resource = get_resource!(scope, resource_id)
+
+        {:ok, _condition} =
+          put_resource_condition(scope, resource.id, %{
+            type: "InventoryCurrent",
+            status: "true",
+            reason: "StillReported",
+            message: "A source still reports this resource",
+            observed_generation: resource.generation,
+            last_transition_at: next_inventory_transition_at(scope, resource.id),
+            details: %{
+              "observation_id" => observation.id,
+              "observed_at" => observation.observed_at
+            }
+          })
+
+        :ok
+
+      _current_or_stale ->
+        :ok
+    end
+  end
+
+  defp next_inventory_transition_at(scope, resource_id) do
+    previous =
+      Repo.get_by(ResourceCondition,
+        organization_id: scope.organization_id,
+        resource_id: resource_id,
+        type: "InventoryCurrent"
+      )
+
+    now = Renga.Time.utc_now_ms()
+
+    if previous && DateTime.compare(now, previous.last_transition_at) != :gt,
+      do: DateTime.add(previous.last_transition_at, 1, :millisecond),
+      else: now
   end
 
   @doc """
