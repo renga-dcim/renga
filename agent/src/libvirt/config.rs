@@ -84,27 +84,47 @@ fn collector(raw: RawLibvirtCollector) -> Result<LibvirtCollector, String> {
 }
 
 /// The URI names the hypervisor in every report and log line, so it must hold no secret: no
-/// password in its user part and no query parameter named like one. libvirt reads credentials
-/// from its auth configuration, SSH keys, and certificate paths instead.
+/// password in its user part and no query parameter named like one. libvirt percent-decodes
+/// parameter names and splits them on `&` or `;`, so both are checked that way, and a URI that
+/// does not decode cleanly is refused. libvirt reads credentials from its auth configuration,
+/// SSH keys, and certificate paths instead.
 fn carries_secret(uri: &str) -> bool {
     let (before_query, query) = uri.split_once('?').unwrap_or((uri, ""));
     let authority = before_query
         .split_once("://")
         .map_or("", |(_, rest)| rest.split('/').next().unwrap_or(""));
-    let password = authority
-        .rsplit_once('@')
-        .is_some_and(|(userinfo, _)| userinfo.contains(':'));
-    let secret_parameter = query.split('&').any(|parameter| {
-        let name = parameter
-            .split('=')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        ["pass", "secret", "token"]
-            .iter()
-            .any(|word| name.contains(word))
+    let password = match authority.rsplit_once('@') {
+        Some((userinfo, _)) => percent_decode(userinfo).is_none_or(|user| user.contains(':')),
+        None => false,
+    };
+    let secret_parameter = query.split(['&', ';']).any(|parameter| {
+        let name = parameter.split('=').next().unwrap_or("");
+        percent_decode(name).is_none_or(|name| {
+            let name = name.to_ascii_lowercase();
+            ["pass", "secret", "token"]
+                .iter()
+                .any(|word| name.contains(word))
+        })
     });
     password || secret_parameter
+}
+
+/// Decodes `%XX` escapes, or `None` when an escape is malformed or the result is not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 #[cfg(test)]
@@ -144,6 +164,22 @@ mod tests {
             ),
             (
                 "[libvirt]\nuri='qemu+tcp://hv1/system?auth_token=x'\n",
+                "must not carry a password",
+            ),
+            (
+                "[libvirt]\nuri='qemu+ssh://hv1/system?%74oken=x'\n",
+                "must not carry a password",
+            ),
+            (
+                "[libvirt]\nuri='qemu+ssh://hv1/system?socket=/run/sock;token=x'\n",
+                "must not carry a password",
+            ),
+            (
+                "[libvirt]\nuri='qemu+ssh://renga%3Ahunter2@hv1/system'\n",
+                "must not carry a password",
+            ),
+            (
+                "[libvirt]\nuri='qemu+ssh://hv1/system?%zz=x'\n",
                 "must not carry a password",
             ),
             ("[libvirt]\ninterval_seconds=10\n", "at least 60"),
