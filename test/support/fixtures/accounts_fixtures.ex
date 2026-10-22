@@ -9,6 +9,16 @@ defmodule Renga.AccountsFixtures do
   alias Renga.Accounts
   alias Renga.Accounts.Scope
 
+  @doc "A six-digit code that matches no step of `secret` near now."
+  def wrong_totp_code(secret) do
+    now = System.os_time(:second)
+    valid = for offset <- -2..2, do: NimbleTOTP.verification_code(secret, time: now + offset * 30)
+
+    Stream.repeatedly(fn -> :rand.uniform(1_000_000) - 1 end)
+    |> Stream.map(&String.pad_leading(Integer.to_string(&1), 6, "0"))
+    |> Enum.find(&(&1 not in valid))
+  end
+
   def unique_user_email, do: "user#{System.unique_integer()}@example.com"
   def valid_user_password, do: "hello world!"
 

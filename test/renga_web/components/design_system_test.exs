@@ -16,7 +16,10 @@ defmodule RengaWeb.DesignSystemTest do
     # Each accent swatch shows its own color, not the one currently applied.
     "lib/renga_web/live/appearance_live.ex" => 5,
     # The native <dialog> scrim must darken the page in both themes.
-    "lib/renga_web/components/layouts.ex" => 1
+    "lib/renga_web/components/layouts.ex" => 1,
+    # An authenticator app's QR code needs dark modules on white to scan in
+    # either theme.
+    "lib/renga_web/live/user_live/settings.ex" => 1
   }
 
   test "recognizes every forbidden design-system category" do

@@ -91,3 +91,6 @@ config :phoenix_live_view,
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# A fixed key for development secrets such as authenticator app secrets.
+config :renga, Renga.Vault, keys: "dev:OyMJcHqXVS5r+ch7+AZaZANdQIP+j3lV/rKmR94Sswc="

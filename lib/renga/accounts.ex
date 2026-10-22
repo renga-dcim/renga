@@ -7,6 +7,7 @@ defmodule Renga.Accounts do
 
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.MFA
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
@@ -352,11 +353,41 @@ defmodule Renga.Accounts do
   @doc "Records an account re-check for this session if `password` is correct."
   defdelegate recheck_with_password(user, session_token, password), to: Recheck
 
+  @doc "Records an account re-check for this session if `code` is a good authenticator code."
+  defdelegate recheck_with_totp(user, session_token, code), to: Recheck
+
   @doc "Emails the first-password or first-factor bootstrap code."
   defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
 
   @doc "Spends a bootstrap code for this session."
   defdelegate verify_bootstrap_code(user, session_token, code), to: Recheck
+
+  ## Second factors
+
+  @doc """
+  Adds an authenticator app once `code` proves it, if this session passed
+  the account re-check (or, for an account with no credential yet, the
+  email bootstrap). Returns new recovery codes when it is the first factor.
+  """
+  def add_totp(%User{} = user, session_token, secret, code) do
+    if Recheck.authorized?(user, session_token, :add_factor),
+      do: MFA.enable_totp(user, secret, code),
+      else: {:error, :recheck_required}
+  end
+
+  @doc "Removes the authenticator app if this session passed the re-check."
+  def remove_totp(%User{} = user, session_token) do
+    if Recheck.authorized?(user, session_token, :remove_factor),
+      do: MFA.disable_totp(user),
+      else: {:error, :recheck_required}
+  end
+
+  @doc "Replaces the recovery codes if this session passed the re-check."
+  def regenerate_recovery_codes(%User{} = user, session_token) do
+    if Recheck.authorized?(user, session_token, :recovery_codes),
+      do: MFA.regenerate_recovery_codes(user),
+      else: {:error, :recheck_required}
+  end
 
   @doc """
   Returns an `%Ecto.Changeset{}` for changing the user email.
