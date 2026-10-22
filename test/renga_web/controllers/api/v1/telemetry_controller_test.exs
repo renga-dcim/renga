@@ -71,6 +71,37 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
       assert Repo.aggregate(Observation, :count) == 0
     end
 
+    test "the host's readings are about the resource its reports reconcile to", %{
+      scope: scope,
+      token: token
+    } do
+      check_in!(token)
+
+      report = %{
+        "observation_id" => "host-1",
+        "observed_at" => "2026-08-13T07:30:00Z",
+        "resources" => [
+          %{"kind" => "server", "identifiers" => %{"machine_id" => "m-1"}, "attributes" => %{}}
+        ]
+      }
+
+      observation =
+        build_conn()
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> put_req_header("x-renga-installation-id", @installation_id)
+        |> post(~p"/api/v1/observations", report)
+
+      assert %{"reconciliation" => %{"matched_resource_id" => resource_id}} =
+               valid_api_response(observation, 202)
+
+      valid_api_response(post_batch(token, host_batch([sample(value: 300)])), 202)
+
+      assert %{^resource_id => [%{reading: reading}]} =
+               Readings.for_resources(scope, [resource_id], ~U[2026-08-13 07:31:00Z])
+
+      assert reading.sensor == "hwmon0/power1"
+    end
+
     test "a collector's readings go to its stream, named by target", %{
       scope: scope,
       token: token

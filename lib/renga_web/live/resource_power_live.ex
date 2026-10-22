@@ -15,6 +15,12 @@ defmodule RengaWeb.ResourcePowerLive do
   feeds they reach (`Renga.Power.Redundancy`). Each outlet shows what
   it powers. Owners and admins record a connection or unplug
   one; both are confirmed power cable claims (RFD 10 phase 2b).
+
+  Power readings about the device (RFD 10 phase 4), such as a host's input
+  power or a supply's status, are listed with the source and mapping that
+  produced them and whether they are current. A supply's own input reading
+  and status also show on its port. Readings are evidence: they never
+  change the device's paths or redundancy.
   """
   use RengaWeb, :live_view
 
@@ -30,6 +36,8 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Paths
   alias Renga.Power.Port
   alias Renga.Power.PowerFactor
+  alias Renga.Power.Reading
+  alias Renga.Power.Readings
   alias Renga.Power.Redundancy
 
   @impl true
@@ -256,6 +264,14 @@ defmodule RengaWeb.ResourcePowerLive do
                   <.power_factor power_factor={PowerFactor.for_port(port, @default_power_factor)} />
                 </span>
               </:col>
+              <:col
+                :let={port}
+                label="Measured"
+                class="w-32 text-right"
+                hide_below="4xl"
+              >
+                <.port_supply id={"power-supply-#{port.id}"} supply={@supplies[port.name]} />
+              </:col>
               <:col :let={port} label="Path" class="w-20 @3xl:w-auto" clip={false}>
                 <button
                   id={"power-path-#{port.id}"}
@@ -356,6 +372,47 @@ defmodule RengaWeb.ResourcePowerLive do
               </:col>
               <:col :let={outlet} label="Powers">
                 <.outlet_connection cable={@cables_by_outlet[outlet.id]} />
+              </:col>
+            </.table>
+          </section>
+
+          <section :if={@readings != []} aria-labelledby="power-readings-heading" class="space-y-2">
+            <div>
+              <h2 id="power-readings-heading" class="text-sm font-semibold">Power readings</h2>
+              <p class="text-xs text-fg-muted">
+                The latest reading of each sensor, with the source that produced it. Only current
+                readings count toward measured load; stale or failed ones are never read as zero.
+              </p>
+            </div>
+            <.table id="power-readings" rows={@readings} row_id={&"power-reading-#{&1.reading.id}"}>
+              <:col :let={entry} label="Measures">
+                <span class="text-fg">{measures_label(entry.reading)}</span>
+                <span class="block font-mono text-xs text-fg-muted">{entry.reading.sensor}</span>
+              </:col>
+              <:col :let={entry} label="Value" class="text-right font-mono tabular-nums">
+                {reading_value(entry.reading)}
+              </:col>
+              <:col :let={entry} label="Source" hide_below="3xl">
+                <span class="text-fg">{entry.reading.source.name}</span>
+                <span class="block text-xs text-fg-muted">
+                  {mapping_label(entry.reading)}
+                </span>
+              </:col>
+              <:col :let={entry} label="Taken" class="whitespace-nowrap">
+                <time
+                  datetime={DateTime.to_iso8601(entry.reading.event_at)}
+                  title={RengaWeb.Format.datetime(entry.reading.event_at)}
+                >
+                  {RengaWeb.Format.age(entry.reading.event_at, @now)}
+                </time>
+              </:col>
+              <:col :let={entry} label="Status">
+                <span
+                  id={"power-reading-#{entry.reading.id}-status"}
+                  class={!entry.eligible? && "text-warn-text"}
+                >
+                  {reading_status(entry, @now)}
+                </span>
               </:col>
             </.table>
           </section>
@@ -779,6 +836,17 @@ defmodule RengaWeb.ResourcePowerLive do
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
+    now = Renga.Time.utc_now_ms()
+    resource_id = socket.assigns.resource.id
+
+    readings =
+      socket.assigns.current_scope
+      |> Readings.for_resources([resource_id], now)
+      |> Map.get(resource_id, [])
+      |> Enum.sort_by(
+        &{&1.reading.boundary, &1.reading.component_name || "", &1.reading.leg || "",
+         &1.reading.quantity, &1.reading.window_ms}
+      )
 
     assign(socket,
       ports: ports,
@@ -792,7 +860,10 @@ defmodule RengaWeb.ResourcePowerLive do
       retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
       unallocated: unallocated,
       allocated_total: if(unallocated == 0, do: Enum.sum(allocations)),
-      default_power_factor: default_power_factor
+      default_power_factor: default_power_factor,
+      now: now,
+      readings: readings,
+      supplies: supplies(readings)
     )
   end
 
@@ -843,6 +914,109 @@ defmodule RengaWeb.ResourcePowerLive do
       %PowerFactor{source: :organization_default, value: value} ->
         "Leave empty to use the organization default of #{value}."
     end
+  end
+
+  attr :id, :string, required: true
+  attr :supply, :map, default: nil
+
+  # A supply's own input reading and status, when either is current.
+  defp port_supply(assigns) do
+    ~H"""
+    <span id={@id} class="font-mono text-xs tabular-nums">
+      <span :if={@supply && @supply.draw} class="text-fg">{@supply.draw}</span>
+      <span
+        :if={@supply && @supply.state}
+        class={["block font-sans", @supply.state != "ok" && "font-medium text-crit"]}
+      >
+        {String.capitalize(String.replace(@supply.state, "_", " "))}
+      </span>
+      <span :if={!@supply} class="text-fg-muted">—</span>
+    </span>
+    """
+  end
+
+  @boundary_labels %{
+    "host_input" => "Host input",
+    "supply_input" => "Supply input",
+    "supply_output" => "Supply output",
+    "outlet" => "Outlet",
+    "feed" => "Inlet",
+    "leg" => "Leg"
+  }
+
+  @quantity_labels %{
+    "real_power" => "real power",
+    "apparent_power" => "apparent power",
+    "current" => "current",
+    "voltage" => "voltage",
+    "power_factor" => "power factor",
+    "state" => "status"
+  }
+
+  defp measures_label(%Reading{} = reading) do
+    place =
+      [
+        Map.fetch!(@boundary_labels, reading.boundary),
+        reading.component_name,
+        reading.leg && String.upcase(reading.leg)
+      ]
+      |> Enum.filter(& &1)
+      |> Enum.join(" ")
+
+    window = if reading.window_ms > 0, do: ", #{seconds(reading.window_ms)}s average"
+    "#{place} #{Map.fetch!(@quantity_labels, reading.quantity)}#{window}"
+  end
+
+  # Whole seconds print without a fraction: 60_000 is "60", 1_500 is "1.5".
+  defp seconds(milliseconds) when rem(milliseconds, 1_000) == 0, do: div(milliseconds, 1_000)
+  defp seconds(milliseconds), do: milliseconds / 1_000
+
+  defp reading_value(%Reading{validity: "valid", state: state}) when is_binary(state),
+    do: String.replace(state, "_", " ")
+
+  defp reading_value(%Reading{validity: "valid", value: value, unit: unit}),
+    do:
+      "#{value |> Decimal.round(1) |> Decimal.normalize() |> Decimal.to_string(:normal)} #{unit}"
+
+  defp reading_value(%Reading{}), do: "—"
+
+  defp mapping_label(%Reading{} = reading) do
+    exporter = if reading.origin == "exporter", do: " · exporter"
+    "#{reading.mapping_name} v#{reading.mapping_version}#{exporter}"
+  end
+
+  defp reading_status(%{eligible?: true}, _now), do: "Current"
+
+  defp reading_status(%{reading: reading}, now) do
+    case Reading.ineligibility(reading, now) do
+      :stale -> "Stale"
+      :missing -> "Missing"
+      :failed -> "Failed"
+      :invalid -> "Unusable"
+      nil -> "Not used"
+    end
+  end
+
+  # Each port's current input power and status, by port name, from readings
+  # that name it.
+  defp supplies(entries) do
+    entries
+    |> Enum.filter(fn %{reading: reading, eligible?: eligible?} ->
+      eligible? and reading.component_kind == "power_port" and
+        reading.boundary == "supply_input" and
+        reading.quantity in ~w(real_power state)
+    end)
+    |> Enum.group_by(& &1.reading.component_name)
+    |> Map.new(fn {name, entries} ->
+      draw =
+        entries
+        |> Enum.map(& &1.reading)
+        |> Enum.filter(&(&1.quantity == "real_power"))
+        |> Enum.min_by(& &1.window_ms, fn -> nil end)
+
+      state = Enum.find_value(entries, &(&1.reading.quantity == "state" && &1.reading.state))
+      {name, %{draw: draw && reading_value(draw), state: state}}
+    end)
   end
 
   defp watts(nil), do: "—"

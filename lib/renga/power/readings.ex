@@ -287,6 +287,7 @@ defmodule Renga.Power.Readings do
     Reading
     |> where([reading], reading.organization_id == ^organization_id)
     |> where(^matches)
+    |> preload(:source)
     |> Repo.all()
   end
 end

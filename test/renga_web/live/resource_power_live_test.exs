@@ -5,6 +5,7 @@ defmodule RengaWeb.ResourcePowerLiveTest do
   import Renga.AccountsFixtures
   import Renga.CatalogFixtures
   import Renga.InventoryFixtures
+  import Renga.PowerReadingFixtures
 
   alias Renga.Accounts
   alias Renga.Catalog
@@ -329,6 +330,46 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     {:ok, _} = Cables.disconnect(scope, %{power_port_id: psu2.id, power_feed_id: b1.id})
     _ = render(view)
     assert has_element?(view, "#power-redundancy[data-status=single_supply]")
+  end
+
+  test "lists the device's power readings with their sources and supply status",
+       %{conn: conn, scope: scope, organization: organization} do
+    server = server!(scope)
+    bmc = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(bmc, "https://bmc-web-1", server)
+
+    supply = fn attrs ->
+      reading_fixture(
+        bmc,
+        [target: "https://bmc-web-1", boundary: "supply_input", mapping_name: "redfish"] ++ attrs
+      )
+    end
+
+    supply.(component: {"power_port", "PSU1"}, quantity: "real_power", value: 212.4)
+    supply.(component: {"power_port", "PSU1"}, quantity: "state", unit: nil, state: "ok")
+    supply.(component: {"power_port", "PSU2"}, quantity: "state", unit: nil, state: "no_input")
+
+    supply.(
+      component: {"power_port", "PSU2"},
+      quantity: "real_power",
+      sensor: "psu2-power",
+      value: 180,
+      event_at: DateTime.add(Renga.Time.utc_now_ms(), -3600, :second)
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    [psu1, psu2] = Power.list_device_endpoints(scope, server.id).ports
+
+    assert has_element?(view, "#power-supply-#{psu1.id}", "212.4 W")
+    assert has_element?(view, "#power-supply-#{psu1.id}", "Ok")
+    assert has_element?(view, "#power-supply-#{psu2.id} .text-crit", "No input")
+    # A stale draw is listed but not shown as the supply's current draw.
+    refute has_element?(view, "#power-supply-#{psu2.id}", "180 W")
+
+    assert has_element?(view, "#power-readings", "Supply input PSU1 real power")
+    assert has_element?(view, "#power-readings", bmc.name)
+    assert has_element?(view, "#power-readings", "redfish v1")
+    assert has_element?(view, "#power-readings tr", "Stale")
   end
 
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
