@@ -22,6 +22,7 @@ defmodule Renga.Application do
         Renga.Accounts.OIDC.Discovery,
         neighbor_expiry_worker(),
         same_machine_sweeper(),
+        collector_findings_worker(),
         assignment_expiry_worker(),
         job_sweeper(),
         job_history_purger(),
@@ -52,6 +53,11 @@ defmodule Renga.Application do
   defp same_machine_sweeper do
     if Application.get_env(:renga, :same_machine_sweeper_enabled, true),
       do: Renga.Inventory.SameMachineSweeper
+  end
+
+  defp collector_findings_worker do
+    if Application.get_env(:renga, :collector_findings_worker_enabled, true),
+      do: Renga.Inventory.CollectorFindingsWorker
   end
 
   defp job_sweeper do
