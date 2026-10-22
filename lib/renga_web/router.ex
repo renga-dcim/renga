@@ -22,6 +22,13 @@ defmodule RengaWeb.Router do
     plug RengaWeb.IntakeAuth
   end
 
+  # SCIM provisioning (RFD 16). No session: only a connection's bearer token
+  # reaches these routes.
+  pipeline :scim do
+    plug RengaWeb.Scim.Auth
+    plug RengaWeb.Scim.RateLimit
+  end
+
   scope "/", RengaWeb do
     pipe_through :browser
 
@@ -44,6 +51,19 @@ defmodule RengaWeb.Router do
     post "/agent/jobs/:id/claims", JobController, :claim
     post "/agent/jobs/:id/events", JobController, :create_event
     post "/observations", ObservationController, :create
+  end
+
+  scope "/scim/v2", RengaWeb.Scim do
+    pipe_through :scim
+
+    get "/ServiceProviderConfig", DiscoveryController, :service_provider_config
+    get "/ResourceTypes", DiscoveryController, :resource_types
+    get "/ResourceTypes/:id", DiscoveryController, :resource_type
+    get "/Schemas", DiscoveryController, :schemas
+    get "/Schemas/:id", DiscoveryController, :schema
+    match :*, "/Me", DiscoveryController, :me
+    match :*, "/Me/*path", DiscoveryController, :me
+    match :*, "/*path", DiscoveryController, :not_found
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
