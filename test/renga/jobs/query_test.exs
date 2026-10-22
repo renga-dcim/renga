@@ -134,6 +134,15 @@ defmodule Renga.Jobs.QueryTest do
     end
   end
 
+  test "one item reads in the singular" do
+    assert Queries.DiskUsage.describe_result(%{"filesystems" => [%{}]}) == "1 filesystem"
+    assert Queries.ListeningSockets.describe_result(%{"sockets" => [%{}]}) == "1 listening socket"
+    assert Queries.Packages.describe_result(%{"packages" => [%{}]}) == "1 package"
+    assert Queries.Routes.describe_result(%{"routes" => [%{}]}) == "1 route"
+    assert Queries.Services.describe_result(%{"units" => [%{}]}) == "1 unit, 0 failed"
+    assert Queries.Services.describe_result(%{"units" => []}) == "0 units, 0 failed"
+  end
+
   test "parameters are typed, and no query takes a command, path, or script" do
     assert Queries.DiskUsage.parameters_changeset(%{}).valid?
     refute Queries.DiskUsage.parameters_changeset(%{"command" => "rm -rf /"}).valid?

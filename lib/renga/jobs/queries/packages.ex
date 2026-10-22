@@ -51,6 +51,7 @@ defmodule Renga.Jobs.Queries.Packages do
   end
 
   @impl true
+  def describe_result(%{"packages" => [_package]}), do: "1 package"
   def describe_result(%{"packages" => packages}), do: "#{length(packages)} packages"
   def describe_result(_result), do: "Completed"
 end

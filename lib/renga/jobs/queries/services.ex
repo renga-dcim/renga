@@ -50,8 +50,11 @@ defmodule Renga.Jobs.Queries.Services do
   @impl true
   def describe_result(%{"units" => units}) do
     failed = Enum.count(units, &(&1["active_state"] == "failed"))
-    "#{length(units)} units, #{failed} failed"
+    "#{count(length(units), "unit")}, #{failed} failed"
   end
 
   def describe_result(_result), do: "Completed"
+
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(n, noun), do: "#{n} #{noun}s"
 end

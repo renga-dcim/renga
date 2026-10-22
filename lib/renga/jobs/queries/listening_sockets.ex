@@ -49,6 +49,7 @@ defmodule Renga.Jobs.Queries.ListeningSockets do
   end
 
   @impl true
+  def describe_result(%{"sockets" => [_socket]}), do: "1 listening socket"
   def describe_result(%{"sockets" => sockets}), do: "#{length(sockets)} listening sockets"
   def describe_result(_result), do: "Completed"
 end

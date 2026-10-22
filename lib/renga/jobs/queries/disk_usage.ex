@@ -50,6 +50,8 @@ defmodule Renga.Jobs.Queries.DiskUsage do
   end
 
   @impl true
+  def describe_result(%{"filesystems" => [_filesystem]}), do: "1 filesystem"
+
   def describe_result(%{"filesystems" => filesystems}),
     do: "#{length(filesystems)} filesystems"
 

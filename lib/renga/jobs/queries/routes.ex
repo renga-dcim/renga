@@ -50,6 +50,7 @@ defmodule Renga.Jobs.Queries.Routes do
   end
 
   @impl true
+  def describe_result(%{"routes" => [_route]}), do: "1 route"
   def describe_result(%{"routes" => routes}), do: "#{length(routes)} routes"
   def describe_result(_result), do: "Completed"
 end
