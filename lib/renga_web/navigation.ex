@@ -143,6 +143,9 @@ defmodule RengaWeb.Navigation do
         section(:teams, "Teams", ~p"/settings/teams", "hero-user-group",
           keywords: ~w(owners ownership)
         ),
+        section(:scim, "SCIM", ~p"/settings/scim", "hero-arrow-path-rounded-square",
+          keywords: ~w(provisioning directory okta entra identity provider groups tokens)
+        ),
         section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
           keywords: ~w(rules triage automation subnet hostname labels)
         ),

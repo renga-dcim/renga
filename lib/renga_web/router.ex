@@ -250,6 +250,7 @@ defmodule RengaWeb.Router do
       live "/settings/members", MemberLive, :index
       live "/settings/roles", RoleLive, :index
       live "/settings/teams", TeamLive, :index
+      live "/settings/scim", ScimLive, :index
       live "/settings/triage-rules", TriageRuleLive, :index
       live "/settings/appearance", AppearanceLive, :index
       live "/settings/limits", LimitsLive, :index

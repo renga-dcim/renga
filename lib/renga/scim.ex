@@ -32,6 +32,7 @@ defmodule Renga.Scim do
   alias Renga.Scim.Connection
   alias Renga.Scim.DirectoryGroup
   alias Renga.Scim.Grants
+  alias Renga.Scim.GroupMember
   alias Renga.Scim.Token
 
   @token_prefix "renga_scim_"
@@ -216,6 +217,21 @@ defmodule Renga.Scim do
           {:ok, enabled}
       end
     end)
+  end
+
+  @doc """
+  A connection's directory groups by name, each with how many entries it
+  holds, as `{group, member_count}`.
+  """
+  def list_groups(%Scope{organization_id: organization_id}, connection_id) do
+    DirectoryGroup
+    |> where([group], group.organization_id == ^organization_id)
+    |> where([group], group.connection_id == ^connection_id)
+    |> join(:left, [group], member in GroupMember, on: member.group_id == group.id)
+    |> group_by([group], group.id)
+    |> order_by([group], asc: group.display_name, asc: group.id)
+    |> select([group, member], {group, count(member.user_id)})
+    |> Repo.all()
   end
 
   @doc """
