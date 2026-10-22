@@ -102,6 +102,41 @@ defmodule Renga.Inventory.SameMachine do
     |> Enum.each(&refresh_guest!(scope, &1, now, domains))
   end
 
+  @doc """
+  Resolves the open findings whose evidence no longer singles out their VM
+  as of `now`. Evidence also ages out with no report to say so, as when a
+  hypervisor's agent stops, so `Renga.Inventory.SameMachineSweeper` calls
+  this periodically. A finding that still stands is left as last observed:
+  only a report is new evidence, and only a report opens a finding.
+  """
+  def expire!(%Scope{} = scope, now) do
+    Repo.transaction(fn ->
+      Inventory.lock_organization!(scope.organization_id)
+      domains = eligible_domains(scope, now)
+
+      CollectorFinding
+      |> where([finding], finding.organization_id == ^scope.organization_id)
+      |> where([finding], finding.kind == @kind and finding.status == "open")
+      |> select([finding], finding.resource_id)
+      |> distinct(true)
+      |> Repo.all()
+      |> Enum.each(fn guest_id ->
+        case guest_agents(scope, guest_id) != [] && candidate(scope, guest_id, domains) do
+          {vm_id, _members, _macs} ->
+            resolve_where!(
+              scope,
+              guest_id,
+              now,
+              &where(&1, [finding], fragment("?->>'vm_resource_id'", finding.details) != ^vm_id)
+            )
+
+          _gone ->
+            resolve_where!(scope, guest_id, now, & &1)
+        end
+      end)
+    end)
+  end
+
   @doc "Opens, updates, or resolves the finding for one machine as of `now`."
   def refresh_guest!(%Scope{} = scope, guest_id, now, domains \\ nil) do
     case guest_agents(scope, guest_id) do

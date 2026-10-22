@@ -21,6 +21,7 @@ defmodule Renga.Application do
         {Phoenix.PubSub, name: Renga.PubSub},
         Renga.Accounts.OIDC.Discovery,
         neighbor_expiry_worker(),
+        same_machine_sweeper(),
         assignment_expiry_worker(),
         job_sweeper(),
         job_history_purger(),
@@ -46,6 +47,11 @@ defmodule Renga.Application do
   defp neighbor_expiry_worker do
     if Application.get_env(:renga, :neighbor_expiry_worker_enabled, true),
       do: Renga.Topology.NeighborExpiryWorker
+  end
+
+  defp same_machine_sweeper do
+    if Application.get_env(:renga, :same_machine_sweeper_enabled, true),
+      do: Renga.Inventory.SameMachineSweeper
   end
 
   defp job_sweeper do
