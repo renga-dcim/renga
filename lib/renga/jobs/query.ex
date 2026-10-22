@@ -92,6 +92,14 @@ defmodule Renga.Jobs.Query do
   @doc "Every registered query module."
   def all, do: Enum.filter(Registry.all(), &query?/1)
 
+  @doc "The query module registered as `key`, or nil when `key` names no query."
+  def module_for(key) when is_binary(key) do
+    case Registry.fetch(key) do
+      {:ok, module} -> if query?(module), do: module
+      {:error, _unknown} -> nil
+    end
+  end
+
   @doc "Every registered query's `name@version` key."
   def keys, do: Enum.map(all(), &Renga.Jobs.Capability.key/1)
 
