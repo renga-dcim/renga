@@ -119,7 +119,9 @@ defmodule Renga.Limits do
   """
   def set(%Organization{} = organization, settings, context) when is_list(settings) do
     DeploymentAudit.mutate(context, "limits.set", fn ->
-      if settings != [] and
+      names = Keyword.keys(settings)
+
+      if settings != [] and names == Enum.uniq(names) and
            Enum.all?(settings, fn {name, value} -> name in @names and valid_value?(value) end) do
         lock!(organization)
 
@@ -149,15 +151,15 @@ defmodule Renga.Limits do
 
         override ->
           Repo.delete!(override)
-          record_activity!(organization, "limit_cleared", name, override.value, nil, context)
+          record_activity!(organization, "limit_cleared", name, context)
           {:ok, :ok, %{organization: organization, changed: [name]}}
       end
     end)
     |> ok()
   end
 
-  # Serializes changes to one organization's limits, so each Activity entry
-  # has the value it really replaced.
+  # Serializes changes to one organization's limits, so a change that sets
+  # the value already in place is recognized as no change.
   defp lock!(organization) do
     Repo.query!("SELECT pg_advisory_xact_lock(hashtext('renga.limits'), hashtext($1))", [
       organization.id
@@ -170,7 +172,7 @@ defmodule Renga.Limits do
       %OrganizationLimit{value: ^value} ->
         false
 
-      existing ->
+      _other ->
         now = Renga.Time.utc_now_ms()
 
         Repo.insert_all(
@@ -189,14 +191,7 @@ defmodule Renga.Limits do
           conflict_target: [:organization_id, :name]
         )
 
-        record_activity!(
-          organization,
-          "limit_set",
-          name,
-          existing && existing.value,
-          value,
-          context
-        )
+        record_activity!(organization, "limit_set", name, context)
 
         true
     end
@@ -208,16 +203,15 @@ defmodule Renga.Limits do
     |> where([limit], limit.name == ^Atom.to_string(name))
   end
 
-  # The organization's owners see what their deployment changed and when
-  # (RFD 22, "Audit"). No person in the organization made the change, so the
-  # entry names the operator rather than a user.
-  defp record_activity!(organization, kind, name, old, new, context) do
+  # The organization sees what its deployment changed and when (RFD 22,
+  # "Audit"): which limit, not its value, since Activity is open to every
+  # member and only owners see limit values. No person in the organization
+  # made the change, so the entry names the operator rather than a user.
+  defp record_activity!(organization, kind, name, context) do
     %ChangeEvent{organization_id: organization.id}
     |> ChangeEvent.changeset(%{
       kind: kind,
       field: Atom.to_string(name),
-      old_value: old && %{"value" => old},
-      new_value: new && %{"value" => new},
       metadata: %{"operator" => DeploymentAudit.actor_label(context)},
       occurred_at: Renga.Time.utc_now_ms()
     })

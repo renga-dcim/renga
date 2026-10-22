@@ -74,8 +74,8 @@ defmodule Renga.LimitsTest do
                  order_by: event.occurred_at,
                  select: {event.kind, event.old_value, event.new_value, event.metadata}
              ) == [
-               {"limit_set", nil, %{"value" => 600}, %{"operator" => "operator: alice"}},
-               {"limit_cleared", %{"value" => 600}, nil, %{"operator" => "operator: alice"}}
+               {"limit_set", nil, nil, %{"operator" => "operator: alice"}},
+               {"limit_cleared", nil, nil, %{"operator" => "operator: alice"}}
              ]
     end
 
@@ -87,6 +87,7 @@ defmodule Renga.LimitsTest do
             [job_creation_rate: -1],
             [job_creation_rate: Limits.max_value() + 1],
             [job_creation_rate: 5, nonexistent: 1],
+            [job_creation_rate: 1, job_creation_rate: 2],
             []
           ] do
         assert Limits.set(organization, settings, context) == {:error, :invalid}
@@ -95,7 +96,7 @@ defmodule Renga.LimitsTest do
       assert Limits.get(organization.id, :job_creation_rate) == 10_000
 
       assert Repo.all(from event in Event, select: {event.outcome, event.reason}) ==
-               List.duplicate({"rejected", "invalid"}, 4)
+               List.duplicate({"rejected", "invalid"}, 5)
 
       :ok = Limits.set(organization, [job_creation_rate: 0], context)
       assert Limits.get(organization.id, :job_creation_rate) == 0

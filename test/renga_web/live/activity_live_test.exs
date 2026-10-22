@@ -251,7 +251,7 @@ defmodule RengaWeb.ActivityLiveTest do
     |> LazyHTML.attribute("id")
   end
 
-  test "shows which operator changed a limit", %{conn: conn, scope: scope} do
+  test "shows which operator changed a limit, but not its value", %{conn: conn, scope: scope} do
     :ok =
       Renga.Limits.set(
         scope.organization,
@@ -261,7 +261,8 @@ defmodule RengaWeb.ActivityLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/activity")
 
-    assert has_element?(view, "#activity-events", "Set the job creation rate limit to 600")
+    assert has_element?(view, "#activity-events", "Changed the job creation rate limit")
     assert has_element?(view, "#activity-events span", "operator: alice")
+    refute has_element?(view, "#activity-events", "600")
   end
 end
