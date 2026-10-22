@@ -3,6 +3,7 @@
 use super::{config::LibvirtCollector, poll, reports, virsh, Virsh};
 use crate::{cancellation::Cancellation, snmp::worker::Sink};
 use std::{
+    sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -15,6 +16,10 @@ pub struct Module {
     collector: Option<LibvirtCollector>,
     stop: Cancellation,
     thread: Option<JoinHandle<()>>,
+    /// Threads of configurations a reload replaced. They were told to stop but may still be
+    /// killing a `virsh` call, so shutdown waits for them too.
+    retired: Vec<JoinHandle<()>>,
+    runner: Arc<Runner>,
 }
 
 /// Runs one `virsh` subcommand for the module; tests substitute a stand-in.
@@ -24,27 +29,49 @@ type Runner =
 impl Module {
     /// Starts the module when configured. It polls immediately, then every `interval`.
     pub fn start(collector: Option<LibvirtCollector>, sink: Sink) -> Self {
-        Self::spawn(collector, sink, Box::new(virsh))
+        Self::with_runner(collector, sink, Arc::new(virsh))
     }
 
-    fn spawn(collector: Option<LibvirtCollector>, sink: Sink, runner: Box<Runner>) -> Self {
+    fn with_runner(collector: Option<LibvirtCollector>, sink: Sink, runner: Arc<Runner>) -> Self {
         let stop = Cancellation::default();
-        let thread = collector.clone().and_then(|collector| {
-            let stop = stop.clone();
-            thread::Builder::new()
-                .name(format!("libvirt-{}", collector.id))
-                .spawn(move || {
-                    let run = |args: &[&str]| runner(&collector, &stop, args);
-                    run_module(&collector, &stop, &sink, &run);
-                })
-                .map_err(|error| warn!(%error, "cannot start the libvirt module"))
-                .ok()
-        });
+        let thread = Self::spawn(collector.clone(), &stop, sink, &runner);
         Self {
             collector,
             stop,
             thread,
+            retired: Vec::new(),
+            runner,
         }
+    }
+
+    fn spawn(
+        collector: Option<LibvirtCollector>,
+        stop: &Cancellation,
+        sink: Sink,
+        runner: &Arc<Runner>,
+    ) -> Option<JoinHandle<()>> {
+        let collector = collector?;
+        let stop = stop.clone();
+        let runner = Arc::clone(runner);
+        thread::Builder::new()
+            .name(format!("libvirt-{}", collector.id))
+            .spawn(move || {
+                let run = |args: &[&str]| runner(&collector, &stop, args);
+                run_module(&collector, &stop, &sink, &run);
+            })
+            .map_err(|error| warn!(%error, "cannot start the libvirt module"))
+            .ok()
+    }
+
+    /// Replaces the running configuration without waiting: the old thread is told to stop and
+    /// kept until it finishes, so [`shutdown`](Self::shutdown) can still wait for it.
+    pub fn restart(&mut self, collector: Option<LibvirtCollector>, sink: Sink) {
+        self.stop();
+        self.retired.extend(self.thread.take());
+        self.retired.retain(|thread| !thread.is_finished());
+        self.stop = Cancellation::default();
+        self.thread = Self::spawn(collector.clone(), &self.stop, sink, &self.runner);
+        self.collector = collector;
     }
 
     pub fn collector(&self) -> Option<&LibvirtCollector> {
@@ -56,11 +83,11 @@ impl Module {
         self.stop.cancel();
     }
 
-    /// Stops the module and waits until its `virsh` call, with everything it started, is gone,
-    /// so nothing outlives the agent. Reloads only [`stop`](Self::stop), to stay responsive.
+    /// Stops the module and waits until every `virsh` call it or a configuration it replaced
+    /// started, with everything those started, is gone, so nothing outlives the agent.
     pub fn shutdown(mut self) {
         self.stop();
-        if let Some(thread) = self.thread.take() {
+        for thread in self.thread.take().into_iter().chain(self.retired.drain(..)) {
             let _ = thread.join();
         }
     }
@@ -105,7 +132,7 @@ fn run_module(collector: &LibvirtCollector, stop: &Cancellation, sink: &Sink, vi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{mpsc, Mutex};
 
     #[test]
     fn polls_on_its_interval_until_stopped() {
@@ -136,12 +163,9 @@ mod tests {
         worker.join().unwrap();
     }
 
+    /// A module whose `virsh` stand-in starts a grandchild, records both PIDs, and blocks.
     #[cfg(unix)]
-    #[test]
-    fn shutdown_kills_the_virsh_call_in_flight_and_its_children() {
-        let directory =
-            std::env::temp_dir().join(format!("renga-libvirt-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&directory).unwrap();
+    fn blocking_module(directory: &std::path::Path) -> (Module, std::path::PathBuf) {
         let pids = directory.join("pids");
         let script = format!(
             "sleep 60 & echo $! > {0}; echo $$ >> {0}; sleep 60",
@@ -153,7 +177,7 @@ mod tests {
             interval: Duration::from_secs(300),
             timeout: Duration::from_secs(60),
         };
-        let runner: Box<Runner> = Box::new(move |collector, stop, _args| {
+        let runner: Arc<Runner> = Arc::new(move |collector, stop, _args| {
             crate::command::run_with_timeout(
                 std::process::Command::new("sh").args(["-c", &script]),
                 stop,
@@ -163,27 +187,46 @@ mod tests {
             .map_err(|error| error.to_string())
         });
         let sink: Sink = Arc::new(|_, _: &[u8]| {});
-        let module = Module::spawn(Some(collector), sink, runner);
+        (Module::with_runner(Some(collector), sink, runner), pids)
+    }
 
+    #[cfg(unix)]
+    fn running_pids(pids: &std::path::Path) -> Vec<i32> {
         let started = Instant::now();
-        while std::fs::read_to_string(&pids).map_or(true, |pids| pids.lines().count() < 2) {
+        while std::fs::read_to_string(pids).map_or(true, |pids| pids.lines().count() < 2) {
             assert!(
                 started.elapsed() < Duration::from_secs(10),
                 "virsh stand-in never ran"
             );
             thread::sleep(Duration::from_millis(20));
         }
-        let pids: Vec<i32> = std::fs::read_to_string(&pids)
+        std::fs::read_to_string(pids)
             .unwrap()
             .lines()
             .map(|pid| pid.parse().unwrap())
-            .collect();
+            .collect()
+    }
 
-        let stopping = Instant::now();
-        module.shutdown();
-        assert!(stopping.elapsed() < Duration::from_secs(5));
-        assert_all_gone(&pids);
-        std::fs::remove_dir_all(directory).unwrap();
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_kills_the_virsh_call_in_flight_and_its_children() {
+        for reload_first in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("renga-libvirt-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let (mut module, pids) = blocking_module(&directory);
+            let pids = running_pids(&pids);
+
+            // A reload that disables the module leaves the old call to finish on its own.
+            if reload_first {
+                module.restart(None, Arc::new(|_, _: &[u8]| {}));
+            }
+            let stopping = Instant::now();
+            module.shutdown();
+            assert!(stopping.elapsed() < Duration::from_secs(5));
+            assert_all_gone(&pids);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     /// SIGKILL is delivered asynchronously, and a killed grandchild is reparented and may

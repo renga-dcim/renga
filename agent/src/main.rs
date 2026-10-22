@@ -374,9 +374,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                 snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
             }
             if libvirt.collector() != config.libvirt.as_ref() {
-                libvirt.stop();
-                libvirt =
-                    LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
+                libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
             }
             scheduler.refresh_intervals(
                 Instant::now(),
