@@ -8,6 +8,7 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.MFA
+  alias Renga.Accounts.Passkeys
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
@@ -390,14 +391,73 @@ defmodule Renga.Accounts do
     end
   end
 
+  @doc "Records an account re-check for this session from a passkey assertion."
+  defdelegate recheck_with_passkey(user, session_token, response), to: Recheck
+
+  @doc """
+  Adds a passkey from the browser's registration response, if this session
+  passed the re-check, is bootstrapping its first credential, or is
+  recovering. Returns the passkey and, when it is the first factor, new
+  recovery codes.
+  """
+  def add_passkey(%User{} = user, session_token, response, name) do
+    # A recovering session spends its grant on this passkey; otherwise the
+    # re-check is checked again under the lock.
+    authorize =
+      if Recheck.recovering?(user, session_token),
+        do: fn -> Recheck.spend_recovery(user, session_token) end,
+        else: fn -> Recheck.authorized?(user, session_token, :add_factor) end
+
+    with {:ok, {passkey, codes}} <-
+           MFA.add_factor(user, fn -> Passkeys.register(user, response, name) end, authorize) do
+      {:ok, passkey, codes}
+    end
+  end
+
+  @doc "Removes a passkey if this session passed the re-check."
+  def remove_passkey(%User{} = user, session_token, passkey_id) do
+    MFA.remove_factor(user, fn -> Passkeys.delete(user, passkey_id) end, fn ->
+      Recheck.authorized?(user, session_token, :remove_factor)
+    end)
+  end
+
+  @doc "Options for signing in with any of this site's passkeys, including autofill."
+  def passkey_sign_in_options, do: Passkeys.authentication_options("sign_in")
+
+  @doc "Options for a passkey ceremony that only `user`'s passkeys can complete."
+  def passkey_options(%User{} = user, purpose) when purpose in ["second_step", "recheck"],
+    do: Passkeys.authentication_options(purpose, user)
+
+  @doc "Options for registering a new passkey for `user`."
+  defdelegate passkey_registration_options(user), to: Passkeys, as: :registration_options
+
+  @doc "The account's passkeys."
+  defdelegate list_passkeys(user), to: Passkeys, as: :list
+
+  @doc "Renames one of the account's passkeys."
+  defdelegate rename_passkey(user, passkey_id, name), to: Passkeys, as: :rename
+
+  @doc "Signs in with a discoverable passkey, which needs no second step."
+  def get_user_by_passkey(response) when is_map(response) do
+    case Passkeys.authenticate("sign_in", response) do
+      {:ok, user, _passkey} -> user
+      {:error, _reason} -> nil
+    end
+  end
+
   @doc "Whether this session signed in with a recovery code and may replace a factor."
   defdelegate recovering?(user, session_token), to: Recheck
 
   @doc """
   Completes the second step of signing in (RFD 19) with an authenticator
-  code or, failing that, a recovery code. Returns `{:ok, :totp}` or
-  `{:ok, :recovery_code}`.
+  code, a passkey assertion (`{:passkey, response}`), or, failing those, a
+  recovery code. Returns `{:ok, method}`.
   """
+  def verify_second_step(%User{} = user, {:passkey, response}) do
+    with {:ok, _user, _passkey} <- Passkeys.authenticate("second_step", response, user),
+         do: {:ok, :passkey}
+  end
+
   def verify_second_step(%User{} = user, code) when is_binary(code) do
     if String.match?(String.replace(code, ~r/\s/, ""), ~r/^\d{6}$/) do
       with :ok <- MFA.verify_totp(user, code), do: {:ok, :totp}

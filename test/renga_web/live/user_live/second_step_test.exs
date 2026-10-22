@@ -23,6 +23,29 @@ defmodule RengaWeb.UserLive.SecondStepTest do
     assert html =~ "recovery codes"
   end
 
+  test "offers the account's passkeys", %{conn: conn, user: user} do
+    authenticator = Renga.FakeAuthenticator.new()
+    options = Renga.Accounts.passkey_registration_options(user)
+
+    {:ok, _passkey} =
+      Renga.Accounts.Passkeys.register(
+        user,
+        Renga.FakeAuthenticator.register(authenticator, options)
+      )
+
+    conn =
+      post(conn, ~p"/users/log-in", %{
+        "user" => %{"email" => user.email, "password" => valid_user_password()}
+      })
+
+    {:ok, lv, _html} = live(recycle(conn), ~p"/users/log-in/second-step")
+
+    assert has_element?(lv, "#second_step_passkey_form[data-mode=get]")
+
+    assert lv |> element("#second_step_passkey_form") |> render() =~
+             Base.url_encode64(authenticator.credential_id, padding: false)
+  end
+
   test "without a half-finished sign-in it goes back to signing in", %{conn: conn} do
     assert {:error, {:redirect, %{to: "/users/log-in"}}} =
              live(conn, ~p"/users/log-in/second-step")

@@ -407,12 +407,13 @@ defmodule RengaWeb.UserLive.SettingsTest do
 
       turn_on(lv)
 
-      assert has_element?(lv, "#totp_status", "10 recovery codes left.")
+      assert has_element?(lv, "#totp_status", "On.")
       assert lv |> element("#recovery_codes li") |> has_element?()
       assert Renga.Accounts.MFA.totp_enabled?(user)
 
       lv |> element("button", "I've saved them") |> render_click()
       refute has_element?(lv, "#recovery_codes")
+      assert has_element?(lv, "#recovery_status", "10 recovery codes left.")
     end
 
     test "a turn-on event with no setup open does nothing", %{conn: conn, user: user} do
@@ -518,6 +519,114 @@ defmodule RengaWeb.UserLive.SettingsTest do
                  user,
                  NimbleTOTP.verification_code(secret, time: System.os_time(:second) + 30)
                )
+    end
+  end
+
+  describe "passkeys" do
+    alias Renga.FakeAuthenticator
+
+    setup %{conn: conn} do
+      user = user_fixture() |> set_password()
+      %{conn: log_in_user(conn, user), user: user}
+    end
+
+    # The browser hook answers "passkey:start" by running the ceremony and
+    # pushing its reply; the fake authenticator stands in for the browser.
+    defp answer_passkey(lv, target, reply, fun) do
+      assert_push_event(lv, "passkey:start", %{target: ^target, options: options})
+      lv |> element("##{target}") |> render_hook(reply, %{"response" => fun.(options)})
+    end
+
+    defp add_passkey(lv, authenticator, name \\ "Laptop") do
+      lv |> form("#passkey_form", %{"passkey" => %{"name" => name}}) |> render_submit()
+
+      if has_element?(lv, "#recheck_form") do
+        lv
+        |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+        |> render_submit()
+      end
+
+      answer_passkey(lv, "passkey_register", "register_passkey", fn options ->
+        FakeAuthenticator.register(authenticator, options)
+      end)
+    end
+
+    test "adding a passkey asks for the password, then shows recovery codes", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(lv, "#passkey_name_0")
+
+      html = add_passkey(lv, FakeAuthenticator.new())
+
+      assert html =~ "Passkey “Laptop” added."
+      # A fresh name field, so the browser drops the name just used.
+      assert has_element?(lv, "#passkey_name_1[value=Passkey]")
+      assert has_element?(lv, "#passkeys li", "Laptop")
+      assert has_element?(lv, "#recovery_codes li")
+      assert Renga.Accounts.MFA.mfa?(user)
+    end
+
+    test "with a passkey, the re-check asks for it instead of the password", %{
+      conn: conn,
+      user: user
+    } do
+      authenticator = FakeAuthenticator.new()
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      add_passkey(lv, authenticator)
+      [passkey] = Renga.Accounts.list_passkeys(user)
+
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+      lv |> element("#passkey-#{passkey.id} button", "Remove") |> render_click()
+
+      assert has_element?(lv, "#recheck_passkey_start")
+      refute has_element?(lv, "#recheck_form")
+
+      lv |> element("#recheck_passkey_start") |> render_click()
+
+      answer_passkey(lv, "recheck_passkey", "recheck_passkey", fn options ->
+        FakeAuthenticator.assert(authenticator, options)
+      end)
+
+      assert Renga.Accounts.list_passkeys(user) == []
+      refute Renga.Accounts.MFA.mfa?(user)
+      assert Renga.Accounts.MFA.recovery_codes_left(user) == 0
+    end
+
+    test "a failed passkey re-check says so and keeps the passkey", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      add_passkey(lv, FakeAuthenticator.new())
+      [passkey] = Renga.Accounts.list_passkeys(user)
+
+      {:ok, lv, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+      lv |> element("#passkey-#{passkey.id} button", "Remove") |> render_click()
+      lv |> element("#recheck_passkey_start") |> render_click()
+
+      # A different authenticator answers: its credential is not on file.
+      answer_passkey(lv, "recheck_passkey", "recheck_passkey", fn options ->
+        FakeAuthenticator.assert(FakeAuthenticator.new(), options)
+      end)
+
+      assert has_element?(lv, "#recheck_passkey_error")
+      assert [_] = Renga.Accounts.list_passkeys(user)
+    end
+
+    test "a cancelled ceremony adds nothing", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      lv |> form("#passkey_form", %{"passkey" => %{"name" => "Laptop"}}) |> render_submit()
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      html =
+        lv
+        |> element("#passkey_register")
+        |> render_hook("register_passkey", %{"error" => "NotAllowedError"})
+
+      assert html =~ "The passkey wasn&#39;t added."
+      assert Renga.Accounts.list_passkeys(user) == []
     end
   end
 end

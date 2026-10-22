@@ -13,6 +13,13 @@ defmodule RengaWeb.UserLive.LoginTest do
       assert html =~ "Log in with email"
     end
 
+    test "offers passkeys first, with autofill on the email field", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/log-in")
+
+      assert has_element?(lv, "#passkey_login_form[data-conditional][data-mode=get]")
+      assert has_element?(lv, "#login_form_magic_email[autocomplete='username webauthn']")
+    end
+
     test "titles the page with the product name only", %{conn: conn} do
       html = conn |> get(~p"/users/log-in") |> html_response(200)
 

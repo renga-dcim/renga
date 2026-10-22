@@ -20,6 +20,7 @@ defmodule Renga.Accounts.Recheck do
   alias Renga.Accounts.AccountAuthorization
   alias Renga.Accounts.AccountChallenge
   alias Renga.Accounts.MFA
+  alias Renga.Accounts.Passkeys
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
@@ -44,12 +45,19 @@ defmodule Renga.Accounts.Recheck do
 
   @doc """
   The ways this account can pass the re-check. An account with a second
-  factor confirms with it; one without enters its password. An empty list
+  factor confirms with a passkey or authenticator code; one without enters
+  its password. An empty list
   means the account must bootstrap through its email first.
   """
   def methods(%User{} = user) do
+    factors =
+      Enum.filter(
+        [passkey: Passkeys.any?(user), totp: MFA.totp_enabled?(user)],
+        fn {_method, held?} -> held? end
+      )
+
     cond do
-      MFA.totp_enabled?(user) -> [:totp]
+      factors != [] -> Keyword.keys(factors)
       user.hashed_password -> [:password]
       true -> []
     end
@@ -142,6 +150,20 @@ defmodule Renga.Accounts.Recheck do
   def recheck_with_totp(%User{} = user, session_token, code) when is_binary(code) do
     with {:ok, session} <- fetch_session(user, session_token),
          :ok <- MFA.verify_totp(user, code) do
+      grant(session, "recheck")
+    else
+      :error -> {:error, :no_session}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Verifies a passkey assertion from `user` and, if it passes, records a
+  re-check for this session.
+  """
+  def recheck_with_passkey(%User{} = user, session_token, response) when is_map(response) do
+    with {:ok, session} <- fetch_session(user, session_token),
+         {:ok, _user, _passkey} <- Passkeys.authenticate("recheck", response, user) do
       grant(session, "recheck")
     else
       :error -> {:error, :no_session}

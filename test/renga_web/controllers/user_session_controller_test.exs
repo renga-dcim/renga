@@ -311,6 +311,81 @@ defmodule RengaWeb.UserSessionControllerTest do
     end
   end
 
+  describe "passkeys" do
+    alias Renga.Accounts.Passkeys
+    alias Renga.FakeAuthenticator
+
+    setup %{user: user} do
+      authenticator = FakeAuthenticator.new()
+      response = FakeAuthenticator.register(authenticator, Passkeys.registration_options(user))
+      {:ok, _passkey} = Passkeys.register(user, response)
+      %{authenticator: authenticator}
+    end
+
+    test "a passkey signs in by itself", %{conn: conn, user: user, authenticator: authenticator} do
+      response = FakeAuthenticator.assert(authenticator, Accounts.passkey_sign_in_options())
+
+      conn =
+        post(conn, ~p"/users/log-in/passkey", %{
+          "passkey" => %{"response" => Jason.encode!(response)}
+        })
+
+      assert redirected_to(conn) == ~p"/"
+
+      assert {signed_in, _inserted_at} =
+               Accounts.get_user_by_session_token(get_session(conn, :user_token))
+
+      assert signed_in.id == user.id
+    end
+
+    test "a bad passkey response signs nobody in", %{conn: conn} do
+      conn = post(conn, ~p"/users/log-in/passkey", %{"passkey" => %{"response" => "{}"}})
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+    end
+
+    test "a passkey completes the second step", %{
+      conn: conn,
+      user: user,
+      authenticator: authenticator
+    } do
+      {token, _hashed} = generate_user_magic_link_token(user)
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+      assert redirected_to(conn) == ~p"/users/log-in/second-step"
+
+      response =
+        FakeAuthenticator.assert(authenticator, Accounts.passkey_options(user, "second_step"))
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"passkey" => Jason.encode!(response)}
+        })
+
+      assert get_session(conn, :user_token)
+    end
+
+    test "another account's passkey cannot complete the second step", %{
+      conn: conn,
+      authenticator: authenticator
+    } do
+      other = user_fixture()
+      totp_fixture(other)
+      {token, _hashed} = generate_user_magic_link_token(other)
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+
+      response =
+        FakeAuthenticator.assert(authenticator, Accounts.passkey_options(other, "second_step"))
+
+      conn =
+        post(recycle(conn), ~p"/users/log-in/second-step", %{
+          "second_step" => %{"passkey" => Jason.encode!(response)}
+        })
+
+      refute get_session(conn, :user_token)
+    end
+  end
+
   describe "POST /users/update-password" do
     setup %{conn: conn, user: user} do
       user = set_password(user)
