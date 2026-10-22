@@ -508,7 +508,7 @@ defmodule RengaUI.CoreComponents do
     attr :clip, :boolean, doc: "set false when the slot owns its clipping and reveal controls"
 
     attr :hide_below, :string,
-      doc: "with overflow=\"clip\", hide the column below this container size (sm to 6xl)"
+      doc: "with overflow=\"clip\", hide the column below this container size (sm to 7xl)"
   end
 
   slot :action, doc: "the slot for showing user actions in the last table column"
@@ -732,6 +732,7 @@ defmodule RengaUI.CoreComponents do
   defp hide_below("4xl"), do: "hidden @4xl:table-cell"
   defp hide_below("5xl"), do: "hidden @5xl:table-cell"
   defp hide_below("6xl"), do: "hidden @6xl:table-cell"
+  defp hide_below("7xl"), do: "hidden @7xl:table-cell"
 
   defp row_command(nil, nil, nil, _row), do: nil
   defp row_command(row_click, nil, nil, row), do: row_click.(row)

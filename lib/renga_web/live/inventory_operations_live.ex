@@ -459,7 +459,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="Power sources" class="w-36" hide_below="3xl">
+            <:col :let={{_id, source}} label="Power sources" class="w-36" hide_below="7xl">
               <span id={"collector-power-#{source.id}"}>
                 <.collector_power_sources
                   id={"collector-power-#{source.id}"}
