@@ -4,6 +4,7 @@ defmodule Renga.InventoryResourceConcurrencyTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
 
   test "concurrent stale updates allow one winner and reject the rest" do
@@ -96,6 +97,199 @@ defmodule Renga.InventoryResourceConcurrencyTest do
     end)
   end
 
+  # `update_resource/3` also locks the organization row, which would hide a
+  # revision lock that no longer excludes, so this allocates directly. The
+  # waiter spells the organization ID differently: it is still the same lock.
+  test "a revision allocator waits for its organization's holder to commit or roll back" do
+    with_resource(fn scope, _resource ->
+      test_process = self()
+
+      holder =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              revision = ResourceStore.next_revision!(scope.organization_id)
+              send(test_process, {:revision_held, revision})
+
+              receive do
+                :roll_back -> Repo.rollback(:rolled_back)
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive {:revision_held, held_revision}, 1_000
+
+      waiter =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              ResourceStore.next_revision!(String.upcase(scope.organization_id))
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      waited =
+        try do
+          Task.yield(waiter, 200)
+        after
+          send(holder.pid, :roll_back)
+        end
+
+      assert waited == nil
+      assert {:error, :rolled_back} = Task.await(holder)
+      assert {:ok, revision} = Task.await(waiter)
+      assert revision > held_revision
+
+      assert_raise ArgumentError, ~r/enclosing transaction/, fn ->
+        ResourceStore.next_revision!(scope.organization_id)
+      end
+    end)
+  end
+
+  test "revision allocation in one organization does not wait on another (RFD 21)" do
+    with_resource(fn scope, first ->
+      {other_organization, other_scope, other} = organization_with_resource()
+
+      try do
+        test_process = self()
+
+        holder =
+          Task.async(fn ->
+            :ok = Sandbox.checkout(Repo, sandbox: false)
+
+            try do
+              Repo.transaction(fn ->
+                result = Inventory.update_resource(scope, first, %{display_name: "Held"})
+                send(test_process, :revision_held)
+
+                receive do
+                  :commit -> result
+                end
+              end)
+            after
+              Sandbox.checkin(Repo)
+            end
+          end)
+
+        assert_receive :revision_held, 1_000
+
+        other_task =
+          Task.async(fn ->
+            :ok = Sandbox.checkout(Repo, sandbox: false)
+
+            try do
+              Inventory.update_resource(other_scope, other, %{display_name: "Not blocked"})
+            after
+              Sandbox.checkin(Repo)
+            end
+          end)
+
+        other_result =
+          try do
+            Task.yield(other_task, 1_000)
+          after
+            send(holder.pid, :commit)
+          end
+
+        assert {:ok, {:ok, _other_updated}} = other_result
+        assert {:ok, {:ok, _first_updated}} = Task.await(holder)
+      after
+        Repo.delete!(other_organization)
+      end
+    end)
+  end
+
+  test "an allocator still taking the pre-RFD 21 global lock excludes current allocators" do
+    with_resource(fn scope, resource ->
+      test_process = self()
+
+      legacy_writer =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              Repo.query!("SELECT pg_advisory_xact_lock($1)", [1_380_271_687])
+              send(test_process, :legacy_lock_held)
+
+              receive do
+                :commit -> :ok
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :legacy_lock_held, 1_000
+
+      current_writer =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.update_resource(scope, resource, %{display_name: "After legacy"})
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      blocked =
+        try do
+          Task.yield(current_writer, 200)
+        after
+          send(legacy_writer.pid, :commit)
+        end
+
+      assert blocked == nil
+      assert {:ok, :ok} = Task.await(legacy_writer)
+      assert {:ok, updated} = Task.await(current_writer)
+
+      # And the other way round: while a current allocator holds its
+      # revision, a legacy allocator cannot take the global lock.
+      current_holder =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              result = Inventory.update_resource(scope, updated, %{display_name: "Held"})
+              send(test_process, :current_revision_held)
+
+              receive do
+                :commit -> result
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :current_revision_held, 1_000
+
+      legacy_available =
+        try do
+          Repo.transaction(fn ->
+            Repo.query!("SELECT pg_try_advisory_xact_lock($1)", [1_380_271_687]).rows
+          end)
+        after
+          send(current_holder.pid, :commit)
+        end
+
+      assert legacy_available == {:ok, [[false]]}
+      assert {:ok, {:ok, _resource}} = Task.await(current_holder)
+    end)
+  end
+
   test "concurrent initial condition puts both succeed" do
     with_resource(fn scope, resource ->
       test_process = self()
@@ -155,21 +349,7 @@ defmodule Renga.InventoryResourceConcurrencyTest do
 
   defp with_resource(fun) do
     :ok = Sandbox.checkout(Repo, sandbox: false)
-
-    {:ok, organization} =
-      Accounts.create_organization(%{
-        name: "Concurrent Resource Updates",
-        slug: "concurrent-resource-#{System.unique_integer([:positive])}"
-      })
-
-    scope = Accounts.scope_for(organization)
-
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{
-        kind: "server",
-        name: "concurrent-resource",
-        spec: %{}
-      })
+    {organization, scope, resource} = organization_with_resource()
 
     try do
       fun.(scope, resource)
@@ -190,5 +370,24 @@ defmodule Renga.InventoryResourceConcurrencyTest do
 
       fun.(scope, first, second)
     end)
+  end
+
+  defp organization_with_resource do
+    {:ok, organization} =
+      Accounts.create_organization(%{
+        name: "Concurrent Resource Updates",
+        slug: "concurrent-resource-#{System.unique_integer([:positive])}"
+      })
+
+    scope = Accounts.scope_for(organization)
+
+    {:ok, resource} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "concurrent-resource",
+        spec: %{}
+      })
+
+    {organization, scope, resource}
   end
 end

@@ -2893,19 +2893,24 @@ defmodule Renga.TopologyTest do
   test "database index rejects duplicate ungrouped VIDs independently of envelope names", %{
     scope: scope
   } do
-    {:ok, first_resource} =
-      ResourceStore.insert(scope.organization_id, %{
-        kind: "vlan",
-        name: "direct-global-100-a",
-        lifecycle_state: "active"
-      })
+    {:ok, {first_resource, second_resource}} =
+      Repo.transaction(fn ->
+        {:ok, first_resource} =
+          ResourceStore.insert(scope.organization_id, %{
+            kind: "vlan",
+            name: "direct-global-100-a",
+            lifecycle_state: "active"
+          })
 
-    {:ok, second_resource} =
-      ResourceStore.insert(scope.organization_id, %{
-        kind: "vlan",
-        name: "direct-global-100-b",
-        lifecycle_state: "active"
-      })
+        {:ok, second_resource} =
+          ResourceStore.insert(scope.organization_id, %{
+            kind: "vlan",
+            name: "direct-global-100-b",
+            lifecycle_state: "active"
+          })
+
+        {first_resource, second_resource}
+      end)
 
     assert {:ok, _first_vlan} =
              %Vlan{organization_id: scope.organization_id, resource_id: first_resource.id}
