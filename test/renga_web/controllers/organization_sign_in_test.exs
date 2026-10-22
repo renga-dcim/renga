@@ -1,0 +1,220 @@
+defmodule RengaWeb.OrganizationSignInTest do
+  use RengaWeb.ConnCase, async: true
+
+  import Phoenix.LiveViewTest
+  import Renga.AccountsFixtures
+  import Renga.InventoryFixtures
+
+  alias Renga.Accounts
+  alias Renga.Accounts.OrganizationProviders
+  alias Renga.Accounts.Scope
+  alias Renga.Accounts.UserIdentity
+  alias Renga.FakeOIDCProvider
+  alias Renga.Repo
+
+  setup do
+    fake = FakeOIDCProvider.new()
+    FakeOIDCProvider.stub(fake)
+
+    organization = organization_fixture(%{name: "Acme Corp"})
+    owner = user_fixture()
+    membership = organization_membership_fixture(owner, organization, %{role: "owner"})
+    scope = Scope.for_membership(owner, organization, membership)
+
+    %{fake: fake, organization: organization, provider: provider(scope, fake)}
+  end
+
+  defp provider(scope, fake, overrides \\ %{}) do
+    {:ok, {provider, _}} =
+      OrganizationProviders.create(
+        scope,
+        Map.merge(
+          %{
+            "id" => OrganizationProviders.new_id(),
+            "issuer" => fake.issuer,
+            "display_name" => "Acme SSO",
+            "client_id" => fake.client_id,
+            "client_secret" => "client-secret",
+            "allow_sign_up" => true
+          },
+          overrides
+        )
+      )
+
+    # Activation is a test sign-in; these tests start from an active one.
+    provider
+    |> Ecto.Changeset.change(active_revision: provider.pending_revision, pending_revision: nil)
+    |> Repo.update!()
+  end
+
+  defp claims(overrides \\ %{}) do
+    Map.merge(
+      %{"sub" => "acme-1", "email" => "sam@acme.example", "email_verified" => true},
+      overrides
+    )
+  end
+
+  defp sign_in(conn, fake, provider, claims) do
+    conn = get(conn, ~p"/users/log-in/provider/#{provider.id}")
+    params = FakeOIDCProvider.authorize(fake, redirected_to(conn, 302), claims)
+    get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+  end
+
+  defp session_user(conn) do
+    {user, _inserted_at} =
+      conn |> get_session(:user_token) |> Accounts.get_user_by_session_token()
+
+    user
+  end
+
+  describe "the organization's sign-in link" do
+    test "offers its providers first", %{
+      conn: conn,
+      organization: organization,
+      provider: provider
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in?organization=#{organization.slug}")
+
+      assert has_element?(view, "#organization_provider_options", "Acme Corp")
+      assert has_element?(view, "#provider-#{provider.id}", "Log in with Acme SSO")
+    end
+
+    test "the usual page never lists an organization's providers", %{
+      conn: conn,
+      provider: provider
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      refute has_element?(view, "#organization_provider_options")
+      refute has_element?(view, "#provider-#{provider.id}")
+    end
+
+    test "an unknown organization, or one with no usable provider, shows the usual page", %{
+      conn: conn,
+      organization: organization,
+      provider: provider
+    } do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in?organization=nobody-here")
+      refute has_element?(view, "#organization_provider_options")
+
+      provider |> Ecto.Changeset.change(enabled: false) |> Repo.update!()
+      {:ok, view, _html} = live(conn, ~p"/users/log-in?organization=#{organization.slug}")
+      refute has_element?(view, "#organization_provider_options")
+    end
+  end
+
+  describe "signing up" do
+    test "creates an account with no global email and a session for the organization only", %{
+      conn: conn,
+      fake: fake,
+      organization: organization,
+      provider: provider
+    } do
+      conn = sign_in(conn, fake, provider, claims())
+
+      assert redirected_to(conn) == ~p"/"
+      user = session_user(conn)
+      assert user.email == nil
+      assert user.confirmed_at == nil
+      assert user.session_organization_id == organization.id
+
+      assert %UserIdentity{email: "sam@acme.example"} =
+               Repo.get_by(UserIdentity, provider_id: provider.id, subject: "acme-1")
+
+      # The asserted address reserves nothing: someone else can still
+      # register it as their global email.
+      assert %{email: "sam@acme.example"} = user_fixture(%{email: "sam@acme.example"})
+    end
+
+    test "the new account can find its way around", %{conn: conn, fake: fake, provider: provider} do
+      conn = sign_in(conn, fake, provider, claims())
+
+      {:ok, view, _html} = live(recycle(conn), ~p"/organizations")
+      assert has_element?(view, "#scoped-session-organizations")
+
+      {:ok, view, _html} = live(recycle(conn), ~p"/users/settings")
+      assert has_element?(view, "#scoped_session_notice")
+    end
+
+    test "a returning person signs in to the same account", %{
+      conn: conn,
+      fake: fake,
+      provider: provider
+    } do
+      first = conn |> sign_in(fake, provider, claims()) |> session_user()
+
+      again =
+        build_conn()
+        |> sign_in(fake, provider, claims(%{"email" => "sam.new@acme.example"}))
+        |> session_user()
+
+      assert again.id == first.id
+
+      assert %UserIdentity{email: "sam.new@acme.example"} =
+               Repo.get_by(UserIdentity, provider_id: provider.id, subject: "acme-1")
+    end
+
+    test "never takes over an account with the same email", %{
+      conn: conn,
+      fake: fake,
+      provider: provider
+    } do
+      existing = user_fixture(%{email: "sam@acme.example"})
+      conn = sign_in(conn, fake, provider, claims())
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "already uses that email"
+      refute get_session(conn, :user_token)
+      assert Accounts.list_user_identities(existing) == []
+    end
+
+    test "only when the organization allows it", %{conn: conn, fake: fake, organization: org} do
+      owner = user_fixture()
+      membership = organization_membership_fixture(owner, org, %{role: "owner"})
+
+      closed =
+        provider(Scope.for_membership(owner, org, membership), fake, %{"allow_sign_up" => false})
+
+      conn = sign_in(conn, fake, closed, claims())
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+    end
+  end
+
+  test "a member signs in to their organization", %{
+    conn: conn,
+    fake: fake,
+    organization: organization,
+    provider: provider
+  } do
+    user = conn |> sign_in(fake, provider, claims()) |> session_user()
+    organization_membership_fixture(user, organization)
+    elsewhere = organization_fixture()
+    organization_membership_fixture(user, elsewhere)
+
+    conn = sign_in(build_conn(), fake, provider, claims())
+
+    assert get_session(conn, :current_organization_id) == organization.id
+    assert Accounts.scope_for_user(session_user(conn), elsewhere.id).organization_id == nil
+
+    {:ok, _view, html} = live(recycle(conn), ~p"/inbox")
+    assert html =~ "Account without an email"
+  end
+
+  test "a disabled organization's provider signs nobody in", %{
+    conn: conn,
+    fake: fake,
+    organization: organization,
+    provider: provider
+  } do
+    conn = get(conn, ~p"/users/log-in/provider/#{provider.id}")
+    params = FakeOIDCProvider.authorize(fake, redirected_to(conn, 302), claims())
+    {:ok, _} = Accounts.update_organization(organization, %{status: "disabled"})
+
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+    assert redirected_to(conn) == ~p"/users/log-in"
+    refute get_session(conn, :user_token)
+  end
+end

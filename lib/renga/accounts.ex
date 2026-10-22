@@ -648,8 +648,11 @@ defmodule Renga.Accounts do
   lock on the provider, so it cannot be disabled, removed, or given another
   active revision meanwhile, it checks the provider still uses the revision
   the attempt started with, resolves the account, and runs `issue` with it.
-  `issue` creates the session and returns `{:ok, value}`; anything else rolls
-  the whole sign-in back, an account it would have created included.
+  For an organization's provider, that user carries the organization as its
+  `session_organization_id`, so the session `issue` creates is scoped to it
+  (RFD 15). `issue` creates the session and returns `{:ok, value}`; anything
+  else rolls the whole sign-in back, an account it would have created
+  included.
   """
   def finish_provider_sign_in(%{provider: provider, revision: revision} = result, issue) do
     # A sign-in may link SCIM entries and so change grants (RFD 16).
@@ -661,14 +664,16 @@ defmodule Renga.Accounts do
       current =
         Repo.one(
           from p in Renga.Accounts.IdentityProvider,
-            where: p.id == ^provider.id and is_nil(p.removed_at) and is_nil(p.organization_id),
+            where: p.id == ^provider.id and is_nil(p.removed_at),
             lock: "FOR SHARE"
         )
 
       with %{enabled: true} <- current || {:error, :inactive},
            %{active_revision: number} when number == revision.number <- current,
+           true <- organization_active?(current) || {:error, :inactive},
            {:ok, user} <- Renga.Accounts.Identities.resolve(result),
-           {:ok, value} <- issue.(user) do
+           # An organization provider's session opens only its organization.
+           {:ok, value} <- issue.(%{user | session_organization_id: current.organization_id}) do
         value
       else
         %{enabled: false} -> Repo.rollback(:inactive)
@@ -678,6 +683,14 @@ defmodule Renga.Accounts do
       end
     end)
   end
+
+  defp organization_active?(%{organization_id: nil}), do: true
+
+  defp organization_active?(%{organization_id: organization_id}),
+    do:
+      Repo.exists?(
+        from o in Organization, where: o.id == ^organization_id and o.status == "active"
+      )
 
   ## Linked identities
 

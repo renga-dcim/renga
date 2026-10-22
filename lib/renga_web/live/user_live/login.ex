@@ -26,6 +26,27 @@ defmodule RengaWeb.UserLive.Login do
           </p>
         </div>
 
+        <div :if={@organization} id="organization_provider_options" class="space-y-2">
+          <p class="text-sm text-fg-muted">
+            Log in to <span class="font-medium text-fg">{@organization.name}</span>
+            with its identity provider.
+          </p>
+          <.button
+            :for={provider <- @organization_providers}
+            id={"provider-#{provider.id}"}
+            href={~p"/users/log-in/provider/#{provider.id}"}
+            variant="primary"
+            class="w-full"
+          >
+            Log in with {provider.display_name}
+          </.button>
+        </div>
+
+        <.divider
+          :if={@organization != nil and (@providers != [] or @local_sign_in)}
+          label="or another way"
+        />
+
         <div :if={@providers != []} id="provider_options" class="space-y-2">
           <.button
             :for={provider <- @providers}
@@ -150,11 +171,19 @@ defmodule RengaWeb.UserLive.Login do
     # asks for one.
     passkey_options = if connected?(socket), do: Accounts.passkey_sign_in_options()
 
+    # An organization's sign-in link offers its own providers first. An
+    # unknown organization, or one without any, shows the usual page.
+    {organization, organization_providers} =
+      Accounts.IdentityProviders.organization_sign_in_options(params["organization"]) ||
+        {nil, []}
+
     {:ok,
      assign(socket,
        form: form,
        trigger_submit: false,
        passkey_options: passkey_options,
+       organization: organization,
+       organization_providers: organization_providers,
        providers: Accounts.IdentityProviders.sign_in_options(params["provider"]),
        local_sign_in: SignInPolicy.local_sign_in?(),
        registration_open: SignInPolicy.registration_open?()

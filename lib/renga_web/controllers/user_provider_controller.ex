@@ -26,8 +26,11 @@ defmodule RengaWeb.UserProviderController do
 
   @attempt_key :provider_attempt
 
+  # A deployment provider, or an organization's: its sign-in can open only
+  # that organization (RFD 15), which `Accounts.finish_provider_sign_in/2`
+  # binds to the session.
   def start(conn, %{"provider" => id}) do
-    with %{} = provider <- IdentityProviders.get(id),
+    with %{} = provider <- IdentityProviders.get_any(id),
          {:ok, url, attempt} <- OIDC.start(provider, callback_url(id)) do
       conn
       |> put_session(@attempt_key, attempt)
