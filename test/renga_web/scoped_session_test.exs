@@ -35,6 +35,16 @@ defmodule RengaWeb.ScopedSessionTest do
     refute has_element?(view, "#organization-form")
   end
 
+  test "with no organization left, the picker doesn't offer to create one", %{conn: conn} do
+    conn =
+      log_in_user(conn, %{user_fixture() | session_organization_id: organization_fixture().id})
+
+    {:ok, view, _html} = live(conn, ~p"/organizations")
+
+    assert has_element?(view, "#organizations-empty", "No organizations yet.")
+    refute has_element?(view, "#organizations-empty", "Create the first one")
+  end
+
   test "selecting another organization is refused", %{conn: conn, home: home, other: other} do
     conn = post(conn, ~p"/organizations/select", %{"organization" => %{"id" => other.id}})
 

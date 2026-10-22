@@ -79,7 +79,9 @@ defmodule RengaWeb.OrganizationLive.Index do
               id="organizations-empty"
               class="px-4 py-8 text-center text-sm text-fg-muted"
             >
-              No organizations yet. Create the first one below.
+              No organizations yet.<span :if={!@current_scope.user.session_organization_id}>
+                Create the first one below.
+              </span>
             </li>
             <li
               :for={{id, membership} <- @streams.memberships}
