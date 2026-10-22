@@ -27,6 +27,7 @@ defmodule Renga.Application do
         job_sweeper(),
         job_history_purger(),
         invitation_delivery_worker(),
+        RengaWeb.Scim.RateLimit.Table,
         # Keep the endpoints last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint,
         RengaWeb.OperatorEndpoint
