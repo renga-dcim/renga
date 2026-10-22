@@ -10,6 +10,7 @@ defmodule RengaWeb.PageController do
   defp destination(%Scope{organization_id: organization_id}) when is_binary(organization_id),
     do: ~p"/inbox"
 
+  defp destination(%Scope{mfa_organization: %{}}), do: ~p"/organizations/confirm-mfa"
   defp destination(%Scope{user: %Renga.Accounts.User{}}), do: ~p"/organizations"
   defp destination(_scope), do: ~p"/users/log-in"
 end

@@ -333,8 +333,8 @@ defmodule RengaWeb.UserAuth do
   """
   def put_current_organization(conn, organization_id) when is_binary(organization_id) do
     with %Scope{user: %Accounts.User{} = user} <- conn.assigns[:current_scope],
-         %Scope{organization_id: ^organization_id} = scope <-
-           Accounts.scope_for_user(user, organization_id) do
+         %Scope{} = scope <- Accounts.scope_for_user(user, organization_id),
+         true <- opens?(scope, organization_id) do
       conn
       |> put_session(@current_organization_key, organization_id)
       |> put_resp_cookie(
@@ -351,6 +351,12 @@ defmodule RengaWeb.UserAuth do
   def put_current_organization(conn, %{id: organization_id}) when is_binary(organization_id) do
     put_current_organization(conn, organization_id)
   end
+
+  # A member whose session must first confirm a second factor (RFD 19)
+  # still selects the organization, so it opens once they confirm.
+  defp opens?(%Scope{organization_id: id}, id), do: true
+  defp opens?(%Scope{mfa_organization: %{id: id}}, id), do: true
+  defp opens?(_scope, _organization_id), do: false
 
   @doc """
   Clears the selected organization from the session and refreshes `current_scope`.
@@ -591,15 +597,22 @@ defmodule RengaWeb.UserAuth do
   def on_mount(:require_organization, _params, session, socket) do
     socket = mount_current_scope(socket, session)
 
-    if socket.assigns.current_scope.organization_id do
-      {:cont, socket}
-    else
-      socket =
-        socket
-        |> Phoenix.LiveView.put_flash(:error, "Select an organization to view inventory.")
-        |> Phoenix.LiveView.redirect(to: ~p"/organizations")
+    case socket.assigns.current_scope do
+      %Scope{organization_id: organization_id} when is_binary(organization_id) ->
+        {:cont, socket}
 
-      {:halt, socket}
+      # The organization requires MFA and this session has not shown a
+      # second factor yet: ask for one in place (RFD 19).
+      %Scope{mfa_organization: %{}} ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/organizations/confirm-mfa")}
+
+      _no_organization ->
+        socket =
+          socket
+          |> Phoenix.LiveView.put_flash(:error, "Select an organization to view inventory.")
+          |> Phoenix.LiveView.redirect(to: ~p"/organizations")
+
+        {:halt, socket}
     end
   end
 

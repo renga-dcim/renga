@@ -22,7 +22,7 @@ defmodule Renga.Accounts.Passkeys do
   alias Renga.Repo
 
   @challenge_seconds 5 * 60
-  @purposes ~w(register sign_in second_step recheck)
+  @purposes ~w(register sign_in second_step recheck confirm_mfa)
   # ES256, then RS256 for authenticators that only offer RSA.
   @algorithms [-7, -257]
 
@@ -114,7 +114,7 @@ defmodule Renga.Accounts.Passkeys do
   autofill).
   """
   def authentication_options(purpose, user \\ nil)
-      when purpose in ["sign_in", "second_step", "recheck"] do
+      when purpose in ["sign_in", "second_step", "recheck", "confirm_mfa"] do
     challenge = new_challenge(purpose, user)
 
     %{
