@@ -169,13 +169,7 @@ defmodule Renga.Power.Readings do
   def for_resources(%Scope{}, [], %DateTime{}), do: %{}
 
   def for_resources(%Scope{organization_id: organization_id}, resource_ids, %DateTime{} = now) do
-    resource_ids = if resource_ids == :all, do: :all, else: Enum.uniq(resource_ids)
-
-    subjects =
-      Map.merge(
-        host_subjects(organization_id, resource_ids),
-        target_subjects(organization_id, resource_ids)
-      )
+    subjects = subjects(%Scope{organization_id: organization_id}, resource_ids)
 
     organization_id
     |> subject_readings(Map.keys(subjects))
@@ -183,6 +177,20 @@ defmodule Renga.Power.Readings do
     |> Enum.group_by(&equivalence/1)
     |> Enum.map(fn {_key, candidates} -> prefer(candidates, now) end)
     |> Enum.group_by(& &1.resource_id, &Map.delete(&1, :resource_id))
+  end
+
+  @doc """
+  `{source id, target}` => resource id for every series source about one of
+  `resource_ids`, by the rules `for_resources/3` describes. A host agent's
+  own series have no target.
+  """
+  def subjects(%Scope{organization_id: organization_id}, resource_ids) do
+    resource_ids = if resource_ids == :all, do: :all, else: Enum.uniq(resource_ids)
+
+    Map.merge(
+      host_subjects(organization_id, resource_ids),
+      target_subjects(organization_id, resource_ids)
+    )
   end
 
   defp equivalence(%{resource_id: resource_id, reading: reading}) do

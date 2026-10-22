@@ -15,6 +15,7 @@ defmodule Renga.Telemetry do
   alias Renga.Accounts.Scope
   alias Renga.Inventory
   alias Renga.Inventory.IntakeApiKey
+  alias Renga.Power.Correlation
   alias Renga.Power.Readings
   alias Renga.Repo
   alias Renga.Telemetry.Batch
@@ -49,7 +50,9 @@ defmodule Renga.Telemetry do
               received_at: now
             })
 
-          {:ok, {batch, :created, Readings.record!(source, attrs.samples, now)}}
+          results = Readings.record!(source, attrs.samples, now)
+          Correlation.record!(source, attrs.samples, now)
+          {:ok, {batch, :created, results}}
       end
     end)
     |> case do

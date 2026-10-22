@@ -17,6 +17,7 @@ defmodule Renga.Power.FindingReconciler do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Power.Correlation
   alias Renga.Power.Feed
   alias Renga.Power.Finding
   alias Renga.Power.Load
@@ -133,7 +134,8 @@ defmodule Renga.Power.FindingReconciler do
       redundancy_conditions(paths) ++
       path_conditions(paths) ++
       supply_conditions(readings) ++
-      draw_conditions(organization_id, outlets, readings)
+      draw_conditions(organization_id, outlets, readings) ++
+      Correlation.conditions(scope, ports, outlets, now)
   end
 
   defp current(schema, organization_id) do
