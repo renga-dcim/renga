@@ -286,7 +286,10 @@
                   "type": "object"
                 },
                 "maxItems": 256,
-                "type": "array"
+                "type": [
+                  "array",
+                  "null"
+                ]
               },
               "interfaces": {
                 "description": "Virtual NICs. MAC addresses are evidence only and never match the VM to a host.",
@@ -334,7 +337,10 @@
                   "type": "object"
                 },
                 "maxItems": 256,
-                "type": "array"
+                "type": [
+                  "array",
+                  "null"
+                ]
               },
               "memory_mib": {
                 "minimum": 1,

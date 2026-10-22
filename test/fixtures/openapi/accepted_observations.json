@@ -71,5 +71,33 @@
         "target": 123
       }
     ]
+  },
+  {
+    "observation_id": "accepted-null-domain-devices",
+    "observed_at": "2026-01-02T03:04:05Z",
+    "scope": "hypervisor",
+    "collector": {
+      "id": "libvirt",
+      "kind": "vm_provider"
+    },
+    "hypervisor": {
+      "id": "qemu:///system",
+      "status": "reachable"
+    },
+    "complete": false,
+    "resources": [
+      {
+        "kind": "vm",
+        "identifiers": {
+          "dmi_uuid": "6695eb01-f6a4-8304-79aa-97f2502e193f"
+        },
+        "domain": {
+          "name": "web-1",
+          "state": "running",
+          "disks": null,
+          "interfaces": null
+        }
+      }
+    ]
   }
 ]

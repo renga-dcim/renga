@@ -94,7 +94,7 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
   defp domain(contract) do
     device_list = fn items, description ->
       %{
-        type: :array,
+        type: [:array, :null],
         maxItems: contract.max_domain_devices,
         items: items,
         description: description
