@@ -175,6 +175,27 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "limit_cleared", field: field}),
     do: "Returned the #{String.replace(field, "_", " ")} limit to the deployment default"
 
+  def describe(%{kind: "scim_connection_created", metadata: %{"provider_id" => provider}}),
+    do: "Connected SCIM provisioning through #{provider}"
+
+  def describe(%{kind: "scim_connection_disabled", metadata: %{"provider_id" => provider}}),
+    do: "Disabled SCIM provisioning through #{provider}"
+
+  def describe(%{kind: "scim_connection_enabled", metadata: %{"provider_id" => provider}}),
+    do: "Re-enabled SCIM provisioning through #{provider}"
+
+  def describe(%{kind: "scim_default_role_changed", new_value: %{"value" => role}}),
+    do: "Set the SCIM default role to #{role}"
+
+  def describe(%{kind: "scim_default_role_changed"}),
+    do: "Removed the SCIM default role"
+
+  def describe(%{kind: "scim_token_created", metadata: %{"token" => name}}),
+    do: "Issued the SCIM token #{name}"
+
+  def describe(%{kind: "scim_token_revoked", metadata: %{"token" => name}}),
+    do: "Revoked the SCIM token #{name}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
