@@ -6,6 +6,9 @@ use roxmltree::{Document, Node};
 /// Must match `Renga.Inventory.AgentPayload`.
 pub const MAX_DOMAIN_DEVICES: usize = 256;
 const MAX_STRING: usize = 255;
+/// Real domain definitions nest about ten deep. The parser recurses once per level, so a remote
+/// daemon's deeply nested answer could overflow the stack and abort the whole agent.
+const MAX_XML_DEPTH: usize = 64;
 
 /// One domain as libvirt defines it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +66,11 @@ pub fn parse(
     state: DomainState,
     persistent: Option<bool>,
 ) -> Result<Domain, ParseError> {
+    if nesting_depth(xml) > MAX_XML_DEPTH {
+        return Err(ParseError(format!(
+            "domain XML nests deeper than {MAX_XML_DEPTH} elements"
+        )));
+    }
     let document =
         Document::parse(xml).map_err(|error| ParseError(format!("invalid domain XML: {error}")))?;
     let root = document.root_element();
@@ -112,6 +120,26 @@ pub fn parse(
         },
         dropped_devices,
     })
+}
+
+/// An upper bound on element nesting, without parsing: start tags open a level, end tags and
+/// self-closing tags close one. Markup inside comments or CDATA only ever raises the count, so
+/// the bound stays conservative.
+fn nesting_depth(xml: &str) -> usize {
+    let bytes = xml.as_bytes();
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    for (index, byte) in bytes.iter().enumerate() {
+        match (byte, bytes.get(index + 1)) {
+            (b'<', Some(b'/')) => depth = depth.saturating_sub(1),
+            (b'<', Some(next)) if next.is_ascii_alphabetic() || *next == b'_' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            (b'/', Some(b'>')) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
 }
 
 /// The UUID in Renga's canonical lowercase, hyphenated form; the server only trims and
@@ -301,6 +329,21 @@ pub(crate) mod tests {
         assert_eq!(parsed.dmi_uuid, "6695eb01-f6a4-8304-79aa-97f2502e193f");
         assert_eq!(parsed.domain.memory_mib, Some(2_048));
         assert!(parsed.domain.disks.is_empty());
+    }
+
+    #[test]
+    fn refuses_xml_nested_deeper_than_a_domain() {
+        let nested = format!(
+            "<domain><name>a</name><uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid>\
+             <metadata>{}{}</metadata></domain>",
+            "<x>".repeat(50_000),
+            "</x>".repeat(50_000)
+        );
+        let error = parse(&nested, DomainState::Running, None).unwrap_err();
+        assert!(error.0.contains("nests deeper"), "{}", error.0);
+
+        assert!(nesting_depth(WEB_01) < MAX_XML_DEPTH);
+        assert_eq!(nesting_depth("<a><b/><c><d/></c></a>"), 3);
     }
 
     #[test]
