@@ -1,10 +1,10 @@
 defmodule Renga.Accounts.ProviderTests do
   @moduledoc """
   Test sign-ins of a pending provider revision (RFD 15, "Storage and
-  changes"). An operator or administrator creates a test with
-  `IdentityProviders.create_test/2` and opens its single-use link; Renga
-  sends the browser to the provider with the pending revision's settings,
-  and a successful callback activates exactly that revision.
+  changes"). An operator, administrator, or organization owner creates a
+  test with `IdentityProviders.create_test/2` and opens its single-use
+  link; Renga sends the browser to the provider with the pending revision's
+  settings, and a successful callback activates exactly that revision.
 
   A test never signs anyone in. Its callback validates the ID token and
   activates the revision, and that is all: it creates no session, links no
@@ -105,8 +105,10 @@ defmodule Renga.Accounts.ProviderTests do
     end
   end
 
+  # A test belongs to the deployment's or an organization's provider,
+  # whichever scope created it.
   defp pending(%IdentityProviderTest{provider_id: id, revision: number}) do
-    case IdentityProviders.get(id) do
+    case IdentityProviders.get_any(id) do
       %IdentityProvider{pending_revision: ^number} = provider ->
         {:ok, provider, IdentityProviders.revision(provider, number)}
 

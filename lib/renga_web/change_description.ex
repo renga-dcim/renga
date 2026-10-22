@@ -169,6 +169,9 @@ defmodule RengaWeb.ChangeDescription do
 
   def describe(%{kind: "organization_created"}), do: "Created this organization"
 
+  def describe(%{kind: "identity_provider_changed", metadata: %{"change" => change} = metadata}),
+    do: identity_provider_change(change, metadata["name"] || metadata["provider"], metadata)
+
   def describe(%{kind: "limit_set", field: field}),
     do: "Changed the #{String.replace(field, "_", " ")} limit"
 
@@ -311,4 +314,42 @@ defmodule RengaWeb.ChangeDescription do
 
   defp reason(%{"reason" => reason}) when is_binary(reason), do: " · #{reason}"
   defp reason(_metadata), do: ""
+
+  defp identity_provider_change("created", name, _metadata),
+    do: "Added the identity provider #{name}, waiting for a test sign-in"
+
+  defp identity_provider_change("updated", name, %{"changed" => changed}) when is_list(changed) do
+    if "display_name" in changed,
+      do: "Renamed the identity provider to #{name}",
+      else: "Changed how the identity provider #{name} is shown"
+  end
+
+  defp identity_provider_change("revision_pending", name, %{"changed" => [_ | _] = changed}),
+    do: "Proposed new settings for #{name} (#{Enum.map_join(changed, ", ", &humanize/1)})"
+
+  defp identity_provider_change("revision_pending", name, _metadata),
+    do: "Proposed new settings for #{name}"
+
+  defp identity_provider_change("revision_discarded", name, _metadata),
+    do: "Discarded the proposed settings for #{name}"
+
+  defp identity_provider_change("activated", name, %{"revision" => revision}),
+    do: "A test sign-in activated settings #{revision} of #{name}"
+
+  defp identity_provider_change("enabled", name, _metadata), do: "Turned on sign-in with #{name}"
+
+  defp identity_provider_change("disabled", name, _metadata),
+    do: "Turned off sign-in with #{name}"
+
+  defp identity_provider_change("removed", name, _metadata),
+    do: "Removed the identity provider #{name}"
+
+  defp identity_provider_change(_change, name, _metadata),
+    do: "Changed the identity provider #{name}"
+
+  defp humanize("client_secret"), do: "client secret"
+  defp humanize("client_id"), do: "client ID"
+  defp humanize("allow_sign_up"), do: "sign-up"
+  defp humanize("session_lifetime_seconds"), do: "session lifetime"
+  defp humanize(field), do: String.replace(field, "_", " ")
 end
