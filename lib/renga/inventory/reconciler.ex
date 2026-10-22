@@ -314,7 +314,10 @@ defmodule Renga.Inventory.Reconciler do
 
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
     reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
-    freshness_advanced? = current_observation?(scope, resource.id, observation)
+
+    freshness_advanced? =
+      current_observation?(scope, resource.id, observation) and
+        not Collectors.superseded_by_snapshot?(scope, observation, resource.id)
 
     Projections.reconcile(scope, source, observation, resource,
       allow_new_rows?: freshness_advanced?

@@ -14,6 +14,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
   alias Renga.Inventory.CollectorTargetResource
   alias Renga.Inventory.Collectors
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.Reconciler
   alias Renga.Repo
 
   @installation_id "67e55044-10b1-426f-9247-bb680e5fe0c8"
@@ -312,12 +313,166 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
 
       old = Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == old.id))
       refute present?(old)
+      assert inventory_current(scope, old.resource_id) == "false"
       [target] = Collectors.list_targets(scope, stream.id)
       assert target.last_reported_at == ~U[2026-08-13 09:00:00.000000Z]
 
       assert present?(
                Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == new.id))
              )
+
+      # A later complete report confirms the withdrawal, so a report from
+      # between the two complete ones, replayed late, cannot bring it back.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-2")],
+          observed_at: "2026-08-13T11:00:00Z",
+          complete: true
+        )
+      )
+      |> valid_api_response(202)
+
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T10:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      old = Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == old.id))
+      refute present?(old)
+      assert inventory_current(scope, old.resource_id) == "false"
+
+      # A newer report of it is current again.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T12:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      old = Enum.find(Collectors.list_target_resources(scope, stream.id), &(&1.id == old.id))
+      assert present?(old)
+      assert inventory_current(scope, old.resource_id) == "true"
+    end
+
+    test "a late report through a target whose complete report lacked it stays withdrawn", %{
+      scope: scope,
+      token: token
+    } do
+      a = %{"address" => "10.0.0.1", "status" => "reachable"}
+      b = %{"address" => "10.0.0.2", "status" => "reachable"}
+
+      token
+      |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+      |> valid_api_response(202)
+
+      token
+      |> post_observation(
+        switch_report([], targets: [a, b], complete: true, observed_at: "2026-08-13T09:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      # Queued from before that complete report, which reached the target and
+      # did not contain the switch.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.2", "SER-1")], observed_at: "2026-08-13T08:00:00Z")
+      )
+      |> valid_api_response(202)
+
+      [stream] = Collectors.list_streams(scope)
+      members = Collectors.list_target_resources(scope, stream.id)
+      assert length(members) == 2
+      refute Enum.any?(members, &present?/1)
+      assert inventory_current(scope, hd(members).resource_id) == "false"
+    end
+
+    for order <- [:old_first, :new_first] do
+      test "a switch that moved between targets stays current (#{order})", %{
+        scope: scope,
+        token: token
+      } do
+        a = %{"address" => "10.0.0.1", "status" => "reachable"}
+        b = %{"address" => "10.0.0.2", "status" => "reachable"}
+
+        token
+        |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+        |> valid_api_response(202)
+
+        targets = if unquote(order) == :old_first, do: [a, b], else: [b, a]
+
+        token
+        |> post_observation(
+          switch_report([switch("10.0.0.2", "SER-1")],
+            targets: targets,
+            complete: true,
+            observed_at: "2026-08-13T09:00:00Z"
+          )
+        )
+        |> valid_api_response(202)
+
+        [stream] = Collectors.list_streams(scope)
+        members = Collectors.list_target_resources(scope, stream.id)
+        by_target = Map.new(members, &{&1.target.key, &1})
+
+        refute present?(by_target["10.0.0.1"])
+        assert present?(by_target["10.0.0.2"])
+        assert inventory_current(scope, by_target["10.0.0.2"].resource_id) == "true"
+      end
+    end
+
+    for order <- [:complete_first, :report_first] do
+      test "a complete report wins a tie with a report of the same time (#{order})", %{
+        scope: scope,
+        token: token
+      } do
+        token
+        |> post_observation(switch_report([switch("10.0.0.1", "SER-1")]))
+        |> valid_api_response(202)
+
+        same_time = "2026-08-13T09:00:00Z"
+        complete = switch_report([], complete: true, observed_at: same_time)
+        partial = switch_report([switch("10.0.0.1", "SER-1")], observed_at: same_time)
+
+        reports =
+          if unquote(order) == :complete_first,
+            do: [complete, partial],
+            else: [partial, complete]
+
+        for report <- reports do
+          token |> post_observation(report) |> valid_api_response(202)
+        end
+
+        [stream] = Collectors.list_streams(scope)
+        [member] = Collectors.list_target_resources(scope, stream.id)
+        refute present?(member)
+        assert inventory_current(scope, member.resource_id) == "false"
+
+        # Neither another report of that time nor a retry of the partial one
+        # makes it current again.
+        token |> post_observation(partial_again(partial)) |> valid_api_response(202)
+
+        partial_id = Repo.get_by!(Observation, idempotency_key: partial["observation_id"]).id
+        [derived] = Inventory.list_derived_observations(scope, partial_id)
+        assert {:ok, _resource, false} = Reconciler.reconcile(scope, derived)
+
+        [member] = Collectors.list_target_resources(scope, stream.id)
+        refute present?(member)
+        assert inventory_current(scope, member.resource_id) == "false"
+
+        # A retry of what a snapshot did contain stays current.
+        included =
+          switch_report([switch("10.0.0.1", "SER-1")],
+            complete: true,
+            observed_at: "2026-08-13T10:00:00Z"
+          )
+
+        assert %{"observation" => %{"id" => included_id}} =
+                 token |> post_observation(included) |> valid_api_response(202)
+
+        [derived] = Inventory.list_derived_observations(scope, included_id)
+        assert {:ok, _resource, false} = Reconciler.reconcile(scope, derived)
+        assert inventory_current(scope, member.resource_id) == "true"
+      end
     end
 
     test "a resource another source still reports stays current when withdrawn", %{
@@ -514,6 +669,9 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
   defp vm(uuid) do
     %{"kind" => "vm", "identifiers" => %{"dmi_uuid" => uuid}, "interfaces" => []}
   end
+
+  defp partial_again(report),
+    do: Map.put(report, "observation_id", "poll-#{System.unique_integer([:positive])}")
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

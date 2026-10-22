@@ -81,6 +81,7 @@ defmodule Renga.Repo.Migrations.CreateCollectorStreams do
       add :error, :string
       add :last_reported_at, :"timestamp(3)", null: false
       add :last_reachable_at, :"timestamp(3)"
+      add :last_complete_at, :"timestamp(3)"
 
       add :last_observation_id,
           references(:observations,

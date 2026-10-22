@@ -75,27 +75,34 @@ defmodule Renga.Inventory.Collectors do
 
     complete? = AgentPayload.complete_report?(report.payload)
 
-    report.payload
-    |> AgentPayload.report_targets()
-    |> Enum.flat_map(fn reported ->
-      target = put_target!(scope, source, report, reported)
-      outcomes = Map.get(resources_by_target, reported.key, [])
+    # Every target's clock and members are recorded before anything is
+    # withdrawn, so a resource that moved between two of the report's targets
+    # already has its new claim when its old one is withdrawn.
+    applied =
+      report.payload
+      |> AgentPayload.report_targets()
+      |> Enum.map(fn reported ->
+        target = put_target!(scope, source, report, reported)
+        outcomes = Map.get(resources_by_target, reported.key, [])
 
-      reported_ids =
-        for {:ok, resource, _discovered?} <- outcomes, uniq: true do
-          put_member!(scope, target, resource, report.observed_at)
-          resource.id
-        end
+        reported_ids =
+          for {:ok, resource, _discovered?} <- outcomes, uniq: true do
+            put_member!(scope, target, resource, report.observed_at)
+            resource.id
+          end
 
-      # A failed resource leaves the target's contents unknown, so nothing
-      # under it can be called gone.
-      if complete? and reported.status == "reachable" and current_report?(target, report) and
-           Enum.all?(outcomes, &match?({:ok, _resource, _discovered?}, &1)) do
-        withdraw_unreported!(scope, source, target, reported_ids, report)
-      else
-        []
-      end
-    end)
+        # A failed resource leaves the target's contents unknown, so nothing
+        # under it can be called gone.
+        snapshot? =
+          complete? and reported.status == "reachable" and current_report?(target, report) and
+            Enum.all?(outcomes, &match?({:ok, _resource, _discovered?}, &1))
+
+        {target, reported_ids, snapshot?}
+      end)
+
+    for {target, reported_ids, true} <- applied,
+        resource_id <- withdraw_unreported!(scope, source, target, reported_ids, report),
+        do: resource_id
   end
 
   defp put_target!(scope, source, report, reported) do
@@ -155,6 +162,12 @@ defmodule Renga.Inventory.Collectors do
       |> lock("FOR UPDATE")
       |> Repo.one()
 
+    # Evidence from at or before the target's latest complete snapshot, about
+    # a resource that snapshot did not contain, was already superseded: the
+    # resource is recorded, but as withdrawn.
+    withdrawn_at =
+      if absent_from_snapshot?(target, member, observed_at), do: target.last_complete_at
+
     case member do
       nil ->
         Repo.insert!(%CollectorTargetResource{
@@ -163,26 +176,75 @@ defmodule Renga.Inventory.Collectors do
           target_id: target.id,
           resource_id: resource.id,
           first_reported_at: observed_at,
-          last_reported_at: observed_at
+          last_reported_at: observed_at,
+          withdrawn_at: withdrawn_at
         })
 
       member ->
         member
         |> Ecto.Changeset.change(
           first_reported_at: earliest(member.first_reported_at, observed_at),
-          last_reported_at: latest(member.last_reported_at, observed_at)
+          last_reported_at: latest(member.last_reported_at, observed_at),
+          withdrawn_at: latest(member.withdrawn_at, withdrawn_at)
         )
         |> Repo.update!()
     end
   end
 
+  # A member present in a complete snapshot was reported at its time, so one
+  # last reported before it, or not at all, was absent from it.
+  defp absent_from_snapshot?(%CollectorTarget{last_complete_at: nil}, _member, _observed_at),
+    do: false
+
+  defp absent_from_snapshot?(%CollectorTarget{last_complete_at: snapshot_at}, member, observed_at) do
+    DateTime.compare(observed_at, snapshot_at) != :gt and
+      (is_nil(member) or DateTime.compare(member.last_reported_at, snapshot_at) == :lt)
+  end
+
+  @doc """
+  Whether a derived observation is about a resource that its target's latest
+  complete snapshot, taken at or after the observation's time, did not
+  contain. Such a report, replayed late, adds its evidence but must not make
+  the resource current again.
+
+  Must run inside the reconciliation transaction, under the organization lock.
+  """
+  def superseded_by_snapshot?(%Scope{}, %Observation{parent_observation_id: nil}, _resource_id),
+    do: false
+
+  def superseded_by_snapshot?(%Scope{} = scope, %Observation{} = observation, resource_id) do
+    Repo.exists?(
+      from target in CollectorTarget,
+        left_join: member in CollectorTargetResource,
+        # Present in the snapshot: reported at its time and not withdrawn by
+        # it, since withdrawal wins a tie.
+        on:
+          member.organization_id == ^scope.organization_id and member.target_id == target.id and
+            member.resource_id == ^resource_id and
+            member.last_reported_at >= target.last_complete_at and
+            (is_nil(member.withdrawn_at) or member.last_reported_at > member.withdrawn_at),
+        where: target.organization_id == ^scope.organization_id,
+        where: target.source_id == ^observation.source_id,
+        where: target.key == ^observation.payload["target"],
+        where: target.last_complete_at >= ^observation.observed_at,
+        where: is_nil(member.id)
+    )
+  end
+
+  # The report is the target's latest complete snapshot. Withdrawal wins a
+  # tie: a resource another report placed at the snapshot's exact time, but
+  # the snapshot does not contain, is withdrawn.
   defp withdraw_unreported!(scope, source, target, reported_ids, report) do
+    target
+    |> Ecto.Changeset.change(last_complete_at: report.observed_at)
+    |> Repo.update!()
+
     withdrawn =
       CollectorTargetResource
       |> where([member], member.organization_id == ^scope.organization_id)
       |> where([member], member.target_id == ^target.id)
       |> where([member], member.resource_id not in ^reported_ids)
-      |> where([member], member.last_reported_at < ^report.observed_at)
+      |> where([member], member.last_reported_at <= ^report.observed_at)
       |> where(
         [member],
         is_nil(member.withdrawn_at) or member.last_reported_at > member.withdrawn_at

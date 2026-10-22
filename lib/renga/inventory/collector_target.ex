@@ -26,6 +26,10 @@ defmodule Renga.Inventory.CollectorTarget do
     field :error, :string
     field :last_reported_at, :utc_datetime_usec
     field :last_reachable_at, :utc_datetime_usec
+    # The observed time of the latest complete report that reached the target
+    # and reconciled everything under it. What it did not contain was absent
+    # then, so older evidence replayed late cannot make it present.
+    field :last_complete_at, :utc_datetime_usec
 
     belongs_to :organization, Organization
     belongs_to :source, Source
