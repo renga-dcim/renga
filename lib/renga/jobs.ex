@@ -220,8 +220,8 @@ defmodule Renga.Jobs do
   @doc """
   Requests a capability of one agent, as the scope's user.
 
-  The organization must allow the capability, the user's role must permit its
-  risk class, the agent must be active and advertise it, and the capability's
+  The organization must allow the capability, the user must hold its
+  `required_permissions/0` (and only `observe` jobs may be requested yet), the agent must be active and advertise it, and the capability's
   own `authorize/3` hook may refuse further. Parameters are validated against
   the capability before anything is stored.
 
@@ -279,14 +279,36 @@ defmodule Renga.Jobs do
 
   defp requesting_user(_scope), do: {:error, :forbidden}
 
-  # `jobs.request` covers `observe` jobs. `operate` and `interactive`
-  # jobs need grants RFDs 13 and 14 define, so nobody may request them yet.
+  # An `observe` job needs its capability's permissions: `jobs.request`, or
+  # the explicit query permissions for a query (RFD 12). `operate` and
+  # `interactive` jobs need grants RFDs 13 and 14 define, so nobody may
+  # request them yet.
   defp authorize_request!(%Scope{} = scope, capability) do
     case capability.risk_class() do
-      :observe -> authorize_member!(scope, "jobs.request")
+      :observe -> authorize_all!(scope, capability.required_permissions())
       _operate_or_interactive -> Repo.rollback(:forbidden)
     end
   end
+
+  # Cancelling or resolving a job needs what requesting it needed. A job's
+  # capability never changes, so it is read before the job is locked, which
+  # keeps the authorization locks first.
+  defp authorize_for_job!(%Scope{} = scope, job_id) do
+    permissions =
+      with {:ok, job_id} <- Ecto.UUID.cast(job_id),
+           %Job{} = job <-
+             Repo.get_by(Job, id: job_id, organization_id: scope.organization_id),
+           {:ok, capability} <- Registry.fetch(Job.capability_key(job)) do
+        capability.required_permissions()
+      else
+        _missing_or_unregistered -> ["jobs.request"]
+      end
+
+    authorize_all!(scope, permissions)
+  end
+
+  defp authorize_all!(%Scope{} = scope, permissions),
+    do: Enum.each(permissions, &authorize_member!(scope, &1))
 
   defp authorize_capability!(capability, scope, agent, parameters) do
     case capability.authorize(scope, agent, parameters) do
@@ -523,14 +545,14 @@ defmodule Renga.Jobs do
   ## Cancelling
 
   @doc """
-  Cancels a job; needs `jobs.request`. A queued job is cancelled at once; a
+  Cancels a job; needs the permissions requesting it needs. A queued job is cancelled at once; a
   leased or running one records the request, which the agent sees on its next
   report and acknowledges with a `cancelled` report.
   """
   def cancel_job(%Scope{} = scope, job_id) do
     with {:ok, actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
-        authorize_member!(scope, "jobs.request")
+        authorize_for_job!(scope, job_id)
 
         scope.organization_id
         |> lock_job!(job_id)
@@ -1037,15 +1059,15 @@ defmodule Renga.Jobs do
   @max_note_length 1000
 
   @doc """
-  Records what happened to an `uncertain` job, as a `jobs.request` holder who
-  checked the target. `outcome` is `"succeeded"` or `"failed"`. Resolving
+  Records what happened to an `uncertain` job, as a person who checked the
+  target and holds the permissions requesting the job needs. `outcome` is `"succeeded"` or `"failed"`. Resolving
   never runs the job again; trying again means requesting a new job.
   """
   def resolve_job(%Scope{} = scope, job_id, outcome, note \\ nil)
       when outcome in ~w(succeeded failed) do
     with {:ok, actor} <- requesting_user(scope) do
       Repo.transaction(fn ->
-        authorize_member!(scope, "jobs.request")
+        authorize_for_job!(scope, job_id)
         resolve!(scope.organization_id, job_id, actor, outcome, note_payload(note))
       end)
       |> Changes.broadcast(scope.organization_id)

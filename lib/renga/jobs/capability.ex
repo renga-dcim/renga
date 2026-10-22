@@ -53,6 +53,21 @@ defmodule Renga.Jobs.Capability do
   @callback sensitive_output?() :: boolean()
 
   @doc """
+  The permissions requesting the job, cancelling or resolving it, and, when
+  `sensitive_output?/0`, reading its payloads need. `observe` capabilities
+  default to `jobs.request`; queries need RFD 17's explicit query
+  permissions instead.
+  """
+  @callback required_permissions() :: [String.t()]
+
+  @doc """
+  Whether an organization that never chose its allowed capabilities allows
+  this one. Every `observe` capability is allowed by default (RFD 9) except
+  queries, which an organization enables one by one (RFD 12).
+  """
+  @callback allowed_by_default?() :: boolean()
+
+  @doc """
   Narrows the organization and role checks for one request. It runs only after
   those checks pass, so it can refuse a request but never permit one they
   refused.
@@ -62,7 +77,13 @@ defmodule Renga.Jobs.Capability do
   @doc "A one-line description of a successful result for people."
   @callback describe_result(result :: map()) :: String.t()
 
-  @optional_callbacks title: 0, noun: 0, authorize: 3, sensitive_output?: 0, describe_result: 1
+  @optional_callbacks title: 0,
+                      noun: 0,
+                      authorize: 3,
+                      sensitive_output?: 0,
+                      required_permissions: 0,
+                      allowed_by_default?: 0,
+                      describe_result: 1
 
   # Initial bound from RFD 9 so a job can never become an unbounded log sink.
   @default_output_limit_bytes 64 * 1024
@@ -84,6 +105,12 @@ defmodule Renga.Jobs.Capability do
       def sensitive_output?, do: false
 
       @impl Renga.Jobs.Capability
+      def required_permissions, do: ["jobs.request"]
+
+      @impl Renga.Jobs.Capability
+      def allowed_by_default?, do: Renga.Jobs.Capability.observe?(__MODULE__)
+
+      @impl Renga.Jobs.Capability
       def authorize(_scope, _agent, _parameters), do: :ok
 
       @impl Renga.Jobs.Capability
@@ -93,6 +120,8 @@ defmodule Renga.Jobs.Capability do
                      noun: 0,
                      output_limit_bytes: 0,
                      sensitive_output?: 0,
+                     required_permissions: 0,
+                     allowed_by_default?: 0,
                      authorize: 3,
                      describe_result: 1
     end
@@ -103,6 +132,9 @@ defmodule Renga.Jobs.Capability do
   def default_title(name) do
     name |> String.replace([".", "_"], " ") |> String.capitalize()
   end
+
+  @doc "Whether a capability module only reports on its host."
+  def observe?(module), do: module.risk_class() == :observe
 
   @doc "The `name@version` key of a capability module."
   def key(module), do: "#{module.name()}@#{module.version()}"

@@ -77,7 +77,7 @@ defmodule Renga.Authorization do
     "dcim.edit" => "Edit sites, locations, racks, and placement",
     "ipam.edit" => "Edit VRFs, prefixes, addresses, plans, and source mappings",
     "topology.edit" => "Edit VLANs, cables, cable plans, and import contracts",
-    "jobs.request" => "Request, cancel, and resolve observe jobs",
+    "jobs.request" => "Request, cancel, and resolve observe jobs other than queries",
     "queries.run" => "Run operational queries and read their results",
     "queries.run_sensitive" => "With queries.run, run sensitive queries and read their results",
     "views.share" => "Save and change views shared with the organization",
