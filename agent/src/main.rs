@@ -369,10 +369,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             }
             listener = start_listener(&client, &config, &queue, &notices, &stopped);
             // Modules keep polling through a reload unless their own settings changed.
-            if snmp.collectors() != config.snmp.as_slice() {
-                snmp.stop();
-                snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
-            }
+            snmp.reload(config.snmp.clone(), &queue_sink(&queue, &stopped));
             if libvirt.collector() != config.libvirt.as_ref() {
                 libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
             }
