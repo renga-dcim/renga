@@ -25,12 +25,15 @@ defmodule Renga.Scim do
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
+  alias Renga.Accounts.User
+  alias Renga.Accounts.UserIdentity
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
   alias Renga.Repo
   alias Renga.Scim.Connection
   alias Renga.Scim.DirectoryGroup
+  alias Renga.Scim.DirectoryUser
   alias Renga.Scim.Grants
   alias Renga.Scim.GroupMember
   alias Renga.Scim.Token
@@ -220,6 +223,31 @@ defmodule Renga.Scim do
   end
 
   @doc """
+  The directory entries of the organization's enabled connection, for the
+  member list (RFD 16, "Linking"), as `{entry, user}` where `user` is the
+  account the entry is linked to, or nil while nobody has signed in for
+  it. Only holders of `members.manage` see them.
+  """
+  def list_directory_entries(%Scope{organization_id: organization_id} = scope) do
+    if Authorization.allowed?(scope, "members.manage") do
+      DirectoryUser
+      |> join(:inner, [entry], connection in Connection,
+        on: connection.id == entry.connection_id and is_nil(connection.disabled_at)
+      )
+      |> join(:left, [entry], identity in UserIdentity, on: identity.id == entry.user_identity_id)
+      |> join(:left, [_entry, _connection, identity], user in User,
+        on: user.id == identity.user_id
+      )
+      |> where([entry], entry.organization_id == ^organization_id)
+      |> order_by([entry], asc: entry.user_name, asc: entry.id)
+      |> select([entry, _connection, _identity, user], {entry, user})
+      |> Repo.all()
+    else
+      []
+    end
+  end
+
+  @doc """
   A connection's directory groups by name, each with how many entries it
   holds, as `{group, member_count}`.
   """
@@ -321,7 +349,7 @@ defmodule Renga.Scim do
       set: [disabled_at: Renga.Time.utc_now_ms()]
     )
 
-    Repo.update_all(where(Renga.Scim.DirectoryUser, connection_id: ^connection.id),
+    Repo.update_all(where(DirectoryUser, connection_id: ^connection.id),
       set: [user_identity_id: nil]
     )
   end
