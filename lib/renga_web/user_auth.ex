@@ -115,8 +115,7 @@ defmodule RengaWeb.UserAuth do
   It clears all session data for safety. See renew_session.
   """
   def log_out_user(conn) do
-    user_token = get_session(conn, :user_token)
-    user_token && Accounts.delete_user_session_token(user_token)
+    revoke_browser_session(conn)
 
     if live_socket_id = get_session(conn, :live_socket_id) do
       RengaWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
@@ -141,7 +140,8 @@ defmodule RengaWeb.UserAuth do
         :current_scope,
         Accounts.scope_for_user(user, get_session(conn, @current_organization_key))
       )
-      |> maybe_reissue_user_session_token(user, token_inserted_at)
+      |> ensure_browser_session_id(token)
+      |> maybe_extend_user_session_token(token, token_inserted_at)
     else
       nil -> assign(conn, :current_scope, Scope.for_user(nil))
     end
@@ -201,44 +201,65 @@ defmodule RengaWeb.UserAuth do
     end
   end
 
-  # Reissue the session token if it is older than the configured reissue age.
-  defp maybe_reissue_user_session_token(conn, user, token_inserted_at) do
+  # A session restored from the remember-me cookie, or one signed in before
+  # browser sessions were recorded, learns its browser session id here.
+  defp ensure_browser_session_id(conn, token) do
+    if get_session(conn, :browser_session_id) do
+      conn
+    else
+      put_session(conn, :browser_session_id, Accounts.ensure_browser_session_id(token))
+    end
+  end
+
+  # Renew the session token in place once it is older than the renewal age,
+  # and refresh the remember-me cookie with it. The token itself never
+  # changes, so concurrent requests cannot leave two live sessions behind.
+  defp maybe_extend_user_session_token(conn, token, token_inserted_at) do
     token_age = DateTime.diff(Renga.Time.utc_now_ms(), token_inserted_at, :day)
 
     if token_age >= @session_reissue_age_in_days do
-      current_organization_id = get_session(conn, @current_organization_key)
-
-      conn
-      |> create_or_extend_session(user, %{})
-      |> maybe_put_current_organization_session(current_organization_id)
+      :ok = Accounts.extend_user_session_token(token)
+      maybe_write_remember_me_cookie(conn, token, %{}, get_session(conn, :user_remember_me))
     else
       conn
     end
   end
 
-  defp maybe_put_current_organization_session(conn, organization_id)
-       when is_binary(organization_id) do
-    put_session(conn, @current_organization_key, organization_id)
-  end
-
-  defp maybe_put_current_organization_session(conn, _organization_id), do: conn
-
-  # This function is the one responsible for creating session tokens
-  # and storing them safely in the session and cookies. It may be called
-  # either when logging in, during sudo mode, or to renew a session which
-  # will soon expire.
+  # This function is the one responsible for creating session tokens and
+  # storing them safely in the session and cookies, when logging in and after
+  # a password change.
   #
-  # When the session is created, rather than extended, the renew_session
-  # function will clear the session to avoid fixation attacks. See the
-  # renew_session function to customize this behaviour.
+  # A browser session is one `:browser_session_id` in the signed session,
+  # recorded on each token issued to it. Signing in again first revokes every
+  # token of that browser session, so evidence bound to an earlier token,
+  # such as the account re-check (RFD 19), cannot outlive it, and LiveViews
+  # still connected with it disconnect. It keeps the id when the same user
+  # signs in again, so a late response that writes the earlier token back
+  # cannot hide the new one from sign-out. A different user gets a fresh
+  # session and id through renew_session, against fixation.
   defp create_or_extend_session(conn, user, params) do
-    token = Accounts.generate_user_session_token(user)
+    revoke_browser_session(conn)
     remember_me = get_session(conn, :user_remember_me)
+    conn = renew_session(conn, user)
+    browser_session_id = get_session(conn, :browser_session_id) || Ecto.UUID.generate()
+    token = Accounts.generate_user_session_token(user, browser_session_id)
 
     conn
-    |> renew_session(user)
+    |> put_session(:browser_session_id, browser_session_id)
     |> put_token_in_session(token)
     |> maybe_write_remember_me_cookie(token, params, remember_me)
+  end
+
+  defp revoke_browser_session(conn) do
+    token = get_session(conn, :user_token)
+    browser_session_id = get_session(conn, :browser_session_id)
+
+    if token || browser_session_id do
+      {:ok, tokens} = Accounts.delete_browser_session_tokens(token, browser_session_id)
+      disconnect_sessions(Enum.map(Enum.uniq(List.wrap(token) ++ tokens), &%{token: &1}))
+    end
+
+    :ok
   end
 
   # Do not renew session if the user is already logged in
@@ -363,21 +384,6 @@ defmodule RengaWeb.UserAuth do
         socket
         |> Phoenix.LiveView.put_flash(:error, "Select an organization to view inventory.")
         |> Phoenix.LiveView.redirect(to: ~p"/organizations")
-
-      {:halt, socket}
-    end
-  end
-
-  def on_mount(:require_sudo_mode, _params, session, socket) do
-    socket = mount_current_scope(socket, session)
-
-    if Accounts.sudo_mode?(socket.assigns.current_scope.user, -10) do
-      {:cont, socket}
-    else
-      socket =
-        socket
-        |> Phoenix.LiveView.put_flash(:error, "You must re-authenticate to access this page.")
-        |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
 
       {:halt, socket}
     end

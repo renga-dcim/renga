@@ -6,6 +6,7 @@ defmodule RengaWeb.UserAuthTest do
   alias Renga.Accounts.Scope
   alias RengaWeb.UserAuth
 
+  import Ecto.Query
   import Renga.AccountsFixtures
 
   @remember_me_cookie "_renga_web_user_remember_me"
@@ -210,6 +211,78 @@ defmodule RengaWeb.UserAuthTest do
       assert get_session(conn, :to_be_removed)
     end
 
+    # Re-check evidence lives on the session token (RFD 19), so a replaced
+    # token must stop working rather than linger beside its replacement.
+    test "revokes the token it replaces and disconnects its LiveViews", %{
+      conn: conn,
+      user: user
+    } do
+      user = set_password(user)
+      old_token = Accounts.generate_user_session_token(user)
+      :ok = Accounts.recheck_with_password(user, old_token, valid_user_password())
+      RengaWeb.Endpoint.subscribe("users_sessions:#{Base.url_encode64(old_token)}")
+
+      conn =
+        conn
+        |> put_session(:user_token, old_token)
+        |> assign(:current_scope, Scope.for_user(user))
+        |> UserAuth.log_in_user(user)
+
+      new_token = get_session(conn, :user_token)
+      assert new_token != old_token
+      refute Accounts.get_user_by_session_token(old_token)
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}
+      refute Accounts.authorized_account_change?(user, old_token, :change_email)
+      refute Accounts.authorized_account_change?(user, new_token, :change_email)
+    end
+
+    # A late response can write the earlier token back into the browser after
+    # the same user signs in again. Signing out with that cookie must still
+    # end the session the browser was really using, its re-check evidence,
+    # and its LiveViews.
+    test "signing out with an earlier token of the browser ends its newer one", %{
+      conn: conn,
+      user: user
+    } do
+      user = set_password(user)
+      first = conn |> UserAuth.log_in_user(user)
+      earlier_session = get_session(first, :user_token)
+
+      again =
+        conn
+        |> recycle_session(first)
+        |> assign(:current_scope, Scope.for_user(user))
+        |> UserAuth.log_in_user(user)
+
+      current = get_session(again, :user_token)
+      assert get_session(again, :browser_session_id) == get_session(first, :browser_session_id)
+      refute Accounts.get_user_by_session_token(earlier_session)
+      :ok = Accounts.recheck_with_password(user, current, valid_user_password())
+      RengaWeb.Endpoint.subscribe("users_sessions:#{Base.url_encode64(current)}")
+
+      # The late response restored the first sign-in's cookie.
+      conn |> recycle_session(first) |> UserAuth.log_out_user()
+
+      refute Accounts.get_user_by_session_token(current)
+      refute Accounts.authorized_account_change?(user, current, :change_email)
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}
+      assert session_tokens(user) == []
+    end
+
+    test "a different user signing in starts a new browser session", %{conn: conn, user: user} do
+      planted = Ecto.UUID.generate()
+      other = user_fixture()
+      other_token = Accounts.generate_user_session_token(other, planted)
+
+      conn =
+        conn
+        |> put_session(:browser_session_id, planted)
+        |> UserAuth.log_in_user(user)
+
+      assert get_session(conn, :browser_session_id) != planted
+      assert Accounts.get_user_by_session_token(other_token) == nil
+    end
+
     test "clears session when user does not match when re-authenticating", %{
       conn: conn,
       user: user
@@ -383,7 +456,9 @@ defmodule RengaWeb.UserAuthTest do
       refute conn.assigns.current_scope
     end
 
-    test "reissues a new token after a few days and refreshes cookie", %{conn: conn, user: user} do
+    # Renewal keeps the token, so no request can leave a second live session
+    # behind, and refreshes the remember-me cookie's lifetime.
+    test "renews an old token in place and refreshes cookie", %{conn: conn, user: user} do
       logged_in_conn =
         conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
 
@@ -402,10 +477,11 @@ defmodule RengaWeb.UserAuthTest do
 
       assert conn.assigns.current_scope.user.id == user.id
       assert conn.assigns.current_scope.user.authenticated_at == user.authenticated_at
-      assert new_token = get_session(conn, :user_token)
-      assert new_token != token
-      assert %{value: new_signed_token, max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
-      assert new_signed_token != signed_token
+      assert get_session(conn, :user_token) == token
+      assert {_user, renewed_at} = Accounts.get_user_by_session_token(token)
+      assert DateTime.diff(Renga.Time.utc_now_ms(), renewed_at, :minute) < 1
+      assert [^token] = session_tokens(user)
+      assert %{max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
       assert max_age == @remember_me_cookie_max_age
     end
 
@@ -428,7 +504,7 @@ defmodule RengaWeb.UserAuthTest do
       assert conn.assigns.current_scope.organization_id == organization.id
       assert conn.assigns.current_scope.membership_id == membership.id
       assert get_session(conn, :current_organization_id) == organization.id
-      assert get_session(conn, :user_token) != user_token
+      assert get_session(conn, :user_token) == user_token
     end
   end
 
@@ -576,38 +652,6 @@ defmodule RengaWeb.UserAuthTest do
     end
   end
 
-  describe "on_mount :require_sudo_mode" do
-    test "allows users that have authenticated in the last 10 minutes", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: RengaWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      assert {:cont, _updated_socket} =
-               UserAuth.on_mount(:require_sudo_mode, %{}, session, socket)
-    end
-
-    test "redirects when authentication is too old", %{conn: conn, user: user} do
-      eleven_minutes_ago = Renga.Time.utc_now_ms() |> DateTime.add(-11, :minute)
-      user = %{user | authenticated_at: eleven_minutes_ago}
-      user_token = Accounts.generate_user_session_token(user)
-      {user, token_inserted_at} = Accounts.get_user_by_session_token(user_token)
-      assert DateTime.compare(token_inserted_at, user.authenticated_at) == :gt
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: RengaWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      assert {:halt, _updated_socket} =
-               UserAuth.on_mount(:require_sudo_mode, %{}, session, socket)
-    end
-  end
-
   describe "require_authenticated_user/2" do
     setup %{conn: conn} do
       %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
@@ -701,5 +745,17 @@ defmodule RengaWeb.UserAuthTest do
 
     {:ok, membership} = Accounts.create_organization_membership(organization, attrs)
     membership
+  end
+
+  defp session_tokens(user) do
+    Renga.Repo.all(
+      from t in Accounts.UserToken,
+        where: t.user_id == ^user.id and t.context == "session",
+        select: t.token
+    )
+  end
+
+  defp recycle_session(conn, from) do
+    Plug.Test.init_test_session(conn, get_session(from))
   end
 end

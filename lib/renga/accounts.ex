@@ -7,6 +7,7 @@ defmodule Renga.Accounts do
 
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
@@ -338,18 +339,24 @@ defmodule Renga.Accounts do
   ## Settings
 
   @doc """
-  Checks whether the user is in sudo mode.
-
-  The user is in sudo mode when the last authentication was done no further
-  than 20 minutes ago. The limit can be given as second argument in minutes.
+  Whether the browser session may make an account-takeover `change` now. See
+  `Renga.Accounts.Recheck`.
   """
-  def sudo_mode?(user, minutes \\ -20)
+  defdelegate authorized_account_change?(user, session_token, change),
+    to: Recheck,
+    as: :authorized?
 
-  def sudo_mode?(%User{authenticated_at: ts}, minutes) when is_struct(ts, DateTime) do
-    DateTime.after?(ts, DateTime.utc_now() |> DateTime.add(minutes, :minute))
-  end
+  @doc "The ways `user` can pass the account re-check."
+  defdelegate recheck_methods(user), to: Recheck, as: :methods
 
-  def sudo_mode?(_user, _minutes), do: false
+  @doc "Records an account re-check for this session if `password` is correct."
+  defdelegate recheck_with_password(user, session_token, password), to: Recheck
+
+  @doc "Emails the first-password or first-factor bootstrap code."
+  defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
+
+  @doc "Spends a bootstrap code for this session."
+  defdelegate verify_bootstrap_code(user, session_token, code), to: Recheck
 
   @doc """
   Returns an `%Ecto.Changeset{}` for changing the user email.
@@ -441,10 +448,83 @@ defmodule Renga.Accounts do
   @doc """
   Generates a session token.
   """
-  def generate_user_session_token(user) do
-    {token, user_token} = UserToken.build_session_token(user)
+  def generate_user_session_token(user, browser_session_id \\ nil) do
+    {token, user_token} = UserToken.build_session_token(user, browser_session_id)
     Repo.insert!(user_token)
     token
+  end
+
+  @doc """
+  Restarts the validity period of the session `token` in place.
+
+  Renewal keeps the token, so it never leaves a second live session behind
+  and keeps everything bound to it, such as an account re-check that has not
+  expired yet. It creates no evidence of its own.
+  """
+  def extend_user_session_token(token) when is_binary(token) do
+    Repo.update_all(
+      from(UserToken, where: [token: ^token, context: "session"]),
+      set: [inserted_at: Renga.Time.utc_now_ms()]
+    )
+
+    :ok
+  end
+
+  @doc """
+  Returns the browser session id recorded on the session `token`, recording
+  a new one first for a token issued before they were recorded.
+  """
+  def ensure_browser_session_id(token) when is_binary(token) do
+    Repo.update_all(
+      from(t in UserToken,
+        where: t.token == ^token and t.context == "session" and is_nil(t.browser_session_id)
+      ),
+      set: [browser_session_id: Ecto.UUID.generate()]
+    )
+
+    Repo.one(
+      from t in UserToken,
+        where: t.token == ^token and t.context == "session",
+        select: t.browser_session_id
+    )
+  end
+
+  @doc """
+  Deletes the session `token` and every other session token of the same
+  browser session: `browser_session_id`, or the one recorded on `token`.
+
+  A late response can write an earlier token back into a browser's cookie,
+  so ending a browser session must not depend on the cookie holding its
+  newest token. Returns the deleted tokens so their LiveViews can be
+  disconnected.
+  """
+  def delete_browser_session_tokens(token, browser_session_id) do
+    recorded =
+      if token do
+        Repo.all(
+          from t in UserToken,
+            where: t.token == ^token and t.context == "session",
+            where: not is_nil(t.browser_session_id),
+            select: t.browser_session_id
+        )
+      else
+        []
+      end
+
+    browser_session_ids = Enum.uniq(Enum.reject([browser_session_id | recorded], &is_nil/1))
+
+    query =
+      from t in UserToken,
+        where: t.context == "session" and t.browser_session_id in ^browser_session_ids,
+        select: t.token
+
+    query =
+      if token,
+        do: or_where(query, [t], t.context == "session" and t.token == ^token),
+        else: query
+
+    {_count, tokens} = Repo.delete_all(query)
+    {:ok, tokens}
   end
 
   @doc """
