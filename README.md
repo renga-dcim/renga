@@ -114,8 +114,15 @@ export --organization SLUG --output FILE --actor NAME` writes one
 organization's export archive (RFD 20, [format](docs/export-format.md)) from a
 consistent snapshot; `--history` and `--raw-observations` add the optional
 parts. The file is created readable only by its owner and holds no
-credentials, but it holds all of the organization's data. Run `renga-admin`
-with no arguments for usage, or `mix renga.admin` in development.
+credentials, but it holds all of the organization's data. `renga-admin import
+--organization SLUG --input FILE --owner EMAIL --actor NAME` validates an
+archive and imports it, whole or not at all, into an organization that is
+still empty apart from its owner, who then invites people back.
+Records keep their IDs, so the original organization must be gone from the
+deployment. People arrive as principals rather than accounts, keys and
+bindings must be approved again, and imported jobs never run. Run
+`renga-admin` with no arguments for usage, or `mix renga.admin` in
+development.
 
 Put the server behind a TLS-terminating reverse proxy; the
 container listens for HTTP on `PORT`. `DATABASE_SSL` uses the image's public CA

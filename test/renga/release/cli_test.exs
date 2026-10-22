@@ -5,10 +5,13 @@ defmodule Renga.Release.CLITest do
 
   import ExUnit.CaptureIO
 
+  alias Renga.Accounts
   alias Renga.DeploymentAudit.Event
+  alias Renga.Inventory
   alias Renga.Operators
   alias Renga.Release.CLI
   alias Renga.Transfers.Archive
+  alias Renga.Transfers.Export
 
   defp run(argv) do
     parent = self()
@@ -302,6 +305,100 @@ defmodule Renga.Release.CLITest do
 
       assert Repo.all(from event in Event, order_by: event.inserted_at, select: event.reason) ==
                ~w(invalid not_found invalid)
+    end
+  end
+
+  describe "import" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp} do
+      source = Renga.InventoryFixtures.organization_fixture()
+
+      {:ok, _resource} =
+        Inventory.create_resource(Accounts.scope_for(source), %{
+          kind: "server",
+          name: "moved",
+          lifecycle_state: "active"
+        })
+
+      archive = Path.join(tmp, "source.tar.zst")
+      {:ok, _summary} = Export.write(source, archive)
+      Repo.delete!(source)
+
+      target = Renga.InventoryFixtures.organization_fixture()
+      owner = Renga.AccountsFixtures.user_fixture()
+      Renga.InventoryFixtures.organization_membership_fixture(owner, target, %{role: "owner"})
+
+      %{archive: archive, target: target, owner: owner}
+    end
+
+    test "imports an archive into an empty organization and audits it", context do
+      %{archive: archive, target: target, owner: owner} = context
+
+      {0, stdout, ""} =
+        run(
+          ~w(import --organization #{target.slug} --input #{archive} --owner #{owner.email} --actor alice)
+        )
+
+      assert stdout =~ "into #{target.slug}"
+      assert stdout =~ "#{owner.email} can invite people back"
+      assert Repo.get_by!(Inventory.Resource, name: "moved").organization_id == target.id
+
+      assert [%{metadata: %{"operator" => "operator: alice"}}] =
+               Repo.all(
+                 from event in Inventory.ChangeEvent,
+                   where: event.organization_id == ^target.id and event.kind == "imported"
+               )
+
+      # The organization is no longer empty.
+      {1, "", stderr} =
+        run(
+          ~w(import --organization #{target.slug} --input #{archive} --owner #{owner.email} --actor alice)
+        )
+
+      assert stderr =~ "#{target.slug} is not empty"
+
+      assert Repo.all(from event in Event, order_by: event.inserted_at, select: event.outcome) ==
+               ~w(succeeded failed)
+    end
+
+    test "lists every problem with an invalid archive", context do
+      %{target: target, owner: owner, tmp_dir: tmp} = context
+      input = Path.join(tmp, "broken.tar.zst")
+      File.write!(input, "not an archive")
+
+      {1, "", stderr} =
+        run(
+          ~w(import --organization #{target.slug} --input #{input} --owner #{owner.email} --actor alice)
+        )
+
+      assert stderr =~ "The archive is not valid:"
+
+      {1, "", stderr} =
+        run(
+          ~w(import --organization #{target.slug} --input #{Path.join(tmp, "nope")} --actor alice)
+        )
+
+      assert stderr =~ "is not a file"
+    end
+
+    test "names the owner who invites everyone back", context do
+      %{archive: archive, target: target} = context
+
+      {1, "", stderr} =
+        run(~w(import --organization #{target.slug} --input #{archive} --actor alice))
+
+      assert stderr =~ "--owner EMAIL is required"
+
+      stranger = Renga.AccountsFixtures.user_fixture()
+
+      {1, "", stderr} =
+        run(
+          ~w(import --organization #{target.slug} --input #{archive} --owner #{stranger.email} --actor alice)
+        )
+
+      assert stderr =~ "#{stranger.email} is not an active owner of #{target.slug}"
+      refute Repo.get_by(Inventory.Resource, name: "moved")
     end
   end
 end
