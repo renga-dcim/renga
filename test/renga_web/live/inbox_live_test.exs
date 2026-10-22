@@ -30,6 +30,26 @@ defmodule RengaWeb.InboxLiveTest do
     }
   end
 
+  test "lists power findings under the Power area", %{conn: conn, resource: resource} do
+    finding =
+      Renga.Repo.insert!(%Renga.Power.Finding{
+        organization_id: resource.organization_id,
+        resource_id: resource.id,
+        kind: "unexpected_draw",
+        resolution_key: Ecto.UUID.generate(),
+        message: "Outlet 2 draws 120 W with no connection recorded.",
+        last_observed_at: Renga.Time.utc_now_ms()
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/inbox?domain=power")
+    assert has_element?(view, "#findings-#{finding.id}", "Unexpected draw")
+    assert has_element?(view, "#findings-group-drift")
+
+    {:ok, view, _html} = live(conn, ~p"/inbox?finding=power:#{finding.id}")
+    assert render(view) =~ "Power"
+    assert render(view) =~ "Outlet 2 draws 120 W"
+  end
+
   test "lists every domain in one queue grouped as Drift and Health", %{
     conn: conn,
     resource: resource,

@@ -21,7 +21,7 @@ defmodule Renga.Findings.Workflow do
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
-  @domains ~w(component hardware_match placement topology address collector)
+  @domains ~w(component hardware_match placement topology address collector power)
   @reason_max 500
 
   schema "finding_workflows" do
