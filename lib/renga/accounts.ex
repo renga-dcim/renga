@@ -407,6 +407,12 @@ defmodule Renga.Accounts do
   @doc "Emails the first-password or first-factor bootstrap code."
   defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
 
+  @doc "Emails the code that sets up an account's first login email (RFD 15)."
+  defdelegate deliver_email_initialization_code(user, session_token, email), to: Recheck
+
+  @doc "Spends an email initialization code; see `Renga.Accounts.Recheck`."
+  defdelegate verify_email_initialization_code(user, session_token, code), to: Recheck
+
   @doc """
   Issues a session for `browser_session_id` that holds RFD 19's bootstrap
   authorization, for a person who just proved control of the email to add

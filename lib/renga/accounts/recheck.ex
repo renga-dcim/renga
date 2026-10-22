@@ -15,6 +15,12 @@ defmodule Renga.Accounts.Recheck do
   re-check with. It proves control of its current email address instead,
   and that bootstrap authorization only lets it set its first password or add
   its first factor.
+
+  An account an organization's provider created has no email to prove. It
+  first initializes one by proving control of an address it chooses, and
+  that grants the same bootstrap and nothing more (RFD 15). This is the one
+  thing a session from the organization's provider can do here: the emailed
+  code, not the provider, proves the mailbox.
   """
 
   import Ecto.Query
@@ -26,6 +32,7 @@ defmodule Renga.Accounts.Recheck do
   alias Renga.Accounts.MFA
   alias Renga.Accounts.OIDC
   alias Renga.Accounts.Passkeys
+  alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.User
   alias Renga.Accounts.UserIdentity
   alias Renga.Accounts.UserNotifier
@@ -109,12 +116,14 @@ defmodule Renga.Accounts.Recheck do
   `session_token` without being asked again.
   """
   def authorized?(%User{} = user, session_token, change) when change in @changes do
-    case fetch_session(user, session_token) do
-      {:ok, session} ->
-        active?(session, "recheck") or
-          (change in @bootstrap_changes and methods(user) == [] and
-             active?(session, "bootstrap")) or
+    case fetch_session(user, session_token, :any_scope) do
+      # A scoped session gets a bootstrap only by initializing the email.
+      {:ok, %UserToken{scoped_organization_id: nil} = session} ->
+        active?(session, "recheck") or bootstrapped?(user, session, change) or
           (change == :add_factor and active?(session, "recovery"))
+
+      {:ok, session} ->
+        bootstrapped?(user, session, change)
 
       :error ->
         false
@@ -122,6 +131,10 @@ defmodule Renga.Accounts.Recheck do
   end
 
   def authorized?(_user, _session_token, _change), do: false
+
+  defp bootstrapped?(user, session, change) do
+    change in @bootstrap_changes and methods(user) == [] and active?(session, "bootstrap")
+  end
 
   @doc """
   Whether this session is recovering an account after spending a recovery
@@ -331,6 +344,116 @@ defmodule Renga.Accounts.Recheck do
     end
   end
 
+  @doc """
+  Emails a code to `email` so an account with no email and nothing to
+  re-check with, such as one an organization's provider created, can make
+  it the account's login email. Replaces any code this session asked for
+  earlier. Returns `{:error, changeset}` for an address that is malformed
+  or belongs to another account.
+  """
+  def deliver_email_initialization_code(%User{} = user, session_token, email)
+      when is_binary(email) do
+    with {:ok, session} <- fetch_session(user, session_token, :any_scope),
+         %User{email: nil} = current <- Repo.get(User, user.id),
+         [] <- methods(current),
+         {:ok, %User{email: email}} <-
+           current
+           |> User.email_changeset(%{email: email})
+           |> Ecto.Changeset.apply_action(:insert) do
+      code = generate_code()
+
+      Repo.insert!(
+        %AccountChallenge{
+          user_id: user.id,
+          session_token_id: session.id,
+          purpose: "email_initialization",
+          code_hash: hash_code(code),
+          sent_to: email,
+          expires_at: expires_at()
+        },
+        on_conflict: {:replace, [:code_hash, :sent_to, :attempts, :expires_at, :inserted_at]},
+        conflict_target: [:session_token_id, :purpose]
+      )
+
+      UserNotifier.deliver_email_initialization_code(email, format_code(code))
+    else
+      :error -> {:error, :no_session}
+      {:error, %Ecto.Changeset{}} = error -> error
+      _has_email_or_methods -> {:error, :not_available}
+    end
+  end
+
+  @doc """
+  Spends an email initialization code. A correct one makes the address the
+  account's confirmed login email and grants this session the bootstrap,
+  but only while the account still has no email and nothing to re-check
+  with. Each wrong code counts against the challenge.
+  """
+  def verify_email_initialization_code(%User{} = user, session_token, code)
+      when is_binary(code) do
+    case fetch_session(user, session_token, :any_scope) do
+      {:ok, session} -> spend_initialization_code(user, session, normalize_code(code))
+      :error -> {:error, :no_session}
+    end
+  end
+
+  # Commits even when the code is wrong, so the attempt counts.
+  defp spend_initialization_code(user, session, code) do
+    case Repo.transaction(fn -> initialize_email(user, session, code) end) do
+      {:ok, result} -> result
+      {:error, :email_in_use} -> {:error, :email_in_use}
+    end
+  end
+
+  defp initialize_email(user, session, code) do
+    # Conflicts with the lock adding a factor takes, so the account can't
+    # gain a credential between the check and the grant.
+    current = Repo.one!(from u in User, where: u.id == ^user.id, lock: "FOR UPDATE")
+    current = %{current | session_organization_id: user.session_organization_id}
+
+    challenge =
+      AccountChallenge
+      |> where(session_token_id: ^session.id, purpose: "email_initialization")
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    cond do
+      current.email || methods(current) != [] ->
+        {:error, :not_available}
+
+      is_nil(challenge) or expired?(challenge.expires_at) ->
+        {:error, :expired}
+
+      challenge.attempts >= @max_code_attempts ->
+        {:error, :too_many_attempts}
+
+      Plug.Crypto.secure_compare(challenge.code_hash, hash_code(code)) ->
+        Repo.delete!(challenge)
+        put_initialized_email(current, session, challenge.sent_to)
+
+      true ->
+        Repo.update_all(where(AccountChallenge, id: ^challenge.id), inc: [attempts: 1])
+        {:error, :invalid_code}
+    end
+  end
+
+  defp put_initialized_email(user, session, email) do
+    user
+    |> User.email_changeset(%{email: email})
+    |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        SecurityLog.record(updated, "email_initialized")
+        :ok = grant(session, "bootstrap")
+        {:ok, updated}
+
+      # Someone registered the address after the code went out.
+      {:error, _changeset} ->
+        Repo.rollback(:email_in_use)
+    end
+  end
+
   defp spend_code(user, session, code) do
     challenge =
       AccountChallenge
@@ -384,16 +507,21 @@ defmodule Renga.Accounts.Recheck do
   # from an organization provider's sign-in: that organization's owners
   # control the identity it proved, so it never reaches an account-wide
   # credential (RFD 15).
-  defp fetch_session(%User{id: user_id}, session_token) when is_binary(session_token) do
+  # Only email initialization and what its bootstrap allows pass
+  # `:any_scope`.
+  defp fetch_session(user, session_token, scope \\ :unscoped)
+
+  defp fetch_session(%User{id: user_id}, session_token, scope) when is_binary(session_token) do
     {:ok, query} = UserToken.verify_session_token_query(session_token)
 
     case query |> exclude(:select) |> select([token], token) |> Repo.one() do
       %UserToken{user_id: ^user_id, scoped_organization_id: nil} = token -> {:ok, token}
+      %UserToken{user_id: ^user_id} = token when scope == :any_scope -> {:ok, token}
       _ -> :error
     end
   end
 
-  defp fetch_session(_user, _session_token), do: :error
+  defp fetch_session(_user, _session_token, _scope), do: :error
 
   defp expires_at, do: DateTime.add(Renga.Time.utc_now_ms(), @window_minutes, :minute)
 

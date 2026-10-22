@@ -141,6 +141,28 @@ defmodule Renga.Accounts.UserNotifier do
   end
 
   @doc """
+  Sends the code that makes `email` the login email of an account that has
+  none yet (RFD 15).
+  """
+  def deliver_email_initialization_code(email, code) do
+    deliver(email, "Your Renga confirmation code", """
+
+    ==============================
+
+    Hi #{email},
+
+    Enter this code in Renga to make this address your login email:
+
+    #{code}
+
+    It expires in #{Renga.Accounts.Recheck.window_minutes()} minutes and works only in the browser where
+    you asked for it. If you didn't ask for it, you can ignore this email.
+
+    ==============================
+    """)
+  end
+
+  @doc """
   Tells an address about a change to the account's sign-in (RFD 19). It
   links nowhere, so a forged notice cannot lead anywhere either.
   """
