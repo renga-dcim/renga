@@ -2,7 +2,8 @@ defmodule Renga.Inventory.CollectorFindings do
   @moduledoc """
   Keeps the collector findings that time alone can open or resolve current
   (RFD 11, "Findings"): a target that stays silent past its freshness window
-  opens a finding without any report arriving.
+  opens a finding without any report arriving, and a VM's competing claim
+  going stale resolves one.
 
   They are refreshed after each collector report commits, and swept
   periodically by `Renga.Inventory.CollectorFindingsWorker`. Every refresh
@@ -16,6 +17,7 @@ defmodule Renga.Inventory.CollectorFindings do
   alias Renga.Accounts.Scope
   alias Renga.Inventory
   alias Renga.Inventory.CollectorTarget
+  alias Renga.Inventory.CompetingPlacements
   alias Renga.Inventory.UnreachableTargets
   alias Renga.Repo
 
@@ -24,6 +26,7 @@ defmodule Renga.Inventory.CollectorFindings do
     Repo.transaction(fn ->
       Inventory.lock_organization!(scope.organization_id)
       UnreachableTargets.refresh!(scope, now)
+      CompetingPlacements.refresh!(scope, now)
     end)
   end
 
