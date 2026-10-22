@@ -467,11 +467,10 @@ defmodule RengaWeb.InventoryOperationsLive do
                   agent={collector_agent(source)}
                 />
               </span>
-            </:col>
-            <:col :let={{_id, source}} label="osquery" class="w-32" hide_below="6xl">
-              <span id={"collector-osquery-#{source.id}"}>
-                <.collector_osquery osquery={Agent.osquery(collector_agent(source))} />
-              </span>
+              <.collector_osquery
+                id={"collector-osquery-#{source.id}"}
+                osquery={Agent.osquery(collector_agent(source))}
+              />
             </:col>
             <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
@@ -874,30 +873,30 @@ defmodule RengaWeb.InventoryOperationsLive do
     """
   end
 
+  attr :id, :string, required: true
   attr :osquery, :map, required: true
 
   # Whether operational queries can use the host's osqueryd (RFD 12), as of
-  # the latest check-in. The agent reaches it over its extensions socket.
+  # the latest check-in, under the jobs it accepts: the page is never wide
+  # enough for a column of its own. Agents that don't report it show nothing.
   defp collector_osquery(assigns) do
     ~H"""
-    <%= case @osquery do %>
-      <% %{status: "available"} -> %>
-        <span class="text-xs text-fg">Available</span>
-        <span :if={@osquery.version} class="ml-1.5 font-mono text-xs text-fg-muted">
-          {@osquery.version}
-        </span>
-      <% %{status: "not_permitted"} -> %>
-        <span
-          class="text-xs font-medium text-warn-text"
-          title="The agent's account can't open the extensions socket"
-        >
-          Not permitted
-        </span>
-      <% %{status: "not_present"} -> %>
-        <span class="text-xs text-fg-muted">Not running</span>
-      <% nil -> %>
-        <span class="text-xs text-fg-subtle">Not reported</span>
-    <% end %>
+    <span :if={@osquery} id={@id} class="mt-0.5 block text-xs">
+      <%= case @osquery do %>
+        <% %{status: "available"} -> %>
+          <span class="text-fg">osquery</span>
+          <span :if={@osquery.version} class="font-mono text-fg-muted">{@osquery.version}</span>
+        <% %{status: "not_permitted"} -> %>
+          <span
+            class="font-medium text-warn-text"
+            title="The agent's account can't open the extensions socket"
+          >
+            osquery not permitted
+          </span>
+        <% %{status: "not_present"} -> %>
+          <span class="text-fg-muted">osquery not running</span>
+      <% end %>
+    </span>
     """
   end
 

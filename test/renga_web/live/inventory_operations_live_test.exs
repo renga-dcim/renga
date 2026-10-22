@@ -257,19 +257,20 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     cell = "#collector-osquery-#{source.id}"
 
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
-    assert has_element?(view, cell, "Not reported")
+    refute has_element?(view, cell)
 
     for {osquery, texts} <- [
-          {%{"status" => "available", "version" => "5.12.1"}, ["Available", "5.12.1"]},
-          {%{"status" => "not_permitted"}, ["Not permitted"]},
-          {%{"status" => "not_present"}, ["Not running"]},
-          {%{"status" => "bogus"}, ["Not reported"]}
+          {%{"status" => "available", "version" => "5.12.1"}, ["osquery", "5.12.1"]},
+          {%{"status" => "not_permitted"}, ["osquery not permitted"]},
+          {%{"status" => "not_present"}, ["osquery not running"]},
+          {%{"status" => "bogus"}, []}
         ] do
       agent
       |> Ecto.Changeset.change(metadata: %{"query_backends" => %{"osquery" => osquery}})
       |> Repo.update!()
 
       {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      assert has_element?(view, cell) == (texts != [])
       for text <- texts, do: assert(has_element?(view, cell, text))
     end
   end

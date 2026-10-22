@@ -357,7 +357,8 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
             collector_width: cells[0].clientWidth,
             name_width: document.getElementById('collector-name-#{agent.source_id}').getBoundingClientRect().width,
             resource_visible: getComputedStyle(cells[2]).display !== 'none',
-            key_visible: getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display !== 'none'
+            key_visible: getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display !== 'none',
+            osquery_visible: document.getElementById('collector-osquery-#{agent.source_id}').offsetParent !== null
           })
         }))
       })
@@ -368,6 +369,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         assert layout["name_width"] >= 96
         assert layout["resource_visible"] == true
         assert layout["key_visible"] == true
+        assert layout["osquery_visible"] == true
       end
     )
     |> click_button("#collector-jobs-#{agent.source_id}-list-more", "+1")
@@ -570,7 +572,10 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
         key,
         "67e55044-10b1-426f-9247-bb680e5fe0c8",
         %{
-          capabilities: ["host.inventory", "inventory.collect@1", long_capability]
+          capabilities: ["host.inventory", "inventory.collect@1", long_capability],
+          metadata: %{
+            "query_backends" => %{"osquery" => %{"status" => "available", "version" => "5.12.1"}}
+          }
         }
       )
 
