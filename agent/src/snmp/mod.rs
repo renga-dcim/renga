@@ -11,20 +11,15 @@ pub mod worker;
 
 pub use crate::switch_report::{reports, TargetOutcome};
 
-use crate::{cancellation::Cancellation, payload::CollectorResource, switch_report::Sections};
+use crate::{
+    cancellation::Cancellation,
+    payload::CollectorResource,
+    switch_report::{self, Sections},
+};
 use client::{PollError, Session};
 use config::{SnmpCollector, Target};
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
-    },
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-/// Neighbor evidence outlives a missed poll or two, but not a switch that stopped answering.
-const NEIGHBOR_TTL_POLLS: u32 = 3;
 /// A whole target, every walk included, must finish within this many request timeouts.
 const TARGET_BUDGET_TIMEOUTS: u32 = 24;
 
@@ -34,46 +29,14 @@ pub fn poll<F>(collector: &SnmpCollector, stopped: &Cancellation, open: F) -> Ve
 where
     F: Fn(&Target) -> Result<Box<dyn Session>, PollError> + Sync,
 {
-    let ttl = u32::try_from(collector.interval.as_secs())
-        .unwrap_or(u32::MAX)
-        .saturating_mul(NEIGHBOR_TTL_POLLS)
-        .min(u32::from(u16::MAX));
+    let ttl = switch_report::neighbor_ttl(collector.interval);
     let budget = collector.timeout * TARGET_BUDGET_TIMEOUTS;
-    let next = AtomicUsize::new(0);
-    let outcomes = Mutex::new(Vec::with_capacity(collector.targets.len()));
-    let workers = collector
-        .max_concurrent_targets
-        .min(collector.targets.len());
-    thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(target) = collector.targets.get(index) else {
-                    break;
-                };
-                let result = if stopped.cancelled() {
-                    Err("polling was cancelled".into())
-                } else {
-                    poll_target(target, &open, budget, ttl, stopped)
-                };
-                outcomes
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((
-                        index,
-                        TargetOutcome {
-                            address: target.address.clone(),
-                            result,
-                        },
-                    ));
-            });
-        }
-    });
-    let mut outcomes = outcomes
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    outcomes.sort_by_key(|(index, _)| *index);
-    outcomes.into_iter().map(|(_, outcome)| outcome).collect()
+    switch_report::poll_each(
+        &collector.targets,
+        collector.max_concurrent_targets,
+        stopped,
+        |target| poll_target(target, &open, budget, ttl, stopped),
+    )
 }
 
 fn poll_target<F>(

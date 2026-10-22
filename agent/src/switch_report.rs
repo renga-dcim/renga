@@ -1,13 +1,30 @@
 //! Switch poller reports (RFD 11, "Observation payload"), shared by every switch module: the
 //! outcome of polling each target becomes complete `targets` reports within the observation
-//! size limit, whichever protocol read the switch.
+//! size limit, whichever protocol read the switch. The polling loop around them is shared too,
+//! so every module schedules, fans out, and logs the same way.
 
-use crate::payload::{
-    Collector, CollectorKind, CollectorResource, Reachability, ReportScope, ScopedReport,
-    SectionCompleteness, TargetStatus, MAX_OBSERVATION_BYTES,
+use crate::{
+    cancellation::Cancellation,
+    payload::{
+        Collector, CollectorKind, CollectorResource, Reachability, ReportScope, ScopedReport,
+        SectionCompleteness, TargetStatus, MAX_OBSERVATION_BYTES,
+    },
+    snmp::config::Target,
 };
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, PoisonError,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use tracing::{info, warn};
 use uuid::Uuid;
 
+/// Neighbor evidence outlives a missed poll or two, but not a switch that stopped answering.
+const NEIGHBOR_TTL_POLLS: u32 = 3;
+const WAIT_SLICE: Duration = Duration::from_millis(250);
 /// Must match `Renga.Inventory.AgentPayload`'s string limit.
 pub const MAX_STRING_CHARS: usize = 255;
 /// Generous upper bounds on the JSON around each target and around the whole report.
@@ -28,6 +45,107 @@ pub struct TargetOutcome {
     /// The target exactly as configured, so reports name it the way the operator does.
     pub address: String,
     pub result: Result<(CollectorResource, Sections), String>,
+}
+
+/// Where finished reports go: the agent's on-disk queue, which delivers them oldest first.
+pub type Sink = Arc<dyn Fn(Uuid, &[u8]) + Send + Sync>;
+
+/// How long a poll's neighbor evidence lasts, in seconds, for a module polling every `interval`.
+pub fn neighbor_ttl(interval: Duration) -> u32 {
+    u32::try_from(interval.as_secs())
+        .unwrap_or(u32::MAX)
+        .saturating_mul(NEIGHBOR_TTL_POLLS)
+        .min(u32::from(u16::MAX))
+}
+
+/// Polls every target with `poll_target`, at most `max_concurrent` at once, and returns the
+/// outcomes in the targets' order.
+pub fn poll_each<F>(
+    targets: &[Target],
+    max_concurrent: usize,
+    stopped: &Cancellation,
+    poll_target: F,
+) -> Vec<TargetOutcome>
+where
+    F: Fn(&Target) -> Result<(CollectorResource, Sections), String> + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let outcomes = Mutex::new(Vec::with_capacity(targets.len()));
+    let workers = max_concurrent.min(targets.len());
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(target) = targets.get(index) else {
+                    break;
+                };
+                let result = if stopped.cancelled() {
+                    Err("polling was cancelled".into())
+                } else {
+                    poll_target(target)
+                };
+                outcomes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((
+                        index,
+                        TargetOutcome {
+                            address: target.address.clone(),
+                            result,
+                        },
+                    ));
+            });
+        }
+    });
+    let mut outcomes = outcomes
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    outcomes.sort_by_key(|(index, _)| *index);
+    outcomes.into_iter().map(|(_, outcome)| outcome).collect()
+}
+
+/// Runs one module until `stop`: polls immediately, then every `interval`, sending each poll's
+/// reports to `sink`. `protocol` names the module in logs.
+pub fn run(
+    collector_id: &str,
+    protocol: &str,
+    interval: Duration,
+    stop: &Cancellation,
+    sink: &Sink,
+    poll: &dyn Fn() -> Vec<TargetOutcome>,
+) {
+    while !stop.cancelled() {
+        let started = Instant::now();
+        let outcomes = poll();
+        if stop.cancelled() {
+            break;
+        }
+        let targets = outcomes.len();
+        let unreachable = outcomes
+            .iter()
+            .filter(|outcome| outcome.result.is_err())
+            .count();
+        for outcome in &outcomes {
+            if let Err(error) = &outcome.result {
+                warn!(collector = %collector_id, target = %outcome.address, %error, "{protocol} target not read");
+            }
+        }
+        let reports = reports(collector_id, outcomes);
+        for (observation_id, body) in &reports {
+            sink(*observation_id, body);
+        }
+        info!(
+            collector = %collector_id,
+            targets,
+            unreachable,
+            reports = reports.len(),
+            "{protocol} poll finished"
+        );
+        let next = started + interval;
+        while !stop.cancelled() && Instant::now() < next {
+            thread::sleep(WAIT_SLICE.min(next.saturating_duration_since(Instant::now())));
+        }
+    }
 }
 
 /// Encodes the outcomes as complete `targets` reports, each within the observation size limit.
