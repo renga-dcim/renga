@@ -30,7 +30,6 @@ defmodule Renga.Accounts.ProviderTests do
   def start(token, redirect_uri) when is_binary(token) and is_function(redirect_uri, 1) do
     with {:ok, test} <- claim(token),
          {:ok, provider, revision} <- pending(test),
-         true <- provider.kind == "oidc" || {:error, :unsupported},
          {:ok, url, attempt} <- OIDC.authorize(provider, revision, redirect_uri.(provider.id)) do
       test
       |> Ecto.Changeset.change(

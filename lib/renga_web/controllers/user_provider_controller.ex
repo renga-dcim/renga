@@ -27,7 +27,7 @@ defmodule RengaWeb.UserProviderController do
   @attempt_key :provider_attempt
 
   def start(conn, %{"provider" => id}) do
-    with %{kind: "oidc"} = provider <- IdentityProviders.get(id),
+    with %{} = provider <- IdentityProviders.get(id),
          {:ok, url, attempt} <- OIDC.start(provider, callback_url(id)) do
       conn
       |> put_session(@attempt_key, attempt)
@@ -52,7 +52,7 @@ defmodule RengaWeb.UserProviderController do
     with true <-
            Accounts.authorized_account_change?(user, token, :link_identity) ||
              {:error, :recheck_required},
-         %{kind: "oidc"} = provider <- IdentityProviders.get(id) || {:error, :inactive},
+         %{} = provider <- IdentityProviders.get(id) || {:error, :inactive},
          session_id when is_binary(session_id) <- Accounts.session_token_id(user, token),
          {:ok, url, attempt} <-
            OIDC.start(provider, callback_url(id), {:link, user.id, session_id}) do
