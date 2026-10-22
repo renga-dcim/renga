@@ -17,6 +17,7 @@ use crate::{
         MAX_TELEMETRY_BYTES,
     },
     power::PowerSources,
+    queue,
     snmp::{
         self,
         client::{self, PollError, Session, WireSession},
@@ -313,13 +314,15 @@ fn sample(
     }
 }
 
-/// Readings stay current through two missed polls.
+/// Readings stay current through two missed polls and the wait for the queue flush that delivers
+/// them, never for less than the host's own readings.
 pub fn fresh_for_seconds(interval: Duration) -> u32 {
     u32::try_from(
         interval
             .as_secs()
             .saturating_mul(3)
-            .clamp(180, MAX_FRESH_FOR_SECONDS),
+            .saturating_add(queue::FLUSH_INTERVAL.as_secs())
+            .clamp(super::FRESH_FOR_SECONDS.into(), MAX_FRESH_FOR_SECONDS),
     )
     .unwrap_or(u32::MAX)
 }
@@ -638,9 +641,17 @@ mod tests {
     }
 
     #[test]
-    fn freshness_covers_two_missed_polls() {
-        assert_eq!(fresh_for_seconds(Duration::from_secs(30)), 180);
-        assert_eq!(fresh_for_seconds(Duration::from_secs(300)), 900);
+    fn freshness_covers_two_missed_polls_and_delivery() {
+        assert_eq!(fresh_for_seconds(Duration::from_secs(30)), 300);
+        assert_eq!(fresh_for_seconds(Duration::from_secs(300)), 1_020);
+
+        // A reading delivered by one flush is up to a poll old and must stay current until the
+        // next flush, through a missed poll, with time to spare for the request itself.
+        for seconds in [10, 60, 90, 120, 600] {
+            let interval = Duration::from_secs(seconds);
+            let oldest_at_flush = seconds + queue::FLUSH_INTERVAL.as_secs();
+            assert!(u64::from(fresh_for_seconds(interval)) >= oldest_at_flush + seconds + 60);
+        }
     }
 
     /// The recorded PDU as the mapper reports it. Renga's collector report tests post this

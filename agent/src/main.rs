@@ -19,7 +19,10 @@ use renga_agent::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
     power::{pdu, PowerModule, PowerSources},
-    queue::{DiskQueue, Drained, QueueError, QueueKind, QueueMonitor},
+    queue::{
+        DiskQueue, Drained, QueueError, QueueKind, QueueMonitor,
+        FLUSH_INTERVAL as QUEUE_FLUSH_INTERVAL,
+    },
     scheduler::{Job, Scheduler},
     snmp::worker::{Modules, Sink},
     transport::{encode_observation, FailureKind, HttpClient},
@@ -35,8 +38,6 @@ use std::{
 use tracing::{error, info, warn};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
-/// How often the daemon retries observations left in the queue by a failed delivery.
-const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 /// The most telemetry batches one flush offers, after every queued observation, so a telemetry
 /// backlog cannot hold the delivery worker from the next inventory (RFD 10, "Measured history").
 #[cfg(not(test))]

@@ -27,6 +27,10 @@ use std::{
 use tracing::warn;
 use uuid::Uuid;
 
+/// How often the daemon delivers queued telemetry and retries observations left in the queue by a
+/// failed delivery. A reading can wait this long before Renga sees it, so freshness windows
+/// cover it.
+pub const FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 const ENTRY_SUFFIX: &str = ".json";
 const TEMPORARY_PREFIX: &str = ".tmp-";
 /// A temporary file this old was left by an interrupted write rather than one in progress.
