@@ -144,7 +144,7 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
     assert has_element?(view, "#query-result-state", "Succeeded")
     assert has_element?(view, "#query-result-sockets-0", "sshd")
     assert has_element?(view, "#query-result-truncated")
-    assert has_element?(view, "#query-run-#{job.id}", "1 listening sockets")
+    assert has_element?(view, "#query-run-#{job.id}", "1 listening socket")
   end
 
   test "renders scalar fields and byte sizes from the schema", context do
