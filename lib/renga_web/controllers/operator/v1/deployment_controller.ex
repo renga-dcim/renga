@@ -15,7 +15,8 @@ defmodule RengaWeb.Operator.V1.DeploymentController do
         "register the deployment. Any valid operator token may read it.",
     responses: [
       ok: {Schemas.Deployment, description: "This deployment."},
-      unauthorized: Schemas.unauthorized_response()
+      unauthorized: Schemas.unauthorized_response(),
+      not_found: Schemas.disabled_response()
     ]
 
   def show(conn, _params) do

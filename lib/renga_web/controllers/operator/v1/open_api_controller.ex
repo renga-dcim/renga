@@ -9,7 +9,8 @@ defmodule RengaWeb.Operator.V1.OpenApiController do
     summary: "This API's OpenAPI document",
     responses: [
       ok: {%{type: :object}, description: "The OpenAPI 3.1 document."},
-      unauthorized: RengaWeb.Operator.V1.Schemas.unauthorized_response()
+      unauthorized: RengaWeb.Operator.V1.Schemas.unauthorized_response(),
+      not_found: RengaWeb.Operator.V1.Schemas.disabled_response()
     ]
 
   # The committed copy, which a test keeps identical to RengaWeb.OperatorApiSpec.

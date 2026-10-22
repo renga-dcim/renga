@@ -17,7 +17,8 @@ defmodule RengaWeb.Operator.V1.TokenController do
         "`renga-admin operator-tokens`.",
     responses: [
       no_content: %{description: "The token is revoked."},
-      unauthorized: Schemas.unauthorized_response()
+      unauthorized: Schemas.unauthorized_response(),
+      not_found: Schemas.disabled_response()
     ]
 
   def delete_self(conn, _params) do

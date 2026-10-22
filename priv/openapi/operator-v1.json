@@ -85,6 +85,16 @@
               }
             },
             "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator API is off because no operator token can authenticate. Every request gets this response, whatever its path."
           }
         },
         "description": "Reports the deployment identifier and public URL, so a control plane can register the deployment. Any valid operator token may read it.",
@@ -117,6 +127,16 @@
               }
             },
             "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator API is off because no operator token can authenticate. Every request gets this response, whatever its path."
           }
         },
         "operationId": "getOperatorOpenApi",
@@ -141,6 +161,16 @@
               }
             },
             "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator API is off because no operator token can authenticate. Every request gets this response, whatever its path."
           }
         },
         "description": "Any authenticated token can revoke itself and needs no scope. A token cannot list, create, or revoke another token through the API; operators do that with `renga-admin operator-tokens`.",

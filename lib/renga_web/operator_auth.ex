@@ -50,9 +50,14 @@ defmodule RengaWeb.OperatorAuth do
     end
   end
 
+  # The scheme is case-insensitive (RFC 9110); a request with several
+  # Authorization headers is refused rather than guessed at.
   defp bearer_token(conn) do
-    case get_req_header(conn, "authorization") do
-      ["Bearer " <> plaintext] -> {:ok, String.trim(plaintext)}
+    with [header] <- get_req_header(conn, "authorization"),
+         [scheme, plaintext] <- String.split(header, " ", parts: 2),
+         "bearer" <- String.downcase(scheme) do
+      {:ok, String.trim(plaintext)}
+    else
       _other -> :error
     end
   end

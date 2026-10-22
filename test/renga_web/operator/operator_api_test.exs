@@ -4,12 +4,40 @@ defmodule RengaWeb.OperatorApiTest do
   alias Renga.Operators
 
   describe "while no token can authenticate" do
-    test "the API is off", %{conn: conn} do
+    setup do
       Renga.Repo.delete_all(Operators.OperatorToken)
+      :ok
+    end
 
-      conn = conn |> authorize("renga_operator_anything") |> get("/operator/v1/deployment")
+    test "every documented operation answers the documented 404", %{conn: conn} do
+      for {method, path} <- [
+            {:get, "/operator/v1/deployment"},
+            {:get, "/operator/v1/openapi.json"},
+            {:delete, "/operator/v1/tokens/self"}
+          ] do
+        conn = conn |> authorize("renga_operator_anything") |> dispatch(@endpoint, method, path)
 
-      assert json_response(conn, 404) == %{"error" => "not_found"}
+        assert valid_operator_response(conn, 404) == %{"error" => "not_found"}
+      end
+    end
+
+    test "nothing tells a caller which paths exist", %{conn: conn} do
+      responses =
+        for request <- [
+              &get(&1, "/operator/v1/deployment"),
+              &get(&1, "/operator/v1/nothing-here"),
+              &get(&1, "/elsewhere"),
+              &post(&1, "/operator/v1/deployment"),
+              &(&1 |> put_req_header("accept", "text/html") |> get("/operator/v1/deployment")),
+              &(&1
+                |> put_req_header("content-type", "application/json")
+                |> post("/operator/v1/tokens/self", "{not json"))
+            ] do
+          conn = request.(conn)
+          {conn.status, conn.resp_body}
+        end
+
+      assert Enum.uniq(responses) == [{404, ~s({"error":"not_found"})}]
     end
   end
 
@@ -46,6 +74,48 @@ defmodule RengaWeb.OperatorApiTest do
       assert valid_operator_response(allowed, 200)
     end
 
+    test "accepts the bearer scheme in any case, and only one Authorization header", %{
+      conn: conn,
+      plaintext: plaintext
+    } do
+      for scheme <- ["bearer", "BEARER", "Bearer"] do
+        conn =
+          conn
+          |> put_req_header("authorization", scheme <> " " <> plaintext)
+          |> get("/operator/v1/deployment")
+
+        assert valid_operator_response(conn, 200)
+      end
+
+      conn = authorize(conn, plaintext)
+      conn = %{conn | req_headers: [{"authorization", "Bearer " <> plaintext} | conn.req_headers]}
+
+      assert length(get_req_header(conn, "authorization")) == 2
+      assert conn |> get("/operator/v1/deployment") |> valid_operator_response(401)
+    end
+
+    test "never reads the body of an unauthenticated request", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> delete("/operator/v1/tokens/self", "{not json")
+
+      assert valid_operator_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "answers unknown paths in its own error shape once authenticated", %{
+      conn: conn,
+      plaintext: plaintext
+    } do
+      assert %{status: 401} = get(conn, "/operator/v1/nothing-here")
+
+      assert conn
+             |> authorize(plaintext)
+             |> get("/operator/v1/nothing-here")
+             |> json_response(404) ==
+               %{"error" => "not_found"}
+    end
+
     test "ignores forwarding headers when checking the source", %{conn: conn} do
       {_token, plaintext} = operator_token_fixture(%{allowed_sources: ["192.0.2.0/24"]})
 
@@ -78,9 +148,16 @@ defmodule RengaWeb.OperatorApiTest do
       {token, plaintext} = operator_token_fixture()
       {other, other_plaintext} = operator_token_fixture()
 
-      conn |> authorize(plaintext) |> delete("/operator/v1/tokens/self") |> response(204)
+      revoked = conn |> authorize(plaintext) |> delete("/operator/v1/tokens/self")
+      assert response(revoked, 204) == ""
+      [request_id] = get_resp_header(revoked, "x-request-id")
 
       assert Operators.get_token(token.id).revoked_at
+
+      assert %{actor: actor, actor_token_id: actor_token_id, changed: ["revoked_at"]} =
+               Renga.Repo.get_by!(Renga.DeploymentAudit.Event, invocation_id: request_id)
+
+      assert {actor, actor_token_id} == {"token: " <> token.name, token.id}
       refute Operators.get_token(other.id).revoked_at
 
       assert conn |> authorize(plaintext) |> get("/operator/v1/deployment") |> response(401)
@@ -93,7 +170,10 @@ defmodule RengaWeb.OperatorApiTest do
       {_token, plaintext} = operator_token_fixture()
 
       body =
-        conn |> authorize(plaintext) |> get("/operator/v1/openapi.json") |> json_response(200)
+        conn
+        |> authorize(plaintext)
+        |> get("/operator/v1/openapi.json")
+        |> valid_operator_response(200)
 
       assert body["info"]["title"] == "Renga operator API"
       assert Map.has_key?(body["paths"], "/operator/v1/deployment")
@@ -110,6 +190,26 @@ defmodule RengaWeb.OperatorApiTest do
       refused = RengaWeb.OperatorAuth.require_scope(conn, "organizations:read")
       assert refused.halted
       assert json_response(refused, 403) == %{"error" => "forbidden"}
+    end
+  end
+
+  test "the main endpoint answers no operator path", %{conn: conn} do
+    {_token, plaintext} = operator_token_fixture()
+
+    for {method, path} <- [
+          {:get, "/operator/v1/deployment"},
+          {:get, "/operator/v1/openapi.json"},
+          {:delete, "/operator/v1/tokens/self"}
+        ] do
+      conn =
+        conn
+        |> authorize(plaintext)
+        |> put_req_header("accept", "application/json")
+        |> dispatch(RengaWeb.Endpoint, method, path)
+
+      assert conn.status == 404
+      refute conn.resp_body =~ "renga_operator"
+      refute Operators.get_token(Operators.list_tokens() |> hd() |> Map.fetch!(:id)).revoked_at
     end
   end
 

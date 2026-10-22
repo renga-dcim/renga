@@ -16,6 +16,11 @@ defmodule RengaWeb.OperatorEndpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :operator_endpoint]
 
+  # Every request authenticates before anything else reads it, so while the
+  # API is off every request gets the same 404, whatever its path, method,
+  # or body, and a request without a valid token never has its body parsed.
+  plug RengaWeb.OperatorAuth
+
   plug Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],

@@ -49,7 +49,7 @@ config :renga, :webauthn, origin: "http://localhost:4000"
 config :renga, RengaWeb.OperatorEndpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
-  render_errors: [formats: [json: RengaWeb.ErrorJSON], layout: false],
+  render_errors: [formats: [json: RengaWeb.Operator.ErrorJSON], layout: false],
   pubsub_server: Renga.PubSub,
   server: false
 
