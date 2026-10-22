@@ -88,6 +88,28 @@ defmodule Renga.Release.ProvidersTest do
     assert {:ok, "sso is enabled."} = Providers.run(~w(enable sso --actor jane))
   end
 
+  test "mark-mfa and unmark-mfa set the enforces MFA mark" do
+    {:ok, _} = add("sso")
+
+    assert {:ok, "sso enforces MFA, approving amr otp+pwd."} =
+             Providers.run(~w(mark-mfa sso --actor jane --amr-combinations pwd+otp))
+
+    assert {:ok, list} = Providers.run(["list"])
+    assert list =~ "\tenforces MFA"
+
+    assert {:ok, "sso enforces MFA."} =
+             Providers.run(["mark-mfa", "sso", "--actor", "jane", "--amr-combinations", ""])
+
+    assert {:error, message} =
+             Providers.run(~w(mark-mfa sso --actor jane --amr-combinations pwd+kba))
+
+    assert message =~ "two independent factors"
+
+    assert {:ok, "sso does not count as MFA."} = Providers.run(~w(unmark-mfa sso --actor jane))
+    assert {:error, message} = Providers.run(~w(unmark-mfa sso))
+    assert message =~ "--actor"
+  end
+
   test "recover-local turns local sign-in on and off" do
     Application.put_env(:renga, :local_sign_in, :disabled)
 

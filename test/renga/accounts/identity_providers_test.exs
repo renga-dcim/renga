@@ -468,4 +468,84 @@ defmodule Renga.Accounts.IdentityProvidersTest do
 
     assert {:error, :invalid} = IdentityProviders.client_secret(copied)
   end
+
+  describe "set_mfa_mark/3" do
+    test "marks and unmarks, recording each" do
+      {provider, _} = create()
+
+      assert {:ok, provider} =
+               IdentityProviders.set_mfa_mark(
+                 provider,
+                 %{"enforces_mfa" => true, "mfa_amr_combinations" => ["pwd+otp", "otp + pwd"]},
+                 @operator
+               )
+
+      assert provider.enforces_mfa
+      assert provider.mfa_amr_combinations == ["otp+pwd"]
+
+      assert {:ok, provider} =
+               IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => false}, @operator)
+
+      refute provider.enforces_mfa
+      assert provider.mfa_amr_combinations == ["otp+pwd"]
+
+      assert [unmarked, marked | _] = IdentityProviders.list_events(provider)
+      assert {marked.kind, marked.actor} == {"mfa_marked", "operator: release"}
+      assert marked.changed == ["enforces_mfa", "mfa_amr_combinations"]
+      assert unmarked.kind == "mfa_unmarked"
+    end
+
+    test "changing only the combinations is an update, and no change records nothing" do
+      {provider, _} = create()
+
+      {:ok, provider} =
+        IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => true}, @operator)
+
+      {:ok, provider} =
+        IdentityProviders.set_mfa_mark(
+          provider,
+          %{"mfa_amr_combinations" => ["hwk+pin"]},
+          @operator
+        )
+
+      {:ok, provider} =
+        IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => true}, @operator)
+
+      assert ["updated", "mfa_marked" | _] = event_kinds(provider)
+      assert provider.mfa_amr_combinations == ["hwk+pin"]
+    end
+
+    test "refuses combinations of one factor" do
+      {provider, _} = create()
+
+      assert {:error, changeset} =
+               IdentityProviders.set_mfa_mark(
+                 provider,
+                 %{"enforces_mfa" => true, "mfa_amr_combinations" => ["pwd+kba"]},
+                 @operator
+               )
+
+      assert [message] = errors_on(changeset).mfa_amr_combinations
+      assert message =~ "two independent factors"
+      refute IdentityProviders.get(provider.id).enforces_mfa
+    end
+
+    test "never marks a GitHub provider" do
+      {:ok, {provider, _}} =
+        IdentityProviders.create(
+          attrs(%{"kind" => "github", "issuer" => nil, "display_name" => "GitHub"}),
+          @operator
+        )
+
+      assert {:error, changeset} =
+               IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => true}, @operator)
+
+      assert errors_on(changeset).enforces_mfa
+
+      # The database refuses it too.
+      assert_raise Postgrex.Error, ~r/github_never_enforces_mfa/, fn ->
+        Repo.update_all(where(IdentityProvider, id: ^provider.id), set: [enforces_mfa: true])
+      end
+    end
+  end
 end

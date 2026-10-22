@@ -26,6 +26,9 @@ defmodule Renga.Accounts.IdentityProvider do
     field :pending_revision, :integer
     field :version, :integer, default: 1
     field :removed_at, :utc_datetime_usec
+    # RFD 19's _enforces MFA_ mark; see `Renga.Accounts.ProviderMFA`.
+    field :enforces_mfa, :boolean, default: false
+    field :mfa_amr_combinations, {:array, :string}, default: []
 
     belongs_to :organization, Renga.Accounts.Organization
 
@@ -96,6 +99,44 @@ defmodule Renga.Accounts.IdentityProvider do
     |> cast(attrs, [:display_name, :icon])
     |> validate_required([:display_name])
     |> display_validations()
+  end
+
+  @doc """
+  A changeset for the _enforces MFA_ mark and the `amr` combinations the
+  provider approves as independent factors (RFD 19). A `github` provider
+  cannot be marked.
+  """
+  def mfa_changeset(provider, attrs) do
+    provider
+    |> cast(attrs, [:enforces_mfa, :mfa_amr_combinations])
+    |> validate_required([:enforces_mfa])
+    |> validate_change(:enforces_mfa, fn :enforces_mfa, marked ->
+      if marked and provider.kind == "github",
+        do: [enforces_mfa: "GitHub does not say how someone signed in"],
+        else: []
+    end)
+    |> normalize_combinations()
+    |> check_constraint(:enforces_mfa, name: :github_never_enforces_mfa)
+  end
+
+  defp normalize_combinations(changeset) do
+    case fetch_change(changeset, :mfa_amr_combinations) do
+      {:ok, combinations} -> put_combinations(changeset, combinations || [])
+      :error -> changeset
+    end
+  end
+
+  defp put_combinations(changeset, combinations) do
+    results = Enum.map(combinations, &Renga.Accounts.ProviderMFA.normalize_combination/1)
+
+    case for({:error, message} <- results, do: message) do
+      [] ->
+        normalized = for {:ok, combination} <- results, uniq: true, do: combination
+        put_change(changeset, :mfa_amr_combinations, Enum.sort(normalized))
+
+      messages ->
+        add_error(changeset, :mfa_amr_combinations, Enum.join(messages, "; "))
+    end
   end
 
   defp display_validations(changeset) do

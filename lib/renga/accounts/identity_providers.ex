@@ -341,6 +341,26 @@ defmodule Renga.Accounts.IdentityProviders do
   end
 
   @doc """
+  Sets the _enforces MFA_ mark and the `amr` combinations the provider
+  approves as independent factors (RFD 19), from `attrs` with
+  `"enforces_mfa"` and `"mfa_amr_combinations"`. Marking or unmarking is
+  recorded as its own event; changing only the combinations is an update.
+  The mark applies at each member's next request, so nothing ends here.
+  """
+  def set_mfa_mark(%IdentityProvider{id: id}, attrs, actor) do
+    change_provider(id, fn provider ->
+      changeset = IdentityProvider.mfa_changeset(provider, attrs)
+
+      case {changed_fields(changeset), Ecto.Changeset.fetch_change(changeset, :enforces_mfa)} do
+        {[], _} -> {:ok, provider}
+        {changed, {:ok, true}} -> save(changeset, "mfa_marked", actor, changed: changed)
+        {changed, {:ok, false}} -> save(changeset, "mfa_unmarked", actor, changed: changed)
+        {changed, :error} -> save(changeset, "updated", actor, changed: changed)
+      end
+    end)
+  end
+
+  @doc """
   Removes the provider. Its ID stays reserved, its revisions lose their
   secrets, and the change is refused when the provider is the deployment's
   last way to sign in.
