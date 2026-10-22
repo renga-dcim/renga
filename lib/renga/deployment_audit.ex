@@ -82,13 +82,19 @@ defmodule Renga.DeploymentAudit do
     {:error, reason}
   end
 
+  @doc """
+  How `context`'s actor reads in records, such as `operator: Jane`, for an
+  organization's Activity entry about the same change.
+  """
+  def actor_label(%{actor: actor}), do: label(actor)
+
   defp record!(%{actor: actor, invocation_id: invocation_id}, operation, outcome, details) do
     organization = details[:organization]
 
     Repo.insert!(%Event{
       operation: operation,
       outcome: outcome,
-      actor: actor_label(actor),
+      actor: label(actor),
       actor_token_id: actor_token_id(actor),
       invocation_id: invocation_id,
       target_id: details[:target_id],
@@ -99,8 +105,8 @@ defmodule Renga.DeploymentAudit do
     })
   end
 
-  defp actor_label({:operator, name}), do: "operator: #{name}"
-  defp actor_label({:token, %OperatorToken{name: name}}), do: "token: #{name}"
+  defp label({:operator, name}) when is_binary(name), do: "operator: #{name}"
+  defp label({:token, %OperatorToken{name: name}}), do: "token: #{name}"
 
   defp actor_token_id({:token, %OperatorToken{id: id}}), do: id
   defp actor_token_id({:operator, _name}), do: nil

@@ -99,6 +99,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/settings/roles",
              "/settings/teams",
              "/settings/triage-rules",
+             "/settings/limits",
              "/organizations",
              "/settings/appearance",
              "/users/settings"

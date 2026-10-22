@@ -57,6 +57,25 @@ case System.get_env("DEPLOYMENT_ID") do
     config :renga, :deployment_id, deployment_id
 end
 
+# Deployment-wide limit defaults (RFD 21), such as LIMIT_JOB_CREATION_RATE.
+# `renga-admin limits set` overrides them for one organization.
+limit_defaults =
+  for {name, %{env: env}} <- Renga.Limits.definitions(),
+      value = System.get_env(env),
+      value not in [nil, ""] do
+    case Integer.parse(value) do
+      {integer, ""} ->
+        if Renga.Limits.valid_value?(integer),
+          do: {name, integer},
+          else: raise("environment variable #{env} must be from 0 to #{Renga.Limits.max_value()}")
+
+      _other ->
+        raise "environment variable #{env} must be a whole number from 0 to #{Renga.Limits.max_value()}"
+    end
+  end
+
+if limit_defaults != [], do: config(:renga, Renga.Limits, limit_defaults)
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

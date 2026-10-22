@@ -8,7 +8,9 @@ defmodule Renga.Release.CLI do
   `mix renga.admin` does in development.
   """
 
+  alias Renga.Accounts
   alias Renga.DeploymentAudit
+  alias Renga.Limits
   alias Renga.Operators
 
   @usage """
@@ -17,9 +19,14 @@ defmodule Renga.Release.CLI do
                                        [--expires-at ISO8601] [--source CIDR...]
     renga-admin operator-tokens list
     renga-admin operator-tokens revoke ID_OR_NAME --actor NAME
+    renga-admin limits show --organization SLUG
+    renga-admin limits set --organization SLUG --actor NAME --LIMIT VALUE [--LIMIT VALUE...]
+    renga-admin limits clear --organization SLUG --actor NAME --limit LIMIT
 
   Changes need --actor, the person making them, which the deployment audit
   log records with an invocation ID. --scope SCOPE may also be repeated.
+
+  Limits: #{Enum.map_join(Renga.Limits.names(), ", ", &String.replace(Atom.to_string(&1), "_", "-"))}
   """
 
   @doc """
@@ -90,7 +97,106 @@ defmodule Renga.Release.CLI do
     end
   end
 
+  def run(["limits", "show" | args]) do
+    with {:ok, organization} <- organization_option(args, []) do
+      Enum.each(Limits.list(organization), &print_limit/1)
+      0
+    end
+  end
+
+  # RFD 21: `renga-admin limits set --organization acme --job-creation-rate 600
+  # --actor NAME`. Every setting applies, or none does.
+  def run(["limits", "set" | args]) do
+    switches = [organization: :string] ++ Enum.map(Limits.names(), &{&1, :integer})
+
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "limits.set", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "limits.set", opts),
+         {:ok, settings} <- audited(context, "limits.set", limit_settings(opts)) do
+      set_limits(organization, settings, context)
+    end
+  end
+
+  def run(["limits", "clear" | args]) do
+    switches = [organization: :string, limit: :string]
+
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "limits.clear", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "limits.clear", opts),
+         {:ok, name} <- audited(context, "limits.clear", parse_limit(opts[:limit])) do
+      :ok = Limits.clear(organization, name, context)
+      IO.puts("Cleared #{limit_option(name)} for #{organization.slug}; the default applies.")
+      0
+    end
+  end
+
   def run(_argv), do: error(@usage)
+
+  defp set_limits(organization, settings, context) do
+    case Limits.set(organization, settings, context) do
+      :ok ->
+        for {name, value} <- settings,
+            do: IO.puts("Set #{limit_option(name)} to #{value} for #{organization.slug}.")
+
+        0
+
+      {:error, :invalid} ->
+        error("limits must be from 0 to #{Limits.max_value()}")
+    end
+  end
+
+  defp organization_option(args, switches) do
+    {opts, rest, invalid} = OptionParser.parse(args, strict: [organization: :string] ++ switches)
+
+    with :ok <- no_extra_args(rest, invalid), do: organization(opts)
+  end
+
+  defp organization(opts) do
+    case opts[:organization] && Accounts.get_organization_by_slug(opts[:organization]) do
+      nil -> error("--organization must name an existing organization by its slug")
+      organization -> {:ok, organization}
+    end
+  end
+
+  # An organization that does not exist is recorded as not found, without
+  # the slug typed.
+  defp audited_organization(context, operation, opts) do
+    with status when is_integer(status) <- organization(opts) do
+      {:error, :not_found} = DeploymentAudit.reject(context, operation, :not_found)
+      status
+    end
+  end
+
+  defp print_limit(limit) do
+    source = if limit.overridden?, do: "override", else: "default"
+    IO.puts(Enum.join([limit_option(limit.name), limit.value, limit.unit, source], "\t"))
+  end
+
+  defp limit_settings(opts) do
+    settings = Keyword.take(opts, Limits.names())
+
+    cond do
+      settings == [] ->
+        error("name at least one limit to set\n\n" <> @usage)
+
+      not Enum.all?(settings, fn {_name, value} -> Limits.valid_value?(value) end) ->
+        error("limits must be from 0 to #{Limits.max_value()}")
+
+      true ->
+        {:ok, settings}
+    end
+  end
+
+  defp parse_limit(nil), do: error("--limit is required")
+
+  defp parse_limit(value) do
+    case Limits.parse_name(String.replace(value, "-", "_")) do
+      {:ok, name} -> {:ok, name}
+      :error -> error("unknown limit #{value}")
+    end
+  end
+
+  defp limit_option(name), do: name |> Atom.to_string() |> String.replace("_", "-")
 
   @doc """
   Entry point for `bin/renga-admin`: starts only the database, runs the
