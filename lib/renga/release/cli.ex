@@ -113,16 +113,7 @@ defmodule Renga.Release.CLI do
          :ok <- audited(context, "limits.set", no_extra_args(rest, invalid)),
          {:ok, organization} <- audited_organization(context, "limits.set", opts),
          {:ok, settings} <- audited(context, "limits.set", limit_settings(opts)) do
-      case Limits.set(organization, settings, context) do
-        :ok ->
-          for {name, value} <- settings,
-              do: IO.puts("Set #{limit_option(name)} to #{value} for #{organization.slug}.")
-
-          0
-
-        {:error, :invalid} ->
-          error("limits must be from 0 to #{Limits.max_value()}")
-      end
+      set_limits(organization, settings, context)
     end
   end
 
@@ -140,6 +131,19 @@ defmodule Renga.Release.CLI do
   end
 
   def run(_argv), do: error(@usage)
+
+  defp set_limits(organization, settings, context) do
+    case Limits.set(organization, settings, context) do
+      :ok ->
+        for {name, value} <- settings,
+            do: IO.puts("Set #{limit_option(name)} to #{value} for #{organization.slug}.")
+
+        0
+
+      {:error, :invalid} ->
+        error("limits must be from 0 to #{Limits.max_value()}")
+    end
+  end
 
   defp organization_option(args, switches) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: [organization: :string] ++ switches)

@@ -119,15 +119,10 @@ defmodule Renga.Limits do
   """
   def set(%Organization{} = organization, settings, context) when is_list(settings) do
     DeploymentAudit.mutate(context, "limits.set", fn ->
-      names = Keyword.keys(settings)
-
-      if settings != [] and names == Enum.uniq(names) and
-           Enum.all?(settings, fn {name, value} -> name in @names and valid_value?(value) end) do
+      if valid_settings?(settings) do
         lock!(organization)
 
-        changed =
-          for {name, value} <- settings, put!(organization, name, value, context), do: name
-
+        changed = put_all!(organization, settings, context)
         {:ok, :ok, %{organization: organization, changed: changed}}
       else
         {:error, :invalid, %{organization: organization}}
@@ -158,12 +153,24 @@ defmodule Renga.Limits do
     |> ok()
   end
 
+  defp valid_settings?(settings) do
+    names = Keyword.keys(settings)
+
+    settings != [] and names == Enum.uniq(names) and
+      Enum.all?(settings, fn {name, value} -> name in @names and valid_value?(value) end)
+  end
+
   # Serializes changes to one organization's limits, so a change that sets
   # the value already in place is recognized as no change.
   defp lock!(organization) do
     Repo.query!("SELECT pg_advisory_xact_lock(hashtext('renga.limits'), hashtext($1))", [
       organization.id
     ])
+  end
+
+  # Returns the names whose value changed.
+  defp put_all!(organization, settings, context) do
+    for {name, value} <- settings, put!(organization, name, value, context), do: name
   end
 
   # Returns whether the value changed.
