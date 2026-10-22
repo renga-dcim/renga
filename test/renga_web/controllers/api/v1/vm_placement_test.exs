@@ -296,6 +296,59 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert findings(with_uuid) == []
     end
 
+    test "a finding resolves once its domain ages out with no further report", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      guest_id = guest!(token, ["52:54:00:00:00:01"], at: recent.(1))
+      assert [%CollectorFinding{status: "open"} = opened] = findings(guest_id)
+
+      # Still fresh: the sweep leaves the finding as last observed.
+      Renga.Inventory.SameMachineSweeper.sweep()
+      assert [%CollectorFinding{status: "open"} = swept] = findings(guest_id)
+      assert swept.last_observed_at == opened.last_observed_at
+
+      # The hypervisor's last report is past the freshness window by now.
+      Renga.Inventory.SameMachineSweeper.sweep(recent.(16))
+      assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
+    end
+
+    test "a hypervisor host's macvtap carrying its guest's MAC is not a match", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      host_id = guest!(token, ["52:54:00:00:00:01"], at: recent.(1), kind: "virtual")
+      assert findings(host_id) == []
+    end
+
+    test "an unset firmware UUID does not stand in for a guest's own", %{
+      token: token,
+      recent: recent
+    } do
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      guest_id =
+        guest!(token, ["52:54:00:00:00:01"],
+          at: recent.(1),
+          dmi_uuid: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+        )
+
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+    end
+
     test "any hypervisor report can change what a guest matches", %{
       token: token,
       recent: recent
@@ -456,7 +509,7 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       macs
       |> Enum.with_index()
       |> Enum.map(fn {mac, index} ->
-        %{"name" => "eth#{index}", "kind" => "ethernet", "mac_address" => mac}
+        %{"name" => "eth#{index}", "kind" => opts[:kind] || "ethernet", "mac_address" => mac}
       end)
 
     %{"reconciliation" => %{"matched_resource_id" => guest_id}} =

@@ -59,39 +59,82 @@ defmodule Renga.Inventory.Reconciler do
     authorize = Keyword.get(opts, :authorize, fn -> :ok end)
 
     try do
-      Repo.transaction(fn ->
-        authorize.()
-        Inventory.lock_organization!(scope.organization_id)
-
-        case latest_result(scope, observation.id) do
-          nil -> perform_reconciliation(scope, observation)
-          result -> result_to_reconciliation(scope, result)
-        end
-      end)
-      |> case do
-        {:ok, result} -> result
-        {:error, reason} -> record_unexpected_failure_once(scope, observation, reason, authorize)
-      end
+      reconcile_once(scope, observation, authorize, %{})
     rescue
       exception -> record_unexpected_failure_once(scope, observation, exception, authorize)
     end
   end
 
-  defp do_reconcile(scope, observation, authorize) do
+  defp reconcile_once(scope, observation, authorize, failed) do
     Repo.transaction(fn ->
       authorize.()
       Inventory.lock_organization!(scope.organization_id)
-      perform_reconciliation(scope, observation)
+
+      case latest_result(scope, observation.id) do
+        nil -> perform_reconciliation(scope, observation, failed)
+        result -> result_to_reconciliation(scope, result)
+      end
     end)
     |> case do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
+      {:ok, result} ->
+        result
+
+      {:error, {:resource_failed, derived, exception}} ->
+        failed = fail_resource!(scope, derived, exception, authorize, failed)
+        reconcile_once(scope, observation, authorize, failed)
+
+      {:error, reason} ->
+        record_unexpected_failure_once(scope, observation, reason, authorize)
     end
   end
 
-  defp perform_reconciliation(scope, observation) do
+  defp do_reconcile(scope, observation, authorize, failed \\ %{}) do
+    Repo.transaction(fn ->
+      authorize.()
+      Inventory.lock_organization!(scope.organization_id)
+      perform_reconciliation(scope, observation, failed)
+    end)
+    |> case do
+      {:ok, result} ->
+        result
+
+      {:error, {:resource_failed, derived, exception}} ->
+        failed = fail_resource!(scope, derived, exception, authorize, failed)
+        do_reconcile(scope, observation, authorize, failed)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Records the failure of the one resource that raised, then lets the report
+  # run again without it. Another run of the same report may have reconciled
+  # the resource since this one rolled back; its committed success stands and
+  # is not superseded. Each rerun settles one more resource, so a report runs
+  # at most once per resource it carries.
+  defp fail_resource!(scope, derived, exception, authorize, failed) do
+    attrs = unexpected_failure_attrs(exception)
+
+    {:ok, outcome} =
+      Repo.transaction(fn ->
+        authorize.()
+        Inventory.lock_organization!(scope.organization_id)
+
+        case latest_result(scope, derived.id) do
+          %{status: "succeeded"} -> :succeeded
+          _none_or_failed -> create_failure(scope, derived, attrs)
+        end
+      end)
+
+    case outcome do
+      :succeeded -> failed
+      {:error, _result} -> Map.put(failed, derived.id, true)
+    end
+  end
+
+  defp perform_reconciliation(scope, observation, failed) do
     if report?(observation),
-      do: perform_report_reconciliation(scope, observation),
+      do: perform_report_reconciliation(scope, observation, failed),
       else: perform_resource_reconciliation(scope, observation)
   end
 
@@ -103,8 +146,9 @@ defmodule Renga.Inventory.Reconciler do
   # Each derived observation reconciles once; a retry of the report retries
   # only the ones that have not succeeded. One resource failing, such as an
   # ambiguous identity, does not hold back the others, but it does stop its
-  # target from retiring anything.
-  defp perform_report_reconciliation(scope, report) do
+  # target from retiring anything. Resources in `failed` raised earlier in this
+  # call, so their recorded failure stands for this run.
+  defp perform_report_reconciliation(scope, report, failed) do
     source = Inventory.get_source!(scope, report.source_id)
     started_at = Renga.Time.utc_now_ms()
     attempt = next_attempt(scope, report.id)
@@ -112,15 +156,7 @@ defmodule Renga.Inventory.Reconciler do
     results =
       scope
       |> Inventory.list_derived_observations(report.id)
-      |> Enum.map(fn derived ->
-        result =
-          case latest_result(scope, derived.id) do
-            %{status: "succeeded"} = result -> result_to_reconciliation(scope, result)
-            _none_or_failed -> perform_resource_reconciliation(scope, derived)
-          end
-
-        {derived, result}
-      end)
+      |> Enum.map(&{&1, derived_result(scope, &1, failed)})
 
     withdrawn = Collectors.apply_report!(scope, source, report, results)
 
@@ -137,6 +173,36 @@ defmodule Renga.Inventory.Reconciler do
       })
 
     {:ok, report_resources(results), Enum.any?(results, &match?({_, {:ok, _, true}}, &1))}
+  end
+
+  defp derived_result(scope, derived, failed) do
+    case latest_result(scope, derived.id) do
+      %{status: "succeeded"} = result ->
+        result_to_reconciliation(scope, result)
+
+      %{} = result when is_map_key(failed, derived.id) ->
+        {:error, result}
+
+      _none_or_failed ->
+        isolated_resource_reconciliation(derived, fn ->
+          perform_resource_reconciliation(scope, derived)
+        end)
+    end
+  end
+
+  # An unexpected failure, such as a database error, stays with its own
+  # resource: the report's transaction rolls back, and the caller records this
+  # resource as failed and runs the report again. A savepoint cannot undo it,
+  # since a failure inside a nested transaction aborts the whole transaction.
+  # A lost connection fails the whole report.
+  defp isolated_resource_reconciliation(derived, reconcile) do
+    reconcile.()
+  rescue
+    exception in DBConnection.ConnectionError ->
+      reraise exception, __STACKTRACE__
+
+    exception ->
+      Repo.rollback({:resource_failed, derived, exception})
   end
 
   defp report_resource_result({derived, {:ok, resource, _discovered?}}),

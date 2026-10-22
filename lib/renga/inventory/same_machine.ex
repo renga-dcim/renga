@@ -102,6 +102,43 @@ defmodule Renga.Inventory.SameMachine do
     |> Enum.each(&refresh_guest!(scope, &1, now, domains))
   end
 
+  @doc """
+  Resolves the open findings whose evidence no longer singles out their VM
+  as of `now`. Evidence also ages out with no report to say so, as when a
+  hypervisor's agent stops, so `Renga.Inventory.SameMachineSweeper` calls
+  this periodically. A finding that still stands is left as last observed:
+  only a report is new evidence, and only a report opens a finding.
+  """
+  def expire!(%Scope{} = scope, now) do
+    Repo.transaction(fn ->
+      Inventory.lock_organization!(scope.organization_id)
+      domains = eligible_domains(scope, now)
+
+      CollectorFinding
+      |> where([finding], finding.organization_id == ^scope.organization_id)
+      |> where([finding], finding.kind == @kind and finding.status == "open")
+      |> select([finding], finding.resource_id)
+      |> distinct(true)
+      |> Repo.all()
+      |> Enum.each(&expire_guest!(scope, &1, domains, now))
+    end)
+  end
+
+  defp expire_guest!(scope, guest_id, domains, now) do
+    case guest_agents(scope, guest_id) != [] && candidate(scope, guest_id, domains) do
+      {vm_id, _members, _macs} ->
+        resolve_where!(
+          scope,
+          guest_id,
+          now,
+          &where(&1, [finding], fragment("?->>'vm_resource_id'", finding.details) != ^vm_id)
+        )
+
+      _gone ->
+        resolve_where!(scope, guest_id, now, & &1)
+    end
+  end
+
   @doc "Opens, updates, or resolves the finding for one machine as of `now`."
   def refresh_guest!(%Scope{} = scope, guest_id, now, domains \\ nil) do
     case guest_agents(scope, guest_id) do
@@ -156,11 +193,14 @@ defmodule Renga.Inventory.SameMachine do
     |> Repo.all()
   end
 
+  # Only device-backed interfaces say which MACs the machine itself carries.
+  # A virtual one may carry another's: a macvtap on a hypervisor host has
+  # its guest's MAC, so the host would otherwise match its own VM.
   defp guest_macs(scope, guest_id) do
     Interface
     |> where([interface], interface.organization_id == ^scope.organization_id)
     |> where([interface], interface.resource_id == ^guest_id)
-    |> where([interface], not is_nil(interface.mac_address))
+    |> where([interface], not is_nil(interface.mac_address) and interface.kind != "virtual")
     |> present_interfaces()
     |> select([interface], interface.mac_address)
     |> Repo.all()
@@ -172,10 +212,15 @@ defmodule Renga.Inventory.SameMachine do
   defp present_interfaces(query),
     do: where(query, [interface], is_nil(interface.status) or interface.status != "not_present")
 
+  # Firmware that never set a UUID reports all zeros or all ones, as many
+  # unrelated machines do, so such a value does not identify the guest.
+  @unset_uuids ~w(00000000-0000-0000-0000-000000000000 ffffffff-ffff-ffff-ffff-ffffffffffff)
+
   defp uuid?(scope, guest_id) do
     ResourceIdentifier
     |> where([identifier], identifier.organization_id == ^scope.organization_id)
     |> where([identifier], identifier.resource_id == ^guest_id and identifier.kind == "dmi_uuid")
+    |> where([identifier], identifier.normalized_value not in ^@unset_uuids)
     |> Repo.exists?()
   end
 

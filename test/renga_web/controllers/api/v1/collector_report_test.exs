@@ -621,6 +621,32 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert inventory_current(scope, member.resource_id) == "true"
     end
 
+    test "a late claim leaves a stale resource stale", %{scope: scope, token: token} do
+      %{"reconciliation" => %{"resources" => [%{"resource_id" => switch_id}]}} =
+        token
+        |> post_observation(
+          switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T09:00:00Z")
+        )
+        |> valid_api_response(202)
+
+      {:ok, _condition} = Inventory.mark_resource_stale(scope, switch_id)
+
+      # Another poller's report from before the switch went stale arrives late.
+      token
+      |> post_observation(
+        switch_report([switch("10.0.0.1", "SER-1")],
+          collector_id: "edge-switches",
+          observed_at: "2026-08-13T08:00:00Z"
+        )
+      )
+      |> valid_api_response(202)
+
+      assert %{status: "false", reason: "Stale"} =
+               scope
+               |> Inventory.list_resource_conditions(switch_id)
+               |> Enum.find(&(&1.type == "InventoryCurrent"))
+    end
+
     test "a failed resource stops its target from withdrawing anything", %{
       scope: scope,
       token: token
