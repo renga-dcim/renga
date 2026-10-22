@@ -16,4 +16,5 @@ pub mod queue;
 pub mod scheduler;
 pub mod smbios;
 pub mod snmp;
+pub mod switch_report;
 pub mod transport;

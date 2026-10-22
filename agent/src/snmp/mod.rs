@@ -9,16 +9,11 @@ pub mod config;
 pub mod mibs;
 pub mod worker;
 
-use crate::{
-    cancellation::Cancellation,
-    payload::{
-        Collector, CollectorKind, CollectorResource, Reachability, ReportScope, ScopedReport,
-        SectionCompleteness, TargetStatus, MAX_OBSERVATION_BYTES,
-    },
-};
+pub use crate::switch_report::{reports, TargetOutcome};
+
+use crate::{cancellation::Cancellation, payload::CollectorResource, switch_report::Sections};
 use client::{PollError, Session};
 use config::{SnmpCollector, Target};
-use mibs::Support;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -27,22 +22,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use uuid::Uuid;
 
 /// Neighbor evidence outlives a missed poll or two, but not a switch that stopped answering.
 const NEIGHBOR_TTL_POLLS: u32 = 3;
 /// A whole target, every walk included, must finish within this many request timeouts.
 const TARGET_BUDGET_TIMEOUTS: u32 = 24;
-/// Generous upper bounds on the JSON around each target and around the whole report.
-const TARGET_ENTRY_BYTES: usize = 96;
-const REPORT_ENVELOPE_BYTES: usize = 1_024;
-
-/// One target's poll: its switch, or why it was not read.
-#[derive(Debug)]
-pub struct TargetOutcome {
-    pub target: Target,
-    pub result: Result<(CollectorResource, Support), String>,
-}
 
 /// Polls every target of `collector`, at most `max_concurrent_targets` at once. `open` connects
 /// to one target; tests pass recorded sessions.
@@ -78,7 +62,7 @@ where
                     .push((
                         index,
                         TargetOutcome {
-                            target: target.clone(),
+                            address: target.address.clone(),
                             result,
                         },
                     ));
@@ -98,7 +82,7 @@ fn poll_target<F>(
     budget: Duration,
     ttl: u32,
     stopped: &Cancellation,
-) -> Result<(CollectorResource, Support), String>
+) -> Result<(CollectorResource, Sections), String>
 where
     F: Fn(&Target) -> Result<Box<dyn Session>, PollError>,
 {
@@ -106,111 +90,6 @@ where
     let mut session = open(target).map_err(|error| error.0)?;
     let answers = client::poll(session.as_mut(), deadline, stopped).map_err(|error| error.0)?;
     mibs::switch(&target.address, &answers, ttl).map_err(|error| error.0)
-}
-
-/// Encodes the outcomes as complete `targets` reports, each within the observation size limit.
-/// Every target appears in exactly one report; one whose switch alone exceeds the limit is
-/// reported unreachable, so its last known state stands.
-pub fn reports(collector_id: &str, outcomes: Vec<TargetOutcome>) -> Vec<(Uuid, Vec<u8>)> {
-    // Packs by each target's own encoded size, leaving room for the report's envelope, then
-    // halves any batch that still comes out too large.
-    let budget = MAX_OBSERVATION_BYTES - REPORT_ENVELOPE_BYTES;
-    let mut batches: Vec<Vec<TargetOutcome>> = Vec::new();
-    let mut used = 0;
-    for outcome in outcomes {
-        let outcome = within_limit(collector_id, outcome);
-        let size = encoded_size(&outcome);
-        if used + size > budget || batches.is_empty() {
-            batches.push(Vec::new());
-            used = 0;
-        }
-        used += size;
-        batches.last_mut().expect("pushed above").push(outcome);
-    }
-    let mut reports = Vec::new();
-    while let Some(mut batch) = batches.pop() {
-        match encode(collector_id, &batch) {
-            Some(report) => reports.push(report),
-            None if batch.len() > 1 => {
-                let rest = batch.split_off(batch.len() / 2);
-                batches.push(rest);
-                batches.push(batch);
-            }
-            None => {}
-        }
-    }
-    reports.reverse();
-    reports
-}
-
-/// The outcome, or an unreachable one when its switch alone cannot fit in a report.
-fn within_limit(collector_id: &str, outcome: TargetOutcome) -> TargetOutcome {
-    if outcome.result.is_err() || encode(collector_id, std::slice::from_ref(&outcome)).is_some() {
-        return outcome;
-    }
-    TargetOutcome {
-        target: outcome.target,
-        result: Err(format!(
-            "the switch's report exceeds {MAX_OBSERVATION_BYTES} bytes"
-        )),
-    }
-}
-
-fn encoded_size(outcome: &TargetOutcome) -> usize {
-    let resource = match &outcome.result {
-        Ok((resource, _)) => serde_json::to_vec(resource).map_or(0, |body| body.len()),
-        Err(error) => error.len(),
-    };
-    resource + outcome.target.address.len() + TARGET_ENTRY_BYTES
-}
-
-/// The encoded report for `outcomes` with its observation ID, or `None` when it is empty or too
-/// large.
-fn encode(collector_id: &str, outcomes: &[TargetOutcome]) -> Option<(Uuid, Vec<u8>)> {
-    if outcomes.is_empty() {
-        return None;
-    }
-    let mut targets = Vec::with_capacity(outcomes.len());
-    let mut resources = Vec::new();
-    let mut lldp = true;
-    let mut q_bridge = true;
-    let mut reached = false;
-    for outcome in outcomes {
-        match &outcome.result {
-            Ok((resource, support)) => {
-                reached = true;
-                lldp &= support.lldp;
-                q_bridge &= support.q_bridge;
-                targets.push(TargetStatus {
-                    address: outcome.target.address.clone(),
-                    status: Reachability::Reachable,
-                    error: None,
-                });
-                resources.push(resource.clone());
-            }
-            Err(error) => targets.push(TargetStatus {
-                address: outcome.target.address.clone(),
-                status: Reachability::Unreachable,
-                // Renga rejects the whole report over a longer error, so it is cut short.
-                error: Some(error.chars().take(mibs::MAX_STRING_CHARS).collect()),
-            }),
-        }
-    }
-    let report = ScopedReport::new(
-        Collector {
-            id: collector_id.to_owned(),
-            kind: CollectorKind::SwitchPoller,
-        },
-        ReportScope::Targets { targets },
-        true,
-        resources,
-    )
-    .with_section_completeness(SectionCompleteness {
-        interface_vlans: reached && q_bridge,
-        interface_neighbors: reached && lldp,
-    });
-    let body = serde_json::to_vec(&report).ok()?;
-    (body.len() <= MAX_OBSERVATION_BYTES).then_some((report.observation_id, body))
 }
 
 #[cfg(test)]
@@ -221,6 +100,7 @@ mod tests {
         mibs::{self, SnmpValue},
         *,
     };
+    use crate::payload::MAX_OBSERVATION_BYTES;
     use serde_json::Value;
 
     fn collector(targets: &[&str]) -> SnmpCollector {
@@ -305,7 +185,7 @@ mod tests {
     fn splits_reports_at_the_size_limit() {
         let outcomes = (0..400)
             .map(|index| TargetOutcome {
-                target: Target::parse(&format!("10.1.{}.{}", index / 200, index % 200)).unwrap(),
+                address: format!("10.1.{}.{}", index / 200, index % 200),
                 result: Err("x".repeat(1_000)),
             })
             .collect();
@@ -332,11 +212,11 @@ mod tests {
         );
         let outcomes = vec![
             TargetOutcome {
-                target: Target::parse("10.0.0.1").unwrap(),
+                address: "10.0.0.1".into(),
                 result: mibs::switch("10.0.0.1", &answers, 60).map_err(|error| error.0),
             },
             TargetOutcome {
-                target: Target::parse("10.0.0.9").unwrap(),
+                address: "10.0.0.9".into(),
                 result: Err(format!("cannot resolve {long}")),
             },
         ];
@@ -350,7 +230,10 @@ mod tests {
             "FDO1234X0YZ"
         );
         let error = report["targets"][1]["error"].as_str().unwrap();
-        assert_eq!(error.chars().count(), mibs::MAX_STRING_CHARS);
+        assert_eq!(
+            error.chars().count(),
+            crate::switch_report::MAX_STRING_CHARS
+        );
     }
 
     /// The recorded switch as the mapper reports it. Renga's collector report tests post this
