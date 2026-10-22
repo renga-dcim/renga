@@ -324,6 +324,70 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert has_element?(view, "#collector-#{source.id}", "Disconnected")
   end
 
+  describe "poller targets" do
+    test "lists each stream's targets, unreachable ones first", %{conn: conn, scope: scope} do
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      refute has_element?(view, "#collector-targets")
+
+      {:ok, {_key, token}} = Inventory.create_intake_api_key(scope, %{name: "Pollers"})
+
+      post_report(token, %{
+        "scope" => "targets",
+        "collector" => %{"id" => "core-switches", "kind" => "switch_poller"},
+        "targets" => [
+          %{"address" => "10.0.0.1", "status" => "reachable"},
+          %{"address" => "10.0.0.2", "status" => "unreachable", "error" => "timeout"}
+        ],
+        "complete" => true,
+        "resources" => [
+          %{
+            "kind" => "switch",
+            "target" => "10.0.0.1",
+            "identifiers" => %{"serial_number" => "SER-1"},
+            "attributes" => %{},
+            "interfaces" => []
+          }
+        ]
+      })
+
+      post_report(token, %{
+        "scope" => "hypervisor",
+        "collector" => %{"id" => "local-libvirt", "kind" => "vm_provider"},
+        "hypervisor" => %{"id" => "qemu+ssh://root:secret@hv-1/system", "status" => "reachable"},
+        "complete" => true,
+        "resources" => []
+      })
+
+      [switches, libvirt] =
+        scope
+        |> Renga.Inventory.Collectors.list_stream_targets()
+        |> Enum.sort_by(fn {stream, _targets} -> stream.collector_id end)
+
+      {_stream, [{down, 0}, {up, 1}]} = switches
+      {_stream, [{hypervisor, 0}]} = libvirt
+      assert down.key == "10.0.0.2"
+
+      {:ok, view, html} = live(conn, ~p"/settings/collectors")
+
+      assert has_element?(view, "#poller-targets", "core-switches · Switch poller")
+      assert has_element?(view, "#poller-target-#{up.id}", "10.0.0.1")
+      assert has_element?(view, "#poller-target-state-#{up.id}", "Reachable")
+      assert has_element?(view, "#poller-target-resources-#{up.id}", "1")
+      assert has_element?(view, "#poller-target-state-#{down.id}", "Unreachable")
+      assert has_element?(view, "#poller-target-state-#{down.id}", "timeout")
+      assert has_element?(view, "#poller-target-#{down.id}", "Never")
+
+      # Unreachable targets lead their stream.
+      assert :binary.match(html, "poller-target-#{down.id}") <
+               :binary.match(html, "poller-target-#{up.id}")
+
+      # A hypervisor URI never shows credentials someone put in it.
+      assert has_element?(view, "#poller-targets", "local-libvirt · Hypervisor")
+      assert has_element?(view, "#poller-target-#{hypervisor.id}", "qemu+ssh://hv-1/system")
+      refute html =~ "secret"
+    end
+  end
+
   test "does not display keys or collectors from another organization", %{conn: conn} do
     other_user = user_fixture()
     organization = organization_fixture(%{name: "Other operations"})
@@ -432,5 +496,22 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       refute has_element?(view, "#pending-key-#{key.id}-approve")
       refute has_element?(view, "#approve-key-#{key.id}")
     end
+  end
+
+  defp post_report(token, payload) do
+    payload =
+      Map.merge(
+        %{
+          "observation_id" => "poll-#{System.unique_integer([:positive])}",
+          "observed_at" => "2026-08-13T07:30:00Z"
+        },
+        payload
+      )
+
+    build_conn()
+    |> put_req_header("authorization", "Bearer #{token}")
+    |> put_req_header("x-renga-installation-id", @installation_id)
+    |> post(~p"/api/v1/observations", payload)
+    |> valid_api_response(202)
   end
 end
