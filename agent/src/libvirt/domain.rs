@@ -6,6 +6,8 @@ use roxmltree::{Document, Node};
 /// Must match `Renga.Inventory.AgentPayload`.
 pub const MAX_DOMAIN_DEVICES: usize = 256;
 const MAX_STRING: usize = 255;
+/// Renga rejects a whole report over a larger count, so a larger value is left out instead.
+const MAX_SERVER_INTEGER: u64 = 2_147_483_647;
 /// Real domain definitions nest about ten deep. The parser recurses once per level, so a remote
 /// daemon's deeply nested answer could overflow the stack and abort the whole agent.
 const MAX_XML_DEPTH: usize = 64;
@@ -110,7 +112,7 @@ pub fn parse(
             persistent,
             vcpus: child_text(root, "vcpu")
                 .and_then(|text| text.parse().ok())
-                .filter(|vcpus| *vcpus > 0),
+                .filter(|vcpus: &u32| (1..=MAX_SERVER_INTEGER).contains(&u64::from(*vcpus))),
             memory_mib: root
                 .children()
                 .find(|node| node.has_tag_name("memory"))
@@ -215,7 +217,8 @@ fn memory_mib(node: Node<'_, '_>) -> Option<u64> {
         "T" | "TiB" => 1 << 40,
         _ => return None,
     };
-    Some(amount.checked_mul(bytes_per_unit)? >> 20).filter(|mib| *mib > 0)
+    Some(amount.checked_mul(bytes_per_unit)? >> 20)
+        .filter(|mib| (1..=MAX_SERVER_INTEGER).contains(mib))
 }
 
 fn child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
@@ -344,6 +347,22 @@ pub(crate) mod tests {
 
         assert!(nesting_depth(WEB_01) < MAX_XML_DEPTH);
         assert_eq!(nesting_depth("<a><b/><c><d/></c></a>"), 3);
+    }
+
+    #[test]
+    fn leaves_out_allocations_renga_cannot_store() {
+        let xml = |vcpu: &str, memory: &str| {
+            format!(
+                "<domain><name>a</name><uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid>\\
+                 <vcpu>{vcpu}</vcpu><memory unit='MiB'>{memory}</memory></domain>"
+            )
+        };
+        let fits = parse(&xml("2147483647", "2147483647"), DomainState::Running, None).unwrap();
+        assert_eq!(fits.domain.vcpus, Some(2_147_483_647));
+        assert_eq!(fits.domain.memory_mib, Some(2_147_483_647));
+        let over = parse(&xml("2147483648", "2147483648"), DomainState::Running, None).unwrap();
+        assert_eq!(over.domain.vcpus, None);
+        assert_eq!(over.domain.memory_mib, None);
     }
 
     #[test]
