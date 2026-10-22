@@ -317,7 +317,12 @@ defmodule Renga.Transfers.RecordTypes do
     "resource_group_memberships" => ~w(resource_id view group_id)
   }
 
+  @imported_principal "names an imported principal; carrying it into another export is future work"
+
   @excluded_fields %{
+    "cable_assertions" => %{"actor_principal_id" => @imported_principal},
+    "desired_module_assignments" => %{"confirmed_by_principal_id" => @imported_principal},
+    "expected_component_exceptions" => %{"confirmed_by_principal_id" => @imported_principal},
     "intake_api_keys" => %{
       "token_hash" => "credential: the key's hash",
       "deployment_id" => "names the source deployment (RFD 23); destination keys carry their own"
@@ -326,13 +331,16 @@ defmodule Renga.Transfers.RecordTypes do
       "lease_token_hash" => "credential: job lease",
       "report_token_hash" => "credential: job report",
       "offer_token_hash" => "credential: signed-lease offer",
-      "offer_nonce" => "credential: signed-lease offer"
+      "offer_nonce" => "credential: signed-lease offer",
+      "imported_at" => "set by the destination when it imports a job as history"
     },
     "organization_memberships" => %{
       "scim_connection_id" =>
         "names a SCIM connection, which is not exported; the destination's provider grants again"
     }
   }
+
+  @imported_bookkeeping "import bookkeeping; carrying it into another export is future work"
 
   @excluded_tables %{
     "agent_leases" => "runtime state; agents take new leases at the destination",
@@ -341,11 +349,15 @@ defmodule Renga.Transfers.RecordTypes do
       "maintained by a trigger when an adjacency is inserted",
     "deployment_audit_events" => "the deployment's operator audit log, not organization data",
     "identity_providers" => "deployment configuration, set up at the destination",
+    "imported_attributions" => @imported_bookkeeping,
+    "imported_held_records" => @imported_bookkeeping,
+    "imported_principals" => @imported_bookkeeping,
     "organization_domains" =>
       "sign-in routing to the organization's identity providers, which are not exported; the destination verifies its domains again",
     "organization_invitations" =>
       "pending invitations carry secrets; access returns through new invitations",
     "organization_exports" => "the source's own exports and their archives",
+    "organization_imports" => "the source's own imports, recorded in its Activity",
     "organization_limits" => "operator policy of the source deployment",
     "scim_connections" =>
       "provisioning through one of the deployment's identity providers, set up at the destination",
