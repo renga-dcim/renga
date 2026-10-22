@@ -97,6 +97,8 @@ pub const COLUMNS: &[&[u32]] = &[
 const ENT_CLASS_CHASSIS: i64 = 3;
 // Postgres integer columns hold MTU and speed.
 const MAX_INT32: u64 = 2_147_483_647;
+/// Must match `Renga.Inventory.AgentPayload`'s string limit.
+pub const MAX_STRING_CHARS: usize = 255;
 
 /// Every variable a switch answered, by OID.
 #[derive(Debug, Default, Clone)]
@@ -542,7 +544,7 @@ fn text(value: &SnmpValue) -> Option<String> {
         SnmpValue::Octets(bytes) => {
             let text = std::str::from_utf8(bytes).ok()?;
             let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\0');
-            normalize_value(text)
+            normalize_value(text).filter(|text| within_string_limit(text))
         }
         _ => None,
     }
@@ -556,9 +558,17 @@ fn text_or_hex(value: &SnmpValue) -> Option<String> {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<Vec<_>>()
                 .join(":"),
-        ),
+        )
+        .filter(|hex| within_string_limit(hex)),
         _ => None,
     })
+}
+
+/// Renga rejects a whole report over one longer string, which would lose every switch in it,
+/// so a value too long to send is left out instead. Cutting it short could make two different
+/// names or IDs equal.
+fn within_string_limit(text: &str) -> bool {
+    text.chars().count() <= MAX_STRING_CHARS
 }
 
 fn mac(value: &SnmpValue) -> Option<String> {

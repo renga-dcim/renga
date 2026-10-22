@@ -190,7 +190,8 @@ fn encode(collector_id: &str, outcomes: &[TargetOutcome]) -> Option<(Uuid, Vec<u
             Err(error) => targets.push(TargetStatus {
                 address: outcome.target.address.clone(),
                 status: Reachability::Unreachable,
-                error: Some(error.clone()),
+                // Renga rejects the whole report over a longer error, so it is cut short.
+                error: Some(error.chars().take(mibs::MAX_STRING_CHARS).collect()),
             }),
         }
     }
@@ -318,6 +319,37 @@ mod tests {
             .map(|(_, body)| decode(body)["targets"].as_array().unwrap().len())
             .sum();
         assert_eq!(targets, 400);
+    }
+
+    #[test]
+    fn keeps_every_string_within_the_server_limit() {
+        let long = "x".repeat(300);
+        let mut answers = mibs::tests::answers();
+        answers.insert(
+            mibs::SYS_NAME.to_vec(),
+            SnmpValue::Octets(long.clone().into_bytes()),
+        );
+        let outcomes = vec![
+            TargetOutcome {
+                target: Target::parse("10.0.0.1").unwrap(),
+                result: mibs::switch("10.0.0.1", &answers, 60).map_err(|error| error.0),
+            },
+            TargetOutcome {
+                target: Target::parse("10.0.0.9").unwrap(),
+                result: Err(format!("cannot resolve {long}")),
+            },
+        ];
+        let report = decode(&reports("core", outcomes)[0].1);
+
+        assert!(report["resources"][0]["identifiers"]
+            .get("hostname")
+            .is_none());
+        assert_eq!(
+            report["resources"][0]["identifiers"]["serial_number"],
+            "FDO1234X0YZ"
+        );
+        let error = report["targets"][1]["error"].as_str().unwrap();
+        assert_eq!(error.chars().count(), mibs::MAX_STRING_CHARS);
     }
 
     #[test]
