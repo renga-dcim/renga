@@ -9,12 +9,14 @@ defmodule Renga.Repo.Migrations.CreateDeploymentAuditEvents do
     create table(:deployment_audit_events) do
       add :operation, :string, null: false
       add :outcome, :string, null: false
-      add :actor, :string, null: false
+      # An actor's name and an organization's name have no length limit here,
+      # so recording one can never be what fails a change.
+      add :actor, :text, null: false
       add :actor_token_id, :binary_id
       add :invocation_id, :string, null: false
       add :target_id, :string
       add :organization_id, :binary_id
-      add :organization_name, :string
+      add :organization_name, :text
       add :changed, {:array, :string}, null: false, default: []
       add :reason, :string
 

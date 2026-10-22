@@ -197,6 +197,18 @@ defmodule Renga.OperatorsTest do
     end
   end
 
+  test "a token's own long name fits its audit events" do
+    {token, _plaintext} = create_token!(%{name: String.duplicate("n", 255)})
+
+    {:ok, _token} = Operators.revoke_token(token, DeploymentAudit.token(token, "request-1"))
+
+    assert Repo.one(
+             from event in Event,
+               where: event.invocation_id == "request-1",
+               select: {event.actor, event.actor_token_id}
+           ) == {"token: " <> token.name, token.id}
+  end
+
   describe "authorized?/2" do
     test "a write scope includes its read, and nothing else" do
       {token, _plaintext} = create_token!(%{scopes: ["policy:write", "usage:read"]})

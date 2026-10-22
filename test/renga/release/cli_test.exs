@@ -115,10 +115,42 @@ defmodule Renga.Release.CLITest do
     assert Repo.all(from event in Event, select: {event.outcome, event.reason}) ==
              List.duplicate({"rejected", "invalid"}, 3)
 
-    {1, "", stderr} = run(~w(operator-tokens revoke a b --actor alice))
-    assert stderr =~ "Usage:"
-
     {1, "", stderr} = run(~w(nope))
     assert stderr =~ "Usage:"
+  end
+
+  test "audits malformed changes once an actor is named" do
+    for argv <- [
+          ~w(operator-tokens create --actor alice --name ci --scopes usage:read unexpected),
+          ~w(operator-tokens create --actor alice --name ci --scopes usage:read --bogus x),
+          ~w(operator-tokens create --actor alice --scopes usage:read --name),
+          ~w(operator-tokens revoke a b --actor alice),
+          ~w(operator-tokens revoke --actor alice)
+        ] do
+      assert {1, "", _stderr} = run(argv)
+    end
+
+    assert Repo.all(from event in Event, select: {event.outcome, event.reason}) ==
+             List.duplicate({"rejected", "invalid"}, 5)
+
+    refute Operators.get_token("ci")
+  end
+
+  test "records actors of any length" do
+    actor = String.duplicate("a", 300)
+
+    {0, _stdout, ""} =
+      run([
+        "operator-tokens",
+        "create",
+        "--actor",
+        actor,
+        "--name",
+        "ci",
+        "--scopes",
+        "usage:read"
+      ])
+
+    assert Repo.one(from event in Event, select: event.actor) == "operator: " <> actor
   end
 end

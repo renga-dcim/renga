@@ -29,21 +29,11 @@ defmodule Renga.Release.CLI do
   def run(argv)
 
   def run(["operator-tokens", "create" | args]) do
-    {opts, rest, invalid} =
-      OptionParser.parse(args,
-        strict: [
-          actor: :string,
-          name: :string,
-          scope: :keep,
-          scopes: :keep,
-          expires_at: :string,
-          source: :keep
-        ]
-      )
+    switches = [name: :string, scope: :keep, scopes: :keep, expires_at: :string, source: :keep]
 
-    with :ok <- no_extra_args(rest, invalid),
-         {:ok, context} <- context(opts),
-         {:ok, attrs} <- token_attrs(opts, context) do
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "operator_token.create", no_extra_args(rest, invalid)),
+         {:ok, attrs} <- audited(context, "operator_token.create", token_attrs(opts)) do
       case Operators.create_token(attrs, context) do
         {:ok, {token, plaintext}} ->
           IO.puts("Created operator token #{token.name} (#{token.id}).")
@@ -83,10 +73,8 @@ defmodule Renga.Release.CLI do
   end
 
   def run(["operator-tokens", "revoke" | args]) do
-    {opts, rest, invalid} = OptionParser.parse(args, strict: [actor: :string])
-
-    with [id_or_name] <- (invalid == [] && rest) || :usage,
-         {:ok, context} <- context(opts) do
+    with {:ok, context, _opts, rest, invalid} <- parse_change(args, []),
+         {:ok, id_or_name} <- audited(context, "operator_token.revoke", one_arg(rest, invalid)) do
       case Operators.get_token(id_or_name) do
         nil ->
           {:error, :not_found} =
@@ -99,9 +87,6 @@ defmodule Renga.Release.CLI do
           IO.puts("Revoked operator token #{token.name} (#{token.id}).")
           0
       end
-    else
-      1 -> 1
-      _usage -> error(@usage)
     end
   end
 
@@ -115,7 +100,14 @@ defmodule Renga.Release.CLI do
     Renga.Release.with_repos(fn -> run(argv) end) |> System.halt()
   end
 
-  # Like bin/providers, a change names who made it.
+  # Like bin/providers, a change names who made it. Once it does, every
+  # refusal of the command is recorded too, though never the arguments typed.
+  defp parse_change(args, switches) do
+    {opts, rest, invalid} = OptionParser.parse(args, strict: [actor: :string] ++ switches)
+
+    with {:ok, context} <- context(opts), do: {:ok, context, opts, rest, invalid}
+  end
+
   defp context(opts) do
     case opts[:actor] && String.trim(opts[:actor]) do
       actor when actor in [nil, ""] ->
@@ -128,27 +120,32 @@ defmodule Renga.Release.CLI do
     end
   end
 
-  # Once the actor is known, a refused attempt is recorded too.
-  defp token_attrs(opts, context) do
+  # Passes a step's result through, recording a refusal (an exit status) as
+  # an `invalid` attempt at `operation`.
+  defp audited(context, operation, status) when is_integer(status) do
+    {:error, :invalid} = DeploymentAudit.reject(context, operation, :invalid)
+    status
+  end
+
+  defp audited(_context, _operation, result), do: result
+
+  defp one_arg([arg], []), do: {:ok, arg}
+  defp one_arg(_rest, _invalid), do: error(@usage)
+
+  defp token_attrs(opts) do
     scopes =
       Keyword.get_values(opts, :scope) ++
         Enum.flat_map(Keyword.get_values(opts, :scopes), &String.split(&1, ","))
 
-    result =
-      with {:ok, expires_at} <- parse_expiry(opts[:expires_at]),
-           :ok <- no_empty_scopes(scopes) do
-        {:ok,
-         %{
-           name: opts[:name],
-           scopes: scopes,
-           allowed_sources: Keyword.get_values(opts, :source),
-           expires_at: expires_at
-         }}
-      end
-
-    with status when is_integer(status) <- result do
-      {:error, :invalid} = DeploymentAudit.reject(context, "operator_token.create", :invalid)
-      status
+    with {:ok, expires_at} <- parse_expiry(opts[:expires_at]),
+         :ok <- no_empty_scopes(scopes) do
+      {:ok,
+       %{
+         name: opts[:name],
+         scopes: scopes,
+         allowed_sources: Keyword.get_values(opts, :source),
+         expires_at: expires_at
+       }}
     end
   end
 
