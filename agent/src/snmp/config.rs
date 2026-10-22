@@ -1,4 +1,5 @@
-//! `[[collectors.snmp]]` configuration (RFD 11, "Deployment").
+//! `[[collectors.snmp]]` configuration (RFD 11, "Deployment"), also used by the
+//! `[[collectors.power]]` PDU poller (RFD 10, "Collectors and BMCs").
 //!
 //! Credentials stay in files on the collector host. The configuration names the files; the
 //! poller reads them before each poll, so rotating a password needs no restart and the secret
@@ -7,8 +8,18 @@
 use serde::Deserialize;
 use std::{collections::BTreeSet, fmt, path::PathBuf, time::Duration};
 
-const INTERVAL_DEFAULT: u64 = 900;
-const INTERVAL_MIN: u64 = 60;
+/// How often a module polls by default, and at least how long it waits between polls.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Intervals {
+    pub default: u64,
+    pub min: u64,
+}
+
+/// Switch inventory changes slowly.
+pub(crate) const SWITCH_INTERVALS: Intervals = Intervals {
+    default: 900,
+    min: 60,
+};
 const TIMEOUT_DEFAULT: u64 = 5;
 const TIMEOUT_MAX: u64 = 60;
 const CONCURRENCY_DEFAULT: usize = 4;
@@ -114,12 +125,22 @@ pub(crate) struct RawSnmpCollector {
 
 /// Validates every `[[collectors.snmp]]` table. Errors name the module by its position.
 pub(crate) fn from_raw(raw: Vec<RawSnmpCollector>) -> Result<Vec<SnmpCollector>, String> {
+    from_raw_section(raw, "collectors.snmp", SWITCH_INTERVALS)
+}
+
+/// Validates every table of an SNMP module `section`, such as `collectors.power`.
+pub(crate) fn from_raw_section(
+    raw: Vec<RawSnmpCollector>,
+    section: &str,
+    intervals: Intervals,
+) -> Result<Vec<SnmpCollector>, String> {
     let mut ids = BTreeSet::new();
     raw.into_iter()
         .enumerate()
         .map(|(index, raw)| {
-            let name = format!("collectors.snmp[{index}]");
-            let collector = collector(raw).map_err(|error| format!("{name}: {error}"))?;
+            let name = format!("{section}[{index}]");
+            let collector =
+                collector(raw, intervals).map_err(|error| format!("{name}: {error}"))?;
             if !ids.insert(collector.id.clone()) {
                 return Err(format!("{name}: id {:?} is used twice", collector.id));
             }
@@ -128,7 +149,7 @@ pub(crate) fn from_raw(raw: Vec<RawSnmpCollector>) -> Result<Vec<SnmpCollector>,
         .collect()
 }
 
-fn collector(raw: RawSnmpCollector) -> Result<SnmpCollector, String> {
+fn collector(raw: RawSnmpCollector, intervals: Intervals) -> Result<SnmpCollector, String> {
     let id = raw.id.ok_or("id is required")?;
     if !valid_collector_id(&id) {
         return Err(format!(
@@ -177,9 +198,12 @@ fn collector(raw: RawSnmpCollector) -> Result<SnmpCollector, String> {
         }
         other => return Err(format!("version must be \"3\" or \"2c\", not {other:?}")),
     };
-    let interval = raw.interval_seconds.unwrap_or(INTERVAL_DEFAULT);
-    if interval < INTERVAL_MIN {
-        return Err(format!("interval_seconds must be at least {INTERVAL_MIN}"));
+    let interval = raw.interval_seconds.unwrap_or(intervals.default);
+    if interval < intervals.min {
+        return Err(format!(
+            "interval_seconds must be at least {}",
+            intervals.min
+        ));
     }
     let timeout = raw.timeout_seconds.unwrap_or(TIMEOUT_DEFAULT);
     if !(1..=TIMEOUT_MAX).contains(&timeout) {

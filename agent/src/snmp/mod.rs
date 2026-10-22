@@ -18,7 +18,14 @@ use crate::{
 };
 use client::{PollError, Session};
 use config::{SnmpCollector, Target};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 /// A whole target, every walk included, must finish within this many request timeouts.
 const TARGET_BUDGET_TIMEOUTS: u32 = 24;
@@ -37,6 +44,40 @@ where
         stopped,
         |target| poll_target(target, &open, budget, ttl, stopped),
     )
+}
+
+/// Runs `read` on every target of `collector`, at most `max_concurrent_targets` at once, and
+/// returns the results in the targets' order.
+pub fn each_target<T, F>(collector: &SnmpCollector, read: F) -> Vec<T>
+where
+    T: Send,
+    F: Fn(&Target) -> T + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(collector.targets.len()));
+    let workers = collector
+        .max_concurrent_targets
+        .min(collector.targets.len());
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(target) = collector.targets.get(index) else {
+                    break;
+                };
+                let result = read(target);
+                results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((index, result));
+            });
+        }
+    });
+    let mut results = results
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 fn poll_target<F>(

@@ -1,4 +1,4 @@
-//! Reads one switch over SNMP into `Answers`.
+//! Reads one device over SNMP into `Answers`.
 
 use super::{
     config::{AuthProtocol, Credentials, PrivacyProtocol, Target},
@@ -38,23 +38,38 @@ pub trait Session {
     fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError>;
 }
 
-/// Reads every scalar and walks every column before `deadline`, or until `stopped`: a module
-/// stopped for a reload or shutdown ends its walk at the next request, not its deadline.
+/// Reads every switch scalar and walks every switch column before `deadline`, or until
+/// `stopped`: a module stopped for a reload or shutdown ends its walk at the next request, not
+/// its deadline.
 pub fn poll(
     session: &mut dyn Session,
     deadline: Instant,
     stopped: &Cancellation,
 ) -> Result<Answers, PollError> {
+    read(session, deadline, stopped, SCALARS, COLUMNS)
+}
+
+/// Reads `scalars` with one GET and walks each of `columns` before `deadline`, or until
+/// `stopped`.
+pub fn read(
+    session: &mut dyn Session,
+    deadline: Instant,
+    stopped: &Cancellation,
+    scalars: &[&[u32]],
+    columns: &[&[u32]],
+) -> Result<Answers, PollError> {
     if stopped.cancelled() {
         return Err(PollError("polling was cancelled".into()));
     }
     let mut answers = Answers::default();
-    for (oid, value) in session.get(SCALARS)? {
-        answers.insert(oid, value);
+    if !scalars.is_empty() {
+        for (oid, value) in session.get(scalars)? {
+            answers.insert(oid, value);
+        }
     }
     let mut total = 0;
     let mut bytes = 0;
-    for column in COLUMNS {
+    for column in columns {
         let mut cursor = column.to_vec();
         'walk: loop {
             if Instant::now() >= deadline {
