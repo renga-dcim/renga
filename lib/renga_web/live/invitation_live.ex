@@ -43,6 +43,10 @@ defmodule RengaWeb.InvitationLive do
 
   defp refusal(:already_member), do: "You're already a member of this organization."
 
+  defp refusal(:scoped_session),
+    do:
+      "You signed in with another organization's identity provider. Sign in another way to accept this invitation."
+
   defp refusal(:forbidden),
     do: "The person who invited you can no longer grant this role. Ask for a new invitation."
 
