@@ -1,0 +1,13 @@
+#!/bin/sh
+# Removes every second factor from an account (RFD 19, "Recovery").
+# Usage: remove-mfa EMAIL ACTOR
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: $0 EMAIL ACTOR" >&2
+  exit 64
+fi
+
+cd -P -- "$(dirname -- "$0")"
+RENGA_REMOVE_MFA_EMAIL="$1" RENGA_REMOVE_MFA_ACTOR="$2" exec ./renga eval \
+  'Renga.Release.remove_mfa(System.fetch_env!("RENGA_REMOVE_MFA_EMAIL"), System.fetch_env!("RENGA_REMOVE_MFA_ACTOR"))'

@@ -11,6 +11,7 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.Passkeys
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
+  alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
@@ -378,6 +379,7 @@ defmodule Renga.Accounts do
       if Recheck.methods(user) == [] do
         token = generate_user_session_token(user, browser_session_id)
         :ok = Recheck.start_bootstrap(user, token)
+        record_sign_in(user, "magic_link")
         {:ok, token}
       else
         {:error, :not_available}
@@ -404,13 +406,18 @@ defmodule Renga.Accounts do
       # Recovery replaces a lost app once: the grant is spent in the same
       # locked transaction that saves the replacement.
       Recheck.recovering?(user, session_token) ->
-        MFA.enable_totp(user, secret, code,
-          replace: true,
-          authorize: fn -> Recheck.spend_recovery(user, session_token) end
-        )
+        with {:ok, codes} <-
+               MFA.enable_totp(user, secret, code,
+                 replace: true,
+                 authorize: fn -> Recheck.spend_recovery(user, session_token) end
+               ) do
+          notify_factor_added(user, "totp_added", codes)
+        end
 
       Recheck.authorized?(user, session_token, :add_factor) ->
-        MFA.enable_totp(user, secret, code)
+        with {:ok, codes} <- MFA.enable_totp(user, secret, code) do
+          notify_factor_added(user, "totp_added", codes)
+        end
 
       true ->
         {:error, :recheck_required}
@@ -436,8 +443,16 @@ defmodule Renga.Accounts do
 
     with {:ok, {passkey, codes}} <-
            MFA.add_factor(user, fn -> Passkeys.register(user, response, name) end, authorize) do
+      notify_factor_added(user, "passkey_added", codes)
       {:ok, passkey, codes}
     end
+  end
+
+  # The first factor also brings the first recovery codes.
+  defp notify_factor_added(user, kind, codes) do
+    SecurityLog.notify(user, kind)
+    if codes, do: SecurityLog.notify(user, "recovery_codes_generated")
+    {:ok, codes}
   end
 
   @doc "Removes a passkey if this session passed the re-check."
@@ -454,6 +469,9 @@ defmodule Renga.Accounts do
       end,
       fn -> Recheck.authorized?(user, session_token, :remove_factor) end
     )
+    |> tap(fn result ->
+      with {:ok, _passkey} <- result, do: SecurityLog.notify(user, "passkey_removed")
+    end)
   end
 
   @doc """
@@ -478,7 +496,7 @@ defmodule Renga.Accounts do
             |> Ecto.Changeset.change(hashed_password: nil)
             |> Repo.update!()
 
-          Repo.insert!(%Renga.Accounts.SecurityEvent{user_id: user.id, kind: "password_removed"})
+          SecurityLog.record(user, "password_removed")
 
           # A sign-in half-finished with the password ends with it.
           Repo.delete_all(
@@ -488,6 +506,9 @@ defmodule Renga.Accounts do
 
           {:ok, user}
       end
+    end)
+    |> tap(fn result ->
+      with {:ok, user} <- result, do: SecurityLog.notify(user, "password_removed")
     end)
   end
 
@@ -532,8 +553,66 @@ defmodule Renga.Accounts do
     if String.match?(String.replace(code, ~r/\s/, ""), ~r/^\d{6}$/) do
       with :ok <- MFA.verify_totp(user, code), do: {:ok, :totp}
     else
-      with :ok <- MFA.spend_recovery_code(user, code), do: {:ok, :recovery_code}
+      with :ok <- MFA.spend_recovery_code(user, code) do
+        SecurityLog.notify(user, "recovery_code_used")
+        {:ok, :recovery_code}
+      end
     end
+  end
+
+  @doc """
+  Records a completed sign-in in the account's security log. `method` is
+  how it finished: `"password"`, `"magic_link"`, `"passkey"`, `"totp"`, or
+  `"recovery_code"`.
+  """
+  def record_sign_in(%User{} = user, method),
+    do: SecurityLog.record(user, "signed_in", %{"method" => method})
+
+  @doc """
+  Issues a session for a fresh sign-in by `method` and records the sign-in
+  in the same transaction, so the log never shows a sign-in whose session
+  was not created.
+  """
+  def create_signed_in_session(%User{} = user, browser_session_id, method) do
+    Repo.transact(fn ->
+      record_sign_in(user, method)
+      {:ok, generate_user_session_token(user, browser_session_id)}
+    end)
+  end
+
+  @doc "The account's most recent security log entries, newest first."
+  defdelegate list_security_events(user), to: SecurityLog, as: :list
+
+  @doc "A person-readable line for a security log entry."
+  defdelegate describe_security_event(event), to: SecurityLog, as: :describe
+
+  @doc """
+  Removes every second factor and recovery code from the account with
+  `email`, for someone who has lost them all (RFD 19, "Recovery"). Only an
+  operator runs this, through `Renga.Release.remove_mfa/2`; `actor` names
+  them in the account's security log. Returns the user and whether the
+  notice to the account was delivered.
+  """
+  def remove_mfa_by_operator(email, actor) when is_binary(email) and is_binary(actor) do
+    case get_user_by_email(email) do
+      nil ->
+        {:error, :not_found}
+
+      user ->
+        # Under the account lock, like every factor change, so a factor
+        # being added meanwhile is removed too or added after.
+        remove = fn -> remove_all_mfa(user, actor) end
+
+        with {:ok, user} <- MFA.with_account_lock(user, remove) do
+          {:ok, user, SecurityLog.notify(user, "mfa_removed_by_operator")}
+        end
+    end
+  end
+
+  defp remove_all_mfa(user, actor) do
+    MFA.remove_all(user)
+    SecurityLog.record(user, "mfa_removed_by_operator", %{"actor" => actor})
+    {:ok, user}
   end
 
   @second_step_minutes 5
@@ -596,6 +675,9 @@ defmodule Renga.Accounts do
       if count == 1 do
         session_token = generate_user_session_token(user, browser_session_id)
         :ok = start_recovery_after(method, user, session_token)
+        # Logged with the session it records, so a spent or expired
+        # pending sign-in logs nothing.
+        record_sign_in(user, to_string(method))
         {:ok, session_token}
       else
         {:error, :expired}
@@ -620,16 +702,26 @@ defmodule Renga.Accounts do
 
   @doc "Removes the authenticator app if this session passed the re-check."
   def remove_totp(%User{} = user, session_token) do
-    if Recheck.authorized?(user, session_token, :remove_factor),
-      do: MFA.disable_totp(user),
-      else: {:error, :recheck_required}
+    if Recheck.authorized?(user, session_token, :remove_factor) do
+      with {:ok, user} <- MFA.disable_totp(user) do
+        SecurityLog.notify(user, "totp_removed")
+        {:ok, user}
+      end
+    else
+      {:error, :recheck_required}
+    end
   end
 
   @doc "Replaces the recovery codes if this session passed the re-check."
   def regenerate_recovery_codes(%User{} = user, session_token) do
-    if Recheck.authorized?(user, session_token, :recovery_codes),
-      do: MFA.regenerate_recovery_codes(user),
-      else: {:error, :recheck_required}
+    if Recheck.authorized?(user, session_token, :recovery_codes) do
+      with {:ok, codes} <- MFA.regenerate_recovery_codes(user) do
+        SecurityLog.notify(user, "recovery_codes_generated")
+        {:ok, codes}
+      end
+    else
+      {:error, :recheck_required}
+    end
   end
 
   @doc """
@@ -653,7 +745,8 @@ defmodule Renga.Accounts do
   If the token matches, the user email is updated and the token is deleted.
   """
   def update_user_email(user, token) do
-    context = "change:#{user.email}"
+    previous_email = user.email
+    context = "change:#{previous_email}"
 
     Repo.transact(fn ->
       with {:ok, query} <- UserToken.verify_change_email_token_query(token, context),
@@ -661,10 +754,15 @@ defmodule Renga.Accounts do
            {:ok, user} <- Repo.update(User.email_changeset(user, %{email: email})),
            {_count, _result} <-
              Repo.delete_all(from(UserToken, where: [user_id: ^user.id, context: ^context])) do
+        SecurityLog.record(user, "email_changed")
         {:ok, user}
       else
         _ -> {:error, :transaction_aborted}
       end
+    end)
+    |> tap(fn result ->
+      with {:ok, user} <- result,
+           do: SecurityLog.notify(user, "email_changed", previous_email: previous_email)
     end)
   end
 
@@ -700,7 +798,10 @@ defmodule Renga.Accounts do
   def update_user_password(user, attrs) do
     user
     |> User.password_changeset(attrs)
-    |> update_user_and_delete_all_tokens()
+    |> update_user_and_delete_all_tokens(&SecurityLog.record(&1, "password_changed"))
+    |> tap(fn result ->
+      with {:ok, {user, _tokens}} <- result, do: SecurityLog.notify(user, "password_changed")
+    end)
   end
 
   @doc "A changeset for the person's appearance preferences, for forms."
@@ -906,9 +1007,12 @@ defmodule Renga.Accounts do
 
   ## Token helper
 
-  defp update_user_and_delete_all_tokens(changeset) do
+  # `on_update` runs in the same transaction, so what it records commits
+  # or rolls back with the change.
+  defp update_user_and_delete_all_tokens(changeset, on_update \\ fn _user -> :ok end) do
     Repo.transact(fn ->
       with {:ok, user} <- Repo.update(changeset) do
+        on_update.(user)
         tokens_to_expire = Repo.all_by(UserToken, user_id: user.id)
 
         Repo.delete_all(from(t in UserToken, where: t.id in ^Enum.map(tokens_to_expire, & &1.id)))

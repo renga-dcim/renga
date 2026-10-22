@@ -20,7 +20,7 @@ defmodule RengaWeb.UserSessionController do
 
         if user_params["add_passkey"] == "true",
           do: sign_in_to_add_passkey(conn, user, user_params, info),
-          else: sign_in(conn, user, user_params, info)
+          else: sign_in(conn, user, user_params, info, "magic_link")
 
       _ ->
         conn
@@ -34,7 +34,7 @@ defmodule RengaWeb.UserSessionController do
     %{"email" => email, "password" => password} = user_params
 
     if user = Accounts.get_user_by_email_and_password(email, password) do
-      sign_in(conn, user, user_params, info)
+      sign_in(conn, user, user_params, info, "password")
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       conn
@@ -63,19 +63,19 @@ defmodule RengaWeb.UserSessionController do
       {:error, conn} ->
         conn
         |> then(&if(return_to, do: put_session(&1, :user_return_to, return_to), else: &1))
-        |> sign_in(user, params, info)
+        |> sign_in(user, params, info, "magic_link")
     end
   end
 
   # A password or magic link is the whole sign-in only for an account without
   # MFA; otherwise it is the first step (RFD 19).
-  defp sign_in(conn, user, params, info) do
+  defp sign_in(conn, user, params, info, method) do
     if Accounts.mfa?(user) do
       UserAuth.begin_second_step(conn, user, params)
     else
       conn
       |> put_flash(:info, info)
-      |> UserAuth.log_in_user(user, params)
+      |> UserAuth.log_in_user(user, params, method)
     end
   end
 
@@ -85,7 +85,7 @@ defmodule RengaWeb.UserSessionController do
          %Accounts.User{} = user <- Accounts.get_user_by_passkey(response) do
       conn
       |> put_flash(:info, "Welcome back!")
-      |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
+      |> UserAuth.log_in_user(user, %{"remember_me" => "true"}, "passkey")
     else
       _ ->
         conn

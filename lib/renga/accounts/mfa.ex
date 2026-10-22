@@ -28,6 +28,7 @@ defmodule Renga.Accounts.MFA do
 
   alias Renga.Accounts.Passkeys
   alias Renga.Accounts.SecurityEvent
+  alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.User
   alias Renga.Accounts.UserRecoveryCode
   alias Renga.Accounts.UserTOTP
@@ -45,6 +46,18 @@ defmodule Renga.Accounts.MFA do
 
   @doc "Whether the account holds a second factor: a passkey or an authenticator app."
   def mfa?(%User{} = user), do: totp_enabled?(user) or Passkeys.any?(user)
+
+  @doc """
+  Removes every passkey, the authenticator app, and the recovery codes, and
+  ends sign-ins waiting for one of them. The caller holds the account lock.
+  """
+  def remove_all(%User{id: user_id} = user) do
+    Repo.delete_all(where(Renga.Accounts.UserPasskey, user_id: ^user_id))
+    Repo.delete_all(where(UserTOTP, user_id: ^user_id))
+    Repo.delete_all(where(UserRecoveryCode, user_id: ^user_id))
+    end_pending_sign_ins(user)
+    :ok
+  end
 
   @doc "Discards the recovery codes once the account has no second factor left."
   def discard_recovery_codes_without_mfa(%User{} = user) do
@@ -146,7 +159,7 @@ defmodule Renga.Accounts.MFA do
     else
       case matching_step(secret, code, nil) do
         nil ->
-          record_event(user, "totp_enable_failed")
+          SecurityLog.record(user, "totp_enable_failed")
           {:ok, {:error, :invalid_code}}
 
         step ->
@@ -176,7 +189,7 @@ defmodule Renga.Accounts.MFA do
           last_used_step: step
         })
 
-        record_event(user, "totp_added")
+        SecurityLog.record(user, "totp_added")
         {:ok, if(first_factor?, do: replace_recovery_codes(user))}
 
       {:error, :no_key} ->
@@ -190,7 +203,7 @@ defmodule Renga.Accounts.MFA do
       Repo.delete_all(where(UserTOTP, user_id: ^user.id))
       discard_recovery_codes_without_mfa(user)
       end_pending_sign_ins(user)
-      record_event(user, "totp_removed")
+      SecurityLog.record(user, "totp_removed")
       {:ok, user}
     end)
   end
@@ -210,7 +223,7 @@ defmodule Renga.Accounts.MFA do
           {:error, :not_enabled}
 
         rate_limited?(user) ->
-          record_event(user, "second_factor_rate_limited", %{"method" => "totp"})
+          SecurityLog.record(user, "second_factor_rate_limited", %{"method" => "totp"})
           {:ok, {:error, :rate_limited}}
 
         true ->
@@ -229,7 +242,7 @@ defmodule Renga.Accounts.MFA do
 
           :ok
         else
-          record_event(user, "totp_failed")
+          SecurityLog.record(user, "totp_failed")
           {:ok, {:error, :invalid_code}}
         end
 
@@ -306,9 +319,7 @@ defmodule Renga.Accounts.MFA do
   def regenerate_recovery_codes(%User{} = user) do
     with_account_lock(user, fn ->
       if mfa?(user) do
-        codes = replace_recovery_codes(user)
-        record_event(user, "recovery_codes_generated")
-        {:ok, codes}
+        {:ok, replace_recovery_codes(user)}
       else
         {:error, :no_mfa}
       end
@@ -333,7 +344,7 @@ defmodule Renga.Accounts.MFA do
 
   defp spend_recovery_code_locked(user, code) do
     if rate_limited?(user) do
-      record_event(user, "second_factor_rate_limited", %{"method" => "recovery_code"})
+      SecurityLog.record(user, "second_factor_rate_limited", %{"method" => "recovery_code"})
       {:ok, {:error, :rate_limited}}
     else
       {count, _} =
@@ -343,10 +354,10 @@ defmodule Renga.Accounts.MFA do
         |> Repo.update_all(set: [used_at: Renga.Time.utc_now_ms()])
 
       if count == 1 do
-        record_event(user, "recovery_code_used")
+        SecurityLog.record(user, "recovery_code_used")
         :ok
       else
-        record_event(user, "recovery_code_failed")
+        SecurityLog.record(user, "recovery_code_failed")
         {:ok, {:error, :invalid_code}}
       end
     end
@@ -394,7 +405,9 @@ defmodule Renga.Accounts.MFA do
     Vault.decrypt(totp.secret_key_id, totp.secret_ciphertext, secret_aad(totp.user_id))
   end
 
+  # Every new set is logged, including the first one a factor brings.
   defp replace_recovery_codes(user) do
+    SecurityLog.record(user, "recovery_codes_generated")
     Repo.delete_all(where(UserRecoveryCode, user_id: ^user.id))
     now = Renga.Time.utc_now_ms()
     codes = for _ <- 1..@recovery_code_count, do: generate_recovery_code()
@@ -440,10 +453,6 @@ defmodule Renga.Accounts.MFA do
     |> where([event], event.inserted_at > ^since)
     |> Repo.aggregate(:count)
     |> Kernel.>=(@max_failures)
-  end
-
-  defp record_event(user, kind, metadata \\ %{}) do
-    Repo.insert!(%SecurityEvent{user_id: user.id, kind: kind, metadata: metadata})
   end
 
   # Sixteen base32 characters, about 80 bits, in groups people can copy.

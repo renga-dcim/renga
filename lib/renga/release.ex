@@ -44,6 +44,42 @@ defmodule Renga.Release do
     end
   end
 
+  @doc """
+  Removes every second factor from an account whose owner lost them all
+  and has no recovery code left (RFD 19, "Recovery"). `actor` names whoever
+  ran it in the account's security log. Organization owners cannot do this,
+  because they do not control the person's other organizations.
+
+      bin/remove-mfa person@example.com "Jane (ticket 1234)"
+  """
+  def remove_mfa(email, actor) do
+    load_app()
+    # The notice to the account goes out from here, so the mailer's HTTP
+    # client must run too.
+    {:ok, _apps} = Application.ensure_all_started([:swoosh, :req])
+
+    for repo <- repos() do
+      {:ok, result, _} =
+        Ecto.Migrator.with_repo(repo, fn _repo ->
+          Renga.Accounts.remove_mfa_by_operator(email, actor)
+        end)
+
+      case result do
+        {:ok, _user, :ok} ->
+          IO.puts("Removed the second factors of #{email} and emailed a notice.")
+
+        {:ok, _user, {:error, reason}} ->
+          IO.puts("Removed the second factors of #{email}.")
+          IO.puts(:stderr, "The notice could not be emailed: #{inspect(reason)}")
+
+        {:error, :not_found} ->
+          raise "No account has the email #{email}."
+      end
+    end
+
+    :ok
+  end
+
   defp repos do
     Application.fetch_env!(@app, :ecto_repos)
   end
