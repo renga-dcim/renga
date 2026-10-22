@@ -4,6 +4,7 @@ use super::{
     config::{AuthProtocol, Credentials, PrivacyProtocol, Target},
     mibs::{Answers, Oid, SnmpValue, COLUMNS, SCALARS},
 };
+use crate::cancellation::Cancellation;
 use snmp2::{v3, Oid as WireOid, Pdu, SyncSession, Value, Version};
 use std::{
     fmt, fs,
@@ -37,8 +38,16 @@ pub trait Session {
     fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError>;
 }
 
-/// Reads every scalar and walks every column before `deadline`.
-pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, PollError> {
+/// Reads every scalar and walks every column before `deadline`, or until `stopped`: a module
+/// stopped for a reload or shutdown ends its walk at the next request, not its deadline.
+pub fn poll(
+    session: &mut dyn Session,
+    deadline: Instant,
+    stopped: &Cancellation,
+) -> Result<Answers, PollError> {
+    if stopped.cancelled() {
+        return Err(PollError("polling was cancelled".into()));
+    }
     let mut answers = Answers::default();
     for (oid, value) in session.get(SCALARS)? {
         answers.insert(oid, value);
@@ -50,6 +59,9 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
         'walk: loop {
             if Instant::now() >= deadline {
                 return Err(PollError("polling took longer than its deadline".into()));
+            }
+            if stopped.cancelled() {
+                return Err(PollError("polling was cancelled".into()));
             }
             let batch = session.next(&cursor, BULK_REPETITIONS)?;
             if batch.is_empty() {
@@ -336,7 +348,12 @@ pub(crate) mod tests {
     fn walks_every_column_into_answers() {
         let recorded = mibs::tests::answers();
         let mut session = Recorded::new(&recorded);
-        let answers = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap();
+        let answers = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap();
 
         let (resource, _) = mibs::switch("10.0.0.1", &answers, 60).unwrap();
         assert_eq!(resource.interfaces.as_ref().unwrap().len(), 4);
@@ -352,7 +369,12 @@ pub(crate) mod tests {
             answers.insert(oid, SnmpValue::Octets(vec![b'x'; 60_000]));
         }
         let mut session = Recorded::new(&answers);
-        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
         assert!(error.0.contains("bytes"), "{error}");
     }
 
@@ -376,7 +398,12 @@ pub(crate) mod tests {
     #[test]
     fn fails_a_walk_that_stops_advancing() {
         let mut session = Stalling(Recorded::new(&mibs::tests::answers()));
-        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
         assert!(error.0.contains("out of order"), "{error}");
         assert!(check_status(2).is_err());
     }
@@ -404,10 +431,39 @@ pub(crate) mod tests {
         assert!(error.0.contains("different SNMP version"), "{error}");
     }
 
+    /// Stops its module once the walk is under way.
+    struct StoppedMidWalk(Recorded, Cancellation);
+
+    impl Session for StoppedMidWalk {
+        fn get(&mut self, oids: &[&[u32]]) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            self.0.get(oids)
+        }
+
+        fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            self.1.cancel();
+            self.0.next(oid, count)
+        }
+    }
+
+    #[test]
+    fn stops_at_the_next_request_once_cancelled() {
+        let stopped = Cancellation::default();
+        let mut session = StoppedMidWalk(Recorded::new(&mibs::tests::answers()), stopped.clone());
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(60),
+            &stopped,
+        )
+        .unwrap_err();
+        assert!(error.0.contains("cancelled"), "{error}");
+        // The scalars and the one walk request in flight when it stopped.
+        assert_eq!(session.0.requests, 2);
+    }
+
     #[test]
     fn stops_at_the_deadline() {
         let mut session = Recorded::new(&mibs::tests::answers());
-        let error = poll(&mut session, Instant::now()).unwrap_err();
+        let error = poll(&mut session, Instant::now(), &Cancellation::default()).unwrap_err();
         assert!(error.0.contains("deadline"));
     }
 
@@ -448,7 +504,12 @@ pub(crate) mod tests {
             privacy_password_file: privacy.into(),
         };
         let mut session = WireSession::open(&target, &credentials, Duration::from_secs(2)).unwrap();
-        let answers = poll(&mut session, Instant::now() + Duration::from_secs(30)).unwrap();
+        let answers = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(30),
+            &Cancellation::default(),
+        )
+        .unwrap();
 
         assert!(answers
             .iter()
@@ -465,8 +526,14 @@ pub(crate) mod tests {
             privacy_protocol: PrivacyProtocol::Aes128,
             privacy_password_file: std::env::var("RENGA_SNMPD_PRIV").unwrap().into(),
         };
-        let refused = WireSession::open(&target, &wrong, Duration::from_secs(1))
-            .and_then(|mut session| poll(&mut session, Instant::now() + Duration::from_secs(5)));
+        let refused =
+            WireSession::open(&target, &wrong, Duration::from_secs(1)).and_then(|mut session| {
+                poll(
+                    &mut session,
+                    Instant::now() + Duration::from_secs(5),
+                    &Cancellation::default(),
+                )
+            });
         assert!(refused.is_err());
     }
 
