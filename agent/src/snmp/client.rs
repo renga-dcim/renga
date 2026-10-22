@@ -4,7 +4,7 @@ use super::{
     config::{AuthProtocol, Credentials, PrivacyProtocol, Target},
     mibs::{Answers, Oid, SnmpValue, COLUMNS, SCALARS},
 };
-use snmp2::{v3, Oid as WireOid, SyncSession, Value};
+use snmp2::{v3, Oid as WireOid, Pdu, SyncSession, Value, Version};
 use std::{
     fmt, fs,
     net::ToSocketAddrs,
@@ -154,7 +154,9 @@ impl Session for WireSession {
             .map(|oid| wire_oid(oid))
             .collect::<Result<_, _>>()?;
         let refs: Vec<&WireOid> = wire.iter().collect();
+        let expected = self.session.version();
         let pdu = self.session.get_many(&refs).map_err(wire_error)?;
+        check_version(expected, &pdu)?;
         check_status(pdu.error_status)?;
         pdu.varbinds
             .map(|(oid, value)| Ok((from_wire_oid(&oid)?, from_wire_value(&value))))
@@ -163,16 +165,30 @@ impl Session for WireSession {
 
     fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
         let wire = wire_oid(oid)?;
+        let expected = self.session.version();
         let pdu = if self.bulk {
             self.session.getbulk(&[&wire], 0, count)
         } else {
             self.session.getnext(&wire)
         }
         .map_err(wire_error)?;
+        check_version(expected, &pdu)?;
         check_status(pdu.error_status)?;
         pdu.varbinds
             .map(|(oid, value)| Ok((from_wire_oid(&oid)?, from_wire_value(&value))))
             .collect()
+    }
+}
+
+/// `snmp2` authenticates a response by the version the packet claims, not the session's, so
+/// a v2c packet carrying a v3 session's username and request ID would be accepted unchecked.
+/// Only a response in the session's own version counts.
+fn check_version(expected: Version, pdu: &Pdu<'_>) -> Result<(), PollError> {
+    match pdu.version() {
+        Ok(version) if version == expected => Ok(()),
+        _ => Err(PollError(
+            "the device answered in a different SNMP version".into(),
+        )),
     }
 }
 
@@ -363,6 +379,29 @@ pub(crate) mod tests {
         let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
         assert!(error.0.contains("out of order"), "{error}");
         assert!(check_status(2).is_err());
+    }
+
+    /// A BER-encoded empty GetResponse with request ID 7, in SNMP `version` (0 = v1, 1 = v2c).
+    fn response(version: u8) -> Vec<u8> {
+        let mut pdu = vec![
+            0x02, 0x01, 0x07, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00,
+        ];
+        pdu.splice(0..0, [0xa2, pdu.len() as u8]);
+        let mut message = vec![0x02, 0x01, version, 0x04, 0x05];
+        message.extend_from_slice(b"renga");
+        message.extend(pdu);
+        message.splice(0..0, [0x30, message.len() as u8]);
+        message
+    }
+
+    #[test]
+    fn rejects_a_response_in_another_version() {
+        let v2c = response(1);
+        let pdu = Pdu::from_bytes(&v2c).unwrap();
+        assert_eq!(pdu.req_id, 7);
+        assert!(check_version(Version::V2C, &pdu).is_ok());
+        let error = check_version(Version::V3, &pdu).unwrap_err();
+        assert!(error.0.contains("different SNMP version"), "{error}");
     }
 
     #[test]
