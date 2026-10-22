@@ -60,7 +60,7 @@ fn run_module(collector: &LibvirtCollector, stop: &Cancellation, sink: &Sink, vi
         }
         let domains = poll.result.as_ref().map_or(0, Vec::len);
         if let Err(error) = &poll.result {
-            warn!(collector = %collector.id, uri = %collector.uri, %error, "libvirt hypervisor not read");
+            warn!(collector = %collector.id, %error, "libvirt hypervisor not read");
         }
         let complete = poll.complete;
         let reports = reports(collector, poll);
