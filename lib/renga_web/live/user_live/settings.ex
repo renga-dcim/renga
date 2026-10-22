@@ -31,7 +31,11 @@ defmodule RengaWeb.UserLive.Settings do
           class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
         >
           <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
-          <p :if={@current_email}>
+          <p :if={@current_email && @first_credential_open}>
+            Your login email is set. Add a password or passkey now to sign in to Renga another
+            way; this works only for the next few minutes.
+          </p>
+          <p :if={@current_email && !@first_credential_open}>
             You signed in with your organization's identity provider, so this session can't
             change how you sign in. Sign in another way to change these settings.
           </p>
@@ -591,6 +595,18 @@ defmodule RengaWeb.UserLive.Settings do
     """
   end
 
+  # A scoped session that set up its login email may add the account's first
+  # credential for a few minutes (RFD 15); the notice says so.
+  defp assign_first_credential_open(socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    open? =
+      !!(user.session_organization_id && user.email && session_token &&
+           Accounts.authorized_account_change?(user, session_token, :set_password))
+
+    assign(socket, :first_credential_open, open?)
+  end
+
   defp bootstrap?(%{methods: [], change: change}), do: change in [:set_password, :add_factor]
   defp bootstrap?(_recheck), do: false
 
@@ -681,6 +697,7 @@ defmodule RengaWeb.UserLive.Settings do
       |> assign(:email_initialization, nil)
       |> assign(:email_initialization_form, email_initialization_form(%{}))
       |> assign_mfa()
+      |> assign_first_credential_open()
 
     {:ok, socket}
   end
@@ -983,6 +1000,7 @@ defmodule RengaWeb.UserLive.Settings do
          )
          |> assign(:email_initialization, nil)
          |> assign_mfa()
+         |> assign_first_credential_open()
          |> put_flash(
            :info,
            "#{user.email} is your login email. Add a password or passkey in the next #{Accounts.Recheck.window_minutes()} minutes."

@@ -341,6 +341,11 @@ defmodule RengaWeb.OrganizationSignInTest do
       assert html =~ "sam@personal.example is your login email"
       assert has_element?(view, "#email_form")
       refute has_element?(view, "#account-email-initialization")
+      assert has_element?(view, "#scoped_session_notice", "Add a password or passkey now")
+
+      # Reloading the page in the same browser keeps the offer.
+      {:ok, reloaded, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(reloaded, "#scoped_session_notice", "Add a password or passkey now")
 
       form = form(view, "#password_form", password)
       render_submit(form)
@@ -351,6 +356,14 @@ defmodule RengaWeb.OrganizationSignInTest do
 
       # This browser stays signed in through the organization's provider.
       assert session_user(conn).session_organization_id == organization.id
+
+      {:ok, view, _html} = live(recycle(conn), ~p"/users/settings")
+
+      assert has_element?(
+               view,
+               "#scoped_session_notice",
+               "Sign in another way to change these settings"
+             )
 
       # The new password signs in to the whole account.
       user =
