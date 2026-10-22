@@ -234,7 +234,8 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       metadata:
         Map.put(agent.metadata, "power_sources", [
           %{"source" => "hwmon", "status" => "available"},
-          %{"source" => "http://127.0.0.1:9100/metrics", "status" => "not_present"}
+          %{"source" => "http://127.0.0.1:9100/metrics", "status" => "not_present"},
+          %{"source" => "power_poller/rack-pdus", "status" => "not_present"}
         ])
     )
     |> Repo.update!()
@@ -243,6 +244,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert has_element?(view, "#{cell}-0", "Available")
     assert has_element?(view, "#{cell}-1", "http://127.0.0.1:9100/metrics")
     assert view |> element("#{cell}-1") |> render() =~ "serves no power metric"
+    assert view |> element("#{cell}-2") |> render() =~ "Raritan PDU2-MIB"
   end
 
   test "malformed legacy queue metadata is not reported rather than crashing", %{
