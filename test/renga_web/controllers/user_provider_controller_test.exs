@@ -60,6 +60,22 @@ defmodule RengaWeb.UserProviderControllerTest do
     assert method == "provider:#{provider.id}"
   end
 
+  test "opens the user's only organization", %{conn: conn, fake: fake, provider: provider} do
+    {first, url} = start(conn, provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+    first = get(recycle(first), ~p"/users/auth/#{provider.id}/callback", params)
+    {user, _} = Accounts.get_user_by_session_token(get_session(first, :user_token))
+
+    organization = Renga.InventoryFixtures.organization_fixture()
+    Renga.InventoryFixtures.organization_membership_fixture(user, organization, %{role: "owner"})
+
+    {conn, url} = start(build_conn(), provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+    assert get_session(conn, :current_organization_id) == organization.id
+  end
+
   test "an account with MFA signs in without a Renga second step", %{
     conn: conn,
     fake: fake,
@@ -263,10 +279,12 @@ defmodule RengaWeb.UserProviderControllerTest do
 
   # The first deletion of this browser's tokens is the revocation before the
   # sign-in transaction; a token issued right after it stands for one issued
-  # by a concurrent sign-in. Any query after the second deletion runs inside
-  # the transaction, where its disconnect must not have gone out yet.
+  # by a concurrent sign-in. Any query after the second deletion and before
+  # the commit runs inside the transaction, where its disconnect must not
+  # have gone out yet.
   defp on_query(query, user, browser_session_id) do
     deletes_tokens? = query =~ ~r/^DELETE FROM "users_tokens"/
+    if query == "commit" && Process.get(:inner_deleted), do: Process.put(:committed, true)
 
     case Process.get(:meanwhile) do
       nil when deletes_tokens? ->
@@ -280,7 +298,7 @@ defmodule RengaWeb.UserProviderControllerTest do
         Process.put(:inner_deleted, true)
 
       {:inserted, _meanwhile, topic} ->
-        if Process.get(:inner_deleted) do
+        if Process.get(:inner_deleted) && !Process.get(:committed) do
           receive do
             %Phoenix.Socket.Broadcast{topic: ^topic} = message ->
               Process.put(:announced_early, true)

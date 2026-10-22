@@ -211,7 +211,7 @@ defmodule RengaWeb.UserAuth do
   sent until the caller redirects, after it all committed.
   """
   def log_in_user_with_provider(conn, %{provider: provider, revision: revision} = result) do
-    return_to = get_session(conn, :user_return_to) || signed_in_path(conn)
+    user_return_to = get_session(conn, :user_return_to)
     method = "provider:#{provider.id}"
 
     deadline =
@@ -226,7 +226,7 @@ defmodule RengaWeb.UserAuth do
              %{},
              &Accounts.create_signed_in_session(user, &1, method, deadline)
            ) do
-        {:ok, conn, revoked} -> {:ok, {conn, revoked}}
+        {:ok, conn, revoked} -> {:ok, {conn, revoked, user}}
         {:error, _conn, _revoked} -> {:error, :session_failed}
       end
     end
@@ -238,11 +238,13 @@ defmodule RengaWeb.UserAuth do
     # browser signed out.
     revoke_browser_session(conn)
 
-    with {:ok, {conn, revoked}} <- Accounts.finish_provider_sign_in(result, issue) do
+    with {:ok, {conn, revoked, user}} <- Accounts.finish_provider_sign_in(result, issue) do
       # Tokens issued to this browser after the revocation above, such as
       # by a sign-in finishing alongside this one.
       disconnect_tokens(revoked)
-      {:ok, conn, return_to}
+
+      {:ok, put_default_organization(conn, user, user_return_to),
+       user_return_to || signed_in_path(conn)}
     end
   end
 
