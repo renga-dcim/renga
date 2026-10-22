@@ -27,5 +27,4 @@ defmodule RengaWeb.Scim.Response do
 
     json(conn, status, body)
   end
-
 end

@@ -21,7 +21,6 @@ defmodule RengaWeb.Scim.Auth do
     with {:ok, value} <- bearer_token(conn),
          {:ok, connection, token} <- Scim.authenticate(value) do
       :ok = Scim.touch_token(token)
-      Logger.metadata(scim_connection_id: connection.id)
 
       conn
       |> assign(:scim_connection, connection)
@@ -36,18 +35,11 @@ defmodule RengaWeb.Scim.Auth do
   end
 
   defp bearer_token(conn) do
-    case get_req_header(conn, "authorization") do
-      [header] ->
-        case String.split(header, " ", parts: 2) do
-          [scheme, token] when token != "" ->
-            if String.downcase(scheme) == "bearer", do: {:ok, String.trim(token)}, else: :error
-
-          _other ->
-            :error
-        end
-
-      _missing_or_repeated ->
-        :error
+    with [header] <- get_req_header(conn, "authorization"),
+         [_match, token] <- Regex.run(~r/^bearer\s+(\S+)\s*$/i, header) do
+      {:ok, token}
+    else
+      _missing_repeated_or_malformed -> :error
     end
   end
 end
