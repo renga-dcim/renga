@@ -1117,6 +1117,10 @@ defmodule Renga.DCIM do
 
     cond do
       conflict? -> current
+      # Agreeing evidence never un-confirms what a person confirmed: the
+      # confirmation is what makes placement a trusted attribute (RFD 17,
+      # RFD 18's trusted group view).
+      current && current.confirmed -> current
       active_disagreement?(resolved) -> current
       true -> do_put_current_placement(scope, resource_id, attrs)
     end
