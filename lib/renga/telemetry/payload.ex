@@ -170,12 +170,7 @@ defmodule Renga.Telemetry.Payload do
         {samples, errors} =
           samples
           |> Enum.with_index()
-          |> Enum.reduce({[], errors}, fn {sample, index}, {samples, errors} ->
-            case validate_sample(sample, "samples[#{index}]", collector) do
-              {:ok, sample} -> {[sample | samples], errors}
-              {:error, sample_errors} -> {samples, sample_errors ++ errors}
-            end
-          end)
+          |> Enum.reduce({[], errors}, &collect_sample(&1, &2, collector))
 
         {Enum.reverse(samples), errors}
     end
@@ -186,6 +181,13 @@ defmodule Renga.Telemetry.Payload do
 
   defp validate_samples(errors, _invalid, _collector),
     do: {[], [error("samples", "must be an array") | errors]}
+
+  defp collect_sample({sample, index}, {samples, errors}, collector) do
+    case validate_sample(sample, "samples[#{index}]", collector) do
+      {:ok, sample} -> {[sample | samples], errors}
+      {:error, sample_errors} -> {samples, sample_errors ++ errors}
+    end
+  end
 
   defp validate_sample(%{} = sample, path, collector) do
     {window_start, window_end, errors} = window(Map.get(sample, "window"), "#{path}.window")
