@@ -9,7 +9,14 @@ defmodule RengaWeb.FindingComponents do
 
   alias RengaWeb.Format
 
-  @acronyms %{"vlan" => "VLAN", "vid" => "VID", "vrf" => "VRF", "nvme" => "NVMe", "psu" => "PSU"}
+  @acronyms %{
+    "vlan" => "VLAN",
+    "vid" => "VID",
+    "vrf" => "VRF",
+    "nvme" => "NVMe",
+    "psu" => "PSU",
+    "vm" => "VM"
+  }
 
   @doc "A finding kind as a label: \"missing_vlan\" -> \"Missing VLAN\"."
   def kind_label(kind) do
@@ -17,7 +24,7 @@ defmodule RengaWeb.FindingComponents do
     |> Format.humanize()
     |> String.capitalize()
     |> String.split(" ")
-    |> Enum.map_join(" ", &Map.get(@acronyms, &1, &1))
+    |> Enum.map_join(" ", &Map.get(@acronyms, String.downcase(&1), &1))
   end
 
   @doc """
