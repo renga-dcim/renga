@@ -111,6 +111,13 @@ defmodule RengaWeb.ActivityLive do
             <% else %>
               {ChangeDescription.describe(event)}
             <% end %>
+            <span
+              :if={imported?(event)}
+              data-imported
+              class="ml-2 rounded border border-edge px-1 text-xs font-normal text-fg-muted"
+            >
+              Imported
+            </span>
           </:col>
           <:col :let={event} label="Resource" class="w-40">
             <.link
@@ -141,9 +148,18 @@ defmodule RengaWeb.ActivityLive do
   # A person when someone acted, otherwise the source that reported it, or
   # Renga itself for changes it derived.
   defp actor(%{actor_user: %User{} = user}), do: User.label(user)
+
+  # Imported Activity (RFD 20) names who the source says acted, which is no
+  # account here.
+  defp actor(%{metadata: %{"imported" => %{"actor" => actor}}}) when is_binary(actor),
+    do: "#{actor} (imported)"
+
   defp actor(%{metadata: %{"agent" => agent}}) when is_binary(agent), do: agent
   defp actor(%{metadata: %{"operator" => operator}}) when is_binary(operator), do: operator
   defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"
   defp actor(%{source: %{name: name}}), do: name
   defp actor(_event), do: "Renga"
+
+  defp imported?(%{metadata: %{"imported" => %{}}}), do: true
+  defp imported?(_event), do: false
 end
