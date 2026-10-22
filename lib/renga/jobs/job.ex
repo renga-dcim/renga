@@ -60,6 +60,10 @@ defmodule Renga.Jobs.Job do
     # result, and agent reports, which are then withheld (RFD 12).
     field :payload_hidden, :boolean, virtual: true, default: false
 
+    # Set on jobs imported from another deployment (RFD 20): history that
+    # never leases, retries, or runs, and that no one can change.
+    field :imported_at, :utc_datetime_usec
+
     belongs_to :organization, Organization
     belongs_to :agent, Agent
     # The resource the job was requested from, for context; the agent is the
