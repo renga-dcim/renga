@@ -175,6 +175,37 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
            )
   end
 
+  test "shows the telemetry queue only for agents that report one", %{
+    conn: conn,
+    source: source,
+    agent: agent
+  } do
+    telemetry_cell = "#collector-telemetry-queue-#{source.id}"
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    refute has_element?(view, telemetry_cell)
+
+    report_queue(agent, "telemetry_queue", %{
+      "entries" => 3,
+      "bytes" => 4_000,
+      "oldest_age_seconds" => 180,
+      "dropped_for_space" => 4,
+      "expired" => 1,
+      "dropped_earliest_age_seconds" => 2 * 86_400,
+      "dropped_latest_age_seconds" => 3 * 3_600
+    })
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, telemetry_cell, "3 undelivered")
+    assert has_element?(view, "#collector-queue-#{source.id}", "Not reported")
+
+    assert has_element?(
+             view,
+             "#{telemetry_cell} [title='4 to make room, 1 after a day; " <>
+               "queued 2d to 3h before the last check-in']",
+             "5 dropped since restart"
+           )
+  end
+
   test "malformed legacy queue metadata is not reported rather than crashing", %{
     conn: conn,
     source: source,
@@ -411,7 +442,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
 
   # Stores a queue report as the agent's latest check-in would, defaulting the
   # counters a test does not care about to zero.
-  defp report_queue(agent, queue) do
+  defp report_queue(agent, name \\ "observation_queue", queue) do
     queue =
       Map.merge(
         %{"dropped_for_space" => 0, "expired" => 0, "rejected" => 0, "unreadable" => 0},
@@ -419,7 +450,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       )
 
     agent
-    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "observation_queue", queue))
+    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, name, queue))
     |> Repo.update!()
   end
 

@@ -53,26 +53,48 @@ defmodule Renga.Inventory.Agent do
   again before presentation rather than coerced into a healthy empty queue.
   """
   def observation_queue(%__MODULE__{metadata: %{"observation_queue" => queue}}) do
-    if AgentPayload.observation_queue_errors(queue) == [] do
-      dropped_for_space = Map.fetch!(queue, "dropped_for_space")
-      expired = Map.fetch!(queue, "expired")
-      rejected = Map.fetch!(queue, "rejected")
-      unreadable = Map.fetch!(queue, "unreadable")
-
-      %{
-        entries: Map.fetch!(queue, "entries"),
-        bytes: Map.fetch!(queue, "bytes"),
-        oldest_age_seconds: Map.fetch!(queue, "oldest_age_seconds"),
-        dropped_for_space: dropped_for_space,
-        expired: expired,
-        rejected: rejected,
-        unreadable: unreadable,
-        dropped: dropped_for_space + expired + rejected + unreadable
-      }
-    end
+    if AgentPayload.observation_queue_errors(queue) == [], do: queue_health(queue)
   end
 
   def observation_queue(_agent), do: nil
+
+  @doc """
+  The last reported telemetry queue health (RFD 10), like `observation_queue/1`.
+  `dropped_ages`, when present, is how long ago the earliest and latest
+  dropped batches were queued, as of the report.
+  """
+  def telemetry_queue(%__MODULE__{metadata: %{"telemetry_queue" => queue}}) do
+    if AgentPayload.telemetry_queue_errors(queue) == [], do: queue_health(queue)
+  end
+
+  def telemetry_queue(_agent), do: nil
+
+  defp queue_health(queue) do
+    dropped_for_space = Map.fetch!(queue, "dropped_for_space")
+    expired = Map.fetch!(queue, "expired")
+    rejected = Map.fetch!(queue, "rejected")
+    unreadable = Map.fetch!(queue, "unreadable")
+
+    %{
+      entries: Map.fetch!(queue, "entries"),
+      bytes: Map.fetch!(queue, "bytes"),
+      oldest_age_seconds: Map.fetch!(queue, "oldest_age_seconds"),
+      dropped_for_space: dropped_for_space,
+      expired: expired,
+      rejected: rejected,
+      unreadable: unreadable,
+      dropped: dropped_for_space + expired + rejected + unreadable,
+      dropped_ages: dropped_ages(queue)
+    }
+  end
+
+  defp dropped_ages(%{
+         "dropped_earliest_age_seconds" => earliest,
+         "dropped_latest_age_seconds" => latest
+       }),
+       do: {earliest, latest}
+
+  defp dropped_ages(_queue), do: nil
 
   def changeset(agent, attrs) do
     agent
