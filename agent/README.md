@@ -475,6 +475,33 @@ imperative, in which case it fails because it may have partly run. The record
 keeps the last 128 jobs for eight days. `--once` runs no jobs and advertises
 none.
 
+### osquery
+
+Beyond the native queries, a host can answer through
+[osquery](https://osquery.io) (RFD 12). The agent never installs, starts, or
+configures osquery. Run `osqueryd` yourself and make its extensions socket
+readable and writable by the agent's account, for example with a group that
+owns the socket. osquery keeps its own privileges, and the agent's sandbox does
+not change.
+
+```toml
+[osquery]
+# enabled = true
+# socket = "/var/osquery/osquery.em"
+```
+
+On every check-in the agent connects to the socket and reports the backend's
+status, which the Collectors page shows:
+
+* `available`: the daemon answered a ping, with its version when
+  `osquery_info` gives one.
+* `not_permitted`: the socket exists but the agent's account may not connect.
+* `not_present`: nothing answers at the socket.
+
+`enabled = false` stops the probing, and no status is reported. The agent
+speaks only to the extension manager's `ping`, `query`, and `options`
+methods, and bounds every reply at 16 MiB.
+
 ## Debian/Ubuntu package and smoke test
 
 The `.deb` installs the binary, hardened systemd unit, example configuration,

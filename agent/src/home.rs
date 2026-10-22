@@ -241,6 +241,10 @@ mod tests {
             power: Vec::new(),
             bmc: Vec::new(),
             exporters: Vec::new(),
+            osquery: crate::osquery::OsqueryConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 

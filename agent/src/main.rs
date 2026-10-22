@@ -16,6 +16,7 @@ use renga_agent::{
     libvirt::worker::Module as LibvirtModule,
     logging,
     notices::{Listener, Notices},
+    osquery::{self, OsqueryConfig},
     payload::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
@@ -362,6 +363,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             monitors: &monitors,
             power_sources: &power_sources,
             presented_key: &presented_key,
+            osquery: &config.osquery,
         };
         let result = deliver_startup(&operations);
         discard_home_if_moved(&client, &home, &args.state_directory);
@@ -373,6 +375,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         &power_sources,
         advertised_capabilities(&config, &client, &queue),
         &presented_key,
+        &config.osquery,
     );
     if let Err(failure) = &checkin {
         warn!(error = %failure, "startup delivery failed: check-in");
@@ -515,6 +518,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                         &power_sources,
                         advertised_capabilities(&config, &client, &queue),
                         &presented_key,
+                        &config.osquery,
                     );
                     if let Err(failure) = &checkin {
                         warn!(error = %failure, "check-in failed");
@@ -800,6 +804,7 @@ fn send_checkin(
     power_sources: &PowerSources,
     capabilities: Vec<String>,
     presented_key: &PresentedKey,
+    osquery: &OsqueryConfig,
 ) -> Result<CheckInAck, Box<dyn Error>> {
     let now = SystemTime::now();
     let report = |monitor: &QueueMonitor| {
@@ -810,7 +815,8 @@ fn send_checkin(
     let checkin = CheckIn::new(capabilities, report(&monitors.observations))
         .with_telemetry_queue(report(&monitors.telemetry))
         .with_power_sources(power_sources.reports())
-        .with_installation_key(presented_key.clone());
+        .with_installation_key(presented_key.clone())
+        .with_osquery(osquery::probe(osquery));
     let ack = client.post_checkin(&checkin)?;
     match &ack.installation_key {
         Some(KeyStatus {
@@ -1169,6 +1175,7 @@ struct RuntimeOperations<'a> {
     monitors: &'a QueueMonitors,
     power_sources: &'a PowerSources,
     presented_key: &'a PresentedKey,
+    osquery: &'a OsqueryConfig,
 }
 
 impl Operations for RuntimeOperations<'_> {
@@ -1179,6 +1186,7 @@ impl Operations for RuntimeOperations<'_> {
             self.power_sources,
             self.capabilities.clone(),
             self.presented_key,
+            self.osquery,
         )
         .map(|_| ())
     }
@@ -3094,6 +3102,10 @@ mod tests {
             power: Vec::new(),
             bmc: Vec::new(),
             exporters: Vec::new(),
+            osquery: OsqueryConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 

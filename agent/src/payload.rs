@@ -1,6 +1,6 @@
 //! JSON models matching the Phoenix host-agent contract.
 
-use crate::queue::QueueHealth;
+use crate::{osquery::BackendStatus, queue::QueueHealth};
 use chrono::{DateTime, Utc};
 use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use serde_json::Value;
@@ -449,6 +449,15 @@ pub struct AgentMetadata {
     /// Whether each power source can be read here (RFD 10, "Source status").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_sources: Option<Vec<PowerSourceReport>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_backends: Option<QueryBackends>,
+}
+
+/// The query backends a host can use beyond the native queries (RFD 12).
+/// Must match `Renga.Inventory.AgentPayload`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QueryBackends {
+    pub osquery: BackendStatus,
 }
 
 /// One power source's status as a check-in reports it. Must match
@@ -470,6 +479,7 @@ impl CheckIn {
                 observation_queue,
                 telemetry_queue: None,
                 power_sources: None,
+                query_backends: None,
             },
             installation_key: None,
         }
@@ -482,6 +492,12 @@ impl CheckIn {
 
     pub fn with_power_sources(mut self, reports: Option<Vec<PowerSourceReport>>) -> Self {
         self.metadata.power_sources = reports;
+        self
+    }
+
+    /// Reports osquery's status, when `[osquery]` is enabled.
+    pub fn with_osquery(mut self, osquery: Option<BackendStatus>) -> Self {
+        self.metadata.query_backends = osquery.map(|osquery| QueryBackends { osquery });
         self
     }
 
