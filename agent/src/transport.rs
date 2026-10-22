@@ -207,6 +207,16 @@ impl HttpClient {
         self.moved.swap(false, Ordering::SeqCst)
     }
 
+    /// Shares `previous`'s move signal, for a client that replaces it without changing the home,
+    /// so a worker still holding the previous client can report a move. A client for a new home
+    /// keeps its own signal, so the old home's answers are ignored.
+    pub fn sharing_moved_signal(mut self, previous: &HttpClient) -> Self {
+        if self.base_url == previous.base_url {
+            self.moved = Arc::clone(&previous.moved);
+        }
+        self
+    }
+
     fn noting_moved<T>(&self, result: Result<T, TransportError>) -> Result<T, TransportError> {
         if result.as_ref().is_err_and(TransportError::is_moved) {
             self.moved.store(true, Ordering::SeqCst);
@@ -872,6 +882,25 @@ mod tests {
         assert_eq!(error.kind(), FailureKind::Transient);
         assert!(client.take_moved());
         assert!(!client.take_moved());
+    }
+
+    #[test]
+    fn a_replacement_for_the_same_home_hears_the_previous_clients_moves() {
+        let (origin, server) = answer_once(410, r#"{"error":"moved"}"#);
+        let previous = insecure_client(&origin);
+        let worker = previous.clone();
+        let same_home = insecure_client(&origin).sharing_moved_signal(&previous);
+        let new_home =
+            insecure_client("http://elsewhere.invalid:1").sharing_moved_signal(&previous);
+
+        // A worker started before the replacement hears the move.
+        worker
+            .post_checkin(&CheckIn::new(vec![], None))
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(!new_home.take_moved());
+        assert!(same_home.take_moved());
     }
 
     #[test]

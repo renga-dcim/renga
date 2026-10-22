@@ -39,22 +39,30 @@ const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
 /// Backoff between startup home resolutions while the resolver is unreachable.
 const HOME_RETRY_INITIAL: Duration = Duration::from_secs(5);
 const HOME_RETRY_MAX: Duration = Duration::from_secs(300);
-/// Backoff between resolutions after `410 moved` that return the same home, so a resolver
-/// that has not caught up is asked again rarely while the queue holds observations.
+/// Backoff between resolutions after `410 moved` that fail or return the same home, so a
+/// resolver that has not caught up is asked again rarely while the queue holds observations.
 const RELOCATION_RETRY_INITIAL: Duration = Duration::from_secs(30);
 const RELOCATION_RETRY_MAX: Duration = Duration::from_secs(900);
+/// The daemon's first relocation backoff; daemon tests follow a move without waiting it out.
+#[cfg(not(test))]
+const DAEMON_RELOCATION_RETRY: Duration = RELOCATION_RETRY_INITIAL;
+#[cfg(test)]
+const DAEMON_RELOCATION_RETRY: Duration = Duration::from_millis(200);
+/// How long a reload waits for a home resolution already in flight.
+const RELOAD_DEFER: Duration = Duration::from_secs(1);
 
-/// When the daemon may next ask where a moved organization lives.
+/// A pending relocation: the home said the organization moved, and nothing has named a
+/// different home yet. It stays pending until one does, whatever the old home answers next.
 struct Relocation {
     not_before: Instant,
     delay: Duration,
 }
 
 impl Relocation {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, first_delay: Duration) -> Self {
         Self {
             not_before: now,
-            delay: RELOCATION_RETRY_INITIAL,
+            delay: first_delay,
         }
     }
 
@@ -68,6 +76,44 @@ impl Relocation {
         self.not_before = now + delay;
         self.delay = (delay * 2).min(RELOCATION_RETRY_MAX);
         delay
+    }
+}
+
+/// Why a home resolution was started.
+enum Purpose {
+    /// A reloaded configuration whose address or deployment identifier changed.
+    Reload(Box<Config>),
+    /// The current home said the organization moved.
+    Relocation,
+}
+
+/// A home resolution running off the scheduler thread, so a slow resolver never delays
+/// check-ins or lease renewals. Only one runs at a time, and reloads wait for it, so the
+/// configuration it was started for is still current when it finishes.
+struct Resolution {
+    purpose: Purpose,
+    handle: thread::JoinHandle<Result<Home, home::HomeError>>,
+}
+
+impl Resolution {
+    fn spawn(purpose: Purpose, config: &Config, stopped: &Cancellation) -> Self {
+        let config = match &purpose {
+            Purpose::Reload(config) => config.as_ref().clone(),
+            Purpose::Relocation => config.clone(),
+        };
+        let stopped = stopped.clone();
+        Self {
+            purpose,
+            handle: thread::spawn(move || home::fetch(&config, &stopped)),
+        }
+    }
+
+    fn finish(self) -> (Purpose, Result<Home, Box<dyn Error>>) {
+        let result = match self.handle.join() {
+            Ok(result) => result.map_err(Into::into),
+            Err(_) => Err("home resolution panicked".into()),
+        };
+        (self.purpose, result)
     }
 }
 
@@ -252,7 +298,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             monitor: &monitor,
             presented_key: &presented_key,
         };
-        return aggregated_result(deliver_startup(&operations));
+        let result = deliver_startup(&operations);
+        if client.take_moved() {
+            discard_moved_home(&home, &args.state_directory);
+        }
+        return aggregated_result(result);
     }
     let checkin = send_checkin(
         &client,
@@ -293,7 +343,32 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // delivery thread like every later one instead of holding up lease check-ins.
     let mut delivery_worker = None;
     spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
-    let mut relocation = Relocation::new(Instant::now());
+    let mut relocation: Option<Relocation> = None;
+    let mut resolution: Option<Resolution> = None;
+    // Puts a reloaded configuration, its home, and the client for it into effect.
+    macro_rules! adopt_reload {
+        ($new_config:expr, $new_home:expr, $new_client:expr) => {{
+            let old_checkin_interval = config.checkin_interval;
+            let old_inventory_interval = config.inventory_interval;
+            config = $new_config;
+            home = $new_home;
+            client = $new_client;
+            policy_generation.advance();
+            // The socket carries the old credentials and policy.
+            if let Some(previous) = listener.take() {
+                previous.stop();
+            }
+            listener = start_listener(&client, &config, &queue, &notices, &stopped);
+            scheduler.refresh_intervals(
+                Instant::now(),
+                old_checkin_interval,
+                config.checkin_interval,
+                old_inventory_interval,
+                config.inventory_interval,
+            );
+            info!("configuration reloaded");
+        }};
+    }
     info!("daemon started");
 
     while !stopped.cancelled() {
@@ -361,31 +436,46 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     scheduler.reschedule(job, Instant::now(), QUEUE_FLUSH_INTERVAL);
                 }
                 Job::Reload => {
-                    let old_checkin_interval = config.checkin_interval;
-                    let old_inventory_interval = config.inventory_interval;
-                    match reload(&args.config, &args.state_directory, stopped.clone()) {
-                        Ok((new_config, new_home, new_client)) => {
-                            if new_home != home {
-                                log_home(&new_config, &new_home);
+                    // The resolution in flight decides the home before the next reload does.
+                    if resolution.is_some() {
+                        scheduler.reschedule(job, Instant::now(), RELOAD_DEFER);
+                        continue;
+                    }
+                    match Config::load(&args.config, &args.state_directory) {
+                        Ok(new_config) => {
+                            // While a move is pending the persisted home is gone, but an
+                            // unchanged address and identifier still mean the current home.
+                            let known = if relocation.is_some() {
+                                Ok(home.answers(&new_config).then(|| home.clone()))
+                            } else {
+                                home::persisted(&new_config, &args.state_directory)
+                            };
+                            match known {
+                                Ok(Some(known)) => match client_for(
+                                    &new_config,
+                                    &known,
+                                    &client,
+                                    &installation_key,
+                                    &stopped,
+                                ) {
+                                    Ok(new_client) => adopt_reload!(new_config, known, new_client),
+                                    Err(failure) => {
+                                        warn!(error = %failure, "configuration reload failed; retaining previous configuration")
+                                    }
+                                },
+                                // A changed address or identifier, or a deleted home: resolve
+                                // without holding up check-ins, then adopt it all at once.
+                                Ok(None) => {
+                                    resolution = Some(Resolution::spawn(
+                                        Purpose::Reload(Box::new(new_config)),
+                                        &config,
+                                        &stopped,
+                                    ))
+                                }
+                                Err(failure) => {
+                                    warn!(error = %failure, "configuration reload failed; retaining previous configuration")
+                                }
                             }
-                            config = new_config;
-                            home = new_home;
-                            client =
-                                new_client.with_installation_key(Arc::clone(&installation_key));
-                            policy_generation.advance();
-                            // The socket carries the old credentials and policy.
-                            if let Some(previous) = listener.take() {
-                                previous.stop();
-                            }
-                            listener = start_listener(&client, &config, &queue, &notices, &stopped);
-                            scheduler.refresh_intervals(
-                                Instant::now(),
-                                old_checkin_interval,
-                                config.checkin_interval,
-                                old_inventory_interval,
-                                config.inventory_interval,
-                            );
-                            info!("configuration reloaded");
                         }
                         Err(failure) => {
                             warn!(error = %failure, "configuration reload failed; retaining previous configuration")
@@ -401,28 +491,84 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         }
         // Requests already on their way to the old home fail with `moved` and stay queued
         // or are retried on the next pass, which uses the new client.
-        if client.take_moved() && relocation.due(Instant::now()) {
-            match relocate(&config, &args.state_directory, &stopped) {
-                Ok((new_home, new_client)) if new_home.home != home.home => {
-                    log_home(&config, &new_home);
-                    home = new_home;
-                    client = new_client.with_installation_key(Arc::clone(&installation_key));
-                    relocation = Relocation::new(Instant::now());
-                    if let Some(previous) = listener.take() {
-                        previous.stop();
+        if client.take_moved() && relocation.is_none() {
+            discard_moved_home(&home, &args.state_directory);
+            relocation = Some(Relocation::new(Instant::now(), DAEMON_RELOCATION_RETRY));
+        }
+        if resolution
+            .as_ref()
+            .is_some_and(|resolution| resolution.handle.is_finished())
+        {
+            let (purpose, result) = resolution.take().unwrap().finish();
+            match (purpose, result) {
+                (Purpose::Reload(new_config), Ok(new_home)) => {
+                    log_home(&new_config, &new_home);
+                    // The home is persisted only once its client exists, so a reload that
+                    // fails here leaves the previous home in place as well as the configuration.
+                    match client_for(&new_config, &new_home, &client, &installation_key, &stopped)
+                        .and_then(|new_client| {
+                            home::persist(&args.state_directory, &new_home)?;
+                            Ok(new_client)
+                        }) {
+                        Ok(new_client) => {
+                            if new_home.home != home.home {
+                                relocation = None;
+                            }
+                            adopt_reload!(*new_config, new_home, new_client);
+                        }
+                        Err(failure) => {
+                            warn!(error = %failure, "configuration reload failed; retaining previous configuration")
+                        }
                     }
-                    listener = start_listener(&client, &config, &queue, &notices, &stopped);
                 }
-                Ok((same, _)) => {
-                    home = same;
-                    let retry_in = relocation.back_off(Instant::now());
-                    warn!(home = %home.home, ?retry_in, "home says the organization moved, but resolution returned it again");
+                (Purpose::Reload(_), Err(failure)) => {
+                    warn!(error = %failure, "configuration reload failed; retaining previous configuration")
                 }
-                Err(failure) => {
-                    let retry_in = relocation.back_off(Instant::now());
-                    warn!(error = %failure, ?retry_in, "home resolution after a move failed");
+                (Purpose::Relocation, Ok(new_home)) if new_home.home != home.home => {
+                    log_home(&config, &new_home);
+                    match client_for(&config, &new_home, &client, &installation_key, &stopped)
+                        .and_then(|new_client| {
+                            home::persist(&args.state_directory, &new_home)?;
+                            Ok(new_client)
+                        }) {
+                        Ok(new_client) => {
+                            home = new_home;
+                            client = new_client;
+                            relocation = None;
+                            if let Some(previous) = listener.take() {
+                                previous.stop();
+                            }
+                            listener = start_listener(&client, &config, &queue, &notices, &stopped);
+                        }
+                        Err(failure) => {
+                            if let Some(relocation) = relocation.as_mut() {
+                                let retry_in = relocation.back_off(Instant::now());
+                                warn!(error = %failure, ?retry_in, "cannot use the home named after a move");
+                            }
+                        }
+                    }
+                }
+                (Purpose::Relocation, Ok(same)) => {
+                    log_home(&config, &same);
+                    if let Some(relocation) = relocation.as_mut() {
+                        let retry_in = relocation.back_off(Instant::now());
+                        warn!(home = %same.home, ?retry_in, "home says the organization moved, but resolution returned it again");
+                    }
+                }
+                (Purpose::Relocation, Err(failure)) => {
+                    if let Some(relocation) = relocation.as_mut() {
+                        let retry_in = relocation.back_off(Instant::now());
+                        warn!(error = %failure, ?retry_in, "home resolution after a move failed");
+                    }
                 }
             }
+        }
+        if resolution.is_none()
+            && relocation
+                .as_ref()
+                .is_some_and(|relocation| relocation.due(Instant::now()))
+        {
+            resolution = Some(Resolution::spawn(Purpose::Relocation, &config, &stopped));
         }
         // A notice that arrives while a pass runs stays raised, so the next
         // pass starts as soon as this one ends.
@@ -444,6 +590,9 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     }
     if let Some(listener) = listener {
         listener.stop();
+    }
+    if let Some(resolution) = resolution {
+        let _ = resolution.finish();
     }
     if let Some(worker) = delivery_worker {
         let _ = worker.handle.join();
@@ -800,27 +949,26 @@ fn aggregated_result(failures: Vec<String>) -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn reload(
-    path: &PathBuf,
-    state_directory: &PathBuf,
-    cancellation: Cancellation,
-) -> Result<(Config, Home, HttpClient), Box<dyn Error>> {
-    let config = Config::load(path, state_directory)?;
-    // A changed `renga_url` or rotated key resolves again; a failure keeps the previous home.
-    let home = home::resolve(&config, state_directory, &cancellation)?;
-    let client = HttpClient::for_home(&config, &home.home, cancellation)?;
-    Ok((config, home, client))
+/// The client for `home`, hearing the current client's moves when the home is unchanged.
+fn client_for(
+    config: &Config,
+    home: &Home,
+    current: &HttpClient,
+    installation_key: &Arc<InstallationKey>,
+    stopped: &Cancellation,
+) -> Result<HttpClient, Box<dyn Error>> {
+    Ok(HttpClient::for_home(config, &home.home, stopped.clone())?
+        .with_installation_key(Arc::clone(installation_key))
+        .sharing_moved_signal(current))
 }
 
-/// Asks `renga_url` where the organization lives after its home answered `410 moved`.
-fn relocate(
-    config: &Config,
-    state_directory: &Path,
-    stopped: &Cancellation,
-) -> Result<(Home, HttpClient), Box<dyn Error>> {
-    let home = home::resolve_again(config, state_directory, stopped)?;
-    let client = HttpClient::for_home(config, &home.home, stopped.clone())?;
-    Ok((home, client))
+/// Forgets the home that said the organization moved (RFD 23), so neither this run nor a
+/// restart sends requests there again without asking `renga_url`.
+fn discard_moved_home(home: &Home, state_directory: &Path) {
+    warn!(home = %home.home, "home says the organization moved; resolving it again");
+    if let Err(error) = home::discard(state_directory) {
+        warn!(%error, "cannot discard the moved home");
+    }
 }
 
 /// Resolves where authenticated requests go before any is sent. A daemon keeps asking while
@@ -1284,7 +1432,7 @@ mod tests {
     #[test]
     fn an_unchanged_home_after_a_move_is_asked_again_less_often() {
         let start = Instant::now();
-        let mut relocation = Relocation::new(start);
+        let mut relocation = Relocation::new(start, RELOCATION_RETRY_INITIAL);
         assert!(relocation.due(start));
 
         let waits: Vec<_> = (0..7).map(|_| relocation.back_off(start)).collect();
@@ -1388,6 +1536,180 @@ mod tests {
             serde_json::from_slice(&std::fs::read(state.join("home.json")).unwrap()).unwrap();
         assert_eq!(persisted["deployment"], "eu-1");
         assert_eq!(persisted["home"], expected_home);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// Writes an agent configuration resolving from `resolver` into `state`.
+    fn write_agent_config(state: &Path, resolver: &str, intake_api_key: &str) -> PathBuf {
+        let config = state.join("agent.toml");
+        std::fs::create_dir_all(state).unwrap();
+        std::fs::write(
+            &config,
+            format!(
+                "renga_url = {resolver:?}\nallow_insecure_http = true\nintake_api_key = {intake_api_key:?}\ncheckin_interval_seconds = 1\nconfig_refresh_interval_seconds = 1\nrequest_timeout_seconds = 2\nmax_retry_attempts = 1\n"
+            ),
+        )
+        .unwrap();
+        config
+    }
+
+    fn spawn_daemon(
+        config: PathBuf,
+        state: &Path,
+        once: bool,
+        stopped: Cancellation,
+    ) -> thread::JoinHandle<Result<(), String>> {
+        let state = state.to_path_buf();
+        thread::spawn(move || {
+            run_configured(
+                Args {
+                    config,
+                    state_directory: state,
+                    once,
+                    dry_run: false,
+                    command: None,
+                },
+                stopped,
+            )
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    #[test]
+    fn a_move_stays_pending_until_a_different_home_is_named() {
+        let state = std::env::temp_dir().join(format!("renga-pending-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (checked_in, new_home_checkins) = mpsc::channel();
+        let new_home_stop = stopped.clone();
+        let (new_origin, new_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins") {
+                let _ = checked_in.send(());
+                new_home_stop.cancel();
+                (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+            } else {
+                (404, "{}".into())
+            }
+        });
+        // The old home says `moved` once and then only fails, as a deployment going away
+        // would, so nothing but the pending relocation can find the new home.
+        let said_moved = Arc::new(AtomicBool::new(false));
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins")
+                && !said_moved.swap(true, Ordering::SeqCst)
+            {
+                (410, r#"{"error":"moved"}"#.into())
+            } else {
+                (503, "{}".into())
+            }
+        });
+        let expected_home = format!("{new_origin}/");
+        // The resolver has not caught up when first asked after the move.
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let resolved = Arc::clone(&resolutions);
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+            let home = if resolved.fetch_add(1, Ordering::SeqCst) < 2 {
+                &old_origin
+            } else {
+                &new_origin
+            };
+            (200, json!({ "home": home }).to_string())
+        });
+        let config = write_agent_config(&state, &resolver, "renga_intake_test");
+        let daemon = spawn_daemon(config, &state, false, stopped.clone());
+
+        new_home_checkins
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap();
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [new_server, old_server, resolver_server] {
+            server.join().unwrap();
+        }
+
+        assert_eq!(resolutions.load(Ordering::SeqCst), 3);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("home.json")).unwrap()).unwrap();
+        assert_eq!(persisted["home"], expected_home);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_single_run_that_hears_moved_forgets_the_home_for_the_next_run() {
+        let state = std::env::temp_dir().join(format!("renga-once-moved-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (old_origin, old_server) = routed_server(stopped.clone(), |_request| {
+            (410, r#"{"error":"moved"}"#.into())
+        });
+        let resolver_home = old_origin.clone();
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+            (200, json!({ "home": resolver_home }).to_string())
+        });
+        let config = write_agent_config(&state, &resolver, "renga_intake_test");
+
+        let result = spawn_daemon(config, &state, true, Cancellation::default())
+            .join()
+            .unwrap();
+        stopped.cancel();
+        old_server.join().unwrap();
+        resolver_server.join().unwrap();
+
+        assert!(result.is_err());
+        assert!(!state.join("home.json").exists());
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_reload_that_cannot_use_its_new_home_keeps_the_old_one_and_keeps_checking_in() {
+        let state = std::env::temp_dir().join(format!("renga-reload-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let checkins = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&checkins);
+        let (home_origin, home_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins") {
+                counted.fetch_add(1, Ordering::SeqCst);
+                (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+            } else {
+                (404, "{}".into())
+            }
+        });
+        let first_home = home_origin.clone();
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+            (200, json!({ "home": first_home }).to_string())
+        });
+        // The replacement resolver is slow and names a home the new key cannot be sent to.
+        let asked = Arc::new(AtomicBool::new(false));
+        let replacement_asked = Arc::clone(&asked);
+        let (slow_resolver, slow_server) = routed_server(stopped.clone(), move |_request| {
+            replacement_asked.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1500));
+            (200, json!({ "home": "http://127.0.0.1:9" }).to_string())
+        });
+        let config = write_agent_config(&state, &resolver, "renga_intake_test");
+        let daemon = spawn_daemon(config.clone(), &state, false, stopped.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while checkins.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let persisted = std::fs::read(state.join("home.json")).unwrap();
+
+        // A newline cannot go into the authorization header, so the new client cannot be built.
+        write_agent_config(&state, &slow_resolver, "renga_intake_bad\nkey");
+        while !asked.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let before = checkins.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(1200));
+        let during = checkins.load(Ordering::SeqCst) - before;
+        thread::sleep(Duration::from_millis(1000));
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [home_server, resolver_server, slow_server] {
+            server.join().unwrap();
+        }
+
+        assert!(asked.load(Ordering::SeqCst));
+        assert!(during >= 1, "check-ins stopped while the resolver was slow");
+        assert_eq!(std::fs::read(state.join("home.json")).unwrap(), persisted);
         std::fs::remove_dir_all(state).unwrap();
     }
 

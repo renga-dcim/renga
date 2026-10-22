@@ -31,7 +31,9 @@ pub struct Home {
 }
 
 impl Home {
-    fn answers(&self, config: &Config) -> bool {
+    /// Whether this home was resolved for `config`'s address and deployment identifier and is
+    /// still an origin `config` may send requests to.
+    pub fn answers(&self, config: &Config) -> bool {
         self.renga_url == config.renga_url
             && self.deployment == deployment_id(&config.intake_api_key).unwrap_or_default()
             && transport::origin_url(self.home.as_str(), config.allow_insecure_http, "home URL")
@@ -106,28 +108,40 @@ pub fn resolve(
     state_directory: &Path,
     cancellation: &Cancellation,
 ) -> Result<Home, HomeError> {
-    if let Some(home) = load(state_directory)?.filter(|home| home.answers(config)) {
+    if let Some(home) = persisted(config, state_directory)? {
         return Ok(home);
     }
-    resolve_again(config, state_directory, cancellation)
+    let home = fetch(config, cancellation)?;
+    persist(state_directory, &home)?;
+    Ok(home)
 }
 
-/// Asks `renga_url` even when a home is persisted, as after `410 moved`. Only an answer
-/// replaces the persisted home, so a failed resolution leaves the previous one in place.
-pub fn resolve_again(
-    config: &Config,
-    state_directory: &Path,
-    cancellation: &Cancellation,
-) -> Result<Home, HomeError> {
+/// The persisted home, when there is one and it answers `config`.
+pub fn persisted(config: &Config, state_directory: &Path) -> Result<Option<Home>, HomeError> {
+    Ok(load(state_directory)?.filter(|home| home.answers(config)))
+}
+
+/// Asks `renga_url` where the home is without persisting the answer, so a caller can check that
+/// it can use the answer before it replaces the persisted home.
+pub fn fetch(config: &Config, cancellation: &Cancellation) -> Result<Home, HomeError> {
     let deployment = deployment_id(&config.intake_api_key).unwrap_or_default();
-    let home = Home {
+    Ok(Home {
         renga_url: config.renga_url.clone(),
         deployment: deployment.into(),
         home: transport::fetch_home(config, deployment, cancellation)?,
         resolved_at: Utc::now(),
-    };
-    persist(state_directory, &home)?;
-    Ok(home)
+    })
+}
+
+/// Forgets the persisted home after it said the organization moved (RFD 23), so no later run
+/// sends requests there without first asking `renga_url` again.
+pub fn discard(state_directory: &Path) -> Result<(), HomeError> {
+    match fs::remove_file(state_directory.join(HOME_FILE)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(HomeError::state(
+            format!("cannot discard persisted home: {error}"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// A missing or unreadable home is resolved again rather than treated as an error.
@@ -158,7 +172,8 @@ fn load(state_directory: &Path) -> Result<Option<Home>, HomeError> {
     Ok(serde_json::from_slice(&bytes).ok())
 }
 
-fn persist(state_directory: &Path, home: &Home) -> Result<(), HomeError> {
+/// Replaces the persisted home atomically.
+pub fn persist(state_directory: &Path, home: &Home) -> Result<(), HomeError> {
     fs::create_dir_all(state_directory).map_err(|error| {
         HomeError::state(format!(
             "cannot create state directory {}: {error}",
@@ -338,7 +353,11 @@ mod tests {
                 fs::remove_file(state.join(HOME_FILE)).unwrap();
                 resolve(&readdressed, &state, &cancellation).unwrap()
             },
-            resolve_again(&readdressed, &state, &cancellation).unwrap(),
+            {
+                let home = fetch(&readdressed, &cancellation).unwrap();
+                persist(&state, &home).unwrap();
+                home
+            },
         ];
 
         assert_eq!(server.join().unwrap().len(), 5);
@@ -363,21 +382,45 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_resolution_keeps_the_persisted_home() {
+    fn fetching_never_touches_the_persisted_home() {
         let (origin, server) = home_server(vec![
             (200, home_body("http://home.test")),
             (503, "{}".into()),
+            (200, home_body("http://elsewhere.test")),
         ]);
         let state = state_directory();
         let config = config(&origin, &format!("renga_intake_{SECRET}"));
         let cancellation = Cancellation::default();
 
         let home = resolve(&config, &state, &cancellation).unwrap();
-        let error = resolve_again(&config, &state, &cancellation).unwrap_err();
+        let error = fetch(&config, &cancellation).unwrap_err();
+        let answer = fetch(&config, &cancellation).unwrap();
 
         server.join().unwrap();
         assert!(error.transient());
+        assert_eq!(answer.home.host_str(), Some("elsewhere.test"));
         assert_eq!(load(&state).unwrap(), Some(home));
+        let _ = fs::remove_dir_all(state);
+    }
+
+    #[test]
+    fn a_discarded_home_is_resolved_again() {
+        let (origin, server) = home_server(vec![
+            (200, home_body("http://one.test")),
+            (200, home_body("http://two.test")),
+        ]);
+        let state = state_directory();
+        let config = config(&origin, &format!("renga_intake_{SECRET}"));
+        let cancellation = Cancellation::default();
+
+        resolve(&config, &state, &cancellation).unwrap();
+        discard(&state).unwrap();
+        discard(&state).unwrap();
+        assert_eq!(persisted(&config, &state).unwrap(), None);
+        let home = resolve(&config, &state, &cancellation).unwrap();
+
+        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(home.home.host_str(), Some("two.test"));
         let _ = fs::remove_dir_all(state);
     }
 
