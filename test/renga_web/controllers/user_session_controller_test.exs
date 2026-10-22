@@ -16,6 +16,11 @@ defmodule RengaWeb.UserSessionControllerTest do
         do: method
   end
 
+  defp second_factor?(conn) do
+    {user, _inserted_at} = Accounts.get_user_by_session_token(get_session(conn, :user_token))
+    Accounts.SessionMFA.second_factor?(user.session_mfa)
+  end
+
   describe "POST /users/log-in - email and password" do
     test "logs the user in", %{conn: conn, user: user} do
       user = set_password(user)
@@ -28,6 +33,7 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert get_session(conn, :user_token)
       assert redirected_to(conn) == ~p"/"
       assert sign_in_methods(user) == ["password"]
+      refute second_factor?(conn)
 
       # Root dispatches the new session into organization onboarding.
       conn = get(conn, ~p"/")
@@ -186,6 +192,7 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert get_session(conn, :user_token)
       refute get_session(conn, :pending_second_step)
       assert sign_in_methods(user) == ["totp"]
+      assert second_factor?(conn)
       assert redirected_to(conn) == ~p"/"
       assert conn.resp_cookies["_renga_web_user_remember_me"]
     end
@@ -289,6 +296,7 @@ defmodule RengaWeb.UserSessionControllerTest do
       token = get_session(conn, :user_token)
       assert redirected_to(conn) == ~p"/users/settings"
       assert Accounts.recovering?(user, token)
+      assert second_factor?(conn)
       refute Accounts.authorized_account_change?(user, token, :remove_factor)
       assert Accounts.MFA.recovery_codes_left(user) == 9
     end
@@ -319,6 +327,33 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(conn) == ~p"/users/settings"
       assert get_session(conn, :user_token)
     end
+
+    test "the session after a password change keeps the second factor", %{
+      conn: conn,
+      user: user,
+      secret: secret
+    } do
+      conn =
+        conn
+        |> log_in_user(user, mfa: Accounts.SessionMFA.for_method(:totp))
+        |> tap(fn conn ->
+          :ok =
+            Accounts.recheck_with_totp(
+              user,
+              get_session(conn, :user_token),
+              NimbleTOTP.verification_code(secret)
+            )
+        end)
+        |> post(~p"/users/update-password", %{
+          "user" => %{
+            "password" => "a brand new password",
+            "password_confirmation" => "a brand new password"
+          }
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert second_factor?(conn)
+    end
   end
 
   describe "passkeys" do
@@ -347,6 +382,7 @@ defmodule RengaWeb.UserSessionControllerTest do
 
       assert signed_in.id == user.id
       assert sign_in_methods(user) == ["passkey"]
+      assert second_factor?(conn)
     end
 
     test "a bad passkey response signs nobody in", %{conn: conn} do

@@ -135,12 +135,13 @@ defmodule RengaWeb.ConnCase do
   end
 
   @doc """
-  Logs the given `user` into the `conn`.
+  Logs the given `user` into the `conn`. `:mfa` is the session's
+  `Renga.Accounts.SessionMFA` evidence, none by default.
 
   It returns an updated `conn`.
   """
   def log_in_user(conn, user, opts \\ []) do
-    token = Renga.Accounts.generate_user_session_token(user)
+    token = Renga.Accounts.generate_user_session_token(user, nil, nil, opts[:mfa])
 
     maybe_set_token_authenticated_at(token, opts[:token_authenticated_at])
 

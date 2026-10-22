@@ -13,6 +13,7 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.SecurityLog
+  alias Renga.Accounts.SessionMFA
   alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
@@ -670,11 +671,22 @@ defmodule Renga.Accounts do
   in the same transaction, so the log never shows a sign-in whose session
   was not created. Returns `:error`, issuing nothing, when the local sign-in
   policy refuses a local `method`.
+
+  The session records the MFA evidence the sign-in leaves: `mfa`, or what
+  `method` alone proves (`Renga.Accounts.SessionMFA.for_method/1`).
   """
-  def create_signed_in_session(%User{} = user, browser_session_id, method, expires_at \\ nil) do
+  def create_signed_in_session(
+        %User{} = user,
+        browser_session_id,
+        method,
+        expires_at \\ nil,
+        mfa \\ nil
+      ) do
+    mfa = mfa || SessionMFA.for_method(method)
+
     Repo.transact(fn ->
       record_issued_sign_in(user, method)
-      {:ok, generate_user_session_token(user, browser_session_id, expires_at)}
+      {:ok, generate_user_session_token(user, browser_session_id, expires_at, mfa)}
     end)
     |> case do
       {:ok, token} -> {:ok, token}
@@ -866,7 +878,14 @@ defmodule Renga.Accounts do
         )
 
       if count == 1 do
-        session_token = generate_user_session_token(user, browser_session_id)
+        session_token =
+          generate_user_session_token(
+            user,
+            browser_session_id,
+            nil,
+            SessionMFA.for_method(method)
+          )
+
         :ok = start_recovery_after(method, user, session_token)
         # Logged with the session it records, so a spent or expired
         # pending sign-in logs nothing.
@@ -1019,11 +1038,21 @@ defmodule Renga.Accounts do
   ## Session
 
   @doc """
-  Generates a session token.
+  Generates a session token, recording `mfa`, the sign-in's
+  `Renga.Accounts.SessionMFA` evidence, on it.
   """
-  def generate_user_session_token(user, browser_session_id \\ nil, expires_at \\ nil) do
+  def generate_user_session_token(
+        user,
+        browser_session_id \\ nil,
+        expires_at \\ nil,
+        mfa \\ nil
+      ) do
     {token, user_token} = UserToken.build_session_token(user, browser_session_id)
-    Repo.insert!(%{user_token | expires_at: expires_at || user_token.expires_at})
+
+    token_fields =
+      [expires_at: expires_at || user_token.expires_at] ++ SessionMFA.token_fields(mfa)
+
+    Repo.insert!(struct!(user_token, token_fields))
     token
   end
 

@@ -60,6 +60,34 @@ defmodule RengaWeb.UserProviderControllerTest do
     assert method == "provider:#{provider.id}"
   end
 
+  test "the session keeps the provider and its amr claim as MFA evidence", %{
+    conn: conn,
+    fake: fake,
+    provider: provider
+  } do
+    {conn, url} = start(conn, provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims(%{"amr" => ["pwd", "otp"]}))
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+    {user, _} = Accounts.get_user_by_session_token(get_session(conn, :user_token))
+
+    assert %Accounts.SessionMFA{
+             second_factor_at: nil,
+             provider_id: provider_id,
+             provider_organization_id: nil,
+             provider_amr: ["pwd", "otp"]
+           } = user.session_mfa
+
+    assert provider_id == provider.id
+
+    {conn, url} = start(build_conn(), provider)
+    params = FakeOIDCProvider.authorize(fake, url, claims())
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+    {user, _} = Accounts.get_user_by_session_token(get_session(conn, :user_token))
+    assert %Accounts.SessionMFA{provider_amr: nil} = user.session_mfa
+  end
+
   test "opens the user's only organization", %{conn: conn, fake: fake, provider: provider} do
     {first, url} = start(conn, provider)
     params = FakeOIDCProvider.authorize(fake, url, claims())
