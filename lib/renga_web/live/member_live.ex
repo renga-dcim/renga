@@ -11,6 +11,10 @@ defmodule RengaWeb.MemberLive do
   With a SCIM connection (RFD 16), members it granted are marked and left
   to the identity provider, and its directory entries are listed, linked
   or not, so managers can tell who has not signed in yet.
+
+  After an import (RFD 20), the people the archive named who were active
+  members are listed until they are back, each with an invitation that
+  restores their access when they accept it (`Renga.Transfers.Principals`).
   """
   use RengaWeb, :live_view
 
@@ -24,6 +28,7 @@ defmodule RengaWeb.MemberLive do
   alias Renga.Members
   alias Renga.Roles.Assignment
   alias Renga.Scim
+  alias Renga.Transfers.Principals
 
   @role_meanings %{
     "owner" => "Everything, including organization settings and export",
@@ -173,6 +178,30 @@ defmodule RengaWeb.MemberLive do
     end
   end
 
+  def handle_event("invite_imported", %{"id" => id}, socket) do
+    scope = socket.assigns.current_scope
+
+    case Principals.invite(scope, id, &url(~p"/invitations/#{&1}")) do
+      {:ok, invitation} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Invitation sent to #{invitation.email}")
+         |> load_members()}
+
+      {:error, {:delivery_failed, invitation}} ->
+        {:noreply,
+         socket
+         |> put_flash(
+           :error,
+           "Invitation for #{invitation.email} saved, but the email could not be delivered. Try sending it again."
+         )
+         |> load_members()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, imported_refusal(reason)) |> load_members()}
+    end
+  end
+
   def handle_event("revoke", %{"id" => id}, socket) do
     case Members.revoke_invitation(socket.assigns.current_scope, id) do
       {:ok, invitation} ->
@@ -226,6 +255,15 @@ defmodule RengaWeb.MemberLive do
 
   defp refusal(_reason), do: "That member is no longer in this organization."
 
+  defp imported_refusal(%Ecto.Changeset{errors: [{:email, {message, _opts}} | _rest]}),
+    do: "That address #{message}."
+
+  defp imported_refusal(:not_eligible),
+    do: "Only people who were active members can be invited back."
+
+  defp imported_refusal(:not_found), do: "That person is already back."
+  defp imported_refusal(reason), do: refusal(reason)
+
   defp load_members(socket) do
     previous = socket.assigns.current_scope
     scope = Accounts.scope_for_user(previous.user, previous.organization_id)
@@ -234,6 +272,7 @@ defmodule RengaWeb.MemberLive do
       members = Members.list_members(scope)
       assignments = Assignments.list_assignments(scope) |> Enum.group_by(& &1.membership_id)
       can_manage? = Members.can_manage?(scope)
+      invitations = if(can_manage?, do: Members.list_invitations(scope), else: [])
 
       socket
       |> assign(
@@ -243,8 +282,9 @@ defmodule RengaWeb.MemberLive do
         assignable: Assignments.assignable_roles(scope),
         members: members,
         assignments: assignments,
-        invitations: if(can_manage?, do: Members.list_invitations(scope), else: []),
+        invitations: invitations,
         directory: Scim.list_directory_entries(scope),
+        imported: if(can_manage?, do: returning(scope, members, invitations), else: []),
         editing: selected(socket.assigns.editing, members),
         assigning: selected(socket.assigns.assigning, members)
       )
@@ -253,6 +293,17 @@ defmodule RengaWeb.MemberLive do
     else
       push_navigate(socket, to: ~p"/organizations")
     end
+  end
+
+  # Imported people who can come back and are not members already, with
+  # their open invitation if any.
+  defp returning(scope, members, invitations) do
+    invited = Map.new(invitations, &{&1.imported_principal_id, &1})
+    member_emails = MapSet.new(members, &String.downcase(&1.user.email))
+
+    for %{role: role} = entry when is_binary(role) <- Principals.list_unlinked(scope),
+        not MapSet.member?(member_emails, String.downcase(entry.principal.email)),
+        do: Map.put(entry, :invitation, invited[entry.principal.id])
   end
 
   defp selected(nil, _members), do: nil
@@ -510,6 +561,47 @@ defmodule RengaWeb.MemberLive do
                 {if entry.active, do: "Active", else: "Inactive"}
               </span>
             </:col>
+          </.table>
+        </section>
+
+        <section :if={@imported != []} id="imported-people" class="space-y-2">
+          <h2 class="text-sm font-medium text-fg">Imported people</h2>
+          <p class="text-sm text-fg-muted">
+            Active members of the organization this one was imported from. Accepting an invitation restores their teams, roles, and private views.
+          </p>
+          <.table
+            id="imported-list"
+            rows={@imported}
+            row_id={&"imported-#{&1.principal.id}"}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={entry} label="Email" class="py-2">
+              <span class="block truncate text-fg">{entry.principal.email}</span>
+            </:col>
+            <:col :let={entry} label="Role" class="w-28">
+              <span class="capitalize text-fg">{entry.role}</span>
+            </:col>
+            <:col :let={entry} label="Invitation" class="w-36 text-fg-muted">
+              <%= cond do %>
+                <% is_nil(entry.invitation) -> %>
+                  Not sent
+                <% expired?(entry.invitation) -> %>
+                  Expired
+                <% true -> %>
+                  Sent
+              <% end %>
+            </:col>
+            <:action :let={entry}>
+              <button
+                :if={entry.role in @grantable}
+                id={"imported-#{entry.principal.id}-invite"}
+                type="button"
+                phx-click={JS.push("invite_imported", value: %{id: entry.principal.id})}
+                class="min-h-tap cursor-pointer whitespace-nowrap text-sm text-link hover:underline"
+              >
+                {if entry.invitation, do: "Send again", else: "Invite back"}
+              </button>
+            </:action>
           </.table>
         </section>
 
