@@ -17,5 +17,8 @@ defmodule RengaWeb.OperatorRouter do
     get "/openapi.json", OpenApiController, :show
     get "/deployment", DeploymentController, :show
     delete "/tokens/self", TokenController, :delete_self
+    post "/organizations", OrganizationController, :create
+    get "/organizations/:id", OrganizationController, :show
+    post "/organizations/:id/owner-invitations", OrganizationController, :invite_owner
   end
 end
