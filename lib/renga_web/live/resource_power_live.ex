@@ -974,6 +974,10 @@ defmodule RengaWeb.ResourcePowerLive do
   defp reading_value(%Reading{validity: "valid", state: state}) when is_binary(state),
     do: String.replace(state, "_", " ")
 
+  # A ratio: rounding to tenths would show 0.96 as 1, and its unit is "1".
+  defp reading_value(%Reading{validity: "valid", quantity: "power_factor", value: value}),
+    do: value |> Decimal.round(2) |> Decimal.to_string(:normal)
+
   defp reading_value(%Reading{validity: "valid", value: value, unit: unit}),
     do:
       "#{value |> Decimal.round(1) |> Decimal.normalize() |> Decimal.to_string(:normal)} #{unit}"

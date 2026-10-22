@@ -347,6 +347,7 @@ defmodule RengaWeb.ResourcePowerLiveTest do
 
     supply.(component: {"power_port", "PSU1"}, quantity: "real_power", value: 212.4)
     supply.(component: {"power_port", "PSU1"}, quantity: "state", unit: nil, state: "ok")
+    supply.(component: {"power_port", "PSU1"}, quantity: "power_factor", value: 0.96)
     supply.(component: {"power_port", "PSU2"}, quantity: "state", unit: nil, state: "no_input")
 
     supply.(
@@ -370,6 +371,9 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#power-readings", bmc.name)
     assert has_element?(view, "#power-readings", "redfish v1")
     assert has_element?(view, "#power-readings tr", "Stale")
+    # A power factor keeps two places and shows no unit.
+    assert has_element?(view, "#power-readings tr", "0.96")
+    refute has_element?(view, "#power-readings tr", "0.96 1")
   end
 
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
