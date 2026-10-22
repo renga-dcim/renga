@@ -27,6 +27,7 @@ defmodule Renga.DCIM do
   alias Renga.Inventory.ResourceIdentifier
   alias Renga.Inventory.Source
   alias Renga.Repo
+  alias Renga.ResourceGroups
 
   @hierarchy_lock "dcim-hierarchy"
 
@@ -193,13 +194,18 @@ defmodule Renga.DCIM do
     managed_transaction(scope, fn ->
       lock_hierarchy(scope.organization_id)
       validate_location_parent!(scope, nil, attr(attrs, :site_id), attr(attrs, :parent_id))
-      create_projection(scope, Location, "location", resource_attrs, attrs)
+
+      scope
+      |> create_projection(Location, "location", resource_attrs, attrs)
+      |> reproject_groups!(scope)
     end)
   end
 
   def create_rack(%Scope{} = scope, resource_attrs, attrs) do
     managed_transaction(scope, fn ->
-      create_projection(scope, Rack, "rack", resource_attrs, attrs)
+      scope
+      |> create_projection(Rack, "rack", resource_attrs, attrs)
+      |> reproject_groups!(scope)
     end)
   end
 
@@ -210,7 +216,11 @@ defmodule Renga.DCIM do
       site_id = attr(attrs, :site_id) || stored.site_id
       parent_id = attr(attrs, :parent_id)
       validate_location_parent!(scope, stored.id, site_id, parent_id)
-      update_or_rollback(Location.changeset(stored, attrs))
+
+      stored
+      |> Location.changeset(attrs)
+      |> update_or_rollback()
+      |> reproject_groups!(scope)
     end)
   end
 
@@ -236,6 +246,7 @@ defmodule Renga.DCIM do
 
       if outside?, do: Repo.rollback(:occupied_units_out_of_bounds)
       updated = update_or_rollback(changeset)
+      if containment_changed?, do: reproject_groups!(updated, scope)
 
       if Ecto.Changeset.changed?(changeset, :height_units),
         do: refresh_desired_findings(scope, [stored.id])
@@ -437,6 +448,7 @@ defmodule Renga.DCIM do
           if placement.rack_id, do: lock_rack!(scope.organization_id, placement.rack_id)
           deleted = Repo.delete!(placement)
           refresh_desired_findings(scope, [placement.rack_id])
+          ResourceGroups.reproject!(scope.organization_id, [resource_id])
           deleted
       end
     end)
@@ -688,6 +700,7 @@ defmodule Renga.DCIM do
 
     insert_occupancies(placement)
     refresh_desired_findings(scope, Map.keys(locked_racks))
+    ResourceGroups.reproject!(scope.organization_id, [resource.id])
     Repo.preload(placement, [:site, :location, :rack])
   end
 
@@ -1218,6 +1231,13 @@ defmodule Renga.DCIM do
     ])
   end
 
+  # A new or moved site, location, or rack inherits its container's groups,
+  # and so does everything below it.
+  defp reproject_groups!(%{resource_id: resource_id} = record, scope) do
+    ResourceGroups.reproject!(scope.organization_id, [resource_id])
+    record
+  end
+
   defp lock_rack!(organization_id, id), do: scoped_lock!(Rack, organization_id, id)
   defp lock_resource!(organization_id, id), do: scoped_lock!(Resource, organization_id, id)
 
@@ -1245,9 +1265,13 @@ defmodule Renga.DCIM do
     |> Repo.one!()
   end
 
+  # Placement and hierarchy writes can change effective resource group
+  # membership (RFD 18), so every one takes the group-projection lock after
+  # the organization lock and before any hierarchy or rack lock.
   defp managed_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       authorize_manager!(scope)
+      ResourceGroups.lock_projection!(scope.organization_id)
 
       case mutation.() do
         {:ok, result} -> result
@@ -1261,6 +1285,7 @@ defmodule Renga.DCIM do
   defp reconciliation_transaction(%Scope{} = scope, mutation) do
     Repo.transaction(fn ->
       authorize_reconciler!(scope)
+      ResourceGroups.lock_projection!(scope.organization_id)
 
       case mutation.() do
         {:ok, result} -> result

@@ -15,6 +15,7 @@ defmodule Renga.ResourceGroupsConcurrencyTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
+  alias Renga.DCIM
   alias Renga.Inventory
   alias Renga.Repo
   alias Renga.ResourceGroups
@@ -54,6 +55,41 @@ defmodule Renga.ResourceGroupsConcurrencyTest do
                end)
 
       refute Repo.reload!(set).exclusive
+    end)
+  end
+
+  test "a placement racing a container's group change cannot break an exclusive set" do
+    with_admins(fn scope, other ->
+      {:ok, web} = Inventory.create_resource(scope, %{kind: "server", name: "web-01"})
+      {:ok, site} = DCIM.create_site(scope, %{name: "DC-A"}, %{slug: "dc-a", status: "active"})
+
+      {:ok, rack} =
+        DCIM.create_rack(scope, %{name: "R12"}, %{
+          site_id: site.id,
+          height_units: 42,
+          status: "active"
+        })
+
+      {:ok, set} = ResourceGroups.create_group_set(scope, %{name: "Environment", exclusive: true})
+
+      {:ok, production} =
+        ResourceGroups.create_group(scope, %{name: "Production", group_set_id: set.id})
+
+      {:ok, staging} =
+        ResourceGroups.create_group(scope, %{name: "Staging", group_set_id: set.id})
+
+      {:ok, 1} = ResourceGroups.add_members(scope, production, [web.id])
+
+      assert {{:ok, 1}, {:error, {:exclusive_conflict, [%{resource: "web-01"}]}}} =
+               race(
+                 fn -> ResourceGroups.add_members(scope, staging, [rack.resource_id]) end,
+                 fn ->
+                   DCIM.put_current_placement(other, web.id, %{rack_id: rack.id, confirmed: true})
+                 end
+               )
+
+      assert trusted_groups(web.id) == [production.id]
+      assert trusted_groups(rack.resource_id) == [staging.id]
     end)
   end
 

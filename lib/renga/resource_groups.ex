@@ -123,24 +123,46 @@ defmodule Renga.ResourceGroups do
   end
 
   @doc """
-  The groups a resource is effectively in that the scope can see, by name.
-  Each entry says whether the membership is direct.
+  The groups a resource is effectively in that the scope can see, by name,
+  with where each membership comes from:
+
+    * `:direct` - whether a person put the resource itself in the group
+    * `:trusted` - whether the membership holds in the trusted view, which
+      `inventory.read` and operational permissions use; when false it comes
+      only through placement nobody has confirmed
+    * `:via` - the containers that pass the group down, each with its id,
+      name, kind, and whether every edge to it was set or confirmed by a
+      person
   """
-  def list_resource_groups(%Scope{} = scope, resource_id) do
-    scope
-    |> visible_groups()
-    |> join(:inner, [group], membership in Membership,
-      on: membership.group_id == group.id and membership.view == "trusted"
-    )
-    |> join(:left, [group], member in Member,
-      on: member.group_id == group.id and member.resource_id == ^resource_id
-    )
-    |> where([_group, membership], membership.resource_id == ^resource_id)
-    |> order_by([group], asc: fragment("lower(?)", group.name))
-    |> select([group, _membership, member], {group, not is_nil(member.id)})
-    |> Repo.all()
-    |> Enum.map(fn {group, direct} ->
-      %{group: Repo.preload(group, :group_set), direct: direct}
+  def list_resource_groups(%Scope{organization_id: organization_id} = scope, resource_id) do
+    views =
+      scope
+      |> visible_groups()
+      |> join(:inner, [group], membership in Membership, on: membership.group_id == group.id)
+      |> where([_group, membership], membership.resource_id == ^resource_id)
+      |> select([group, membership], {group, membership.view})
+      |> Repo.all()
+      |> Enum.group_by(fn {group, _view} -> group end, fn {_group, view} -> view end)
+
+    direct =
+      Member
+      |> where([member], member.organization_id == ^organization_id)
+      |> where([member], member.resource_id == ^resource_id)
+      |> select([member], member.group_id)
+      |> Repo.all()
+      |> MapSet.new()
+
+    via = container_paths(organization_id, resource_id)
+
+    views
+    |> Enum.sort_by(fn {group, _views} -> String.downcase(group.name) end)
+    |> Enum.map(fn {group, views} ->
+      %{
+        group: Repo.preload(group, :group_set),
+        direct: MapSet.member?(direct, group.id),
+        trusted: "trusted" in views,
+        via: Map.get(via, group.id, [])
+      }
     end)
   end
 
@@ -484,66 +506,195 @@ defmodule Renga.ResourceGroups do
 
   ## Projection
 
-  # The effective memberships of the given resources, as candidate rows. A
-  # direct membership applies in both views; paths through containers arrive
-  # with container membership.
-  @candidates """
-  SELECT DISTINCT member.organization_id, member.resource_id, view.view, member.group_id,
-         CASE WHEN group_set.exclusive THEN group_set.id END AS group_set_id
-    FROM resource_group_members AS member
-    JOIN resource_groups AS grp ON grp.id = member.group_id
-    LEFT JOIN resource_group_sets AS group_set ON group_set.id = grp.group_set_id
-   CROSS JOIN (VALUES ('inventory'), ('trusted')) AS view(view)
-   WHERE member.organization_id = $1 AND member.resource_id = ANY($2)
+  # Containment edges from a resource to the container resource that holds
+  # it, and whether a person set or confirmed the edge. A resource's current
+  # placement names its site, location, and rack, and is trusted only once
+  # confirmed; racks and locations sit in their location and site, which
+  # only people edit. The location hierarchy is acyclic (`Renga.DCIM`
+  # refuses cycles), so walking the edges ends.
+  @edges """
+  SELECT placement.resource_id AS child, site.resource_id AS parent,
+         placement.confirmed AS trusted
+    FROM current_placements AS placement
+    JOIN sites AS site ON site.id = placement.site_id
+   WHERE placement.organization_id = $1
+  UNION ALL
+  SELECT placement.resource_id, location.resource_id, placement.confirmed
+    FROM current_placements AS placement
+    JOIN locations AS location ON location.id = placement.location_id
+   WHERE placement.organization_id = $1
+  UNION ALL
+  SELECT placement.resource_id, rack.resource_id, placement.confirmed
+    FROM current_placements AS placement
+    JOIN racks AS rack ON rack.id = placement.rack_id
+   WHERE placement.organization_id = $1
+  UNION ALL
+  SELECT rack.resource_id, site.resource_id, true
+    FROM racks AS rack
+    JOIN sites AS site ON site.id = rack.site_id
+   WHERE rack.organization_id = $1
+  UNION ALL
+  SELECT rack.resource_id, location.resource_id, true
+    FROM racks AS rack
+    JOIN locations AS location ON location.id = rack.location_id
+   WHERE rack.organization_id = $1
+  UNION ALL
+  SELECT location.resource_id, site.resource_id, true
+    FROM locations AS location
+    JOIN sites AS site ON site.id = location.site_id
+   WHERE location.organization_id = $1
+  UNION ALL
+  SELECT location.resource_id, parent.resource_id, true
+    FROM locations AS location
+    JOIN locations AS parent ON parent.id = location.parent_id
+   WHERE location.organization_id = $1
   """
 
-  # Rebuilds the effective-membership rows of `resource_ids` from their
-  # sources, refusing the whole mutation when a resource would be in two
-  # groups of one exclusive set in either view. The caller holds the
-  # projection lock, so the check and the write see the same sources; the
-  # partial unique index is the backstop.
-  defp project!(_scope, []), do: :ok
+  # Every container above each resource in $2, and whether the whole path
+  # to it was set or confirmed by people.
+  @reach """
+  reach(resource_id, container_id, trusted) AS (
+    SELECT edge.child, edge.parent, edge.trusted FROM edges AS edge WHERE edge.child = ANY($2)
+    UNION
+    SELECT reach.resource_id, edge.parent, reach.trusted AND edge.trusted
+      FROM reach JOIN edges AS edge ON edge.child = reach.container_id
+  )
+  """
 
-  defp project!(%Scope{organization_id: organization_id} = scope, resource_ids) do
-    params = [Ecto.UUID.dump!(organization_id), Enum.map(resource_ids, &Ecto.UUID.dump!/1)]
+  # The effective memberships of the resources in $2, as candidate rows.
+  # The inventory view takes a resource's own direct memberships and those
+  # of every container above it; the trusted view takes only containers
+  # reached through edges people set or confirmed.
+  @candidates """
+  WITH RECURSIVE edges AS (#{@edges}),
+  #{@reach},
+  sources(resource_id, member_id, view) AS (
+    SELECT id, id, view.view
+      FROM unnest($2::uuid[]) AS id
+     CROSS JOIN (VALUES ('inventory'), ('trusted')) AS view(view)
+    UNION
+    SELECT resource_id, container_id, 'inventory' FROM reach
+    UNION
+    SELECT resource_id, container_id, 'trusted' FROM reach WHERE trusted
+  ),
+  candidates AS (
+    SELECT DISTINCT $1::uuid AS organization_id, source.resource_id, source.view,
+           member.group_id,
+           CASE WHEN group_set.exclusive THEN group_set.id END AS group_set_id
+      FROM sources AS source
+      JOIN resource_group_members AS member
+        ON member.organization_id = $1 AND member.resource_id = source.member_id
+      JOIN resource_groups AS grp ON grp.id = member.group_id
+      LEFT JOIN resource_group_sets AS group_set ON group_set.id = grp.group_set_id
+  )
+  """
 
-    %{rows: conflicts} =
+  # The resources in $2 and every resource placed or contained below them,
+  # through any edge: their effective membership follows a container's.
+  @affected """
+  WITH RECURSIVE edges AS (#{@edges}),
+  below(resource_id) AS (
+    SELECT unnest($2::uuid[])
+    UNION
+    SELECT edge.child FROM below JOIN edges AS edge ON edge.parent = below.resource_id
+  )
+  SELECT resource_id FROM below
+  """
+
+  defp project!(%Scope{organization_id: organization_id}, resource_ids),
+    do: reproject!(organization_id, resource_ids)
+
+  @doc false
+  # Rebuilds the effective-membership rows of `resource_ids` and of every
+  # resource below them from their sources, refusing the whole mutation
+  # when a resource would be in two groups of one exclusive set in either
+  # view. Every writer that changes direct membership, current placement,
+  # or the location and rack hierarchy calls this in its transaction, after
+  # `lock_projection!/1`, so the check and the write see the same sources;
+  # the partial unique index is the backstop.
+  def reproject!(_organization_id, []), do: :ok
+
+  def reproject!(organization_id, resource_ids) do
+    organization = Ecto.UUID.dump!(organization_id)
+
+    # Without any direct member there is nothing to inherit or remove, so
+    # placement writes in organizations that use no groups stay cheap.
+    if Repo.exists?(where(Member, [member], member.organization_id == ^organization_id)) or
+         Repo.exists?(where(Membership, [row], row.organization_id == ^organization_id)) do
+      %{rows: affected} =
+        Repo.query!(@affected, [organization, Enum.map(resource_ids, &Ecto.UUID.dump!/1)])
+
+      params = [organization, List.flatten(affected)]
+
+      %{rows: conflicts} =
+        Repo.query!(
+          """
+          #{@candidates}
+          SELECT resource_id, group_set_id, array_agg(DISTINCT group_id)
+            FROM candidates
+           WHERE group_set_id IS NOT NULL
+           GROUP BY resource_id, view, group_set_id
+          HAVING count(DISTINCT group_id) > 1
+          """,
+          params
+        )
+
+      if conflicts != [] do
+        Repo.rollback({:exclusive_conflict, describe_conflicts(organization_id, conflicts)})
+      end
+
       Repo.query!(
-        """
-        WITH candidates AS (#{@candidates})
-        SELECT resource_id, group_set_id, array_agg(DISTINCT group_id)
-          FROM candidates
-         WHERE group_set_id IS NOT NULL
-         GROUP BY resource_id, view, group_set_id
-        HAVING count(DISTINCT group_id) > 1
-        """,
+        "DELETE FROM resource_group_memberships WHERE organization_id = $1 AND resource_id = ANY($2)",
         params
       )
 
-    if conflicts != [] do
-      Repo.rollback({:exclusive_conflict, describe_conflicts(scope, conflicts)})
+      Repo.query!(
+        """
+        #{@candidates}
+        INSERT INTO resource_group_memberships
+          (organization_id, resource_id, view, group_id, group_set_id)
+        SELECT organization_id, resource_id, view, group_id, group_set_id FROM candidates
+        """,
+        params
+      )
     end
-
-    Repo.query!(
-      "DELETE FROM resource_group_memberships WHERE organization_id = $1 AND resource_id = ANY($2)",
-      params
-    )
-
-    Repo.query!(
-      """
-      INSERT INTO resource_group_memberships
-        (organization_id, resource_id, view, group_id, group_set_id)
-      #{@candidates}
-      """,
-      params
-    )
 
     :ok
   end
 
+  # The containers above `resource_id` that are direct members of a group,
+  # by group, nearest trust first.
+  defp container_paths(organization_id, resource_id) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH RECURSIVE edges AS (#{@edges}),
+        #{@reach}
+        SELECT member.group_id, container.id, container.name, container.kind,
+               bool_or(reach.trusted)
+          FROM reach
+          JOIN resource_group_members AS member
+            ON member.organization_id = $1 AND member.resource_id = reach.container_id
+          JOIN resources AS container ON container.id = reach.container_id
+         GROUP BY member.group_id, container.id, container.name, container.kind
+        """,
+        [Ecto.UUID.dump!(organization_id), [Ecto.UUID.dump!(resource_id)]]
+      )
+
+    rows
+    |> Enum.map(fn [group_id, id, name, kind, trusted] ->
+      {Ecto.UUID.load!(group_id),
+       %{id: Ecto.UUID.load!(id), name: name, kind: kind, trusted: trusted}}
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {group_id, containers} ->
+      {group_id, Enum.sort_by(containers, &{not &1.trusted, &1.name})}
+    end)
+  end
+
   # Names each conflict once, whichever views it appears in, so the refusal
   # can say "web-01 would be in both Production and Staging".
-  defp describe_conflicts(%Scope{organization_id: organization_id}, rows) do
+  defp describe_conflicts(organization_id, rows) do
     rows =
       rows
       |> Enum.map(fn [resource_id, set_id, group_ids] ->
