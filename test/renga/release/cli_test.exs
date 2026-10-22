@@ -270,6 +270,12 @@ defmodule Renga.Release.CLITest do
                Repo.all(Event)
 
       assert id == organization.id
+
+      assert [%{metadata: %{"operator" => "operator: alice"}}] =
+               Repo.all(
+                 from event in Renga.Inventory.ChangeEvent,
+                   where: event.organization_id == ^organization.id and event.kind == "exported"
+               )
     end
 
     test "never overwrites a file and needs an actor and an organization", %{

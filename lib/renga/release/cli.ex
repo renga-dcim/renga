@@ -13,6 +13,7 @@ defmodule Renga.Release.CLI do
   alias Renga.Limits
   alias Renga.Operators
   alias Renga.Transfers
+  alias Renga.Transfers.Export
 
   @usage """
   Usage:
@@ -178,11 +179,12 @@ defmodule Renga.Release.CLI do
       File.chmod!(staging, 0o700)
       File.touch!(partial)
       File.chmod!(partial, 0o600)
-      {:ok, summary} = Transfers.Export.write(organization, partial, parts: parts)
+      {:ok, summary} = Export.write(organization, partial, parts: parts)
 
       case File.ln(partial, output) do
         :ok ->
           :ok = DeploymentAudit.succeeded(context, "organization.export", details)
+          :ok = Transfers.record_operator_export(organization, context)
 
           IO.puts(
             "Exported #{organization.slug} (#{summary.records} records, snapshot at " <>
