@@ -10,6 +10,8 @@ defmodule RengaWeb.Browser.PowerTest do
   alias Renga.DCIM
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.History
+  alias Renga.Telemetry.Store
 
   @moduletag :playwright
   @phone [has_touch: true, is_mobile: true, viewport: %{width: 390, height: 844}]
@@ -236,6 +238,95 @@ defmodule RengaWeb.Browser.PowerTest do
     |> refute_has("#path-panel [role=dialog]")
     |> click_button("#unplug-port-#{context.port.id}", "Unplug")
     |> assert_has(path, text: "Not recorded")
+  end
+
+  @tag browser_context_opts: @phone
+  test "the measured input trend fits a phone and switches period", context do
+    %{scope: scope, server: server} = context
+
+    bmc =
+      power_stream_fixture(
+        Renga.Repo.get!(Renga.Accounts.Organization, scope.organization_id),
+        "bmc_power"
+      )
+
+    target_resource_fixture(bmc, "bmc-web-1", server)
+
+    reading_fixture(bmc,
+      target: "bmc-web-1",
+      sensor: "PSU1/input",
+      boundary: "supply_input",
+      component: {"power_port", "PSU1"},
+      value: 240
+    )
+
+    now = Renga.Time.utc_now_ms()
+    series = History.device_series(server.id)
+
+    # A day of load, with a two-hour gap where the BMC went quiet.
+    samples =
+      for minutes <- 0..1_438//2,
+          minutes not in 600..720,
+          do: %{
+            series: series,
+            at: DateTime.add(now, -minutes * 60, :second),
+            value: 220 + 60 * :math.sin(minutes / 90)
+          }
+
+    :ok = Store.write(scope, samples)
+
+    context.conn
+    |> visit("/inventory/#{server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#power-input-trend-summary",
+      text: "Gaps are periods without a current reading"
+    )
+    |> evaluate(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth",
+      &assert(&1 == true)
+    )
+    |> click("#power-input-trend-range-7d")
+    |> assert_has("#power-input-trend-summary", text: "Over the last 7 days")
+  end
+
+  @tag browser_context_opts: @phone
+  test "a feed's measured load trend fits its panel on a phone", context do
+    %{scope: scope, feed: feed} = context
+    now = Renga.Time.utc_now_ms()
+
+    :ok =
+      Store.write(
+        scope,
+        for(
+          minutes <- 0..1_438//2,
+          do: %{
+            series: History.feed_series(feed),
+            at: DateTime.add(now, -minutes * 60, :second),
+            value: 1_800 + 400 * :math.cos(minutes / 120)
+          }
+        )
+      )
+
+    context.conn
+    |> visit("/places/sites/#{context.site.id}/power")
+    |> assert_has("body .phx-connected")
+    |> click("#feed-#{feed.id}-measured")
+    |> assert_has("#load-panel [role=dialog] #measured-trend-summary",
+      text: "The dashed line is usable capacity."
+    )
+    |> evaluate(
+      """
+      (() => {
+        const panel = document.getElementById('load-panel-container').getBoundingClientRect();
+        const figure = document.getElementById('measured-trend');
+        const box = figure.getBoundingClientRect();
+        return box.left >= panel.left && box.right <= panel.right + 0.5 &&
+          [figure, ...figure.querySelectorAll('*')].every(element =>
+            element.scrollWidth <= element.clientWidth + 0.5);
+      })()
+      """,
+      &assert(&1 == true)
+    )
   end
 
   @tag browser_context_opts: @phone

@@ -11,6 +11,7 @@ defmodule RengaWeb.SitePowerLiveTest do
   alias Renga.DCIM
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.History
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -282,6 +283,60 @@ defmodule RengaWeb.SitePowerLiveTest do
 
     assert has_element?(view, "#measured-gaps", "only a lower bound")
   end
+
+  test "charts a feed's measured load over time, with gaps and its usable capacity",
+       %{conn: conn, site: site, scope: scope, organization: organization} do
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+    a1 = feed!(scope, panel, "A1")
+    stream = power_stream_fixture(organization)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-a1", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    %{ports: [inlet]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _cable} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: a1.id})
+    target_resource_fixture(stream, "10.0.0.5", pdu)
+
+    reading_fixture(stream,
+      target: "10.0.0.5",
+      boundary: "feed",
+      quantity: "apparent_power",
+      coverage: "complete",
+      value: 1500
+    )
+
+    now = Renga.Time.utc_now_ms()
+    assert History.record(scope, now) == 1
+
+    :ok =
+      Renga.Telemetry.Store.write(scope, [
+        %{series: History.feed_series(a1), at: DateTime.add(now, -7_200, :second), value: 1100}
+      ])
+
+    {:ok, view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+    view |> element("#feed-#{a1.id}-measured") |> render_click()
+
+    assert has_element?(
+             view,
+             "#measured-trend-summary",
+             "Over the last 24 hours: average 1,300 VA, peak 1,500 VA."
+           )
+
+    assert has_element?(view, "#measured-trend-summary", "Gaps are periods without")
+    assert has_element?(view, "#measured-trend-summary", "The dashed line is usable capacity.")
+    assert has_element?(view, "#measured-trend-limit")
+    # Two separate measured stretches draw two lines, never one through zero.
+    assert view |> element("#measured-trend-plot") |> render() |> count_lines() == 2
+
+    view |> element("#measured-trend-range-7d") |> render_click()
+    assert_patched(view, ~p"/places/sites/#{site.id}/power?trend=7d")
+    assert has_element?(view, "#measured-trend-summary", "Over the last 7 days")
+  end
+
+  defp count_lines(svg), do: length(Regex.scan(~r/stroke-accent/, svg))
 
   test "labels load that rests on the organization's default power factor",
        %{conn: conn, site: site, scope: scope, organization: organization} do

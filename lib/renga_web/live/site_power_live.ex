@@ -8,7 +8,9 @@ defmodule RengaWeb.SitePowerLive do
   or why it is unknown, and opens a breakdown by load and three-phase leg.
   Beside it is the measured load from current power readings
   (`Renga.Power.Measured`), which counts only fresh, valid readings that
-  cover the whole feed and otherwise says why it is unknown.
+  cover the whole feed and otherwise says why it is unknown. A feed's
+  breakdown also charts its measured load over time from the telemetry store
+  (`Renga.Power.History`), which never feeds the figures beside it.
   Its "What fails" action lists the devices that would lose all supply or
   their redundancy if it failed (`Renga.Power.Redundancy`).
   People holding `dcim.edit` (owners and admins) add panels and add or edit
@@ -25,10 +27,14 @@ defmodule RengaWeb.SitePowerLive do
   alias Renga.Power
   alias Renga.Power.Capacity
   alias Renga.Power.Feed
+  alias Renga.Power.History
   alias Renga.Power.Load
   alias Renga.Power.Measured
   alias Renga.Power.PowerFactor
   alias Renga.Power.Redundancy
+  alias RengaWeb.TrendComponents
+
+  import RengaWeb.TrendComponents, only: [trend_chart: 1]
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -49,9 +55,39 @@ defmodule RengaWeb.SitePowerLive do
        feed_panel: nil,
        editing_feed: nil,
        load_feed_id: nil,
+       trend_range: "24h",
+       trend: nil,
        failure: nil
      )
      |> load_panels()}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply,
+     socket
+     |> assign(trend_range: TrendComponents.range(params["trend"]))
+     |> load_trend()}
+  end
+
+  # The open feed's measured load over the chosen period.
+  defp load_trend(%{assigns: %{load_feed_id: nil}} = socket), do: assign(socket, trend: nil)
+
+  defp load_trend(socket) do
+    case Enum.find(socket.assigns.feeds, &(&1.id == socket.assigns.load_feed_id)) do
+      nil ->
+        assign(socket, trend: nil)
+
+      feed ->
+        buckets =
+          TrendComponents.load(
+            socket.assigns.current_scope,
+            History.feed_series(feed),
+            socket.assigns.trend_range
+          )
+
+        assign(socket, trend: buckets)
+    end
   end
 
   @impl true
@@ -91,7 +127,7 @@ defmodule RengaWeb.SitePowerLive do
   end
 
   def handle_event("show_load", %{"id" => id}, socket),
-    do: {:noreply, assign(socket, load_feed_id: id)}
+    do: {:noreply, socket |> assign(load_feed_id: id) |> load_trend()}
 
   def handle_event("show_failure", %{"id" => id}, socket) do
     feed = Enum.find(socket.assigns.feeds, &(&1.id == id))
@@ -352,6 +388,9 @@ defmodule RengaWeb.SitePowerLive do
           load={@loads[@load_feed_id]}
           measured={@measured[@load_feed_id]}
           default_power_factor={@default_power_factor}
+          trend={@trend}
+          trend_range={@trend_range}
+          trend_patch={&~p"/places/sites/#{@site.id}/power?trend=#{&1}"}
         />
       </.side_panel>
 
@@ -699,6 +738,9 @@ defmodule RengaWeb.SitePowerLive do
   attr :load, Load, required: true
   attr :measured, Measured, default: nil
   attr :default_power_factor, Decimal, default: nil
+  attr :trend, :list, default: nil
+  attr :trend_range, :string, default: "24h"
+  attr :trend_patch, :any, required: true
 
   defp load_details(assigns) do
     ~H"""
@@ -795,6 +837,18 @@ defmodule RengaWeb.SitePowerLive do
       </section>
 
       <.measured_details :if={@measured} measured={@measured} />
+
+      <.trend_chart
+        :if={@measured}
+        id="measured-trend"
+        title="Measured load over time"
+        buckets={@trend}
+        unit={Capacity.unit_label(Capacity.unit(@measured.feed))}
+        limit={@measured.capacity.usable}
+        limit_label="usable capacity"
+        range={@trend_range}
+        patch={@trend_patch}
+      />
 
       <p class="text-xs text-fg-muted">
         Allocated load is planning data. Neither it nor a watt total alone proves that another

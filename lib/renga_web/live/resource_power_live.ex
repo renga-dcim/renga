@@ -22,25 +22,31 @@ defmodule RengaWeb.ResourcePowerLive do
   and status also show on its port. Readings are evidence: they never
   change the device's paths or redundancy. Telemetry does not announce
   itself and readings expire with time alone, so a connected page reloads
-  its readings on a timer rather than waiting for an inventory change.
+  its readings on a timer rather than waiting for an inventory change. A
+  device with input readings also charts its measured input over 24 hours,
+  7 days, or 30 days from the telemetry store (`Renga.Power.History`, RFD 10
+  phase 5).
   """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   import RengaWeb.InventoryComponents
+  import RengaWeb.TrendComponents, only: [trend_chart: 1]
 
   alias Renga.Catalog
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.History
   alias Renga.Power.Paths
   alias Renga.Power.Port
   alias Renga.Power.PowerFactor
   alias Renga.Power.Reading
   alias Renga.Power.Readings
   alias Renga.Power.Redundancy
+  alias RengaWeb.TrendComponents
 
   @readings_refresh_ms 30_000
 
@@ -66,40 +72,60 @@ defmodule RengaWeb.ResourcePowerLive do
        connect_options: [],
        suggested?: false,
        suggested_target: nil,
-       selected_path: nil
+       selected_path: nil,
+       trend_range: "24h",
+       trend: nil
      )
      |> load_endpoints()
      |> schedule_readings_refresh()}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, socket |> load_trend(TrendComponents.range(params["trend"])) |> suggest(params)}
   end
 
   # A suggested connection's finding links here with its port and outlet,
   # and the connect panel opens with that outlet chosen. Nothing is recorded
   # until the operator saves it, and only while both ends are still free: a
   # suggestion never replaces a recorded connection.
-  @impl true
-  def handle_params(%{"connect" => port_id, "outlet" => outlet_id}, _uri, socket)
-      when is_binary(port_id) and is_binary(outlet_id) do
+  defp suggest(socket, %{"connect" => port_id, "outlet" => outlet_id})
+       when is_binary(port_id) and is_binary(outlet_id) do
     port = Enum.find(socket.assigns.ports, &(&1.id == port_id))
     options = if socket.assigns.can_connect?, do: connect_options(socket), else: []
     target = "outlet:#{outlet_id}"
 
     if port && option?(options, target) &&
          Cables.free?(socket.assigns.current_scope, port.id, outlet_id) do
-      {:noreply,
-       assign(socket,
-         connecting_port: port,
-         connect_form: to_form(%{"target" => target}, as: :connection),
-         connect_error: nil,
-         connect_options: options,
-         suggested?: true,
-         suggested_target: target
-       )}
+      assign(socket,
+        connecting_port: port,
+        connect_form: to_form(%{"target" => target}, as: :connection),
+        connect_error: nil,
+        connect_options: options,
+        suggested?: true,
+        suggested_target: target
+      )
     else
-      {:noreply, socket}
+      socket
     end
   end
 
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+  defp suggest(socket, _params), do: socket
+
+  # The device's measured input over the chosen period, from the telemetry
+  # store; only devices with input readings show it.
+  defp load_trend(socket, range) do
+    buckets =
+      if socket.assigns.input_measured?,
+        do:
+          TrendComponents.load(
+            socket.assigns.current_scope,
+            History.device_series(socket.assigns.resource.id),
+            range
+          )
+
+    assign(socket, trend_range: range, trend: buckets)
+  end
 
   defp option?(options, value) do
     Enum.any?(options, fn {_group, choices} -> Enum.any?(choices, &(elem(&1, 1) == value)) end)
@@ -109,8 +135,13 @@ defmodule RengaWeb.ResourcePowerLive do
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_endpoints(socket)}
 
-  def handle_info(:refresh_readings, socket),
-    do: {:noreply, socket |> load_readings() |> schedule_readings_refresh()}
+  def handle_info(:refresh_readings, socket) do
+    {:noreply,
+     socket
+     |> load_readings()
+     |> load_trend(socket.assigns.trend_range)
+     |> schedule_readings_refresh()}
+  end
 
   @impl true
   def handle_event("edit_port", %{"id" => id}, socket) do
@@ -429,6 +460,16 @@ defmodule RengaWeb.ResourcePowerLive do
               </:col>
             </.table>
           </section>
+
+          <.trend_chart
+            :if={@input_measured?}
+            id="power-input-trend"
+            title="Measured input"
+            buckets={@trend}
+            unit="W"
+            range={@trend_range}
+            patch={&~p"/inventory/#{@resource}/power?trend=#{&1}"}
+          />
 
           <section :if={@readings != []} aria-labelledby="power-readings-heading" class="space-y-2">
             <div>
@@ -934,7 +975,12 @@ defmodule RengaWeb.ResourcePowerLive do
          &1.reading.quantity, &1.reading.window_ms}
       )
 
-    assign(socket, now: now, readings: readings, supplies: supplies(readings))
+    assign(socket,
+      now: now,
+      readings: readings,
+      supplies: supplies(readings),
+      input_measured?: Enum.any?(readings, &(&1.reading.boundary in ~w(host_input supply_input)))
+    )
   end
 
   defp schedule_readings_refresh(socket) do
