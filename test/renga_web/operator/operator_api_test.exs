@@ -1,6 +1,8 @@
 defmodule RengaWeb.OperatorApiTest do
   use RengaWeb.OperatorCase, async: true
 
+  import Ecto.Query
+
   alias Renga.Operators
 
   describe "while no token can authenticate" do
@@ -162,6 +164,45 @@ defmodule RengaWeb.OperatorApiTest do
 
       assert conn |> authorize(plaintext) |> get("/operator/v1/deployment") |> response(401)
       assert conn |> authorize(other_plaintext) |> get("/operator/v1/deployment") |> response(200)
+    end
+  end
+
+  describe "an authenticated self-revocation" do
+    test "reaches the operation, which records it, whatever its body or Accept header", %{
+      conn: conn
+    } do
+      for request <- [
+            &(&1
+              |> put_req_header("content-type", "application/json")
+              |> delete("/operator/v1/tokens/self", "{not json")),
+            &(&1 |> put_req_header("accept", "text/html") |> delete("/operator/v1/tokens/self"))
+          ] do
+        {token, plaintext} = operator_token_fixture()
+
+        conn = conn |> authorize(plaintext) |> request.()
+        [request_id] = get_resp_header(conn, "x-request-id")
+
+        assert response(conn, 204) == ""
+        assert Operators.get_token(token.id).revoked_at
+
+        assert [%{outcome: "succeeded"}] =
+                 Renga.Repo.all(
+                   from event in Renga.DeploymentAudit.Event,
+                     where: event.invocation_id == ^request_id
+                 )
+      end
+    end
+
+    test "is never recorded when the request fails authentication", %{conn: conn} do
+      {_token, plaintext} = operator_token_fixture()
+      before = Renga.Repo.aggregate(Renga.DeploymentAudit.Event, :count)
+
+      assert conn
+             |> authorize(plaintext <> "x")
+             |> delete("/operator/v1/tokens/self")
+             |> response(401)
+
+      assert Renga.Repo.aggregate(Renga.DeploymentAudit.Event, :count) == before
     end
   end
 

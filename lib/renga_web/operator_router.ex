@@ -10,13 +10,10 @@ defmodule RengaWeb.OperatorRouter do
   use RengaWeb, :router
 
   # RengaWeb.OperatorEndpoint authenticates every request before routing.
-  pipeline :operator do
-    plug :accepts, ["json"]
-  end
-
+  # Every response is JSON whatever the request's Accept header says, so no
+  # content negotiation can refuse an authenticated request before its
+  # operation records it.
   scope "/operator/v1", RengaWeb.Operator.V1 do
-    pipe_through :operator
-
     get "/openapi.json", OpenApiController, :show
     get "/deployment", DeploymentController, :show
     delete "/tokens/self", TokenController, :delete_self

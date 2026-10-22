@@ -18,13 +18,12 @@ defmodule RengaWeb.OperatorEndpoint do
 
   # Every request authenticates before anything else reads it, so while the
   # API is off every request gets the same 404, whatever its path, method,
-  # or body, and a request without a valid token never has its body parsed.
+  # or body.
   plug RengaWeb.OperatorAuth
 
-  plug Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json"],
-    json_decoder: Phoenix.json_library()
-
+  # No operation takes a body yet, so nothing parses one, and nothing between
+  # authentication and an operation can refuse an authenticated request
+  # without the operation recording the attempt (RFD 22, "Audit"). An
+  # operation that takes a body must keep that true when it adds a parser.
   plug RengaWeb.OperatorRouter
 end
