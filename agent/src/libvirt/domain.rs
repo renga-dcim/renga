@@ -124,21 +124,61 @@ pub fn parse(
     })
 }
 
-/// An upper bound on element nesting, without parsing: start tags open a level, end tags and
-/// self-closing tags close one. Markup inside comments or CDATA only ever raises the count, so
-/// the bound stays conservative.
+/// An upper bound on element nesting, found without recursion. It skips comments, CDATA,
+/// processing instructions, and declarations, and reads each tag up to its closing `>` outside
+/// quoted attribute values. Any other `<` counts as a start tag, so text the parser would reject
+/// can only raise the count, never hide a level.
 fn nesting_depth(xml: &str) -> usize {
     let bytes = xml.as_bytes();
-    let (mut depth, mut deepest) = (0usize, 0usize);
-    for (index, byte) in bytes.iter().enumerate() {
-        match (byte, bytes.get(index + 1)) {
-            (b'<', Some(b'/')) => depth = depth.saturating_sub(1),
-            (b'<', Some(next)) if next.is_ascii_alphabetic() || *next == b'_' => {
-                depth += 1;
-                deepest = deepest.max(depth);
+    let (mut index, mut depth, mut deepest) = (0usize, 0usize, 0usize);
+    let skip_past = |from: usize, end: &[u8]| {
+        bytes[from..]
+            .windows(end.len())
+            .position(|window| window == end)
+            .map_or(bytes.len(), |at| from + at + end.len())
+    };
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        let rest = &bytes[index..];
+        if rest.starts_with(b"<!--") {
+            index = skip_past(index + 4, b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            index = skip_past(index + 9, b"]]>");
+        } else if rest.starts_with(b"<?") {
+            index = skip_past(index + 2, b"?>");
+        } else if rest.starts_with(b"<!") {
+            index = skip_past(index + 2, b">");
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            index = skip_past(index + 2, b">");
+        } else {
+            // A start tag: find its `>` outside quotes, and whether `/` precedes it.
+            let mut cursor = index + 1;
+            let mut quote = None;
+            let mut self_closing = false;
+            while cursor < bytes.len() {
+                let byte = bytes[cursor];
+                match quote {
+                    Some(open) if byte == open => quote = None,
+                    Some(_) => {}
+                    None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+                    None if byte == b'>' => {
+                        self_closing = bytes[cursor - 1] == b'/';
+                        break;
+                    }
+                    None => {}
+                }
+                cursor += 1;
             }
-            (b'/', Some(b'>')) => depth = depth.saturating_sub(1),
-            _ => {}
+            depth += 1;
+            deepest = deepest.max(depth);
+            if self_closing {
+                depth -= 1;
+            }
+            index = cursor + 1;
         }
     }
     deepest
@@ -347,6 +387,31 @@ pub(crate) mod tests {
 
         assert!(nesting_depth(WEB_01) < MAX_XML_DEPTH);
         assert_eq!(nesting_depth("<a><b/><c><d/></c></a>"), 3);
+
+        // Lexical tricks that must not hide a level from the bound.
+        let deep = |open: &str, close: &str| {
+            format!(
+                "<domain><name>a</name><uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid>\\
+                 <metadata>{}{}</metadata></domain>",
+                open.repeat(20_000),
+                close.repeat(20_000)
+            )
+        };
+        for (open, close) in [
+            ("<\u{e9}>", "</\u{e9}>"),
+            ("<x a='/>'>", "</x>"),
+            ("<x><!-- </x> -->", "</x>"),
+            ("<x><![CDATA[</x>]]>", "</x>"),
+        ] {
+            let error = parse(&deep(open, close), DomainState::Running, None).unwrap_err();
+            assert!(error.0.contains("nests deeper"), "{open}: {}", error.0);
+        }
+
+        // The same constructs in a shallow document still parse.
+        let shallow = "<domain><name>a</name><uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid>\\
+                       <metadata><\u{e9} a='/>'><!-- </x></x> --><![CDATA[</x>]]></\u{e9}>\\
+                       </metadata></domain>";
+        assert!(parse(shallow, DomainState::Running, None).is_ok());
     }
 
     #[test]
