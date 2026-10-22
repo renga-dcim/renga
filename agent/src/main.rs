@@ -760,10 +760,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
 }
 
 /// The job capabilities compiled into this build, bound to the current
-/// client and labels so a reload reaches the next job.
+/// client, labels, and osquery socket so a reload reaches the next job.
 fn job_catalog(
     client: &HttpClient,
     labels: &BTreeMap<String, String>,
+    osquery: &OsqueryConfig,
     queue: &Arc<Mutex<DeliveryQueue>>,
 ) -> Catalog {
     let client = client.clone();
@@ -776,7 +777,7 @@ fn job_catalog(
     };
     let mut capabilities: Vec<Arc<dyn Capability>> =
         vec![Arc::new(InventoryCollect::new(Box::new(collect)))];
-    capabilities.extend(queries::catalog());
+    capabilities.extend(queries::catalog(osquery));
     Catalog::new(capabilities)
 }
 
@@ -787,7 +788,10 @@ fn advertised_capabilities(
     client: &HttpClient,
     queue: &Arc<Mutex<DeliveryQueue>>,
 ) -> Vec<String> {
-    job_capabilities(&job_catalog(client, &config.labels, queue), &config.jobs)
+    job_capabilities(
+        &job_catalog(client, &config.labels, &config.osquery, queue),
+        &config.jobs,
+    )
 }
 
 fn job_capabilities(catalog: &Catalog, policy: &JobPolicy) -> Vec<String> {
@@ -890,7 +894,7 @@ fn start_listener(
     notices: &Notices,
     stopped: &Cancellation,
 ) -> Option<Listener> {
-    let catalog = job_catalog(client, &config.labels, queue);
+    let catalog = job_catalog(client, &config.labels, &config.osquery, queue);
     if catalog.enabled_keys(&config.jobs).is_empty() {
         return None;
     }
@@ -925,7 +929,7 @@ fn spawn_job_pass(
     let client = client.clone();
     let stopped = stopped.clone();
     let policy = config.jobs.clone();
-    let catalog = job_catalog(&client, &config.labels, queue);
+    let catalog = job_catalog(&client, &config.labels, &config.osquery, queue);
     let state_directory = state_directory.to_path_buf();
     let expected_generation = policy_generation.current();
     let policy_generation = policy_generation.clone();
