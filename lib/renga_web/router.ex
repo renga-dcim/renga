@@ -61,6 +61,12 @@ defmodule RengaWeb.Router do
     get "/ResourceTypes/:id", DiscoveryController, :resource_type
     get "/Schemas", DiscoveryController, :schemas
     get "/Schemas/:id", DiscoveryController, :schema
+    get "/Users", UserController, :index
+    post "/Users", UserController, :create
+    get "/Users/:id", UserController, :show
+    put "/Users/:id", UserController, :update
+    patch "/Users/:id", UserController, :patch
+    delete "/Users/:id", UserController, :delete
     match :*, "/Me", DiscoveryController, :me
     match :*, "/Me/*path", DiscoveryController, :me
     match :*, "/*path", DiscoveryController, :not_found
