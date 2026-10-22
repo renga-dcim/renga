@@ -543,4 +543,206 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
       assert Repo.reload!(context.job).failure_reason == "binding_changed"
     end
   end
+
+  # RFD 13: a shared intake key lets any installation report any inventory, so
+  # what an installation reports must never make it a privileged target.
+  describe "privileged targets on a shared intake key" do
+    setup context do
+      context.organization
+      |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => [@restart]}})
+      |> Repo.update!()
+
+      resource_id = report_host(context, "db-01", "machine-db-01")
+      {key, private_key} = approved_key_fixture(context.organization, context.agent)
+
+      {:ok, binding} =
+        Renga.Jobs.TargetBindings.bind(
+          context.scope,
+          resource_id,
+          context.agent.id,
+          key.fingerprint
+        )
+
+      {:ok, job} =
+        Jobs.create_system_job(
+          context.organization.id,
+          context.agent.id,
+          @restart,
+          %{"service" => "postgresql"},
+          resource_id: resource_id
+        )
+
+      # A second installation on the same intake key, with a key an owner
+      # approved: as trusted as an installation gets without a binding.
+      intruder_installation_id = Ecto.UUID.generate()
+
+      {:ok, {intruder, _lease}} =
+        Inventory.record_intake_agent_check_in(
+          Accounts.scope_for(context.organization),
+          context.intake_api_key,
+          intruder_installation_id,
+          %{capabilities: [@restart]}
+        )
+
+      {_intruder_key, intruder_private_key} =
+        approved_key_fixture(context.organization, intruder)
+
+      intruder_context = %{
+        context
+        | agent: intruder,
+          installation_id: intruder_installation_id
+      }
+
+      Map.merge(context, %{
+        resource_id: resource_id,
+        binding: binding,
+        job: job,
+        private_key: private_key,
+        intruder: intruder_context,
+        intruder_private_key: intruder_private_key
+      })
+    end
+
+    defp report_host(context, hostname, machine_id) do
+      %{"reconciliation" => %{"matched_resource_id" => resource_id}} =
+        context
+        |> post_json(~p"/api/v1/observations", %{
+          "observation_id" => "obs-#{System.unique_integer([:positive])}",
+          "observed_at" => DateTime.to_iso8601(DateTime.utc_now()),
+          "source" => %{"kind" => "host_agent"},
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"hostname" => hostname, "machine_id" => machine_id},
+              "attributes" => %{"hostname" => hostname},
+              "interfaces" => [],
+              "components" => []
+            }
+          ]
+        })
+        |> valid_api_response(202)
+
+      resource_id
+    end
+
+    defp lease_privileged(context),
+      do: context |> lease(%{"capabilities" => [@restart]}) |> valid_api_response(200)
+
+    defp sign(context, offer, private_key) do
+      message =
+        Renga.Jobs.SignedLeases.message(
+          offer["job_id"],
+          offer["lease_token"],
+          offer["nonce"],
+          context.installation_id,
+          offer["resource_id"],
+          offer["binding_version"]
+        )
+
+      :eddsa
+      |> :crypto.sign(:none, message, [private_key, :ed25519])
+      |> Base.url_encode64(padding: false)
+    end
+
+    defp claim_offer(context, offer, private_key) do
+      post_json(context, ~p"/api/v1/agent/jobs/#{offer["job_id"]}/claims", %{
+        "lease_token" => offer["lease_token"],
+        "nonce" => offer["nonce"],
+        "signature" => sign(context, offer, private_key)
+      })
+    end
+
+    test "reporting the bound resource from another installation does not move its jobs",
+         context do
+      %{scope: scope, resource_id: resource_id, intruder: intruder} = context
+
+      # The intruder reports the same machine, so inventory now associates the
+      # resource with it and offers it as a binding candidate.
+      assert report_host(intruder, "db-01", "machine-db-01") == resource_id
+
+      assert intruder.agent.id in Enum.map(
+               Renga.Jobs.TargetBindings.candidates(scope, resource_id),
+               fn {agent, _key} -> agent.id end
+             )
+
+      # The binding, and the job captured under it, are unchanged.
+      binding = Renga.Jobs.TargetBindings.current(scope, resource_id)
+      assert binding.id == context.binding.id
+      assert binding.version == 1
+      assert binding.agent_id == context.agent.id
+      assert Repo.reload!(context.job).state == "queued"
+
+      # The intruder is offered nothing, cannot claim the bound installation's
+      # offer with its own approved key, and cannot be sent new privileged jobs.
+      assert %{"jobs" => [], "offers" => []} = lease_privileged(intruder)
+
+      %{"offers" => [offer]} = lease_privileged(context)
+
+      intruder
+      |> claim_offer(offer, context.intruder_private_key)
+      |> valid_api_response(404)
+
+      assert {:error, :target_not_bound} =
+               Jobs.create_system_job(
+                 context.organization.id,
+                 intruder.agent.id,
+                 @restart,
+                 %{"service" => "postgresql"},
+                 resource_id: resource_id
+               )
+
+      # The bound installation still claims its job.
+      assert %{"id" => job_id} =
+               context
+               |> claim_offer(offer, context.private_key)
+               |> valid_api_response(200)
+
+      assert job_id == context.job.id
+    end
+
+    test "reporting a machine into a saved view does not make it a privileged target", context do
+      %{scope: scope, intruder: intruder} = context
+
+      {:ok, view} =
+        Renga.SavedViews.create_view(scope, %{
+          area: "inventory",
+          name: "Databases",
+          shared: true,
+          params: %{"q" => "db-"}
+        })
+
+      members = fn ->
+        options =
+          view.params |> RengaWeb.InventoryQuery.parse() |> RengaWeb.InventoryQuery.list_options()
+
+        scope
+        |> Inventory.list_operational_resources(options)
+        |> Map.fetch!(:entries)
+        |> Enum.map(& &1.id)
+      end
+
+      assert members.() == [context.resource_id]
+
+      # The intruder reports a machine of its own that matches the view.
+      poisoned_id = report_host(intruder, "db-02", "machine-db-02")
+      assert poisoned_id in members.()
+
+      # Joining the view binds nothing, so no privileged job can target it.
+      assert Renga.Jobs.TargetBindings.current(scope, poisoned_id) == nil
+
+      privileged_job = fn agent ->
+        Jobs.create_system_job(
+          context.organization.id,
+          agent.id,
+          @restart,
+          %{"service" => "postgresql"},
+          resource_id: poisoned_id
+        )
+      end
+
+      assert {:error, :target_not_bound} = privileged_job.(intruder.agent)
+      assert {:error, :agent_not_for_resource} = privileged_job.(context.agent)
+      assert %{"jobs" => [], "offers" => []} = lease_privileged(intruder)
+    end
+  end
 end
