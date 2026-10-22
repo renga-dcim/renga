@@ -390,7 +390,8 @@ defmodule RengaWeb.InventoryOperationsLive do
                 state (docs/design-system.md, "Overflow"). As the table narrows
                 it drops the installation id (already in the name), then the
                 installation key, the resource, jobs, queue and inventory; the
-                name and connection always stay. The page is max-w-6xl, so the
+                name, with the agent's power sources on a line under it, and
+                the connection always stay. The page is max-w-6xl, so the
                 installation id shows only if the page grows wider. --%>
           <.table
             id="collectors"
@@ -403,6 +404,10 @@ defmodule RengaWeb.InventoryOperationsLive do
               <span class="ml-1.5 font-mono text-xs text-fg-muted">
                 {collector_version(source)}
               </span>
+              <.collector_power_sources
+                id={"collector-power-#{source.id}"}
+                sources={Agent.power_sources(collector_agent(source))}
+              />
             </:col>
             <:col :let={{_id, source}} label="Connection" class="w-40">
               <span id={"collector-connection-#{source.id}"}>
@@ -456,14 +461,6 @@ defmodule RengaWeb.InventoryOperationsLive do
                 <.collector_jobs
                   id={"collector-jobs-#{source.id}-list"}
                   agent={collector_agent(source)}
-                />
-              </span>
-            </:col>
-            <:col :let={{_id, source}} label="Power sources" class="w-36" hide_below="7xl">
-              <span id={"collector-power-#{source.id}"}>
-                <.collector_power_sources
-                  id={"collector-power-#{source.id}"}
-                  sources={Agent.power_sources(collector_agent(source))}
                 />
               </span>
             </:col>
@@ -740,21 +737,19 @@ defmodule RengaWeb.InventoryOperationsLive do
   attr :id, :string, required: true
   attr :sources, :list, required: true
 
-  # Whether the agent can read each power source on its host (RFD 10). A source
-  # it cannot read names what would enable it.
-  defp collector_power_sources(%{sources: nil} = assigns) do
-    ~H"""
-    <span class="text-xs text-fg-subtle">Not reported</span>
-    """
-  end
+  # Whether the agent can read each power source on its host (RFD 10), under
+  # the collector's name so it shows at every width, wrapping rather than
+  # clipping. A source it cannot read names what would enable it. Agents that
+  # report no power sources show nothing.
+  defp collector_power_sources(%{sources: nil} = assigns), do: ~H""
 
   defp collector_power_sources(assigns) do
     ~H"""
-    <span class="flex flex-wrap gap-x-2 gap-y-0.5">
+    <span id={@id} class="mt-0.5 block whitespace-normal">
       <span
         :for={{source, index} <- Enum.with_index(@sources)}
         id={"#{@id}-#{index}"}
-        class="inline-flex items-center gap-1 text-xs"
+        class="mr-2 inline-flex items-center gap-1 text-xs"
         title={power_source_hint(source)}
       >
         <span class={["size-1.5 rounded-full", power_source_dot(source.status)]} />

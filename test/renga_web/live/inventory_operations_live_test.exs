@@ -211,7 +211,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
   } do
     cell = "#collector-power-#{source.id}"
     {:ok, view, _html} = live(conn, ~p"/settings/collectors")
-    assert has_element?(view, cell, "Not reported")
+    refute has_element?(view, cell)
 
     agent
     |> Ecto.Changeset.change(

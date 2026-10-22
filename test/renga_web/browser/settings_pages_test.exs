@@ -314,9 +314,31 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     %{agent: agent, conn: conn, long_capability: long_capability, resource: resource} =
       collector_context(conn)
 
+    agent
+    |> Ecto.Changeset.change(
+      metadata:
+        Map.put(agent.metadata, "power_sources", [
+          %{"source" => "power_poller/rack-pdus", "status" => "available"},
+          %{"source" => "bmc_power/rack-bmcs", "status" => "available"}
+        ])
+    )
+    |> Renga.Repo.update!()
+
     conn
     |> visit("/settings/collectors")
     |> assert_has("body .phx-connected")
+    # Power sources sit under the collector name, so the page's widest table
+    # still shows them in full.
+    |> evaluate(
+      """
+      (() => {
+        const source = document.getElementById('collector-power-#{agent.source_id}-1')
+        const cell = source.closest('td').getBoundingClientRect()
+        return source.checkVisibility() && source.getBoundingClientRect().right <= cell.right
+      })()
+      """,
+      &assert(&1 == true)
+    )
     |> evaluate(
       "[document.querySelectorAll('#collector-#{agent.source_id} td')[2], document.getElementById('collector-key-#{agent.source_id}').closest('td')].every(cell => getComputedStyle(cell).display !== 'none')",
       &assert(&1 == true)
