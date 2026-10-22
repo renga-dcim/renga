@@ -10,7 +10,7 @@ defmodule Renga.Inventory.SameMachine do
   It resolves when the evidence no longer singles out one domain, or once
   the guest reports a UUID and correlates by it.
 
-  Evaluation follows each reconciliation, as of the observation's time,
+  Evaluation follows each reconciliation, as of the server's clock,
   whenever a host agent reports a machine or a hypervisor reports domains.
   """
 
@@ -197,7 +197,9 @@ defmodule Renga.Inventory.SameMachine do
 
   defp domain_macs(domain) do
     domain
-    |> Map.get("interfaces", [])
+    # The API accepts an explicit null for a domain without a device list.
+    |> Map.get("interfaces")
+    |> List.wrap()
     |> Enum.flat_map(&cast_mac(&1["mac_address"]))
     |> MapSet.new()
   end

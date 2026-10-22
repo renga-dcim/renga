@@ -379,6 +379,34 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
                Renga.Findings.list_findings(scope, resource_id: guest_id, state: "excepted")
     end
 
+    test "a domain with no device list does not stop evaluation", %{
+      token: token,
+      recent: recent
+    } do
+      listless = %{
+        "kind" => "vm",
+        "identifiers" => %{"dmi_uuid" => "0d8f6f2c-3a4b-4c5d-8e9f-0a1b2c3d4e5f"},
+        "domain" => %{"name" => "db-1", "state" => "running", "interfaces" => nil}
+      }
+
+      post!(token, hypervisor_report("hv-b", [listless], at: recent.(0)))
+
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      guest_id = guest!(token, ["52:54:00:00:00:01"], at: recent.(1))
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:09"])], at: recent.(2))
+      )
+
+      assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
+    end
+
     test "withdrawn evidence on either side is not evidence", %{token: token, recent: recent} do
       post!(
         token,
