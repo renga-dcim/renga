@@ -283,6 +283,38 @@ switch. Trunk ports' allowed VLANs are read against the switch's VLAN table,
 as with SNMP. Neighbors and VLANs count as complete only when every reached
 switch answered for them.
 
+## PDU power over SNMP
+
+Rack PDUs are polled the same way for measured load (RFD 10). Each
+`[[collectors.power]]` table takes the same settings and credentials as a
+`[[collectors.snmp]]` table and is its own `power_poller` collector stream, so
+its `id` must differ from every other module's.
+
+```toml
+[[collectors.power]]
+id = "rack-pdus"
+targets = ["10.0.4.21", "10.0.4.22"]
+username = "renga"
+auth_password_file = "/etc/renga/snmp-auth"
+privacy_password_file = "/etc/renga/snmp-priv"
+interval_seconds = 60               # default 1 minute, at least 30
+```
+
+The PDU's `sysObjectID` picks one fixed mapping: Raritan `PDU2-MIB`
+(`raritan_pdu2`) or APC `PowerNet-MIB` rack PDU tables (`apc_rpdu2`). Each
+poll sends the inlet meter's real and apparent power, current, and power
+factor, each phase's current on a three-phase inlet, and each outlet's power,
+current, and on/off state as telemetry. Renga matches outlets by the label the
+PDU shows, such as `1`, so the PDU's hardware type should name its outlets the
+same way. Only the first unit of a daisy chain is read.
+
+The PDUs themselves, identified by serial number, are reported to inventory
+when a target's PDU changes and every 15 minutes. A target that does not
+answer, or answers without a supported MIB, is reported unreachable, and the
+readings it last sent are sent again as failed so Renga shows them as unknown
+rather than zero. Check-ins report each module as the `power_poller/<id>`
+power source.
+
 ## Virtual machines over libvirt
 
 On a KVM hypervisor, the agent can also report the virtual machines libvirt

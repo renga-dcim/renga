@@ -19,7 +19,14 @@ use renga_agent::{
         ReportScope, ReportType, ResourceKind, ScopedReport, SectionCompleteness, ServerResource,
         TaggingMode, TargetStatus, VlanMembership, VmDomain,
     },
-    power::{self, hwmon},
+    power::{
+        self, hwmon,
+        pdu::{
+            self,
+            mibs::{Measurement, Pdu, Reading},
+        },
+    },
+    snmp::config::Target,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -376,6 +383,90 @@ node_hwmon_power_watt{chip="i2c_3_3_0068",sensor="power1"} 512
             "TelemetryBatch",
             &exporters::batch(&readings, failed, chrono::Utc::now()),
         );
+    }
+}
+
+#[test]
+fn pdu_poller_reports_and_batches_match_the_contract() {
+    let reading = |sensor: &str, boundary, quantity, component, leg, measurement| Reading {
+        sensor: sensor.into(),
+        boundary,
+        quantity,
+        component,
+        leg,
+        measurement,
+    };
+    let pdu = Pdu {
+        mapping: "raritan_pdu2",
+        vendor: Some("Raritan".into()),
+        model: Some("PX3-5190R".into()),
+        serial_number: "PKE0954001".into(),
+        hostname: Some("pdu-a1".into()),
+        readings: vec![
+            reading(
+                "inlet/1",
+                "feed",
+                "real_power",
+                None,
+                None,
+                Measurement::Value(2455.0),
+            ),
+            reading(
+                "inlet/1",
+                "feed",
+                "power_factor",
+                None,
+                None,
+                Measurement::Value(0.96),
+            ),
+            reading(
+                "inlet/1/pole/1",
+                "leg",
+                "current",
+                None,
+                Some("a"),
+                Measurement::Value(4.1),
+            ),
+            reading(
+                "outlet/1",
+                "outlet",
+                "real_power",
+                Some(("power_outlet", "1".to_owned())),
+                None,
+                Measurement::Failed,
+            ),
+            reading(
+                "outlet/2",
+                "outlet",
+                "state",
+                Some(("power_outlet", "2".to_owned())),
+                None,
+                Measurement::State("off"),
+            ),
+        ],
+    };
+    let outcomes = vec![
+        pdu::Outcome {
+            target: Target::parse("10.0.0.5").unwrap(),
+            read_at: chrono::Utc::now(),
+            result: Ok(pdu),
+        },
+        pdu::Outcome {
+            target: Target::parse("10.0.0.6").unwrap(),
+            read_at: chrono::Utc::now(),
+            result: Err(pdu::TargetError::Unreachable("no answer".into())),
+        },
+    ];
+
+    for (_, body) in pdu::reports("rack-pdus", &outcomes) {
+        assert_conforms(
+            "Observation",
+            &serde_json::from_slice::<Value>(&body).unwrap(),
+        );
+    }
+    let mut known = pdu::Known::new();
+    for batch in pdu::batches("rack-pdus", &outcomes, &mut known, 180) {
+        assert_conforms("TelemetryBatch", &batch);
     }
 }
 
