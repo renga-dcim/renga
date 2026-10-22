@@ -184,6 +184,23 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "identity_provider_changed", metadata: %{"change" => change} = metadata}),
     do: identity_provider_change(change, metadata["name"] || metadata["provider"], metadata)
 
+  def describe(%{
+        kind: "security_setting_changed",
+        field: "require_mfa",
+        new_value: new_value,
+        metadata: metadata
+      }) do
+    change =
+      if new_value == %{"value" => true},
+        do: "Required multi-factor authentication for members",
+        else: "Stopped requiring multi-factor authentication"
+
+    change <> reason(metadata)
+  end
+
+  def describe(%{kind: "security_setting_changed", field: field, metadata: metadata}),
+    do: "Changed the #{String.replace(field, "_", " ")} security setting" <> reason(metadata)
+
   def describe(%{kind: "limit_set", field: field}),
     do: "Changed the #{String.replace(field, "_", " ")} limit"
 
