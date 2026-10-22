@@ -5,6 +5,11 @@ defmodule Renga.Accounts.OIDC.Discovery do
   minute and one hour, and the keys reload early when a token names a key ID
   Renga has not seen, so a provider can rotate keys without a restart.
 
+  Entries are kept per issuer and policy (`:deployment` or `:organization`,
+  see `Renga.Accounts.OIDC.HTTP`), so a document loaded for an operator's
+  provider is never reused for an organization's, whose endpoints must pass
+  the stricter destination check.
+
   Requests run in the caller's process; this server only owns the table.
   """
 
@@ -25,23 +30,26 @@ defmodule Renga.Accounts.OIDC.Discovery do
   end
 
   @doc "The issuer's configuration and signing keys, loading them when not cached."
-  def fetch(issuer) when is_binary(issuer) do
+  def fetch(issuer, policy \\ :deployment) when is_binary(issuer) do
     now = System.monotonic_time(:millisecond)
+    key = {issuer, policy}
 
-    case :ets.lookup(@table, issuer) do
-      [{^issuer, configuration, jwks, expires_at}] when expires_at > now ->
+    case :ets.lookup(@table, key) do
+      [{^key, configuration, jwks, expires_at}] when expires_at > now ->
         {:ok, configuration, jwks}
 
       _missing_or_expired ->
-        load(issuer)
+        load(issuer, policy)
     end
   end
 
   @doc "Reloads the issuer's signing keys, for a token signed with a key not seen before."
-  def refresh_jwks(issuer) do
-    with [{^issuer, configuration, _jwks, expires_at}] <- :ets.lookup(@table, issuer),
-         {:ok, {jwks, _expiry}} <- load_jwks(configuration) do
-      :ets.insert(@table, {issuer, configuration, jwks, expires_at})
+  def refresh_jwks(issuer, policy \\ :deployment) do
+    key = {issuer, policy}
+
+    with [{^key, configuration, _jwks, expires_at}] <- :ets.lookup(@table, key),
+         {:ok, {jwks, _expiry}} <- load_jwks(configuration, policy) do
+      :ets.insert(@table, {key, configuration, jwks, expires_at})
       {:ok, jwks}
     else
       [] -> {:error, :not_loaded}
@@ -50,26 +58,29 @@ defmodule Renga.Accounts.OIDC.Discovery do
   end
 
   @doc "Forgets an issuer, so the next sign-in loads it again."
-  def evict(issuer), do: :ets.delete(@table, issuer)
+  def evict(issuer) do
+    :ets.delete(@table, {issuer, :deployment})
+    :ets.delete(@table, {issuer, :organization})
+  end
 
-  defp load(issuer) do
+  defp load(issuer, policy) do
     # oidcc checks only the issuer's own scheme, so the endpoints the
     # document names are checked below: each must be https, or plain HTTP to
     # this machine, for development against a local identity provider.
     opts = %{
-      request_opts: HTTP.request_opts(),
-      quirks: %{allow_unsafe_http: local_http?(issuer)}
+      request_opts: HTTP.request_opts(policy),
+      quirks: %{allow_unsafe_http: policy == :deployment and local_http?(issuer)}
     }
 
     with {:ok, {configuration, configuration_ttl}} <-
            Oidcc.ProviderConfiguration.load_configuration(issuer, opts),
-         :ok <- check_configuration(configuration),
-         {:ok, {jwks, jwks_ttl}} <- load_jwks(configuration) do
+         :ok <- check_configuration(configuration, policy),
+         {:ok, {jwks, jwks_ttl}} <- load_jwks(configuration, policy) do
       ttl = configuration_ttl |> min(jwks_ttl) |> max(@min_ttl) |> min(@max_ttl)
 
       :ets.insert(
         @table,
-        {issuer, configuration, jwks, System.monotonic_time(:millisecond) + ttl}
+        {{issuer, policy}, configuration, jwks, System.monotonic_time(:millisecond) + ttl}
       )
 
       {:ok, configuration, jwks}
@@ -79,7 +90,7 @@ defmodule Renga.Accounts.OIDC.Discovery do
   # The endpoints sign-in sends the browser, the client secret, and the
   # PKCE verifier to, and where the signing keys come from. PKCE must be
   # S256: a provider that offers only `plain` would see the verifier itself.
-  defp check_configuration(configuration) do
+  defp check_configuration(configuration, policy) do
     endpoints = [
       configuration.authorization_endpoint,
       configuration.token_endpoint,
@@ -87,7 +98,7 @@ defmodule Renga.Accounts.OIDC.Discovery do
     ]
 
     cond do
-      not Enum.all?(endpoints, &HTTP.allowed_url?/1) -> {:error, :insecure_endpoint}
+      not Enum.all?(endpoints, &HTTP.allowed_url?(&1, policy)) -> {:error, :insecure_endpoint}
       not s256?(configuration.code_challenge_methods_supported) -> {:error, :no_s256_pkce}
       true -> :ok
     end
@@ -103,8 +114,9 @@ defmodule Renga.Accounts.OIDC.Discovery do
     )
   end
 
-  defp load_jwks(%Oidcc.ProviderConfiguration{jwks_uri: :undefined}), do: {:error, :no_jwks_uri}
+  defp load_jwks(%Oidcc.ProviderConfiguration{jwks_uri: :undefined}, _policy),
+    do: {:error, :no_jwks_uri}
 
-  defp load_jwks(%Oidcc.ProviderConfiguration{jwks_uri: uri}),
-    do: Oidcc.ProviderConfiguration.load_jwks(uri, %{request_opts: HTTP.request_opts()})
+  defp load_jwks(%Oidcc.ProviderConfiguration{jwks_uri: uri}, policy),
+    do: Oidcc.ProviderConfiguration.load_jwks(uri, %{request_opts: HTTP.request_opts(policy)})
 end

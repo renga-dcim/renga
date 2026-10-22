@@ -145,7 +145,7 @@ defmodule Renga.Accounts.OIDC do
         require_pkce: true,
         scopes: Enum.uniq(@default_scopes ++ revision.scopes),
         url_extension: extension,
-        request_opts: HTTP.request_opts()
+        request_opts: HTTP.request_opts(policy(provider))
       }
 
       with {:ok, url} <- Oidcc.Authorization.create_redirect_url(context, authorization) do
@@ -212,7 +212,7 @@ defmodule Renga.Accounts.OIDC do
              pkce_verifier: attempt["verifier"],
              require_pkce: true,
              refresh_jwks: &refresh_jwks(provider, &1, &2),
-             request_opts: HTTP.request_opts()
+             request_opts: HTTP.request_opts(policy(provider))
            }) do
       {:ok, %{provider: provider, revision: revision, claims: claims}}
     else
@@ -308,8 +308,13 @@ defmodule Renga.Accounts.OIDC do
 
   defp hash(state), do: :crypto.hash(:sha256, state)
 
+  # An organization's provider is held to the destination policy for every
+  # request made for it (RFD 15, "Organization providers").
+  defp policy(%IdentityProvider{organization_id: nil}), do: :deployment
+  defp policy(%IdentityProvider{}), do: :organization
+
   defp client_context(provider, revision) do
-    with {:ok, configuration, jwks} <- Discovery.fetch(provider.issuer),
+    with {:ok, configuration, jwks} <- Discovery.fetch(provider.issuer, policy(provider)),
          {:ok, secret} <- IdentityProviders.client_secret(revision) do
       {:ok, Oidcc.ClientContext.from_manual(configuration, jwks, revision.client_id, secret)}
     else
@@ -323,7 +328,7 @@ defmodule Renga.Accounts.OIDC do
 
   # oidcc calls this from Erlang, which expects the key set as a record.
   defp refresh_jwks(provider, _jwks, _kid) do
-    with {:ok, jwks} <- Discovery.refresh_jwks(provider.issuer),
+    with {:ok, jwks} <- Discovery.refresh_jwks(provider.issuer, policy(provider)),
          do: {:ok, JOSE.JWK.to_record(jwks)}
   end
 

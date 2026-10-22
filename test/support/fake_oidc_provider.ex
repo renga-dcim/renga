@@ -32,9 +32,24 @@ defmodule Renga.FakeOIDCProvider do
     }
   end
 
-  @doc "Routes Renga's provider requests in this test process to `fake`."
-  def stub(%__MODULE__{} = fake) do
-    Req.Test.stub(@stub, fn conn -> handle(fake, conn) end)
+  @doc """
+  Routes Renga's provider requests in this test process to `fake`. With
+  `observer: pid`, each request's host and Host header are also sent to
+  `pid` as `{FakeOIDCProvider, :request, host, host_header}`.
+  """
+  def stub(%__MODULE__{} = fake, opts \\ []) do
+    observer = opts[:observer]
+
+    Req.Test.stub(@stub, fn conn ->
+      if observer,
+        do:
+          send(
+            observer,
+            {__MODULE__, :request, conn.host, Plug.Conn.get_req_header(conn, "host")}
+          )
+
+      handle(fake, conn)
+    end)
   end
 
   @doc """
