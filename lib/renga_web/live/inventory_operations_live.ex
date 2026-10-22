@@ -835,6 +835,11 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp power_source_hint(%{status: "not_permitted"}),
     do: "The agent is not allowed to read this source. Check its credentials or permissions."
 
+  defp power_source_hint(%{status: "not_present"}),
+    do:
+      "The exporter serves no power metric the agent maps: hwmon power from " <>
+        "node_exporter, or the DCMI reading and power supply sensors from ipmi_exporter."
+
   defp power_source_hint(_source), do: nil
 
   attr :id, :string, required: true
