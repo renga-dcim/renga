@@ -5,12 +5,19 @@ defmodule Renga.Inventory.Reconciler do
   Stable identifiers decide identity before names. Hostname and FQDN are only
   eligible when an observation has no strong identifier, which prevents a
   recycled name from merging two different machines.
+
+  A collector stream's report (RFD 11) reconciles each of its derived
+  single-resource observations the same way, except that only stable
+  identifiers match: a switch or VM name, or a MAC address alone, never merges
+  it with another resource. The report then updates its stream's targets.
   """
 
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
   alias Renga.Inventory
+  alias Renga.Inventory.AgentPayload
+  alias Renga.Inventory.Collectors
   alias Renga.Inventory.Host
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Observation
@@ -18,11 +25,15 @@ defmodule Renga.Inventory.Reconciler do
   alias Renga.Inventory.Reconciler.Projections
   alias Renga.Inventory.Resource
   alias Renga.Inventory.ResourceIdentifier
+  alias Renga.Inventory.Source
   alias Renga.Repo
 
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
   @identity_interface_kinds ~w(ethernet)
+  # What collector streams report (RFD 11). Only stable identifiers match
+  # them, whichever side reports first.
+  @collector_resource_kinds ~w(switch vm)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
@@ -79,12 +90,72 @@ defmodule Renga.Inventory.Reconciler do
   end
 
   defp perform_reconciliation(scope, observation) do
+    if report?(observation),
+      do: perform_report_reconciliation(scope, observation),
+      else: perform_resource_reconciliation(scope, observation)
+  end
+
+  defp report?(%Observation{parent_observation_id: nil, payload: payload}),
+    do: AgentPayload.scoped_report?(payload)
+
+  defp report?(%Observation{}), do: false
+
+  # Each derived observation reconciles once; a retry of the report retries
+  # only the ones that have not succeeded. One resource failing, such as an
+  # ambiguous identity, does not hold back the others, but it does stop its
+  # target from retiring anything.
+  defp perform_report_reconciliation(scope, report) do
+    source = Inventory.get_source!(scope, report.source_id)
+    started_at = Renga.Time.utc_now_ms()
+    attempt = next_attempt(scope, report.id)
+
+    results =
+      scope
+      |> Inventory.list_derived_observations(report.id)
+      |> Enum.map(fn derived ->
+        result =
+          case latest_result(scope, derived.id) do
+            %{status: "succeeded"} = result -> result_to_reconciliation(scope, result)
+            _none_or_failed -> perform_resource_reconciliation(scope, derived)
+          end
+
+        {derived, result}
+      end)
+
+    withdrawn = Collectors.apply_report!(scope, source, report, results)
+
+    {:ok, _result} =
+      Inventory.create_observation_reconciliation(scope, report.id, %{
+        status: "succeeded",
+        attempt: attempt,
+        metadata: %{
+          "resources" => Enum.map(results, &report_resource_result/1),
+          "withdrawn_resource_ids" => withdrawn
+        },
+        started_at: started_at,
+        completed_at: Renga.Time.utc_now_ms()
+      })
+
+    {:ok, report_resources(results), Enum.any?(results, &match?({_, {:ok, _, true}}, &1))}
+  end
+
+  defp report_resource_result({derived, {:ok, resource, _discovered?}}),
+    do: %{"observation_id" => derived.id, "status" => "succeeded", "resource_id" => resource.id}
+
+  defp report_resource_result({derived, {:error, result}}),
+    do: %{"observation_id" => derived.id, "status" => "failed", "errors" => result.errors}
+
+  defp report_resources(results) do
+    for {_derived, {:ok, resource, _discovered?}} <- results, uniq: true, do: resource
+  end
+
+  defp perform_resource_reconciliation(scope, observation) do
     source = Inventory.get_source!(scope, observation.source_id)
     identifiers = observation_identifiers(observation.payload)
     started_at = Renga.Time.utc_now_ms()
     attempt = next_attempt(scope, observation.id)
 
-    case match_resource(scope, identifiers) do
+    case match_resource(scope, identifiers, Source.collector_stream?(source)) do
       {:ok, resource, match} ->
         reconcile_resource(
           scope,
@@ -120,6 +191,15 @@ defmodule Renga.Inventory.Reconciler do
     scope
     |> Inventory.list_observation_reconciliations(observation_id)
     |> List.last()
+  end
+
+  defp result_to_reconciliation(scope, %{status: "succeeded", matched_resource_id: nil} = result) do
+    resources =
+      for %{"status" => "succeeded", "resource_id" => id} <- result.metadata["resources"] || [],
+          uniq: true,
+          do: Inventory.get_resource!(scope, id)
+
+    {:ok, resources, false}
   end
 
   defp result_to_reconciliation(scope, %{status: "succeeded"} = result) do
@@ -237,7 +317,10 @@ defmodule Renga.Inventory.Reconciler do
 
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
     reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
-    freshness_advanced? = current_observation?(scope, resource.id, observation)
+
+    freshness_advanced? =
+      current_observation?(scope, resource.id, observation) and
+        not Collectors.superseded_by_snapshot?(scope, observation, resource.id)
 
     Projections.reconcile(scope, source, observation, resource,
       allow_new_rows?: freshness_advanced?
@@ -254,10 +337,25 @@ defmodule Renga.Inventory.Reconciler do
       freshness_advanced?
     )
 
+    # A host agent's report is a claim that keeps a withdrawn resource
+    # current, even when it arrives after the withdrawal (RFD 11).
+    if source.kind == "host_agent",
+      do: :ok = Inventory.keep_claimed_inventory_current!(scope, resource.id, observation)
+
     {:ok, resource, discovered?}
   end
 
-  defp match_resource(scope, identifiers) do
+  # RFD 11: collector resources match only by stable identifiers. MAC
+  # addresses are reassigned and cloned with images, and names are reused.
+  defp match_resource(scope, identifiers, true = _collector?) do
+    stable_identifiers = Enum.filter(identifiers, &(&1.kind in @strong_identifier_kinds))
+
+    scope
+    |> identifier_matches(stable_identifiers, @strong_identifier_kinds)
+    |> combine_strong_matches()
+  end
+
+  defp match_resource(scope, identifiers, false) do
     stable_identifiers = Enum.filter(identifiers, &(&1.kind in @strong_identifier_kinds))
     has_mac? = Enum.any?(identifiers, &(&1.kind == "mac_address"))
     strong_identity? = stable_identifiers != [] or has_mac?
@@ -356,6 +454,7 @@ defmodule Renga.Inventory.Reconciler do
     Resource
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([resource], resource.kind not in ^@collector_resource_kinds)
     |> where([_resource, interface], interface.status != "not_present")
     |> where([_resource, interface], interface.kind in ^@identity_interface_kinds)
     |> where([_resource, interface], not is_nil(interface.mac_address))
@@ -404,17 +503,19 @@ defmodule Renga.Inventory.Reconciler do
     Resource
     |> join(:inner, [resource], host in Host, on: host.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([resource], resource.kind not in ^@collector_resource_kinds)
     |> where([_resource, host], field(host, ^field) in ^values)
     |> distinct(true)
     |> Repo.all()
   end
 
   defp ensure_resource(scope, observation, identifiers, nil) do
-    name = resource_name(scope, observation, identifiers)
+    kind = Map.get(resource_payload(observation.payload), "kind", "server")
+    name = resource_name(scope, observation, identifiers, kind)
 
     {:ok, resource} =
       Inventory.create_resource(scope, %{
-        kind: "server",
+        kind: kind,
         name: name,
         display_name: display_name(identifiers),
         lifecycle_state: "unknown"
@@ -639,16 +740,16 @@ defmodule Renga.Inventory.Reconciler do
 
   defp resource_payload(%{"resources" => [resource]}), do: resource
 
-  defp resource_name(scope, observation, identifiers) do
+  defp resource_name(scope, observation, identifiers, kind) do
     base_name =
-      Enum.find_value(@weak_identifier_kinds, fn kind ->
-        Enum.find_value(identifiers, &if(&1.kind == kind, do: &1.normalized_value))
-      end) || "server"
+      Enum.find_value(@weak_identifier_kinds, fn identifier_kind ->
+        Enum.find_value(identifiers, &if(&1.kind == identifier_kind, do: &1.normalized_value))
+      end) || kind
 
     if Repo.exists?(
          from resource in Resource,
            where:
-             resource.organization_id == ^scope.organization_id and resource.kind == "server" and
+             resource.organization_id == ^scope.organization_id and resource.kind == ^kind and
                resource.name == ^base_name
        ) do
       suffix =

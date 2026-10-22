@@ -21,6 +21,10 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "deleted"}), do: "Deleted"
   def describe(%{kind: "discovered"}), do: "Discovered"
   def describe(%{kind: "stale"}), do: "Marked stale"
+
+  def describe(%{kind: "withdrawn", old_value: %{"target" => target}}) when is_binary(target),
+    do: "No longer reported by #{target}"
+
   # A managed address's assignment names its interface.
   def describe(%{kind: "updated", field: "assignment", new_value: %{"value" => interface}})
       when is_binary(interface),

@@ -17,7 +17,10 @@ defmodule Renga.Inventory.CollectionClocks do
   `latest_outcome` says so.
 
   This module computes the two inventory clocks; contact and lease come with
-  the agent and its lease.
+  the agent and its lease. A collector stream (RFD 11) is its own source, so
+  its inventory clocks are its own; contact and lease stay with its
+  installation. Derived per-resource observations are not reports, so only
+  the report they came from counts.
   """
 
   import Ecto.Query, warn: false
@@ -60,6 +63,7 @@ defmodule Renga.Inventory.CollectionClocks do
   defp accepted_at(organization_id) do
     from(observation in Observation,
       where: observation.organization_id == ^organization_id,
+      where: is_nil(observation.parent_observation_id),
       group_by: observation.source_id,
       select: {observation.source_id, max(observation.inserted_at)}
     )
@@ -74,6 +78,7 @@ defmodule Renga.Inventory.CollectionClocks do
         reconciliation.observation_id == observation.id and
           reconciliation.organization_id == observation.organization_id,
       where: observation.organization_id == ^organization_id,
+      where: is_nil(observation.parent_observation_id),
       where: reconciliation.status == "succeeded",
       group_by: observation.source_id,
       select: {observation.source_id, max(observation.observed_at)}
@@ -86,6 +91,7 @@ defmodule Renga.Inventory.CollectionClocks do
     latest_observations =
       from(observation in Observation,
         where: observation.organization_id == ^organization_id,
+        where: is_nil(observation.parent_observation_id),
         distinct: observation.source_id,
         order_by: [
           asc: observation.source_id,

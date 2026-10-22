@@ -5,6 +5,12 @@ defmodule Renga.Inventory.Observation do
   This row records what the source said and when. Matching decisions, attempts,
   status, and errors belong to `Renga.Inventory.ObservationReconciliation` so a
   retry or improved reconciler cannot rewrite historical evidence.
+
+  A collector stream's multi-resource report (RFD 11) is stored as one
+  observation and split at intake into one derived observation per resource,
+  pointing at the report through `parent_observation_id` and `resource_index`.
+  Derived observations reconcile exactly like host reports; the report itself
+  records which targets were reachable and what a complete report retired.
   """
 
   use Ecto.Schema
@@ -30,11 +36,14 @@ defmodule Renga.Inventory.Observation do
     # Set by the server at intake, never from the payload: the address the
     # report arrived from and the intake key it authenticated with.
     field :reported_from, Renga.Types.Inet
+    # Set by the server when it splits a report, never from the payload.
+    field :resource_index, :integer
 
     belongs_to :organization, Organization
     belongs_to :source, Source
     belongs_to :sync_run, SyncRun
     belongs_to :intake_api_key, Renga.Inventory.IntakeApiKey
+    belongs_to :parent_observation, __MODULE__
     has_many :reconciliations, ObservationReconciliation
     has_many :resource_identifier_claims, ResourceIdentifierClaim
     has_many :change_events, ChangeEvent

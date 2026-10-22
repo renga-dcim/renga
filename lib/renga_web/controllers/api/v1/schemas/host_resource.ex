@@ -11,13 +11,28 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
     %{
       title: "HostResource",
       description:
-        "The host as the agent sees it. Fields the server assigns, such as `id`, are rejected.",
+        "The host as the agent sees it, or for a scoped report a switch (`targets`) or VM " <>
+          "(`hypervisor`) a collector reports. Fields the server assigns, such as `id`, " <>
+          "are rejected. A switch or VM is matched to inventory only by " <>
+          "#{Enum.join(contract.strong_identifier_kinds, ", ")}, one of which it must have.",
       type: :object,
       properties:
         contract.prohibited_resource_keys
         |> forbidden()
         |> Map.merge(%{
-          "kind" => %{const: "server"},
+          "kind" => %{
+            anyOf: Enum.map(["server" | collector_resource_kinds(contract)], &%{const: &1}),
+            description: "`server` for a host report, `switch` or `vm` for a scoped report."
+          },
+          # Unconstrained here because host reports ignore it; the scoped rules
+          # are in prose so this shared schema never rejects an accepted host
+          # report.
+          "target" => %{
+            description:
+              "For `targets` scope, required: the address, as a non-blank string, of the " <>
+                "reachable target this switch was polled from. Not allowed for " <>
+                "`hypervisor` scope, and ignored for `host` scope."
+          },
           "identifiers" => identifiers(contract),
           "attributes" => attributes(contract),
           "interfaces" => %{
@@ -37,6 +52,9 @@ defmodule RengaWeb.Api.V1.Schemas.HostResource do
       required: [:kind, :identifiers]
     }
   end
+
+  defp collector_resource_kinds(contract),
+    do: contract.collector_kinds |> Map.values() |> Enum.map(& &1.resource_kind) |> Enum.sort()
 
   defp identifiers(contract) do
     value_or_values = %{anyOf: [non_blank_string(), %{type: :array, items: non_blank_string()}]}

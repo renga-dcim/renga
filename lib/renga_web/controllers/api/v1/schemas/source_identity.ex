@@ -9,7 +9,12 @@ defmodule RengaWeb.Api.V1.Schemas.SourceIdentity do
           "identify it.",
       type: :object,
       properties: %{
-        kind: %{type: [:string, :null], enum: ["host_agent", nil]},
+        kind: %{
+          type: [:string, :null],
+          enum: ["host_agent", "switch_poller", "vm_provider", nil],
+          description:
+            "`host_agent` for a host report, or the collector's kind for a scoped report."
+        },
         source_id: %{
           type: :null,
           description:

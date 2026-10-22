@@ -13,11 +13,11 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   operation :create,
     operation_id: "createObservation",
-    summary: "Submit a host observation",
+    summary: "Submit an observation",
     description:
-      "Stores a point-in-time report about the collector's host, then reconciles it " <>
-        "into inventory once. Retries are safe: resending an observation under the same " <>
-        "`observation_id` returns the stored one.",
+      "Stores a point-in-time report about the collector's host, or from one of its " <>
+        "collector modules, then reconciles it into inventory once. Retries are safe: " <>
+        "resending an observation under the same `observation_id` returns the stored one.",
     security: Schemas.intake_security(),
     request_body: Schemas.Observation,
     responses: [
@@ -29,13 +29,14 @@ defmodule RengaWeb.Api.V1.ObservationController do
       conflict:
         {Schemas.Rejected,
          description:
-           "The installation ID is registered to a different collector source, or the " <>
-             "`observation_id` was already used for a different payload."},
+           "The installation ID is registered to a different collector source, the " <>
+             "`observation_id` was already used for a different payload, or the named " <>
+             "collector is disabled or registered with a different kind."},
       unprocessable_entity: {Schemas.Rejected, description: "The observation is invalid."}
     ]
 
   def create(%{assigns: %{current_intake_api_key: intake_api_key}} = conn, params) do
-    source_identity = %Source{kind: "host_agent"}
+    source_identity = %Source{kind: reported_kind(params)}
 
     with {:ok, attrs} <- AgentPayload.validate_observation(params, source_identity),
          {:ok, {_agent, _lease, observation, disposition}} <-
@@ -57,6 +58,11 @@ defmodule RengaWeb.Api.V1.ObservationController do
     |> put_status(:forbidden)
     |> json(%{errors: [%{path: "source.kind", message: "must be host_agent"}]})
   end
+
+  # Collector reports are checked against the collector's kind; the stream
+  # itself is resolved from the installation and collector ID at ingest.
+  defp reported_kind(%{"collector" => %{"kind" => kind}}) when is_binary(kind), do: kind
+  defp reported_kind(_params), do: "host_agent"
 
   # The address the endpoint saw. Behind a proxy, deployments rewrite
   # `remote_ip` from forwarding headers before it reaches here.
@@ -104,6 +110,21 @@ defmodule RengaWeb.Api.V1.ObservationController do
     })
   end
 
+  defp observation_error(conn, {:error, :collector_kind_conflict}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      status: "rejected",
+      errors: [%{path: "collector.kind", message: "does not match the collector's kind"}]
+    })
+  end
+
+  defp observation_error(conn, {:error, :collector_disabled}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{status: "rejected", errors: [%{path: "collector.id", message: "is disabled"}]})
+  end
+
   defp observation_error(conn, {:error, :idempotency_conflict, observation}) do
     conn
     |> put_status(:conflict)
@@ -136,6 +157,9 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   defp reconcile_observation(scope, observation, disposition) do
     case Inventory.reconcile_observation_once(scope, observation.id) do
+      {:ok, resources, _discovered?} when is_list(resources) ->
+        %{status: "succeeded", resources: report_resources(scope, observation)}
+
       {:ok, resource, _discovered?} ->
         %{status: "succeeded", matched_resource_id: resource.id}
 
@@ -153,6 +177,22 @@ defmodule RengaWeb.Api.V1.ObservationController do
         %{status: "failed", errors: %{"processing" => "reconciliation_failed"}}
     end
   end
+
+  defp report_resources(scope, report) do
+    scope
+    |> Inventory.list_observation_reconciliations(report.id)
+    |> List.last()
+    |> Map.fetch!(:metadata)
+    |> Map.get("resources", [])
+    |> Enum.map(fn result ->
+      %{status: result["status"]}
+      |> maybe_put(:resource_id, result["resource_id"])
+      |> maybe_put(:errors, result["errors"])
+    end)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp changeset_errors(changeset, prefix) do
     changeset

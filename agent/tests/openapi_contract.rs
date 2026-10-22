@@ -10,9 +10,11 @@ use renga_agent::{
     collectors,
     installation_key::InstallationKey,
     payload::{
-        Address, AgentHome, CheckIn, CheckInAck, Component, HostAttributes, Identifiers, Interface,
-        JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Observation,
-        PresentedKey, QueueReport, ReportAck, ReportType, ResourceKind, ServerResource,
+        Address, AgentHome, CheckIn, CheckInAck, Collector, CollectorIdentifiers, CollectorKind,
+        CollectorResource, CollectorResourceKind, Component, HostAttributes, HypervisorStatus,
+        Identifiers, Interface, JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse,
+        LeasedJob, Observation, PresentedKey, QueueReport, Reachability, ReportAck, ReportScope,
+        ReportType, ResourceKind, ScopedReport, ServerResource, TargetStatus,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -118,6 +120,84 @@ fn full_observation() -> Observation {
 #[test]
 fn a_fully_populated_observation_matches_the_contract() {
     assert_conforms("Observation", &full_observation());
+}
+
+#[test]
+fn a_switch_poller_report_matches_the_contract() {
+    let report = ScopedReport::new(
+        Collector {
+            id: "core-switches".into(),
+            kind: CollectorKind::SwitchPoller,
+        },
+        ReportScope::Targets {
+            targets: vec![
+                TargetStatus {
+                    address: "10.0.0.1".into(),
+                    status: Reachability::Reachable,
+                    error: None,
+                },
+                TargetStatus {
+                    address: "10.0.0.2".into(),
+                    status: Reachability::Unreachable,
+                    error: Some("timeout after 5s".into()),
+                },
+            ],
+        },
+        true,
+        vec![CollectorResource {
+            kind: CollectorResourceKind::Switch,
+            target: Some("10.0.0.1".into()),
+            identifiers: CollectorIdentifiers {
+                hostname: Some("core1".into()),
+                serial_number: Some("CN0SER1".into()),
+                dmi_uuid: None,
+                mac_address: vec!["52:54:00:aa:00:01".into()],
+            },
+            attributes: Some(HostAttributes {
+                hostname: Some("core1".into()),
+                vendor: Some("Dell".into()),
+                model: Some("S5248F-ON".into()),
+                ..Default::default()
+            }),
+            interfaces: Some(vec![interface(
+                "ethernet1/1/1",
+                "ethernet",
+                Some("52:54:00:aa:00:01"),
+            )]),
+        }],
+    );
+
+    assert_conforms("Observation", &report);
+}
+
+#[test]
+fn a_hypervisor_report_matches_the_contract() {
+    let report = ScopedReport::new(
+        Collector {
+            id: "local-libvirt".into(),
+            kind: CollectorKind::VmProvider,
+        },
+        ReportScope::Hypervisor {
+            hypervisor: HypervisorStatus {
+                id: "hv-01".into(),
+                status: Reachability::Reachable,
+                error: None,
+            },
+        },
+        true,
+        vec![CollectorResource {
+            kind: CollectorResourceKind::Vm,
+            target: None,
+            identifiers: CollectorIdentifiers {
+                dmi_uuid: Some("4c4c4544-004d-3610-804b-c4c04f4e4a31".into()),
+                ..Default::default()
+            },
+            attributes: None,
+            interfaces: None,
+        }],
+    );
+
+    assert_conforms("Observation", &report);
 }
 
 #[test]

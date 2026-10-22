@@ -21,8 +21,26 @@ defmodule RengaWeb.Api.V1.Schemas.ObservationAccepted do
           properties: %{
             status: %{type: :string, enum: ["succeeded", "failed"]},
             matched_resource_id:
-              uuid("The inventory resource the observation matched, when known.")
+              uuid(
+                "The inventory resource a host observation matched, when known. Absent " <>
+                  "for scoped reports, which list `resources` instead."
+              )
               |> nullable(),
+            resources: %{
+              type: :array,
+              description:
+                "For a scoped report: how each of its resources reconciled, in report order.",
+              items: %{
+                type: :object,
+                properties: %{
+                  status: %{type: :string, enum: ["succeeded", "failed"]},
+                  resource_id: uuid("The inventory resource it matched or created."),
+                  errors: free_object("Why it failed to reconcile.")
+                },
+                required: [:status],
+                additionalProperties: false
+              }
+            },
             errors: free_object("Why reconciliation failed, keyed by field or stage.")
           },
           required: [:status],

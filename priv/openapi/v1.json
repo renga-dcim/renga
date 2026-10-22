@@ -183,7 +183,7 @@
       },
       "HostResource": {
         "title": "HostResource",
-        "description": "The host as the agent sees it. Fields the server assigns, such as `id`, are rejected.",
+        "description": "The host as the agent sees it, or for a scoped report a switch (`targets`) or VM (`hypervisor`) a collector reports. Fields the server assigns, such as `id`, are rejected. A switch or VM is matched to inventory only by serial_number, dmi_uuid, machine_id, one of which it must have.",
         "properties": {
           "components": {
             "description": "Hardware components, stored as reported. The agent sends objects with a `kind` discriminator whose other fields depend on the kind.",
@@ -397,7 +397,18 @@
             ]
           },
           "kind": {
-            "const": "server"
+            "anyOf": [
+              {
+                "const": "server"
+              },
+              {
+                "const": "switch"
+              },
+              {
+                "const": "vm"
+              }
+            ],
+            "description": "`server` for a host report, `switch` or `vm` for a scoped report."
           },
           "labels": {
             "additionalProperties": {
@@ -415,7 +426,10 @@
           "organization_id": false,
           "resource_id": false,
           "source_id": false,
-          "sync_run_id": false
+          "sync_run_id": false,
+          "target": {
+            "description": "For `targets` scope, required: the address, as a non-blank string, of the reachable target this switch was polled from. Not allowed for `hypervisor` scope, and ignored for `host` scope."
+          }
         },
         "required": [
           "kind",
@@ -988,8 +1002,73 @@
       },
       "Observation": {
         "title": "Observation",
-        "description": "One point-in-time report about the collector's host. The encoded body must be at most 256000 bytes. Unknown top-level fields are stored with the observation but not interpreted.",
+        "description": "One point-in-time report: about the collector's host (`host` scope, the default), or from one of its collector modules about the targets it polls (`targets`) or the hypervisor it reads (`hypervisor`). The encoded body must be at most 256000 bytes. Unknown top-level fields are stored with the observation but not interpreted.",
         "properties": {
+          "collector": {
+            "description": "Required for `targets` and `hypervisor` scope and not allowed for `host`. Names the collector module reporting, which Renga resolves to its own source within the installation. A collector's kind never changes.",
+            "properties": {
+              "id": {
+                "description": "The stable collector ID from the agent configuration. At most 64 characters of letters, digits, '.', '_', and '-', starting and ending with a letter or digit.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "switch_poller",
+                  "vm_provider"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "complete": {
+            "description": "For `targets` and `hypervisor` scope: whether the report contains everything each reachable target holds, so a resource a target no longer reports can be withdrawn. Partial reports never withdraw anything.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "hypervisor": {
+            "description": "For `hypervisor` scope, required: the hypervisor this report covers. An unreachable hypervisor reports no resources.",
+            "properties": {
+              "error": {
+                "description": "Why the target could not be reached. At most 255 characters.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "description": "A stable ID of the hypervisor. Must not be blank. At most 255 characters.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "description": "Whether this report reached it. An unreachable target's resources stay as they were: unknown, never absent.",
+                "enum": [
+                  "reachable",
+                  "unreachable"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "observation_id": {
             "description": "Idempotency key chosen by the agent. Resending the same payload under the same key is a duplicate; a different payload under it is a conflict. Must not be blank; at most 255 characters.",
             "minLength": 1,
@@ -1000,13 +1079,25 @@
             "type": "string"
           },
           "resources": {
-            "description": "Exactly one resource: the host itself.",
+            "description": "For `host` scope, exactly one `HostResource`: the host itself. For `targets` and `hypervisor` scope, any number of switches or VMs, possibly none.",
             "items": {
               "$ref": "#/components/schemas/HostResource"
             },
-            "maxItems": 1,
-            "minItems": 1,
+            "maxItems": 1000,
             "type": "array"
+          },
+          "scope": {
+            "description": "What the report is authoritative for. `host` (or omitted) for the host itself; `targets` from a `switch_poller` collector; `hypervisor` from a `vm_provider` collector.",
+            "enum": [
+              "host",
+              "targets",
+              "hypervisor",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "section_completeness": {
             "additionalProperties": false,
@@ -1038,6 +1129,44 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "targets": {
+            "description": "For `targets` scope, required: every target this report covers, each address once.",
+            "items": {
+              "properties": {
+                "address": {
+                  "description": "The target's configured address. Must not be blank. At most 255 characters.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "error": {
+                  "description": "Why the target could not be reached. At most 255 characters.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "description": "Whether this report reached it. An unreachable target's resources stay as they were: unknown, never absent.",
+                  "enum": [
+                    "reachable",
+                    "unreachable"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "address",
+                "status"
+              ],
+              "type": "object"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "type": [
+              "array",
+              "null"
             ]
           }
         },
@@ -1093,12 +1222,41 @@
                 "type": "object"
               },
               "matched_resource_id": {
-                "description": "The inventory resource the observation matched, when known.",
+                "description": "The inventory resource a host observation matched, when known. Absent for scoped reports, which list `resources` instead.",
                 "format": "uuid",
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "resources": {
+                "description": "For a scoped report: how each of its resources reconciled, in report order.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "errors": {
+                      "description": "Why it failed to reconcile.",
+                      "type": "object"
+                    },
+                    "resource_id": {
+                      "description": "The inventory resource it matched or created.",
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "succeeded",
+                        "failed"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
               },
               "status": {
                 "enum": [
@@ -1225,8 +1383,11 @@
         "description": "The reporting source. Optional: the intake key and installation ID already identify it.",
         "properties": {
           "kind": {
+            "description": "`host_agent` for a host report, or the collector's kind for a scoped report.",
             "enum": [
               "host_agent",
+              "switch_poller",
+              "vm_provider",
               null
             ],
             "type": [
@@ -1729,7 +1890,7 @@
                 }
               }
             },
-            "description": "The installation ID is registered to a different collector source, or the `observation_id` was already used for a different payload."
+            "description": "The installation ID is registered to a different collector source, the `observation_id` was already used for a different payload, or the named collector is disabled or registered with a different kind."
           },
           "422": {
             "content": {
@@ -1742,7 +1903,7 @@
             "description": "The observation is invalid."
           }
         },
-        "description": "Stores a point-in-time report about the collector's host, then reconciles it into inventory once. Retries are safe: resending an observation under the same `observation_id` returns the stored one.",
+        "description": "Stores a point-in-time report about the collector's host, or from one of its collector modules, then reconciles it into inventory once. Retries are safe: resending an observation under the same `observation_id` returns the stored one.",
         "operationId": "createObservation",
         "parameters": [
           {
@@ -1766,7 +1927,7 @@
           },
           "required": true
         },
-        "summary": "Submit a host observation"
+        "summary": "Submit an observation"
       }
     }
   }
