@@ -134,7 +134,7 @@ defmodule Renga.Accounts.Identities do
 
   defp insert_link(user, provider, subject, email) do
     %UserIdentity{user_id: user.id, provider_id: provider.id, subject: subject}
-    |> Ecto.Changeset.change(email: email && email.address)
+    |> Ecto.Changeset.change(email_fields(email))
     |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
     |> Repo.insert()
     |> case do
@@ -235,10 +235,8 @@ defmodule Renga.Accounts.Identities do
   defp returning(identity, email, claims) do
     identity =
       identity
-      |> Ecto.Changeset.change(
-        email: email && email.address,
-        last_signed_in_at: Renga.Time.utc_now_ms()
-      )
+      |> Ecto.Changeset.change(email_fields(email))
+      |> Ecto.Changeset.change(last_signed_in_at: Renga.Time.utc_now_ms())
       |> Repo.update!()
 
     Linking.link_identity(identity, claims)
@@ -260,14 +258,14 @@ defmodule Renga.Accounts.Identities do
         {:error, :unverified_email}
 
       true ->
-        sign_up(provider, subject, email.address, claims)
+        sign_up(provider, subject, email, claims)
     end
   end
 
-  defp sign_up(provider, subject, address, claims) do
+  defp sign_up(provider, subject, email, claims) do
     Repo.transact(fn ->
-      with {:ok, user} <- provider |> new_user(address) |> Repo.insert() do
-        link_new_user(user, provider, subject, address, claims)
+      with {:ok, user} <- provider |> new_user(email.address) |> Repo.insert() do
+        link_new_user(user, provider, subject, email, claims)
       end
     end)
     |> case do
@@ -289,15 +287,14 @@ defmodule Renga.Accounts.Identities do
 
   defp new_user(%IdentityProvider{}, _address), do: Ecto.Changeset.change(%User{})
 
-  defp link_new_user(user, provider, subject, address, claims) do
+  defp link_new_user(user, provider, subject, email, claims) do
     %UserIdentity{
       user_id: user.id,
       provider_id: provider.id,
       subject: subject,
-      email: address,
       last_signed_in_at: Renga.Time.utc_now_ms()
     }
-    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.change(email_fields(email))
     |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
     |> Repo.insert()
     |> case do
@@ -350,4 +347,7 @@ defmodule Renga.Accounts.Identities do
   end
 
   defp email(_claims), do: nil
+
+  defp email_fields(nil), do: [email: nil, email_verified: false]
+  defp email_fields(email), do: [email: email.address, email_verified: email.verified]
 end
