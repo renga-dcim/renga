@@ -211,8 +211,14 @@ mod tests {
 
     fn recorded(args: &[&str]) -> Result<String, String> {
         match args {
-            ["list", ..] => Ok("6695eb01-f6a4-8304-79aa-97f2502e193f\ngone\n".into()),
-            ["dominfo", "gone"] => Err("virsh dominfo failed with exit status: 1".into()),
+            ["list", ..] => Ok(
+                "6695eb01-f6a4-8304-79aa-97f2502e193f\n0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0\n"
+                    .into(),
+            ),
+            // A domain undefined between the listing and this read.
+            ["dominfo", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"] => {
+                Err("virsh dominfo failed with exit status: 1".into())
+            }
             ["dominfo", _] => Ok("State:          paused\nPersistent:     yes\n".into()),
             ["dumpxml", _] => Ok(domain::tests::WEB_01.into()),
             _ => Err("unexpected".into()),
@@ -247,6 +253,19 @@ mod tests {
             vm.get("interfaces").is_none(),
             "NICs belong to the guest's own view"
         );
+    }
+
+    #[test]
+    fn a_listing_that_is_not_a_domain_uuid_withholds_completeness() {
+        let virsh = |args: &[&str]| match args {
+            ["list", ..] => Ok("6695eb01-f6a4-8304-79aa-97f2502e193f\nnot-a-uuid\n".to_owned()),
+            other => recorded(other),
+        };
+        let poll = poll("libvirt", &Cancellation::default(), &virsh);
+        assert!(!poll.complete);
+        let report = decode(&reports(&collector(), poll)[0].1);
+        assert_eq!(report["complete"], false);
+        assert_eq!(report["resources"].as_array().unwrap().len(), 1);
     }
 
     #[test]
