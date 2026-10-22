@@ -7,16 +7,22 @@ defmodule RengaWeb.MemberLive do
   that asks why; the reason goes to Activity. Pickers offer only roles
   within the actor's grant ceiling, and members above it are read-only.
   Renga.Members re-checks all of it.
+
+  With a SCIM connection (RFD 16), members it granted are marked and left
+  to the identity provider, and its directory entries are listed, linked
+  or not, so managers can tell who has not signed in yet.
   """
   use RengaWeb, :live_view
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
   alias Renga.Accounts
+  alias Renga.Accounts.OrganizationMembership
   alias Renga.Assignments
   alias Renga.Inventory.Changes
   alias Renga.Members
   alias Renga.Roles.Assignment
+  alias Renga.Scim
 
   @role_meanings %{
     "owner" => "Everything, including organization settings and export",
@@ -234,6 +240,7 @@ defmodule RengaWeb.MemberLive do
         members: members,
         assignments: assignments,
         invitations: if(can_manage?, do: Members.list_invitations(scope), else: []),
+        directory: Scim.list_directory_entries(scope),
         editing: selected(socket.assigns.editing, members),
         assigning: selected(socket.assigns.assigning, members)
       )
@@ -294,7 +301,7 @@ defmodule RengaWeb.MemberLive do
   defp expired?(invitation), do: DateTime.before?(invitation.expires_at, DateTime.utc_now())
 
   defp manageable?(member, grantable, assignments, assignable) do
-    member.role in grantable and
+    not OrganizationMembership.scim_managed?(member) and member.role in grantable and
       assignments
       |> Map.get(member.id, [])
       |> Enum.all?(&(not current?(&1) or removable?(&1, assignable)))
@@ -339,6 +346,13 @@ defmodule RengaWeb.MemberLive do
               class="block text-xs text-fg-muted"
             >
               You
+            </span>
+            <span
+              :if={OrganizationMembership.scim_managed?(member)}
+              id={"member-#{member.id}-scim"}
+              class="block text-xs text-fg-muted"
+            >
+              Managed by SCIM
             </span>
           </:col>
           <:col :let={member} label="Role" class="w-48">
@@ -436,6 +450,62 @@ defmodule RengaWeb.MemberLive do
                 Revoke
               </button>
             </:action>
+          </.table>
+        </section>
+
+        <section :if={@directory != []} id="directory" class="space-y-2">
+          <div>
+            <h2 class="text-sm font-medium text-fg">Directory</h2>
+            <p class="mt-1 text-xs text-fg-muted">
+              Everyone your identity provider assigned through SCIM. An entry gives access once its person signs in with the provider.
+            </p>
+          </div>
+          <.table
+            id="directory-list"
+            rows={@directory}
+            row_id={fn {entry, _user} -> "directory-#{entry.id}" end}
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={{entry, _user}} label="Entry" class="py-2">
+              <span class="block truncate font-medium text-fg">{entry.user_name}</span>
+              <span
+                :if={entry.display_name || entry.email}
+                class="block truncate text-xs text-fg-muted"
+              >
+                {entry.display_name || entry.email}
+              </span>
+            </:col>
+            <:col :let={{entry, user}} label="Account" class="w-56">
+              <span
+                :if={user}
+                id={"directory-#{entry.id}-account"}
+                class="block truncate text-fg"
+              >
+                {user.email}
+              </span>
+              <span
+                :if={!user}
+                id={"directory-#{entry.id}-unlinked"}
+                class="text-xs text-fg-muted"
+              >
+                Not signed in yet
+              </span>
+            </:col>
+            <:col :let={{entry, _user}} label="Status" class="w-28">
+              <span
+                id={"directory-#{entry.id}-status"}
+                class={[
+                  "inline-flex items-center gap-1.5 text-xs font-medium",
+                  if(entry.active, do: "text-ok", else: "text-fg-muted")
+                ]}
+              >
+                <span class={[
+                  "size-1.5 rounded-full",
+                  if(entry.active, do: "bg-ok", else: "bg-unknown")
+                ]} />
+                {if entry.active, do: "Active", else: "Inactive"}
+              </span>
+            </:col>
           </.table>
         </section>
 
