@@ -182,6 +182,60 @@ if config_env() == :prod do
   # Without a key, Renga runs but nobody can add an authenticator app.
   config :renga, Renga.Vault, keys: System.get_env("ENCRYPTION_KEYS")
 
+  # The operator API listens on its own port, only when one is configured,
+  # and only over HTTPS (RFD 22). The port may be public; set
+  # OPERATOR_CLIENT_CA_FILE to also require a client certificate from that
+  # authority.
+  if operator_port = System.get_env("OPERATOR_PORT") do
+    operator_setting = fn name ->
+      System.get_env(name) ||
+        raise "environment variable #{name} is required when OPERATOR_PORT is set"
+    end
+
+    operator_ip =
+      case System.get_env("OPERATOR_IP") do
+        nil ->
+          {0, 0, 0, 0, 0, 0, 0, 0}
+
+        address ->
+          case :inet.parse_address(String.to_charlist(address)) do
+            {:ok, ip} -> ip
+            {:error, _reason} -> raise "environment variable OPERATOR_IP is not an IP address"
+          end
+      end
+
+    operator_port =
+      case Integer.parse(operator_port) do
+        {number, ""} when number in 1..65_535 and number != port ->
+          number
+
+        _other ->
+          raise "environment variable OPERATOR_PORT must be a port number other than PORT's"
+      end
+
+    client_crl_file = System.get_env("OPERATOR_CLIENT_CRL_FILE")
+    client_ca_file = System.get_env("OPERATOR_CLIENT_CA_FILE")
+
+    if client_crl_file && !client_ca_file do
+      raise "OPERATOR_CLIENT_CRL_FILE requires OPERATOR_CLIENT_CA_FILE"
+    end
+
+    config :renga, :operator_client_crl_file, client_crl_file
+
+    config :renga, RengaWeb.OperatorEndpoint,
+      url: [host: host, port: operator_port, scheme: "https"],
+      https:
+        RengaWeb.OperatorListener.https_options(%{
+          ip: operator_ip,
+          port: operator_port,
+          certfile: operator_setting.("OPERATOR_TLS_CERTFILE"),
+          keyfile: operator_setting.("OPERATOR_TLS_KEYFILE"),
+          client_ca_file: client_ca_file,
+          client_crl_file: client_crl_file
+        }),
+      server: System.get_env("PHX_SERVER") != nil
+  end
+
   config :renga, RengaWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [

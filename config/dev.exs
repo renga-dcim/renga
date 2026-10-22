@@ -56,6 +56,11 @@ config :renga, RengaWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
+# The operator API over plain HTTP, for development only; other environments
+# require HTTPS (RFD 22).
+config :renga, RengaWeb.OperatorEndpoint,
+  http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("OPERATOR_PORT") || "4403")]
+
 # Watch static and templates for browser reloading.
 config :renga, RengaWeb.Endpoint,
   live_reload: [

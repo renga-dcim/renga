@@ -135,6 +135,75 @@ defmodule Renga.RuntimeConfigTest do
     assert endpoint[:url] == [host: "renga.example.com", port: 443, scheme: "https"]
   end
 
+  test "OPERATOR_PORT serves the operator API over HTTPS, optionally with mutual TLS" do
+    config =
+      prod_runtime_config(%{
+        "OPERATOR_PORT" => "4443",
+        "OPERATOR_TLS_CERTFILE" => "/etc/renga/operator.pem",
+        "OPERATOR_TLS_KEYFILE" => "/etc/renga/operator.key",
+        "OPERATOR_CLIENT_CA_FILE" => "/etc/renga/clients.pem",
+        "OPERATOR_IP" => "10.0.0.5"
+      })
+
+    endpoint = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(RengaWeb.OperatorEndpoint)
+    https = Keyword.fetch!(endpoint, :https)
+
+    assert https[:port] == 4443
+    assert https[:ip] == {10, 0, 0, 5}
+    assert https[:certfile] == "/etc/renga/operator.pem"
+    transport = https[:thousand_island_options][:transport_options]
+    assert transport[:cacertfile] == "/etc/renga/clients.pem"
+    assert transport[:fail_if_no_peer_cert]
+    refute Keyword.has_key?(endpoint, :http)
+  end
+
+  test "the operator API has no listener unless OPERATOR_PORT is set" do
+    config = prod_runtime_config(%{})
+
+    refute config |> Keyword.fetch!(:renga) |> Keyword.has_key?(RengaWeb.OperatorEndpoint)
+  end
+
+  test "OPERATOR_PORT must be a port number other than PORT's" do
+    files = %{
+      "OPERATOR_TLS_CERTFILE" => "/etc/renga/operator.pem",
+      "OPERATOR_TLS_KEYFILE" => "/etc/renga/operator.key"
+    }
+
+    for operator_port <- ["0", "65536", "-1", "44x3", "4000"] do
+      assert_raise RuntimeError, ~r/OPERATOR_PORT must be a port number other than PORT's/, fn ->
+        prod_runtime_config(
+          Map.merge(files, %{"PORT" => "4000", "OPERATOR_PORT" => operator_port})
+        )
+      end
+    end
+
+    config =
+      prod_runtime_config(Map.merge(files, %{"PORT" => "4000", "OPERATOR_PORT" => "65535"}))
+
+    endpoint = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(RengaWeb.OperatorEndpoint)
+    assert endpoint[:https][:port] == 65_535
+  end
+
+  test "OPERATOR_PORT refuses to boot without a TLS certificate" do
+    assert_raise RuntimeError, ~r/OPERATOR_TLS_CERTFILE is required/, fn ->
+      prod_runtime_config(%{"OPERATOR_PORT" => "4443"})
+    end
+  end
+
+  defp prod_runtime_config(environment) do
+    with_env(
+      Map.merge(
+        %{
+          "DATABASE_URL" => database_url(nil),
+          "SECRET_KEY_BASE" => @secret,
+          "PHX_HOST" => "renga.example.com"
+        },
+        environment
+      ),
+      fn -> Config.Reader.read!(@runtime_config, env: :prod) end
+    )
+  end
+
   defp resolved_repo_config(database_url) do
     config = read_runtime_config(database_url)
     repo_config = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(Renga.Repo)

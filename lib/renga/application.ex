@@ -24,10 +24,13 @@ defmodule Renga.Application do
         assignment_expiry_worker(),
         job_sweeper(),
         job_history_purger(),
-        # Keep the endpoint last so infrastructure dependencies are ready first.
-        RengaWeb.Endpoint
+        # Keep the endpoints last so infrastructure dependencies are ready first.
+        RengaWeb.Endpoint,
+        RengaWeb.OperatorEndpoint
       ]
       |> Enum.reject(&is_nil/1)
+
+    :ok = RengaWeb.OperatorListener.load_revocation_list()
 
     opts = [strategy: :one_for_one, name: Renga.Supervisor]
     Supervisor.start_link(children, opts)
@@ -36,6 +39,7 @@ defmodule Renga.Application do
   @impl true
   def config_change(changed, _new, removed) do
     RengaWeb.Endpoint.config_change(changed, removed)
+    RengaWeb.OperatorEndpoint.config_change(changed, removed)
     :ok
   end
 

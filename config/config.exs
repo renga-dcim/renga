@@ -44,6 +44,16 @@ config :renga, RengaWeb.Endpoint,
 # (RFD 19). Production derives it from PHX_HOST in runtime.exs.
 config :renga, :webauthn, origin: "http://localhost:4000"
 
+# The operator API's own listener (RFD 22). It serves nothing until a
+# deployment configures it, in config/runtime.exs. Like the main endpoint, it
+# only listens under `mix phx.server` or an explicit `server:` setting, so
+# `mix run` and `iex -S mix` can run beside a development server.
+config :renga, RengaWeb.OperatorEndpoint,
+  url: [host: "localhost"],
+  adapter: Bandit.PhoenixAdapter,
+  render_errors: [formats: [json: RengaWeb.Operator.ErrorJSON], layout: false],
+  pubsub_server: Renga.PubSub
+
 # Configures the mailer
 #
 # By default it uses the "Local" adapter which stores the emails

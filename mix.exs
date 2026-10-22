@@ -98,7 +98,7 @@ defmodule Renga.MixProject do
       "ecto.migration": ["ecto.migrate", "ecto.dump"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       # Regenerates the committed OpenAPI document; a test fails when it is stale.
-      "api.spec": ["openapi.dump RengaWeb.ApiSpec --pretty -o priv/openapi/v1.json"],
+      "api.spec": &api_spec/1,
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",
@@ -112,5 +112,16 @@ defmodule Renga.MixProject do
       ],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
     ]
+  end
+
+  # The machine API and the operator API (RFD 22) each have a document.
+  # openapi.dump runs once per Mix invocation unless re-enabled.
+  defp api_spec(_args) do
+    Mix.Task.run("openapi.dump", ~w(RengaWeb.ApiSpec --pretty -o priv/openapi/v1.json))
+
+    Mix.Task.rerun(
+      "openapi.dump",
+      ~w(RengaWeb.OperatorApiSpec --pretty -o priv/openapi/operator-v1.json)
+    )
   end
 end
