@@ -299,9 +299,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             presented_key: &presented_key,
         };
         let result = deliver_startup(&operations);
-        if client.take_moved() {
-            discard_moved_home(&home, &args.state_directory);
-        }
+        discard_home_if_moved(&client, &home, &args.state_directory);
         return aggregated_result(result);
     }
     let checkin = send_checkin(
@@ -329,6 +327,13 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         );
     }
     if stopped.cancelled() {
+        if let Some(listener) = listener {
+            listener.stop();
+        }
+        if let Some(worker) = job_worker {
+            let _ = worker.join();
+        }
+        discard_home_if_moved(&client, &home, &args.state_directory);
         return Ok(());
     }
 
@@ -505,9 +510,13 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     log_home(&new_config, &new_home);
                     // The home is persisted only once its client exists, so a reload that
                     // fails here leaves the previous home in place as well as the configuration.
+                    // A home that already said the organization moved is never persisted again.
+                    let still_moved = relocation.is_some() && new_home.home == home.home;
                     match client_for(&new_config, &new_home, &client, &installation_key, &stopped)
                         .and_then(|new_client| {
-                            home::persist(&args.state_directory, &new_home)?;
+                            if !still_moved {
+                                home::persist(&args.state_directory, &new_home)?;
+                            }
                             Ok(new_client)
                         }) {
                         Ok(new_client) => {
@@ -600,6 +609,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     if let Some(worker) = job_worker {
         let _ = worker.join();
     }
+    // A request still in flight at shutdown may have heard `moved` after the loop stopped.
+    discard_home_if_moved(&client, &home, &args.state_directory);
     info!("daemon stopped");
     Ok(())
 }
@@ -960,6 +971,13 @@ fn client_for(
     Ok(HttpClient::for_home(config, &home.home, stopped.clone())?
         .with_installation_key(Arc::clone(installation_key))
         .sharing_moved_signal(current))
+}
+
+/// Discards the home when a request through `client` heard that the organization moved.
+fn discard_home_if_moved(client: &HttpClient, home: &Home, state_directory: &Path) {
+    if client.take_moved() {
+        discard_moved_home(home, state_directory);
+    }
 }
 
 /// Forgets the home that said the organization moved (RFD 23), so neither this run nor a
@@ -1631,6 +1649,111 @@ mod tests {
             serde_json::from_slice(&std::fs::read(state.join("home.json")).unwrap()).unwrap();
         assert_eq!(persisted["home"], expected_home);
         std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_reload_during_a_move_never_persists_the_home_that_said_moved() {
+        let state =
+            std::env::temp_dir().join(format!("renga-moved-reload-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let said_moved = Arc::new(AtomicBool::new(false));
+        let moved_once = Arc::clone(&said_moved);
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins")
+                && !moved_once.swap(true, Ordering::SeqCst)
+            {
+                (410, r#"{"error":"moved"}"#.into())
+            } else {
+                (503, "{}".into())
+            }
+        });
+        let first_answer = old_origin.clone();
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+            (200, json!({ "home": first_answer }).to_string())
+        });
+        // The replacement resolver has not caught up either.
+        let replacement_asked = Arc::new(AtomicUsize::new(0));
+        let asked = Arc::clone(&replacement_asked);
+        let (replacement, replacement_server) = routed_server(stopped.clone(), move |_request| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            (200, json!({ "home": old_origin }).to_string())
+        });
+        let config = write_agent_config(&state, &resolver, "renga_intake_test");
+        let daemon = spawn_daemon(config, &state, false, stopped.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // The home was persisted before the check-in that heard `moved`, so its absence after
+        // that means the daemon discarded it.
+        while !said_moved.load(Ordering::SeqCst) || state.join("home.json").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the moved home was never discarded"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        write_agent_config(&state, &replacement, "renga_intake_test");
+        while replacement_asked.load(Ordering::SeqCst) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the replacement resolver was never asked"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [old_server, resolver_server, replacement_server] {
+            server.join().unwrap();
+        }
+
+        assert!(!state.join("home.json").exists());
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_move_heard_while_stopping_still_discards_the_home() {
+        // One case per request still in flight when the daemon is asked to stop: the startup
+        // check-in, and an observation on the delivery thread.
+        for path in ["/api/v1/agent/checkins", "/api/v1/observations"] {
+            let state =
+                std::env::temp_dir().join(format!("renga-moved-stop-{}", uuid::Uuid::new_v4()));
+            let stopped = Cancellation::default();
+            let server_stop = Cancellation::default();
+            let (arrived, request_arrived) = mpsc::channel();
+            let (release, released) = mpsc::channel::<()>();
+            let released = Arc::new(Mutex::new(released));
+            let (home_origin, home_server) = routed_server(server_stop.clone(), move |request| {
+                if request.contains(path) {
+                    let _ = arrived.send(());
+                    let _ = released.lock().unwrap().recv();
+                    (410, r#"{"error":"moved"}"#.into())
+                } else if request.contains("/api/v1/agent/checkins") {
+                    (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+                } else {
+                    (404, "{}".into())
+                }
+            });
+            let (resolver, resolver_server) = routed_server(server_stop.clone(), move |_request| {
+                (200, json!({ "home": home_origin }).to_string())
+            });
+            let config = write_agent_config(&state, &resolver, "renga_intake_test");
+            let daemon = spawn_daemon(config, &state, false, stopped.clone());
+
+            request_arrived
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            assert!(state.join("home.json").exists());
+            stopped.cancel();
+            // Let the scheduler loop notice the stop before the answer arrives.
+            thread::sleep(Duration::from_millis(600));
+            release.send(()).unwrap();
+            daemon.join().unwrap().unwrap();
+            server_stop.cancel();
+            home_server.join().unwrap();
+            resolver_server.join().unwrap();
+
+            assert!(!state.join("home.json").exists(), "{path}");
+            std::fs::remove_dir_all(state).unwrap();
+        }
     }
 
     #[test]
