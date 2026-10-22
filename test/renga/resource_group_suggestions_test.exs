@@ -91,6 +91,78 @@ defmodule Renga.ResourceGroupSuggestionsTest do
     assert resource_id == labelled.id
   end
 
+  test "accepting adds the resource as the accepting person", context do
+    stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, _result} = staging_rule(context)
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:ok, %{status: "accepted"}} =
+             ResourceGroups.accept_suggestion(context.admin, suggestion.id)
+
+    assert [%{direct: true, trusted: true}] =
+             ResourceGroups.list_resource_groups(context.admin, stg.id)
+
+    assert [%{kind: "group_member_added", metadata: metadata} = event | _] =
+             Inventory.list_change_events(context.admin, stg.id)
+
+    assert event.actor_user_id == context.admin.user.id
+    assert metadata["reason"] == "Suggested by the triage rule Staging hosts"
+    assert ResourceGroups.list_suggestions(context.admin) == []
+
+    # Already decided.
+    assert {:error, :not_found} = ResourceGroups.accept_suggestion(context.admin, suggestion.id)
+  end
+
+  test "people without inventory.edit cannot accept or dismiss", context do
+    server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, _result} = staging_rule(context)
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:error, :forbidden} = ResourceGroups.accept_suggestion(context.member, suggestion.id)
+    assert {:error, :forbidden} = ResourceGroups.dismiss_suggestion(context.member, suggestion.id)
+    assert Repo.all(Member) == []
+    assert [%{status: "open"}] = ResourceGroups.list_suggestions(context.admin)
+  end
+
+  test "accepting goes through exclusivity like a manual add", context do
+    {:ok, set} =
+      ResourceGroups.create_group_set(context.admin, %{name: "Environment", exclusive: true})
+
+    {:ok, prod} =
+      ResourceGroups.create_group(context.admin, %{name: "Prod", group_set_id: set.id})
+
+    {:ok, _staging} =
+      ResourceGroups.update_group(context.admin, context.staging, %{group_set_id: set.id})
+
+    stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, 1} = ResourceGroups.add_members(context.admin, prod, [stg.id])
+    {:ok, _result} = staging_rule(context)
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:error, {:exclusive_conflict, _conflicts}} =
+             ResourceGroups.accept_suggestion(context.admin, suggestion.id)
+
+    assert [%{status: "open"}] = ResourceGroups.list_suggestions(context.admin)
+  end
+
+  test "a dismissed suggestion returns only after the rule changes", context do
+    stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, %{rule: rule}} = staging_rule(context)
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:ok, %{status: "dismissed"}} =
+             ResourceGroups.dismiss_suggestion(context.admin, suggestion.id)
+
+    # Applying again, as a new report does, leaves it dismissed.
+    assert {:ok, 0} = TriageRules.apply_to_resource(context.organization.id, stg.id)
+    assert ResourceGroups.list_suggestions(context.admin) == []
+
+    assert {:ok, %{applied: 1}} =
+             TriageRules.update_rule(context.admin, rule, %{"name" => "Staging"})
+
+    assert [%{rule_name: "Staging"}] = ResourceGroups.list_suggestions(context.admin)
+  end
+
   test "a resource already in the group is not suggested", context do
     stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
     {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [stg.id])

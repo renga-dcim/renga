@@ -523,6 +523,38 @@ defmodule Renga.ResourceGroups do
     |> Repo.all()
   end
 
+  @doc """
+  Accepts an open suggestion: the resource joins the group directly, as an
+  ordinary membership change by the accepting person, with the same
+  `inventory.edit` check, locking, exclusivity, and Activity as adding it by
+  hand.
+  """
+  def accept_suggestion(%Scope{} = scope, suggestion_id) do
+    managed(scope, "inventory.edit", fn ->
+      suggestion = lock_open_suggestion!(scope, suggestion_id)
+      group = lock_group!(scope, suggestion.group_id)
+
+      added =
+        insert_members!(scope, group, [suggestion.resource_id],
+          reason: "Suggested by the triage rule #{suggestion.rule_name}"
+        )
+
+      project!(scope, added)
+      {:ok, decide!(scope, suggestion, "accepted")}
+    end)
+  end
+
+  @doc """
+  Dismisses an open suggestion. Nothing changes, and the rule does not raise
+  it again until the rule changes. Needs `inventory.edit`, like accepting.
+  """
+  def dismiss_suggestion(%Scope{} = scope, suggestion_id) do
+    managed(scope, "inventory.edit", fn ->
+      suggestion = lock_open_suggestion!(scope, suggestion_id)
+      {:ok, decide!(scope, suggestion, "dismissed")}
+    end)
+  end
+
   @doc false
   # Raises `rule`'s suggestion for one resource, inside the triage rules
   # transaction. Never touches membership. A resource already directly in
@@ -584,6 +616,30 @@ defmodule Renga.ResourceGroups do
     |> Repo.update!()
 
     :raised
+  end
+
+  defp lock_open_suggestion!(%Scope{organization_id: organization_id}, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id || ""),
+         %Suggestion{} = suggestion <-
+           Suggestion
+           |> where([suggestion], suggestion.organization_id == ^organization_id)
+           |> where([suggestion], suggestion.id == ^id and suggestion.status == "open")
+           |> lock("FOR UPDATE")
+           |> Repo.one() do
+      suggestion
+    else
+      _missing_or_decided -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp decide!(scope, suggestion, status) do
+    suggestion
+    |> Ecto.Changeset.change(
+      status: status,
+      decided_by_user_id: scope.user.id,
+      decided_at: Renga.Time.utc_now_ms()
+    )
+    |> Repo.update!()
   end
 
   ## Projection
