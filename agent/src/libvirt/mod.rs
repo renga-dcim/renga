@@ -76,6 +76,15 @@ pub fn poll(collector_id: &str, stopped: &Cancellation, virsh: Virsh<'_>) -> Pol
             complete = false;
             break;
         }
+        // Each entry goes back to virsh as an argument, so only a UUID may.
+        if domain::canonical_uuid(uuid).is_none() {
+            warn!(
+                collector = collector_id,
+                "virsh listed something other than a domain UUID"
+            );
+            complete = false;
+            continue;
+        }
         let read = virsh(&["dominfo", uuid]).and_then(|info| {
             let (state, persistent) = domain::info(&info);
             let xml = virsh(&["dumpxml", uuid])?;

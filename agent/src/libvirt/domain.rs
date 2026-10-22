@@ -10,7 +10,8 @@ const MAX_STRING: usize = 255;
 /// One domain as libvirt defines it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Domain {
-    /// The SMBIOS system UUID the guest sees: the domain UUID unless `<sysinfo>` overrides it.
+    /// The SMBIOS system UUID the guest sees, canonical: `<hwuuid>` when set, else the domain
+    /// UUID. libvirt refuses a `<sysinfo>` UUID that differs, so sysinfo never changes it.
     pub dmi_uuid: String,
     pub domain: VmDomain,
     /// Devices beyond the payload limit, left out of `domain`.
@@ -71,10 +72,11 @@ pub fn parse(
     let name = child_text(root, "name")
         .and_then(bounded)
         .ok_or_else(|| ParseError("domain has no usable name".into()))?;
-    let uuid = child_text(root, "uuid")
-        .and_then(bounded)
-        .ok_or_else(|| ParseError(format!("domain {name} has no UUID")))?;
-    let dmi_uuid = smbios_uuid(root).unwrap_or(uuid);
+    // Only the domain's own unnamespaced elements count; `<metadata>` can hold anything.
+    let dmi_uuid = child_text(root, "hwuuid")
+        .or_else(|| child_text(root, "uuid"))
+        .and_then(canonical_uuid)
+        .ok_or_else(|| ParseError(format!("domain {name} has no usable UUID")))?;
     let devices = root.children().find(|node| node.has_tag_name("devices"));
     let disks: Vec<_> = devices
         .into_iter()
@@ -112,18 +114,12 @@ pub fn parse(
     })
 }
 
-fn smbios_uuid(root: Node<'_, '_>) -> Option<String> {
-    root.descendants()
-        .filter(|node| node.has_tag_name("sysinfo") && node.attribute("type") == Some("smbios"))
-        .flat_map(|sysinfo| {
-            sysinfo
-                .children()
-                .filter(|node| node.has_tag_name("system"))
-        })
-        .flat_map(|system| system.children().filter(|node| node.has_tag_name("entry")))
-        .find(|entry| entry.attribute("name") == Some("uuid"))
-        .and_then(|entry| entry.text())
-        .and_then(bounded)
+/// The UUID in Renga's canonical lowercase, hyphenated form; the server only trims and
+/// lowercases identifiers, so a malformed one would match nothing or the wrong thing.
+pub fn canonical_uuid(text: &str) -> Option<String> {
+    uuid::Uuid::parse_str(text.trim())
+        .ok()
+        .map(|uuid| uuid.hyphenated().to_string())
 }
 
 fn disk(node: Node<'_, '_>) -> Option<DomainDisk> {
@@ -195,7 +191,8 @@ fn memory_mib(node: Node<'_, '_>) -> Option<u64> {
 }
 
 fn child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
-    node.children().find(|child| child.has_tag_name(name))
+    node.children()
+        .find(|child| child.has_tag_name(name) && child.tag_name().namespace().is_none())
 }
 
 fn child_text<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
@@ -217,10 +214,10 @@ pub(crate) mod tests {
   <uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid>
   <memory unit='GiB'>4</memory>
   <vcpu placement='static'>2</vcpu>
+  <hwuuid>4C4C4544-004D-3610-804B-C4C04F4E4A31</hwuuid>
   <sysinfo type='smbios'>
     <system>
       <entry name='manufacturer'>Renga</entry>
-      <entry name='uuid'>4c4c4544-004d-3610-804b-c4c04f4e4a31</entry>
     </system>
   </sysinfo>
   <devices>
@@ -307,7 +304,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ignores_uuids_in_namespaced_metadata() {
+        let xml = "<domain><name>a</name><uuid>6695EB01-F6A4-8304-79AA-97F2502E193F</uuid>\
+                   <metadata><x:hwuuid xmlns:x='urn:example'>not-a-uuid</x:hwuuid>\
+                   <x:sysinfo xmlns:x='urn:example' type='smbios'><x:system>\
+                   <x:entry name='uuid'>00000000-0000-0000-0000-000000000001</x:entry>\
+                   </x:system></x:sysinfo></metadata></domain>";
+        let parsed = parse(xml, DomainState::Running, None).unwrap();
+        assert_eq!(parsed.dmi_uuid, "6695eb01-f6a4-8304-79aa-97f2502e193f");
+    }
+
+    #[test]
     fn rejects_definitions_it_cannot_identify() {
+        assert!(parse(
+            "<domain><name>a</name><uuid>not-a-uuid</uuid></domain>",
+            DomainState::Running,
+            None
+        )
+        .is_err());
         assert!(parse(
             "<domain><name>a</name></domain>",
             DomainState::Running,
@@ -329,7 +343,7 @@ pub(crate) mod tests {
                 )
             })
             .collect();
-        let xml = format!("<domain><name>a</name><uuid>u</uuid><devices>{nics}</devices></domain>");
+        let xml = format!("<domain><name>a</name><uuid>6695eb01-f6a4-8304-79aa-97f2502e193f</uuid><devices>{nics}</devices></domain>");
         let parsed = parse(&xml, DomainState::Running, None).unwrap();
         assert_eq!(parsed.domain.interfaces.len(), MAX_DOMAIN_DEVICES);
         assert_eq!(parsed.dropped_devices, 300 - MAX_DOMAIN_DEVICES);
