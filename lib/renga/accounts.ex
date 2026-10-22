@@ -363,6 +363,32 @@ defmodule Renga.Accounts do
   @doc "Emails the first-password or first-factor bootstrap code."
   defdelegate deliver_bootstrap_code(user, session_token), to: Recheck
 
+  @doc """
+  Issues a session for `browser_session_id` that holds RFD 19's bootstrap
+  authorization, for a person who just proved control of the email to add
+  a first credential. Eligibility (no re-check method at all), the session
+  and the grant are one transaction under the account lock, so a factor
+  added meanwhile means no session is issued: `:error`, and the caller
+  signs in the usual way, with the second step if one is needed now.
+  """
+  def create_bootstrap_session(%User{id: user_id}, browser_session_id) do
+    MFA.with_account_lock(%User{id: user_id}, fn ->
+      user = Repo.get!(User, user_id)
+
+      if Recheck.methods(user) == [] do
+        token = generate_user_session_token(user, browser_session_id)
+        :ok = Recheck.start_bootstrap(user, token)
+        {:ok, token}
+      else
+        {:error, :not_available}
+      end
+    end)
+    |> case do
+      {:ok, token} when is_binary(token) -> {:ok, token}
+      _ -> :error
+    end
+  end
+
   @doc "Spends a bootstrap code for this session."
   defdelegate verify_bootstrap_code(user, session_token, code), to: Recheck
 
@@ -416,8 +442,52 @@ defmodule Renga.Accounts do
 
   @doc "Removes a passkey if this session passed the re-check."
   def remove_passkey(%User{} = user, session_token, passkey_id) do
-    MFA.remove_factor(user, fn -> Passkeys.delete(user, passkey_id) end, fn ->
-      Recheck.authorized?(user, session_token, :remove_factor)
+    MFA.remove_factor(
+      user,
+      fn ->
+        # A passwordless account keeps a credential it can sign in with.
+        # Read under the account lock, so a concurrent password removal or
+        # passkey removal cannot leave it with none.
+        if is_nil(Repo.get!(User, user.id).hashed_password) and length(Passkeys.list(user)) == 1,
+          do: {:error, :last_passkey},
+          else: Passkeys.delete(user, passkey_id)
+      end,
+      fn -> Recheck.authorized?(user, session_token, :remove_factor) end
+    )
+  end
+
+  @doc """
+  Removes the password from an account that has a passkey, after the
+  re-check (RFD 19, "Passwordless accounts").
+  """
+  def remove_user_password(%User{} = user, session_token) do
+    # Under the account lock, like removing a passkey, so the two cannot
+    # race to leave the account with neither.
+    MFA.with_account_lock(user, fn ->
+      cond do
+        not Recheck.authorized?(user, session_token, :set_password) ->
+          {:error, :recheck_required}
+
+        not Passkeys.any?(user) ->
+          {:error, :no_passkey}
+
+        true ->
+          user =
+            User
+            |> Repo.get!(user.id)
+            |> Ecto.Changeset.change(hashed_password: nil)
+            |> Repo.update!()
+
+          Repo.insert!(%Renga.Accounts.SecurityEvent{user_id: user.id, kind: "password_removed"})
+
+          # A sign-in half-finished with the password ends with it.
+          Repo.delete_all(
+            from token in UserToken,
+              where: token.user_id == ^user.id and token.context == "second_step"
+          )
+
+          {:ok, user}
+      end
     end)
   end
 

@@ -258,5 +258,65 @@ defmodule Renga.Accounts.PasskeysTest do
     end
   end
 
+  describe "passwordless accounts" do
+    alias Renga.Accounts
+
+    defp rechecked_session(user, authenticator) do
+      token = Accounts.generate_user_session_token(user)
+      options = Accounts.passkey_options(user, "recheck")
+
+      :ok =
+        Accounts.recheck_with_passkey(
+          user,
+          token,
+          FakeAuthenticator.assert(authenticator, options)
+        )
+
+      token
+    end
+
+    test "an account with a passkey may remove its password after the re-check" do
+      user = set_password(user_fixture())
+      {authenticator, _passkey} = register(user)
+
+      assert {:error, :recheck_required} =
+               Accounts.remove_user_password(user, Accounts.generate_user_session_token(user))
+
+      token = rechecked_session(user, authenticator)
+      assert {:ok, user} = Accounts.remove_user_password(user, token)
+      assert is_nil(user.hashed_password)
+      refute Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+    end
+
+    test "removing the password ends a sign-in half-finished with it" do
+      user = set_password(user_fixture())
+      {authenticator, _passkey} = register(user)
+      pending = Accounts.create_pending_second_step(user)
+      token = rechecked_session(user, authenticator)
+
+      assert {:ok, _user} = Accounts.remove_user_password(user, token)
+      refute Accounts.get_pending_second_step_user(pending)
+    end
+
+    test "an account without a passkey keeps its password" do
+      user = set_password(user_fixture())
+      token = Accounts.generate_user_session_token(user)
+      :ok = Accounts.recheck_with_password(user, token, valid_user_password())
+
+      assert {:error, :no_passkey} = Accounts.remove_user_password(user, token)
+    end
+
+    test "a passwordless account cannot remove its last passkey" do
+      user = user_fixture()
+      {authenticator, passkey} = register(user)
+      token = rechecked_session(user, authenticator)
+
+      assert {:error, :last_passkey} = Accounts.remove_passkey(user, token, passkey.id)
+
+      {_second, _passkey} = register(user)
+      assert {:ok, _passkey} = Accounts.remove_passkey(user, token, passkey.id)
+    end
+  end
+
   defp encode(bytes), do: Base.url_encode64(bytes, padding: false)
 end

@@ -17,7 +17,10 @@ defmodule RengaWeb.UserSessionController do
     case Accounts.login_user_by_magic_link(token) do
       {:ok, {user, tokens_to_disconnect}} ->
         UserAuth.disconnect_sessions(tokens_to_disconnect)
-        sign_in(conn, user, user_params, info)
+
+        if user_params["add_passkey"] == "true",
+          do: sign_in_to_add_passkey(conn, user, user_params, info),
+          else: sign_in(conn, user, user_params, info)
 
       _ ->
         conn
@@ -38,6 +41,29 @@ defmodule RengaWeb.UserSessionController do
       |> put_flash(:error, "Invalid email or password")
       |> put_flash(:email, String.slice(email, 0, 160))
       |> redirect(to: ~p"/users/log-in")
+    end
+  end
+
+  # The link just proved control of the account's email, for the purpose of
+  # adding its first credential, so it also grants RFD 19's five-minute
+  # bootstrap in this browser: a new account can register with only a
+  # passkey. An account that has any credential by the time the session is
+  # issued signs in the usual way instead, second step included. Staying
+  # signed in follows the person's own choice.
+  defp sign_in_to_add_passkey(conn, user, params, info) do
+    return_to = get_session(conn, :user_return_to)
+
+    case UserAuth.log_in_user_to_bootstrap(conn, user, params) do
+      {:ok, conn} ->
+        conn
+        |> put_flash(:info, "Email confirmed. Add your passkey now.")
+        |> redirect(to: ~p"/users/settings#passkey_register")
+
+      # The attempt cleared the session; only where to go next carries over.
+      {:error, conn} ->
+        conn
+        |> then(&if(return_to, do: put_session(&1, :user_return_to, return_to), else: &1))
+        |> sign_in(user, params, info)
     end
   end
 

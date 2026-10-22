@@ -202,6 +202,22 @@ defmodule Renga.Accounts.Recheck do
   end
 
   @doc """
+  Grants the bootstrap authorization to a session that just signed in by
+  proving control of the email for this purpose, such as confirming a new
+  account to add a passkey. Only an account with no re-check method can
+  bootstrap.
+  """
+  def start_bootstrap(%User{} = user, session_token) do
+    with [] <- methods(user),
+         {:ok, session} <- fetch_session(user, session_token) do
+      grant(session, "bootstrap")
+    else
+      :error -> {:error, :no_session}
+      [_ | _] -> {:error, :not_available}
+    end
+  end
+
+  @doc """
   Spends a bootstrap code. A correct code grants this session the bootstrap
   authorization; each wrong one counts against the challenge.
   """

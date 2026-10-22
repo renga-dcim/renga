@@ -21,6 +21,24 @@ defmodule RengaWeb.UserLive.ConfirmationTest do
       assert html =~ "Confirm and stay logged in"
     end
 
+    test "a new account can confirm and go straight to adding a passkey", %{
+      conn: conn,
+      unconfirmed_user: user
+    } do
+      token = extract_user_token(fn url -> Accounts.deliver_login_instructions(user, url) end)
+      {:ok, lv, _html} = live(conn, ~p"/users/log-in/#{token}")
+
+      lv
+      |> form("#confirmation_form", %{"user" => %{"token" => token}})
+      |> render_submit(%{"user" => %{"add_passkey" => "true"}})
+
+      # The button that was pressed survives as a hidden field for the post.
+      conn = follow_trigger_action(form(lv, "#confirmation_form"), conn)
+
+      assert redirected_to(conn) == ~p"/users/settings#passkey_register"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Add your passkey now."
+    end
+
     test "renders login page for confirmed user", %{conn: conn, confirmed_user: user} do
       token =
         extract_user_token(fn url ->
