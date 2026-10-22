@@ -184,7 +184,9 @@ pub fn switch(
             hostname: hostname.clone(),
             serial_number: Some(chassis.serial),
             dmi_uuid: None,
-            mac_address: local_chassis_mac(answers).into_iter().collect(),
+            // Renga requires a resource's MAC identifiers to be exactly its current Ethernet
+            // interfaces' MACs, which a chassis MAC is not; the serial identifies the switch.
+            mac_address: Vec::new(),
         },
         attributes: Some(HostAttributes {
             hostname,
@@ -226,14 +228,6 @@ fn chassis(answers: &Answers) -> Option<Chassis> {
                 model: models.get(&index).and_then(|value| text(value)),
             })
         })
-}
-
-fn local_chassis_mac(answers: &Answers) -> Option<String> {
-    // Subtype 4 is macAddress (IEEE 802.1AB LldpChassisIdSubtype).
-    match answers.scalar(LLDP_LOC_CHASSIS_ID_SUBTYPE)? {
-        SnmpValue::Integer(4) => mac(answers.scalar(LLDP_LOC_CHASSIS_ID)?),
-        _ => None,
-    }
 }
 
 struct Entry {
@@ -757,7 +751,7 @@ pub(crate) mod tests {
             Some("FDO1234X0YZ")
         );
         assert_eq!(resource.identifiers.hostname.as_deref(), Some("leaf-01"));
-        assert_eq!(resource.identifiers.mac_address, ["00:1b:21:aa:bb:cc"]);
+        assert!(resource.identifiers.mac_address.is_empty());
         let attributes = resource.attributes.as_ref().unwrap();
         assert_eq!(attributes.vendor.as_deref(), Some("Example Networks"));
         assert_eq!(attributes.model.as_deref(), Some("EX-48T"));
