@@ -25,6 +25,7 @@ defmodule Renga.AuthorizationParityTest do
   alias Renga.IPAM
   alias Renga.Jobs
   alias Renga.Requests
+  alias Renga.ResourceGroups
   alias Renga.SavedViews
   alias Renga.Teams
   alias Renga.Topology
@@ -57,6 +58,8 @@ defmodule Renga.AuthorizationParityTest do
     {"job settings", ~w(owner), nil, &__MODULE__.update_job_settings/2},
     {"default accent", ~w(owner), nil, &__MODULE__.set_default_accent/2},
     {"teams", @managers, nil, &__MODULE__.create_team/2},
+    {"resource groups", @managers, nil, &__MODULE__.create_resource_group/2},
+    {"resource group membership", @managers, nil, &__MODULE__.add_group_members/2},
     {"triage rules", @managers, "triage_rules", &__MODULE__.create_triage_rule/2},
     {"shared views", @managers, nil, &__MODULE__.share_view/2}
   ]
@@ -70,6 +73,8 @@ defmodule Renga.AuthorizationParityTest do
     {&Requests.can_request?/1, ~w(member)},
     {&Requests.can_decide?/1, @managers},
     {&Teams.can_manage?/1, @managers},
+    {&ResourceGroups.can_manage?/1, @managers},
+    {&ResourceGroups.can_change_membership?/1, @managers},
     {&TriageRules.can_manage?/1, @managers}
   ]
 
@@ -195,6 +200,17 @@ defmodule Renga.AuthorizationParityTest do
 
   def resolve_job(scope, _context),
     do: Jobs.resolve_job(scope, Ecto.UUID.generate(), "failed")
+
+  def create_resource_group(scope, _context),
+    do: ResourceGroups.create_group(scope, %{name: unique("group")})
+
+  def add_group_members(scope, context) do
+    ResourceGroups.add_members(
+      scope,
+      %ResourceGroups.Group{id: Ecto.UUID.generate()},
+      [context.resource.id]
+    )
+  end
 
   def update_job_settings(scope, _context), do: Jobs.update_settings(scope, %{})
 

@@ -201,6 +201,67 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "security_setting_changed", field: field, metadata: metadata}),
     do: "Changed the #{String.replace(field, "_", " ")} security setting" <> reason(metadata)
 
+  # RFD 18 resource groups. Membership events sit on the resource, so they
+  # read from its side.
+  def describe(%{kind: "group_created", new_value: %{"name" => name}}),
+    do: "Created the #{name} group"
+
+  def describe(%{kind: "group_updated", old_value: %{"name" => old}, new_value: %{"name" => new}})
+      when old != new,
+      do: "Renamed the #{old} group to #{new}"
+
+  def describe(%{
+        kind: "group_updated",
+        old_value: %{"group_set" => old_set},
+        new_value: %{"name" => name, "group_set" => new_set}
+      })
+      when old_set != new_set do
+    case new_set do
+      nil -> "Took the #{name} group out of #{old_set}"
+      set -> "Moved the #{name} group into #{set}"
+    end
+  end
+
+  def describe(%{kind: "group_updated", new_value: %{"name" => name}}),
+    do: "Changed the #{name} group"
+
+  def describe(%{kind: "group_deleted", old_value: %{"name" => name}}),
+    do: "Deleted the #{name} group"
+
+  def describe(%{kind: "group_set_created", new_value: %{"name" => name}}),
+    do: "Created the #{name} group set"
+
+  def describe(%{
+        kind: "group_set_updated",
+        old_value: %{"exclusive" => was},
+        new_value: %{"name" => name, "exclusive" => now}
+      })
+      when was != now,
+      do: if(now, do: "Made #{name} exclusive", else: "Made #{name} non-exclusive")
+
+  def describe(%{
+        kind: "group_set_updated",
+        old_value: %{"name" => old},
+        new_value: %{"name" => new}
+      })
+      when old != new,
+      do: "Renamed the #{old} group set to #{new}"
+
+  def describe(%{kind: "group_set_updated", new_value: %{"name" => name}}),
+    do: "Changed the #{name} group set"
+
+  def describe(%{kind: "group_set_deleted", old_value: %{"name" => name}}),
+    do: "Deleted the #{name} group set"
+
+  def describe(%{kind: "group_member_added", new_value: %{"name" => name}}),
+    do: "Added to #{name}"
+
+  def describe(%{kind: "group_member_removed", metadata: %{"reason" => "group_deleted"}} = event),
+    do: "Left #{event.old_value["name"]}, which was deleted"
+
+  def describe(%{kind: "group_member_removed", old_value: %{"name" => name}}),
+    do: "Removed from #{name}"
+
   def describe(%{kind: "limit_set", field: field}),
     do: "Changed the #{String.replace(field, "_", " ")} limit"
 
