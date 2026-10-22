@@ -17,9 +17,13 @@ defmodule Renga.Repo do
   `timeout_ms` instead of the connection's baseline `statement_timeout`
   (RFD 21), and returns the transaction's result.
 
-  `fun` receives query options carrying a matching client-side `:timeout`;
+  The transaction itself gets a client-side deadline of `timeout_ms` plus a
+  margin, and `fun` receives query options carrying the same `:timeout`;
   pass them to every query inside, since Ecto's default client timeout (15
-  seconds) would otherwise end a longer statement first.
+  seconds) would otherwise end a longer statement first. That deadline
+  covers the whole transaction, not each statement, so keep the work inside
+  to one bounded batch. Nested in an outer transaction, the outer deadline
+  still applies; DBConnection cannot extend it.
 
   `timeout_ms` may not exceed `background_statement_timeout_ms/0`. Only
   approved background work uses this, never request handling: the baseline
@@ -43,18 +47,23 @@ defmodule Renga.Repo do
             "statement timeout #{timeout_ms}ms exceeds the background maximum of #{maximum}ms"
     end
 
-    transaction(fn ->
-      %{rows: [[previous]]} = query!("SHOW statement_timeout")
-      # SET LOCAL takes no bind parameters; set_config is its parameterized form.
-      set_local_statement_timeout("#{timeout_ms}ms")
-      result = fun.(timeout: timeout_ms + @client_timeout_margin_ms)
-      set_local_statement_timeout(previous)
-      result
-    end)
+    options = [timeout: timeout_ms + @client_timeout_margin_ms]
+
+    transaction(
+      fn ->
+        %{rows: [[previous]]} = query!("SHOW statement_timeout", [], options)
+        # SET LOCAL takes no bind parameters; set_config is its parameterized form.
+        set_local_statement_timeout("#{timeout_ms}ms", options)
+        result = fun.(options)
+        set_local_statement_timeout(previous, options)
+        result
+      end,
+      options
+    )
   end
 
-  defp set_local_statement_timeout(value),
-    do: query!("SELECT set_config('statement_timeout', $1, true)", [value])
+  defp set_local_statement_timeout(value, options),
+    do: query!("SELECT set_config('statement_timeout', $1, true)", [value], options)
 
   @doc """
   The longer per-statement timeout approved background work may use, in

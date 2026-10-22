@@ -41,9 +41,24 @@ defmodule Renga.Repo.StatementTimeoutTest do
     assert current_timeout() == [["1min"]]
   end
 
-  test "passes a client timeout longer than the statement timeout" do
-    assert {:ok, options} = Repo.with_statement_timeout(120_000, & &1)
-    assert options[:timeout] > 120_000
+  test "outlasts the pool's default client timeout, for the transaction and its queries" do
+    # A separate pool whose default client timeout is shorter than the
+    # statement the override allows.
+    config =
+      Keyword.merge(Repo.config(),
+        name: nil,
+        pool: DBConnection.ConnectionPool,
+        pool_size: 1,
+        timeout: 500
+      )
+
+    pool = start_supervised!(%{id: :short_pool, start: {Repo, :start_link, [config]}})
+    Repo.put_dynamic_repo(pool)
+
+    assert {:ok, %{rows: [[""]]}} =
+             Repo.with_statement_timeout(3000, fn options ->
+               Repo.query!("SELECT pg_sleep(1)::text", [], options)
+             end)
   end
 
   test "a statement over the timeout is cancelled and the connection survives" do

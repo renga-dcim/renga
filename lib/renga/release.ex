@@ -118,7 +118,9 @@ defmodule Renga.Release do
 
   # Migrations may rewrite large tables, so they run without the baseline
   # statement timeout that bounds application queries (RFD 21). This only
-  # changes the configuration of the migrating process's own repos.
+  # changes the configuration of the migrating VM's own repos, which
+  # `bin/migrate` starts fresh with `eval`; it would not reach a pool that
+  # is already running.
   defp without_statement_timeout do
     for repo <- repos() do
       config = Application.get_env(@app, repo, [])

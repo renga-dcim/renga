@@ -50,7 +50,9 @@ defmodule Renga.RuntimeConfigTest do
             %{
               "DATABASE_URL" => database_url(nil),
               "SECRET_KEY_BASE" => @secret,
-              "PHX_HOST" => "renga.example.com"
+              "PHX_HOST" => "renga.example.com",
+              "DATABASE_STATEMENT_TIMEOUT" => nil,
+              "DATABASE_BACKGROUND_STATEMENT_TIMEOUT" => nil
             },
             environment
           ),
@@ -122,7 +124,12 @@ defmodule Renga.RuntimeConfigTest do
 
   defp with_env(environment, fun) do
     previous = Map.new(environment, fn {name, _value} -> {name, System.get_env(name)} end)
-    System.put_env(environment)
+
+    # A nil value unsets the variable for the call.
+    Enum.each(environment, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
 
     try do
       fun.()
