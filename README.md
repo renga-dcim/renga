@@ -79,7 +79,7 @@ runtime server and database settings with environment variables:
 | --- | --- | --- |
 | `DATABASE_URL` | yes | `ecto://USER:PASS@HOST/DATABASE` |
 | `SECRET_KEY_BASE` | yes | Generate with `mix phx.gen.secret` |
-| `PHX_HOST` | yes | Public host name used in generated URLs |
+| `PHX_HOST` | yes | Public host name used in generated URLs, and the home agents are sent to (RFD 23) |
 | `DATABASE_SSL` | no | `true` to require TLS, verifying the server certificate against the OS trust store and the URL's host name; any `ssl` query option in `DATABASE_URL` must also be `true` |
 | `POOL_SIZE` | no | Database connections per node (default 10) |
 | `DATABASE_STATEMENT_TIMEOUT` | no | Longest a single application statement may run, in milliseconds (default 30000), so one organization's slow query cannot hold a connection others need (RFD 21). It is sent as a connection startup parameter, so a PgBouncer in front of the database must accept `statement_timeout` (do not list it in `ignore_startup_parameters`, which would drop the bound). `bin/migrate` runs without it |
@@ -87,6 +87,7 @@ runtime server and database settings with environment variables:
 | `ECTO_IPV6` | no | `true` to reach the database over IPv6 |
 | `DNS_CLUSTER_QUERY` | no | DNS name that resolves to every node, for clustering |
 | `PORT` | no | HTTP port (default 4000) |
+| `DEPLOYMENT_ID` | no | A short, non-secret name for this deployment, such as `eu1`: at most 16 lowercase letters, digits, and hyphens. New intake keys carry it so a resolver can route agents here (RFD 23); existing keys keep working |
 
 Run `/app/bin/migrate` once per deploy, before new nodes start, then run
 `/app/bin/server`. Put the server behind a TLS-terminating reverse proxy; the

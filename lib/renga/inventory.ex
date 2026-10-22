@@ -15,6 +15,7 @@ defmodule Renga.Inventory do
   alias Renga.Authorization
   alias Renga.Catalog.ExpectedComponent
   alias Renga.Catalog.HardwareAssignment
+  alias Renga.Deployment
   alias Renga.Inventory.Address
   alias Renga.Inventory.AddressEvidence
   alias Renga.Inventory.Agent
@@ -137,9 +138,10 @@ defmodule Renga.Inventory do
   """
   def create_intake_api_key(%Scope{} = scope, attrs) do
     organization_management_transaction(scope, "intake_keys.manage", fn ->
-      token = generate_intake_api_key()
+      deployment_id = Deployment.id()
+      token = generate_intake_api_key(deployment_id)
 
-      case %IntakeApiKey{organization_id: scope.organization_id}
+      case %IntakeApiKey{organization_id: scope.organization_id, deployment_id: deployment_id}
            |> IntakeApiKey.create_changeset(attrs, hash_intake_api_key(token))
            |> Repo.insert() do
         {:ok, key} -> {:ok, {key, token}}
@@ -2765,8 +2767,12 @@ defmodule Renga.Inventory do
     if DateTime.compare(first, second) == :gt, do: second, else: first
   end
 
-  defp generate_intake_api_key do
+  # A deployment identifier sits between the prefix and the secret in the
+  # open (RFD 23). It is only an annotation: authentication hashes the whole
+  # key, so a key with a missing or wrong identifier still matches its hash.
+  defp generate_intake_api_key(deployment_id) do
     @intake_api_key_prefix <>
+      if(deployment_id, do: deployment_id <> "_", else: "") <>
       Base.url_encode64(:crypto.strong_rand_bytes(@intake_api_key_bytes), padding: false)
   end
 

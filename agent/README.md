@@ -168,6 +168,45 @@ is currently no signal-triggered reload, so edit the file atomically or restart
 the service when an immediate change is required. Logs are structured JSON on
 stderr; systemd records them in the journal.
 
+### Home deployment
+
+`renga_url` is where the agent asks for its _home_, the deployment it sends
+every authenticated request to (RFD 23). A Renga deployment answers with its own
+public URL, so pointing `renga_url` at a deployment works as before. An operator
+running several deployments can instead point every agent at one resolver
+address, which answers with the deployment that owns the intake key.
+
+Before its first check-in, the agent sends `GET /api/v1/agent/home` to
+`renga_url` with the deployment identifier read from its intake key (empty for a
+key that carries none). That request carries no credential, so the intake key
+only ever reaches the resolved home. The home must be an `https` origin unless
+`allow_insecure_http` is set, and redirects are not followed. The agent stores
+the answer in `home.json` under the state directory and reuses it on later
+starts. It asks again when `renga_url` or the key's deployment identifier
+changes, or when the file is deleted. While the address cannot be reached at
+startup, the daemon keeps retrying, backing off from 5 seconds to 5 minutes;
+`--once` fails instead. A reload that changes `renga_url` or the key's
+identifier resolves again in the background, so check-ins continue meanwhile,
+and takes effect only once the new home is usable; otherwise the previous
+configuration and home stay in place.
+
+When the home answers `410 Gone` with `{"error": "moved"}`, the organization
+now lives on another deployment. The agent stops retrying that request, keeps
+the observation queued, deletes `home.json`, and asks `renga_url` again. A
+different answer becomes the new home at once, with the same installation
+identity. The same answer, or no answer, means the resolver has not caught up,
+so the agent keeps sending to its current home and asks again after 30
+seconds, doubling up to 15 minutes, until a different home is named. A `--once`
+run that hears `moved` deletes `home.json` so the next run resolves again. Any
+other status, including `401` and `403`, never triggers resolution. The agent
+logs `renga_url`, the home, and when the home was resolved at startup and after
+every resolution.
+
+Upgrade the Renga server before its agents: an agent pointed directly at a
+server that does not answer `/api/v1/agent/home` yet gets `404` and does not
+start, because it never sends its intake key to an address that has not named
+itself as the home.
+
 ## Jobs
 
 Renga can ask an agent to run a job, such as collecting inventory now instead

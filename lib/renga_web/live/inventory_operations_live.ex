@@ -3,6 +3,7 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Deployment
   alias Renga.Inventory
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
@@ -17,6 +18,7 @@ defmodule RengaWeb.InventoryOperationsLive do
      socket
      |> assign(:page_title, "Collectors")
      |> assign(:issued_token, nil)
+     |> assign(:deployment_id, Deployment.id())
      |> assign(:key_form, key_form())
      |> stream_configure(:sources, dom_id: &"collector-#{&1.id}")
      |> stream_configure(:intake_api_keys, dom_id: &"intake-key-#{&1.id}")
@@ -154,6 +156,9 @@ defmodule RengaWeb.InventoryOperationsLive do
             <p class="mt-1 text-xs text-fg-muted">
               Several active keys let a whole fleet rotate without downtime.
             </p>
+            <p :if={@deployment_id} id="intake-key-deployment-id" class="mt-1 text-xs text-fg-muted">
+              New keys carry this deployment's identifier, <span class="font-mono text-fg">{@deployment_id}</span>. Older keys keep working; rotate them to add it.
+            </p>
           </div>
 
           <.side_panel
@@ -255,7 +260,12 @@ defmodule RengaWeb.InventoryOperationsLive do
             >
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium text-fg">{key.name}</p>
-                <p class="text-xs text-fg-muted">Created {format_time(key.inserted_at)}</p>
+                <p class="text-xs text-fg-muted">
+                  Created {format_time(key.inserted_at)}
+                  <span :if={key.deployment_id} id={"intake-key-#{key.id}-deployment-id"}>
+                    · Deployment <span class="font-mono">{key.deployment_id}</span>
+                  </span>
+                </p>
               </div>
               <span class={[
                 "inline-flex items-center gap-1.5 text-xs font-medium",

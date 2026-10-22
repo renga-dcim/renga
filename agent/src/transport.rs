@@ -5,8 +5,8 @@ use crate::{
     config::{Config, DELIVERY_BUDGET},
     installation_key::InstallationKey,
     payload::{
-        CheckIn, CheckInAck, JobClaim, JobOffer, JobReport, LeaseRequest, LeaseResponse, LeasedJob,
-        Observation, ReportAck, MAX_OBSERVATION_BYTES,
+        AgentHome, CheckIn, CheckInAck, JobClaim, JobOffer, JobReport, LeaseRequest, LeaseResponse,
+        LeasedJob, Observation, ReportAck, MAX_OBSERVATION_BYTES,
     },
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -17,13 +17,23 @@ use reqwest::{
     StatusCode, Url,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt, io::Read, sync::Arc, thread, time::Duration};
+use std::{
+    fmt,
+    io::Read,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 use tracing::warn;
 
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
 const JOB_LEASE_PATH: &str = "/api/v1/agent/jobs/lease";
+const HOME_PATH: &str = "/api/v1/agent/home";
 const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
 const BACKOFF_SLICE: Duration = Duration::from_millis(25);
 /// Ten leased jobs with their parameters fit well inside this; anything
@@ -48,6 +58,7 @@ pub struct TransportError {
     message: String,
     kind: FailureKind,
     status: Option<StatusCode>,
+    moved: bool,
 }
 
 impl TransportError {
@@ -56,6 +67,7 @@ impl TransportError {
             message,
             kind,
             status: None,
+            moved: false,
         }
     }
 
@@ -77,6 +89,11 @@ impl TransportError {
 
     pub fn kind(&self) -> FailureKind {
         self.kind
+    }
+
+    /// Whether the home said this agent's organization now lives on another deployment.
+    pub fn is_moved(&self) -> bool {
+        self.moved
     }
 
     fn transient(&self) -> bool {
@@ -111,40 +128,28 @@ pub struct HttpClient {
     attempts: u32,
     request_timeout: Duration,
     cancellation: Cancellation,
+    /// Raised by any clone that hears `410 moved`, so the daemon resolves the home again.
+    moved: Arc<AtomicBool>,
 }
 
 impl HttpClient {
+    /// A client that sends every request to the configured `renga_url` itself.
     pub fn new(config: &Config, cancellation: Cancellation) -> Result<Self, TransportError> {
-        let has_explicit_authority = config
-            .renga_url
-            .split_once("://")
-            .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
-        let base_url = Url::parse(&config.renga_url).map_err(|_| {
-            TransportError::new("invalid Renga server URL".into(), FailureKind::Permanent)
-        })?;
-        if base_url.scheme() == "http" && !config.allow_insecure_http {
-            return Err(TransportError::new(
-                "Renga server URL must use HTTPS unless insecure HTTP is explicitly enabled".into(),
-                FailureKind::Permanent,
-            ));
-        }
-        // The agent API is rooted at the origin. Rejecting base paths avoids silently
-        // discarding an operator-supplied path when joining absolute API routes.
-        if !has_explicit_authority
-            || !matches!(base_url.scheme(), "http" | "https")
-            || base_url.host_str().is_none()
-            || !base_url.username().is_empty()
-            || base_url.password().is_some()
-            || base_url.query().is_some()
-            || base_url.fragment().is_some()
-            || base_url.path() != "/"
-        {
-            return Err(TransportError::new(
-                "Renga server URL must be an HTTP(S) origin without credentials, path, query, or fragment"
-                    .into(),
-                FailureKind::Permanent,
-            ));
-        }
+        let base_url = origin_url(
+            &config.renga_url,
+            config.allow_insecure_http,
+            "Renga server URL",
+        )?;
+        Self::for_home(config, &base_url, cancellation)
+    }
+
+    /// A client that sends every request to `home`, the deployment `renga_url` resolved to.
+    pub fn for_home(
+        config: &Config,
+        home: &Url,
+        cancellation: Cancellation,
+    ) -> Result<Self, TransportError> {
+        let base_url = origin_url(home.as_str(), config.allow_insecure_http, "home URL")?;
         let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
         let lease_url = endpoint_url(&base_url, JOB_LEASE_PATH)?;
@@ -157,22 +162,7 @@ impl HttpClient {
             HeaderValue::from_str(&config.installation_id.to_string()).map_err(|_| {
                 TransportError::new("invalid installation ID".into(), FailureKind::Permanent)
             })?;
-        // Pin both the provider and roots so static installations neither depend on a host CA
-        // store nor inherit a process-global Rustls provider selected by another library.
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|error| {
-            TransportError::new(
-                format!("cannot configure TLS protocol versions: {error}"),
-                FailureKind::Permanent,
-            )
-        })?
-        .with_root_certificates(rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-        ))
-        .with_no_client_auth();
+        let tls = pinned_tls()?;
         // The notice socket shares the same pinned TLS settings and credentials.
         let notices = NoticeEndpoint {
             base_url: base_url.clone(),
@@ -181,19 +171,8 @@ impl HttpClient {
             tls: Arc::new(tls.clone()),
             timeout: config.request_timeout,
         };
-        let client = Client::builder()
-            .tls_backend_preconfigured(tls)
-            .timeout(config.request_timeout)
-            .redirect(Policy::none())
-            .build()
-            .map_err(|e| {
-                TransportError::new(
-                    format!("cannot build HTTP client: {e}"),
-                    FailureKind::Permanent,
-                )
-            })?;
         Ok(Self {
-            client,
+            client: build_client(tls, config.request_timeout)?,
             base_url,
             checkin_url,
             observation_url,
@@ -206,6 +185,7 @@ impl HttpClient {
             attempts: config.max_retry_attempts,
             request_timeout: config.request_timeout,
             cancellation,
+            moved: Arc::default(),
         })
     }
     /// Signs claims of privileged job offers with `key` (RFD 13). Without
@@ -215,6 +195,33 @@ impl HttpClient {
             installation_key: Some(key),
             ..self
         }
+    }
+
+    /// The origin every request goes to.
+    pub fn home(&self) -> &Url {
+        &self.base_url
+    }
+
+    /// Whether a request heard `410 moved` since the last call, clearing the flag.
+    pub fn take_moved(&self) -> bool {
+        self.moved.swap(false, Ordering::SeqCst)
+    }
+
+    /// Shares `previous`'s move signal, for a client that replaces it without changing the home,
+    /// so a worker still holding the previous client can report a move. A client for a new home
+    /// keeps its own signal, so the old home's answers are ignored.
+    pub fn sharing_moved_signal(mut self, previous: &HttpClient) -> Self {
+        if self.base_url == previous.base_url {
+            self.moved = Arc::clone(&previous.moved);
+        }
+        self
+    }
+
+    fn noting_moved<T>(&self, result: Result<T, TransportError>) -> Result<T, TransportError> {
+        if result.as_ref().is_err_and(TransportError::is_moved) {
+            self.moved.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     /// Where and how to open the job notice socket (see `crate::notices`).
@@ -315,7 +322,7 @@ impl HttpClient {
         body: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
-        retry(
+        self.noting_moved(retry(
             self.attempts,
             self.request_timeout,
             || {
@@ -332,7 +339,7 @@ impl HttpClient {
             },
             thread::sleep,
             cancelled,
-        )
+        ))
     }
     fn post_json<T: Serialize, R: DeserializeOwned>(
         &self,
@@ -350,7 +357,7 @@ impl HttpClient {
 
     /// Posts JSON and returns the successful response's body.
     fn post_reading<T: Serialize>(&self, url: Url, value: &T) -> Result<Vec<u8>, TransportError> {
-        retry(
+        self.noting_moved(retry(
             self.attempts,
             self.request_timeout,
             || {
@@ -366,7 +373,7 @@ impl HttpClient {
             },
             thread::sleep,
             || self.cancellation.cancelled(),
-        )
+        ))
     }
 }
 
@@ -409,6 +416,110 @@ pub fn encode_observation(value: &Observation) -> Result<Vec<u8>, TransportError
         ));
     }
     Ok(body)
+}
+
+/// Asks `renga_url` where this agent's home deployment is (RFD 23). The request carries no
+/// credential, so the intake key never reaches an address that is only a resolver.
+pub fn fetch_home(
+    config: &Config,
+    deployment: &str,
+    cancellation: &Cancellation,
+) -> Result<Url, TransportError> {
+    let base_url = origin_url(
+        &config.renga_url,
+        config.allow_insecure_http,
+        "Renga server URL",
+    )?;
+    let mut url = endpoint_url(&base_url, HOME_PATH)?;
+    url.query_pairs_mut().append_pair("deployment", deployment);
+    let client = build_client(pinned_tls()?, config.request_timeout)?;
+    let body = retry(
+        config.max_retry_attempts,
+        config.request_timeout,
+        || {
+            let response = client.get(url.clone()).send().map_err(request_error)?;
+            response_body(response)
+        },
+        thread::sleep,
+        || cancellation.cancelled(),
+    )?;
+    let response: AgentHome = serde_json::from_slice(&body).map_err(|error| {
+        TransportError::new(
+            format!("cannot parse home response: {error}"),
+            FailureKind::Permanent,
+        )
+    })?;
+    origin_url(&response.home, config.allow_insecure_http, "home URL")
+}
+
+/// Parses an HTTP(S) origin. The agent API is rooted at the origin, so rejecting base paths
+/// avoids silently discarding an operator-supplied path when joining absolute API routes.
+pub(crate) fn origin_url(
+    value: &str,
+    allow_insecure_http: bool,
+    name: &str,
+) -> Result<Url, TransportError> {
+    let has_explicit_authority = value
+        .split_once("://")
+        .is_some_and(|(_, authority)| !authority.is_empty() && !authority.starts_with('/'));
+    let url = Url::parse(value)
+        .map_err(|_| TransportError::new(format!("invalid {name}"), FailureKind::Permanent))?;
+    if url.scheme() == "http" && !allow_insecure_http {
+        return Err(TransportError::new(
+            format!("{name} must use HTTPS unless insecure HTTP is explicitly enabled"),
+            FailureKind::Permanent,
+        ));
+    }
+    if !has_explicit_authority
+        || !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(TransportError::new(
+            format!(
+                "{name} must be an HTTP(S) origin without credentials, path, query, or fragment"
+            ),
+            FailureKind::Permanent,
+        ));
+    }
+    Ok(url)
+}
+
+/// Pins both the provider and roots so static installations neither depend on a host CA store
+/// nor inherit a process-global Rustls provider selected by another library.
+fn pinned_tls() -> Result<rustls::ClientConfig, TransportError> {
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| {
+        TransportError::new(
+            format!("cannot configure TLS protocol versions: {error}"),
+            FailureKind::Permanent,
+        )
+    })?
+    .with_root_certificates(rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    ))
+    .with_no_client_auth())
+}
+
+fn build_client(tls: rustls::ClientConfig, timeout: Duration) -> Result<Client, TransportError> {
+    Client::builder()
+        .tls_backend_preconfigured(tls)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .map_err(|e| {
+            TransportError::new(
+                format!("cannot build HTTP client: {e}"),
+                FailureKind::Permanent,
+            )
+        })
 }
 
 fn request_error(error: reqwest::Error) -> TransportError {
@@ -467,16 +578,29 @@ fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, Transport
 
 fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
     let excerpt = bounded_error_excerpt(response);
-    TransportError::new(
-        format!("server returned {status}; response excerpt: {excerpt:?}"),
-        failure_kind(status, &excerpt),
-    )
-    .with_status(status)
+    TransportError {
+        moved: moved(status, &excerpt),
+        ..TransportError::new(
+            format!("server returned {status}; response excerpt: {excerpt:?}"),
+            failure_kind(status, &excerpt),
+        )
+        .with_status(status)
+    }
+}
+
+/// `410 moved` names an organization that now lives on another deployment (RFD 23). Any other
+/// `410` is not an answer the agent knows how to act on.
+fn moved(status: StatusCode, excerpt: &str) -> bool {
+    status == StatusCode::GONE
+        && serde_json::from_str::<serde_json::Value>(excerpt)
+            .is_ok_and(|body| body.get("error").and_then(|value| value.as_str()) == Some("moved"))
 }
 
 fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
     match status {
         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => FailureKind::Transient,
+        // The payload is fine; it waits for the agent to find its new home.
+        StatusCode::GONE if moved(status, excerpt) => FailureKind::Transient,
         status if status.is_server_error() => FailureKind::Transient,
         StatusCode::BAD_REQUEST
         | StatusCode::PAYLOAD_TOO_LARGE
@@ -522,7 +646,10 @@ fn retry<T>(
         }
         match operation() {
             Ok(value) => return Ok(value),
-            Err(error) if !error.transient() || attempt == attempts => return Err(error),
+            // Asking the same home again cannot succeed once it said the organization moved.
+            Err(error) if !error.transient() || error.is_moved() || attempt == attempts => {
+                return Err(error)
+            }
             Err(error) => {
                 // Do not start an attempt whose configured timeout cannot fit inside the fixed
                 // delivery budget; check-in interval plus this budget must remain below lease TTL.
@@ -630,6 +757,12 @@ mod tests {
             (StatusCode::UNAUTHORIZED, "", FailureKind::Permanent),
             (StatusCode::FORBIDDEN, "", FailureKind::Permanent),
             (StatusCode::NOT_FOUND, "", FailureKind::Permanent),
+            (
+                StatusCode::GONE,
+                r#"{"error":"moved"}"#,
+                FailureKind::Transient,
+            ),
+            (StatusCode::GONE, "", FailureKind::Permanent),
         ] {
             assert_eq!(failure_kind(status, excerpt), kind, "{status} {excerpt}");
         }
@@ -730,6 +863,59 @@ mod tests {
         config.allow_insecure_http = true;
         config.request_timeout = Duration::from_secs(5);
         HttpClient::new(&config, Cancellation::default()).unwrap()
+    }
+
+    #[test]
+    fn moved_stops_retrying_keeps_the_payload_and_raises_the_shared_flag() {
+        let (origin, server) = answer_once(410, r#"{"error":"moved"}"#);
+        let mut config = config(&origin, "token");
+        config.allow_insecure_http = true;
+        config.max_retry_attempts = 3;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let clone = client.clone();
+
+        // The stub answers once, so a retry would fail to connect instead.
+        let error = clone.post_checkin(&CheckIn::new(vec![], None)).unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.is_moved());
+        assert_eq!(error.kind(), FailureKind::Transient);
+        assert!(client.take_moved());
+        assert!(!client.take_moved());
+    }
+
+    #[test]
+    fn a_replacement_for_the_same_home_hears_the_previous_clients_moves() {
+        let (origin, server) = answer_once(410, r#"{"error":"moved"}"#);
+        let previous = insecure_client(&origin);
+        let worker = previous.clone();
+        let same_home = insecure_client(&origin).sharing_moved_signal(&previous);
+        let new_home =
+            insecure_client("http://elsewhere.invalid:1").sharing_moved_signal(&previous);
+
+        // A worker started before the replacement hears the move.
+        worker
+            .post_checkin(&CheckIn::new(vec![], None))
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(!new_home.take_moved());
+        assert!(same_home.take_moved());
+    }
+
+    #[test]
+    fn a_gone_without_moved_is_not_a_move() {
+        let (origin, server) = answer_once(410, r#"{"error":"gone"}"#);
+        let client = insecure_client(&origin);
+
+        let error = client
+            .post_checkin(&CheckIn::new(vec![], None))
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(!error.is_moved());
+        assert_eq!(error.kind(), FailureKind::Permanent);
+        assert!(!client.take_moved());
     }
 
     #[test]
