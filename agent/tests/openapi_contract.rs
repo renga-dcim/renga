@@ -18,6 +18,7 @@ use renga_agent::{
         ResourceKind, ScopedReport, SectionCompleteness, ServerResource, TaggingMode, TargetStatus,
         VlanMembership, VmDomain,
     },
+    power::{self, hwmon},
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -296,6 +297,41 @@ fn check_ins_match_the_contract() {
         "CheckIn",
         &CheckIn::new(vec![], None).with_installation_key(PresentedKey::ed25519(key.public_key())),
     );
+}
+
+#[test]
+fn host_power_batches_match_the_contract() {
+    let reading = |sensor: &str, boundary, watts| hwmon::Reading {
+        sensor: sensor.into(),
+        boundary,
+        watts,
+        window: std::time::Duration::from_secs(30),
+    };
+    let batch = power::batch(
+        &[
+            reading(
+                "acpi_power_meter/ACPI000D:00/power1",
+                hwmon::Boundary::HostInput,
+                Ok(245.5),
+            ),
+            reading(
+                "ibm-cffps/3-0068/power1",
+                hwmon::Boundary::SupplyInput,
+                Err(hwmon::SensorError {
+                    message: "busy".into(),
+                    denied: false,
+                }),
+            ),
+            reading(
+                "ibm-cffps/3-0068/power2",
+                hwmon::Boundary::SupplyOutput,
+                Ok(0.0),
+            ),
+        ],
+        chrono::Utc::now(),
+    );
+
+    assert_conforms("TelemetryBatch", &batch);
 }
 
 #[test]
