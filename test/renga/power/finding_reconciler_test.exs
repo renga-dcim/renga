@@ -200,7 +200,7 @@ defmodule Renga.Power.FindingReconcilerTest do
 
     reconcile!(scope)
     assert {pdu.id, "unexpected_draw", two.id} in open_findings(scope)
-    assert [_one] = for {_, "unexpected_draw", _} = finding <- open_findings(scope), do: finding
+    assert [_one] = for({_, "unexpected_draw", _} = finding <- open_findings(scope), do: finding)
 
     {[finding], 1} = Findings.list_findings(scope, domain: "power", kind: "unexpected_draw")
     assert finding.message == "Outlet 2 draws 120 W with no connection recorded."
