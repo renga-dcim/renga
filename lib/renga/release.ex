@@ -129,6 +129,22 @@ defmodule Renga.Release do
     end
   end
 
+  @doc """
+  Runs `fun` with the repositories started but not the rest of the
+  application, for release commands such as `bin/renga-admin`, and returns
+  its result.
+  """
+  def with_repos(fun) do
+    load_app()
+
+    Enum.reduce(repos(), fun, fn repo, inner ->
+      fn ->
+        {:ok, result, _apps} = Ecto.Migrator.with_repo(repo, fn _repo -> inner.() end)
+        result
+      end
+    end).()
+  end
+
   defp repos do
     Application.fetch_env!(@app, :ecto_repos)
   end
