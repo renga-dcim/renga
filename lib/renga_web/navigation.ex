@@ -149,6 +149,9 @@ defmodule RengaWeb.Navigation do
         section(:security, "Security", ~p"/settings/security", "hero-shield-check",
           keywords: ~w(mfa 2fa multi-factor authentication passkey require policy)
         ),
+        section(:groups, "Groups", ~p"/settings/groups", "hero-rectangle-group",
+          keywords: ~w(resource groups environment customer tenant sets)
+        ),
         section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
           keywords: ~w(rules triage automation subnet hostname labels)
         ),
