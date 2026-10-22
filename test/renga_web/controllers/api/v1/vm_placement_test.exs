@@ -146,6 +146,21 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       VmPlacements.placement(scope, vm_id, at(1)).defined_on |> Enum.map(& &1.host_resource_id)
 
     assert Enum.sort(hosts, :desc) == [host_id, nil]
+
+    # Neither a dummy driver nor an external transport is the host itself.
+    for {collector, uri} <- [
+          {"test", "test:///default"},
+          {"ext", "qemu+ext:///system?command=/opt/tunnel"}
+        ] do
+      report!(token, collector, "shutoff", at: 0, uri: uri)
+    end
+
+    hosts =
+      VmPlacements.placement(scope, vm_id, at(1)).defined_on
+      |> Map.new(&{&1.target.key, &1.host_resource_id})
+
+    assert hosts["test:///default"] == nil
+    assert hosts["qemu+ext:///system?command=/opt/tunnel"] == nil
   end
 
   test "another stream on an active hypervisor does not settle a conflict", %{

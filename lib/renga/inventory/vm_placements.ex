@@ -133,12 +133,11 @@ defmodule Renga.Inventory.VmPlacements do
     end
   end
 
-  defp local_uri?(uri) do
-    case URI.new(uri) do
-      {:ok, %URI{scheme: scheme, host: host}} when is_binary(scheme) -> host in [nil, ""]
-      _invalid -> false
-    end
-  end
+  # Only the local QEMU daemons are known to run guests on the installation's
+  # own machine. An empty host is not enough: `test:///default` is a dummy
+  # driver, and `+ext` or `+ssh` transports reach wherever their command or
+  # socket leads.
+  defp local_uri?(uri), do: uri in ["qemu:///system", "qemu:///session"]
 
   defp host_resources(scope, source_id) do
     ResourceIdentifierClaim
