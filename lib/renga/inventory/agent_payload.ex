@@ -46,6 +46,11 @@ defmodule Renga.Inventory.AgentPayload do
     "vm_provider" => %{scope: "hypervisor", resource_kind: "vm"}
   }
   @target_statuses ~w(reachable unreachable)
+  # RFD 11, "Virtualization collection": what a hypervisor says about one
+  # domain. Active states occupy the hypervisor; the rest are definitions.
+  @domain_states ~w(running idle paused shutting_down shutoff crashed pmsuspended unknown)
+  @domain_interface_types ~w(bridge network direct user other)
+  @max_domain_devices 256
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @max_scope_resources 1_000
   @max_scope_targets 1_000
@@ -100,6 +105,9 @@ defmodule Renga.Inventory.AgentPayload do
       completeness_sections: @completeness_sections,
       observation_scopes: @observation_scopes,
       collector_kinds: @collector_kinds,
+      domain_states: @domain_states,
+      domain_interface_types: @domain_interface_types,
+      max_domain_devices: @max_domain_devices,
       target_statuses: @target_statuses,
       strong_identifier_kinds: @strong_identifier_kinds,
       max_scope_resources: @max_scope_resources,
@@ -799,6 +807,101 @@ defmodule Renga.Inventory.AgentPayload do
     |> validate_interfaces(resource, path)
     |> validate_components(resource, path)
     |> validate_labels(resource, path)
+    |> validate_domain(resource, path, kind)
+  end
+
+  defp validate_domain(errors, resource, path, kind) do
+    case {Map.fetch(resource, "domain"), kind} do
+      {:error, _kind} ->
+        errors
+
+      {{:ok, %{} = domain}, "vm"} ->
+        path = "#{path}.domain"
+
+        errors
+        |> validate_required_string(domain, "name", "#{path}.name")
+        |> validate_string_length(domain, "name", "#{path}.name")
+        |> validate_required_inclusion(domain, "state", @domain_states, "#{path}.state")
+        |> validate_optional_boolean(domain, "persistent", "#{path}.persistent")
+        |> validate_optional_positive_integer(domain, "vcpus", "#{path}.vcpus")
+        |> validate_optional_positive_integer(domain, "memory_mib", "#{path}.memory_mib")
+        |> validate_domain_devices(domain, "disks", path, &validate_domain_disk/3)
+        |> validate_domain_devices(domain, "interfaces", path, &validate_domain_interface/3)
+
+      {{:ok, _invalid}, "vm"} ->
+        [error("#{path}.domain", "must be an object") | errors]
+
+      {{:ok, _domain}, _other} ->
+        [error("#{path}.domain", "is only allowed for a vm") | errors]
+    end
+  end
+
+  defp validate_domain_devices(errors, domain, key, path, validate) do
+    case Map.get(domain, key) do
+      nil ->
+        errors
+
+      devices when is_list(devices) and length(devices) > @max_domain_devices ->
+        [error("#{path}.#{key}", "must have at most #{@max_domain_devices} entries") | errors]
+
+      devices when is_list(devices) ->
+        devices
+        |> Enum.with_index()
+        |> Enum.reduce(errors, fn
+          {%{} = device, index}, errors ->
+            validate.(errors, device, "#{path}.#{key}.#{index}")
+
+          {_invalid, index}, errors ->
+            [error("#{path}.#{key}.#{index}", "must be an object") | errors]
+        end)
+
+      _invalid ->
+        [error("#{path}.#{key}", "must be a list") | errors]
+    end
+  end
+
+  defp validate_domain_disk(errors, disk, path) do
+    errors
+    |> validate_required_string(disk, "target", "#{path}.target")
+    |> validate_string_length(disk, "target", "#{path}.target")
+    |> then(fn errors ->
+      Enum.reduce(~w(device bus format source), errors, fn key, errors ->
+        validate_optional_string(errors, disk, key, "#{path}.#{key}")
+      end)
+    end)
+  end
+
+  defp validate_domain_interface(errors, interface, path) do
+    errors
+    |> validate_required_mac(interface, "#{path}.mac_address")
+    |> validate_optional_inclusion(interface, "type", @domain_interface_types, "#{path}.type")
+    |> then(fn errors ->
+      Enum.reduce(~w(source model target), errors, fn key, errors ->
+        validate_optional_string(errors, interface, key, "#{path}.#{key}")
+      end)
+    end)
+  end
+
+  defp validate_required_mac(errors, attrs, path) do
+    case Map.get(attrs, "mac_address") do
+      nil -> [error(path, "is required") | errors]
+      _value -> validate_optional_mac(errors, attrs, path)
+    end
+  end
+
+  defp validate_required_inclusion(errors, attrs, key, accepted_values, path) do
+    case Map.fetch(attrs, key) do
+      :error -> [error(path, "is required") | errors]
+      {:ok, value} -> validate_inclusion_value(errors, value, accepted_values, path)
+    end
+  end
+
+  defp validate_optional_boolean(errors, attrs, key, path) do
+    case Map.get(attrs, key) do
+      nil -> errors
+      value when is_boolean(value) -> errors
+      _invalid -> [error(path, "must be a boolean") | errors]
+    end
   end
 
   # Operator-configured labels the agent sends with each report; triage

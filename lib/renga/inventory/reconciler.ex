@@ -744,7 +744,7 @@ defmodule Renga.Inventory.Reconciler do
     base_name =
       Enum.find_value(@weak_identifier_kinds, fn identifier_kind ->
         Enum.find_value(identifiers, &if(&1.kind == identifier_kind, do: &1.normalized_value))
-      end) || kind
+      end) || domain_name(observation) || kind
 
     if Repo.exists?(
          from resource in Resource,
@@ -760,6 +760,15 @@ defmodule Renga.Inventory.Reconciler do
       "#{String.slice(base_name, 0, 242)}-#{suffix}"
     else
       String.slice(base_name, 0, 255)
+    end
+  end
+
+  # A hypervisor knows a VM by its domain name long before any guest agent
+  # reports a hostname.
+  defp domain_name(observation) do
+    case resource_payload(observation.payload) do
+      %{"domain" => %{"name" => name}} when is_binary(name) and name != "" -> name
+      _resource -> nil
     end
   end
 

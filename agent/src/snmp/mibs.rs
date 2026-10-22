@@ -203,6 +203,7 @@ pub fn switch(
                 .map(|entry| entry.interface)
                 .collect(),
         ),
+        domain: None,
     };
     Ok((resource, support))
 }

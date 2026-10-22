@@ -11,11 +11,12 @@ use renga_agent::{
     installation_key::InstallationKey,
     payload::{
         Address, AgentHome, CheckIn, CheckInAck, Collector, CollectorIdentifiers, CollectorKind,
-        CollectorResource, CollectorResourceKind, Component, HostAttributes, HypervisorStatus,
-        Identifiers, Interface, JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse,
-        LeasedJob, Neighbor, Observation, PresentedKey, QueueReport, Reachability, ReportAck,
-        ReportScope, ReportType, ResourceKind, ScopedReport, SectionCompleteness, ServerResource,
-        TaggingMode, TargetStatus, VlanMembership,
+        CollectorResource, CollectorResourceKind, Component, DomainDisk, DomainInterface,
+        DomainInterfaceType, DomainState, HostAttributes, HypervisorStatus, Identifiers, Interface,
+        JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Neighbor,
+        Observation, PresentedKey, QueueReport, Reachability, ReportAck, ReportScope, ReportType,
+        ResourceKind, ScopedReport, SectionCompleteness, ServerResource, TaggingMode, TargetStatus,
+        VlanMembership, VmDomain,
     },
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -185,6 +186,7 @@ fn a_switch_poller_report_matches_the_contract() {
                 }]),
                 ..interface("ethernet1/1/1", "ethernet", Some("52:54:00:aa:00:01"))
             }]),
+            domain: None,
         }],
     )
     .with_section_completeness(SectionCompleteness {
@@ -219,6 +221,27 @@ fn a_hypervisor_report_matches_the_contract() {
             },
             attributes: None,
             interfaces: None,
+            domain: Some(VmDomain {
+                name: "web-01".into(),
+                state: DomainState::Running,
+                persistent: Some(true),
+                vcpus: Some(2),
+                memory_mib: Some(4_096),
+                disks: vec![DomainDisk {
+                    target: "vda".into(),
+                    device: Some("disk".into()),
+                    bus: Some("virtio".into()),
+                    format: Some("qcow2".into()),
+                    source: Some("/var/lib/libvirt/images/web-01.qcow2".into()),
+                }],
+                interfaces: vec![DomainInterface {
+                    mac_address: "52:54:00:12:34:56".into(),
+                    kind: DomainInterfaceType::Bridge,
+                    source: Some("br0".into()),
+                    model: Some("virtio".into()),
+                    target: Some("vnet0".into()),
+                }],
+            }),
         }],
     );
 

@@ -8,6 +8,7 @@ pub mod home;
 pub mod identity;
 pub mod installation_key;
 pub mod jobs;
+pub mod libvirt;
 pub mod logging;
 pub mod notices;
 pub mod payload;

@@ -10,6 +10,7 @@ use renga_agent::{
         worker::{PolicyGeneration, Worker},
         Catalog, JobPolicy,
     },
+    libvirt::worker::Module as LibvirtModule,
     logging,
     notices::{Listener, Notices},
     payload::{
@@ -350,6 +351,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let mut delivery_worker = None;
     spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
     let mut snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
+    let mut libvirt = LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -370,6 +372,9 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             if snmp.collectors() != config.snmp.as_slice() {
                 snmp.stop();
                 snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
+            }
+            if libvirt.collector() != config.libvirt.as_ref() {
+                libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
             }
             scheduler.refresh_intervals(
                 Instant::now(),
@@ -618,6 +623,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     }
     // A request still in flight at shutdown may have heard `moved` after the loop stopped.
     discard_home_if_moved(&client, &home, &args.state_directory);
+    // A virsh call in flight must be killed and reaped before the agent exits.
+    libvirt.shutdown();
     info!("daemon stopped");
     Ok(())
 }
@@ -1883,6 +1890,7 @@ mod tests {
             labels: BTreeMap::new(),
             jobs: Default::default(),
             snmp: Vec::new(),
+            libvirt: None,
         }
     }
 

@@ -24,7 +24,8 @@ pub fn run(command: &mut Command, cancellation: &Cancellation) -> io::Result<Out
     run_with_timeout(command, cancellation, COLLECTOR_COMMAND_TIMEOUT)
 }
 
-fn run_with_timeout(
+/// Like [`run`], with a caller-chosen limit.
+pub fn run_with_timeout(
     command: &mut Command,
     cancellation: &Cancellation,
     timeout: Duration,

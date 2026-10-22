@@ -305,6 +305,76 @@ pub struct CollectorResource {
     pub attributes: Option<HostAttributes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<Vec<Interface>>,
+    /// The hypervisor's view of a VM; `hypervisor` scope only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<VmDomain>,
+}
+
+/// What a hypervisor reports about one domain (RFD 11, "Virtualization collection"). Its NICs
+/// stay here rather than in `interfaces`, which belong to the guest's own view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VmDomain {
+    pub name: String,
+    pub state: DomainState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistent: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u64>,
+    pub disks: Vec<DomainDisk>,
+    pub interfaces: Vec<DomainInterface>,
+}
+
+/// Running, idle, paused, and shutting-down domains occupy the hypervisor; the rest are only
+/// defined on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainState {
+    Running,
+    Idle,
+    Paused,
+    ShuttingDown,
+    Shutoff,
+    Crashed,
+    Pmsuspended,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DomainDisk {
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DomainInterface {
+    pub mac_address: String,
+    #[serde(rename = "type")]
+    pub kind: DomainInterfaceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainInterfaceType {
+    Bridge,
+    Network,
+    Direct,
+    User,
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

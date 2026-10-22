@@ -248,6 +248,38 @@ Pollers run on their own threads, so a slow switch never delays host inventory
 or job check-ins. Reports go through the same on-disk queue as host
 observations, split by target to stay within the observation size limit.
 
+## Virtual machines over libvirt
+
+On a KVM hypervisor, the agent can also report the virtual machines libvirt
+defines there (RFD 11). It runs `virsh` in read-only mode, so it needs the
+`libvirt-clients` package (`libvirt-client` on Fedora) and access to libvirt's
+read-only socket, which most distributions grant to every local account.
+
+```toml
+[collectors.libvirt]
+id = "libvirt"                      # default; the collector stream in Renga
+uri = "qemu:///system"              # default
+interval_seconds = 300              # default 5 minutes, at least 60
+timeout_seconds = 10                # per virsh call
+```
+
+The URI also names the hypervisor in every report and log line, so it must not
+carry a password or a secret query parameter. For a remote hypervisor, keep
+credentials in libvirt's authentication configuration, SSH keys, or
+certificate files instead.
+
+Each poll reports every defined domain: its name, state, whether it is
+persistent, vCPU and memory allocation, disks, and virtual NICs with their MAC
+addresses and the bridge or network they attach to. Renga matches a VM to the
+host agent running inside it by the SMBIOS system UUID the guest sees (the
+domain's `<hwuuid>` when set, otherwise its UUID), so the two views become one
+machine. MAC addresses are only supporting evidence and never merge machines.
+
+A hypervisor whose domains cannot be listed is reported unreachable, and its
+VMs stay as Renga last saw them. A report counts as complete, and so lets Renga
+retire domains it no longer lists, only when every domain was read and fit in
+one report.
+
 ## Jobs
 
 Renga can ask an agent to run a job, such as collecting inventory now instead

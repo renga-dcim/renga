@@ -236,6 +236,7 @@ mod tests {
             labels: BTreeMap::new(),
             jobs: Default::default(),
             snmp: Vec::new(),
+            libvirt: None,
         }
     }
 

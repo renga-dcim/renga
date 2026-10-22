@@ -686,7 +686,19 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
            ]
          ), "targets.1.address"},
         {hypervisor_report([vm("VM-1")], status: "unreachable"), "resources.0"},
-        {Map.put(switch_report([]), "scope", "galaxy"), "scope"}
+        {Map.put(switch_report([]), "scope", "galaxy"), "scope"},
+        {switch_report([Map.put(switch("10.0.0.1", "SER-1"), "domain", domain())]),
+         "resources.0.domain"},
+        {hypervisor_report([Map.put(vm("VM-1"), "domain", Map.delete(domain(), "state"))]),
+         "resources.0.domain.state"},
+        {hypervisor_report([Map.put(vm("VM-1"), "domain", %{domain() | "state" => "asleep"})]),
+         "resources.0.domain.state"},
+        {hypervisor_report([
+           Map.put(vm("VM-1"), "domain", %{domain() | "interfaces" => [%{"type" => "bridge"}]})
+         ]), "resources.0.domain.interfaces.0.mac_address"},
+        {hypervisor_report([
+           Map.put(vm("VM-1"), "domain", %{domain() | "disks" => [%{"bus" => "virtio"}]})
+         ]), "resources.0.domain.disks.0.target"}
       ]
 
       for {payload, path} <- cases do
@@ -694,6 +706,24 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         assert %{"errors" => errors} = valid_api_response(conn, 422)
         assert Enum.any?(errors, &(&1["path"] == path)), "expected #{path} in #{inspect(errors)}"
       end
+    end
+  end
+
+  describe "libvirt domains (RFD 11 phase 3)" do
+    test "a hypervisor report carries each VM's domain", %{token: token} do
+      report =
+        post_observation(
+          token,
+          hypervisor_report([
+            Map.put(vm("6a4f3c2e-1b2d-4e5f-8a9b-0c1d2e3f4a5b"), "domain", domain())
+          ])
+        )
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => vm_id}]}} =
+               valid_api_response(report, 202)
+
+      # With no hostname to go on, the VM is named after its domain.
+      assert Repo.get!(Inventory.Resource, vm_id).name == "web-1"
     end
   end
 
@@ -897,6 +927,32 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
 
   defp partial_again(report),
     do: Map.put(report, "observation_id", "poll-#{System.unique_integer([:positive])}")
+
+  defp domain do
+    %{
+      "name" => "web-1",
+      "state" => "running",
+      "persistent" => true,
+      "vcpus" => 2,
+      "memory_mib" => 2048,
+      "disks" => [
+        %{
+          "target" => "vda",
+          "device" => "disk",
+          "bus" => "virtio",
+          "source" => "/var/lib/web-1.qcow2"
+        }
+      ],
+      "interfaces" => [
+        %{
+          "mac_address" => "52:54:00:12:34:56",
+          "type" => "bridge",
+          "source" => "br0",
+          "model" => "virtio"
+        }
+      ]
+    }
+  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

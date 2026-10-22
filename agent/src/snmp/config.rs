@@ -14,7 +14,7 @@ const TIMEOUT_MAX: u64 = 60;
 const CONCURRENCY_DEFAULT: usize = 4;
 const CONCURRENCY_MAX: usize = 32;
 // Must match `Renga.Inventory.AgentPayload`.
-const COLLECTOR_ID_MAX: usize = 64;
+pub(crate) const COLLECTOR_ID_MAX: usize = 64;
 const TARGETS_MAX: usize = 1_000;
 // Renga's string limit; a report naming a longer target would be rejected whole.
 const TARGET_ADDRESS_MAX: usize = 255;
@@ -255,7 +255,7 @@ impl Target {
     }
 }
 
-fn valid_collector_id(id: &str) -> bool {
+pub(crate) fn valid_collector_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= COLLECTOR_ID_MAX
