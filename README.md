@@ -105,7 +105,8 @@ API (RFD 22) and prints it once; `list` and `revoke ID_OR_NAME --actor NAME`
 manage existing tokens. Every change names its `--actor` and is recorded,
 whether it succeeds or is refused, in the `deployment_audit_events` table with
 an invocation ID, never with a token. `renga-admin limits set --organization
-SLUG --job-creation-rate N` overrides a limit for one organization (RFD 21),
+SLUG --actor NAME --job-creation-rate N` overrides a limit for one
+organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
 Owners see their limits and usage under Settings > Limits. Run `renga-admin`

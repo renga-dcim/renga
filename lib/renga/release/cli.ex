@@ -20,8 +20,8 @@ defmodule Renga.Release.CLI do
     renga-admin operator-tokens list
     renga-admin operator-tokens revoke ID_OR_NAME --actor NAME
     renga-admin limits show --organization SLUG
-    renga-admin limits set --organization SLUG --LIMIT VALUE [--LIMIT VALUE...]
-    renga-admin limits clear --organization SLUG --limit LIMIT
+    renga-admin limits set --organization SLUG --actor NAME --LIMIT VALUE [--LIMIT VALUE...]
+    renga-admin limits clear --organization SLUG --actor NAME --limit LIMIT
 
   Changes need --actor, the person making them, which the deployment audit
   log records with an invocation ID. --scope SCOPE may also be repeated.
@@ -104,21 +104,36 @@ defmodule Renga.Release.CLI do
     end
   end
 
-  # RFD 21: `renga-admin limits set --organization acme --job-creation-rate 600`.
+  # RFD 21: `renga-admin limits set --organization acme --job-creation-rate 600
+  # --actor NAME`. Every setting applies, or none does.
   def run(["limits", "set" | args]) do
-    limit_switches = Enum.map(Limits.names(), &{&1, :integer})
+    switches = [organization: :string] ++ Enum.map(Limits.names(), &{&1, :integer})
 
-    with {:ok, organization, opts} <- organization_option_with(args, limit_switches),
-         {:ok, settings} <- limit_settings(opts) do
-      Enum.each(settings, &set_limit(organization, &1))
-      0
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "limits.set", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "limits.set", opts),
+         {:ok, settings} <- audited(context, "limits.set", limit_settings(opts)) do
+      case Limits.set(organization, settings, context) do
+        :ok ->
+          for {name, value} <- settings,
+              do: IO.puts("Set #{limit_option(name)} to #{value} for #{organization.slug}.")
+
+          0
+
+        {:error, :invalid} ->
+          error("limits must be from 0 to #{Limits.max_value()}")
+      end
     end
   end
 
   def run(["limits", "clear" | args]) do
-    with {:ok, organization, opts} <- organization_option_with(args, limit: :string),
-         {:ok, name} <- parse_limit(opts[:limit]) do
-      :ok = Limits.clear(organization, name)
+    switches = [organization: :string, limit: :string]
+
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "limits.clear", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "limits.clear", opts),
+         {:ok, name} <- audited(context, "limits.clear", parse_limit(opts[:limit])) do
+      :ok = Limits.clear(organization, name, context)
       IO.puts("Cleared #{limit_option(name)} for #{organization.slug}; the default applies.")
       0
     end
@@ -127,18 +142,24 @@ defmodule Renga.Release.CLI do
   def run(_argv), do: error(@usage)
 
   defp organization_option(args, switches) do
-    with {:ok, organization, _opts} <- organization_option_with(args, switches),
-         do: {:ok, organization}
-  end
-
-  defp organization_option_with(args, switches) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: [organization: :string] ++ switches)
 
-    with :ok <- no_extra_args(rest, invalid) do
-      case opts[:organization] && Accounts.get_organization_by_slug(opts[:organization]) do
-        nil -> error("--organization must name an existing organization by its slug")
-        organization -> {:ok, organization, opts}
-      end
+    with :ok <- no_extra_args(rest, invalid), do: organization(opts)
+  end
+
+  defp organization(opts) do
+    case opts[:organization] && Accounts.get_organization_by_slug(opts[:organization]) do
+      nil -> error("--organization must name an existing organization by its slug")
+      organization -> {:ok, organization}
+    end
+  end
+
+  # An organization that does not exist is recorded as not found, without
+  # the slug typed.
+  defp audited_organization(context, operation, opts) do
+    with status when is_integer(status) <- organization(opts) do
+      {:error, :not_found} = DeploymentAudit.reject(context, operation, :not_found)
+      status
     end
   end
 
@@ -154,17 +175,12 @@ defmodule Renga.Release.CLI do
       settings == [] ->
         error("name at least one limit to set\n\n" <> @usage)
 
-      Enum.any?(settings, fn {_name, value} -> value < 0 end) ->
-        error("limits must not be negative")
+      not Enum.all?(settings, fn {_name, value} -> Limits.valid_value?(value) end) ->
+        error("limits must be from 0 to #{Limits.max_value()}")
 
       true ->
         {:ok, settings}
     end
-  end
-
-  defp set_limit(organization, {name, value}) do
-    :ok = Limits.set(organization, name, value)
-    IO.puts("Set #{limit_option(name)} to #{value} for #{organization.slug}.")
   end
 
   defp parse_limit(nil), do: error("--limit is required")

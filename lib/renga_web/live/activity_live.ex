@@ -140,6 +140,7 @@ defmodule RengaWeb.ActivityLive do
   # Renga itself for changes it derived.
   defp actor(%{actor_user: %{email: email}}), do: email
   defp actor(%{metadata: %{"agent" => agent}}) when is_binary(agent), do: agent
+  defp actor(%{metadata: %{"operator" => operator}}) when is_binary(operator), do: operator
   defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"
   defp actor(%{source: %{name: name}}), do: name
   defp actor(_event), do: "Renga"

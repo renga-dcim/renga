@@ -64,8 +64,13 @@ limit_defaults =
       value = System.get_env(env),
       value not in [nil, ""] do
     case Integer.parse(value) do
-      {integer, ""} when integer >= 0 -> {name, integer}
-      _other -> raise "environment variable #{env} must be a non-negative integer"
+      {integer, ""} ->
+        if Renga.Limits.valid_value?(integer),
+          do: {name, integer},
+          else: raise("environment variable #{env} must be from 0 to #{Renga.Limits.max_value()}")
+
+      _other ->
+        raise "environment variable #{env} must be a whole number from 0 to #{Renga.Limits.max_value()}"
     end
   end
 

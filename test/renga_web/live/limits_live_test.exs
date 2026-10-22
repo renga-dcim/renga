@@ -20,7 +20,13 @@ defmodule RengaWeb.LimitsLiveTest do
 
   test "owners see each limit, its usage, and whether it is overridden", %{conn: conn} do
     {conn, organization} = member_conn(conn, "owner")
-    :ok = Renga.Limits.set(organization, :job_creation_rate, 2_500)
+
+    :ok =
+      Renga.Limits.set(
+        organization,
+        [job_creation_rate: 2_500],
+        Renga.DeploymentAudit.operator("test")
+      )
 
     {:ok, view, _html} = live(conn, ~p"/settings/limits")
 

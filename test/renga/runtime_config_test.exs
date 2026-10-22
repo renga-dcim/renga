@@ -214,10 +214,12 @@ defmodule Renga.RuntimeConfigTest do
              job_creation_rate: 600
            ]
 
-    assert_raise RuntimeError, ~r/LIMIT_JOB_CREATION_RATE must be a non-negative integer/, fn ->
-      with_env(%{"LIMIT_JOB_CREATION_RATE" => "lots"}, fn ->
-        Config.Reader.read!(@runtime_config, env: :dev)
-      end)
+    for value <- ["lots", "-1", "9223372036854775808"] do
+      assert_raise RuntimeError, ~r/LIMIT_JOB_CREATION_RATE must be/, fn ->
+        with_env(%{"LIMIT_JOB_CREATION_RATE" => value}, fn ->
+          Config.Reader.read!(@runtime_config, env: :dev)
+        end)
+      end
     end
   end
 

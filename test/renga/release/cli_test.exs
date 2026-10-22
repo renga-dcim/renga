@@ -162,35 +162,75 @@ defmodule Renga.Release.CLITest do
     test "sets, shows, and clears an organization's overrides", %{organization: organization} do
       slug = organization.slug
 
-      {0, stdout, ""} = run(~w(limits set --organization #{slug} --job-creation-rate 600))
+      {0, stdout, ""} =
+        run(~w(limits set --organization #{slug} --actor alice --job-creation-rate 600))
+
       assert stdout =~ "Set job-creation-rate to 600 for #{slug}."
       assert Renga.Limits.get(organization.id, :job_creation_rate) == 600
 
       {0, stdout, ""} = run(~w(limits show --organization #{slug}))
       assert stdout =~ "job-creation-rate\t600\tjobs per minute\toverride"
 
-      {0, _stdout, ""} = run(~w(limits clear --organization #{slug} --limit job-creation-rate))
+      {0, _stdout, ""} =
+        run(~w(limits clear --organization #{slug} --actor alice --limit job-creation-rate))
+
       {0, stdout, ""} = run(~w(limits show --organization #{slug}))
       assert stdout =~ "job-creation-rate\t10000\tjobs per minute\tdefault"
+
+      assert Repo.all(
+               from event in Event,
+                 order_by: event.inserted_at,
+                 select: {event.operation, event.outcome, event.organization_id, event.changed}
+             ) == [
+               {"limits.set", "succeeded", organization.id, ["job_creation_rate"]},
+               {"limits.clear", "succeeded", organization.id, ["job_creation_rate"]}
+             ]
     end
 
     test "refuses unknown organizations, limits, and values", %{organization: organization} do
-      {1, "", stderr} = run(~w(limits set --organization missing --job-creation-rate 1))
-      assert stderr =~ "--organization"
+      slug = organization.slug
 
-      {1, "", stderr} = run(~w(limits set --organization #{organization.slug}))
-      assert stderr =~ "name at least one limit"
+      {1, "", stderr} = run(~w(limits set --organization #{slug} --job-creation-rate 1))
+      assert stderr =~ "--actor NAME is required"
 
       {1, "", stderr} =
-        run(~w(limits set --organization #{organization.slug} --job-creation-rate -1))
+        run(~w(limits set --organization missing --actor alice --job-creation-rate 1))
 
-      assert stderr =~ "must not be negative"
+      assert stderr =~ "--organization"
 
-      {1, "", stderr} = run(~w(limits set --organization #{organization.slug} --intake-rate 1))
+      {1, "", stderr} = run(~w(limits set --organization #{slug} --actor alice))
+      assert stderr =~ "name at least one limit"
+
+      for value <- ["-1", "9223372036854775808"] do
+        {1, "", stderr} =
+          run(~w(limits set --organization #{slug} --actor alice --job-creation-rate #{value}))
+
+        assert stderr =~ "limits must be from 0 to 9223372036854775807"
+      end
+
+      {1, "", stderr} =
+        run(~w(limits set --organization #{slug} --actor alice --intake-rate 1))
+
       assert stderr =~ "Usage:"
 
-      {1, "", stderr} = run(~w(limits clear --organization #{organization.slug} --limit nope))
+      {1, "", stderr} =
+        run(~w(limits clear --organization #{slug} --actor alice --limit nope))
+
       assert stderr =~ "unknown limit nope"
+
+      assert Renga.Limits.get(organization.id, :job_creation_rate) == 10_000
+
+      assert Repo.all(from event in Event, order_by: event.inserted_at, select: event.reason) ==
+               ~w(not_found invalid invalid invalid invalid invalid)
+    end
+
+    test "accepts the largest value a limit can have", %{organization: organization} do
+      {0, _stdout, ""} =
+        run(
+          ~w(limits set --organization #{organization.slug} --actor alice --job-creation-rate 9223372036854775807)
+        )
+
+      assert Renga.Limits.get(organization.id, :job_creation_rate) == Renga.Limits.max_value()
     end
   end
 end
