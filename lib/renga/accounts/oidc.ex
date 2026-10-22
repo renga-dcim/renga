@@ -9,6 +9,10 @@ defmodule Renga.Accounts.OIDC do
   in the browser session, and records the state's hash on the server;
   `finish/3` accepts a callback only for that attempt, at most once, and
   only while the provider still uses the revision the attempt started with.
+
+  An attempt has a purpose. A sign-in names nobody; linking the provider to
+  an account is bound to the user and the session that started it, and only
+  a callback finishing it for that same session can complete it.
   """
 
   import Ecto.Query
@@ -24,25 +28,44 @@ defmodule Renga.Accounts.OIDC do
   @attempt_seconds 10 * 60
   @default_scopes ["openid", "email", "profile"]
 
-  @doc """
-  Starts signing in with `provider`. Returns `{:ok, url, attempt}`; send the
-  browser to `url` and keep `attempt` for the callback.
+  @typedoc """
+  What an attempt is for: `:sign_in`, or `{:link, user_id, session_token_id}`
+  to connect the provider to that user's account from that session.
   """
-  def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri) do
+  @type purpose :: :sign_in | {:link, Ecto.UUID.t(), Ecto.UUID.t()}
+
+  @doc """
+  Starts signing in with `provider`, or linking it when `purpose` says so.
+  Returns `{:ok, url, attempt}`; send the browser to `url` and keep
+  `attempt` for the callback.
+  """
+  def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri, purpose \\ :sign_in) do
     with %Revision{} = revision <-
            IdentityProviders.active_revision(provider) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
          {:ok, url, attempt} <- authorize(provider, revision, redirect_uri) do
-      Repo.insert!(%IdentityProviderAttempt{
-        provider_id: provider.id,
-        revision: revision.number,
-        state_hash: hash(attempt["state"]),
-        expires_at: DateTime.add(Renga.Time.utc_now_ms(), @attempt_seconds, :second)
-      })
+      Repo.insert!(
+        struct(
+          %IdentityProviderAttempt{
+            provider_id: provider.id,
+            revision: revision.number,
+            state_hash: hash(attempt["state"]),
+            expires_at: DateTime.add(Renga.Time.utc_now_ms(), @attempt_seconds, :second)
+          },
+          attempt_binding(purpose)
+        )
+      )
 
-      {:ok, url, attempt}
+      {:ok, url, Map.put(attempt, "purpose", purpose_name(purpose))}
     end
   end
+
+  defp attempt_binding(:sign_in), do: [purpose: "sign_in", user_id: nil, session_token_id: nil]
+
+  defp attempt_binding({:link, user_id, session_token_id}),
+    do: [purpose: "link", user_id: user_id, session_token_id: session_token_id]
+
+  defp purpose_name(purpose), do: attempt_binding(purpose)[:purpose]
 
   @doc """
   The authorization URL for `revision` of `provider`, whichever revision
@@ -80,20 +103,23 @@ defmodule Renga.Accounts.OIDC do
   end
 
   @doc """
-  Finishes an attempt from the provider's callback parameters. Returns the
-  provider, the revision used, and the validated ID token claims.
+  Finishes an attempt from the provider's callback parameters, for the
+  `purpose` it started with. Returns the provider, the revision used, and
+  the validated ID token claims.
   """
-  def finish(attempt, params, redirect_uri) when is_map(attempt) and is_map(params) do
+  def finish(attempt, params, redirect_uri, purpose \\ :sign_in)
+
+  def finish(attempt, params, redirect_uri, purpose) when is_map(attempt) and is_map(params) do
     with :ok <- check_state(attempt, params),
          :ok <- check_age(attempt),
          {:ok, provider, revision} <- current(attempt),
          :ok <- check_response(provider, attempt, params),
-         :ok <- consume(attempt) do
+         :ok <- consume(attempt, purpose) do
       exchange(provider, revision, attempt, params, redirect_uri)
     end
   end
 
-  def finish(_attempt, _params, _redirect_uri), do: {:error, :no_attempt}
+  def finish(_attempt, _params, _redirect_uri, _purpose), do: {:error, :no_attempt}
 
   @doc """
   Exchanges the callback's code with `revision` of `provider` and validates
@@ -188,18 +214,28 @@ defmodule Renga.Accounts.OIDC do
   end
 
   # Spends the server's record of the attempt before the code is exchanged,
-  # so the attempt finishes at most once.
-  defp consume(%{"provider" => id, "revision" => number, "state" => state}) do
+  # so the attempt finishes at most once, and only for the purpose, user,
+  # and session it started with: a sign-in callback cannot finish a link,
+  # nor one session finish another's.
+  defp consume(%{"provider" => id, "revision" => number, "state" => state}, purpose) do
     now = Renga.Time.utc_now_ms()
     Repo.delete_all(where(IdentityProviderAttempt, [a], a.expires_at < ^now))
 
-    case Repo.delete_all(
-           where(IdentityProviderAttempt,
-             state_hash: ^hash(state),
-             provider_id: ^id,
-             revision: ^number
-           )
-         ) do
+    query =
+      Enum.reduce(
+        attempt_binding(purpose),
+        where(IdentityProviderAttempt,
+          state_hash: ^hash(state),
+          provider_id: ^id,
+          revision: ^number
+        ),
+        fn
+          {field, nil}, query -> where(query, [a], is_nil(field(a, ^field)))
+          {field, value}, query -> where(query, [a], field(a, ^field) == ^value)
+        end
+      )
+
+    case Repo.delete_all(query) do
       {1, _} -> :ok
       _ -> {:error, :attempt_used}
     end
