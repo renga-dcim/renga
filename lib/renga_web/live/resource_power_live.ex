@@ -64,10 +64,41 @@ defmodule RengaWeb.ResourcePowerLive do
        connect_form: to_form(%{"target" => ""}, as: :connection),
        connect_error: nil,
        connect_options: [],
+       suggested?: false,
        selected_path: nil
      )
      |> load_endpoints()
      |> schedule_readings_refresh()}
+  end
+
+  # A suggested connection's finding links here with its port and outlet,
+  # and the connect panel opens with that outlet chosen. Nothing is recorded
+  # until the operator saves it.
+  @impl true
+  def handle_params(%{"connect" => port_id, "outlet" => outlet_id}, _uri, socket)
+      when is_binary(port_id) and is_binary(outlet_id) do
+    port = Enum.find(socket.assigns.ports, &(&1.id == port_id))
+    options = if socket.assigns.can_connect?, do: connect_options(socket), else: []
+    target = "outlet:#{outlet_id}"
+
+    if port && option?(options, target) do
+      {:noreply,
+       assign(socket,
+         connecting_port: port,
+         connect_form: to_form(%{"target" => target}, as: :connection),
+         connect_error: nil,
+         connect_options: options,
+         suggested?: true
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+
+  defp option?(options, value) do
+    Enum.any?(options, fn {_group, choices} -> Enum.any?(choices, &(elem(&1, 1) == value)) end)
   end
 
   @impl true
@@ -92,7 +123,8 @@ defmodule RengaWeb.ResourcePowerLive do
        connecting_port: port,
        connect_form: to_form(%{"target" => target_value(current)}, as: :connection),
        connect_error: nil,
-       connect_options: connect_options(socket)
+       connect_options: connect_options(socket),
+       suggested?: false
      )}
   end
 
@@ -119,7 +151,7 @@ defmodule RengaWeb.ResourcePowerLive do
         {:noreply,
          socket
          |> put_flash(:info, "#{port.name} #{result_label}")
-         |> assign(connecting_port: nil, connect_error: nil)
+         |> assign(connecting_port: nil, connect_error: nil, suggested?: false)
          |> close_overlay("connect-panel")
          |> load_endpoints()}
 
@@ -590,9 +622,13 @@ defmodule RengaWeb.ResourcePowerLive do
       <.side_panel
         :if={@can_connect?}
         id="connect-panel"
+        show={@suggested?}
         title={connection_title(@connecting_port, @cables_by_port)}
       >
         <.form for={@connect_form} id="connect-form" phx-submit="save_connection" class="space-y-1">
+          <p :if={@suggested?} id="connect-suggested" class="mb-2 text-sm text-fg-muted">
+            Power readings suggest this outlet. Check the cable before you record it.
+          </p>
           <.input
             field={@connect_form[:target]}
             type="select"

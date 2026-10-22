@@ -170,6 +170,43 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#power-port-#{psu1.id}", "Not recorded")
   end
 
+  test "a suggested connection opens the connect panel on its outlet", %{
+    conn: conn,
+    scope: scope
+  } do
+    server = server!(scope)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-1", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    %{outlets: [outlet]} = Power.list_device_endpoints(scope, pdu.id)
+    [psu1 | _] = Power.list_device_endpoints(scope, server.id).ports
+
+    {:ok, view, _html} =
+      live(conn, ~p"/inventory/#{server}/power?#{[connect: psu1.id, outlet: outlet.id]}")
+
+    assert has_element?(view, "#connect-panel[data-initial-show='true']")
+    assert has_element?(view, "#connect-suggested", "Power readings suggest this outlet")
+    assert has_element?(view, "#connect-form option[value='outlet:#{outlet.id}'][selected]")
+
+    # Nothing is recorded until the operator saves it.
+    assert Cables.list_cables(scope, resource_ids: [server.id]) == []
+    view |> form("#connect-form") |> render_submit()
+    assert [_cable] = Cables.list_cables(scope, resource_ids: [server.id])
+
+    # An outlet the port cannot use opens nothing.
+    {:ok, view, _html} =
+      live(
+        conn,
+        ~p"/inventory/#{server}/power?#{[connect: psu1.id, outlet: Ecto.UUID.generate()]}"
+      )
+
+    assert has_element?(view, "#connect-panel[data-initial-show='false']")
+  end
+
   test "a stale unplug event leaves the replacement connection in place", %{
     conn: conn,
     scope: scope

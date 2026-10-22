@@ -1285,6 +1285,15 @@ defmodule RengaWeb.InboxLive do
           current_user_id={@current_user_id}
         />
 
+        <.link
+          :if={@finding.domain == "power" and @finding.kind == "suggested_connection"}
+          id="finding-record-connection"
+          navigate={suggested_connection_path(@finding)}
+          class="inline-block text-sm text-link hover:underline"
+        >
+          Review and record this connection
+        </.link>
+
         <section :if={@finding.details != %{}} id="finding-details" class="space-y-2">
           <h3 class="text-xs font-medium text-fg-muted">Diagnostic evidence</h3>
           <pre class="max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-edge bg-sunken p-3 font-mono text-xs text-fg-muted">{Jason.encode!(@finding.details, pretty: true)}</pre>
@@ -1588,6 +1597,11 @@ defmodule RengaWeb.InboxLive do
        do: ~p"/inventory/#{resource}/network"
 
   defp resource_path(%{resource: resource}), do: ~p"/inventory/#{resource}"
+
+  # The port's Power tab, with the connect panel open on the suggested outlet.
+  defp suggested_connection_path(%{resource: resource, details: details}) do
+    ~p"/inventory/#{resource}/power?#{[connect: details["port_id"], outlet: details["outlet_id"]]}"
+  end
 
   defp selected?(%{domain: domain, id: id}, %{domain: domain, id: id}), do: true
   defp selected?(_selected, _finding), do: false
