@@ -5,6 +5,17 @@
 use std::collections::BTreeMap;
 
 #[derive(Clone, PartialEq, prost::Message)]
+pub struct CapabilityRequest {}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct CapabilityResponse {
+    #[prost(enumeration = "Encoding", repeated, tag = "2")]
+    pub supported_encodings: Vec<i32>,
+    #[prost(string, tag = "3")]
+    pub g_nmi_version: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
 pub struct GetRequest {
     #[prost(message, optional, tag = "1")]
     pub prefix: Option<Path>,
