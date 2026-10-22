@@ -203,6 +203,52 @@ defmodule RengaWeb.UserAuth do
   end
 
   @doc """
+  Signs in through an identity provider, once `Renga.Accounts.OIDC.finish/3`
+  validated the callback (RFD 15). The account is resolved and the session
+  issued while the provider is locked against changes, and the session ends
+  when the provider's session lifetime does, however active it is. Returns
+  the conn with the new session and where to send the browser; nothing is
+  sent until the caller redirects, after it all committed.
+  """
+  def log_in_user_with_provider(conn, %{provider: provider, revision: revision} = result) do
+    user_return_to = get_session(conn, :user_return_to)
+    method = "provider:#{provider.id}"
+
+    deadline =
+      DateTime.add(Renga.Time.utc_now_ms(), revision.session_lifetime_seconds, :second)
+
+    # Runs inside the sign-in transaction, so the tokens it deletes are only
+    # announced once that commits; a rolled-back deletion announces nothing.
+    issue = fn user ->
+      case issue_session(
+             conn,
+             user,
+             %{},
+             &Accounts.create_signed_in_session(user, &1, method, deadline)
+           ) do
+        {:ok, conn, revoked} -> {:ok, {conn, revoked, user}}
+        {:error, _conn, _revoked} -> {:error, :session_failed}
+      end
+    end
+
+    # The browser's earlier session ends first, committed and announced on
+    # its own: revoked inside the sign-in transaction, its disconnect would
+    # go out before the deletion commits, and a page mounted in between
+    # would keep the old session. A sign-in that then fails leaves the
+    # browser signed out.
+    revoke_browser_session(conn)
+
+    with {:ok, {conn, revoked, user}} <- Accounts.finish_provider_sign_in(result, issue) do
+      # Tokens issued to this browser after the revocation above, such as
+      # by a sign-in finishing alongside this one.
+      disconnect_tokens(revoked)
+
+      {:ok, put_default_organization(conn, user, user_return_to),
+       user_return_to || signed_in_path(conn)}
+    end
+  end
+
+  @doc """
   Signs in a person who just proved control of the email to add a first
   credential, with the bootstrap authorization (RFD 19). Nothing is written
   to the response unless the session and its grant were committed together;
@@ -344,8 +390,23 @@ defmodule RengaWeb.UserAuth do
   # `issue` creates the token for the browser session id; the second step
   # passes one that issues it only while the pending sign-in is unspent.
   defp create_or_extend_session(conn, user, params, issue) do
+    # Outside any transaction the deletion has committed by now, so the
+    # disconnect can go out.
+    {result, conn, revoked} =
+      case issue_session(conn, user, params, issue) do
+        {:ok, conn, revoked} -> {:ok, conn, revoked}
+        {:error, conn, revoked} -> {:error, conn, revoked}
+      end
+
+    disconnect_tokens(revoked)
+    {result, conn}
+  end
+
+  # Revokes the browser's session and issues the new one, returning the
+  # revoked tokens for the caller to disconnect once their deletion commits.
+  defp issue_session(conn, user, params, issue) do
     issue = issue || (&{:ok, Accounts.generate_user_session_token(user, &1)})
-    revoke_browser_session(conn)
+    revoked = delete_browser_session(conn)
     remember_me = get_session(conn, :user_remember_me)
     conn = renew_session(conn, user)
     browser_session_id = get_session(conn, :browser_session_id) || Ecto.UUID.generate()
@@ -356,24 +417,33 @@ defmodule RengaWeb.UserAuth do
          conn
          |> put_session(:browser_session_id, browser_session_id)
          |> put_token_in_session(token)
-         |> maybe_write_remember_me_cookie(token, params, remember_me)}
+         |> maybe_write_remember_me_cookie(token, params, remember_me), revoked}
 
       :error ->
-        {:error, conn}
+        {:error, conn, revoked}
     end
   end
 
   defp revoke_browser_session(conn) do
+    conn |> delete_browser_session() |> disconnect_tokens()
+    :ok
+  end
+
+  # Deletes every token of this browser's session and returns them, without
+  # telling their LiveViews yet.
+  defp delete_browser_session(conn) do
     token = get_session(conn, :user_token)
     browser_session_id = get_session(conn, :browser_session_id)
 
     if token || browser_session_id do
       {:ok, tokens} = Accounts.delete_browser_session_tokens(token, browser_session_id)
-      disconnect_sessions(Enum.map(Enum.uniq(List.wrap(token) ++ tokens), &%{token: &1}))
+      Enum.uniq(List.wrap(token) ++ tokens)
+    else
+      []
     end
-
-    :ok
   end
+
+  defp disconnect_tokens(tokens), do: disconnect_sessions(Enum.map(tokens, &%{token: &1}))
 
   # Do not renew session if the user is already logged in
   # to prevent CSRF errors or data being lost in tabs that are still open
@@ -503,7 +573,8 @@ defmodule RengaWeb.UserAuth do
   end
 
   defp mount_current_scope(socket, session) do
-    Phoenix.Component.assign_new(socket, :current_scope, fn ->
+    socket
+    |> Phoenix.Component.assign_new(:current_scope, fn ->
       {user, _} =
         if user_token = session["user_token"] do
           Accounts.get_user_by_session_token(user_token)
@@ -511,7 +582,42 @@ defmodule RengaWeb.UserAuth do
 
       Accounts.scope_for_user(user, session[to_string(@current_organization_key)])
     end)
+    |> end_at_session_deadline(session["user_token"])
   end
+
+  # A connected LiveView outlives the request that checked its session, so
+  # one whose session has a deadline (a provider sign-in) leaves at it.
+  defp end_at_session_deadline(socket, token) when is_binary(token) do
+    # Both the authentication and the organization hooks get here; the
+    # deadline is set up once per socket.
+    with true <- Phoenix.LiveView.connected?(socket),
+         false <- Map.has_key?(socket.assigns, :session_deadline),
+         %Scope{user: %Accounts.User{}} <- socket.assigns.current_scope,
+         %DateTime{} = deadline <- Accounts.session_deadline(token) do
+      Process.send_after(
+        self(),
+        :session_deadline,
+        max(DateTime.diff(deadline, Renga.Time.utc_now_ms(), :millisecond), 0)
+      )
+
+      socket
+      |> Phoenix.Component.assign(:session_deadline, deadline)
+      |> Phoenix.LiveView.attach_hook(:session_deadline, :handle_info, fn
+        :session_deadline, socket ->
+          {:halt,
+           socket
+           |> Phoenix.LiveView.put_flash(:error, "Your session ended. Please log in again.")
+           |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")}
+
+        _message, socket ->
+          {:cont, socket}
+      end)
+    else
+      _no_deadline -> socket
+    end
+  end
+
+  defp end_at_session_deadline(socket, _token), do: socket
 
   @doc "Returns the path to redirect to after log in."
   # the user was already logged in, redirect to settings

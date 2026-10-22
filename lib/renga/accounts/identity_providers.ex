@@ -35,6 +35,17 @@ defmodule Renga.Accounts.IdentityProviders do
     |> Repo.all()
   end
 
+  @doc """
+  The providers the sign-in page offers: every usable one not hidden, plus
+  the hidden provider `revealed` names (`/users/log-in?provider=<id>`).
+  """
+  def sign_in_options(revealed \\ nil) do
+    usable_deployment()
+    |> where([provider], not provider.hidden or provider.id == ^(revealed || ""))
+    |> order_by([provider], asc: provider.display_name, asc: provider.id)
+    |> Repo.all()
+  end
+
   @doc "A deployment provider by ID, or nil when there is none or it was removed."
   def get(id) when is_binary(id), do: Repo.get(deployment(), id)
 

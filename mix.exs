@@ -46,6 +46,9 @@ defmodule Renga.MixProject do
       # WebAuthn verification (RFD 19). Pinned: upgrades are reviewed, not
       # picked up by `mix deps.update`.
       {:wax_, "== 0.7.0"},
+      # RFD 15: a pinned, reviewed OpenID Connect client. Renga binds state,
+      # nonce, and PKCE to each attempt itself.
+      {:oidcc, "== 3.9.0"},
       {:eqrcode, "~> 0.2"},
       {:phoenix, "~> 1.8.1"},
       {:phoenix_ecto, "~> 4.5"},

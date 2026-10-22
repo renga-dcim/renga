@@ -84,3 +84,6 @@ config :phoenix_live_view,
 config :renga, Renga.Vault, keys: "test:JEhIiyOdTqyJVJP6LBS3Tt65N+Ho5AQzC7ov/t6FjVM="
 
 config :renga, :webauthn, origin: "http://localhost:4002"
+
+# Provider requests (RFD 15) go to Renga.FakeOIDCProvider's stub.
+config :renga, :oidc_req_options, plug: {Req.Test, Renga.Accounts.OIDC}

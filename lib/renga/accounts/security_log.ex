@@ -118,5 +118,6 @@ defmodule Renga.Accounts.SecurityLog do
   defp method_label("magic_link"), do: "an emailed link"
   defp method_label("totp"), do: "an authenticator code"
   defp method_label("recovery_code"), do: "a recovery code"
+  defp method_label("provider:" <> id), do: "the identity provider #{id}"
   defp method_label(other), do: other
 end

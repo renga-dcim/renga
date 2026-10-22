@@ -573,10 +573,53 @@ defmodule Renga.Accounts do
   in the same transaction, so the log never shows a sign-in whose session
   was not created.
   """
-  def create_signed_in_session(%User{} = user, browser_session_id, method) do
+  def create_signed_in_session(%User{} = user, browser_session_id, method, expires_at \\ nil) do
     Repo.transact(fn ->
       record_sign_in(user, method)
-      {:ok, generate_user_session_token(user, browser_session_id)}
+      {:ok, generate_user_session_token(user, browser_session_id, expires_at)}
+    end)
+  end
+
+  @doc """
+  When the session `token` ends regardless of activity, or nil. Only a
+  session from a provider sign-in has such a deadline (RFD 15).
+  """
+  def session_deadline(token) when is_binary(token) do
+    Repo.one(
+      from t in UserToken,
+        where: t.token == ^token and t.context == "session",
+        select: t.expires_at
+    )
+  end
+
+  @doc """
+  Finishes a provider sign-in that `OIDC.finish/3` validated. Under a share
+  lock on the provider, so it cannot be disabled, removed, or given another
+  active revision meanwhile, it checks the provider still uses the revision
+  the attempt started with, resolves the account, and runs `issue` with it.
+  `issue` creates the session and returns `{:ok, value}`; anything else rolls
+  the whole sign-in back, an account it would have created included.
+  """
+  def finish_provider_sign_in(%{provider: provider, revision: revision} = result, issue) do
+    Repo.transaction(fn ->
+      current =
+        Repo.one(
+          from p in Renga.Accounts.IdentityProvider,
+            where: p.id == ^provider.id and is_nil(p.removed_at) and is_nil(p.organization_id),
+            lock: "FOR SHARE"
+        )
+
+      with %{enabled: true} <- current || {:error, :inactive},
+           %{active_revision: number} when number == revision.number <- current,
+           {:ok, user} <- Renga.Accounts.Identities.resolve(result),
+           {:ok, value} <- issue.(user) do
+        value
+      else
+        %{enabled: false} -> Repo.rollback(:inactive)
+        %{} -> Repo.rollback(:provider_changed)
+        {:error, reason} when is_atom(reason) -> Repo.rollback(reason)
+        _other -> Repo.rollback(:session_failed)
+      end
     end)
   end
 
@@ -823,9 +866,9 @@ defmodule Renga.Accounts do
   @doc """
   Generates a session token.
   """
-  def generate_user_session_token(user, browser_session_id \\ nil) do
+  def generate_user_session_token(user, browser_session_id \\ nil, expires_at \\ nil) do
     {token, user_token} = UserToken.build_session_token(user, browser_session_id)
-    Repo.insert!(user_token)
+    Repo.insert!(%{user_token | expires_at: expires_at})
     token
   end
 
