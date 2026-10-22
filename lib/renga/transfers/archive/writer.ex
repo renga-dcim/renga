@@ -10,6 +10,7 @@ defmodule Renga.Transfers.Archive.Writer do
 
       writer = Writer.new()
       writer = Writer.add_records(writer, "resources", stream_of_maps)
+      writer = Writer.add_json(writer, "teams", stream_of_json_objects)
       :ok = Writer.finish(writer, %{organization: org, snapshot_at: at, parts: []}, path)
 
   A writer that is abandoned instead of finished must be `discard/1`ed.
@@ -36,6 +37,15 @@ defmodule Renga.Transfers.Archive.Writer do
   empty file, so the archive says it has none rather than omitting it.
   """
   def add_records(%__MODULE__{} = writer, type, records) do
+    add_json(writer, type, Stream.map(records, &Renga.JSON.encode_to_iodata!/1))
+  end
+
+  @doc """
+  Like `add_records/3`, for records already encoded as JSON objects, such as
+  rows PostgreSQL serialized. Each must be one JSON object without a newline;
+  the writer trusts its caller for that.
+  """
+  def add_json(%__MODULE__{} = writer, type, records) do
     file = Archive.record_file(type)
 
     if Map.has_key?(writer.files, file),
@@ -46,7 +56,7 @@ defmodule Renga.Transfers.Archive.Writer do
     {hash, count, bytes} =
       File.open!(Path.join(writer.dir, file), [:write, :binary, :raw, :delayed_write], fn out ->
         Enum.reduce(records, initial, fn record, {hash, count, bytes} ->
-          line = [Renga.JSON.encode_to_iodata!(record), ?\n]
+          line = [record, ?\n]
           :ok = IO.binwrite(out, line)
           {:crypto.hash_update(hash, line), count + 1, bytes + IO.iodata_length(line)}
         end)
