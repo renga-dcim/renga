@@ -45,18 +45,18 @@ defmodule Renga.Inventory.VmPlacements do
       |> list_members(resource_id)
       |> Enum.map(&claim(scope, &1))
 
+    fresh = Enum.filter(claims, &fresh_active?(&1, now))
+    standing = standing_hypervisors(fresh)
+
     active =
-      claims
-      |> Enum.filter(&fresh_active?(&1, now))
-      |> drop_superseded()
+      fresh
+      |> Enum.filter(&(hypervisor_key(&1) in standing))
       |> Enum.sort_by(& &1.active_since, {:desc, DateTime})
 
-    hypervisors = Enum.uniq_by(active, &hypervisor_key/1)
-
     {status, hypervisor} =
-      case hypervisors do
-        [] -> {:unknown, nil}
-        [claim] -> {:placed, claim}
+      case {standing, active} do
+        {[], _active} -> {:unknown, nil}
+        {[_hypervisor], [claim | _views]} -> {:placed, claim}
         _competing -> {:ambiguous, nil}
       end
 
@@ -98,14 +98,23 @@ defmodule Renga.Inventory.VmPlacements do
   end
 
   # A hypervisor that last said "active" before another began saying so has
-  # not said anything since the VM moved.
-  defp drop_superseded(claims) do
-    Enum.reject(claims, fn claim ->
-      Enum.any?(claims, fn other ->
-        hypervisor_key(other) != hypervisor_key(claim) and
-          DateTime.compare(claim.last_reported_at, other.active_since) == :lt
+  # not said anything since the VM moved. Streams reading one hypervisor are
+  # views of one run, from the earliest start to the latest report, so adding
+  # a stream never looks like a migration.
+  defp standing_hypervisors(claims) do
+    runs =
+      claims
+      |> Enum.group_by(&hypervisor_key/1)
+      |> Enum.map(fn {key, views} ->
+        {key, Enum.min(Enum.map(views, & &1.active_since), DateTime),
+         Enum.max(Enum.map(views, & &1.last_reported_at), DateTime)}
       end)
-    end)
+
+    for {key, _since, last_reported_at} <- runs,
+        not Enum.any?(runs, fn {other, since, _last} ->
+          other != key and DateTime.compare(last_reported_at, since) == :lt
+        end),
+        do: key
   end
 
   defp hypervisor_key(%{host_resource_id: nil, target: target}), do: {:target, target.id}

@@ -125,16 +125,7 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
   end
 
   test "a local hypervisor links to the host its agent reports", %{scope: scope, token: token} do
-    host =
-      post!(token, %{
-        "observation_id" => "host-1",
-        "observed_at" => DateTime.to_iso8601(@t0),
-        "resources" => [
-          %{"kind" => "server", "identifiers" => %{"machine_id" => "hv-a-machine"}}
-        ]
-      })
-
-    host_id = host["reconciliation"]["matched_resource_id"]
+    host_id = host!(token)
 
     %{"reconciliation" => %{"resources" => [%{"resource_id" => vm_id}]}} =
       post!(
@@ -157,11 +148,39 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
     assert Enum.sort(hosts, :desc) == [host_id, nil]
   end
 
+  test "another stream on an active hypervisor does not settle a conflict", %{
+    scope: scope,
+    token: token
+  } do
+    host_id = host!(token)
+    vm_id = report!(token, "local-1", "running", at: 0, uri: "qemu:///system")
+    report!(token, "hv-b", "running", at: 2)
+    report!(token, "local-1", "running", at: 5, uri: "qemu:///system")
+    assert %{status: :ambiguous} = VmPlacements.placement(scope, vm_id, at(6))
+
+    # A second collector on the same installation reads the same hypervisor.
+    report!(token, "local-2", "running", at: 6, uri: "qemu:///system")
+    placement = VmPlacements.placement(scope, vm_id, at(7))
+    assert placement.status == :ambiguous
+
+    assert placement.active |> Enum.map(& &1.host_resource_id) |> Enum.count(&(&1 == host_id)) ==
+             2
+  end
+
   defp report!(token, hypervisor, state, opts) do
     %{"reconciliation" => %{"resources" => [%{"resource_id" => vm_id}]}} =
       post!(token, hypervisor_report(hypervisor, [vm(state)], opts))
 
     vm_id
+  end
+
+  # The installation's own host, as its agent reports it.
+  defp host!(token) do
+    post!(token, %{
+      "observation_id" => "host-1",
+      "observed_at" => DateTime.to_iso8601(@t0),
+      "resources" => [%{"kind" => "server", "identifiers" => %{"machine_id" => "hv-a-machine"}}]
+    })["reconciliation"]["matched_resource_id"]
   end
 
   defp post!(token, payload) do
