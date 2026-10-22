@@ -697,6 +697,105 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
     end
   end
 
+  describe "switch pollers (RFD 11 phase 2)" do
+    # Written by the agent's mapper from a recorded switch (agent/src/snmp/mod.rs), so the
+    # server's cross-field rules, which the OpenAPI schema cannot state, check real output.
+    test "accepts a switch as the agent's SNMP mapper reports it", %{scope: scope, token: token} do
+      resource =
+        "test/fixtures/collectors/recorded_switch.json" |> File.read!() |> Jason.decode!()
+
+      assert %{
+               "reconciliation" => %{
+                 "resources" => [%{"status" => "succeeded", "resource_id" => id}]
+               }
+             } =
+               token
+               |> post_observation(switch_report([resource], complete: true))
+               |> valid_api_response(202)
+
+      assert Inventory.get_resource!(scope, id).kind == "switch"
+    end
+
+    test "two pollers reporting one chassis serial reconcile to one switch", %{
+      scope: scope,
+      token: token
+    } do
+      first = post_observation(token, switch_report([switch("10.0.0.1", "SER-1")]))
+
+      second =
+        post_observation(
+          token,
+          switch_report([switch("192.0.2.1", "SER-1")], collector_id: "dc2-switches"),
+          installation_id: @other_installation_id
+        )
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
+               valid_api_response(first, 202)
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
+               valid_api_response(second, 202)
+
+      streams = Collectors.list_streams(scope)
+      assert length(streams) == 2
+
+      assert [%{id: ^id}] = Enum.filter(Inventory.list_resources(scope), &(&1.kind == "switch"))
+    end
+
+    test "a switch's LLDP neighbors and VLANs become topology evidence", %{
+      scope: scope,
+      token: token
+    } do
+      uplink = %{
+        "name" => "Te1/1/1",
+        "kind" => "ethernet",
+        "status" => "up",
+        "mac_address" => "00:1b:21:aa:bb:31",
+        "vlan_mode" => "trunk",
+        "vlans" => [
+          %{"vid" => 10, "tagging_mode" => "untagged"},
+          %{"vid" => 20, "tagging_mode" => "tagged"}
+        ],
+        "neighbors" => [
+          %{
+            "protocol" => "lldp",
+            "remote_chassis_id" => "00:1c:73:01:02:03",
+            "remote_chassis_id_kind" => "mac_address",
+            "remote_port_id" => "Ethernet1/49",
+            "remote_port_id_kind" => "name",
+            "remote_system_name" => "spine-01",
+            "ttl_seconds" => 2_700
+          }
+        ]
+      }
+
+      report =
+        [switch("10.0.0.1", "SER-1", interfaces: [uplink])]
+        |> switch_report(complete: true)
+        |> Map.put("section_completeness", %{
+          "interface_vlans" => true,
+          "interface_neighbors" => true
+        })
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
+               token |> post_observation(report) |> valid_api_response(202)
+
+      [interface] = Inventory.list_interfaces(scope, id)
+      assert interface.name == "Te1/1/1"
+
+      assert [evidence] = Renga.Topology.list_interface_neighbor_evidence(scope, interface.id)
+      assert evidence.remote_system_name == "spine-01"
+
+      # Memberships resolve once the stream is mapped to a VLAN group; the evidence is kept now.
+      vids =
+        scope
+        |> Renga.Topology.list_interface_vlan_evidence(interface.id)
+        |> Enum.map(&{&1.vid, &1.tagging_mode})
+        |> Enum.sort()
+
+      assert vids == [{10, "untagged"}, {20, "tagged"}]
+    end
+  end
+
   defp post_observation(token, payload, opts \\ []) do
     build_conn()
     |> put_req_header("authorization", "Bearer #{token}")

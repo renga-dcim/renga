@@ -267,6 +267,7 @@ fn project_interfaces(facts: Vec<NetworkInterface>) -> Vec<Interface> {
                     })
                     .collect(),
             ),
+            ..Default::default()
         })
         .collect()
 }
