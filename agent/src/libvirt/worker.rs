@@ -182,16 +182,32 @@ mod tests {
         let stopping = Instant::now();
         module.shutdown();
         assert!(stopping.elapsed() < Duration::from_secs(5));
-        for pid in pids {
-            // A killed grandchild is reparented and may linger as a zombie until init reaps it.
-            let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
-            let running = state.as_deref().is_some_and(|stat| {
-                stat.rsplit_once(") ")
-                    .is_some_and(|(_, rest)| !rest.starts_with('Z'))
-            });
-            assert!(!running, "process {pid} outlived shutdown: {state:?}");
-        }
+        assert_all_gone(&pids);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// SIGKILL is delivered asynchronously, and a killed grandchild is reparented and may
+    /// linger as a zombie until init reaps it, so each process gets a moment to finish exiting.
+    #[cfg(unix)]
+    fn assert_all_gone(pids: &[i32]) {
+        let running = |pid: i32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .filter(|stat| {
+                    stat.rsplit_once(") ")
+                        .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+                })
+        };
+        let started = Instant::now();
+        for pid in pids {
+            while let Some(stat) = running(*pid) {
+                assert!(
+                    started.elapsed() < Duration::from_secs(2),
+                    "process {pid} outlived shutdown: {stat}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     #[test]
