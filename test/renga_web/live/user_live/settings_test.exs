@@ -757,11 +757,30 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert Accounts.list_user_identities(user) == []
     end
 
+    test "an account without a credential re-checks at its provider", %{provider: provider} do
+      user = user_fixture()
+      identity = link(user, provider)
+      {:ok, lv, _html} = live(log_in_user(build_conn(), user), ~p"/users/settings")
+
+      result = lv |> element("#account-identities button", "Disconnect") |> render_click()
+
+      assert result =~ "Sign in again at your identity provider"
+      assert has_element?(lv, ~s|#recheck_provider_form[action="/users/settings/recheck"]|)
+
+      assert has_element?(
+               lv,
+               ~s|#recheck_identity-#{identity.id}[name="identity"][value="#{identity.id}"]|,
+               "Confirm with Company SSO"
+             )
+    end
+
     test "an account with nothing to re-check with is told to add a credential first", %{
       provider: provider
     } do
       user = user_fixture()
       link(user, provider)
+      # An identity at a disabled provider cannot confirm anything.
+      Accounts.IdentityProviders.disable(provider, {:operator, "test"})
       {:ok, lv, _html} = live(log_in_user(build_conn(), user), ~p"/users/settings")
 
       result = lv |> element("#account-identities button", "Disconnect") |> render_click()

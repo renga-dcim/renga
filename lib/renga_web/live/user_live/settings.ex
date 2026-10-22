@@ -451,6 +451,27 @@ defmodule RengaWeb.UserLive.Settings do
         </div>
       </.form>
 
+      <%!-- Signing in again leaves the page, so this is a real form post. --%>
+      <.form
+        :if={:provider in @recheck.methods}
+        for={%{}}
+        id="recheck_provider_form"
+        action={~p"/users/settings/recheck"}
+        method="post"
+        class="flex flex-wrap gap-2"
+      >
+        <.button
+          :for={identity <- @recheck.identities}
+          id={"recheck_identity-#{identity.id}"}
+          variant="primary"
+          name="identity"
+          value={identity.id}
+        >
+          Confirm with {identity.provider.display_name}
+        </.button>
+        <.button type="button" phx-click="cancel_recheck">Cancel</.button>
+      </.form>
+
       <div :if={bootstrap?(@recheck) and not @recheck.code_sent} class="flex gap-2">
         <.button id="bootstrap_send" variant="primary" phx-click="send_bootstrap_code">
           Email me a code
@@ -505,6 +526,10 @@ defmodule RengaWeb.UserLive.Settings do
   defp recheck_description(%{methods: [:password | _]}),
     do:
       "Enter your current password. It covers changes to your sign-in for the next five minutes."
+
+  defp recheck_description(%{methods: [:provider]}),
+    do:
+      "Sign in again at your identity provider. You'll come back here, and it covers changes to your sign-in for the next five minutes."
 
   defp recheck_description(%{methods: [], code_sent: true}),
     do: "Enter the code we emailed to your current address. It expires in five minutes."
@@ -840,6 +865,7 @@ defmodule RengaWeb.UserLive.Settings do
         change: change,
         params: params,
         methods: Accounts.recheck_methods(user),
+        identities: Accounts.recheck_identities(user),
         code_sent: false,
         form: recheck_form()
       })
@@ -974,6 +1000,13 @@ defmodule RengaWeb.UserLive.Settings do
           socket,
           :error,
           "That's your only way to sign in. Connect another identity provider first."
+        )
+
+      {:error, :last_recheck_method} ->
+        put_flash(
+          socket,
+          :error,
+          "Add a password or passkey before disconnecting your last identity provider. You need one of them to confirm it's you."
         )
 
       {:error, _reason} ->

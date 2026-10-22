@@ -8,7 +8,9 @@ defmodule RengaWeb.UserProviderController do
   `link` starts connecting a provider to the signed-in account, after the
   account re-check. Its attempt is bound to this browser session, and the
   provider's callback comes back to the same `callback` URL, which every
-  provider has registered.
+  provider has registered. `recheck` likewise starts signing in again at a
+  linked provider to pass the account re-check, for an account with no
+  passkey, authenticator app, or password.
   """
 
   use RengaWeb, :controller
@@ -66,6 +68,33 @@ defmodule RengaWeb.UserProviderController do
   end
 
   @doc """
+  Starts the account re-check through one of the account's linked
+  providers. The attempt asks the provider to authenticate the person again
+  and is bound to this user and session.
+  """
+  def recheck(conn, %{"identity" => identity_id}) do
+    user = conn.assigns.current_scope.user
+    token = get_session(conn, :user_token)
+
+    with [:provider] <- Accounts.recheck_methods(user),
+         %{provider: provider} <-
+           Enum.find(Accounts.recheck_identities(user), &(&1.id == identity_id)) ||
+             {:error, :not_available},
+         session_id when is_binary(session_id) <- Accounts.session_token_id(user, token),
+         {:ok, url, attempt} <-
+           OIDC.start(provider, callback_url(provider.id), {:recheck, user.id, session_id}) do
+      conn
+      |> put_session(@attempt_key, Map.put(attempt, "identity", identity_id))
+      |> redirect(external: url)
+    else
+      _unavailable ->
+        conn
+        |> put_flash(:error, recheck_message(:error))
+        |> redirect(to: ~p"/users/settings")
+    end
+  end
+
+  @doc """
   Opens a test sign-in link (RFD 15). The test's callback comes back to
   `callback/2` like any other, and activates the tested revision without
   signing anyone in.
@@ -117,6 +146,7 @@ defmodule RengaWeb.UserProviderController do
 
     case attempt do
       %{"purpose" => "link"} -> finish_link(conn, attempt, params)
+      %{"purpose" => "recheck"} -> finish_recheck(conn, attempt, params)
       _sign_in -> finish_provider_sign_in(conn, attempt, params)
     end
   end
@@ -163,6 +193,31 @@ defmodule RengaWeb.UserProviderController do
     end
   end
 
+  # Like a link, a re-check completes only for the session it started from.
+  # Leaving for the provider ends the settings page, so the person makes
+  # their change again, which the fresh re-check now covers.
+  defp finish_recheck(conn, attempt, %{"provider" => id} = params) do
+    user = conn.assigns.current_scope && conn.assigns.current_scope.user
+    token = get_session(conn, :user_token)
+    session_id = user && Accounts.session_token_id(user, token)
+
+    with true <- (is_binary(session_id) and attempt["provider"] == id) || {:error, :no_attempt},
+         {:ok, result} <-
+           OIDC.finish(attempt, params, callback_url(id), {:recheck, user.id, session_id}),
+         :ok <- Accounts.recheck_with_provider(user, token, attempt["identity"], result) do
+      conn
+      |> put_flash(:info, recheck_message(:ok))
+      |> redirect(to: ~p"/users/settings")
+    else
+      {:error, reason} when is_atom(reason) ->
+        Logger.info("Re-check through #{id} failed: #{reason}")
+
+        conn
+        |> put_flash(:error, recheck_message({:error, reason}))
+        |> redirect(to: if(user, do: ~p"/users/settings", else: ~p"/users/log-in"))
+    end
+  end
+
   defp log_reason({:error, reason}) when is_atom(reason), do: reason
   defp log_reason(_error), do: :failed
 
@@ -200,6 +255,17 @@ defmodule RengaWeb.UserProviderController do
   defp link_message({:error, :denied}), do: "Connecting was cancelled."
 
   defp link_message(_error), do: "The sign-in option couldn't be connected. Please try again."
+
+  defp recheck_message(:ok),
+    do: "You're confirmed for the next five minutes. Make your change again."
+
+  defp recheck_message({:error, :wrong_account}),
+    do: "That's a different account at the identity provider. Sign in as yourself to confirm."
+
+  defp recheck_message({:error, :stale_authentication}),
+    do: "The identity provider didn't ask you to sign in again, so it couldn't confirm it's you."
+
+  defp recheck_message(_error), do: "Confirming it's you didn't work. Please try again."
 
   defp test_message({:error, :test_expired}),
     do: "That test link has expired or was already used. Create a new test."

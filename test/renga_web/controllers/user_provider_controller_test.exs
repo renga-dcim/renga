@@ -565,4 +565,137 @@ defmodule RengaWeb.UserProviderControllerTest do
       assert Accounts.list_user_identities(user) == []
     end
   end
+
+  describe "re-checking through a linked provider" do
+    # An account a provider created has no password or factor, so it
+    # confirms it's you by signing in at that provider again.
+    setup %{conn: conn, fake: fake, provider: provider} do
+      {conn, url} = start(conn, provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+      token = get_session(conn, :user_token)
+      {user, _} = Accounts.get_user_by_session_token(token)
+      [identity] = Accounts.list_user_identities(user)
+
+      %{conn: recycle(conn), user: user, token: token, identity: identity}
+    end
+
+    defp start_recheck(conn, identity) do
+      conn = post(conn, ~p"/users/settings/recheck", %{"identity" => identity.id})
+      {conn, redirected_to(conn, 302)}
+    end
+
+    defp fresh(overrides \\ %{}),
+      do: claims(Map.merge(%{"auth_time" => System.system_time(:second)}, overrides))
+
+    test "asks the provider to authenticate again and records the re-check", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      token: token,
+      identity: identity
+    } do
+      refute Accounts.authorized_account_change?(user, token, :link_identity)
+
+      {conn, url} = start_recheck(conn, identity)
+      query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+      assert query["prompt"] == "login"
+      assert query["max_age"] == "300"
+
+      params = FakeOIDCProvider.authorize(fake, url, fresh())
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "confirmed for the next five minutes"
+      assert get_session(conn, :user_token) == token
+      assert Accounts.authorized_account_change?(user, token, :link_identity)
+    end
+
+    test "an ordinary sign-in is not a re-check", %{
+      fake: fake,
+      provider: provider,
+      user: user
+    } do
+      {conn, url} = start(build_conn(), provider)
+      params = FakeOIDCProvider.authorize(fake, url, fresh())
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      refute Accounts.authorized_account_change?(
+               user,
+               get_session(conn, :user_token),
+               :change_email
+             )
+    end
+
+    test "switching accounts at the provider fails", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      token: token,
+      identity: identity
+    } do
+      {conn, url} = start_recheck(conn, identity)
+      params = FakeOIDCProvider.authorize(fake, url, fresh(%{"sub" => "someone-else"}))
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "different account"
+      refute Accounts.authorized_account_change?(user, token, :change_email)
+    end
+
+    test "a provider that did not authenticate again is refused", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      token: token,
+      identity: identity
+    } do
+      {conn, url} = start_recheck(conn, identity)
+      stale = fresh(%{"auth_time" => System.system_time(:second) - 3600})
+      params = FakeOIDCProvider.authorize(fake, url, stale)
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "didn't ask you to sign in again"
+      refute Accounts.authorized_account_change?(user, token, :change_email)
+    end
+
+    test "completes only in the session that started it", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      identity: identity
+    } do
+      {conn, url} = start_recheck(conn, identity)
+      attempt = get_session(conn, :provider_attempt)
+      params = FakeOIDCProvider.authorize(fake, url, fresh())
+
+      # The same user's other session, carrying the copied attempt.
+      {user, _} = Accounts.get_user_by_session_token(get_session(conn, :user_token))
+      other = build_conn() |> log_in_user(user)
+      other_token = get_session(other, :user_token)
+
+      other =
+        other
+        |> Plug.Conn.put_session(:provider_attempt, attempt)
+        |> get(~p"/users/auth/#{provider.id}/callback", params)
+
+      assert Phoenix.Flash.get(other.assigns.flash, :error) =~ "didn't work"
+      refute Accounts.authorized_account_change?(user, other_token, :change_email)
+    end
+
+    test "an account with a password re-checks with it instead", %{
+      user: user,
+      identity: identity
+    } do
+      # Setting a password ends the account's sessions, so sign in again.
+      conn = build_conn() |> log_in_user(set_password(user))
+      conn = post(conn, ~p"/users/settings/recheck", %{"identity" => identity.id})
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "didn't work"
+    end
+  end
 end
