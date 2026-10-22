@@ -97,6 +97,9 @@ pub const COLUMNS: &[&[u32]] = &[
 const ENT_CLASS_CHASSIS: i64 = 3;
 // Postgres integer columns hold MTU and speed.
 const MAX_INT32: u64 = 2_147_483_647;
+/// Far more than any real switch carries, so a device listing more is refused rather than
+/// allowed to grow the report without bound.
+const MAX_VLAN_MEMBERSHIPS: usize = 100_000;
 /// Must match `Renga.Inventory.AgentPayload`'s string limit.
 pub const MAX_STRING_CHARS: usize = 255;
 
@@ -174,7 +177,7 @@ pub fn switch(
         attach_neighbors(answers, &mut interfaces, ttl_seconds);
     }
     if support.q_bridge {
-        attach_vlans(answers, &mut interfaces);
+        attach_vlans(answers, &mut interfaces)?;
     }
     let hostname = answers.scalar(SYS_NAME).and_then(text);
     let resource = CollectorResource {
@@ -449,13 +452,16 @@ fn network_address(value: &SnmpValue) -> Option<String> {
     }
 }
 
-fn attach_vlans(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>) {
-    let bridge_ports: BTreeMap<u32, u32> = answers
+fn attach_vlans(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>) -> Result<(), MapError> {
+    // Only bridge ports that lead to a reported interface matter, so bitmaps are tested for
+    // those ports alone instead of expanding every set bit a device sends.
+    let bridge_ports: Vec<(u32, u32)> = answers
         .by_index(DOT1D_BASE_PORT_IF_INDEX)
         .into_iter()
         .filter_map(|(port, if_index)| Some((port, u32::try_from(integer(if_index)?).ok()?)))
+        .filter(|(_, if_index)| interfaces.contains_key(if_index))
         .collect();
-    let vlan_ports = |column| -> BTreeMap<u16, BTreeSet<u32>> {
+    let vlan_ports = |column| -> BTreeMap<u16, &[u8]> {
         answers
             .column(column)
             .filter_map(|(index, value)| match (index, value) {
@@ -463,7 +469,7 @@ fn attach_vlans(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>) {
                     let vid = u16::try_from(*vid)
                         .ok()
                         .filter(|vid| (1..=4094).contains(vid))?;
-                    Some((vid, port_list(bitmap)))
+                    Some((vid, bitmap.as_slice()))
                 }
                 _ => None,
             })
@@ -472,12 +478,22 @@ fn attach_vlans(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>) {
     let egress = vlan_ports(DOT1Q_VLAN_CURRENT_EGRESS_PORTS);
     let untagged = vlan_ports(DOT1Q_VLAN_CURRENT_UNTAGGED_PORTS);
     let mut memberships: BTreeMap<u32, Vec<VlanMembership>> = BTreeMap::new();
+    let mut total = 0;
     for (vid, ports) in &egress {
-        for port in ports {
-            let Some(if_index) = bridge_ports.get(port) else {
+        for (port, if_index) in &bridge_ports {
+            if !in_port_list(ports, *port) {
                 continue;
-            };
-            let tagging_mode = if untagged.get(vid).is_some_and(|ports| ports.contains(port)) {
+            }
+            total += 1;
+            if total > MAX_VLAN_MEMBERSHIPS {
+                return Err(MapError(format!(
+                    "the switch reports more than {MAX_VLAN_MEMBERSHIPS} VLAN memberships"
+                )));
+            }
+            let tagging_mode = if untagged
+                .get(vid)
+                .is_some_and(|ports| in_port_list(ports, *port))
+            {
                 TaggingMode::Untagged
             } else {
                 TaggingMode::Tagged
@@ -518,19 +534,17 @@ fn attach_vlans(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>) {
         entry.interface.vlan_mode = Some(if access { "access" } else { "trunk" }.into());
         entry.interface.vlans = Some(vlans);
     }
+    Ok(())
 }
 
-/// A Q-BRIDGE PortList: the first octet's high bit is bridge port 1.
-fn port_list(bitmap: &[u8]) -> BTreeSet<u32> {
+/// Whether a Q-BRIDGE PortList holds `port`: the first octet's high bit is bridge port 1.
+fn in_port_list(bitmap: &[u8], port: u32) -> bool {
+    let Some(bit) = port.checked_sub(1) else {
+        return false;
+    };
     bitmap
-        .iter()
-        .enumerate()
-        .flat_map(|(octet, bits)| {
-            (0..8)
-                .filter(move |bit| bits & (0x80 >> bit) != 0)
-                .map(move |bit| octet as u32 * 8 + bit + 1)
-        })
-        .collect()
+        .get((bit / 8) as usize)
+        .is_some_and(|octet| octet & (0x80 >> (bit % 8)) != 0)
 }
 
 fn text(value: &SnmpValue) -> Option<String> {
@@ -869,9 +883,43 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_port_lists_most_significant_bit_first() {
-        assert_eq!(
-            port_list(&[0b1000_0001, 0b0100_0000]),
-            BTreeSet::from([1, 8, 10])
-        );
+        let bitmap = [0b1000_0001, 0b0100_0000];
+        let ports: Vec<u32> = (0..=20)
+            .filter(|port| in_port_list(&bitmap, *port))
+            .collect();
+        assert_eq!(ports, [1, 8, 10]);
+    }
+
+    #[test]
+    fn maps_dense_port_lists_only_through_known_bridge_ports() {
+        let mut answers = answers();
+        for vid in 100..600 {
+            answers.insert(
+                oid(DOT1Q_VLAN_CURRENT_EGRESS_PORTS, &[0, vid]),
+                SnmpValue::Octets(vec![0xff; 60_000]),
+            );
+        }
+        let (resource, _) = switch("10.0.0.1", &answers, 60).unwrap();
+        let memberships: usize = resource
+            .interfaces
+            .unwrap()
+            .iter()
+            .map(|interface| interface.vlans.as_ref().map_or(0, Vec::len))
+            .sum();
+        // Each bridge port that leads to an interface carries the 500 new VLANs, nothing more.
+        assert!(memberships < 500 * 8, "{memberships}");
+
+        for if_index in 1_000..1_300 {
+            answers.insert(
+                oid(IF_NAME, &[if_index]),
+                octets(&format!("port{if_index}")),
+            );
+            answers.insert(
+                oid(DOT1D_BASE_PORT_IF_INDEX, &[if_index]),
+                SnmpValue::Integer(i64::from(if_index)),
+            );
+        }
+        let error = switch("10.0.0.1", &answers, 60).unwrap_err();
+        assert!(error.0.contains("VLAN memberships"), "{}", error.0);
     }
 }
