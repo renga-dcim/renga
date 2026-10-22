@@ -4,6 +4,7 @@ use super::{
     config::{AuthProtocol, Credentials, PrivacyProtocol, Target},
     mibs::{Answers, Oid, SnmpValue, COLUMNS, SCALARS},
 };
+use crate::cancellation::Cancellation;
 use snmp2::{v3, Oid as WireOid, Pdu, SyncSession, Value, Version};
 use std::{
     fmt, fs,
@@ -37,8 +38,16 @@ pub trait Session {
     fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError>;
 }
 
-/// Reads every scalar and walks every column before `deadline`.
-pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, PollError> {
+/// Reads every scalar and walks every column before `deadline`, or until `stopped`: a module
+/// stopped for a reload or shutdown ends its walk at the next request, not its deadline.
+pub fn poll(
+    session: &mut dyn Session,
+    deadline: Instant,
+    stopped: &Cancellation,
+) -> Result<Answers, PollError> {
+    if stopped.cancelled() {
+        return Err(PollError("polling was cancelled".into()));
+    }
     let mut answers = Answers::default();
     for (oid, value) in session.get(SCALARS)? {
         answers.insert(oid, value);
@@ -50,6 +59,9 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
         'walk: loop {
             if Instant::now() >= deadline {
                 return Err(PollError("polling took longer than its deadline".into()));
+            }
+            if stopped.cancelled() {
+                return Err(PollError("polling was cancelled".into()));
             }
             let batch = session.next(&cursor, BULK_REPETITIONS)?;
             if batch.is_empty() {
@@ -336,7 +348,12 @@ pub(crate) mod tests {
     fn walks_every_column_into_answers() {
         let recorded = mibs::tests::answers();
         let mut session = Recorded::new(&recorded);
-        let answers = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap();
+        let answers = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap();
 
         let (resource, _) = mibs::switch("10.0.0.1", &answers, 60).unwrap();
         assert_eq!(resource.interfaces.as_ref().unwrap().len(), 4);
@@ -352,7 +369,12 @@ pub(crate) mod tests {
             answers.insert(oid, SnmpValue::Octets(vec![b'x'; 60_000]));
         }
         let mut session = Recorded::new(&answers);
-        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
         assert!(error.0.contains("bytes"), "{error}");
     }
 
@@ -376,7 +398,12 @@ pub(crate) mod tests {
     #[test]
     fn fails_a_walk_that_stops_advancing() {
         let mut session = Stalling(Recorded::new(&mibs::tests::answers()));
-        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(5),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
         assert!(error.0.contains("out of order"), "{error}");
         assert!(check_status(2).is_err());
     }
@@ -404,10 +431,120 @@ pub(crate) mod tests {
         assert!(error.0.contains("different SNMP version"), "{error}");
     }
 
+    /// Builds a target's answer to the request with the given ID.
+    type Reply = fn(i32) -> Vec<u8>;
+
+    /// A v2c target at a local UDP port that answers each request with `reply(request_id)`.
+    fn substituting_target(reply: Reply) -> (Target, std::path::PathBuf) {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut buffer = [0; 1500];
+            while let Ok((length, from)) = socket.recv_from(&mut buffer) {
+                let request_id = Pdu::from_bytes(&buffer[..length]).unwrap().req_id;
+                socket.send_to(&reply(request_id), from).unwrap();
+            }
+        });
+        let community = std::env::temp_dir().join(format!("renga-community-{port}"));
+        fs::write(&community, "renga\n").unwrap();
+        (
+            Target::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            community,
+        )
+    }
+
+    /// An empty GetResponse with the community `renga`.
+    fn response_to(version: u8, request_id: i32) -> Vec<u8> {
+        let id = request_id.to_be_bytes();
+        let skip = id
+            .windows(2)
+            .take_while(|pair| {
+                (pair[0] == 0 && pair[1] < 0x80) || (pair[0] == 0xff && pair[1] >= 0x80)
+            })
+            .count();
+        let id = &id[skip..];
+        let mut pdu = vec![0x02, id.len() as u8];
+        pdu.extend_from_slice(id);
+        pdu.extend_from_slice(&[0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00]);
+        pdu.splice(0..0, [0xa2, pdu.len() as u8]);
+        let mut message = vec![0x02, 0x01, version, 0x04, 0x05];
+        message.extend_from_slice(b"renga");
+        message.extend(pdu);
+        message.splice(0..0, [0x30, message.len() as u8]);
+        message
+    }
+
+    #[test]
+    fn rejects_substituted_responses_on_the_wire() {
+        // The same request answered as SNMPv1, then under another request ID, which snmp2
+        // fails at once rather than waiting on: the target reads as unreachable, never as
+        // the substitute's answers.
+        let substitutes: [(Reply, &str); 2] = [
+            (|id| response_to(0, id), "different SNMP version"),
+            (|id| response_to(1, id.wrapping_add(1)), "RequestIdMismatch"),
+        ];
+        for (reply, expected) in substitutes {
+            let (target, community) = substituting_target(reply);
+            let mut session = WireSession::open(
+                &target,
+                &Credentials::V2c {
+                    community_file: community.clone(),
+                },
+                Duration::from_millis(300),
+            )
+            .unwrap();
+            let error = session.get(&[mibs::SYS_NAME]).unwrap_err();
+            assert!(error.0.contains(expected), "{error}");
+            fs::remove_file(community).unwrap();
+        }
+        // A genuine answer to the same request is accepted, so the rejections above are the
+        // substitutions' doing.
+        let (target, community) = substituting_target(|id| response_to(1, id));
+        let mut session = WireSession::open(
+            &target,
+            &Credentials::V2c {
+                community_file: community.clone(),
+            },
+            Duration::from_millis(300),
+        )
+        .unwrap();
+        assert!(session.get(&[]).is_ok());
+        fs::remove_file(community).unwrap();
+    }
+
+    /// Stops its module once the walk is under way.
+    struct StoppedMidWalk(Recorded, Cancellation);
+
+    impl Session for StoppedMidWalk {
+        fn get(&mut self, oids: &[&[u32]]) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            self.0.get(oids)
+        }
+
+        fn next(&mut self, oid: &[u32], count: u32) -> Result<Vec<(Oid, SnmpValue)>, PollError> {
+            self.1.cancel();
+            self.0.next(oid, count)
+        }
+    }
+
+    #[test]
+    fn stops_at_the_next_request_once_cancelled() {
+        let stopped = Cancellation::default();
+        let mut session = StoppedMidWalk(Recorded::new(&mibs::tests::answers()), stopped.clone());
+        let error = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(60),
+            &stopped,
+        )
+        .unwrap_err();
+        assert!(error.0.contains("cancelled"), "{error}");
+        // The scalars and the one walk request in flight when it stopped.
+        assert_eq!(session.0.requests, 2);
+    }
+
     #[test]
     fn stops_at_the_deadline() {
         let mut session = Recorded::new(&mibs::tests::answers());
-        let error = poll(&mut session, Instant::now()).unwrap_err();
+        let error = poll(&mut session, Instant::now(), &Cancellation::default()).unwrap_err();
         assert!(error.0.contains("deadline"));
     }
 
@@ -448,7 +585,12 @@ pub(crate) mod tests {
             privacy_password_file: privacy.into(),
         };
         let mut session = WireSession::open(&target, &credentials, Duration::from_secs(2)).unwrap();
-        let answers = poll(&mut session, Instant::now() + Duration::from_secs(30)).unwrap();
+        let answers = poll(
+            &mut session,
+            Instant::now() + Duration::from_secs(30),
+            &Cancellation::default(),
+        )
+        .unwrap();
 
         assert!(answers
             .iter()
@@ -465,8 +607,14 @@ pub(crate) mod tests {
             privacy_protocol: PrivacyProtocol::Aes128,
             privacy_password_file: std::env::var("RENGA_SNMPD_PRIV").unwrap().into(),
         };
-        let refused = WireSession::open(&target, &wrong, Duration::from_secs(1))
-            .and_then(|mut session| poll(&mut session, Instant::now() + Duration::from_secs(5)));
+        let refused =
+            WireSession::open(&target, &wrong, Duration::from_secs(1)).and_then(|mut session| {
+                poll(
+                    &mut session,
+                    Instant::now() + Duration::from_secs(5),
+                    &Cancellation::default(),
+                )
+            });
         assert!(refused.is_err());
     }
 

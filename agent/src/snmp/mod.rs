@@ -70,7 +70,7 @@ where
                 let result = if stopped.cancelled() {
                     Err("polling was cancelled".into())
                 } else {
-                    poll_target(target, &open, budget, ttl)
+                    poll_target(target, &open, budget, ttl, stopped)
                 };
                 outcomes
                     .lock()
@@ -97,13 +97,14 @@ fn poll_target<F>(
     open: &F,
     budget: Duration,
     ttl: u32,
+    stopped: &Cancellation,
 ) -> Result<(CollectorResource, Support), String>
 where
     F: Fn(&Target) -> Result<Box<dyn Session>, PollError>,
 {
     let deadline = Instant::now() + budget;
     let mut session = open(target).map_err(|error| error.0)?;
-    let answers = client::poll(session.as_mut(), deadline).map_err(|error| error.0)?;
+    let answers = client::poll(session.as_mut(), deadline, stopped).map_err(|error| error.0)?;
     mibs::switch(&target.address, &answers, ttl).map_err(|error| error.0)
 }
 

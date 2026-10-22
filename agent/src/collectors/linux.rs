@@ -82,6 +82,13 @@ fn read(root: &Path, path: &str) -> Option<String> {
         .and_then(|v| normalize_value(&v))
 }
 
+/// Firmware that never set a system UUID reports all zeros or all ones, which many machines
+/// share; like the SMBIOS parser, treat it as absent rather than a strong identifier.
+fn unset_uuid(uuid: &str) -> bool {
+    let digits: Vec<char> = uuid.chars().filter(|c| *c != '-').collect();
+    digits.iter().all(|c| *c == '0') || digits.iter().all(|c| c.eq_ignore_ascii_case(&'f'))
+}
+
 fn collect_from_with_cancellation(
     root: &Path,
     cancellation: &Cancellation,
@@ -170,7 +177,9 @@ fn collect_from_with_sources(
             fqdn: fqdn.clone(),
             machine_id: read(root, "etc/machine-id"),
             // sysfs is readable only when running as root; the snapshot covers the service.
-            dmi_uuid: read(root, "sys/class/dmi/id/product_uuid").or(system.uuid),
+            dmi_uuid: read(root, "sys/class/dmi/id/product_uuid")
+                .filter(|uuid| !unset_uuid(uuid))
+                .or(system.uuid),
             serial_number: read(root, "sys/class/dmi/id/product_serial").or(system.serial_number),
             mac_address: macs,
         },
@@ -711,6 +720,29 @@ mod tests {
             Some("SN-SYSFS")
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unset_sysfs_uuids_fall_back_to_the_snapshot() {
+        for unset in [
+            "00000000-0000-0000-0000-000000000000",
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+        ] {
+            let root = fixture();
+            publish_smbios(
+                &root,
+                &smbios_tests::system_record(smbios_tests::UUID_BYTES, "SN-SMBIOS"),
+            );
+            let dmi = root.join("sys/class/dmi/id");
+            fs::create_dir_all(&dmi).unwrap();
+            fs::write(dmi.join("product_uuid"), format!("{unset}\n")).unwrap();
+            let resource = collect_from_with_ip(&root, Ok("")).unwrap();
+            assert_eq!(
+                resource.identifiers.dmi_uuid.as_deref(),
+                Some("00112233-4455-6677-8899-aabbccddeeff")
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

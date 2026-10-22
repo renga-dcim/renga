@@ -254,6 +254,41 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_waits_for_a_replaced_configuration_still_running() {
+        let collector = LibvirtCollector {
+            id: "libvirt".into(),
+            uri: "qemu:///system".into(),
+            interval: Duration::from_secs(300),
+            timeout: Duration::from_secs(60),
+        };
+        // The stand-in ignores cancellation, as a call still being killed would, until released.
+        let (entered, in_call) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let (entered, released) = (Mutex::new(entered), Mutex::new(released));
+        let runner: Arc<Runner> = Arc::new(move |_, _, _| {
+            entered.lock().unwrap().send(()).unwrap();
+            let _ = released.lock().unwrap().recv();
+            Err("released".into())
+        });
+        let mut module = Module::with_runner(Some(collector), Arc::new(|_, _: &[u8]| {}), runner);
+        in_call.recv_timeout(Duration::from_secs(5)).unwrap();
+        module.restart(None, Arc::new(|_, _: &[u8]| {}));
+
+        let (finished, shut_down) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            module.shutdown();
+            finished.send(()).unwrap();
+        });
+        assert!(
+            shut_down.recv_timeout(Duration::from_millis(300)).is_err(),
+            "shutdown returned while the replaced configuration was still in a call"
+        );
+        drop(release);
+        shut_down.recv_timeout(Duration::from_secs(5)).unwrap();
+        shutdown.join().unwrap();
+    }
+
+    #[test]
     fn an_unconfigured_module_does_nothing() {
         let module = Module::start(None, Arc::new(|_, _: &[u8]| panic!("no reports")));
         assert!(module.collector().is_none());

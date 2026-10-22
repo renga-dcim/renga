@@ -21,48 +21,80 @@ const WAIT_SLICE: Duration = Duration::from_millis(250);
 pub type Sink = Arc<dyn Fn(Uuid, &[u8]) + Send + Sync>;
 
 /// The running modules of one configuration.
+#[derive(Default)]
 pub struct Modules {
-    collectors: Vec<SnmpCollector>,
-    stop: Cancellation,
+    running: Vec<(SnmpCollector, Cancellation)>,
 }
 
 impl Modules {
     /// Starts one thread per module. Each polls immediately, then every `interval`.
     pub fn start(collectors: Vec<SnmpCollector>, sink: Sink) -> Self {
-        let stop = Cancellation::default();
-        for collector in &collectors {
-            let collector = collector.clone();
-            let stop = stop.clone();
-            let sink = Arc::clone(&sink);
-            let name = format!("snmp-{}", collector.id);
-            if let Err(error) = thread::Builder::new().name(name).spawn(move || {
-                let credentials = collector.credentials.clone();
-                let timeout = collector.timeout;
-                let open = move |target: &Target| {
-                    WireSession::open(target, &credentials, timeout)
-                        .map(|session| Box::new(session) as Box<dyn Session>)
-                };
-                run(&collector, &stop, &sink, &open);
-            }) {
-                warn!(%error, "cannot start an SNMP module");
+        let mut modules = Self::default();
+        modules.reload(collectors, &sink);
+        modules
+    }
+
+    /// Puts `collectors` into effect. A module whose settings are unchanged keeps polling on its
+    /// own schedule; a changed or removed one stops, and a changed or new one starts afresh.
+    pub fn reload(&mut self, collectors: Vec<SnmpCollector>, sink: &Sink) {
+        self.reload_with(collectors, sink, spawn_wire);
+    }
+
+    fn reload_with(
+        &mut self,
+        collectors: Vec<SnmpCollector>,
+        sink: &Sink,
+        spawn: impl Fn(SnmpCollector, Cancellation, Sink),
+    ) {
+        let mut previous = std::mem::take(&mut self.running);
+        let mut starting = Vec::new();
+        for collector in collectors {
+            match previous
+                .iter()
+                .position(|(running, _)| *running == collector)
+            {
+                Some(index) => self.running.push(previous.swap_remove(index)),
+                None => starting.push(collector),
             }
         }
-        Self { collectors, stop }
+        // Superseded modules stop before their replacements start, so the two overlap by at
+        // most the one request the old module has in flight.
+        for (_, stop) in previous {
+            stop.cancel();
+        }
+        for collector in starting {
+            let stop = Cancellation::default();
+            spawn(collector.clone(), stop.clone(), Arc::clone(sink));
+            self.running.push((collector, stop));
+        }
     }
 
-    pub fn collectors(&self) -> &[SnmpCollector] {
-        &self.collectors
-    }
-
-    /// Asks every module to stop. A poll in flight ends at its next target or request timeout.
+    /// Asks every module to stop. A poll in flight ends at its next request.
     pub fn stop(&self) {
-        self.stop.cancel();
+        for (_, stop) in &self.running {
+            stop.cancel();
+        }
     }
 }
 
 impl Drop for Modules {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn spawn_wire(collector: SnmpCollector, stop: Cancellation, sink: Sink) {
+    let name = format!("snmp-{}", collector.id);
+    if let Err(error) = thread::Builder::new().name(name).spawn(move || {
+        let credentials = collector.credentials.clone();
+        let timeout = collector.timeout;
+        let open = move |target: &Target| {
+            WireSession::open(target, &credentials, timeout)
+                .map(|session| Box::new(session) as Box<dyn Session>)
+        };
+        run(&collector, &stop, &sink, &open);
+    }) {
+        warn!(%error, "cannot start an SNMP module");
     }
 }
 
@@ -108,6 +140,64 @@ mod tests {
     use super::*;
     use crate::snmp::{client::tests::Recorded, config::Credentials, mibs};
     use std::sync::{mpsc, Mutex};
+
+    #[test]
+    fn reload_restarts_only_the_modules_that_changed() {
+        let module = |id: &str, interval_ms| SnmpCollector {
+            id: id.into(),
+            targets: vec![Target::parse("10.0.0.1").unwrap()],
+            credentials: Credentials::V2c {
+                community_file: "/dev/null".into(),
+            },
+            interval: Duration::from_millis(interval_ms),
+            timeout: Duration::from_secs(1),
+            max_concurrent_targets: 1,
+        };
+        // Each start records whether each module started before it had been stopped by then.
+        let started: Mutex<Vec<(String, Cancellation)>> = Mutex::new(Vec::new());
+        let stopped_at_start = Mutex::new(Vec::new());
+        let spawn = |collector: SnmpCollector, stop: Cancellation, _sink: Sink| {
+            let mut started = started.lock().unwrap();
+            let stopped: Vec<_> = started.iter().map(|(_, stop)| stop.cancelled()).collect();
+            stopped_at_start.lock().unwrap().push(stopped);
+            started.push((collector.id, stop));
+        };
+        let sink: Sink = Arc::new(|_, _: &[u8]| {});
+        let mut modules = Modules::default();
+        modules.reload_with(
+            vec![module("core", 60_000), module("edge", 60_000)],
+            &sink,
+            spawn,
+        );
+        modules.reload_with(
+            vec![
+                module("core", 60_000),
+                module("edge", 30_000),
+                module("lab", 60_000),
+            ],
+            &sink,
+            spawn,
+        );
+        modules.reload_with(vec![module("core", 60_000)], &sink, spawn);
+
+        // The changed "edge" starts only once the old "edge" has stopped.
+        assert_eq!(
+            stopped_at_start.into_inner().unwrap(),
+            [
+                vec![],
+                vec![false],
+                vec![false, true],
+                vec![false, true, false]
+            ]
+        );
+        let started = started.into_inner().unwrap();
+        let ids: Vec<_> = started.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["core", "edge", "edge", "lab"]);
+        let stopped: Vec<_> = started.iter().map(|(_, stop)| stop.cancelled()).collect();
+        assert_eq!(stopped, [false, true, true, true]);
+        let running: Vec<_> = modules.running.iter().map(|(module, _)| module).collect();
+        assert_eq!(running, [&module("core", 60_000)]);
+    }
 
     #[test]
     fn polls_on_its_interval_until_stopped() {

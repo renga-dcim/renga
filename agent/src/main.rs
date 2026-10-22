@@ -369,10 +369,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             }
             listener = start_listener(&client, &config, &queue, &notices, &stopped);
             // Modules keep polling through a reload unless their own settings changed.
-            if snmp.collectors() != config.snmp.as_slice() {
-                snmp.stop();
-                snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
-            }
+            snmp.reload(config.snmp.clone(), &queue_sink(&queue, &stopped));
             if libvirt.collector() != config.libvirt.as_ref() {
                 libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
             }
@@ -1626,6 +1623,149 @@ mod tests {
             )
             .map_err(|error| error.to_string())
         })
+    }
+
+    /// A silent SNMP target on a local UDP port, and how many requests it has received.
+    fn silent_snmp_target(stopped: Cancellation) -> (String, Arc<AtomicUsize>) {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let target = socket.local_addr().unwrap().to_string();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let received = Arc::clone(&requests);
+        thread::spawn(move || {
+            let mut buffer = [0; 1500];
+            while !stopped.cancelled() {
+                if socket.recv_from(&mut buffer).is_ok() {
+                    received.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        (target, requests)
+    }
+
+    /// Writes a configuration resolving from `resolver` with one SNMP module reading `target`.
+    fn write_snmp_config(state: &Path, resolver: &str, target: &str) -> PathBuf {
+        let config = write_agent_config(state, resolver, "renga_intake_test");
+        let community = state.join("community");
+        std::fs::write(&community, "renga\n").unwrap();
+        let mut toml = std::fs::read_to_string(&config).unwrap();
+        toml.push_str(&format!(
+            "[[collectors.snmp]]\nid = \"core\"\ntargets = [{target:?}]\nversion = \"2c\"\nallow_v2c = true\ncommunity_file = {community:?}\ninterval_seconds = 3600\ntimeout_seconds = 1\n"
+        ));
+        std::fs::write(&config, toml).unwrap();
+        config
+    }
+
+    fn wait_until(what: &str, deadline: Instant, done: impl Fn() -> bool) {
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} never happened");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn collector_settings_change_with_the_home_a_reload_resolves_and_outlast_a_move() {
+        let state =
+            std::env::temp_dir().join(format!("renga-reload-snmp-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let accept = |request: &str| {
+            if request.contains("/api/v1/agent/checkins") {
+                (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+            } else if request.contains("/api/v1/observations") {
+                (202, "{}".into())
+            } else {
+                (404, "{}".into())
+            }
+        };
+        let (first_home, first_server) = routed_server(stopped.clone(), accept);
+        // The second home says the organization moved once told to; the third home is where
+        // the move leads.
+        let moving = Arc::new(AtomicBool::new(false));
+        let move_now = Arc::clone(&moving);
+        let moved = Arc::new(AtomicBool::new(false));
+        let said_moved = Arc::clone(&moved);
+        let (second_home, second_server) = routed_server(stopped.clone(), move |request| {
+            if move_now.load(Ordering::SeqCst) {
+                said_moved.store(true, Ordering::SeqCst);
+                (410, r#"{"error":"moved"}"#.into())
+            } else {
+                accept(request)
+            }
+        });
+        let third_checkins = Arc::new(AtomicUsize::new(0));
+        let checked_in = Arc::clone(&third_checkins);
+        let (third_home, third_server) = routed_server(stopped.clone(), move |request| {
+            if request.contains("/api/v1/agent/checkins") {
+                checked_in.fetch_add(1, Ordering::SeqCst);
+            }
+            accept(request)
+        });
+        let (first_resolver, first_resolver_server) = routed_server(stopped.clone(), move |_| {
+            (200, json!({ "home": first_home }).to_string())
+        });
+        // The new resolver fails until released, then names the second home until it says
+        // the organization moved, and the third after.
+        let resolvable = Arc::new(AtomicBool::new(false));
+        let released = Arc::clone(&resolvable);
+        let asked = Arc::new(AtomicUsize::new(0));
+        let asked_count = Arc::clone(&asked);
+        let (second_resolver, second_resolver_server) = routed_server(stopped.clone(), move |_| {
+            asked_count.fetch_add(1, Ordering::SeqCst);
+            if !released.load(Ordering::SeqCst) {
+                (503, "{}".into())
+            } else if moved.load(Ordering::SeqCst) {
+                (200, json!({ "home": third_home }).to_string())
+            } else {
+                (200, json!({ "home": second_home }).to_string())
+            }
+        });
+        let (old_target, old_polls) = silent_snmp_target(stopped.clone());
+        let (new_target, new_polls) = silent_snmp_target(stopped.clone());
+        std::fs::create_dir_all(&state).unwrap();
+        let config = write_snmp_config(&state, &first_resolver, &old_target);
+        let daemon = spawn_daemon(config, &state, false, stopped.clone());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        wait_until("the first poll", deadline, || {
+            old_polls.load(Ordering::SeqCst) == 1
+        });
+
+        // While the new configuration's home cannot be resolved, the old settings stay.
+        write_snmp_config(&state, &second_resolver, &new_target);
+        wait_until("a failed resolution", deadline, || {
+            asked.load(Ordering::SeqCst) >= 2
+        });
+        assert_eq!(new_polls.load(Ordering::SeqCst), 0);
+
+        // Once it resolves, the new settings come with the new home.
+        resolvable.store(true, Ordering::SeqCst);
+        wait_until("a poll with the new settings", deadline, || {
+            new_polls.load(Ordering::SeqCst) == 1
+        });
+
+        // A move changes the home and its client, never the collectors: a restarted module
+        // would poll again at once. Queued reports go out on the next flush, which uses the
+        // new client.
+        moving.store(true, Ordering::SeqCst);
+        wait_until("check-ins at the home the move leads to", deadline, || {
+            third_checkins.load(Ordering::SeqCst) >= 2
+        });
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [
+            first_server,
+            second_server,
+            third_server,
+            first_resolver_server,
+            second_resolver_server,
+        ] {
+            server.join().unwrap();
+        }
+
+        assert_eq!(old_polls.load(Ordering::SeqCst), 1);
+        assert_eq!(new_polls.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     #[test]
