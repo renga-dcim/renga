@@ -1,5 +1,7 @@
 defmodule Renga.Release.CLITest do
-  use Renga.DataCase, async: true
+  # Synchronous: capturing :stderr captures the whole node's standard error,
+  # and while async tests run, test files still compiling print warnings there.
+  use Renga.DataCase, async: false
 
   import ExUnit.CaptureIO
 
