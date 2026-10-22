@@ -16,6 +16,8 @@ const CONCURRENCY_MAX: usize = 32;
 // Must match `Renga.Inventory.AgentPayload`.
 const COLLECTOR_ID_MAX: usize = 64;
 const TARGETS_MAX: usize = 1_000;
+// Renga's string limit; a report naming a longer target would be rejected whole.
+const TARGET_ADDRESS_MAX: usize = 255;
 
 /// One SNMP poller module instance. Its `id` is the collector stream identity Renga keeps for
 /// it, so changing the targets or credentials keeps the same stream.
@@ -224,7 +226,8 @@ impl Target {
     /// Accepts `host`, `host:port`, an IPv6 literal, or `[ipv6]:port`. The port defaults to 161.
     pub fn parse(address: &str) -> Option<Self> {
         let trimmed = address.trim();
-        if trimmed.is_empty() || trimmed != address {
+        if trimmed.is_empty() || trimmed != address || address.chars().count() > TARGET_ADDRESS_MAX
+        {
             return None;
         }
         let (host, port) = if let Some(rest) = trimmed.strip_prefix('[') {
@@ -370,6 +373,9 @@ mod tests {
             let error = parse(&V3.replace(needle, replacement)).unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+
+        assert!(Target::parse(&"a".repeat(TARGET_ADDRESS_MAX)).is_some());
+        assert!(Target::parse(&"a".repeat(TARGET_ADDRESS_MAX + 1)).is_none());
 
         let twice = format!("{V3}\n{V3}");
         assert!(parse(&twice).unwrap_err().contains("used twice"));
