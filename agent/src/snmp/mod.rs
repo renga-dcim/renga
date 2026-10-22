@@ -352,6 +352,28 @@ mod tests {
         assert_eq!(error.chars().count(), mibs::MAX_STRING_CHARS);
     }
 
+    /// The recorded switch as the mapper reports it. Renga's collector report tests post this
+    /// file, so a mapping the server would reject fails there. Set `RENGA_UPDATE_FIXTURES=1` to
+    /// rewrite it after an intended mapping change.
+    #[test]
+    fn the_recorded_switch_matches_the_server_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test/fixtures/collectors/recorded_switch.json"
+        );
+        let (resource, _) = mibs::switch("10.0.0.1", &mibs::tests::answers(), 2_700).unwrap();
+        let mapped = serde_json::to_value(&resource).unwrap();
+        if std::env::var_os("RENGA_UPDATE_FIXTURES").is_some() {
+            let body = serde_json::to_string_pretty(&mapped).unwrap();
+            std::fs::write(path, body + "\n").unwrap();
+        }
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            mapped, fixture,
+            "rerun with RENGA_UPDATE_FIXTURES=1 if intended"
+        );
+    }
+
     #[test]
     fn stops_polling_once_cancelled() {
         let stopped = Cancellation::default();

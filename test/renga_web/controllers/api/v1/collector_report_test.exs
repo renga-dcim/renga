@@ -698,6 +698,24 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
   end
 
   describe "switch pollers (RFD 11 phase 2)" do
+    # Written by the agent's mapper from a recorded switch (agent/src/snmp/mod.rs), so the
+    # server's cross-field rules, which the OpenAPI schema cannot state, check real output.
+    test "accepts a switch as the agent's SNMP mapper reports it", %{scope: scope, token: token} do
+      resource =
+        "test/fixtures/collectors/recorded_switch.json" |> File.read!() |> Jason.decode!()
+
+      assert %{
+               "reconciliation" => %{
+                 "resources" => [%{"status" => "succeeded", "resource_id" => id}]
+               }
+             } =
+               token
+               |> post_observation(switch_report([resource], complete: true))
+               |> valid_api_response(202)
+
+      assert Inventory.get_resource!(scope, id).kind == "switch"
+    end
+
     test "two pollers reporting one chassis serial reconcile to one switch", %{
       scope: scope,
       token: token

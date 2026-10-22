@@ -1,0 +1,94 @@
+{
+  "attributes": {
+    "hostname": "leaf-01",
+    "model": "EX-48T",
+    "vendor": "Example Networks"
+  },
+  "identifiers": {
+    "hostname": "leaf-01",
+    "serial_number": "FDO1234X0YZ"
+  },
+  "interfaces": [
+    {
+      "kind": "ethernet",
+      "mac_address": "00:1b:21:aa:bb:01",
+      "mtu": 1500,
+      "name": "Gi1/0/1",
+      "neighbors": [
+        {
+          "protocol": "lldp",
+          "remote_chassis_id": "192.0.2.10",
+          "remote_chassis_id_kind": "network_address",
+          "remote_port_id": "52:54:00:12:34:56",
+          "remote_port_id_kind": "mac_address",
+          "ttl_seconds": 2700
+        }
+      ],
+      "speed_mbps": 1000,
+      "status": "up",
+      "vlan_mode": "access",
+      "vlans": [
+        {
+          "tagging_mode": "untagged",
+          "vid": 10
+        }
+      ]
+    },
+    {
+      "kind": "ethernet",
+      "mac_address": "00:1b:21:aa:bb:02",
+      "mtu": 1500,
+      "name": "Gi1/0/2",
+      "neighbors": [],
+      "speed_mbps": 1000,
+      "status": "down",
+      "vlan_mode": "access",
+      "vlans": [
+        {
+          "tagging_mode": "untagged",
+          "vid": 10
+        }
+      ]
+    },
+    {
+      "kind": "ethernet",
+      "mac_address": "00:1b:21:aa:bb:31",
+      "mtu": 1500,
+      "name": "Te1/1/1",
+      "neighbors": [
+        {
+          "protocol": "lldp",
+          "remote_chassis_id": "00:1c:73:01:02:03",
+          "remote_chassis_id_kind": "mac_address",
+          "remote_port_description": "to leaf-01",
+          "remote_port_id": "Ethernet1/49",
+          "remote_port_id_kind": "name",
+          "remote_system_name": "spine-01",
+          "ttl_seconds": 2700
+        }
+      ],
+      "speed_mbps": 10000,
+      "status": "up",
+      "vlan_mode": "trunk",
+      "vlans": [
+        {
+          "tagging_mode": "tagged",
+          "vid": 10
+        },
+        {
+          "tagging_mode": "tagged",
+          "vid": 20
+        }
+      ]
+    },
+    {
+      "kind": "virtual",
+      "name": "Vlan10",
+      "neighbors": [],
+      "status": "up",
+      "vlans": []
+    }
+  ],
+  "kind": "switch",
+  "target": "10.0.0.1"
+}
