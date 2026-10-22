@@ -180,3 +180,21 @@ its IDs exists in the deployment. At the destination:
 - portable settings apply unless they would allow more than the destination
   does now; those are held on the import for an owner to confirm.
 
+### Bringing people back
+
+`Renga.Transfers.Principals` invites an imported principal back to the email
+address the archive had for it. Only a principal whose held membership was
+active can return, and it returns with that membership's role, which must be
+within what the inviter may grant. Accepting needs an account that has
+confirmed that address, and in one transaction it:
+
+- links the principal to the account and restores the membership with its
+  held ID;
+- restores the membership's team memberships, and its manual role assignments
+  that are still valid and within what the inviter may grant;
+- restores the principal's private saved views as the account's own;
+- fills the empty person fields of current records the principal was
+  attributed with.
+
+Whatever does not apply stays held. History (Activity, job events, cable and
+module events, jobs) and cable claims keep their imported attribution.

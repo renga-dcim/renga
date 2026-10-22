@@ -33,6 +33,7 @@ defmodule Renga.Members do
   alias Renga.Inventory.Changes
   alias Renga.Operators.OperatorToken
   alias Renga.Repo
+  alias Renga.Transfers.Principals
 
   @doc "UI hint for `members.manage`."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "members.manage")
@@ -139,8 +140,11 @@ defmodule Renga.Members do
   token. Inviting an address again replaces its open invitation. Returns
   `{:error, changeset}` for an invalid address or role, or an address that
   already belongs to a member.
+
+  `opts` may carry an `:imported_principal_id`, which accepting links to
+  the accepting account (`Renga.Transfers.Principals.invite/3`).
   """
-  def invite(%Scope{} = scope, attrs, url_fun) when is_function(url_fun, 1) do
+  def invite(%Scope{} = scope, attrs, url_fun, opts \\ []) when is_function(url_fun, 1) do
     {token, token_hash} = OrganizationInvitation.build_token()
 
     result =
@@ -153,6 +157,7 @@ defmodule Renga.Members do
           %OrganizationInvitation{
             organization_id: scope.organization_id,
             invited_by_user_id: scope.user.id,
+            imported_principal_id: opts[:imported_principal_id],
             token_hash: token_hash,
             expires_at: DateTime.add(now, OrganizationInvitation.validity_days(), :day)
           }
@@ -162,10 +167,13 @@ defmodule Renga.Members do
         with true <- changeset.valid? || {:error, changeset},
              :ok <- replace_open_invitation(scope, changeset.changes.email, ceiling, now),
              {:ok, invitation} <- Repo.insert(changeset) do
-          record!(scope, "member_invited", nil, invitation.role, %{
-            "member" => invitation.email,
-            "invitation_id" => invitation.id
-          })
+          record!(
+            scope,
+            "member_invited",
+            nil,
+            invitation.role,
+            imported(invitation, %{"member" => invitation.email, "invitation_id" => invitation.id})
+          )
 
           invitation
         else
@@ -320,23 +328,21 @@ defmodule Renga.Members do
            true <- OrganizationInvitation.open?(invitation, now),
            :ok <- confirmed_recipient(recipient, invitation),
            :ok <- inviter_may_grant(invitation),
-           :ok <- not_yet_member(recipient, invitation) do
-        {:ok, membership} =
-          %OrganizationMembership{organization_id: invitation.organization_id}
-          |> OrganizationMembership.changeset(%{user_id: recipient.id, role: invitation.role})
-          |> Repo.insert()
-
+           :ok <- not_yet_member(recipient, invitation),
+           {:ok, membership, restored} <- enter(invitation, recipient, now) do
         invitation
         |> Ecto.Changeset.change(accepted_at: now, accepted_by_user_id: recipient.id)
         |> Repo.update!()
 
         scope = %Scope{user: recipient, organization_id: invitation.organization_id}
 
-        record!(scope, "member_joined", nil, invitation.role, %{
-          "member" => recipient.email || invitation.email,
-          "membership_id" => membership.id,
-          "invitation_id" => invitation.id
-        })
+        record!(
+          scope,
+          "member_joined",
+          nil,
+          invitation.role,
+          joined(invitation, recipient, membership, restored)
+        )
 
         Repo.preload(membership, :organization)
       else
@@ -355,6 +361,35 @@ defmodule Renga.Members do
   defp session_may_join(%User{session_organization_id: nil}, _organization_id), do: :ok
   defp session_may_join(%User{session_organization_id: id}, id), do: :ok
   defp session_may_join(%User{}, _organization_id), do: {:error, :scoped_session}
+
+  # An imported person returns with what the import held for them
+  # (RFD 20); anyone else joins with a new membership.
+  defp enter(%OrganizationInvitation{imported_principal_id: nil} = invitation, recipient, _now) do
+    {:ok, membership} =
+      %OrganizationMembership{organization_id: invitation.organization_id}
+      |> OrganizationMembership.changeset(%{user_id: recipient.id, role: invitation.role})
+      |> Repo.insert()
+
+    {:ok, membership, %{}}
+  end
+
+  defp enter(invitation, recipient, now), do: Principals.restore(invitation, recipient, now)
+
+  defp joined(invitation, recipient, membership, restored) do
+    metadata =
+      imported(invitation, %{
+        "member" => recipient.email || invitation.email,
+        "membership_id" => membership.id,
+        "invitation_id" => invitation.id
+      })
+
+    if restored == %{}, do: metadata, else: Map.put(metadata, "restored", restored)
+  end
+
+  defp imported(%OrganizationInvitation{imported_principal_id: nil}, metadata), do: metadata
+
+  defp imported(%OrganizationInvitation{imported_principal_id: id}, metadata),
+    do: Map.put(metadata, "imported_principal_id", id)
 
   defp lock_invitation(organization_id, token_hash) do
     OrganizationInvitation
