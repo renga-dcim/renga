@@ -36,7 +36,7 @@ defmodule Renga.Inventory.Source do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @kinds ~w(host_agent switch_poller vm_provider bmc manual)
+  @kinds ~w(host_agent switch_poller vm_provider power_poller bmc_power bmc manual)
   @routing_domain_authorities ~w(host_agent switch_poller)
   @statuses ~w(active revoked disabled)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
