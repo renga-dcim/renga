@@ -18,7 +18,7 @@ use renga_agent::{
     payload::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
-    power::{pdu, PowerModule, PowerSources},
+    power::{collector::Sinks, pdu, PowerModule, PowerSources},
     queue::{
         DiskQueue, Drained, QueueError, QueueKind, QueueMonitor,
         FLUSH_INTERVAL as QUEUE_FLUSH_INTERVAL,
@@ -423,11 +423,15 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         telemetry_sink(&queue, &stopped),
         power_sources.clone(),
     );
-    let pdu_sinks = || pdu::Sinks {
+    let collector_sinks = || Sinks {
         observations: queue_sink(&queue, &stopped),
         telemetry: telemetry_sink(&queue, &stopped),
     };
-    let mut pdus = pdu::Pollers::start(config.power.clone(), pdu_sinks(), power_sources.clone());
+    let mut pdus = pdu::Pollers::start(
+        config.power.clone(),
+        collector_sinks(),
+        power_sources.clone(),
+    );
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -471,8 +475,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             }
             if pdus.collectors() != config.power.as_slice() {
                 drop(pdus);
-                pdus =
-                    pdu::Pollers::start(config.power.clone(), pdu_sinks(), power_sources.clone());
+                pdus = pdu::Pollers::start(
+                    config.power.clone(),
+                    collector_sinks(),
+                    power_sources.clone(),
+                );
             }
             scheduler.refresh_intervals(
                 Instant::now(),

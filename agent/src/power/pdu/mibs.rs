@@ -6,7 +6,10 @@
 //! `PowerNet-MIB` rack PDU tables (`rPDU2`). Only the first unit of a daisy chain is read, since
 //! the others are separate PDUs that this target does not identify.
 
-use crate::snmp::mibs::{integer, text, Answers, SnmpValue, SYS_NAME};
+use crate::{
+    power::collector::{Measurement, Reading},
+    snmp::mibs::{integer, text, Answers, SnmpValue, SYS_NAME},
+};
 use std::collections::BTreeMap;
 
 pub const MAPPING_VERSION: u32 = 1;
@@ -151,45 +154,6 @@ pub struct Pdu {
     pub serial_number: String,
     pub hostname: Option<String>,
     pub readings: Vec<Reading>,
-}
-
-/// One instantaneous reading. The sensor names the meter, so a meter's real power, apparent
-/// power, and power factor share it and Renga can combine them.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Reading {
-    pub sensor: String,
-    /// `feed` for an inlet meter, `leg` for one phase of it, or `outlet`.
-    pub boundary: &'static str,
-    pub quantity: &'static str,
-    /// The outlet, or the inlet when the PDU has more than one, as the PDU labels it.
-    pub component: Option<(&'static str, String)>,
-    pub leg: Option<&'static str>,
-    pub measurement: Measurement,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Measurement {
-    Value(f64),
-    State(&'static str),
-    /// The PDU has the sensor but cannot read it now.
-    Failed,
-}
-
-impl Reading {
-    pub fn unit(&self) -> Option<&'static str> {
-        match self.quantity {
-            "real_power" => Some("W"),
-            "apparent_power" => Some("VA"),
-            "current" => Some("A"),
-            "power_factor" => Some("1"),
-            _ => None,
-        }
-    }
-
-    /// An inlet meter covers everything its inlet feeds.
-    pub fn coverage(&self) -> Option<&'static str> {
-        (self.boundary == "feed").then_some("complete")
-    }
 }
 
 /// Why an answering device cannot be reported as a PDU.

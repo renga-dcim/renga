@@ -1,10 +1,9 @@
 //! The `power_poller` collector's PDU module (RFD 10, "Collectors and BMCs").
 //!
-//! Each `[[collectors.power]]` module polls its PDUs over SNMP on its own thread. Every poll
-//! queues the PDUs' readings as telemetry, and the PDUs themselves as a `targets` inventory
-//! report whenever what the targets show changes, or every fifteen minutes, so Renga maps each
-//! target to its PDU and the readings to that PDU's outlets and inlet. The module reuses the
-//! switch poller's configuration, credentials, and SNMP client (RFD 11), not its mapping.
+//! Each `[[collectors.power]]` module polls its PDUs over SNMP on its own thread, as every power
+//! collector module does (see `power::collector`), so Renga maps each target to its PDU and the
+//! readings to that PDU's outlets and inlet. The module reuses the switch poller's
+//! configuration, credentials, and SNMP client (RFD 11), not its mapping.
 
 pub mod mibs;
 
@@ -12,70 +11,33 @@ use crate::{
     cancellation::Cancellation,
     payload::{
         Collector, CollectorIdentifiers, CollectorKind, CollectorResource, CollectorResourceKind,
-        HostAttributes, Reachability, ReportScope, SampleComponent, SampleMapping, SampleWindow,
-        ScopedReport, TargetStatus, TelemetryBatch, TelemetrySample, MAX_OBSERVATION_BYTES,
-        MAX_TELEMETRY_BYTES,
+        HostAttributes,
     },
-    power::PowerSources,
-    queue,
+    power::{
+        collector::{self, Device, Outcome, Sinks, TargetError},
+        PowerSources,
+    },
     snmp::{
         self,
         client::{self, PollError, Session, WireSession},
         config::{Intervals, SnmpCollector, Target},
-        mibs::MAX_STRING_CHARS,
-        worker::Sink,
     },
 };
-use chrono::{DateTime, Utc};
-use mibs::{Measurement, Pdu, Reading, Vendor, MAPPING_VERSION};
+use chrono::Utc;
+use mibs::{Pdu, Vendor, MAPPING_VERSION};
 use std::{
-    collections::BTreeMap,
     thread,
     time::{Duration, Instant},
 };
-use tracing::{info, warn};
-use uuid::Uuid;
+use tracing::warn;
 
 /// Readings go stale within minutes, so PDUs are polled far more often than switches.
 pub(crate) const POWER_INTERVALS: Intervals = Intervals {
     default: 60,
     min: 30,
 };
-/// How often an unchanged set of PDUs is reported again.
-const INVENTORY_INTERVAL: Duration = Duration::from_secs(900);
 /// A whole target must finish within this many request timeouts.
 const TARGET_BUDGET_TIMEOUTS: u32 = 12;
-/// A PDU's report entry is a few short strings, so this many always fit in one report.
-const TARGETS_PER_REPORT: usize = 100;
-/// Samples run to a few hundred bytes, so this many stay well within the batch size limit.
-const SAMPLES_PER_BATCH: usize = 1_000;
-const MAX_FRESH_FOR_SECONDS: u64 = 86_400;
-const WAIT_SLICE: Duration = Duration::from_millis(250);
-
-/// Why a target has no PDU this poll.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TargetError {
-    /// The device did not answer, or not in full.
-    Unreachable(String),
-    /// The device answered, but not as a PDU this module can map.
-    Unsupported(String),
-}
-
-impl TargetError {
-    fn message(&self) -> &str {
-        match self {
-            Self::Unreachable(message) | Self::Unsupported(message) => message,
-        }
-    }
-}
-
-/// One target's poll.
-#[derive(Debug, Clone)]
-pub struct Outcome {
-    pub target: Target,
-    pub read_at: DateTime<Utc>,
-    pub result: Result<Pdu, TargetError>,
-}
 
 /// Polls every target of `collector`. `open` connects to one target; tests pass recordings.
 pub fn poll<F>(collector: &SnmpCollector, stopped: &Cancellation, open: F) -> Vec<Outcome>
@@ -84,11 +46,11 @@ where
 {
     let budget = collector.timeout * TARGET_BUDGET_TIMEOUTS;
     snmp::each_target(collector, |target| Outcome {
-        target: target.clone(),
+        address: target.address.clone(),
         result: if stopped.cancelled() {
             Err(TargetError::Unreachable("polling was cancelled".into()))
         } else {
-            poll_target(target, &open, budget, stopped)
+            poll_target(target, &open, budget, stopped).map(device)
         },
         read_at: Utc::now(),
     })
@@ -121,217 +83,29 @@ where
     mibs::pdu(vendor, &answers).map_err(|error| TargetError::Unsupported(error.0))
 }
 
-/// The status of the module as one power source: available while any PDU is read.
-pub fn source_status(outcomes: &[Outcome]) -> &'static str {
-    if outcomes.iter().any(|outcome| outcome.result.is_ok()) {
-        "available"
-    } else if outcomes
-        .iter()
-        .any(|outcome| matches!(outcome.result, Err(TargetError::Unsupported(_))))
-    {
-        "not_present"
-    } else {
-        "unreachable"
-    }
-}
-
-/// The source name a module reports in check-ins.
-pub fn source(collector_id: &str) -> String {
-    format!("power_poller/{collector_id}")
-}
-
-/// Complete `targets` reports of the PDUs, in order. A target without a PDU is reported
-/// unreachable, so the PDU Renga last saw there stays as it was instead of being withdrawn.
-pub fn reports(collector_id: &str, outcomes: &[Outcome]) -> Vec<(Uuid, Vec<u8>)> {
-    outcomes
-        .chunks(TARGETS_PER_REPORT)
-        .filter_map(|chunk| {
-            let mut targets = Vec::with_capacity(chunk.len());
-            let mut resources = Vec::new();
-            for outcome in chunk {
-                let address = outcome.target.address.clone();
-                match &outcome.result {
-                    Ok(pdu) => {
-                        targets.push(TargetStatus {
-                            address: address.clone(),
-                            status: Reachability::Reachable,
-                            error: None,
-                        });
-                        resources.push(resource(&address, pdu));
-                    }
-                    Err(error) => targets.push(TargetStatus {
-                        address,
-                        status: Reachability::Unreachable,
-                        error: Some(error.message().chars().take(MAX_STRING_CHARS).collect()),
-                    }),
-                }
-            }
-            let report = ScopedReport::new(
-                Collector {
-                    id: collector_id.to_owned(),
-                    kind: CollectorKind::PowerPoller,
-                },
-                ReportScope::Targets { targets },
-                true,
-                resources,
-            );
-            let body = serde_json::to_vec(&report).ok()?;
-            (body.len() <= MAX_OBSERVATION_BYTES).then_some((report.observation_id, body))
-        })
-        .collect()
-}
-
 /// The PDU as Renga reconciles it: matched by serial number, named by its target.
-pub fn resource(target: &str, pdu: &Pdu) -> CollectorResource {
-    CollectorResource {
-        kind: CollectorResourceKind::Pdu,
-        target: Some(target.to_owned()),
-        identifiers: CollectorIdentifiers {
-            hostname: pdu.hostname.clone(),
-            serial_number: Some(pdu.serial_number.clone()),
-            ..CollectorIdentifiers::default()
-        },
-        attributes: Some(HostAttributes {
-            vendor: pdu.vendor.clone(),
-            model: pdu.model.clone(),
-            ..HostAttributes::default()
-        }),
-        interfaces: None,
-        domain: None,
-    }
-}
-
-/// The readings each target last served, with their mapping, so a target that stops answering
-/// reports them as failed.
-pub type Known = BTreeMap<String, (&'static str, Vec<Reading>)>;
-
-/// The poll's telemetry batches. A target without a PDU this poll sends every reading it last
-/// served as failed, so Renga knows those series are unknown now rather than waiting for them to
-/// expire, never zero.
-pub fn batches(
-    collector_id: &str,
-    outcomes: &[Outcome],
-    known: &mut Known,
-    fresh_for_seconds: u32,
-) -> Vec<TelemetryBatch> {
-    known.retain(|address, _| {
-        outcomes
-            .iter()
-            .any(|outcome| &outcome.target.address == address)
-    });
-    let mut samples = Vec::new();
-    for outcome in outcomes {
-        let address = &outcome.target.address;
-        let (mapping, readings, failed) = match &outcome.result {
-            Ok(pdu) => {
-                known.insert(address.clone(), (pdu.mapping, pdu.readings.clone()));
-                (pdu.mapping, &pdu.readings, false)
-            }
-            Err(_) => match known.get(address) {
-                Some((mapping, readings)) => (*mapping, readings, true),
-                None => continue,
+pub fn device(pdu: Pdu) -> Device {
+    Device {
+        mapping: pdu.mapping,
+        mapping_version: MAPPING_VERSION,
+        resource: CollectorResource {
+            kind: CollectorResourceKind::Pdu,
+            target: None,
+            identifiers: CollectorIdentifiers {
+                hostname: pdu.hostname,
+                serial_number: Some(pdu.serial_number),
+                ..CollectorIdentifiers::default()
             },
-        };
-        samples.extend(readings.iter().map(|reading| {
-            sample(
-                address,
-                reading,
-                mapping,
-                failed,
-                outcome.read_at,
-                fresh_for_seconds,
-            )
-        }));
-    }
-    let mut batches = Vec::new();
-    let mut pending: Vec<Vec<TelemetrySample>> = samples
-        .chunks(SAMPLES_PER_BATCH)
-        .map(<[_]>::to_vec)
-        .rev()
-        .collect();
-    while let Some(chunk) = pending.pop() {
-        let batch = TelemetryBatch::collector(collector_id, CollectorKind::PowerPoller, chunk);
-        if serde_json::to_vec(&batch).is_ok_and(|body| body.len() <= MAX_TELEMETRY_BYTES) {
-            batches.push(batch);
-            continue;
-        }
-        let mut chunk = batch.samples;
-        if chunk.len() == 1 {
-            warn!(
-                collector = collector_id,
-                "a PDU sample is too large to send"
-            );
-            continue;
-        }
-        let rest = chunk.split_off(chunk.len() / 2);
-        pending.push(rest);
-        pending.push(chunk);
-    }
-    batches
-}
-
-fn sample(
-    target: &str,
-    reading: &Reading,
-    mapping: &'static str,
-    failed: bool,
-    read_at: DateTime<Utc>,
-    fresh_for_seconds: u32,
-) -> TelemetrySample {
-    let (status, value, state) = match reading.measurement {
-        _ if failed => ("failed", None, None),
-        Measurement::Value(value) if value.is_finite() => ("valid", Some(value), None),
-        Measurement::State(state) => ("valid", None, Some(state)),
-        Measurement::Value(_) | Measurement::Failed => ("failed", None, None),
-    };
-    TelemetrySample {
-        target: Some(target.to_owned()),
-        sensor: reading.sensor.clone(),
-        boundary: reading.boundary,
-        quantity: reading.quantity,
-        unit: reading.unit(),
-        component: reading
-            .component
-            .clone()
-            .map(|(kind, name)| SampleComponent { kind, name }),
-        leg: reading.leg,
-        coverage: reading.coverage(),
-        status,
-        origin: "native",
-        value,
-        state,
-        // The MIBs report instantaneous values.
-        window: SampleWindow {
-            start: read_at,
-            end: read_at,
+            attributes: Some(HostAttributes {
+                vendor: pdu.vendor,
+                model: pdu.model,
+                ..HostAttributes::default()
+            }),
+            interfaces: None,
+            domain: None,
         },
-        event_at: read_at,
-        mapping: SampleMapping {
-            name: mapping,
-            version: MAPPING_VERSION,
-        },
-        fresh_for_seconds,
+        readings: pdu.readings,
     }
-}
-
-/// Readings stay current through two missed polls and the wait for the queue flush that delivers
-/// them, never for less than the host's own readings.
-pub fn fresh_for_seconds(interval: Duration) -> u32 {
-    u32::try_from(
-        interval
-            .as_secs()
-            .saturating_mul(3)
-            .saturating_add(queue::FLUSH_INTERVAL.as_secs())
-            .clamp(super::FRESH_FOR_SECONDS.into(), MAX_FRESH_FOR_SECONDS),
-    )
-    .unwrap_or(u32::MAX)
-}
-
-/// Where a module's output goes: inventory reports and telemetry use separate queues.
-#[derive(Clone)]
-pub struct Sinks {
-    pub observations: Sink,
-    pub telemetry: Sink,
 }
 
 /// The running PDU modules of one configuration; dropping them stops every thread.
@@ -343,14 +117,12 @@ pub struct Pollers {
 impl Pollers {
     /// Starts one thread per module. Each polls immediately, then every interval.
     pub fn start(collectors: Vec<SnmpCollector>, sinks: Sinks, sources: PowerSources) -> Self {
-        let configured: Vec<String> = collectors
-            .iter()
-            .map(|collector| source(&collector.id))
-            .collect();
         // A removed module is no longer a source this agent reports.
-        sources.retain(|name| {
-            !name.starts_with("power_poller/") || configured.iter().any(|kept| kept == name)
-        });
+        let ids: Vec<&str> = collectors
+            .iter()
+            .map(|collector| collector.id.as_str())
+            .collect();
+        collector::retain_sources(&sources, CollectorKind::PowerPoller, &ids);
         let stop = Cancellation::default();
         for collector in &collectors {
             let collector = collector.clone();
@@ -365,7 +137,12 @@ impl Pollers {
                     WireSession::open(target, &credentials, timeout)
                         .map(|session| Box::new(session) as Box<dyn Session>)
                 };
-                run(&collector, &stop, &sinks, &sources, &open);
+                let module = Collector {
+                    id: collector.id.clone(),
+                    kind: CollectorKind::PowerPoller,
+                };
+                let poll = |stop: &Cancellation| poll(&collector, stop, &open);
+                collector::run(&module, collector.interval, &stop, &sinks, &sources, &poll);
             }) {
                 warn!(%error, "cannot start a PDU power module");
             }
@@ -384,88 +161,11 @@ impl Drop for Pollers {
     }
 }
 
-type Opener<'a> = &'a (dyn Fn(&Target) -> Result<Box<dyn Session>, PollError> + Sync);
-
-/// What the targets showed, to tell when the PDUs need reporting again.
-type Shown = Vec<(String, Option<(String, Option<String>)>)>;
-
-fn shown(outcomes: &[Outcome]) -> Shown {
-    outcomes
-        .iter()
-        .map(|outcome| {
-            (
-                outcome.target.address.clone(),
-                outcome
-                    .result
-                    .as_ref()
-                    .ok()
-                    .map(|pdu| (pdu.serial_number.clone(), pdu.hostname.clone())),
-            )
-        })
-        .collect()
-}
-
-fn run(
-    collector: &SnmpCollector,
-    stop: &Cancellation,
-    sinks: &Sinks,
-    sources: &PowerSources,
-    open: Opener<'_>,
-) {
-    let source = source(&collector.id);
-    let fresh_for = fresh_for_seconds(collector.interval);
-    let mut known = Known::new();
-    let mut reported: Option<(Instant, Shown)> = None;
-    while !stop.cancelled() {
-        let started = Instant::now();
-        let outcomes = poll(collector, stop, open);
-        if stop.cancelled() {
-            break;
-        }
-        for outcome in &outcomes {
-            if let Err(error) = &outcome.result {
-                warn!(collector = %collector.id, target = %outcome.target.address, error = error.message(), "PDU not read");
-            }
-        }
-        let status = source_status(&outcomes);
-        if sources.status(&source) != Some(status) {
-            info!(collector = %collector.id, status, "PDU power source status");
-        }
-        sources.publish(&source, status);
-
-        for batch in batches(&collector.id, &outcomes, &mut known, fresh_for) {
-            match serde_json::to_vec(&batch) {
-                Ok(body) => (sinks.telemetry)(batch.replay_id, &body),
-                Err(error) => {
-                    warn!(collector = %collector.id, %error, "cannot encode PDU readings")
-                }
-            }
-        }
-
-        let now_shown = shown(&outcomes);
-        let due = reported
-            .as_ref()
-            .is_none_or(|(at, before)| *before != now_shown || at.elapsed() >= INVENTORY_INTERVAL);
-        if due {
-            for (observation_id, body) in reports(&collector.id, &outcomes) {
-                (sinks.observations)(observation_id, &body);
-            }
-            reported = Some((Instant::now(), now_shown));
-        }
-
-        let next = started + collector.interval;
-        while !stop.cancelled() && Instant::now() < next {
-            thread::sleep(WAIT_SLICE.min(next.saturating_duration_since(Instant::now())));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::snmp::{client::tests::Recorded, config::Credentials};
     use serde_json::{json, Value};
-    use std::sync::{mpsc, Arc, Mutex};
 
     fn collector(targets: &[&str]) -> SnmpCollector {
         SnmpCollector {
@@ -494,14 +194,6 @@ mod tests {
         }
     }
 
-    fn decode(body: &[u8]) -> Value {
-        serde_json::from_slice(body).unwrap()
-    }
-
-    fn encode(batch: &TelemetryBatch) -> Value {
-        serde_json::to_value(batch).unwrap()
-    }
-
     #[test]
     fn polls_each_vendor_and_tells_unsupported_devices_from_silent_ones() {
         let outcomes = poll(
@@ -510,7 +202,8 @@ mod tests {
             open,
         );
 
-        assert_eq!(outcomes[0].result.as_ref().unwrap().mapping, "raritan_pdu2");
+        let read = outcomes[0].result.as_ref().unwrap();
+        assert_eq!((read.mapping, read.mapping_version), ("raritan_pdu2", 1));
         assert_eq!(outcomes[1].result.as_ref().unwrap().mapping, "apc_rpdu2");
         // A switch answers SNMP, but not as a PDU.
         assert!(matches!(
@@ -521,25 +214,20 @@ mod tests {
             outcomes[3].result,
             Err(TargetError::Unreachable(_))
         ));
-        assert_eq!(source_status(&outcomes), "available");
-        assert_eq!(source_status(&outcomes[2..]), "not_present");
-        assert_eq!(source_status(&outcomes[3..]), "unreachable");
+        assert_eq!(collector::source_status(&outcomes), "available");
+        assert_eq!(collector::source_status(&outcomes[2..]), "not_present");
+        assert_eq!(collector::source_status(&outcomes[3..]), "unreachable");
     }
 
     #[test]
-    fn reports_pdus_by_target_and_unread_targets_as_unreachable() {
-        let outcomes = poll(
-            &collector(&["10.0.0.5", "10.0.0.9"]),
-            &Cancellation::default(),
-            open,
-        );
-        let [(_, report)] = <[_; 1]>::try_from(reports("rack-pdus", &outcomes)).unwrap();
-        let report = decode(&report);
-
-        assert_eq!(report["scope"], "targets");
-        assert_eq!(report["collector"]["kind"], "power_poller");
-        assert_eq!(report["complete"], true);
-        assert_eq!(report["targets"][1]["status"], "unreachable");
+    fn reports_pdus_by_target_with_their_legs_and_outlets() {
+        let module = Collector {
+            id: "rack-pdus".into(),
+            kind: CollectorKind::PowerPoller,
+        };
+        let outcomes = poll(&collector(&["10.0.0.5"]), &Cancellation::default(), open);
+        let [(_, report)] = <[_; 1]>::try_from(collector::reports(&module, &outcomes)).unwrap();
+        let report: Value = serde_json::from_slice(&report).unwrap();
         assert_eq!(
             report["resources"],
             json!([{
@@ -549,109 +237,29 @@ mod tests {
                 "attributes": {"vendor": "Raritan", "model": "PX3-5190R"}
             }])
         );
-    }
 
-    #[test]
-    fn splits_reports_by_target_count() {
-        let outcomes: Vec<_> = (0..250)
-            .map(|index| Outcome {
-                target: Target::parse(&format!("10.1.0.{index}")).unwrap(),
-                read_at: Utc::now(),
-                result: Err(TargetError::Unreachable("x".repeat(1_000))),
-            })
-            .collect();
-        let reports = reports("rack-pdus", &outcomes);
-        assert_eq!(reports.len(), 3);
-        assert!(reports
-            .iter()
-            .all(|(_, body)| body.len() <= MAX_OBSERVATION_BYTES));
-    }
-
-    #[test]
-    fn a_pdu_that_stops_answering_reports_its_series_as_failed() {
-        let mut known = Known::new();
-        let read_at = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let mut outcomes = poll(&collector(&["10.0.0.5"]), &Cancellation::default(), open);
-        outcomes[0].read_at = read_at;
-
-        let [batch] = <[_; 1]>::try_from(batches("rack-pdus", &outcomes, &mut known, 180)).unwrap();
-        let batch = encode(&batch);
-        assert_eq!(
-            batch["collector"],
-            json!({"id": "rack-pdus", "kind": "power_poller"})
-        );
-        let samples = batch["samples"].as_array().unwrap();
-        let inlet = samples
-            .iter()
-            .find(|sample| sample["sensor"] == "inlet/1" && sample["quantity"] == "real_power")
-            .unwrap();
-        assert_eq!(
-            inlet,
-            &json!({
-                "target": "10.0.0.5",
-                "sensor": "inlet/1",
-                "boundary": "feed",
-                "quantity": "real_power",
-                "unit": "W",
-                "coverage": "complete",
-                "status": "valid",
-                "origin": "native",
-                "value": 2455.0,
-                "window": {"start": "2026-10-22T12:00:00Z", "end": "2026-10-22T12:00:00Z"},
-                "event_at": "2026-10-22T12:00:00Z",
-                "mapping": {"name": "raritan_pdu2", "version": 1},
-                "fresh_for_seconds": 180
-            })
-        );
+        let mut known = collector::Known::new();
+        let [batch] =
+            <[_; 1]>::try_from(collector::batches(&module, &outcomes, &mut known, 180)).unwrap();
+        let samples = serde_json::to_value(&batch).unwrap()["samples"].clone();
+        let samples = samples.as_array().unwrap();
         let leg = samples
             .iter()
             .find(|sample| sample["boundary"] == "leg")
             .unwrap();
         assert_eq!(leg["leg"], "a");
-        let off = samples
+        assert_eq!(
+            leg["mapping"],
+            json!({"name": "raritan_pdu2", "version": 1})
+        );
+        let outlet = samples
             .iter()
             .find(|sample| sample["sensor"] == "outlet/2" && sample["quantity"] == "state")
             .unwrap();
-        assert_eq!(off["state"], "off");
-        assert!(off.get("unit").is_none());
-        let unavailable = samples
-            .iter()
-            .find(|sample| sample["sensor"] == "outlet/3" && sample["quantity"] == "real_power")
-            .unwrap();
-        assert_eq!(unavailable["status"], "failed");
-        assert!(unavailable.get("value").is_none());
-
-        let silent = vec![Outcome {
-            result: Err(TargetError::Unreachable("timeout".into())),
-            ..outcomes[0].clone()
-        }];
-        let [failed] = <[_; 1]>::try_from(batches("rack-pdus", &silent, &mut known, 180)).unwrap();
-        let failed = encode(&failed);
-        let failed = failed["samples"].as_array().unwrap();
-        assert_eq!(failed.len(), samples.len());
-        assert!(failed
-            .iter()
-            .all(|sample| sample["status"] == "failed" && sample.get("value").is_none()));
-
-        // A target removed from the configuration is forgotten.
-        assert!(batches("rack-pdus", &[], &mut known, 180).is_empty());
-        assert!(known.is_empty());
-    }
-
-    #[test]
-    fn freshness_covers_two_missed_polls_and_delivery() {
-        assert_eq!(fresh_for_seconds(Duration::from_secs(30)), 300);
-        assert_eq!(fresh_for_seconds(Duration::from_secs(300)), 1_020);
-
-        // A reading delivered by one flush is up to a poll old and must stay current until the
-        // next flush, through a missed poll, with time to spare for the request itself.
-        for seconds in [10, 60, 90, 120, 600] {
-            let interval = Duration::from_secs(seconds);
-            let oldest_at_flush = seconds + queue::FLUSH_INTERVAL.as_secs();
-            assert!(u64::from(fresh_for_seconds(interval)) >= oldest_at_flush + seconds + 60);
-        }
+        assert_eq!(
+            outlet["component"],
+            json!({"kind": "power_outlet", "name": "2"})
+        );
     }
 
     /// The recorded PDU as the mapper reports it. Renga's collector report tests post this
@@ -664,7 +272,11 @@ mod tests {
             "/../test/fixtures/collectors/recorded_pdu.json"
         );
         let pdu = mibs::pdu(Vendor::Raritan, &mibs::tests::raritan_answers()).unwrap();
-        let mapped = serde_json::to_value(resource("10.0.0.5", &pdu)).unwrap();
+        let mapped = serde_json::to_value(CollectorResource {
+            target: Some("10.0.0.5".into()),
+            ..device(pdu).resource
+        })
+        .unwrap();
         if std::env::var_os("RENGA_UPDATE_FIXTURES").is_some() {
             let body = serde_json::to_string_pretty(&mapped).unwrap();
             std::fs::write(path, body + "\n").unwrap();
@@ -674,42 +286,5 @@ mod tests {
             mapped, fixture,
             "rerun with RENGA_UPDATE_FIXTURES=1 if intended"
         );
-    }
-
-    #[test]
-    fn reports_inventory_when_it_changes_and_readings_every_poll() {
-        let mut collector = collector(&["10.0.0.5"]);
-        collector.interval = Duration::from_millis(50);
-        let (observations, observed) = mpsc::channel();
-        let (telemetry, measured) = mpsc::channel();
-        let observations = Mutex::new(observations);
-        let telemetry = Mutex::new(telemetry);
-        let sinks = Sinks {
-            observations: Arc::new(move |id, _body: &[u8]| {
-                observations.lock().unwrap().send(id).unwrap();
-            }),
-            telemetry: Arc::new(move |id, _body: &[u8]| {
-                telemetry.lock().unwrap().send(id).unwrap();
-            }),
-        };
-        let sources = PowerSources::default();
-        let stop = Cancellation::default();
-        let worker = {
-            let stop = stop.clone();
-            let sources = sources.clone();
-            thread::spawn(move || run(&collector, &stop, &sinks, &sources, &open))
-        };
-
-        let wait = Duration::from_secs(5);
-        observed.recv_timeout(wait).unwrap();
-        let first = measured.recv_timeout(wait).unwrap();
-        let second = measured.recv_timeout(wait).unwrap();
-        assert_ne!(first, second, "each poll is a new batch");
-        stop.cancel();
-        worker.join().unwrap();
-
-        // The unchanged PDU was reported once.
-        assert!(observed.try_recv().is_err());
-        assert_eq!(sources.status("power_poller/rack-pdus"), Some("available"));
     }
 }
