@@ -342,6 +342,43 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       end
     end
 
+    test "records the osquery backend's status (RFD 12)", %{conn: conn} do
+      %{scope: scope, token: token} = source_fixture()
+
+      osquery = %{"status" => "available", "version" => "5.12.1"}
+      conn = check_in_json(conn, token, %{"query_backends" => %{"osquery" => osquery}})
+      %{"agent" => %{"id" => agent_id}} = valid_api_response(conn, 202)
+
+      assert %{status: "available", version: "5.12.1"} =
+               scope |> Inventory.get_agent!(agent_id) |> Renga.Inventory.Agent.osquery()
+
+      # Backends this server does not know are ignored.
+      backends = %{"osquery" => %{"status" => "not_permitted"}, "dtrace" => %{"status" => "?"}}
+      conn = check_in_json(build_conn(), token, %{"query_backends" => backends})
+      assert valid_api_response(conn, 202)
+
+      assert %{status: "not_permitted", version: nil} =
+               scope |> Inventory.get_agent!(agent_id) |> Renga.Inventory.Agent.osquery()
+    end
+
+    test "rejects malformed query backends", %{conn: conn} do
+      %{token: token} = source_fixture()
+
+      for {backends, path, message} <- [
+            {[], "metadata.query_backends", "must be an object"},
+            {%{"osquery" => "available"}, "metadata.query_backends.osquery", "must be an object"},
+            {%{"osquery" => %{"status" => "running"}}, "metadata.query_backends.osquery.status",
+             "must be one of available, not_permitted, not_present"},
+            {%{"osquery" => %{"status" => "available", "version" => String.duplicate("9", 65)}},
+             "metadata.query_backends.osquery.version", "must be a string of at most 64 bytes"}
+          ] do
+        conn = check_in_json(conn, token, %{"query_backends" => backends})
+
+        assert %{"errors" => [%{"path" => ^path, "message" => ^message}]} =
+                 valid_api_response(conn, 422)
+      end
+    end
+
     test "rejects metadata larger than the encoded storage limit", %{conn: conn} do
       %{token: token} = source_fixture()
 

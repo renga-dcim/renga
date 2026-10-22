@@ -80,6 +80,9 @@
                 "maxItems": 32,
                 "type": "array"
               },
+              "query_backends": {
+                "$ref": "#/components/schemas/QueryBackends"
+              },
               "telemetry_queue": {
                 "$ref": "#/components/schemas/ObservationQueue"
               }
@@ -1539,6 +1542,38 @@
           "source",
           "status"
         ],
+        "type": "object"
+      },
+      "QueryBackends": {
+        "title": "QueryBackends",
+        "description": "Query backends the agent can use beyond its native operational queries (RFD 12). Unknown backends are ignored.",
+        "properties": {
+          "osquery": {
+            "description": "The local osqueryd reached over its extensions socket: available, not_permitted (the socket refuses the agent's account), or not_present.",
+            "properties": {
+              "status": {
+                "enum": [
+                  "available",
+                  "not_permitted",
+                  "not_present"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "description": "The daemon's version, when available.",
+                "maxLength": 64,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        },
         "type": "object"
       },
       "Rejected": {

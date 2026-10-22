@@ -26,6 +26,8 @@ defmodule Renga.Inventory.AgentPayload do
   @queue_dropped_ages ~w(dropped_earliest_age_seconds dropped_latest_age_seconds)
   @power_source_statuses ~w(available not_permitted not_present unreachable)
   @max_power_sources 32
+  @query_backend_statuses ~w(available not_permitted not_present)
+  @max_backend_version_bytes 64
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
@@ -97,6 +99,8 @@ defmodule Renga.Inventory.AgentPayload do
       queue_dropped_ages: @queue_dropped_ages,
       power_source_statuses: @power_source_statuses,
       max_power_sources: @max_power_sources,
+      query_backend_statuses: @query_backend_statuses,
+      max_backend_version_bytes: @max_backend_version_bytes,
       identifier_kinds: @accepted_identifier_kinds,
       matchable_identifier_kinds: @matchable_identifier_kinds,
       prohibited_resource_keys: @prohibited_resource_keys,
@@ -303,6 +307,7 @@ defmodule Renga.Inventory.AgentPayload do
         |> validate_queue(metadata, "observation_queue")
         |> validate_queue(metadata, "telemetry_queue")
         |> validate_power_sources(metadata)
+        |> validate_query_backends(metadata)
 
       _invalid ->
         [error("metadata", "must be an object") | errors]
@@ -462,6 +467,50 @@ defmodule Renga.Inventory.AgentPayload do
       {:ok, age} -> queue_count?(age)
     end
   end
+
+  # The query backends the agent can use beyond its native queries (RFD 12).
+  # Backends this server does not know are ignored, as queue fields are.
+  defp validate_query_backends(errors, metadata) do
+    case Map.fetch(metadata, "query_backends") do
+      :error -> errors
+      {:ok, backends} -> query_backends_errors(backends) ++ errors
+    end
+  end
+
+  @doc "Validates reported query backends, and metadata stored before this contract existed."
+  def query_backends_errors(backends) when is_map(backends) do
+    case Map.fetch(backends, "osquery") do
+      :error -> []
+      {:ok, osquery} -> backend_errors("metadata.query_backends.osquery", osquery)
+    end
+  end
+
+  def query_backends_errors(_invalid),
+    do: [error("metadata.query_backends", "must be an object")]
+
+  defp backend_errors(path, %{"status" => status} = backend)
+       when status in @query_backend_statuses do
+    case Map.get(backend, "version") do
+      nil ->
+        []
+
+      version when is_binary(version) and byte_size(version) <= @max_backend_version_bytes ->
+        []
+
+      _invalid ->
+        [
+          error(
+            "#{path}.version",
+            "must be a string of at most #{@max_backend_version_bytes} bytes"
+          )
+        ]
+    end
+  end
+
+  defp backend_errors(path, backend) when is_map(backend),
+    do: [error("#{path}.status", "must be one of #{Enum.join(@query_backend_statuses, ", ")}")]
+
+  defp backend_errors(path, _invalid), do: [error(path, "must be an object")]
 
   defp queue_count?(value),
     do: is_integer(value) and value >= 0 and value <= @max_json_safe_integer
