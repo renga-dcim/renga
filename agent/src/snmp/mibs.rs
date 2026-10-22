@@ -399,14 +399,37 @@ fn attach_neighbors(answers: &Answers, interfaces: &mut BTreeMap<u32, Entry>, tt
             ttl_seconds,
         };
         let neighbors = entry.interface.neighbors.get_or_insert_with(Vec::new);
-        // Each remote endpoint may appear once per interface.
-        if !neighbors.iter().any(|existing| {
-            existing.remote_chassis_id == neighbor.remote_chassis_id
-                && existing.remote_port_id == neighbor.remote_port_id
-        }) {
+        // Each remote endpoint may appear once per interface, identified as Renga identifies
+        // neighbor evidence: by each ID's kind and its normalized value.
+        if !neighbors
+            .iter()
+            .any(|existing| endpoint(existing) == endpoint(&neighbor))
+        {
             neighbors.push(neighbor);
         }
     }
+}
+
+/// A neighbor's remote endpoint as Renga compares it. IDs arrive trimmed and MAC and network
+/// addresses canonical, so only chassis names, which Renga compares without case, need folding.
+/// Each character folds alone, as Elixir's `String.downcase/1` does: `str::to_lowercase` would
+/// apply the Greek final sigma, which Renga does not.
+fn endpoint(neighbor: &Neighbor) -> (&str, String, &str, &str) {
+    let chassis_id = if neighbor.remote_chassis_id_kind == "name" {
+        neighbor
+            .remote_chassis_id
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect()
+    } else {
+        neighbor.remote_chassis_id.clone()
+    };
+    (
+        neighbor.remote_chassis_id_kind,
+        chassis_id,
+        neighbor.remote_port_id_kind,
+        &neighbor.remote_port_id,
+    )
 }
 
 /// Remote table rows keyed by `(localPortNum, remIndex)`, dropping the leading `timeMark`.
@@ -820,6 +843,67 @@ pub(crate) mod tests {
         assert_eq!(host.remote_port_id_kind, "mac_address");
         // LLDP answered, so a port without neighbors says so.
         assert_eq!(interface(&resource, "Gi1/0/2").neighbors, Some(vec![]));
+    }
+
+    #[test]
+    fn deduplicates_neighbors_as_renga_compares_them() {
+        let mut answers = answers();
+        // The uplink's neighbor reappears under other remIndexes: a chassis name in two cases
+        // (one endpoint), a local chassis ID that reads the same (another), and the fixture's
+        // MAC chassis with a local port ID that reads like its port name (another).
+        for (remote, chassis_subtype, port_subtype, chassis) in [
+            (2, 6, 5, octets("SPINE-01")),
+            (3, 6, 5, octets("spine-01")),
+            // Renga folds a final sigma like any other: these are one name, and "ος" another.
+            (6, 6, 5, octets("ΟΣ")),
+            (7, 6, 5, octets("οσ")),
+            (8, 6, 5, octets("ος")),
+            (4, 7, 5, octets("spine-01")),
+            (
+                5,
+                4,
+                7,
+                SnmpValue::Octets(vec![0x00, 0x1c, 0x73, 0x01, 0x02, 0x03]),
+            ),
+        ] {
+            let index = [0, 49, remote];
+            answers.insert(
+                oid(LLDP_REM_CHASSIS_ID_SUBTYPE, &index),
+                SnmpValue::Integer(chassis_subtype),
+            );
+            answers.insert(oid(LLDP_REM_CHASSIS_ID, &index), chassis);
+            answers.insert(
+                oid(LLDP_REM_PORT_ID_SUBTYPE, &index),
+                SnmpValue::Integer(port_subtype),
+            );
+            answers.insert(oid(LLDP_REM_PORT_ID, &index), octets("Ethernet1/49"));
+        }
+        let (resource, _) = switch("10.0.0.1", &answers, 2_700).unwrap();
+
+        let ids: Vec<_> = interface(&resource, "Te1/1/1")
+            .neighbors
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|neighbor| {
+                (
+                    neighbor.remote_chassis_id_kind,
+                    neighbor.remote_chassis_id.as_str(),
+                    neighbor.remote_port_id_kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("mac_address", "00:1c:73:01:02:03", "name"),
+                ("name", "SPINE-01", "name"),
+                ("local", "spine-01", "name"),
+                ("mac_address", "00:1c:73:01:02:03", "local"),
+                ("name", "ΟΣ", "name"),
+                ("name", "ος", "name"),
+            ]
+        );
     }
 
     #[test]
