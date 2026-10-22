@@ -10,8 +10,9 @@ defmodule Renga.Jobs.Query.Schema do
 
   Types:
 
-    * `:string` or `{:string, max: n}` (at most 1024 characters by default,
-      counted as Unicode code points)
+    * `:string` or `{:string, min: m, max: n}` (at least `m`, by default 0,
+      and at most `n`, by default 1024, characters, counted as Unicode code
+      points)
     * `:integer` or `{:integer, min: a, max: b}`
     * `:boolean`
     * `{:enum, values}` - one of a list of strings
@@ -93,6 +94,7 @@ defmodule Renga.Jobs.Query.Schema do
   defp validate(:string, value, path), do: validate({:string, []}, value, path)
 
   defp validate({:string, opts}, value, path) when is_binary(value) do
+    min = Keyword.get(opts, :min, 0)
     max = Keyword.get(opts, :max, @default_string_max)
 
     # Characters are Unicode code points, as JSON Schema's `maxLength` and the
@@ -101,6 +103,7 @@ defmodule Renga.Jobs.Query.Schema do
     cond do
       byte_size(value) > 4 * max -> [{path, "must be at most #{max} characters"}]
       not String.valid?(value) -> [{path, "must be valid UTF-8"}]
+      length(String.codepoints(value)) < min -> [{path, "must be at least #{min} characters"}]
       length(String.codepoints(value)) > max -> [{path, "must be at most #{max} characters"}]
       true -> []
     end
@@ -176,8 +179,10 @@ defmodule Renga.Jobs.Query.Schema do
   """
   def to_json_schema(:string), do: to_json_schema({:string, []})
 
-  def to_json_schema({:string, opts}),
-    do: %{"type" => "string", "maxLength" => Keyword.get(opts, :max, @default_string_max)}
+  def to_json_schema({:string, opts}) do
+    %{"type" => "string", "maxLength" => Keyword.get(opts, :max, @default_string_max)}
+    |> put_present("minLength", Keyword.get(opts, :min))
+  end
 
   def to_json_schema(:integer), do: to_json_schema({:integer, []})
 

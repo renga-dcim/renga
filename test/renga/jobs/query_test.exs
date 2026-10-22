@@ -14,8 +14,12 @@ defmodule Renga.Jobs.QueryTest do
     "query.disk_usage@1" => {Queries.DiskUsage, :inventory},
     "query.routes@1" => {Queries.Routes, :inventory},
     "query.time_sync@1" => {Queries.TimeSync, :inventory},
-    "query.packages@1" => {Queries.Packages, :sensitive}
+    "query.packages@1" => {Queries.Packages, :sensitive},
+    "query.sql@1" => {Queries.Sql, :sensitive}
   }
+
+  # The queries whose parameters are typed values rather than request text.
+  @named_queries Map.delete(@queries, "query.sql@1")
 
   # One conforming result per query, the shape the agent reports.
   @results %{
@@ -94,10 +98,15 @@ defmodule Renga.Jobs.QueryTest do
         }
       ],
       "truncated" => true
+    },
+    Queries.Sql => %{
+      "columns" => ["name", "pid"],
+      "rows" => [["sshd", "812"], ["chronyd", ""]],
+      "truncated" => false
     }
   }
 
-  test "the first six queries are registered with RFD 12's sensitivities" do
+  test "the queries are registered with RFD 12's sensitivities" do
     assert Enum.sort(Query.keys()) == @queries |> Map.keys() |> Enum.sort()
 
     for {key, {module, sensitivity}} <- @queries do
@@ -143,7 +152,7 @@ defmodule Renga.Jobs.QueryTest do
     assert Queries.Services.describe_result(%{"units" => []}) == "0 units, 0 failed"
   end
 
-  test "parameters are typed, and no query takes a command, path, or script" do
+  test "parameters are typed, and no named query takes a command, path, or script" do
     assert Queries.DiskUsage.parameters_changeset(%{}).valid?
     refute Queries.DiskUsage.parameters_changeset(%{"command" => "rm -rf /"}).valid?
     assert Queries.ListeningSockets.parameters_changeset(%{"port" => 23}).valid?
@@ -155,13 +164,31 @@ defmodule Renga.Jobs.QueryTest do
     refute Queries.Packages.parameters_changeset(%{"name" => String.duplicate("a", 129)}).valid?
     assert Queries.Services.parameters_changeset(%{"failed_only" => true}).valid?
 
-    for {_key, {module, _sensitivity}} <- @queries,
+    for {_key, {module, _sensitivity}} <- @named_queries,
         {name, type, _required?} <- Query.parameter_fields(module) do
       refute name in ~w(command cmd path script exec args sql), "#{inspect(module)}: #{name}"
 
       assert match?({:integer, _}, type) or match?({:enum, _}, type) or type == :boolean or
                match?({:string, max: max} when max <= 128, type)
     end
+  end
+
+  test "ad hoc SQL is sensitive, needs text, and returns a bounded table" do
+    assert Queries.Sql.required_permissions() == ["queries.run", "queries.run_sensitive"]
+    refute Queries.Sql.allowed_by_default?()
+    assert Queries.Sql.parameters_changeset(%{"sql" => "SELECT name FROM processes"}).valid?
+    refute Queries.Sql.parameters_changeset(%{"sql" => ""}).valid?
+    refute Queries.Sql.parameters_changeset(%{}).valid?
+    refute Queries.Sql.parameters_changeset(%{"sql" => String.duplicate("x", 4097)}).valid?
+    refute Queries.Sql.parameters_changeset(%{"sql" => "SELECT 1", "table" => "file"}).valid?
+
+    refute Queries.Sql.result_changeset(%{
+             "columns" => ["a"],
+             "rows" => [[1]],
+             "truncated" => false
+           }).valid?
+
+    assert Queries.Sql.describe_result(%{"rows" => [["a"]]}) == "1 row"
   end
 
   # The agent's tests read the committed copy, so it must match the code.
@@ -253,6 +280,16 @@ defmodule Renga.Jobs.QueryTest do
       # One grapheme, but far more bytes than four code points can take.
       assert [{["name"], "must be at most 4 characters"}] =
                Schema.validate(schema, %{"name" => "a" <> String.duplicate("\u0301", 100_000)})
+    end
+
+    test "bounds strings from below when asked" do
+      assert [{[], "must be at least 2 characters"}] = Schema.validate({:string, min: 2}, "a")
+      assert Schema.validate({:string, min: 2}, "ab") == []
+
+      assert Schema.to_json_schema({:string, min: 2, max: 3}) ==
+               %{"type" => "string", "minLength" => 2, "maxLength" => 3}
+
+      assert Schema.to_json_schema({:string, max: 3}) == %{"type" => "string", "maxLength" => 3}
     end
   end
 end
