@@ -1,12 +1,14 @@
 defmodule Renga.Power.FindingSweeper do
   @moduledoc """
   Periodically reconciles power findings (`Renga.Power.FindingReconciler`)
-  for every organization with power inventory or readings.
+  for every organization with power inventory or readings, then records its
+  measured loads for charts (`Renga.Power.History`).
 
   Measured findings depend on readings expiring by their event time, which
   no write announces, so they need a clock. Each organization reconciles
   under a transaction-scoped advisory lock that a busy organization skips,
-  so every node may run this worker.
+  so every node may run this worker. History claims each minute first, and
+  a failure to record it never affects findings.
   """
 
   use GenServer
@@ -18,6 +20,7 @@ defmodule Renga.Power.FindingSweeper do
   alias Renga.Accounts.Organization
   alias Renga.Power.Feed
   alias Renga.Power.FindingReconciler
+  alias Renga.Power.History
   alias Renga.Power.Port
   alias Renga.Power.Reading
   alias Renga.Repo
@@ -49,20 +52,36 @@ defmodule Renga.Power.FindingSweeper do
     {:noreply, state}
   end
 
-  @doc "Reconciles every organization with power data; one failure does not stop the rest."
+  @doc """
+  Reconciles and records every organization with power data; one failure
+  does not stop the rest.
+  """
   def sweep do
     Enum.each(organizations(), fn organization ->
-      reconcile(organization)
+      scope = Accounts.scope_for(organization)
+      reconcile(organization, scope)
+      record_history(organization, scope)
     end)
   end
 
-  defp reconcile(organization) do
-    organization |> Accounts.scope_for() |> FindingReconciler.reconcile()
+  defp reconcile(organization, scope) do
+    FindingReconciler.reconcile(scope)
   rescue
     error ->
       Logger.error(
         "Power finding reconciliation failed for organization #{organization.id}: " <>
           Exception.message(error)
+      )
+
+      {:error, error}
+  end
+
+  defp record_history(organization, scope) do
+    History.record(scope)
+  rescue
+    error ->
+      Logger.error(
+        "Power history failed for organization #{organization.id}: " <> Exception.message(error)
       )
 
       {:error, error}
