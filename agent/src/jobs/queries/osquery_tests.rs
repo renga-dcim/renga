@@ -234,6 +234,16 @@ fn packages_come_from_deb_and_rpm_tables() {
     assert_eq!(server.join().unwrap(), ["query", "query"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn no_systemd_units_from_osquery_reads_natively() {
+    let (capability, server) =
+        with_daemon(services::Services, vec![("FROM systemd_units", Vec::new())]);
+    let answer = capability.run(&json!({}), &Cancellation::default());
+    assert_ne!(answer.ok(), Some(json!({"units": [], "truncated": false})));
+    assert_eq!(server.join().unwrap(), ["query"]);
+}
+
 #[test]
 fn invalid_parameters_are_refused_before_asking_osquery() {
     let (capability, _server) = with_daemon(listening_sockets::ListeningSockets, vec![]);

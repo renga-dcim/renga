@@ -508,7 +508,9 @@ fixed SQL: `listening_ports` and `processes` for listening sockets,
 `rpm_packages` for packages. The result has the same shape either way. If the
 daemon cannot be reached, a table is missing, or osquery returns an error, the
 agent logs a warning and answers natively instead. Packages also fall back when
-both package tables are empty, since osquery has no table for apk or pacman.
+both package tables are empty, since osquery has no table for apk or pacman,
+and services when `systemd_units` is empty, which is how osquery answers when
+it cannot reach systemd.
 
 ## Debian/Ubuntu package and smoke test
 

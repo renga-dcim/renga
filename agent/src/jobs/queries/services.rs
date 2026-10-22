@@ -94,6 +94,12 @@ impl Query for Services {
         let Some(rows) = osquery_rows(osquery, OSQUERY_SQL) else {
             return Ok(None);
         };
+        // osquery answers an empty table, not an error, when it cannot reach
+        // systemd over D-Bus. A systemd host always has units, so none means
+        // osquery could not tell; the native reading says why.
+        if rows.is_empty() {
+            return Ok(None);
+        }
         let units = rows
             .iter()
             .filter_map(|row| {
