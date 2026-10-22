@@ -405,4 +405,164 @@ defmodule RengaWeb.UserProviderControllerTest do
       assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "expired or was already used"
     end
   end
+
+  describe "linking from settings" do
+    setup %{conn: conn} do
+      user = set_password(user_fixture())
+      conn = log_in_user(conn, user)
+      %{conn: conn, user: user, session_token: get_session(conn, :user_token)}
+    end
+
+    defp recheck(user, session_token),
+      do: :ok = Accounts.recheck_with_password(user, session_token, valid_user_password())
+
+    defp start_link(conn, provider) do
+      conn = post(conn, ~p"/users/settings/identities", %{"provider" => provider.id})
+      {conn, redirected_to(conn, 302)}
+    end
+
+    test "links the provider to the signed-in account", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      session_token: session_token
+    } do
+      recheck(user, session_token)
+      {conn, url} = start_link(conn, provider)
+      assert String.starts_with?(url, fake.issuer <> "/authorize?")
+
+      # The provider's email need not match the account's.
+      params = FakeOIDCProvider.authorize(fake, url, claims(%{"email" => "other@example.com"}))
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Company SSO is connected"
+      # Linking keeps the session it started from.
+      assert get_session(conn, :user_token) == session_token
+
+      assert [identity] = Accounts.list_user_identities(user)
+      assert identity.provider_id == provider.id
+      assert identity.subject == "subject-1"
+      refute Accounts.get_user_by_email("other@example.com")
+
+      # The linked identity now signs in to the same account.
+      {sign_in, url} = start(build_conn(), provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims(%{"email" => "other@example.com"}))
+      sign_in = get(recycle(sign_in), ~p"/users/auth/#{provider.id}/callback", params)
+      {signed_in, _} = Accounts.get_user_by_session_token(get_session(sign_in, :user_token))
+      assert signed_in.id == user.id
+    end
+
+    test "requires the account re-check", %{conn: conn, provider: provider} do
+      conn = post(conn, ~p"/users/settings/identities", %{"provider" => provider.id})
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Confirm it's you"
+      refute get_session(conn, :provider_attempt)
+    end
+
+    test "requires a signed-in user", %{provider: provider} do
+      conn = post(build_conn(), ~p"/users/settings/identities", %{"provider" => provider.id})
+      assert redirected_to(conn) == ~p"/users/log-in"
+    end
+
+    test "refuses a subject linked to another account", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      session_token: session_token
+    } do
+      {first, url} = start(build_conn(), provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+      get(recycle(first), ~p"/users/auth/#{provider.id}/callback", params)
+
+      recheck(user, session_token)
+      {conn, url} = start_link(conn, provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "another Renga account"
+      assert Accounts.list_user_identities(user) == []
+    end
+
+    test "a link attempt completes only in the session that started it", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      session_token: session_token
+    } do
+      recheck(user, session_token)
+      {conn, url} = start_link(conn, provider)
+      attempt = get_session(conn, :provider_attempt)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+
+      # Another session of someone else carrying the copied attempt.
+      other =
+        build_conn()
+        |> log_in_user(user_fixture())
+        |> Plug.Conn.put_session(:provider_attempt, attempt)
+        |> get(~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(other) == ~p"/users/settings"
+      assert Phoenix.Flash.get(other.assigns.flash, :error) =~ "couldn't be connected"
+
+      # A signed-out browser carrying it.
+      signed_out =
+        build_conn()
+        |> init_test_session(%{provider_attempt: attempt})
+        |> get(~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(signed_out) == ~p"/users/log-in"
+      refute get_session(signed_out, :user_token)
+      assert Accounts.list_user_identities(user) == []
+      refute Accounts.get_user_by_email("sam@example.com")
+    end
+
+    test "a sign-in callback cannot finish a link attempt", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      session_token: session_token
+    } do
+      recheck(user, session_token)
+      {_conn, url} = start_link(conn, provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+
+      # The same state presented as a sign-in attempt from a fresh browser.
+      {fresh, _url} = start(build_conn(), provider)
+      forged = Map.merge(get_session(fresh, :provider_attempt), %{"state" => params["state"]})
+
+      conn =
+        build_conn()
+        |> init_test_session(%{provider_attempt: forged})
+        |> get(~p"/users/auth/#{provider.id}/callback", params)
+
+      assert redirected_to(conn) == ~p"/users/log-in"
+      refute get_session(conn, :user_token)
+      refute Accounts.get_user_by_email("sam@example.com")
+    end
+
+    test "signing out ends the link attempt", %{
+      conn: conn,
+      fake: fake,
+      provider: provider,
+      user: user,
+      session_token: session_token
+    } do
+      recheck(user, session_token)
+      {conn, url} = start_link(conn, provider)
+      params = FakeOIDCProvider.authorize(fake, url, claims())
+
+      Accounts.delete_user_session_token(session_token)
+      conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "couldn't be connected"
+      assert Accounts.list_user_identities(user) == []
+    end
+  end
 end

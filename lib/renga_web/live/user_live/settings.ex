@@ -278,6 +278,66 @@ defmodule RengaWeb.UserLive.Settings do
           <.recheck_panel :if={@recheck && @recheck.action == :recovery_codes} recheck={@recheck} />
         </.settings_section>
         <.settings_section
+          :if={@identities != [] or @linkable_providers != []}
+          id="account-identities"
+          title="Identity providers"
+          description="Sign in with an account you already have at an identity provider. Connecting or disconnecting one asks you to confirm it's you."
+        >
+          <ul :if={@identities != []} id="identities" class="mb-4 divide-y divide-line">
+            <li
+              :for={identity <- @identities}
+              id={"identity-#{identity.id}"}
+              class="flex items-center justify-between gap-3 py-2"
+            >
+              <div class="min-w-0">
+                <p class="truncate text-sm font-medium text-fg">
+                  {identity.provider.display_name}
+                </p>
+                <p class="truncate text-xs text-fg-muted">
+                  {identity_detail(identity)}
+                </p>
+              </div>
+              <.button
+                size="sm"
+                phx-click="unlink_identity"
+                phx-value-id={identity.id}
+                aria-label={"Disconnect #{identity.provider.display_name}"}
+              >
+                Disconnect
+              </.button>
+            </li>
+          </ul>
+
+          <div :if={@linkable_providers != []} id="linkable_providers" class="flex flex-wrap gap-2">
+            <.button
+              :for={provider <- @linkable_providers}
+              id={"link-#{provider.id}"}
+              type="button"
+              phx-click="link_identity"
+              phx-value-provider={provider.id}
+            >
+              Connect {provider.display_name}
+            </.button>
+          </div>
+
+          <%!-- Linking leaves the page for the provider, so it is a real form
+               post, submitted once the re-check passes. --%>
+          <.form
+            for={%{}}
+            id="identity_link_form"
+            action={~p"/users/settings/identities"}
+            method="post"
+            phx-trigger-action={not is_nil(@link_provider)}
+          >
+            <input type="hidden" name="provider" value={@link_provider} />
+          </.form>
+
+          <.recheck_panel
+            :if={@recheck && @recheck.action in [:link_identity, :unlink_identity]}
+            recheck={@recheck}
+          />
+        </.settings_section>
+        <.settings_section
           id="account-security-log"
           title="Security log"
           description="Recent sign-ins and changes to how you sign in. We also email you about every change."
@@ -450,11 +510,21 @@ defmodule RengaWeb.UserLive.Settings do
     do: "Enter the code we emailed to your current address. It expires in five minutes."
 
   defp recheck_description(%{methods: []} = recheck) do
-    if bootstrap?(recheck),
-      do:
-        "Your account has no password or authenticator app yet. We'll email a code to your current address to confirm the first one.",
-      else:
+    cond do
+      bootstrap?(recheck) ->
+        "Your account has no password or authenticator app yet. We'll email a code to your current address to confirm the first one."
+
+      recheck.change in [:link_identity, :unlink_identity] ->
+        "Add a password or passkey first. Your account needs a way to confirm it's you before its sign-in options change."
+
+      true ->
         "Set a password first. Your account needs a way to confirm it's you before its email changes."
+    end
+  end
+
+  defp identity_detail(%{email: email, last_signed_in_at: at}) do
+    used = if at, do: "last used " <> Calendar.strftime(at, "%b %-d, %Y"), else: "never used"
+    if email, do: "#{email} · #{used}", else: used
   end
 
   defp last_used(%{last_used_at: nil}), do: "never used"
@@ -496,6 +566,7 @@ defmodule RengaWeb.UserLive.Settings do
       |> assign(:new_recovery_codes, nil)
       |> assign(:pending_passkey_name, nil)
       |> assign(:passkey_form, passkey_form())
+      |> assign(:link_provider, nil)
       |> assign_mfa()
 
     {:ok, socket}
@@ -740,6 +811,16 @@ defmodule RengaWeb.UserLive.Settings do
     end
   end
 
+  def handle_event("link_identity", %{"provider" => id}, socket) do
+    if Enum.any?(socket.assigns.linkable_providers, &(&1.id == id)),
+      do: {:noreply, with_recheck(socket, :link_identity, %{"provider" => id})},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("unlink_identity", %{"id" => id}, socket) do
+    {:noreply, with_recheck(socket, :unlink_identity, %{"id" => id})}
+  end
+
   def handle_event("cancel_recheck", _params, socket) do
     {:noreply, assign(socket, :recheck, nil)}
   end
@@ -870,6 +951,36 @@ defmodule RengaWeb.UserLive.Settings do
     end
   end
 
+  # The form post starts the provider round trip; the controller checks the
+  # re-check again before it binds the attempt to this session.
+  defp apply_change(socket, :link_identity, %{"provider" => id}) do
+    assign(socket, :link_provider, id)
+  end
+
+  defp apply_change(socket, :unlink_identity, %{"id" => id}) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    case Accounts.unlink_identity(user, session_token, id) do
+      {:ok, identity} ->
+        socket
+        |> assign_mfa()
+        |> put_flash(
+          :info,
+          "#{identity.provider.display_name} is disconnected from your account."
+        )
+
+      {:error, :last_sign_in_method} ->
+        put_flash(
+          socket,
+          :error,
+          "That's your only way to sign in. Connect another identity provider first."
+        )
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "The identity provider could not be disconnected.")
+    end
+  end
+
   defp apply_change(socket, :recovery_codes, _params) do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
 
@@ -896,6 +1007,8 @@ defmodule RengaWeb.UserLive.Settings do
     |> assign(:recovery_codes_left, MFA.recovery_codes_left(user))
     |> assign(:recovering, Accounts.recovering?(user, socket.assigns.session_token))
     |> assign(:security_events, Accounts.list_security_events(user))
+    |> assign(:identities, Accounts.list_user_identities(user))
+    |> assign(:linkable_providers, Accounts.linkable_providers(user))
   end
 
   # With an authenticator app too, a passkey error shows on the code field;

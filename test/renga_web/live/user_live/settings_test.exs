@@ -677,4 +677,97 @@ defmodule RengaWeb.UserLive.SettingsTest do
       refute has_element?(lv, "#password_remove")
     end
   end
+
+  describe "identity providers" do
+    setup %{conn: conn} do
+      fake = Renga.FakeOIDCProvider.new()
+      provider = identity_provider_fixture(fake)
+      user = set_password(user_fixture())
+
+      %{conn: log_in_user(conn, user), user: user, provider: provider, fake: fake}
+    end
+
+    defp link(user, provider) do
+      {:ok, identity} =
+        Accounts.link_identity(user, %{
+          provider: provider,
+          revision: Accounts.IdentityProviders.active_revision(provider),
+          claims: %{"sub" => "subject-1", "email" => "sam@corp.example"}
+        })
+
+      identity
+    end
+
+    test "hides the section when there is nothing to show", %{conn: conn, provider: provider} do
+      Accounts.IdentityProviders.disable(provider, {:operator, "test"})
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      refute has_element?(lv, "#account-identities")
+    end
+
+    test "connecting asks for the re-check, then posts the link form", %{
+      conn: conn,
+      provider: provider
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(lv, "#link-#{provider.id}", "Connect Company SSO")
+
+      lv |> element("#link-#{provider.id}") |> render_click()
+      assert has_element?(lv, "#account-identities #recheck_form")
+      refute has_element?(lv, "#identity_link_form[phx-trigger-action]")
+
+      lv
+      |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+      |> render_submit()
+
+      assert has_element?(lv, "#identity_link_form[phx-trigger-action]")
+
+      assert has_element?(
+               lv,
+               ~s|#identity_link_form input[name="provider"][value="#{provider.id}"]|
+             )
+    end
+
+    test "ignores a provider it does not offer", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      render_hook(lv, "link_identity", %{"provider" => "unknown"})
+      refute has_element?(lv, "#recheck")
+    end
+
+    test "lists linked identities and disconnects after the re-check", %{
+      conn: conn,
+      user: user,
+      provider: provider
+    } do
+      identity = link(user, provider)
+
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(lv, "#identity-#{identity.id}", "sam@corp.example")
+      refute has_element?(lv, "#link-#{provider.id}")
+
+      lv |> element("#identity-#{identity.id} button", "Disconnect") |> render_click()
+
+      result =
+        lv
+        |> form("#recheck_form", %{"recheck" => %{"password" => valid_user_password()}})
+        |> render_submit()
+
+      assert result =~ "Company SSO is disconnected"
+      refute has_element?(lv, "#identity-#{identity.id}")
+      assert has_element?(lv, "#link-#{provider.id}")
+      assert Accounts.list_user_identities(user) == []
+    end
+
+    test "an account with nothing to re-check with is told to add a credential first", %{
+      provider: provider
+    } do
+      user = user_fixture()
+      link(user, provider)
+      {:ok, lv, _html} = live(log_in_user(build_conn(), user), ~p"/users/settings")
+
+      result = lv |> element("#account-identities button", "Disconnect") |> render_click()
+
+      assert result =~ "Add a password or passkey first"
+      refute has_element?(lv, "#bootstrap_send")
+    end
+  end
 end
