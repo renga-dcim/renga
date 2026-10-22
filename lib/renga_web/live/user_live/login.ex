@@ -2,13 +2,14 @@ defmodule RengaWeb.UserLive.Login do
   use RengaWeb, :live_view
 
   alias Renga.Accounts
+  alias Renga.Accounts.SignInPolicy
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
       <.auth_card id="login" title="Log in">
-        <:subtitle>
+        <:subtitle :if={@local_sign_in}>
           We'll email you a link, or you can use your password.
         </:subtitle>
 
@@ -36,10 +37,14 @@ defmodule RengaWeb.UserLive.Login do
           </.button>
         </div>
 
-        <.divider :if={@providers != []} label="or" />
+        <.divider :if={@providers != [] and @local_sign_in} label="or" />
+
+        <p :if={not @local_sign_in and @providers == []} class="text-sm text-fg-muted">
+          No sign-in option is available right now.
+        </p>
 
         <form
-          :if={@passkey_options}
+          :if={@local_sign_in and @passkey_options}
           id="passkey_login_form"
           action={~p"/users/log-in/passkey"}
           method="post"
@@ -58,10 +63,11 @@ defmodule RengaWeb.UserLive.Login do
           <p data-passkey-status class="text-xs text-crit" role="status"></p>
         </form>
 
-        <.divider :if={@passkey_options} label="or use your email" />
+        <.divider :if={@local_sign_in and @passkey_options} label="or use your email" />
 
         <.form
           :let={f}
+          :if={@local_sign_in}
           for={@form}
           id="login_form_magic"
           action={~p"/users/log-in"}
@@ -81,10 +87,11 @@ defmodule RengaWeb.UserLive.Login do
           </.button>
         </.form>
 
-        <.divider label="or use your password" />
+        <.divider :if={@local_sign_in} label="or use your password" />
 
         <.form
           :let={f}
+          :if={@local_sign_in}
           for={@form}
           id="login_form_password"
           action={~p"/users/log-in"}
@@ -119,7 +126,7 @@ defmodule RengaWeb.UserLive.Login do
           </div>
         </.form>
 
-        <:footer>
+        <:footer :if={@registration_open}>
           Don't have an account?
           <.link
             navigate={~p"/users/register"}
@@ -148,7 +155,9 @@ defmodule RengaWeb.UserLive.Login do
        form: form,
        trigger_submit: false,
        passkey_options: passkey_options,
-       providers: Accounts.IdentityProviders.sign_in_options(params["provider"])
+       providers: Accounts.IdentityProviders.sign_in_options(params["provider"]),
+       local_sign_in: SignInPolicy.local_sign_in?(),
+       registration_open: SignInPolicy.registration_open?()
      )}
   end
 
@@ -158,7 +167,9 @@ defmodule RengaWeb.UserLive.Login do
   end
 
   def handle_event("submit_magic", %{"user" => %{"email" => email}}, socket) do
-    if user = Accounts.get_user_by_email(email) do
+    user = if SignInPolicy.local_sign_in?(), do: Accounts.get_user_by_email(email)
+
+    if user do
       Accounts.deliver_login_instructions(
         user,
         &url(~p"/users/log-in/#{&1}")

@@ -6,6 +6,8 @@ defmodule Renga.Release do
   application nodes, so schema changes land once rather than racing on boot.
   """
 
+  alias Renga.Release.Providers
+
   @app :renga
 
   def migrate do
@@ -87,6 +89,29 @@ defmodule Renga.Release do
     end
 
     :ok
+  end
+
+  @doc """
+  Runs `bin/providers` (`Renga.Release.Providers`) with the arguments the
+  script passes in `RENGA_ARGV`, one per line. Exits non-zero on failure.
+  """
+  def providers do
+    load_app()
+    argv = "RENGA_ARGV" |> System.get_env("") |> String.split("\n", trim: true)
+
+    [repo | _] = repos()
+
+    {:ok, result, _} =
+      Ecto.Migrator.with_repo(repo, fn _repo -> Providers.run(argv) end)
+
+    case result do
+      {:ok, output} ->
+        IO.puts(output)
+
+      {:error, message} ->
+        IO.puts(:stderr, message)
+        System.halt(1)
+    end
   end
 
   defp repos do

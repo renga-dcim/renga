@@ -12,6 +12,7 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.SecurityLog
+  alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
@@ -379,7 +380,7 @@ defmodule Renga.Accounts do
       if Recheck.methods(user) == [] do
         token = generate_user_session_token(user, browser_session_id)
         :ok = Recheck.start_bootstrap(user, token)
-        record_sign_in(user, "magic_link")
+        record_issued_sign_in(user, "magic_link")
         {:ok, token}
       else
         {:error, :not_available}
@@ -568,16 +569,44 @@ defmodule Renga.Accounts do
   def record_sign_in(%User{} = user, method),
     do: SecurityLog.record(user, "signed_in", %{"method" => method})
 
+  # Records a sign-in in the transaction that issues its session. A local
+  # credential (anything but a provider) signs in only while the local
+  # sign-in policy allows it, checked here rather than only before the
+  # transaction, so a sign-in racing a revoked override issues nothing. A
+  # sign-in an override allowed names it in the log (RFD 15).
+  defp record_issued_sign_in(user, "provider:" <> _ = method), do: record_sign_in(user, method)
+
+  defp record_issued_sign_in(user, method) do
+    case SignInPolicy.local_sign_in_grant() do
+      {:ok, nil} ->
+        record_sign_in(user, method)
+
+      {:ok, override_id} ->
+        SecurityLog.record(user, "signed_in", %{
+          "method" => method,
+          "local_override" => override_id
+        })
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
   @doc """
   Issues a session for a fresh sign-in by `method` and records the sign-in
   in the same transaction, so the log never shows a sign-in whose session
-  was not created.
+  was not created. Returns `:error`, issuing nothing, when the local sign-in
+  policy refuses a local `method`.
   """
   def create_signed_in_session(%User{} = user, browser_session_id, method, expires_at \\ nil) do
     Repo.transact(fn ->
-      record_sign_in(user, method)
+      record_issued_sign_in(user, method)
       {:ok, generate_user_session_token(user, browser_session_id, expires_at)}
     end)
+    |> case do
+      {:ok, token} -> {:ok, token}
+      {:error, _reason} -> :error
+    end
   end
 
   @doc """
@@ -720,7 +749,7 @@ defmodule Renga.Accounts do
         :ok = start_recovery_after(method, user, session_token)
         # Logged with the session it records, so a spent or expired
         # pending sign-in logs nothing.
-        record_sign_in(user, to_string(method))
+        record_issued_sign_in(user, to_string(method))
         {:ok, session_token}
       else
         {:error, :expired}

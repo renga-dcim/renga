@@ -1,0 +1,14 @@
+#!/bin/sh
+# Manages deployment identity providers (RFD 15). Run without arguments for
+# usage. Arguments travel one per line, so none may contain a newline.
+set -eu
+
+for argument in "$@"; do
+  case "$argument" in
+    *'
+'*) echo "$0: arguments cannot contain newlines" >&2; exit 64 ;;
+  esac
+done
+
+cd -P -- "$(dirname -- "$0")"
+RENGA_ARGV="$(printf '%s\n' "$@")" exec ./renga eval 'Renga.Release.providers()'
