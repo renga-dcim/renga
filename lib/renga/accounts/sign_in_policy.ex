@@ -5,11 +5,13 @@ defmodule Renga.Accounts.SignInPolicy do
   Two settings come from the environment at boot:
 
     * `REGISTRATION`: `open` (the default) or `closed`, which removes
-      `/users/register`. People then join only through a provider that
-      allows sign-up, or an invitation.
+      `/users/register`. New accounts then come only from a provider that
+      allows sign-up, or from an operator; an invitation adds an existing
+      account to an organization.
     * `LOCAL_SIGN_IN`: `enabled` (the default) or `disabled`, which turns off
       passwords, emailed links, and passkey sign-in, leaving identity
-      providers as the only way in.
+      providers as the only way in. It also closes registration, whose
+      accounts would have no way in.
 
   The one runtime exception is the operator's local recovery override
   (`recover_local/3`), which re-enables local credentials until it expires
@@ -27,8 +29,19 @@ defmodule Renga.Accounts.SignInPolicy do
 
   @max_override_minutes 24 * 60
 
-  @doc "Whether people can create an account at /users/register."
-  def registration_open?, do: Application.get_env(:renga, :registration, :open) == :open
+  @doc """
+  Whether people can create an account at /users/register.
+
+  Registration creates a local account whose only ways in are local
+  credentials, so it also needs the environment to enable local sign-in.
+  Otherwise the account could never sign in, yet its address would stop the
+  owner's provider sign-up, which refuses an email that is already in use.
+  An override never opens it.
+  """
+  def registration_open?,
+    do:
+      Application.get_env(:renga, :registration, :open) == :open and
+        configured_local_sign_in?()
 
   @doc "Whether local credentials (passwords, emailed links, passkeys) can sign in."
   def local_sign_in?, do: configured_local_sign_in?() or override_active?()

@@ -59,8 +59,8 @@ defmodule RengaWeb.UserLive.Registration do
     end
   end
 
-  # Closed registration (RFD 15): people join through an identity provider
-  # that allows sign-up, or an invitation.
+  # Closed registration (RFD 15): new accounts come from an identity provider
+  # that allows sign-up. An invitation needs an existing account.
   defp registration_closed(socket) do
     socket
     |> put_flash(:error, "This Renga doesn't take new sign-ups. Ask an administrator for access.")

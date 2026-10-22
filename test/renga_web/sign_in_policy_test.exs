@@ -76,6 +76,19 @@ defmodule RengaWeb.SignInPolicyTest do
       refute get_session(conn, :user_token)
     end
 
+    # REGISTRATION defaults to open, but a registered account could only
+    # sign in locally, and its address would block the owner's provider
+    # sign-up.
+    test "registration is closed, even during a recovery override", %{conn: conn} do
+      for override? <- [false, true] do
+        if override?, do: {:ok, _} = SignInPolicy.recover_local(30, "jane")
+
+        assert {:error, {:redirect, %{to: "/users/log-in"}}} = live(conn, ~p"/users/register")
+        {:ok, lv, _html} = live(conn, ~p"/users/log-in")
+        refute has_element?(lv, ~s|a[href="/users/register"]|)
+      end
+    end
+
     test "the recovery override lets local credentials in again", %{conn: conn, user: user} do
       {:ok, _} = SignInPolicy.recover_local(30, "jane")
 
@@ -86,6 +99,21 @@ defmodule RengaWeb.SignInPolicyTest do
 
       assert get_session(conn, :user_token)
     end
+  end
+
+  test "a registration form opened before local sign-in was turned off creates nobody", %{
+    conn: conn,
+    fake: fake
+  } do
+    identity_provider_fixture(fake)
+    {:ok, lv, _html} = live(conn, ~p"/users/register")
+    disable_local()
+    email = unique_user_email()
+
+    assert {:error, {:redirect, %{to: "/users/log-in"}}} =
+             lv |> form("#registration_form", user: %{email: email}) |> render_submit()
+
+    refute Repo.get_by(Renga.Accounts.User, email: email)
   end
 
   test "closed registration sends people to the login page", %{conn: conn} do
