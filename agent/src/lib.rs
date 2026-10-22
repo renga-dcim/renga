@@ -4,6 +4,7 @@ pub mod cancellation;
 pub mod collectors;
 pub mod command;
 pub mod config;
+pub mod gnmi;
 pub mod home;
 pub mod identity;
 pub mod installation_key;
