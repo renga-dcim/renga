@@ -45,6 +45,17 @@ defmodule Renga.Inventory.CollectorTargetResource do
   @doc "Whether a reported domain state occupies the hypervisor."
   def active_domain_state?(state), do: state in @active_domain_states
 
+  @doc """
+  Whether the domain view was reported after the member's latest withdrawal.
+  A withdrawal ends the domain's active run, so evidence from before it can
+  neither place the VM nor carry its run into a later report.
+  """
+  def domain_current?(%__MODULE__{domain_reported_at: nil}), do: false
+  def domain_current?(%__MODULE__{withdrawn_at: nil}), do: true
+
+  def domain_current?(%__MODULE__{domain_reported_at: reported_at, withdrawn_at: withdrawn_at}),
+    do: DateTime.compare(reported_at, withdrawn_at) == :gt
+
   @doc "Whether the target still reports the resource."
   def present?(%__MODULE__{withdrawn_at: nil}), do: true
 

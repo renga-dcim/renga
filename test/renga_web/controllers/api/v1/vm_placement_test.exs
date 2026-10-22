@@ -87,6 +87,35 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
     assert %{status: :unknown, defined_on: []} = VmPlacements.placement(scope, vm_id, at(6))
   end
 
+  test "a withdrawal ends the active run", %{scope: scope, token: token} do
+    vm_id = report!(token, "hv-a", "running", at: 0)
+    post!(token, hypervisor_report("hv-a", [], at: 5, complete: true))
+    # Reported again by identity alone: defined there, but not shown active.
+    post!(token, hypervisor_report("hv-a", [identity_only()], at: 6))
+
+    assert %{status: :unknown, defined_on: [_defined]} =
+             VmPlacements.placement(scope, vm_id, at(7))
+
+    report!(token, "hv-a", "running", at: 8)
+    assert %{status: :placed, hypervisor: claim} = VmPlacements.placement(scope, vm_id, at(9))
+    assert DateTime.compare(claim.active_since, at(8)) == :eq
+  end
+
+  test "an active report replayed behind a withdrawal starts no run", %{
+    scope: scope,
+    token: token
+  } do
+    post!(token, hypervisor_report("hv-a", [], at: 5, complete: true))
+    vm_id = report!(token, "hv-a", "running", at: 0)
+    post!(token, hypervisor_report("hv-a", [identity_only()], at: 6))
+
+    assert %{status: :unknown} = VmPlacements.placement(scope, vm_id, at(7))
+
+    report!(token, "hv-a", "running", at: 8)
+    assert %{status: :placed, hypervisor: claim} = VmPlacements.placement(scope, vm_id, at(9))
+    assert DateTime.compare(claim.active_since, at(8)) == :eq
+  end
+
   test "a late replay never revives an active claim", %{scope: scope, token: token} do
     vm_id = report!(token, "hv-a", "shutoff", at: 5)
     report!(token, "hv-a", "running", at: 0)
@@ -168,6 +197,8 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       "domain" => %{"name" => "web-1", "state" => state, "persistent" => true}
     }
   end
+
+  defp identity_only, do: Map.delete(vm("running"), "domain")
 
   defp keys(hypervisors), do: Enum.map(hypervisors, &"qemu+ssh://#{&1}/system")
 

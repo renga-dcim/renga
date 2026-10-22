@@ -74,11 +74,13 @@ defmodule Renga.Inventory.VmPlacements do
     |> Enum.filter(&CollectorTargetResource.present?/1)
   end
 
+  # A member reported again without its domain after a withdrawal still
+  # defines the VM there, but its old active run is over.
   defp claim(scope, member) do
     %{
       target: member.target,
       domain: member.domain,
-      active_since: member.active_since,
+      active_since: if(CollectorTargetResource.domain_current?(member), do: member.active_since),
       last_reported_at: member.domain_reported_at,
       host_resource_id: host_resource_id(scope, member.target)
     }

@@ -230,9 +230,14 @@ defmodule Renga.Inventory.Collectors do
     else
       active_since =
         cond do
-          not CollectorTargetResource.active_domain_state?(domain["state"]) -> nil
-          member.active_since && CollectorTargetResource.present?(member) -> member.active_since
-          true -> observed_at
+          not CollectorTargetResource.active_domain_state?(domain["state"]) ->
+            nil
+
+          member.active_since && CollectorTargetResource.domain_current?(member) ->
+            member.active_since
+
+          true ->
+            observed_at
         end
 
       [domain: domain, domain_reported_at: observed_at, active_since: active_since]
