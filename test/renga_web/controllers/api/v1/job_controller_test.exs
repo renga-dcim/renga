@@ -6,6 +6,8 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Jobs
+  alias Renga.Jobs.TargetBinding
+  alias Renga.Jobs.TargetBindings
   alias Renga.Repo
   alias RengaWeb.Api.V1.JobController
 
@@ -541,6 +543,215 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                |> valid_api_response(409)
 
       assert Repo.reload!(context.job).failure_reason == "binding_changed"
+    end
+  end
+
+  # RFD 13: a shared intake key lets any installation report any inventory, and
+  # name any installation ID, so what an installation reports must never make
+  # it a privileged target.
+  describe "privileged targets on a shared intake key" do
+    setup context do
+      context.organization
+      |> Ecto.Changeset.change(settings: %{"jobs" => %{"allowed_capabilities" => [@restart]}})
+      |> Repo.update!()
+
+      resource_id = report_host(context, "db-01", "machine-db-01")
+      {key, private_key} = approved_key_fixture(context.organization, context.agent)
+
+      {:ok, binding} =
+        TargetBindings.bind(context.scope, resource_id, context.agent.id, key.fingerprint)
+
+      {:ok, job} = privileged_job(context, context.agent, resource_id)
+
+      # A second installation on the same intake key, advertising the same
+      # capability, with a key an owner approved: as trusted as an
+      # installation gets without a binding.
+      intruder_installation_id = Ecto.UUID.generate()
+
+      {:ok, {intruder, _lease}} =
+        Inventory.record_intake_agent_check_in(
+          Accounts.scope_for(context.organization),
+          context.intake_api_key,
+          intruder_installation_id,
+          %{capabilities: [@restart]}
+        )
+
+      {intruder_key, intruder_private_key} = approved_key_fixture(context.organization, intruder)
+
+      Map.merge(context, %{
+        resource_id: resource_id,
+        key: key,
+        private_key: private_key,
+        binding: binding,
+        job: job,
+        intruder: %{context | agent: intruder, installation_id: intruder_installation_id},
+        intruder_key: intruder_key,
+        intruder_private_key: intruder_private_key
+      })
+    end
+
+    defp report_host(context, hostname, machine_id) do
+      %{"reconciliation" => %{"matched_resource_id" => resource_id}} =
+        context
+        |> post_json(~p"/api/v1/observations", %{
+          "observation_id" => "obs-#{System.unique_integer([:positive])}",
+          "observed_at" => DateTime.to_iso8601(DateTime.utc_now()),
+          "source" => %{"kind" => "host_agent"},
+          "resources" => [
+            %{
+              "kind" => "server",
+              "identifiers" => %{"hostname" => hostname, "machine_id" => machine_id},
+              "attributes" => %{"hostname" => hostname},
+              "interfaces" => [],
+              "components" => []
+            }
+          ]
+        })
+        |> valid_api_response(202)
+
+      resource_id
+    end
+
+    defp privileged_job(context, agent, resource_id) do
+      Jobs.create_system_job(
+        context.organization.id,
+        agent.id,
+        @restart,
+        %{"service" => "postgresql"},
+        resource_id: resource_id
+      )
+    end
+
+    defp lease_privileged(context),
+      do: context |> lease(%{"capabilities" => [@restart]}) |> valid_api_response(200)
+
+    defp candidates(scope, resource_id) do
+      scope
+      |> TargetBindings.candidates(resource_id)
+      |> MapSet.new(fn {agent, key} -> {agent.id, key.id} end)
+    end
+
+    # The resource is bound, at version 1, to the first installation and the
+    # key the owner approved, and its job is still captured under that binding.
+    defp assert_bound_as_approved(context) do
+      binding = TargetBindings.current(context.scope, context.resource_id)
+
+      assert {binding.id, binding.agent_id, binding.installation_key_id, binding.version} ==
+               {context.binding.id, context.agent.id, context.key.id, 1}
+
+      job = Repo.reload!(context.job)
+
+      assert {job.agent_id, job.resource_id, job.target_binding_id, job.target_binding_version} ==
+               {context.agent.id, context.resource_id, context.binding.id, 1}
+    end
+
+    test "reporting the bound resource from another installation does not move its jobs",
+         context do
+      %{scope: scope, resource_id: resource_id, intruder: intruder} = context
+      refute intruder.agent.id == context.agent.id
+
+      # The intruder reports the same machine. Inventory matches it to the
+      # bound resource and lists both installations as binding candidates.
+      assert report_host(intruder, "db-01", "machine-db-01") == resource_id
+
+      assert candidates(scope, resource_id) ==
+               MapSet.new([
+                 {context.agent.id, context.key.id},
+                 {intruder.agent.id, context.intruder_key.id}
+               ])
+
+      assert_bound_as_approved(context)
+
+      # As itself, the intruder is offered nothing.
+      assert %{"jobs" => [], "offers" => []} = lease_privileged(intruder)
+
+      # Naming the bound installation's ID, it is offered the job, without
+      # parameters, but can claim it neither as itself nor as the bound
+      # installation, since its key is not the one the binding names.
+      spoofed = %{intruder | installation_id: context.installation_id}
+      assert %{"jobs" => [], "offers" => [offer]} = lease_privileged(spoofed)
+
+      assert {offer["job_id"], offer["resource_id"], offer["binding_version"]} ==
+               {context.job.id, resource_id, 1}
+
+      refute Map.has_key?(offer, "parameters")
+
+      assert %{"errors" => [%{"path" => "id"}]} =
+               intruder
+               |> claim(offer, signature(intruder, offer, context.intruder_private_key))
+               |> valid_api_response(404)
+
+      assert %{"errors" => [%{"path" => "signature"}]} =
+               spoofed
+               |> claim(offer, signature(spoofed, offer, context.intruder_private_key))
+               |> valid_api_response(403)
+
+      job = Repo.reload!(context.job)
+      assert {job.state, job.attempts, job.lease_token_hash} == {"queued", 0, nil}
+      assert_bound_as_approved(context)
+
+      # The bound installation claims the same offer.
+      assert %{"id" => job_id} =
+               context
+               |> claim(offer, signature(context, offer, context.private_key))
+               |> valid_api_response(200)
+
+      assert job_id == context.job.id
+      assert Repo.reload!(context.job).state == "leased"
+
+      # New privileged jobs still go only to the bound installation.
+      assert {:error, :target_not_bound} = privileged_job(context, intruder.agent, resource_id)
+      assert {:ok, next} = privileged_job(context, context.agent, resource_id)
+
+      assert {next.agent_id, next.target_binding_id, next.target_binding_version} ==
+               {context.agent.id, context.binding.id, 1}
+    end
+
+    test "reporting a machine into a saved view does not make it a privileged target", context do
+      %{scope: scope, intruder: intruder} = context
+
+      {:ok, view} =
+        Renga.SavedViews.create_view(scope, %{
+          area: "inventory",
+          name: "Databases",
+          shared: true,
+          params: %{"q" => "db-"}
+        })
+
+      members = fn ->
+        options =
+          view.params |> RengaWeb.InventoryQuery.parse() |> RengaWeb.InventoryQuery.list_options()
+
+        scope
+        |> Inventory.list_operational_resources(options)
+        |> Map.fetch!(:entries)
+        |> MapSet.new(& &1.id)
+      end
+
+      assert members.() == MapSet.new([context.resource_id])
+
+      # The intruder reports a machine of its own that matches the view.
+      poisoned_id = report_host(intruder, "db-02", "machine-db-02")
+      refute poisoned_id == context.resource_id
+      assert members.() == MapSet.new([context.resource_id, poisoned_id])
+
+      # An owner could bind it to the intruder, but joining the view binds
+      # nothing, so no privileged job can target it.
+      assert candidates(scope, poisoned_id) ==
+               MapSet.new([{intruder.agent.id, context.intruder_key.id}])
+
+      assert {:error, :target_not_bound} = privileged_job(context, intruder.agent, poisoned_id)
+
+      assert {:error, :agent_not_for_resource} =
+               privileged_job(context, context.agent, poisoned_id)
+
+      assert Repo.get_by(TargetBinding, resource_id: poisoned_id) == nil
+      assert Jobs.list_jobs(scope, resource_id: poisoned_id) == []
+      assert %{"jobs" => [], "offers" => []} = lease_privileged(intruder)
+
+      # The view's original member stays bound as approved.
+      assert_bound_as_approved(context)
+      assert Repo.reload!(context.job).state == "queued"
     end
   end
 end
