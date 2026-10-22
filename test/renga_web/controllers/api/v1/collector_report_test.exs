@@ -172,6 +172,25 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert Enum.map(derived, & &1.resource_index) == [0, 1]
       assert Enum.map(derived, & &1.payload["target"]) == ["10.0.0.1", "10.0.0.2"]
 
+      # Each derived observation carries only the collector's normalized
+      # identity; the rest of the collector object stays in the raw report.
+      padded =
+        switch_report([switch("10.0.0.1", "SER-1"), switch("10.0.0.2", "SER-2")])
+        |> put_in(["collector", "id"], "  core-switches  ")
+        |> put_in(["collector", "notes"], String.duplicate("x", 1_000))
+
+      assert %{"observation" => %{"id" => padded_id}} =
+               token |> post_observation(padded) |> valid_api_response(202)
+
+      assert Repo.get!(Observation, padded_id).payload["collector"]["notes"]
+
+      for derived <- Inventory.list_derived_observations(scope, padded_id) do
+        assert derived.payload["collector"] == %{
+                 "id" => "core-switches",
+                 "kind" => "switch_poller"
+               }
+      end
+
       # A resent report is the stored one, reconciled once.
       duplicate =
         post_observation(

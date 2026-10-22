@@ -465,12 +465,19 @@ defmodule Renga.Inventory.AgentPayload do
   @doc """
   Splits a validated report into one single-resource payload per resource,
   each naming the target it belongs to under `"target"`. The derived payloads
-  keep the report's scope, collector, time, and section completeness, so they
-  reconcile like host observations.
+  keep the report's scope, collector ID and kind, time, and section
+  completeness, so they reconcile like host observations.
   """
   def derived_resource_payloads(%{"resources" => resources} = payload) do
+    # Only the normalized collector identity is copied: anything else in the
+    # collector object stays in the raw report rather than being multiplied
+    # into every derived observation.
+    {collector_id, kind} = collector(payload)
+
     shared =
-      Map.take(payload, ~w(observation_id observed_at scope collector section_completeness))
+      payload
+      |> Map.take(~w(observation_id observed_at scope section_completeness))
+      |> Map.put("collector", %{"id" => collector_id, "kind" => kind})
 
     resources
     |> Enum.with_index()
