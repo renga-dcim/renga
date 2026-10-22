@@ -263,11 +263,16 @@ interval_seconds = 300              # default 5 minutes, at least 60
 timeout_seconds = 10                # per virsh call
 ```
 
+The URI also names the hypervisor in every report and log line, so it must not
+carry a password or a secret query parameter. For a remote hypervisor, keep
+credentials in libvirt's authentication configuration, SSH keys, or
+certificate files instead.
+
 Each poll reports every defined domain: its name, state, whether it is
 persistent, vCPU and memory allocation, disks, and virtual NICs with their MAC
 addresses and the bridge or network they attach to. Renga matches a VM to the
 host agent running inside it by the SMBIOS system UUID the guest sees (the
-domain UUID unless `<sysinfo>` overrides it), so the two views become one
+domain's `<hwuuid>` when set, otherwise its UUID), so the two views become one
 machine. MAC addresses are only supporting evidence and never merge machines.
 
 A hypervisor whose domains cannot be listed is reported unreachable, and its
