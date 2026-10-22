@@ -468,7 +468,7 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
-            <:col :let={{_id, source}} label="osquery" class="w-32" hide_below="5xl">
+            <:col :let={{_id, source}} label="osquery" class="w-32" hide_below="6xl">
               <span id={"collector-osquery-#{source.id}"}>
                 <.collector_osquery osquery={Agent.osquery(collector_agent(source))} />
               </span>
