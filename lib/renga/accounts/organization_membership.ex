@@ -27,9 +27,15 @@ defmodule Renga.Accounts.OrganizationMembership do
 
     belongs_to :organization, Organization
     belongs_to :user, User
+    # Set when a SCIM connection granted the membership (RFD 16); a manual
+    # membership has none, and SCIM never changes it.
+    belongs_to :scim_connection, Renga.Scim.Connection
 
     timestamps()
   end
+
+  @doc "Whether a SCIM connection manages the membership."
+  def scim_managed?(%__MODULE__{scim_connection_id: id}), do: not is_nil(id)
 
   def changeset(membership, attrs) do
     membership

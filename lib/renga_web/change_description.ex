@@ -220,6 +220,30 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "scim_link_refused", metadata: %{"user_name" => name}}),
     do: "Refused to relink the SCIM user #{name} to another sign-in"
 
+  def describe(%{
+        kind: "scim_group_mapped",
+        metadata: %{"group" => group},
+        new_value: %{"value" => role}
+      }),
+      do: "Mapped the SCIM group #{group} to the #{role} role"
+
+  def describe(%{kind: "scim_group_mapped", metadata: %{"group" => group}}),
+    do: "Unmapped the SCIM group #{group}"
+
+  def describe(%{kind: "scim_grant_added", metadata: metadata, new_value: %{"value" => role}}),
+    do: "SCIM gave #{metadata["member"]} the #{role} role"
+
+  def describe(%{
+        kind: "scim_grant_changed",
+        metadata: metadata,
+        old_value: %{"value" => old},
+        new_value: %{"value" => new}
+      }),
+      do: "SCIM changed #{metadata["member"]} from #{old} to #{new}"
+
+  def describe(%{kind: "scim_grant_removed", metadata: metadata}),
+    do: "SCIM removed #{metadata["member"]}'s access"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),

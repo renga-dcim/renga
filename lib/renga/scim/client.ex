@@ -7,4 +7,13 @@ defmodule Renga.Scim.Client do
 
   @enforce_keys [:connection, :token_id]
   defstruct [:connection, :token_id, :request_id]
+
+  @doc "What Activity records about the client behind a change."
+  def cause(%__MODULE__{} = client) do
+    %{
+      "connection_id" => client.connection.id,
+      "token_id" => client.token_id,
+      "request_id" => client.request_id
+    }
+  end
 end

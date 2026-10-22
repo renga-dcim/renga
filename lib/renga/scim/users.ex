@@ -20,6 +20,7 @@ defmodule Renga.Scim.Users do
   alias Renga.Scim.Connection
   alias Renga.Scim.DirectoryUser
   alias Renga.Scim.Filter
+  alias Renga.Scim.Grants
   alias Renga.Scim.UserResource
 
   @filters %{
@@ -78,9 +79,11 @@ defmodule Renga.Scim.Users do
   def replace(%Client{} = client, id, resource) do
     write(client, fn ->
       with {:ok, user} <- lock_user(client.connection, id),
+           before = Grants.users_of_entries([user.id]),
            {:ok, attrs} <- UserResource.replace(resource, user),
            {:ok, updated} <- update_user(user, attrs) do
         record!(client, "scim_user_updated", updated)
+        reconcile!(client, before ++ Grants.users_of_entries([user.id]))
         {:ok, with_groups(updated)}
       end
     end)
@@ -90,9 +93,11 @@ defmodule Renga.Scim.Users do
   def patch(%Client{} = client, id, operations) do
     write(client, fn ->
       with {:ok, user} <- lock_user(client.connection, id),
+           before = Grants.users_of_entries([user.id]),
            {:ok, attrs} <- UserResource.patch(operations, user),
            {:ok, updated} <- update_user(user, attrs) do
         record!(client, "scim_user_updated", updated)
+        reconcile!(client, before ++ Grants.users_of_entries([user.id]))
         {:ok, with_groups(updated)}
       end
     end)
@@ -102,12 +107,17 @@ defmodule Renga.Scim.Users do
   def delete(%Client{} = client, id) do
     write(client, fn ->
       with {:ok, user} <- lock_user(client.connection, id),
+           before = Grants.users_of_entries([user.id]),
            {:ok, deleted} <- Repo.delete(user) do
         record!(client, "scim_user_deleted", deleted)
+        reconcile!(client, before)
         {:ok, deleted}
       end
     end)
   end
+
+  defp reconcile!(%Client{connection: connection} = client, user_ids),
+    do: Grants.reconcile!(connection.organization_id, user_ids, Client.cause(client))
 
   defp with_groups(user), do: Repo.preload(user, [groups: groups_query()], force: true)
 

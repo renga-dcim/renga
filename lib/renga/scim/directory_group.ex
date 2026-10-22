@@ -15,6 +15,9 @@ defmodule Renga.Scim.DirectoryGroup do
     field :display_name, :string
     field :external_id, :string
     field :organization_id, :binary_id
+    # The built-in role an owner mapped the group to; SCIM writes never
+    # change it.
+    field :role, :string
 
     belongs_to :connection, Renga.Scim.Connection
 

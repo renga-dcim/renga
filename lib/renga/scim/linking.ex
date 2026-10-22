@@ -24,6 +24,7 @@ defmodule Renga.Scim.Linking do
   alias Renga.Repo
   alias Renga.Scim.Connection
   alias Renga.Scim.DirectoryUser
+  alias Renga.Scim.Grants
 
   @doc """
   Whether an active, unlinked entry of an enabled connection to `provider`
@@ -55,7 +56,7 @@ defmodule Renga.Scim.Linking do
       # sign-in goes on. Once it is held, the entry is read again under the
       # candidate rules: a SCIM write or connection change that committed
       # meanwhile may have taken the correlation away.
-      with :ok <- lock_organization(organization_id) do
+      with :ok <- Grants.lock_organization(organization_id) do
         DirectoryUser
         |> where(id: ^entry_id)
         |> where([user], user.id in subquery(select(candidates, [user], user.id)))
@@ -82,18 +83,6 @@ defmodule Renga.Scim.Linking do
       not String.contains?(value, ["\n", "\r", "\t", "\v", "\f", "\e", "\a", "\b"])
   end
 
-  defp lock_organization(organization_id) do
-    Organization
-    |> where(
-      [organization],
-      organization.id == ^organization_id and organization.status == "active"
-    )
-    |> select([organization], organization.id)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> if(do: :ok, else: :inactive)
-  end
-
   defp bind!(entry, identity) do
     linked =
       entry
@@ -101,6 +90,12 @@ defmodule Renga.Scim.Linking do
       |> Repo.update!()
 
     record!(linked, "scim_user_linked", identity)
+
+    Grants.reconcile!(linked.organization_id, [identity.user_id], %{
+      "connection_id" => linked.connection_id,
+      "user_identity_id" => identity.id
+    })
+
     linked
   end
 

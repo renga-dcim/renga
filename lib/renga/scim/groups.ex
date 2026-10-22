@@ -19,6 +19,7 @@ defmodule Renga.Scim.Groups do
   alias Renga.Scim.DirectoryGroup
   alias Renga.Scim.DirectoryUser
   alias Renga.Scim.Filter
+  alias Renga.Scim.Grants
   alias Renga.Scim.GroupMember
   alias Renga.Scim.GroupResource
 
@@ -115,6 +116,7 @@ defmodule Renga.Scim.Groups do
         removed = current_member_ids(group)
         Repo.delete!(group)
         record!(client, "scim_group_deleted", group, [], removed)
+        reconcile!(client, group, removed)
         {:ok, group}
       end
     end)
@@ -131,8 +133,17 @@ defmodule Renga.Scim.Groups do
            group |> DirectoryGroup.changeset(attrs) |> Repo.update(force: force?) |> invalid() do
       {added, removed} = set_members!(updated, current, members)
       record!(client, "scim_group_updated", updated, added, removed)
+      reconcile!(client, group, added ++ removed)
       {:ok, reload(updated)}
     end
+  end
+
+  # Only a mapped group's members change what the group grants.
+  defp reconcile!(_client, %DirectoryGroup{role: nil}, _entry_ids), do: []
+
+  defp reconcile!(%Client{connection: connection} = client, _group, entry_ids) do
+    users = Grants.users_of_entries(entry_ids)
+    Grants.reconcile!(connection.organization_id, users, Client.cause(client))
   end
 
   defp write(%Client{connection: connection}, mutation) do
