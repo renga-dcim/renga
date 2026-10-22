@@ -240,6 +240,15 @@ defmodule Renga.Inventory.SameMachine do
         }
       end)
 
+    # A finding names one pairing, so a different VM resolves it and opens
+    # its own rather than inheriting its history and any exception.
+    resolve_where!(
+      scope,
+      guest_id,
+      now,
+      &where(&1, [finding], fragment("?->>'vm_resource_id'", finding.details) != ^vm_id)
+    )
+
     Repo.insert_all(CollectorFinding, entries,
       on_conflict: {:replace, [:message, :details, :last_observed_at, :updated_at]},
       conflict_target:

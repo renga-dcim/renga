@@ -303,6 +303,62 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
     end
 
+    test "dismissing a finding covers its pairing and no other", %{
+      scope: scope,
+      token: token,
+      recent: recent
+    } do
+      other = %{
+        vm("running", macs: ["52:54:00:00:00:01"])
+        | "identifiers" => %{"dmi_uuid" => "0d8f6f2c-3a4b-4c5d-8e9f-0a1b2c3d4e5f"}
+      }
+
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(0))
+      )
+
+      guest = [installation_id: Ecto.UUID.generate(), machine_id: "guest-dismissed"]
+      guest_id = guest!(token, ["52:54:00:00:00:01"], [at: recent.(1)] ++ guest)
+
+      {[finding], 1} = Renga.Findings.list_findings(scope, resource_id: guest_id)
+      vm_a = finding.details["vm_resource_id"]
+
+      {:ok, _finding} =
+        Renga.Findings.accept_exception(scope, finding, %{"exception_reason" => "Lab twin"})
+
+      # The same evidence again neither reopens it nor files another.
+      guest!(token, ["52:54:00:00:00:01"], [at: recent.(2)] ++ guest)
+      assert [%CollectorFinding{status: "open"}] = findings(guest_id)
+      assert {[], 0} = Renga.Findings.list_findings(scope, resource_id: guest_id)
+
+      # The guest's MAC now singles out a different VM: a new pairing.
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:09"])], at: recent.(3))
+      )
+
+      post!(token, hypervisor_report("hv-b", [other], at: recent.(3)))
+
+      assert {[%{details: %{"vm_resource_id" => vm_b}}], 1} =
+               Renga.Findings.list_findings(scope, resource_id: guest_id)
+
+      refute vm_b == vm_a
+
+      # Back to the first VM: its dismissal still holds.
+      post!(token, hypervisor_report("hv-b", [], at: recent.(4), complete: true))
+
+      post!(
+        token,
+        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:01"])], at: recent.(4))
+      )
+
+      assert {[], 0} = Renga.Findings.list_findings(scope, resource_id: guest_id)
+
+      assert {[%{details: %{"vm_resource_id" => ^vm_a}}], 1} =
+               Renga.Findings.list_findings(scope, resource_id: guest_id, state: "excepted")
+    end
+
     test "withdrawn evidence on either side is not evidence", %{token: token, recent: recent} do
       post!(
         token,

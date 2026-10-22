@@ -647,8 +647,17 @@ defmodule Renga.Findings do
           subject_id: finding.resource_id,
           interface_id: type(^nil, :binary_id),
           kind: finding.kind,
-          # One resource can be reported by several installations.
-          resolution_key: type(finding.agent_id, :string),
+          # One resource can be reported by several installations, so a
+          # finding about an installation is kept apart per installation. A
+          # possible same machine is about one pairing instead: dismissing it
+          # covers that VM, from any installation, and no other.
+          resolution_key:
+            fragment(
+              "CASE WHEN ? = 'possible_same_machine' THEN ?->>'vm_resource_id' ELSE ?::text END",
+              finding.kind,
+              finding.details,
+              finding.agent_id
+            ),
           status: finding.status,
           message: finding.message,
           details: finding.details,
