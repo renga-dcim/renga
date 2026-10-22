@@ -17,6 +17,10 @@ defmodule Renga.Power.Readings do
   import Ecto.Query, warn: false
 
   alias Renga.Accounts.Scope
+  alias Renga.Inventory.CollectorTarget
+  alias Renga.Inventory.CollectorTargetResource
+  alias Renga.Inventory.Observation
+  alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Source
   alias Renga.Power.Reading
   alias Renga.Repo
@@ -141,6 +145,148 @@ defmodule Renga.Power.Readings do
       asc: reading.quantity,
       asc: reading.window_ms
     )
+    |> Repo.all()
+  end
+
+  @doc """
+  The current readings about each of `resource_ids`, after source precedence,
+  keyed by resource id. Each entry is `%{reading, eligible?}`.
+
+  A host agent's own readings are about the resource its latest reconciled
+  report matched. A collector's readings are about the resource its target
+  reports, and only while the target reports exactly one: a target with
+  several resources cannot say which one a sensor measures.
+
+  Readings are equivalent when they measure the same component of the same
+  resource at the same boundary and leg, for the same quantity over the
+  same window length. Among equivalent readings, precedence applies only to
+  eligible ones: a native reading wins over an exporter's, then the latest.
+  When none is eligible the latest is kept, so its staleness or failure can
+  be shown, and it never counts.
+  """
+  def for_resources(%Scope{}, [], %DateTime{}), do: %{}
+
+  def for_resources(%Scope{organization_id: organization_id}, resource_ids, %DateTime{} = now) do
+    resource_ids = Enum.uniq(resource_ids)
+
+    subjects =
+      Map.merge(
+        host_subjects(organization_id, resource_ids),
+        target_subjects(organization_id, resource_ids)
+      )
+
+    organization_id
+    |> subject_readings(Map.keys(subjects))
+    |> Enum.map(&%{reading: &1, resource_id: Map.fetch!(subjects, {&1.source_id, &1.target})})
+    |> Enum.group_by(&equivalence/1)
+    |> Enum.map(fn {_key, candidates} -> prefer(candidates, now) end)
+    |> Enum.group_by(& &1.resource_id, &Map.delete(&1, :resource_id))
+  end
+
+  defp equivalence(%{resource_id: resource_id, reading: reading}) do
+    {resource_id, reading.component_kind, reading.component_name, reading.boundary, reading.leg,
+     reading.quantity, reading.window_ms}
+  end
+
+  defp prefer(candidates, now) do
+    case Enum.filter(candidates, &Reading.eligible?(&1.reading, now)) do
+      [] ->
+        candidates
+        |> Enum.max_by(& &1.reading.event_at, DateTime)
+        |> Map.put(:eligible?, false)
+
+      eligible ->
+        eligible
+        |> Enum.min_by(
+          &{origin_rank(&1.reading.origin), -DateTime.to_unix(&1.reading.event_at, :millisecond)}
+        )
+        |> Map.put(:eligible?, true)
+    end
+  end
+
+  defp origin_rank("native"), do: 0
+  defp origin_rank("exporter"), do: 1
+
+  # {source id, nil} => resource id for each host source whose latest
+  # reconciled report matched one of the resources.
+  defp host_subjects(organization_id, resource_ids) do
+    latest =
+      from(observation in Observation,
+        join: reconciliation in ObservationReconciliation,
+        on:
+          reconciliation.observation_id == observation.id and
+            reconciliation.organization_id == ^organization_id,
+        join: source in Source,
+        on: source.id == observation.source_id,
+        where: observation.organization_id == ^organization_id,
+        where: source.kind == "host_agent" and reconciliation.status == "succeeded",
+        where: not is_nil(reconciliation.matched_resource_id),
+        distinct: observation.source_id,
+        order_by: [
+          asc: observation.source_id,
+          desc: observation.observed_at,
+          desc: observation.id
+        ],
+        select: %{
+          source_id: observation.source_id,
+          resource_id: reconciliation.matched_resource_id
+        }
+      )
+
+    from(match in subquery(latest), where: match.resource_id in ^resource_ids)
+    |> Repo.all()
+    |> Map.new(&{{&1.source_id, nil}, &1.resource_id})
+  end
+
+  # {source id, target key} => resource id for each collector target that
+  # reports exactly one present resource, one of `resource_ids`.
+  defp target_subjects(organization_id, resource_ids) do
+    present =
+      from(member in CollectorTargetResource,
+        where: member.organization_id == ^organization_id,
+        where: is_nil(member.withdrawn_at) or member.last_reported_at > member.withdrawn_at
+      )
+
+    single =
+      from(member in subquery(present),
+        group_by: member.target_id,
+        having: count(member.id) == 1,
+        select: %{target_id: member.target_id}
+      )
+
+    from(member in subquery(present),
+      join: only in subquery(single),
+      on: only.target_id == member.target_id,
+      join: target in CollectorTarget,
+      on: target.id == member.target_id,
+      where: member.resource_id in ^resource_ids,
+      select: {target.source_id, target.key, member.resource_id}
+    )
+    |> Repo.all()
+    |> Map.new(fn {source_id, key, resource_id} -> {{source_id, key}, resource_id} end)
+  end
+
+  defp subject_readings(_organization_id, []), do: []
+
+  defp subject_readings(organization_id, subjects) do
+    matches =
+      Enum.reduce(subjects, dynamic(false), fn
+        {source_id, nil}, matches ->
+          dynamic(
+            [reading],
+            ^matches or (reading.source_id == ^source_id and is_nil(reading.target))
+          )
+
+        {source_id, target}, matches ->
+          dynamic(
+            [reading],
+            ^matches or (reading.source_id == ^source_id and reading.target == ^target)
+          )
+      end)
+
+    Reading
+    |> where([reading], reading.organization_id == ^organization_id)
+    |> where(^matches)
     |> Repo.all()
   end
 end
