@@ -428,6 +428,9 @@ pub struct AgentMetadata {
     pub agent_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observation_queue: Option<QueueReport>,
+    /// The telemetry queue, bounded and reported separately (RFD 10, "Measured history").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry_queue: Option<QueueReport>,
 }
 
 impl CheckIn {
@@ -437,9 +440,15 @@ impl CheckIn {
             metadata: AgentMetadata {
                 agent_version: env!("CARGO_PKG_VERSION").into(),
                 observation_queue,
+                telemetry_queue: None,
             },
             installation_key: None,
         }
+    }
+
+    pub fn with_telemetry_queue(mut self, report: Option<QueueReport>) -> Self {
+        self.metadata.telemetry_queue = report;
+        self
     }
 
     pub fn with_installation_key(mut self, key: PresentedKey) -> Self {
@@ -448,9 +457,9 @@ impl CheckIn {
     }
 }
 
-/// The observation queue's health as a check-in reports it, so Renga can show a collector's
-/// undelivered backlog. Must match `Renga.Inventory.AgentPayload`. Drop counts cover the agent's
-/// current run; the backlog itself survives restarts.
+/// A queue's health as a check-in reports it, so Renga can show a collector's undelivered
+/// backlog. Must match `Renga.Inventory.AgentPayload`. Drop counts cover the agent's current
+/// run; the backlog itself survives restarts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueueReport {
     pub entries: u64,
@@ -461,10 +470,19 @@ pub struct QueueReport {
     pub expired: u64,
     pub rejected: u64,
     pub unreadable: u64,
+    /// How long ago the earliest and latest entries dropped for space or age were queued,
+    /// omitted when none were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_earliest_age_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_latest_age_seconds: Option<u64>,
 }
 
 impl QueueReport {
     pub fn new(health: &QueueHealth, now: SystemTime) -> Self {
+        // A clock stepped backwards makes a drop look recent rather than failing the report.
+        let age = |at: SystemTime| now.duration_since(at).unwrap_or_default().as_secs();
+        let dropped = health.counters.dropped_range;
         Self {
             entries: health.entries as u64,
             bytes: health.bytes,
@@ -473,6 +491,8 @@ impl QueueReport {
             expired: health.counters.expired,
             rejected: health.counters.rejected,
             unreadable: health.counters.unreadable,
+            dropped_earliest_age_seconds: dropped.map(|(earliest, _latest)| age(earliest)),
+            dropped_latest_age_seconds: dropped.map(|(_earliest, latest)| age(latest)),
         }
     }
 }
@@ -772,10 +792,12 @@ mod tests {
                 expired: 2,
                 rejected: 3,
                 unreadable: 4,
+                dropped_range: None,
             },
         };
         let report = QueueReport::new(&health, queued_at + Duration::from_secs(90));
         let value = serde_json::to_value(CheckIn::new(vec![], Some(report))).unwrap();
+        assert!(value["metadata"].get("telemetry_queue").is_none());
 
         assert_eq!(
             value["metadata"]["observation_queue"],
@@ -798,6 +820,37 @@ mod tests {
         };
         let value = serde_json::to_value(QueueReport::new(&empty, queued_at)).unwrap();
         assert_eq!(value["oldest_age_seconds"], Value::Null);
+    }
+
+    #[test]
+    fn checkin_reports_the_telemetry_queue_and_when_its_drops_were_queued() {
+        use crate::queue::QueueCounters;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let start = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let health = QueueHealth {
+            entries: 1,
+            bytes: 100,
+            oldest_queued_at: Some(start + Duration::from_secs(500)),
+            counters: QueueCounters {
+                dropped_for_space: 4,
+                expired: 1,
+                dropped_range: Some((start, start + Duration::from_secs(240))),
+                ..QueueCounters::default()
+            },
+        };
+        let report = QueueReport::new(&health, start + Duration::from_secs(600));
+        let value =
+            serde_json::to_value(CheckIn::new(vec![], None).with_telemetry_queue(Some(report)))
+                .unwrap();
+
+        let queue = &value["metadata"]["telemetry_queue"];
+        assert_eq!(queue["entries"], 1);
+        assert_eq!(queue["oldest_age_seconds"], 100);
+        assert_eq!(queue["dropped_for_space"], 4);
+        assert_eq!(queue["dropped_earliest_age_seconds"], 600);
+        assert_eq!(queue["dropped_latest_age_seconds"], 360);
+        assert!(value["metadata"].get("observation_queue").is_none());
     }
 
     #[test]
