@@ -40,21 +40,26 @@ defmodule RengaWeb.Scim.ProviderFixturesTest do
 
   defp replay(conn, step, captured) do
     path = substitute(step["path"], captured)
-    body = if step["body"], do: step["body"] |> substitute(captured) |> Jason.encode!(), else: ""
     label = "#{step["method"]} #{path}"
-
-    response =
-      case step["method"] do
-        "GET" -> get(conn, path)
-        "POST" -> post(conn, path, body)
-        "PUT" -> put(conn, path, body)
-        "PATCH" -> patch(conn, path, body)
-        "DELETE" -> delete(conn, path)
-      end
+    response = send_step(conn, step["method"], path, body(step, captured))
 
     assert response.status == step["status"], "#{label}: #{response.resp_body}"
     decoded = if response.resp_body == "", do: %{}, else: Jason.decode!(response.resp_body)
+    check(decoded, step, captured, label)
 
+    for {name, key} <- step["capture"] || %{}, into: captured, do: {name, decoded[key]}
+  end
+
+  defp body(%{"body" => body}, captured), do: body |> substitute(captured) |> Jason.encode!()
+  defp body(_step, _captured), do: ""
+
+  defp send_step(conn, "GET", path, _body), do: get(conn, path)
+  defp send_step(conn, "POST", path, body), do: post(conn, path, body)
+  defp send_step(conn, "PUT", path, body), do: put(conn, path, body)
+  defp send_step(conn, "PATCH", path, body), do: patch(conn, path, body)
+  defp send_step(conn, "DELETE", path, _body), do: delete(conn, path)
+
+  defp check(decoded, step, captured, label) do
     for {key, expected} <- step["expect"] || %{} do
       assert decoded[key] == substitute(expected, captured), "#{label}: #{key}"
     end
@@ -66,8 +71,6 @@ defmodule RengaWeb.Scim.ProviderFixturesTest do
     if members = step["expect_members"] do
       assert Enum.map(decoded["members"], & &1["value"]) == substitute(members, captured), label
     end
-
-    for {name, key} <- step["capture"] || %{}, into: captured, do: {name, decoded[key]}
   end
 
   defp substitute(value, captured) when is_binary(value) do

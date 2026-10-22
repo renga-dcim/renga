@@ -56,34 +56,31 @@ defmodule Renga.Scim.GroupResource do
   end
 
   defp operation(%{} = operation, attrs, members) do
-    op = operation |> Attributes.get("op") |> then(&(is_binary(&1) && String.downcase(&1)))
-    path = Attributes.get(operation, "path")
-    value = Attributes.get(operation, "value")
-
-    cond do
-      op not in ["add", "replace", "remove"] ->
-        {:error, {:invalid_syntax, "Each operation's op must be add, replace, or remove"}}
-
-      path in [nil, ""] and op == "remove" ->
-        {:error, {:no_target, "A remove operation needs a path"}}
-
-      path in [nil, ""] ->
-        pathless(op, value, attrs, members)
-
-      not is_binary(path) ->
-        {:error, {:invalid_path, "The path must be a string"}}
-
-      true ->
-        case Path.parse(path, @core) do
-          {:ok, parsed} -> apply_path(op, parsed, value, attrs, members)
-          :extension -> {:ok, attrs, members}
-          :error -> {:error, {:invalid_path, "#{path} is not a valid path"}}
-        end
+    with {:ok, op} <- Attributes.op(operation) do
+      path = Attributes.get(operation, "path")
+      targeted(op, path, Attributes.get(operation, "value"), attrs, members)
     end
   end
 
   defp operation(_operation, _attrs, _members),
     do: {:error, {:invalid_syntax, "Each operation must be an object"}}
+
+  defp targeted("remove", path, _value, _attrs, _members) when path in [nil, ""],
+    do: {:error, {:no_target, "A remove operation needs a path"}}
+
+  defp targeted(op, path, value, attrs, members) when path in [nil, ""],
+    do: pathless(op, value, attrs, members)
+
+  defp targeted(_op, path, _value, _attrs, _members) when not is_binary(path),
+    do: {:error, {:invalid_path, "The path must be a string"}}
+
+  defp targeted(op, path, value, attrs, members) do
+    case Path.parse(path, @core) do
+      {:ok, parsed} -> apply_path(op, parsed, value, attrs, members)
+      :extension -> {:ok, attrs, members}
+      :error -> {:error, {:invalid_path, "#{path} is not a valid path"}}
+    end
+  end
 
   # Okta renames a group with {"op": "replace", "value": {"id": ..., "displayName": ...}}.
   defp pathless(op, value, attrs, members) when is_map(value) do
@@ -123,21 +120,13 @@ defmodule Renga.Scim.GroupResource do
          do: {:ok, %{attrs | external_id: external_id}, members}
   end
 
-  defp apply_path(op, %{attribute: "members", filter: nil, sub: nil}, value, attrs, members) do
-    case {op, value} do
-      # Without a value, remove empties the group.
-      {"remove", nil} ->
-        {:ok, attrs, MapSet.new()}
+  # Without a value, remove empties the group.
+  defp apply_path("remove", %{attribute: "members", filter: nil, sub: nil}, nil, attrs, _members),
+    do: {:ok, attrs, MapSet.new()}
 
-      {op, value} ->
-        with {:ok, ids} <- member_ids(List.wrap(value)) do
-          case op do
-            "add" -> {:ok, attrs, MapSet.union(members, MapSet.new(ids))}
-            "replace" -> {:ok, attrs, MapSet.new(ids)}
-            "remove" -> {:ok, attrs, MapSet.difference(members, MapSet.new(ids))}
-          end
-        end
-    end
+  defp apply_path(op, %{attribute: "members", filter: nil, sub: nil}, value, attrs, members) do
+    with {:ok, ids} <- member_ids(List.wrap(value)),
+         do: {:ok, attrs, change_members(op, members, MapSet.new(ids))}
   end
 
   defp apply_path(
@@ -163,6 +152,10 @@ defmodule Renga.Scim.GroupResource do
 
   # Undeclared attributes are accepted and not kept.
   defp apply_path(_op, _path, _value, attrs, members), do: {:ok, attrs, members}
+
+  defp change_members("add", members, ids), do: MapSet.union(members, ids)
+  defp change_members("replace", _members, ids), do: ids
+  defp change_members("remove", members, ids), do: MapSet.difference(members, ids)
 
   defp display_name(value) do
     case Attributes.optional_string(value) do
