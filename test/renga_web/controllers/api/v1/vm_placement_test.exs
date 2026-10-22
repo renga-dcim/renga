@@ -214,11 +214,31 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
       assert {[%{domain: "collector", kind: "possible_same_machine"}], 1} =
                Renga.Findings.list_findings(scope, resource_id: guest_id)
 
-      # The domain's NIC changes, so its MACs no longer single the guest out.
+      # Credentials another client put in a URI stay out of what members see.
       post!(
         token,
-        hypervisor_report("hv-a", [vm("running", macs: ["52:54:00:00:00:09"])], at: recent.(2))
+        hypervisor_report("hv-c", [vm("shutoff", macs: ["52:54:00:00:00:01"])],
+          at: recent.(1),
+          uri: "qemu+ssh://root:hunter2@hv-c/system?keyfile=/root/.ssh/id"
+        )
       )
+
+      assert [%CollectorFinding{details: %{"hypervisors" => hypervisors}}] = findings(guest_id)
+      assert hypervisors == ["qemu+ssh://hv-a/system", "qemu+ssh://hv-c/system"]
+
+      # The domain's NIC changes, so its MACs no longer single the guest out.
+      for {hypervisor, uri} <- [
+            {"hv-a", "qemu+ssh://hv-a/system"},
+            {"hv-c", "qemu+ssh://root:hunter2@hv-c/system?keyfile=/root/.ssh/id"}
+          ] do
+        post!(
+          token,
+          hypervisor_report(hypervisor, [vm("running", macs: ["52:54:00:00:00:09"])],
+            at: recent.(2),
+            uri: uri
+          )
+        )
+      end
 
       assert [%CollectorFinding{status: "resolved"}] = findings(guest_id)
     end

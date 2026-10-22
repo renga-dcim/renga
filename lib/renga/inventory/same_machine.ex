@@ -215,7 +215,8 @@ defmodule Renga.Inventory.SameMachine do
     details = %{
       "vm_resource_id" => vm_id,
       "domain" => hd(members).domain["name"],
-      "hypervisors" => members |> Enum.map(& &1.target.key) |> Enum.sort(),
+      "hypervisors" =>
+        members |> Enum.map(&display_uri(&1.target.key)) |> Enum.uniq() |> Enum.sort(),
       "mac_addresses" => macs |> Enum.map(&mac_string/1) |> Enum.sort()
     }
 
@@ -263,6 +264,16 @@ defmodule Renga.Inventory.SameMachine do
       now,
       &where(&1, [finding], finding.agent_id not in ^agent_ids)
     )
+  end
+
+  # The Inbox shows every member these details. The bundled agent keeps
+  # credentials out of libvirt URIs, but the API cannot promise another
+  # client did, so only the scheme, host, and path are shown.
+  defp display_uri(uri) do
+    case URI.new(uri) do
+      {:ok, uri} -> URI.to_string(%{uri | userinfo: nil, query: nil, fragment: nil})
+      {:error, _part} -> "(unparseable URI)"
+    end
   end
 
   defp resolve_where!(scope, guest_id, now, narrow) do
