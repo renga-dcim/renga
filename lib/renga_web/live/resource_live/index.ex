@@ -18,10 +18,12 @@ defmodule RengaWeb.ResourceLive.Index do
   alias Renga.Authorization
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.ResourceGroups
   alias Renga.SavedViews
   alias Renga.SavedViews.SavedView
   alias Renga.Teams
   alias RengaWeb.Format
+  alias RengaWeb.GroupComponents
   alias RengaWeb.InventoryQuery
 
   @column_labels %{
@@ -52,6 +54,8 @@ defmodule RengaWeb.ResourceLive.Index do
        kinds: Inventory.list_resource_kinds(scope),
        sources: Inventory.list_sources(scope),
        teams: Teams.list_teams(scope),
+       can_change_groups?: ResourceGroups.can_change_membership?(scope),
+       resource_groups: ResourceGroups.list_groups(scope),
        column_labels: @column_labels,
        reload_timer: nil,
        views: SavedViews.list_views(scope, "inventory"),
@@ -89,6 +93,7 @@ defmodule RengaWeb.ResourceLive.Index do
         freshness: blank_to_nil(filter["freshness"]),
         source_id: blank_to_nil(filter["source"]),
         owner: owner_filter(filter["owner"], socket.assigns.teams),
+        resource_group: group_filter(filter["in"], socket.assigns.resource_groups),
         page: 1
     }
 
@@ -181,6 +186,37 @@ defmodule RengaWeb.ResourceLive.Index do
          socket
          |> put_flash(:error, "That team no longer exists")
          |> assign(:teams, Teams.list_teams(scope))}
+    end
+  end
+
+  # RFD 18: a bulk change adds the resources selected at that moment; the
+  # group never follows the list's query.
+  def handle_event("bulk_group", %{"group" => group_id, "action" => action}, socket)
+      when action in ~w(add remove) do
+    %{current_scope: scope, query: query} = socket.assigns
+
+    result =
+      case ResourceGroups.get_group(scope, group_id) do
+        nil -> {:error, :not_found}
+        group when action == "add" -> ResourceGroups.add_members(scope, group, query.selected)
+        group -> ResourceGroups.remove_members(scope, group, query.selected)
+      end
+
+    case result do
+      {:ok, count} ->
+        verb = if action == "add", do: "Added", else: "Removed"
+        preposition = if action == "add", do: "to", else: "from"
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{verb} #{count_label(count)} #{preposition} the group")
+         |> patch(%{query | selected: []})}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, GroupComponents.refusal_message(reason))
+         |> assign(:resource_groups, ResourceGroups.list_groups(scope))}
     end
   end
 
@@ -409,8 +445,19 @@ defmodule RengaWeb.ResourceLive.Index do
             </div>
           </form>
 
-          <.filter_chips query={@query} sources={@sources} teams={@teams} />
-          <.filter_menu query={@query} kinds={@kinds} sources={@sources} teams={@teams} />
+          <.filter_chips
+            query={@query}
+            sources={@sources}
+            teams={@teams}
+            resource_groups={@resource_groups}
+          />
+          <.filter_menu
+            query={@query}
+            kinds={@kinds}
+            sources={@sources}
+            teams={@teams}
+            resource_groups={@resource_groups}
+          />
         </div>
 
         <div id="resource-keys" phx-hook="ListKeys" data-filter="#resource-search-input">
@@ -557,6 +604,9 @@ defmodule RengaWeb.ResourceLive.Index do
           can_set_owners?={@can_set_owners?}
           lifecycle_editable?={@lifecycle_editable?}
           teams={@teams}
+          can_change_groups?={@can_change_groups?}
+          resource_groups={@resource_groups}
+          filtered_group={@query.resource_group}
         />
       </section>
     </Layouts.app>
@@ -722,6 +772,9 @@ defmodule RengaWeb.ResourceLive.Index do
   attr :can_set_owners?, :boolean, required: true
   attr :lifecycle_editable?, :boolean, required: true
   attr :teams, :list, required: true
+  attr :can_change_groups?, :boolean, required: true
+  attr :resource_groups, :list, required: true
+  attr :filtered_group, :string, default: nil
 
   defp bulk_bar(assigns) do
     assigns = assign(assigns, lifecycles: @bulk_lifecycles)
@@ -789,6 +842,31 @@ defmodule RengaWeb.ResourceLive.Index do
         </select>
         <.button id="bulk-owner-submit" size="sm">Set owner</.button>
       </form>
+      <form
+        :if={@can_change_groups? and @resource_groups != []}
+        id="bulk-group-form"
+        phx-submit="bulk_group"
+        class="flex items-center gap-1.5"
+      >
+        <label for="bulk-group-select" class="sr-only">Group</label>
+        <select
+          id="bulk-group-select"
+          name="group"
+          class="h-control min-h-tap max-w-36 rounded-md border border-edge bg-surface px-2 text-sm text-fg"
+        >
+          <option
+            :for={group <- @resource_groups}
+            value={group.id}
+            selected={group.id == @filtered_group}
+          >
+            {group.name}
+          </option>
+        </select>
+        <.button id="bulk-group-add" size="sm" name="action" value="add">Add to group</.button>
+        <.button id="bulk-group-remove" size="sm" variant="ghost" name="action" value="remove">
+          Remove
+        </.button>
+      </form>
       <.button id="bulk-clear" size="sm" variant="ghost" phx-click="clear_selection">Clear</.button>
 
       <.confirm_dialog
@@ -812,6 +890,7 @@ defmodule RengaWeb.ResourceLive.Index do
   attr :query, :map, required: true
   attr :sources, :list, required: true
   attr :teams, :list, required: true
+  attr :resource_groups, :list, required: true
 
   defp filter_chips(assigns) do
     ~H"""
@@ -851,6 +930,13 @@ defmodule RengaWeb.ResourceLive.Index do
         value={owner_label(@teams, @query.owner)}
         clear={list_path(%{@query | owner: nil, page: 1})}
       />
+      <.filter_chip
+        :if={@query.resource_group}
+        id="chip-group"
+        label="Group"
+        value={resource_group_label(@resource_groups, @query.resource_group)}
+        clear={list_path(%{@query | resource_group: nil, page: 1})}
+      />
     </ul>
     """
   end
@@ -883,6 +969,7 @@ defmodule RengaWeb.ResourceLive.Index do
   attr :kinds, :list, required: true
   attr :sources, :list, required: true
   attr :teams, :list, required: true
+  attr :resource_groups, :list, required: true
 
   defp filter_menu(assigns) do
     ~H"""
@@ -949,6 +1036,16 @@ defmodule RengaWeb.ResourceLive.Index do
             value={@query.owner}
             prompt="Any owner"
             options={[{"No owner", "none"} | Enum.map(@teams, &{&1.name, &1.id})]}
+          />
+          <.input
+            :if={@resource_groups != []}
+            id="filter-group"
+            name="filter[in]"
+            type="select"
+            label="Group"
+            value={@query.resource_group}
+            prompt="Any group"
+            options={Enum.map(@resource_groups, &{&1.name, &1.id})}
           />
         </.form>
       </div>
@@ -1060,6 +1157,18 @@ defmodule RengaWeb.ResourceLive.Index do
 
   defp owner_filter(id, teams) do
     if Enum.any?(teams, &(&1.id == id)), do: id
+  end
+
+  defp resource_group_label(groups, id) do
+    case Enum.find(groups, &(&1.id == id)) do
+      nil -> "Unknown group"
+      group -> group.name
+    end
+  end
+
+  # Only groups the person can see reach the URL from the filter form.
+  defp group_filter(id, groups) do
+    if Enum.any?(groups, &(&1.id == id)), do: id
   end
 
   defp source_name(sources, id) do

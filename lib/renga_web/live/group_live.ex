@@ -267,7 +267,12 @@ defmodule RengaWeb.GroupLive do
             <.group_set_label set={group.group_set} />
           </:col>
           <:col :let={group} label="Members" class="whitespace-nowrap text-right">
-            <span class="font-mono text-xs tabular-nums text-fg-muted">{group.member_count}</span>
+            <.link
+              navigate={~p"/inventory?#{[in: group.id]}"}
+              class="font-mono text-xs tabular-nums text-link hover:underline"
+            >
+              {group.member_count}
+            </.link>
           </:col>
           <:action :let={group} :if={@can_manage?}>
             <button

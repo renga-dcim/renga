@@ -227,6 +227,85 @@ defmodule RengaWeb.GroupLiveTest do
     end
   end
 
+  describe "inventory list" do
+    setup context do
+      {:ok, db} = Inventory.create_resource(context.admin, %{kind: "server", name: "db-01"})
+      {:ok, staging} = ResourceGroups.create_group(context.admin, %{name: "Staging"})
+      %{db: db, staging: staging}
+    end
+
+    test "filters by group and adds or removes the selection in bulk", context do
+      %{web: web, db: db, staging: staging} = context
+
+      {:ok, view, _html} =
+        live(context.admin_conn, ~p"/inventory?#{[sel: "#{web.id},#{db.id}"]}")
+
+      view
+      |> form("#bulk-group-form", group: staging.id)
+      |> put_submitter("#bulk-group-add")
+      |> render_submit()
+
+      assert ResourceGroups.list_members(context.admin, staging) |> length() == 2
+
+      {:ok, view, _html} =
+        live(context.admin_conn, ~p"/inventory?#{[in: staging.id, sel: web.id]}")
+
+      assert has_element?(view, "#chip-group", "Staging")
+      assert has_element?(view, "#resources-#{web.id}")
+      assert has_element?(view, "#bulk-group-select option[selected][value='#{staging.id}']")
+
+      view
+      |> form("#bulk-group-form", group: staging.id)
+      |> put_submitter("#bulk-group-remove")
+      |> render_submit()
+
+      assert [%{id: id}] = ResourceGroups.list_members(context.admin, staging)
+      assert id == db.id
+      refute has_element?(view, "#resources-#{web.id}")
+    end
+
+    test "a bulk add that breaks an exclusive set changes nothing", context do
+      {:ok, set} =
+        ResourceGroups.create_group_set(context.admin, %{name: "Environment", exclusive: true})
+
+      {:ok, production} =
+        ResourceGroups.create_group(context.admin, %{name: "Production", group_set_id: set.id})
+
+      {:ok, _staging} =
+        ResourceGroups.update_group(context.admin, context.staging, %{group_set_id: set.id})
+
+      {:ok, 1} = ResourceGroups.add_members(context.admin, production, [context.web.id])
+
+      {:ok, view, _html} =
+        live(context.admin_conn, ~p"/inventory?#{[sel: "#{context.web.id},#{context.db.id}"]}")
+
+      html =
+        view
+        |> form("#bulk-group-form", group: context.staging.id)
+        |> put_submitter("#bulk-group-add")
+        |> render_submit()
+
+      assert html =~ "web-01 would be in both Production and Staging"
+      assert ResourceGroups.list_members(context.admin, context.staging) == []
+    end
+
+    test "members cannot change groups in bulk", context do
+      {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [context.db.id])
+
+      {:ok, view, _html} =
+        live(context.member_conn, ~p"/inventory?#{[sel: context.web.id]}")
+
+      refute has_element?(view, "#bulk-group-form")
+
+      assert render_submit(view, "bulk_group", %{
+               "group" => context.staging.id,
+               "action" => "add"
+             }) =~ "requires the owner or admin role"
+
+      assert [%{name: "db-01"}] = ResourceGroups.list_members(context.admin, context.staging)
+    end
+  end
+
   defp member(organization, role) do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: role})
