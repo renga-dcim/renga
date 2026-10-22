@@ -4,6 +4,7 @@ defmodule Renga.InventoryResourceConcurrencyTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Inventory
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
 
   test "concurrent stale updates allow one winner and reject the rest" do
@@ -93,6 +94,64 @@ defmodule Renga.InventoryResourceConcurrencyTest do
       assert second_result == nil
       assert {:ok, second_updated} = Task.await(second_task)
       assert first_updated.resource_version < second_updated.resource_version
+    end)
+  end
+
+  # `update_resource/3` also locks the organization row, which would hide a
+  # revision lock that no longer excludes, so this allocates directly. The
+  # waiter spells the organization ID differently: it is still the same lock.
+  test "a revision allocator waits for its organization's holder to commit or roll back" do
+    with_resource(fn scope, _resource ->
+      test_process = self()
+
+      holder =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              revision = ResourceStore.next_revision!(scope.organization_id)
+              send(test_process, {:revision_held, revision})
+
+              receive do
+                :roll_back -> Repo.rollback(:rolled_back)
+              end
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive {:revision_held, held_revision}, 1_000
+
+      waiter =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              ResourceStore.next_revision!(String.upcase(scope.organization_id))
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      waited =
+        try do
+          Task.yield(waiter, 200)
+        after
+          send(holder.pid, :roll_back)
+        end
+
+      assert waited == nil
+      assert {:error, :rolled_back} = Task.await(holder)
+      assert {:ok, revision} = Task.await(waiter)
+      assert revision > held_revision
+
+      assert_raise ArgumentError, ~r/enclosing transaction/, fn ->
+        ResourceStore.next_revision!(scope.organization_id)
+      end
     end)
   end
 
