@@ -107,6 +107,57 @@ defmodule RengaWeb.GroupLiveTest do
     end
   end
 
+  describe "resource page" do
+    setup context do
+      {:ok, set} =
+        ResourceGroups.create_group_set(context.admin, %{name: "Environment", exclusive: true})
+
+      {:ok, production} =
+        ResourceGroups.create_group(context.admin, %{name: "Production", group_set_id: set.id})
+
+      {:ok, staging} =
+        ResourceGroups.create_group(context.admin, %{name: "Staging", group_set_id: set.id})
+
+      %{production: production, staging: staging}
+    end
+
+    test "admins add, move within a set, and remove groups", context do
+      {:ok, view, _html} = live(context.admin_conn, ~p"/inventory/#{context.web.id}")
+
+      view
+      |> form("#resource-group-form", group: %{id: context.production.id})
+      |> render_submit()
+
+      assert has_element?(view, "#resource-group-#{context.production.id}", "Environment")
+
+      # Choosing the sibling moves the resource instead of conflicting.
+      view
+      |> form("#resource-group-form", group: %{id: context.staging.id})
+      |> render_submit()
+
+      assert has_element?(view, "#resource-group-#{context.staging.id}")
+      refute has_element?(view, "#resource-group-#{context.production.id}")
+
+      view |> element("#resource-group-#{context.staging.id}-remove") |> render_click()
+      refute has_element?(view, "#resource-group-#{context.staging.id}")
+    end
+
+    test "members see the groups but cannot change them", context do
+      {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [context.web.id])
+      {:ok, view, _html} = live(context.member_conn, ~p"/inventory/#{context.web.id}")
+
+      assert has_element?(view, "#resource-group-#{context.staging.id}", "Staging")
+      refute has_element?(view, "#resource-group-form")
+      refute has_element?(view, "#resource-group-#{context.staging.id}-remove")
+
+      assert render_click(view, "remove_from_group", %{"id" => context.staging.id}) =~
+               "requires the owner or admin role"
+
+      assert [%{direct: true}] =
+               ResourceGroups.list_resource_groups(context.admin, context.web.id)
+    end
+  end
+
   defp member(organization, role) do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: role})
