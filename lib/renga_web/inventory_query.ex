@@ -27,6 +27,7 @@ defmodule RengaWeb.InventoryQuery do
             freshness: nil,
             source_id: nil,
             owner: nil,
+            resource_group: nil,
             group: nil,
             sort: {:name, :asc},
             columns: @default_columns,
@@ -55,6 +56,7 @@ defmodule RengaWeb.InventoryQuery do
         member(params["freshness"], @freshness) || if(params["stale"] == "true", do: "stale"),
       source_id: blank_to_nil(params["source"]),
       owner: parse_owner(params["owner"]),
+      resource_group: parse_id(params["in"]),
       group: params["group"] |> member(@groups) |> to_atom(),
       sort: parse_sort(params["sort"]),
       columns: parse_columns(params["cols"]),
@@ -73,6 +75,7 @@ defmodule RengaWeb.InventoryQuery do
       {"freshness", query.freshness},
       {"source", query.source_id},
       {"owner", query.owner},
+      {"in", query.resource_group},
       {"group", query.group && Atom.to_string(query.group)},
       {"sort", encode_sort(query.sort)},
       {"cols", encode_columns(query.columns)},
@@ -98,6 +101,7 @@ defmodule RengaWeb.InventoryQuery do
       freshness: query.freshness,
       source_id: query.source_id,
       owner: owner_option(query.owner),
+      resource_group: query.resource_group,
       group: query.group,
       sort: query.sort,
       page: query.page
@@ -107,20 +111,29 @@ defmodule RengaWeb.InventoryQuery do
   @doc "Whether any filter narrows the list."
   def filtered?(%__MODULE__{} = query) do
     query.search != "" or query.kinds != [] or
-      Enum.any?([query.lifecycle, query.freshness, query.source_id, query.owner])
+      Enum.any?([
+        query.lifecycle,
+        query.freshness,
+        query.source_id,
+        query.owner,
+        query.resource_group
+      ])
   end
 
   # "none" lists unowned resources; anything else must be a team id.
   defp parse_owner("none"), do: "none"
 
-  defp parse_owner(value) when is_binary(value) do
+  defp parse_owner(value), do: parse_id(value)
+
+  # `in` names a resource group (RFD 18) by id.
+  defp parse_id(value) when is_binary(value) do
     case Ecto.UUID.cast(value) do
       {:ok, id} -> id
       :error -> nil
     end
   end
 
-  defp parse_owner(_missing), do: nil
+  defp parse_id(_missing), do: nil
 
   defp owner_option("none"), do: :none
   defp owner_option(owner), do: owner

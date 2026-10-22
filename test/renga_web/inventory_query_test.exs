@@ -14,6 +14,7 @@ defmodule RengaWeb.InventoryQueryTest do
       "lifecycle" => "active",
       "freshness" => "stale",
       "source" => "6f1c2b8e-4f7a-4d0e-9a52-0f3c1e8d2a41",
+      "in" => "0b6a8f0e-2d4c-4e7f-9b1a-5c3d2e1f0a9b",
       "group" => "kind",
       "sort" => "-last_seen",
       "cols" => "kind,status",
@@ -54,6 +55,7 @@ defmodule RengaWeb.InventoryQueryTest do
         "lifecycle" => "exploded",
         "freshness" => "soon",
         "group" => "owner",
+        "in" => "staging",
         "sort" => "-colour",
         "page" => "-4",
         "cols" => "kind,secret"
@@ -62,6 +64,7 @@ defmodule RengaWeb.InventoryQueryTest do
     assert query.lifecycle == nil
     assert query.freshness == nil
     assert query.group == nil
+    assert query.resource_group == nil
     assert query.sort == {:name, :desc}
     assert query.page == 1
     assert query.columns == ["kind"]
