@@ -19,7 +19,7 @@ defmodule Renga.Topology.NeighborReconciler do
   alias Renga.Topology.TopologySnapshotEvent
   alias Renga.Types.MacAddress
 
-  @finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency)
+  @finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency neighbor_mismatch)
 
   def reconcile(
         %Scope{organization_id: organization_id},
@@ -719,9 +719,20 @@ defmodule Renga.Topology.NeighborReconciler do
     matches = neighbor_matches(organization_id, evidence)
     boundaries = latest_neighbor_boundaries(organization_id, evidence)
 
+    mismatches = mismatch_findings(organization_id, evidence, matches, observed_at)
+    explained = MapSet.new(mismatches, & &1.interface_id)
+
+    # A mismatch names both reports, so the generic conflict it explains is
+    # not filed beside it.
+    conflicts =
+      evidence
+      |> conflicting_findings(matches, observed_at)
+      |> Enum.reject(&MapSet.member?(explained, &1.interface_id))
+
     findings =
       ambiguous_findings(evidence, matches, observed_at) ++
-        conflicting_findings(evidence, matches, observed_at) ++
+        conflicts ++
+        mismatches ++
         asymmetric_findings(adjacencies, observed_at) ++
         expired_findings(evidence, boundaries, observed_at)
 
@@ -899,6 +910,108 @@ defmodule Renga.Topology.NeighborReconciler do
         observed_at
       )
     end)
+  end
+
+  # RFD 11, "Findings": LLDP from a switch disagrees with the host's own
+  # report of the same link. A switch port may see several neighbors (a
+  # hypervisor's guests behind one port), so a claim disagrees only when the
+  # other end reports neighbors of its own and the claimant is not among
+  # them. The finding is filed on the interface the claim is about.
+  defp mismatch_findings(organization_id, evidence, matches, observed_at) do
+    claims =
+      for item <- evidence,
+          is_nil(item.stale_at),
+          %{status: "matched", remote_interface_id: remote_id} <- [Map.get(matches, item.id)],
+          do: {item, remote_id}
+
+    kinds =
+      source_kinds(organization_id, Enum.map(claims, fn {item, _remote} -> item.source_id end))
+
+    switch = claims_by_local(claims, kinds, "switch_poller")
+    host = claims_by_local(claims, kinds, "host_agent")
+
+    disagreements =
+      for(
+        {port_id, remote_ids} <- switch,
+        host_id <- remote_ids,
+        seen = Map.get(host, host_id),
+        seen != nil and port_id not in seen,
+        do: {:host, host_id, port_id, host_id, seen}
+      ) ++
+        for(
+          {host_id, remote_ids} <- host,
+          port_id <- remote_ids,
+          seen = Map.get(switch, port_id),
+          seen != nil and host_id not in seen,
+          do: {:switch, port_id, port_id, host_id, seen}
+        )
+
+    names =
+      disagreements
+      |> Enum.flat_map(fn {_side, _on, port_id, host_id, seen} -> [port_id, host_id | seen] end)
+      |> then(&interface_names(organization_id, &1))
+
+    Enum.map(disagreements, fn {side, interface_id, port_id, host_id, seen} ->
+      seen_names = seen |> Enum.map(&Map.fetch!(names, &1)) |> Enum.sort() |> Enum.join(", ")
+
+      message =
+        case side do
+          :host ->
+            "Switch port #{names[port_id]} reports this interface as its neighbor, " <>
+              "but the host reports #{seen_names}"
+
+          :switch ->
+            "#{names[host_id]} reports this port as its neighbor, " <>
+              "but the switch reports #{seen_names}"
+        end
+
+      neighbor_finding(
+        interface_id,
+        "neighbor_mismatch",
+        "#{port_id}:#{host_id}",
+        message,
+        %{
+          "switch_interface_id" => port_id,
+          "host_interface_id" => host_id,
+          "reported_by_other_end" => Enum.sort(seen)
+        },
+        observed_at
+      )
+    end)
+  end
+
+  defp claims_by_local(claims, kinds, kind) do
+    claims
+    |> Enum.filter(fn {item, _remote_id} -> Map.get(kinds, item.source_id) == kind end)
+    |> Enum.group_by(fn {item, _remote_id} -> item.local_interface_id end, &elem(&1, 1))
+    |> Map.new(fn {local_id, remote_ids} -> {local_id, Enum.uniq(remote_ids)} end)
+  end
+
+  defp source_kinds(_organization_id, []), do: %{}
+
+  defp source_kinds(organization_id, source_ids) do
+    Source
+    |> where([source], source.organization_id == ^organization_id)
+    |> where([source], source.id in ^Enum.uniq(source_ids))
+    |> select([source], {source.id, source.kind})
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # "<resource> <interface>" for each interface, for finding messages.
+  defp interface_names(_organization_id, []), do: %{}
+
+  defp interface_names(organization_id, interface_ids) do
+    Interface
+    |> join(:inner, [interface], resource in Resource, on: resource.id == interface.resource_id)
+    |> where([interface], interface.organization_id == ^organization_id)
+    |> where([interface], interface.id in ^Enum.uniq(interface_ids))
+    |> select([interface, resource], {
+      interface.id,
+      fragment("coalesce(?, ?) || ' ' || ?", resource.display_name, resource.name, interface.name)
+    })
+    |> Repo.all()
+    |> Map.new()
   end
 
   defp other_endpoint({interface_id, remote_interface_id}, interface_id),
