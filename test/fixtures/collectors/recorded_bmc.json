@@ -1,0 +1,12 @@
+{
+  "attributes": {
+    "model": "PowerEdge R650",
+    "vendor": "Dell Inc."
+  },
+  "identifiers": {
+    "dmi_uuid": "4c4c4544-0042-3510-8052-b4c04f4c4d32",
+    "hostname": "r1-07"
+  },
+  "kind": "server",
+  "target": "10.0.1.5"
+}
