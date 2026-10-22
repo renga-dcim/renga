@@ -15,6 +15,8 @@ use std::{
 /// A large chassis answers well under this many variables; a device answering more is cut off
 /// rather than allowed to grow the report without bound.
 const MAX_VARIABLES: usize = 200_000;
+/// Bounds memory too, since each variable can carry a long string.
+const MAX_ANSWER_BYTES: usize = 32 * 1024 * 1024;
 const BULK_REPETITIONS: u32 = 25;
 /// Credential files hold one short secret.
 const MAX_SECRET_BYTES: u64 = 4_096;
@@ -42,6 +44,7 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
         answers.insert(oid, value);
     }
     let mut total = 0;
+    let mut bytes = 0;
     for column in COLUMNS {
         let mut cursor = column.to_vec();
         'walk: loop {
@@ -58,9 +61,15 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
                     break 'walk;
                 }
                 total += 1;
+                bytes += oid.len() * 4 + value_bytes(&value);
                 if total > MAX_VARIABLES {
                     return Err(PollError(format!(
                         "the device answered more than {MAX_VARIABLES} variables"
+                    )));
+                }
+                if bytes > MAX_ANSWER_BYTES {
+                    return Err(PollError(format!(
+                        "the device answered more than {MAX_ANSWER_BYTES} bytes"
                     )));
                 }
                 cursor.clone_from(&oid);
@@ -69,6 +78,14 @@ pub fn poll(session: &mut dyn Session, deadline: Instant) -> Result<Answers, Pol
         }
     }
     Ok(answers)
+}
+
+fn value_bytes(value: &SnmpValue) -> usize {
+    match value {
+        SnmpValue::Octets(bytes) => bytes.len(),
+        SnmpValue::ObjectId(oid) => oid.len() * 4,
+        _ => 8,
+    }
 }
 
 /// An `snmp2` session to one target.
@@ -301,6 +318,19 @@ pub(crate) mod tests {
         let (resource, _) = mibs::switch("10.0.0.1", &answers, 60).unwrap();
         assert_eq!(resource.interfaces.as_ref().unwrap().len(), 4);
         assert!(answers.iter().any(|(oid, _)| oid.starts_with(IF_NAME)));
+    }
+
+    #[test]
+    fn stops_a_device_that_answers_too_much() {
+        let mut answers = mibs::tests::answers();
+        for index in 0..600 {
+            let mut oid = IF_NAME.to_vec();
+            oid.push(10_000 + index);
+            answers.insert(oid, SnmpValue::Octets(vec![b'x'; 60_000]));
+        }
+        let mut session = Recorded::new(&answers);
+        let error = poll(&mut session, Instant::now() + Duration::from_secs(5)).unwrap_err();
+        assert!(error.0.contains("bytes"), "{error}");
     }
 
     #[test]
