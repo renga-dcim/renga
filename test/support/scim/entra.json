@@ -1,0 +1,145 @@
+[
+  {
+    "method": "GET",
+    "path": "/scim/v2/Users?filter=userName+eq+%22Test_User_ab6490ee-1e48-479e-a20b-2d77186b5dd1%22",
+    "status": 200,
+    "expect": {"totalResults": 0}
+  },
+  {
+    "note": "Entra sends the enterprise extension schema and an empty roles list",
+    "method": "POST",
+    "path": "/scim/v2/Users",
+    "body": {
+      "schemas": [
+        "urn:ietf:params:scim:schemas:core:2.0:User",
+        "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+      ],
+      "externalId": "0a21f0f2-8d2a-4f8e-bf98-7363c4aed4ef",
+      "userName": "Test_User_ab6490ee-1e48-479e-a20b-2d77186b5dd1",
+      "active": true,
+      "emails": [
+        {
+          "primary": true,
+          "type": "work",
+          "value": "Test_User_fd0ea19b-0777-472c-9f96-4f70d2226f2e@testuser.com"
+        }
+      ],
+      "meta": {"resourceType": "User"},
+      "name": {"formatted": "givenName familyName", "familyName": "familyName", "givenName": "givenName"},
+      "roles": [],
+      "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {"department": "Ops"}
+    },
+    "status": 201,
+    "capture": {"user_id": "id"},
+    "absent": ["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User", "roles"]
+  },
+  {
+    "method": "GET",
+    "path": "/scim/v2/Users?filter=externalId+eq+%220a21f0f2-8d2a-4f8e-bf98-7363c4aed4ef%22",
+    "status": 200,
+    "expect": {"totalResults": 1}
+  },
+  {
+    "note": "Entra's title-case operations and value-filtered email path",
+    "method": "PATCH",
+    "path": "/scim/v2/Users/{{user_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [
+        {"op": "Replace", "path": "emails[type eq \"work\"].value", "value": "updatedEmail@microsoft.com"},
+        {"op": "Replace", "path": "name.familyName", "value": "updatedFamilyName"},
+        {
+          "op": "Add",
+          "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager",
+          "value": "26118915-6090-4610-87e4-49d8ca9f808d"
+        }
+      ]
+    },
+    "status": 200,
+    "expect": {"emails": [{"value": "updatedEmail@microsoft.com", "primary": true}]}
+  },
+  {
+    "note": "Entra sends booleans as title-case strings",
+    "method": "PATCH",
+    "path": "/scim/v2/Users/{{user_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [{"op": "Replace", "path": "active", "value": "False"}]
+    },
+    "status": 200,
+    "expect": {"active": false}
+  },
+  {
+    "method": "PATCH",
+    "path": "/scim/v2/Users/{{user_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [{"op": "Replace", "path": "active", "value": "True"}]
+    },
+    "status": 200,
+    "expect": {"active": true}
+  },
+  {
+    "method": "POST",
+    "path": "/scim/v2/Groups",
+    "body": {
+      "schemas": [
+        "urn:ietf:params:scim:schemas:core:2.0:Group",
+        "http://schemas.microsoft.com/2006/11/ResourceManagement/ADSCIM/2.0/Group"
+      ],
+      "externalId": "8aa1a0c0-c4c3-4bc0-b4a5-2ef676900159",
+      "displayName": "displayName",
+      "meta": {"resourceType": "Group"}
+    },
+    "status": 201,
+    "capture": {"group_id": "id"},
+    "expect": {"externalId": "8aa1a0c0-c4c3-4bc0-b4a5-2ef676900159"}
+  },
+  {
+    "note": "Entra lists groups without their members",
+    "method": "GET",
+    "path": "/scim/v2/Groups?excludedAttributes=members&filter=displayName+eq+%22displayName%22",
+    "status": 200,
+    "expect": {"totalResults": 1}
+  },
+  {
+    "method": "PATCH",
+    "path": "/scim/v2/Groups/{{group_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [{"op": "Add", "path": "members", "value": [{"$ref": null, "value": "{{user_id}}"}]}]
+    },
+    "status": 200,
+    "expect_members": ["{{user_id}}"]
+  },
+  {
+    "method": "PATCH",
+    "path": "/scim/v2/Groups/{{group_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [{"op": "Remove", "path": "members", "value": [{"$ref": null, "value": "{{user_id}}"}]}]
+    },
+    "status": 200,
+    "expect_members": []
+  },
+  {
+    "method": "PATCH",
+    "path": "/scim/v2/Groups/{{group_id}}",
+    "body": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [{"op": "Replace", "path": "displayName", "value": "updatedDisplayName"}]
+    },
+    "status": 200,
+    "expect": {"displayName": "updatedDisplayName"}
+  },
+  {
+    "method": "DELETE",
+    "path": "/scim/v2/Users/{{user_id}}",
+    "status": 204
+  },
+  {
+    "method": "DELETE",
+    "path": "/scim/v2/Groups/{{group_id}}",
+    "status": 204
+  }
+]
