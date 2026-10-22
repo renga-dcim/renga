@@ -29,11 +29,16 @@ defmodule Renga.Scim.Users do
     "displayName" => :display_name
   }
 
-  @doc "An entry of the connection by SCIM id, or nil."
+  @doc "An entry of the connection by SCIM id, with its groups, or nil."
   def get(%Connection{id: connection_id}, id) do
     case Ecto.UUID.cast(id || "") do
-      {:ok, id} -> Repo.get_by(DirectoryUser, id: id, connection_id: connection_id)
-      :error -> nil
+      {:ok, id} ->
+        DirectoryUser
+        |> Repo.get_by(id: id, connection_id: connection_id)
+        |> Repo.preload(groups: groups_query())
+
+      :error ->
+        nil
     end
   end
 
@@ -51,6 +56,7 @@ defmodule Renga.Scim.Users do
         |> order_by([user], asc: user.inserted_at, asc: user.id)
         |> offset(^(start_index - 1))
         |> limit(^count)
+        |> preload(groups: ^groups_query())
         |> Repo.all()
 
       {:ok, {total, entries}}
@@ -63,7 +69,7 @@ defmodule Renga.Scim.Users do
       with {:ok, attrs} <- UserResource.create(resource),
            {:ok, user} <- insert_user(client.connection, attrs) do
         record!(client, "scim_user_created", user)
-        {:ok, user}
+        {:ok, with_groups(user)}
       end
     end)
   end
@@ -75,7 +81,7 @@ defmodule Renga.Scim.Users do
            {:ok, attrs} <- UserResource.replace(resource, user),
            {:ok, updated} <- update_user(user, attrs) do
         record!(client, "scim_user_updated", updated)
-        {:ok, updated}
+        {:ok, with_groups(updated)}
       end
     end)
   end
@@ -87,7 +93,7 @@ defmodule Renga.Scim.Users do
            {:ok, attrs} <- UserResource.patch(operations, user),
            {:ok, updated} <- update_user(user, attrs) do
         record!(client, "scim_user_updated", updated)
-        {:ok, updated}
+        {:ok, with_groups(updated)}
       end
     end)
   end
@@ -102,6 +108,10 @@ defmodule Renga.Scim.Users do
       end
     end)
   end
+
+  defp with_groups(user), do: Repo.preload(user, [groups: groups_query()], force: true)
+
+  defp groups_query, do: order_by(Renga.Scim.DirectoryGroup, [group], asc: group.display_name)
 
   defp write(%Client{connection: connection}, mutation) do
     Repo.transaction(fn ->

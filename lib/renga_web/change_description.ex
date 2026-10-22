@@ -205,6 +205,15 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "scim_user_deleted", metadata: %{"user_name" => name}}),
     do: "SCIM removed #{name}"
 
+  def describe(%{kind: "scim_group_created", metadata: %{"group" => name}}),
+    do: "SCIM created the group #{name}"
+
+  def describe(%{kind: "scim_group_updated", metadata: %{"group" => name}}),
+    do: "SCIM updated the group #{name}"
+
+  def describe(%{kind: "scim_group_deleted", metadata: %{"group" => name}}),
+    do: "SCIM deleted the group #{name}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
