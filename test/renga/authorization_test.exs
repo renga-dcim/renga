@@ -34,9 +34,26 @@ defmodule Renga.AuthorizationTest do
       end
     end
 
-    test "every built-in permission is in the catalogue and every catalogue entry is granted" do
-      granted = @expected |> Map.values() |> List.flatten() |> Enum.uniq() |> Enum.sort()
-      assert granted == Enum.sort(Authorization.permissions())
+    test "every built-in permission is in the catalogue and every other entry is explicit" do
+      granted = @expected |> Map.values() |> List.flatten() |> Enum.uniq()
+
+      assert Enum.sort(granted ++ Authorization.explicit_permissions()) ==
+               Enum.sort(Authorization.permissions())
+    end
+
+    test "nobody holds an explicit permission by default, but owners and admins may issue them" do
+      assert Authorization.explicit_permissions() == ~w(queries.run queries.run_sensitive)
+
+      for permission <- Authorization.explicit_permissions() do
+        assert Authorization.explicit?(permission)
+        assert Authorization.roles_granting(permission) == []
+        assert permission in Authorization.custom_role_permissions()
+        assert permission in Authorization.grantable_permissions("owner")
+        assert permission in Authorization.grantable_permissions("admin")
+        refute permission in Authorization.grantable_permissions("member")
+      end
+
+      refute Authorization.explicit?("jobs.request")
     end
 
     test "roles_granting lists roles most privileged first" do

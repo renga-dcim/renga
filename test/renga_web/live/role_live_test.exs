@@ -23,6 +23,9 @@ defmodule RengaWeb.RoleLiveTest do
     # Owner-only and reserved permissions are not offered to an admin.
     refute has_element?(view, "#role-permission-organization\\.export")
     refute has_element?(view, "#role-permission-members\\.manage")
+    # Explicit permissions are offered on their own, never among routine ones.
+    assert has_element?(view, "#role-explicit-permissions #role-permission-queries\\.run")
+    refute has_element?(view, "#role-permissions #role-permission-queries\\.run")
 
     view
     |> form("#role-form", role: %{name: "Network", permissions: [""]})

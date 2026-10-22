@@ -52,6 +52,8 @@ defmodule Renga.Authorization do
     "ipam.edit",
     "topology.edit",
     "jobs.request",
+    "queries.run",
+    "queries.run_sensitive",
     "views.share",
     "teams.manage",
     "triage_rules.manage",
@@ -76,6 +78,8 @@ defmodule Renga.Authorization do
     "ipam.edit" => "Edit VRFs, prefixes, addresses, plans, and source mappings",
     "topology.edit" => "Edit VLANs, cables, cable plans, and import contracts",
     "jobs.request" => "Request, cancel, and resolve observe jobs",
+    "queries.run" => "Run operational queries and read their results",
+    "queries.run_sensitive" => "With queries.run, run sensitive queries and read their results",
     "views.share" => "Save and change views shared with the organization",
     "teams.manage" => "Manage teams, who is on them, and resource owners",
     "triage_rules.manage" => "Manage triage rules",
@@ -96,6 +100,13 @@ defmodule Renga.Authorization do
   # members.manage it never rides on a custom role.
   @reserved ~w(members.manage roles.manage scim.manage)
 
+  # Explicit permissions open operational access to hosts. No built-in role
+  # includes them and nobody holds them by default, owners included: a
+  # built-in owner or admin issues them, to anyone including themselves,
+  # through a custom role that carries nothing else, so a routine role never
+  # quietly acquires them.
+  @explicit ~w(queries.run queries.run_sensitive)
+
   # Built-in roles keep the behavior of the hard-coded role lists exactly.
   # `requests.create` is member-only: owners and admins make the change
   # directly instead of proposing it.
@@ -114,6 +125,15 @@ defmodule Renga.Authorization do
 
   @doc "Every permission in the catalogue."
   def permissions, do: @permissions
+
+  @doc """
+  The explicit permissions: in no built-in role, issued only through custom
+  roles that carry no other permission.
+  """
+  def explicit_permissions, do: @explicit
+
+  @doc "Whether `permission` is explicit."
+  def explicit?(permission), do: validate!(permission) in @explicit
 
   @doc "What `permission` allows, in a phrase for people."
   def describe(permission), do: Map.fetch!(@descriptions, validate!(permission))
@@ -162,7 +182,9 @@ defmodule Renga.Authorization do
   @doc """
   The permissions a holder of built-in `role` may put in a custom role or
   grant (RFD 17's grant ceiling). Only owners may grant the owner-only
-  organization permissions.
+  organization permissions. Owners and admins may both issue the explicit
+  permissions without holding them, which is how an organization where
+  nobody holds one gets its first holder.
   """
   def grantable_permissions(roles) when is_list(roles) do
     grantable = Enum.flat_map(roles, &grantable_permissions/1)

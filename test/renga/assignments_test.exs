@@ -160,6 +160,35 @@ defmodule Renga.AssignmentsTest do
     assert {:ok, _} = Members.enable_member(context.admin, context.viewer.membership_id)
   end
 
+  test "admins bootstrap explicit permissions without acquiring them", context do
+    for scope <- [context.owner, context.admin, context.member],
+        permission <- Authorization.explicit_permissions(),
+        do: refute(authorized?(scope, permission))
+
+    queries = role(context.admin, "Queries", ~w(queries.run))
+    sensitive = role(context.admin, "Sensitive queries", ~w(queries.run queries.run_sensitive))
+
+    # Defining the roles grants the admin nothing.
+    refute authorized?(context.admin, "queries.run")
+
+    assert {:ok, _} = assign(context.admin, context.member, queries.id)
+    assert {:ok, _} = assign(context.admin, context.admin, sensitive.id)
+
+    assert {:ok, _} =
+             assign(context.owner, context.owner, queries.id, %{
+               "valid_until" => DateTime.add(Renga.Time.utc_now_ms(), 1, :hour)
+             })
+
+    assert {:error, :forbidden} = assign(context.member, context.viewer, queries.id)
+
+    assert authorized?(context.member, "queries.run")
+    refute authorized?(context.member, "queries.run_sensitive")
+    assert authorized?(context.admin, "queries.run_sensitive")
+    assert authorized?(context.owner, "queries.run")
+    assert Authorization.allowed?(reload(context.member), "queries.run")
+    refute Authorization.allowed?(reload(context.viewer), "queries.run")
+  end
+
   test "validates the role, deadline, and duplicates", context do
     assert {:error, %Ecto.Changeset{} = changeset} = assign(context.admin, context.viewer, "root")
     assert "choose a role" in errors_on(changeset).built_in_role

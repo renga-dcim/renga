@@ -9,7 +9,9 @@ defmodule Renga.Roles do
   grant ceiling of the actor's current built-in role
   (`Renga.Authorization.grantable_permissions/1`): only owners may include
   the owner-only organization permissions, and no custom role may carry
-  `members.manage` or `roles.manage`. Every change is an Activity entry.
+  `members.manage` or `roles.manage`. A role with an explicit permission,
+  such as `queries.run`, carries only explicit permissions. Every change is
+  an Activity entry.
   """
 
   import Ecto.Query, warn: false

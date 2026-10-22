@@ -295,30 +295,34 @@ defmodule RengaWeb.RoleLive do
           <fieldset id="role-permissions" class="mb-3">
             <legend class="mb-1 text-sm font-medium text-fg">Permissions</legend>
             <input type="hidden" name="role[permissions][]" value="" />
-            <label
+            <.permission_option
               :for={permission <- Authorization.custom_role_permissions()}
-              :if={permission in @grantable}
-              class="flex min-h-tap cursor-pointer items-start gap-2 py-1"
-            >
-              <input
-                type="checkbox"
-                id={"role-permission-#{permission}"}
-                name="role[permissions][]"
-                value={permission}
-                checked={permission in (@form[:permissions].value || [])}
-                class="mt-0.5 size-4 rounded border-edge"
-              />
-              <span class="min-w-0">
-                <span class="block font-mono text-xs text-fg">{permission}</span>
-                <span class="block text-xs text-fg-muted">{Authorization.describe(permission)}</span>
-              </span>
-            </label>
+              :if={permission in @grantable and not Authorization.explicit?(permission)}
+              permission={permission}
+              checked={permission in (@form[:permissions].value || [])}
+            />
             <p
               :for={message <- Enum.map(@form[:permissions].errors, &translate_error/1)}
               class="mt-1 text-sm text-crit"
             >
               {message}
             </p>
+          </fieldset>
+          <fieldset
+            :if={Enum.any?(Authorization.explicit_permissions(), &(&1 in @grantable))}
+            id="role-explicit-permissions"
+            class="mb-3"
+          >
+            <legend class="mb-1 text-sm font-medium text-fg">Operational access</legend>
+            <p class="mb-1 text-xs text-fg-muted">
+              Explicit permissions. No built-in role includes them, and a role with one holds nothing else.
+            </p>
+            <.permission_option
+              :for={permission <- Authorization.explicit_permissions()}
+              :if={permission in @grantable}
+              permission={permission}
+              checked={permission in (@form[:permissions].value || [])}
+            />
           </fieldset>
           <div class="mt-4 flex justify-end gap-2">
             <.button type="button" phx-click={hide_overlay("role-panel")}>Cancel</.button>
@@ -327,6 +331,28 @@ defmodule RengaWeb.RoleLive do
         </.form>
       </.side_panel>
     </Layouts.app>
+    """
+  end
+
+  attr :permission, :string, required: true
+  attr :checked, :boolean, default: false
+
+  defp permission_option(assigns) do
+    ~H"""
+    <label class="flex min-h-tap cursor-pointer items-start gap-2 py-1">
+      <input
+        type="checkbox"
+        id={"role-permission-#{@permission}"}
+        name="role[permissions][]"
+        value={@permission}
+        checked={@checked}
+        class="mt-0.5 size-4 rounded border-edge"
+      />
+      <span class="min-w-0">
+        <span class="block font-mono text-xs text-fg">{@permission}</span>
+        <span class="block text-xs text-fg-muted">{Authorization.describe(@permission)}</span>
+      </span>
+    </label>
     """
   end
 end
