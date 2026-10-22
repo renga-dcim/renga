@@ -156,23 +156,7 @@ defmodule Renga.Inventory.Reconciler do
     results =
       scope
       |> Inventory.list_derived_observations(report.id)
-      |> Enum.map(fn derived ->
-        result =
-          case latest_result(scope, derived.id) do
-            %{status: "succeeded"} = result ->
-              result_to_reconciliation(scope, result)
-
-            %{} = result when is_map_key(failed, derived.id) ->
-              {:error, result}
-
-            _none_or_failed ->
-              isolated_resource_reconciliation(derived, fn ->
-                perform_resource_reconciliation(scope, derived)
-              end)
-          end
-
-        {derived, result}
-      end)
+      |> Enum.map(&{&1, derived_result(scope, &1, failed)})
 
     withdrawn = Collectors.apply_report!(scope, source, report, results)
 
@@ -189,6 +173,21 @@ defmodule Renga.Inventory.Reconciler do
       })
 
     {:ok, report_resources(results), Enum.any?(results, &match?({_, {:ok, _, true}}, &1))}
+  end
+
+  defp derived_result(scope, derived, failed) do
+    case latest_result(scope, derived.id) do
+      %{status: "succeeded"} = result ->
+        result_to_reconciliation(scope, result)
+
+      %{} = result when is_map_key(failed, derived.id) ->
+        {:error, result}
+
+      _none_or_failed ->
+        isolated_resource_reconciliation(derived, fn ->
+          perform_resource_reconciliation(scope, derived)
+        end)
+    end
   end
 
   # An unexpected failure, such as a database error, stays with its own

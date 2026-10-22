@@ -120,21 +120,23 @@ defmodule Renga.Inventory.SameMachine do
       |> select([finding], finding.resource_id)
       |> distinct(true)
       |> Repo.all()
-      |> Enum.each(fn guest_id ->
-        case guest_agents(scope, guest_id) != [] && candidate(scope, guest_id, domains) do
-          {vm_id, _members, _macs} ->
-            resolve_where!(
-              scope,
-              guest_id,
-              now,
-              &where(&1, [finding], fragment("?->>'vm_resource_id'", finding.details) != ^vm_id)
-            )
-
-          _gone ->
-            resolve_where!(scope, guest_id, now, & &1)
-        end
-      end)
+      |> Enum.each(&expire_guest!(scope, &1, domains, now))
     end)
+  end
+
+  defp expire_guest!(scope, guest_id, domains, now) do
+    case guest_agents(scope, guest_id) != [] && candidate(scope, guest_id, domains) do
+      {vm_id, _members, _macs} ->
+        resolve_where!(
+          scope,
+          guest_id,
+          now,
+          &where(&1, [finding], fragment("?->>'vm_resource_id'", finding.details) != ^vm_id)
+        )
+
+      _gone ->
+        resolve_where!(scope, guest_id, now, & &1)
+    end
   end
 
   @doc "Opens, updates, or resolves the finding for one machine as of `now`."
