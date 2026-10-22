@@ -45,15 +45,23 @@ defmodule RengaWeb.OperatorListener do
 
   defp client_certificate_options(_settings), do: []
 
+  # `true` checks every certificate in the client's chain, so a revoked
+  # intermediate authority is refused too; `:peer` would check only the leaf.
+  # The file must therefore hold a current list from every authority in the
+  # chain, and a chain without one fails the handshake.
   defp revocation_options(%{client_crl_file: crl_file}) when is_binary(crl_file) do
-    [crl_check: :peer, crl_cache: {:ssl_crl_cache, {:internal, []}}]
+    [crl_check: true, crl_cache: {:ssl_crl_cache, {:internal, []}}]
   end
 
   defp revocation_options(_settings), do: []
 
   @doc """
-  Loads the configured certificate revocation list into the TLS stack's
-  cache. Called once at startup; a changed list takes effect on restart.
+  Loads the configured certificate revocation lists, a PEM bundle, into the
+  TLS stack's cache. Called once at startup; a changed file takes effect on
+  restart.
+
+  The TLS stack would accept a file holding no PEM list, such as a DER one,
+  and then refuse every client, so such a file stops the boot instead.
   """
   def load_revocation_list do
     case Application.get_env(:renga, :operator_client_crl_file) do
@@ -61,6 +69,12 @@ defmodule RengaWeb.OperatorListener do
         :ok
 
       path ->
+        crls = for {:CertificateList, _der, _} <- :public_key.pem_decode(File.read!(path)), do: 1
+
+        if crls == [] do
+          raise "OPERATOR_CLIENT_CRL_FILE #{path} holds no PEM certificate revocation list"
+        end
+
         {:ok, _apps} = Application.ensure_all_started(:ssl)
         :ok = :ssl_crl_cache.insert({:file, String.to_charlist(path)})
     end

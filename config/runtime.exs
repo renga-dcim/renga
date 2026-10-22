@@ -204,6 +204,15 @@ if config_env() == :prod do
           end
       end
 
+    operator_port =
+      case Integer.parse(operator_port) do
+        {number, ""} when number in 1..65_535 and number != port ->
+          number
+
+        _other ->
+          raise "environment variable OPERATOR_PORT must be a port number other than PORT's"
+      end
+
     client_crl_file = System.get_env("OPERATOR_CLIENT_CRL_FILE")
     client_ca_file = System.get_env("OPERATOR_CLIENT_CA_FILE")
 
@@ -214,11 +223,11 @@ if config_env() == :prod do
     config :renga, :operator_client_crl_file, client_crl_file
 
     config :renga, RengaWeb.OperatorEndpoint,
-      url: [host: host, port: String.to_integer(operator_port), scheme: "https"],
+      url: [host: host, port: operator_port, scheme: "https"],
       https:
         RengaWeb.OperatorListener.https_options(%{
           ip: operator_ip,
-          port: String.to_integer(operator_port),
+          port: operator_port,
           certfile: operator_setting.("OPERATOR_TLS_CERTFILE"),
           keyfile: operator_setting.("OPERATOR_TLS_KEYFILE"),
           client_ca_file: client_ca_file,

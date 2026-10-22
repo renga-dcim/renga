@@ -163,6 +163,27 @@ defmodule Renga.RuntimeConfigTest do
     refute config |> Keyword.fetch!(:renga) |> Keyword.has_key?(RengaWeb.OperatorEndpoint)
   end
 
+  test "OPERATOR_PORT must be a port number other than PORT's" do
+    files = %{
+      "OPERATOR_TLS_CERTFILE" => "/etc/renga/operator.pem",
+      "OPERATOR_TLS_KEYFILE" => "/etc/renga/operator.key"
+    }
+
+    for operator_port <- ["0", "65536", "-1", "44x3", "4000"] do
+      assert_raise RuntimeError, ~r/OPERATOR_PORT must be a port number other than PORT's/, fn ->
+        prod_runtime_config(
+          Map.merge(files, %{"PORT" => "4000", "OPERATOR_PORT" => operator_port})
+        )
+      end
+    end
+
+    config =
+      prod_runtime_config(Map.merge(files, %{"PORT" => "4000", "OPERATOR_PORT" => "65535"}))
+
+    endpoint = config |> Keyword.fetch!(:renga) |> Keyword.fetch!(RengaWeb.OperatorEndpoint)
+    assert endpoint[:https][:port] == 65_535
+  end
+
   test "OPERATOR_PORT refuses to boot without a TLS certificate" do
     assert_raise RuntimeError, ~r/OPERATOR_TLS_CERTFILE is required/, fn ->
       prod_runtime_config(%{"OPERATOR_PORT" => "4443"})
