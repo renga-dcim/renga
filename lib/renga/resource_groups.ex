@@ -41,6 +41,7 @@ defmodule Renga.ResourceGroups do
   alias Renga.ResourceGroups.GroupSet
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Membership
+  alias Renga.ResourceGroups.Suggestion
 
   @doc "UI hint: `groups.manage` defines groups and group sets."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "groups.manage")
@@ -502,6 +503,87 @@ defmodule Renga.ResourceGroups do
     |> distinct(true)
     |> select([member], member.resource_id)
     |> Repo.all()
+  end
+
+  ## Suggestions
+
+  @doc """
+  The open group suggestions for groups the scope can see, oldest first,
+  with their resource and group.
+  """
+  def list_suggestions(%Scope{organization_id: organization_id} = scope) do
+    visible = select(visible_groups(scope), [group], group.id)
+
+    Suggestion
+    |> where([suggestion], suggestion.organization_id == ^organization_id)
+    |> where([suggestion], suggestion.status == "open")
+    |> where([suggestion], suggestion.group_id in subquery(visible))
+    |> order_by([suggestion], asc: suggestion.inserted_at, asc: suggestion.id)
+    |> preload([:resource, group: :group_set])
+    |> Repo.all()
+  end
+
+  @doc false
+  # Raises `rule`'s suggestion for one resource, inside the triage rules
+  # transaction. Never touches membership. A resource already directly in
+  # the group, an open suggestion, and a decision on this version of the
+  # rule are left alone; a decision on an older version is reopened.
+  def suggest!(%Scope{organization_id: organization_id}, rule, resource_id) do
+    member? =
+      Member
+      |> where([member], member.organization_id == ^organization_id)
+      |> where([member], member.group_id == ^rule.resource_group_id)
+      |> where([member], member.resource_id == ^resource_id)
+      |> Repo.exists?()
+
+    existing =
+      Suggestion
+      |> where([suggestion], suggestion.organization_id == ^organization_id)
+      |> where([suggestion], suggestion.resource_id == ^resource_id)
+      |> where([suggestion], suggestion.group_id == ^rule.resource_group_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    cond do
+      member? -> :skipped
+      is_nil(existing) -> raise_suggestion!(organization_id, rule, resource_id)
+      existing.status == "open" -> :skipped
+      decided_on_this_version?(existing, rule) -> :skipped
+      true -> reopen_suggestion!(existing, rule)
+    end
+  end
+
+  defp decided_on_this_version?(suggestion, rule) do
+    suggestion.rule_id == rule.id and
+      DateTime.compare(suggestion.rule_updated_at, rule.updated_at) != :lt
+  end
+
+  defp raise_suggestion!(organization_id, rule, resource_id) do
+    Repo.insert!(%Suggestion{
+      organization_id: organization_id,
+      resource_id: resource_id,
+      group_id: rule.resource_group_id,
+      rule_id: rule.id,
+      rule_name: rule.name,
+      rule_updated_at: rule.updated_at
+    })
+
+    :raised
+  end
+
+  defp reopen_suggestion!(suggestion, rule) do
+    suggestion
+    |> Ecto.Changeset.change(
+      status: "open",
+      rule_id: rule.id,
+      rule_name: rule.name,
+      rule_updated_at: rule.updated_at,
+      decided_by_user_id: nil,
+      decided_at: nil
+    )
+    |> Repo.update!()
+
+    :raised
   end
 
   ## Projection

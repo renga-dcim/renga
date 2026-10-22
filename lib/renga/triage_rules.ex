@@ -17,6 +17,10 @@ defmodule Renga.TriageRules do
   their facts without anyone re-running it. Before saving, `preview/2` says
   what the rule would change and what it would leave alone.
 
+  Group rules (RFD 18) are the exception: they never set a fact. They raise
+  a suggestion that a person accepts or dismisses in the Inbox, because only
+  people change direct group membership.
+
   Owners and admins manage rules. Applying rules after reconciliation runs
   as the system, with no user.
   """
@@ -39,6 +43,10 @@ defmodule Renga.TriageRules do
   alias Renga.Inventory.ObservationReconciliation
   alias Renga.Inventory.Resource
   alias Renga.Repo
+  alias Renga.ResourceGroups
+  alias Renga.ResourceGroups.Group
+  alias Renga.ResourceGroups.Member
+  alias Renga.ResourceGroups.Suggestion
   alias Renga.Teams.Team
   alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceNeighborMatch
@@ -49,7 +57,7 @@ defmodule Renga.TriageRules do
   # The system role that applies rules after reconciliation.
   @system_role "triage_rules"
   @preview_examples 5
-  @preloads [:team, :intake_api_key, site: :resource, location: :resource]
+  @preloads [:team, :resource_group, :intake_api_key, site: :resource, location: :resource]
 
   # A placement from a person is confirmed; collectors and rules leave theirs
   # unconfirmed.
@@ -68,6 +76,7 @@ defmodule Renga.TriageRules do
 
   @doc "The fact a rule kind sets."
   def fact(%Rule{kind: "ownership"}), do: :owner
+  def fact(%Rule{kind: "group"}), do: :group
   def fact(%Rule{}), do: :placement
 
   ## Rules
@@ -254,8 +263,8 @@ defmodule Renga.TriageRules do
     )
   end
 
-  defp where_matches(query, organization_id, %Rule{kind: "ownership", hostname_pattern: pattern})
-       when is_binary(pattern) do
+  defp where_matches(query, organization_id, %Rule{kind: kind, hostname_pattern: pattern})
+       when kind in ~w(ownership group) and is_binary(pattern) do
     like = glob_to_like(pattern)
 
     hosts =
@@ -268,7 +277,8 @@ defmodule Renga.TriageRules do
     where(query, [resource], exists(hosts))
   end
 
-  defp where_matches(query, organization_id, %Rule{kind: "ownership"} = rule) do
+  defp where_matches(query, organization_id, %Rule{kind: kind} = rule)
+       when kind in ~w(ownership group) do
     key = rule.label_key
     value = rule.label_value
 
@@ -295,6 +305,37 @@ defmodule Renga.TriageRules do
     })
   end
 
+  # A group rule "sets" nothing: a resource already directly in the group
+  # counts as set by a person, and one with an open suggestion, or a
+  # decision on this version of the rule, as already having a value.
+  defp select_state(query, %Rule{kind: "group"} = rule) do
+    group_id = rule.resource_group_id
+
+    member =
+      from member in Member,
+        where: member.group_id == ^group_id and member.resource_id == parent_as(:resource).id
+
+    suggested =
+      from suggestion in Suggestion,
+        where:
+          suggestion.group_id == ^group_id and
+            suggestion.resource_id == parent_as(:resource).id,
+        where: ^suggestion_blocks(rule)
+
+    select(query, [resource], %{
+      id: resource.id,
+      name: resource.name,
+      kind: resource.kind,
+      rack_id: type(^nil, :binary_id),
+      state:
+        fragment(
+          "CASE WHEN ? THEN 'set_by_person' WHEN ? THEN 'has_value' ELSE 'will_set' END",
+          exists(member),
+          exists(suggested)
+        )
+    })
+  end
+
   defp select_state(query, %Rule{kind: "top_of_rack"}) do
     select(query, [resource, placement: placement, neighbor: neighbor], %{
       id: resource.id,
@@ -313,6 +354,16 @@ defmodule Renga.TriageRules do
       rack_id: type(^nil, :binary_id),
       state: placement_state(placement)
     })
+  end
+
+  defp suggestion_blocks(%Rule{id: nil}), do: dynamic([suggestion], suggestion.status == "open")
+
+  defp suggestion_blocks(%Rule{id: id, updated_at: updated_at}) do
+    dynamic(
+      [suggestion],
+      suggestion.status == "open" or
+        (suggestion.rule_id == ^id and suggestion.rule_updated_at >= ^updated_at)
+    )
   end
 
   @doc false
@@ -433,7 +484,7 @@ defmodule Renga.TriageRules do
         id -> where(query, [resource], resource.id == ^id)
       end
 
-    rule = Repo.preload(rule, [:site, :location, :team])
+    rule = Repo.preload(rule, [:site, :location, :team, :resource_group])
 
     from(match in subquery(query), where: match.state == "will_set", order_by: match.id)
     |> Repo.all()
@@ -450,6 +501,13 @@ defmodule Renga.TriageRules do
           "team_id" => rule.team.id,
           "name" => rule.team.name
         })
+    end
+  end
+
+  defp fill!(scope, %Rule{kind: "group"} = rule, match) do
+    case ResourceGroups.suggest!(scope, rule, match.id) do
+      :raised -> :filled
+      :skipped -> :skipped
     end
   end
 
@@ -528,6 +586,7 @@ defmodule Renga.TriageRules do
     |> validate_reference(:site_id, Site, organization_id)
     |> validate_reference(:location_id, Location, organization_id)
     |> validate_reference(:team_id, Team, organization_id)
+    |> validate_reference(:resource_group_id, Group, organization_id)
     |> validate_reference(:intake_api_key_id, IntakeApiKey, organization_id)
     |> validate_location_in_site(organization_id)
   end
