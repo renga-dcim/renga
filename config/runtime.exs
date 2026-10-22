@@ -35,6 +35,16 @@ for {variable, key, values} <- [
   config :renga, key, String.to_atom(value)
 end
 
+# Destinations an organization's identity provider may reach although they
+# are not public addresses, such as an internal enterprise provider (RFD 15):
+# exact host names and address ranges, comma-separated. An entry that can't
+# be read stops the boot.
+if allow = System.get_env("ORGANIZATION_PROVIDER_ALLOW") do
+  config :renga,
+         :organization_provider_allow,
+         Renga.Accounts.OIDC.Destinations.parse_allowlist(allow)
+end
+
 # An optional, non-secret name for this deployment, such as `eu1`. Intake
 # keys issued while it is set carry it so a resolver can find the deployment
 # (RFD 23).
