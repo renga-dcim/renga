@@ -73,9 +73,31 @@ defmodule Renga.AccountsFixtures do
   """
   def totp_fixture(user) do
     secret = Accounts.MFA.new_totp_secret()
-    code = NimbleTOTP.verification_code(secret, time: System.os_time(:second) - 30)
-    {:ok, codes} = Accounts.MFA.enable_totp(user, secret, code)
+    {:ok, codes} = enable_totp_with_previous_step(user, secret)
     {secret, codes}
+  end
+
+  # Renga accepts the step before the current one, so a code for it turns
+  # two steps old, and is refused, if a boundary passes before Renga checks
+  # it. The tail of a step is waited out, and a code that crosses a boundary
+  # anyway is made again for the new step.
+  defp enable_totp_with_previous_step(user, secret) do
+    now = System.os_time(:millisecond)
+    left = 30_000 - rem(now, 30_000)
+    if left < 2_000, do: Process.sleep(left)
+
+    step = div(System.os_time(:second), 30)
+    code = NimbleTOTP.verification_code(secret, time: (step - 1) * 30)
+
+    case Accounts.MFA.enable_totp(user, secret, code) do
+      {:error, :invalid_code} ->
+        if div(System.os_time(:second), 30) != step,
+          do: enable_totp_with_previous_step(user, secret),
+          else: {:error, :invalid_code}
+
+      result ->
+        result
+    end
   end
 
   @doc """
