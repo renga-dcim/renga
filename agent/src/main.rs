@@ -2245,6 +2245,144 @@ mod tests {
         std::fs::remove_dir_all(state).unwrap();
     }
 
+    /// Leases one `inventory.collect` job and answers its first report only after
+    /// `started_delay`. Returns the origin, the reports posted, and the notice sockets opened.
+    #[allow(clippy::result_large_err)]
+    fn slow_start_job_server(
+        stopped: Cancellation,
+        started_delay: Duration,
+    ) -> (
+        String,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let home = json!({ "home": origin }).to_string();
+        let job_id = uuid::Uuid::new_v4();
+        let leased = Arc::new(AtomicBool::new(false));
+        let reports = Arc::new(AtomicUsize::new(0));
+        let sockets = Arc::new(AtomicUsize::new(0));
+        let (report_count, socket_count) = (Arc::clone(&reports), Arc::clone(&sockets));
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let leased = Arc::clone(&leased);
+                        let reports = Arc::clone(&reports);
+                        let sockets = Arc::clone(&sockets);
+                        let home = home.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                sockets.fetch_add(1, Ordering::SeqCst);
+                                let mut socket = tungstenite::accept_hdr(
+                                    stream,
+                                    |_request: &Request, mut response: Response| {
+                                        response.headers_mut().insert(
+                                            SEC_WEBSOCKET_PROTOCOL,
+                                            HeaderValue::from_static("phoenix"),
+                                        );
+                                        Ok(response)
+                                    },
+                                )
+                                .unwrap();
+                                let join: serde_json::Value =
+                                    serde_json::from_str(socket.read().unwrap().to_text().unwrap())
+                                        .unwrap();
+                                socket
+                                    .send(Message::text(
+                                        json!(["1", "1", join[2], "phx_reply", {
+                                            "status": "ok",
+                                            "response": {"jobs_waiting": false}
+                                        }])
+                                        .to_string(),
+                                    ))
+                                    .unwrap();
+                                while socket.read().is_ok() {}
+                                return;
+                            }
+
+                            let (request, mut reader) = read_http_request(stream);
+                            if request.contains("/api/v1/agent/home") {
+                                answer(&mut reader, 200, &home);
+                            } else if request.contains("/api/v1/agent/checkins") {
+                                answer(
+                                    &mut reader,
+                                    202,
+                                    r#"{"status":"accepted","jobs_waiting":true}"#,
+                                );
+                            } else if request.contains("/api/v1/agent/jobs/lease") {
+                                if leased.swap(true, Ordering::SeqCst) {
+                                    answer(&mut reader, 200, r#"{"jobs":[]}"#);
+                                    return;
+                                }
+                                let job = json!({
+                                    "id": job_id,
+                                    "capability": "inventory.collect@1",
+                                    "parameters": {},
+                                    "attempt": 1,
+                                    "lease_token": "lease",
+                                    "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
+                                    "timeout_ms": 30_000,
+                                    "output_limit_bytes": 65_536
+                                });
+                                answer(&mut reader, 200, &json!({ "jobs": [job] }).to_string());
+                            } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
+                                if reports.fetch_add(1, Ordering::SeqCst) == 0 {
+                                    thread::sleep(started_delay);
+                                }
+                                answer(&mut reader, 200, r#"{"cancel_requested":false}"#);
+                            } else if request.contains("/api/v1/observations") {
+                                answer(&mut reader, 202, "{}");
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("slow start job server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        (origin, report_count, socket_count, server)
+    }
+
+    #[test]
+    fn an_unchanged_reload_keeps_the_notice_socket_and_the_job_it_is_starting() {
+        let state =
+            std::env::temp_dir().join(format!("renga-reload-same-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        // The started report is answered only after a configuration refresh.
+        let (origin, reports, sockets, server) =
+            slow_start_job_server(stopped.clone(), Duration::from_millis(1_500));
+        let config = write_agent_config(&state, &origin, "renga_intake_test");
+        let daemon = spawn_daemon(config, &state, false, stopped.clone());
+
+        wait_until(
+            "a report after the job started",
+            Instant::now() + Duration::from_secs(15),
+            || reports.load(Ordering::SeqCst) >= 2,
+        );
+        assert_eq!(sockets.load(Ordering::SeqCst), 1);
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
     #[test]
     fn only_settings_jobs_use_restart_them_on_reload() {
         let config = stub_config("http://renga.test");
