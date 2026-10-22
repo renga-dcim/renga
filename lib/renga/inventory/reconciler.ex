@@ -31,6 +31,9 @@ defmodule Renga.Inventory.Reconciler do
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
   @identity_interface_kinds ~w(ethernet)
+  # What collector streams report (RFD 11). Only stable identifiers match
+  # them, whichever side reports first.
+  @collector_resource_kinds ~w(switch vm)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
@@ -446,6 +449,7 @@ defmodule Renga.Inventory.Reconciler do
     Resource
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([resource], resource.kind not in ^@collector_resource_kinds)
     |> where([_resource, interface], interface.status != "not_present")
     |> where([_resource, interface], interface.kind in ^@identity_interface_kinds)
     |> where([_resource, interface], not is_nil(interface.mac_address))
@@ -494,6 +498,7 @@ defmodule Renga.Inventory.Reconciler do
     Resource
     |> join(:inner, [resource], host in Host, on: host.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
+    |> where([resource], resource.kind not in ^@collector_resource_kinds)
     |> where([_resource, host], field(host, ^field) in ^values)
     |> distinct(true)
     |> Repo.all()

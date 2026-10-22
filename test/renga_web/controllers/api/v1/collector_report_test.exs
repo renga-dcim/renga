@@ -219,28 +219,52 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                valid_api_response(second, 202)
     end
 
-    test "names and MAC addresses alone never merge a collector resource", %{
-      token: token
-    } do
-      host = post_observation(token, host_report(hostname: "core1", mac: "52:54:00:00:00:01"))
+    for order <- [:host_first, :collector_first] do
+      test "names and MAC addresses alone never merge a collector resource (#{order})", %{
+        token: token
+      } do
+        lookalike =
+          switch("10.0.0.1", "SER-1",
+            hostname: "core1",
+            interfaces: [
+              %{"name" => "eth0", "kind" => "ethernet", "mac_address" => "52:54:00:00:00:01"}
+            ]
+          )
 
-      assert %{"reconciliation" => %{"matched_resource_id" => host_id}} =
-               valid_api_response(host, 202)
+        same_mac = host_report(mac: "52:54:00:00:00:01")
 
-      lookalike =
-        switch("10.0.0.1", "SER-1",
-          hostname: "core1",
-          interfaces: [
-            %{"name" => "eth0", "kind" => "ethernet", "mac_address" => "52:54:00:00:00:01"}
-          ]
-        )
+        # With no stable identifier, a host report falls back to its name.
+        same_name =
+          update_in(
+            host_report(hostname: "core1"),
+            ["resources", Access.at(0), "identifiers"],
+            &Map.delete(&1, "machine_id")
+          )
 
-      report = post_observation(token, switch_report([lookalike]))
+        post = fn report -> token |> post_observation(report) |> valid_api_response(202) end
 
-      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => switch_id}]}} =
-               valid_api_response(report, 202)
+        hosts = fn ->
+          Enum.map([same_mac, same_name], &post.(&1)["reconciliation"]["matched_resource_id"])
+        end
 
-      refute switch_id == host_id
+        switch_id = fn ->
+          %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
+            post.(switch_report([lookalike]))
+
+          id
+        end
+
+        {switch_id, host_ids} =
+          if unquote(order) == :host_first do
+            host_ids = hosts.()
+            {switch_id.(), host_ids}
+          else
+            switch_id = switch_id.()
+            {switch_id, hosts.()}
+          end
+
+        refute switch_id in host_ids
+      end
     end
 
     test "a VM whose UUID a guest agent reports reconciles to the guest's resource", %{
