@@ -249,6 +249,31 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert view |> element("#{cell}-3") |> render() =~ "the Power resource the agent reads"
   end
 
+  test "shows whether each collector's host can use osquery", %{
+    conn: conn,
+    source: source,
+    agent: agent
+  } do
+    cell = "#collector-osquery-#{source.id}"
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, cell, "Not reported")
+
+    for {osquery, texts} <- [
+          {%{"status" => "available", "version" => "5.12.1"}, ["Available", "5.12.1"]},
+          {%{"status" => "not_permitted"}, ["Not permitted"]},
+          {%{"status" => "not_present"}, ["Not running"]},
+          {%{"status" => "bogus"}, ["Not reported"]}
+        ] do
+      agent
+      |> Ecto.Changeset.change(metadata: %{"query_backends" => %{"osquery" => osquery}})
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+      for text <- texts, do: assert(has_element?(view, cell, text))
+    end
+  end
+
   test "malformed legacy queue metadata is not reported rather than crashing", %{
     conn: conn,
     source: source,

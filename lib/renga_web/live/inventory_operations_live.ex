@@ -468,6 +468,11 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
+            <:col :let={{_id, source}} label="osquery" class="w-32" hide_below="5xl">
+              <span id={"collector-osquery-#{source.id}"}>
+                <.collector_osquery osquery={Agent.osquery(collector_agent(source))} />
+              </span>
+            </:col>
             <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
                 <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
@@ -866,6 +871,33 @@ defmodule RengaWeb.InventoryOperationsLive do
       <span class="text-xs text-fg-subtle">· Telemetry</span>
       <.collector_queue queue={@queue} kind={:telemetry} />
     </span>
+    """
+  end
+
+  attr :osquery, :map, required: true
+
+  # Whether operational queries can use the host's osqueryd (RFD 12), as of
+  # the latest check-in. The agent reaches it over its extensions socket.
+  defp collector_osquery(assigns) do
+    ~H"""
+    <%= case @osquery do %>
+      <% %{status: "available"} -> %>
+        <span class="text-xs text-fg">Available</span>
+        <span :if={@osquery.version} class="ml-1.5 font-mono text-xs text-fg-muted">
+          {@osquery.version}
+        </span>
+      <% %{status: "not_permitted"} -> %>
+        <span
+          class="text-xs font-medium text-warn-text"
+          title="The agent's account can't open the extensions socket"
+        >
+          Not permitted
+        </span>
+      <% %{status: "not_present"} -> %>
+        <span class="text-xs text-fg-muted">Not running</span>
+      <% nil -> %>
+        <span class="text-xs text-fg-subtle">Not reported</span>
+    <% end %>
     """
   end
 
