@@ -29,11 +29,15 @@ defmodule Renga.Accounts.OrganizationInvitation do
     field :expires_at, :utc_datetime_usec
     field :accepted_at, :utc_datetime_usec
     field :revoked_at, :utc_datetime_usec
+    # Set instead of invited_by_user for an operator's owner invitation
+    # (RFD 22): the operator's label, and its token when the API made it.
+    field :invited_by_operator, :string
 
     belongs_to :organization, Organization
     belongs_to :invited_by_user, User
     belongs_to :accepted_by_user, User
     belongs_to :revoked_by_user, User
+    belongs_to :invited_by_operator_token, Renga.Operators.OperatorToken
 
     timestamps()
   end
