@@ -146,6 +146,9 @@ defmodule RengaWeb.Navigation do
         section(:scim, "SCIM", ~p"/settings/scim", "hero-arrow-path-rounded-square",
           keywords: ~w(provisioning directory okta entra identity provider groups tokens)
         ),
+        section(:security, "Security", ~p"/settings/security", "hero-shield-check",
+          keywords: ~w(mfa 2fa multi-factor authentication passkey require policy)
+        ),
         section(:triage_rules, "Triage rules", ~p"/settings/triage-rules", "hero-funnel",
           keywords: ~w(rules triage automation subnet hostname labels)
         ),
