@@ -4,7 +4,17 @@ defmodule Renga.Repo.Migrations.AddPossibleSameMachineFinding do
   # RFD 11, "Virtualization collection": a guest without a usable SMBIOS UUID
   # whose MAC addresses cover exactly one fresh libvirt domain.
   def up, do: kinds(~w(installation_key_changed possible_same_machine))
-  def down, do: kinds(~w(installation_key_changed))
+
+  # The narrower constraint cannot hold these findings, so rolling back
+  # discards them and the workflows people added to them.
+  def down do
+    execute(
+      "DELETE FROM finding_workflows WHERE domain = 'collector' AND kind = 'possible_same_machine'"
+    )
+
+    execute("DELETE FROM collector_findings WHERE kind = 'possible_same_machine'")
+    kinds(~w(installation_key_changed))
+  end
 
   defp kinds(kinds) do
     drop constraint(:collector_findings, :collector_findings_valid)
