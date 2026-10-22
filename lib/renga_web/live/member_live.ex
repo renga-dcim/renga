@@ -201,9 +201,13 @@ defmodule RengaWeb.MemberLive do
   end
 
   defp refusal(:last_owner),
-    do: "The organization needs at least one active owner. Make someone else an owner first."
+    do:
+      "The organization needs at least one active owner who isn't managed by SCIM. Make someone else an owner first."
 
   defp refusal(:self), do: "You can't disable yourself."
+
+  defp refusal(:scim_managed),
+    do: "Your identity provider manages this member through SCIM. Change their access there."
 
   defp refusal(:already_assigned), do: "They already hold that role."
 
