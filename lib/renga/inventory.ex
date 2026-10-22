@@ -2205,6 +2205,7 @@ defmodule Renga.Inventory do
     |> Reconciler.reconcile(observation)
     |> apply_triage_rules(scope)
     |> reconcile_address_findings(scope)
+    |> reconcile_same_machine(scope, observation)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2214,6 +2215,7 @@ defmodule Renga.Inventory do
       |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
       |> apply_triage_rules(scope)
       |> reconcile_address_findings(scope)
+      |> reconcile_same_machine(scope, observation)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2229,6 +2231,7 @@ defmodule Renga.Inventory do
     |> Reconciler.reconcile_once(observation)
     |> apply_triage_rules(scope)
     |> reconcile_address_findings(scope)
+    |> reconcile_same_machine(scope, observation)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2240,6 +2243,7 @@ defmodule Renga.Inventory do
       )
       |> apply_triage_rules(scope)
       |> reconcile_address_findings(scope)
+      |> reconcile_same_machine(scope, observation)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2292,6 +2296,30 @@ defmodule Renga.Inventory do
   end
 
   defp reconcile_address_findings(result, _scope), do: result
+
+  # RFD 11: possible-same-machine findings follow the evidence like address
+  # findings, after reconciliation commits; a failure is logged, never fatal.
+  # That holds only outside a transaction: a failure rescued inside one would
+  # still leave the enclosing transaction aborted, so callers must not wrap
+  # reconciliation in one.
+  defp reconcile_same_machine(
+         {:ok, _resource_or_resources, _discovered?} = result,
+         scope,
+         observation
+       ) do
+    {:ok, _} = Renga.Inventory.SameMachine.refresh_after!(scope, observation, result)
+    result
+  rescue
+    exception ->
+      Logger.error(
+        "same-machine findings failed for #{scope.organization_id}: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      result
+  end
+
+  defp reconcile_same_machine(result, _scope, _observation), do: result
 
   @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
