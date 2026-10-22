@@ -174,50 +174,44 @@ defmodule Renga.Power.Measured do
   defp explain_aggregate(measured, _context, _port), do: measured
 
   defp constituents(measured, context, unit) do
-    points =
-      Enum.map(context.outlets, fn outlet ->
-        entries =
-          Enum.filter(context.entries, fn entry ->
-            entry.reading.boundary == "outlet" and
-              entry.reading.component_kind == "power_outlet" and
-              entry.reading.component_name == outlet.name
-          end)
-
-        {point(entries, unit), entries}
-      end)
-
+    points = Enum.map(context.outlets, &outlet_point(&1, context.entries, unit))
     values = for {%{value: value}, _entries} <- points, value, do: value
     currents = for {%{current: current}, _entries} <- points, current, do: current
     used = for {_point, entries} <- points, entry <- entries, entry.eligible?, do: entry.reading
-    count = length(points)
-    unmeasured = count - length(values)
-
-    gaps =
-      cond do
-        used == [] and not Enum.any?(points, fn {_point, entries} -> entries != [] end) ->
-          [:no_readings]
-
-        unmeasured > 0 ->
-          [{:outlets_unmeasured, unmeasured} | point_gaps(points)]
-
-        true ->
-          []
-      end
-
-    known = if values != [], do: Enum.reduce(values, &Decimal.add/2)
-    complete? = values != [] and unmeasured == 0
+    unmeasured = length(points) - length(values)
+    known = sum(values)
 
     %{
       measured
       | basis: if(used != [], do: :outlets),
         known: known,
-        load: if(complete?, do: known),
-        current:
-          if(length(currents) == count and count > 0, do: Enum.reduce(currents, &Decimal.add/2)),
+        load: if(unmeasured == 0, do: known),
+        current: if(length(currents) == length(points), do: sum(currents)),
         readings: used,
-        gaps: Enum.uniq(measured.gaps ++ gaps)
+        gaps: Enum.uniq(measured.gaps ++ constituent_gaps(points, unmeasured))
     }
   end
+
+  defp outlet_point(outlet, entries, unit) do
+    entries =
+      Enum.filter(entries, fn %{reading: reading} ->
+        reading.boundary == "outlet" and reading.component_kind == "power_outlet" and
+          reading.component_name == outlet.name
+      end)
+
+    {point(entries, unit), entries}
+  end
+
+  defp constituent_gaps(points, unmeasured) do
+    cond do
+      Enum.all?(points, fn {_point, entries} -> entries == [] end) -> [:no_readings]
+      unmeasured > 0 -> [{:outlets_unmeasured, unmeasured} | point_gaps(points)]
+      true -> []
+    end
+  end
+
+  defp sum([]), do: nil
+  defp sum(values), do: Enum.reduce(values, &Decimal.add/2)
 
   defp point_gaps(points) do
     points
@@ -355,40 +349,44 @@ defmodule Renga.Power.Measured do
   defp put_legs(measured, _context, _port), do: measured
 
   defp put_status(%__MODULE__{} = measured) do
-    usable = measured.capacity.usable
-
-    over? =
-      (measured.known && Decimal.gt?(measured.known, usable)) ||
-        (measured.current && Decimal.gt?(measured.current, measured.current_limit)) ||
-        Enum.any?(measured.legs, &(&1.current && Decimal.gt?(&1.current, &1.limit)))
-
-    legs_complete? = Enum.all?(measured.legs, &(&1.current != nil))
-    proven? = measured.load != nil and legs_complete?
+    proven? = measured.load != nil and Enum.all?(measured.legs, &(&1.current != nil))
 
     status =
       cond do
-        over? -> :over
+        over?(measured) -> :over
         proven? and measured.gaps == [] -> :ok
         true -> :unknown
-      end
-
-    as_of =
-      case measured.readings do
-        [] -> nil
-        readings -> readings |> Enum.map(& &1.event_at) |> Enum.min(DateTime)
       end
 
     %{
       measured
       | status: status,
-        as_of: as_of,
+        as_of: oldest(measured.readings),
         # Positive headroom needs complete, eligible coverage.
-        headroom:
-          if(measured.load && (status == :ok or status == :over),
-            do: Decimal.sub(usable, measured.load)
-          )
+        headroom: headroom(measured, status)
     }
   end
+
+  # What is known is a lower bound, so it can prove an overload alone.
+  defp over?(measured) do
+    exceeds?(measured.known, measured.capacity.usable) or
+      exceeds?(measured.current, measured.current_limit) or
+      Enum.any?(measured.legs, &exceeds?(&1.current, &1.limit))
+  end
+
+  defp exceeds?(nil, _limit), do: false
+  defp exceeds?(value, limit), do: Decimal.gt?(value, limit)
+
+  defp oldest([]), do: nil
+  defp oldest(readings), do: readings |> Enum.map(& &1.event_at) |> Enum.min(DateTime)
+
+  defp headroom(%__MODULE__{load: nil}, _status), do: nil
+
+  defp headroom(%__MODULE__{load: load, capacity: capacity}, status)
+       when status in [:ok, :over],
+       do: Decimal.sub(capacity.usable, load)
+
+  defp headroom(_measured, _status), do: nil
 
   defp current_limit(%Feed{amperage: amperage, max_utilization: max_utilization}),
     do: amperage |> Decimal.mult(max_utilization) |> Decimal.div(100)
