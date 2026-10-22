@@ -192,6 +192,38 @@ defmodule RengaWeb.TriageRuleLiveTest do
     refute has_element?(view, "#rule-#{rule.id}-edit")
   end
 
+  test "a group rule suggests the group and changes no membership", context do
+    {:ok, group} = Renga.ResourceGroups.create_group(context.admin, %{name: "Web tier"})
+    {:ok, view, _html} = live(context.admin_conn, ~p"/settings/triage-rules")
+
+    view |> form("#rule-form", rule: %{kind: "group"}) |> render_change()
+    assert has_element?(view, "#rule_hostname_pattern")
+    assert has_element?(view, "#rule_resource_group_id")
+    refute has_element?(view, "#rule_team_id")
+
+    view
+    |> form("#rule-form",
+      rule: %{
+        kind: "group",
+        name: "Web",
+        match_on: "hostname",
+        hostname_pattern: "web-*",
+        resource_group_id: group.id
+      }
+    )
+    |> render_change()
+
+    assert has_element?(view, "#rule-preview-will-set", "Suggests the group for 1 resource")
+
+    view |> form("#rule-form") |> render_submit()
+
+    assert [rule] = TriageRules.list_rules(context.admin)
+    assert has_element?(view, "#rules-group #rule-#{rule.id}", "hostname web-*")
+    assert has_element?(view, "#rule-#{rule.id}", "suggest Web tier")
+    assert render(view) =~ "It suggested 1 resource for the Inbox"
+    assert Renga.ResourceGroups.list_resource_groups(context.admin, context.web.id) == []
+  end
+
   defp server!(scope, name, address) do
     {:ok, resource} =
       Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})

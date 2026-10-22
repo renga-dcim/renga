@@ -15,6 +15,7 @@ defmodule RengaWeb.TriageRuleLive do
   alias Renga.DCIM
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.ResourceGroups
   alias Renga.Teams
   alias Renga.TriageRules
   alias Renga.TriageRules.Rule
@@ -25,11 +26,13 @@ defmodule RengaWeb.TriageRuleLive do
     {"top_of_rack", "Top of rack",
      "A resource whose LLDP neighbor is a switch in a rack goes in that rack, never at a unit."},
     {"ownership", "Ownership",
-     "A hostname pattern, or a label the collector sends, sets the owning team."}
+     "A hostname pattern, or a label the collector sends, sets the owning team."},
+    {"group", "Group suggestions",
+     "A hostname pattern, or a label the collector sends, suggests a group. A person accepts each suggestion in the Inbox."}
   ]
 
   @suggestion_fields ~w(kind name match_on subnet intake_api_key_id hostname_pattern
-                         label_key label_value site_id location_id team_id)
+                         label_key label_value site_id location_id team_id resource_group_id)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -45,6 +48,7 @@ defmodule RengaWeb.TriageRuleLive do
        editing: nil,
        sites: DCIM.list_sites(scope),
        teams: Teams.list_teams(scope),
+       groups: ResourceGroups.list_groups(scope),
        intake_keys: Enum.filter(Inventory.list_intake_api_keys(scope), &(&1.status == "active"))
      )
      |> load_rules()
@@ -57,7 +61,7 @@ defmodule RengaWeb.TriageRuleLive do
   # until the person completes it.
   @impl true
   def handle_params(%{"kind" => kind} = params, _uri, socket)
-      when kind in ~w(network_location top_of_rack ownership) do
+      when kind in ~w(network_location top_of_rack ownership group) do
     if socket.assigns.can_manage? and not socket.assigns.suggested? do
       attrs = Map.take(params, @suggestion_fields)
 
@@ -176,7 +180,7 @@ defmodule RengaWeb.TriageRuleLive do
     attrs =
       rule
       |> Map.take(
-        ~w(kind name enabled subnet intake_api_key_id hostname_pattern label_key label_value site_id location_id team_id)a
+        ~w(kind name enabled subnet intake_api_key_id hostname_pattern label_key label_value site_id location_id team_id resource_group_id)a
       )
       |> Map.put(:match_on, Rule.match_on(rule))
 
@@ -223,11 +227,20 @@ defmodule RengaWeb.TriageRuleLive do
 
   defp default_match_on(%{"kind" => kind, "match_on" => match_on} = attrs) do
     case {kind, match_on} do
-      {"network_location", match_on} when match_on in ~w(subnet intake_key) -> attrs
-      {"network_location", _other} -> Map.put(attrs, "match_on", "subnet")
-      {"ownership", match_on} when match_on in ~w(hostname label) -> attrs
-      {"ownership", _other} -> Map.put(attrs, "match_on", "hostname")
-      _top_of_rack -> attrs
+      {"network_location", match_on} when match_on in ~w(subnet intake_key) ->
+        attrs
+
+      {"network_location", _other} ->
+        Map.put(attrs, "match_on", "subnet")
+
+      {kind, match_on} when kind in ~w(ownership group) and match_on in ~w(hostname label) ->
+        attrs
+
+      {kind, _other} when kind in ~w(ownership group) ->
+        Map.put(attrs, "match_on", "hostname")
+
+      _top_of_rack ->
+        attrs
     end
   end
 
@@ -246,6 +259,15 @@ defmodule RengaWeb.TriageRuleLive do
   end
 
   defp applied_label(%Rule{enabled: false}, _applied), do: "It is off, so it set nothing."
+
+  defp applied_label(%Rule{kind: "group"}, 0),
+    do: "Nothing it matches needs a suggestion right now."
+
+  defp applied_label(%Rule{kind: "group"}, 1), do: "It suggested 1 resource for the Inbox."
+
+  defp applied_label(%Rule{kind: "group"}, count),
+    do: "It suggested #{count} resources for the Inbox."
+
   defp applied_label(rule, 0), do: "Nothing it matches is missing #{fact_noun(rule)} right now."
   defp applied_label(rule, 1), do: "It #{fact_verb(rule)} 1 resource."
   defp applied_label(rule, count), do: "It #{fact_verb(rule)} #{count} resources."
@@ -432,6 +454,8 @@ defmodule RengaWeb.TriageRuleLive do
             teams={@teams}
           />
 
+          <.group_fields :if={@form[:kind].value == "group"} form={@form} groups={@groups} />
+
           <.rule_preview preview={@preview} kind={@form[:kind].value} />
 
           <div class="mt-4 flex justify-end gap-2">
@@ -499,6 +523,42 @@ defmodule RengaWeb.TriageRuleLive do
 
   defp ownership_fields(assigns) do
     ~H"""
+    <.signal_fields form={@form} />
+    <.input
+      field={@form[:team_id]}
+      type="select"
+      label="Owning team"
+      prompt="Choose a team"
+      options={Enum.map(@teams, &{&1.name, &1.id})}
+    />
+    """
+  end
+
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :groups, :list, required: true
+
+  defp group_fields(assigns) do
+    ~H"""
+    <.signal_fields form={@form} />
+    <.input
+      field={@form[:resource_group_id]}
+      type="select"
+      label="Suggest the group"
+      prompt="Choose a group"
+      options={Enum.map(@groups, &{&1.name, &1.id})}
+    />
+    <p id="rule-group-help" class="rounded-md bg-sunken px-3 py-2 text-sm text-fg-muted">
+      The rule never changes membership. Each match waits in the Inbox until someone who can edit
+      inventory accepts or dismisses it.
+    </p>
+    """
+  end
+
+  attr :form, Phoenix.HTML.Form, required: true
+
+  # The collector signal ownership and group rules match on.
+  defp signal_fields(assigns) do
+    ~H"""
     <.input
       field={@form[:match_on]}
       type="select"
@@ -529,13 +589,6 @@ defmodule RengaWeb.TriageRuleLive do
         autocomplete="off"
       />
     </div>
-    <.input
-      field={@form[:team_id]}
-      type="select"
-      label="Owning team"
-      prompt="Choose a team"
-      options={Enum.map(@teams, &{&1.name, &1.id})}
-    />
     """
   end
 
@@ -569,12 +622,7 @@ defmodule RengaWeb.TriageRuleLive do
           id="rule-preview-left-alone"
           class="text-xs text-fg-muted"
         >
-          Leaves alone {resource_count(@preview.has_value + @preview.set_by_person)} that already {if @kind ==
-                                                                                                        "ownership",
-                                                                                                      do:
-                                                                                                        "have an owner",
-                                                                                                      else:
-                                                                                                        "have a placement"}: {@preview.set_by_person} set by a person, {@preview.has_value} by a collector or another rule.
+          {left_alone(@kind, @preview)}
         </p>
       <% else %>
         <p class="text-fg-muted">Complete the rule to see what it would change.</p>
@@ -584,7 +632,22 @@ defmodule RengaWeb.TriageRuleLive do
   end
 
   defp preview_headline("ownership", count), do: "Sets the owner on #{resource_count(count)}"
+  defp preview_headline("group", count), do: "Suggests the group for #{resource_count(count)}"
   defp preview_headline(_kind, count), do: "Places #{resource_count(count)}"
+
+  defp left_alone("group", preview) do
+    "Leaves alone #{resource_count(preview.has_value + preview.set_by_person)}: " <>
+      "#{preview.set_by_person} already in the group, " <>
+      "#{preview.has_value} already suggested or dismissed."
+  end
+
+  defp left_alone(kind, preview) do
+    fact = if kind == "ownership", do: "have an owner", else: "have a placement"
+
+    "Leaves alone #{resource_count(preview.has_value + preview.set_by_person)} that already " <>
+      "#{fact}: #{preview.set_by_person} set by a person, " <>
+      "#{preview.has_value} by a collector or another rule."
+  end
 
   defp resource_count(1), do: "1 resource"
   defp resource_count(count), do: "#{count} resources"
@@ -597,11 +660,12 @@ defmodule RengaWeb.TriageRuleLive do
 
   defp condition(%Rule{kind: "top_of_rack"}), do: "LLDP neighbor switch's rack"
 
-  defp condition(%Rule{kind: "ownership", label_key: key, label_value: value})
-       when is_binary(key),
+  defp condition(%Rule{kind: kind, label_key: key, label_value: value})
+       when kind in ~w(ownership group) and is_binary(key),
        do: "label #{key}=#{value}"
 
-  defp condition(%Rule{kind: "ownership", hostname_pattern: pattern}), do: "hostname #{pattern}"
+  defp condition(%Rule{kind: kind, hostname_pattern: pattern}) when kind in ~w(ownership group),
+    do: "hostname #{pattern}"
 
   defp effect(%Rule{kind: "network_location", site: site, location: location}) do
     [site, location]
@@ -611,6 +675,7 @@ defmodule RengaWeb.TriageRuleLive do
 
   defp effect(%Rule{kind: "top_of_rack"}), do: "that rack, no unit"
   defp effect(%Rule{kind: "ownership", team: team}), do: "owned by #{team.name}"
+  defp effect(%Rule{kind: "group", resource_group: group}), do: "suggest #{group.name}"
 
   defp format_subnet(%Postgrex.INET{address: address, netmask: netmask}) do
     "#{:inet.ntoa(address)}#{if netmask, do: "/#{netmask}"}"
