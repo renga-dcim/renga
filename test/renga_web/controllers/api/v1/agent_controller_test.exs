@@ -308,6 +308,40 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       end
     end
 
+    test "stores which power sources the agent can read", %{conn: conn} do
+      %{scope: scope, token: token} = source_fixture()
+
+      sources = [
+        %{"source" => "hwmon", "status" => "not_present"},
+        %{"source" => "http://127.0.0.1:9290/metrics", "status" => "unreachable"}
+      ]
+
+      conn = check_in_json(conn, token, %{"power_sources" => sources})
+      %{"agent" => %{"id" => agent_id}} = valid_api_response(conn, 202)
+
+      assert Renga.Inventory.Agent.power_sources(Inventory.get_agent!(scope, agent_id)) == [
+               %{source: "hwmon", status: "not_present"},
+               %{source: "http://127.0.0.1:9290/metrics", status: "unreachable"}
+             ]
+
+      for {sources, path, message} <- [
+            {%{}, "metadata.power_sources", "must be an array"},
+            {List.duplicate(hd(sources), 33), "metadata.power_sources",
+             "must have at most 32 entries"},
+            {[%{"source" => "hwmon"}], "metadata.power_sources.0",
+             "must be an object with a source and a status"},
+            {[%{"source" => " ", "status" => "available"}], "metadata.power_sources.0.source",
+             "must be a non-blank string of at most 255 characters"},
+            {[%{"source" => "hwmon", "status" => "broken"}], "metadata.power_sources.0.status",
+             "must be one of available, not_permitted, not_present, unreachable"}
+          ] do
+        conn = check_in_json(build_conn(), token, %{"power_sources" => sources})
+
+        assert %{"errors" => [%{"path" => ^path, "message" => ^message}]} =
+                 valid_api_response(conn, 422)
+      end
+    end
+
     test "rejects metadata larger than the encoded storage limit", %{conn: conn} do
       %{token: token} = source_fixture()
 

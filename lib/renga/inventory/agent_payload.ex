@@ -24,6 +24,8 @@ defmodule Renga.Inventory.AgentPayload do
   # Mirrors `QueueReport` in agent/src/payload.rs.
   @observation_queue_counts ~w(entries bytes dropped_for_space expired rejected unreadable)
   @queue_dropped_ages ~w(dropped_earliest_age_seconds dropped_latest_age_seconds)
+  @power_source_statuses ~w(available not_permitted not_present unreachable)
+  @max_power_sources 32
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
@@ -91,6 +93,8 @@ defmodule Renga.Inventory.AgentPayload do
       max_source_local_vlan_key_bytes: @max_source_local_vlan_key_bytes,
       observation_queue_counts: @observation_queue_counts,
       queue_dropped_ages: @queue_dropped_ages,
+      power_source_statuses: @power_source_statuses,
+      max_power_sources: @max_power_sources,
       identifier_kinds: @accepted_identifier_kinds,
       matchable_identifier_kinds: @matchable_identifier_kinds,
       prohibited_resource_keys: @prohibited_resource_keys,
@@ -296,6 +300,7 @@ defmodule Renga.Inventory.AgentPayload do
         |> validate_agent_version(metadata)
         |> validate_queue(metadata, "observation_queue")
         |> validate_queue(metadata, "telemetry_queue")
+        |> validate_power_sources(metadata)
 
       _invalid ->
         [error("metadata", "must be an object") | errors]
@@ -350,6 +355,54 @@ defmodule Renga.Inventory.AgentPayload do
         queue_errors(queue, name) ++ errors
     end
   end
+
+  # Whether each power source can be read on the host (RFD 10, "Source status").
+  defp validate_power_sources(errors, metadata) do
+    case Map.fetch(metadata, "power_sources") do
+      :error -> errors
+      {:ok, sources} -> power_sources_errors(sources) ++ errors
+    end
+  end
+
+  @doc "Validates a power source status report, incoming or stored."
+  def power_sources_errors(sources) when is_list(sources) do
+    if length(sources) > @max_power_sources do
+      [error("metadata.power_sources", "must have at most #{@max_power_sources} entries")]
+    else
+      sources
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {source, index} ->
+        power_source_errors(source, "metadata.power_sources.#{index}")
+      end)
+    end
+  end
+
+  def power_sources_errors(_invalid), do: [error("metadata.power_sources", "must be an array")]
+
+  defp power_source_errors(%{"source" => name, "status" => status}, path) do
+    name_errors =
+      if is_binary(name) and String.trim(name) != "" and
+           String.length(name) <= @max_agent_string_length,
+         do: [],
+         else: [
+           error(
+             "#{path}.source",
+             "must be a non-blank string of at most #{@max_agent_string_length} characters"
+           )
+         ]
+
+    status_errors =
+      if status in @power_source_statuses,
+        do: [],
+        else: [
+          error("#{path}.status", "must be one of #{Enum.join(@power_source_statuses, ", ")}")
+        ]
+
+    name_errors ++ status_errors
+  end
+
+  defp power_source_errors(_source, path),
+    do: [error(path, "must be an object with a source and a status")]
 
   @doc "Validates both incoming queue reports and metadata stored before this contract existed."
   def observation_queue_errors(queue), do: queue_errors(queue, "observation_queue")

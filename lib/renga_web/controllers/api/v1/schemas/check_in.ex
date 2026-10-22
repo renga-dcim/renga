@@ -4,6 +4,7 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
   import RengaWeb.Api.V1.Schemas
 
   alias RengaWeb.Api.V1.Schemas.ObservationQueue
+  alias RengaWeb.Api.V1.Schemas.PowerSource
   alias RengaWeb.Api.V1.Schemas.SourceIdentity
 
   def json_schema do
@@ -27,7 +28,15 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
             agent_version: nullable(string()),
             observation_queue: ObservationQueue,
             # The agent's separate telemetry queue (RFD 10), in the same shape.
-            telemetry_queue: ObservationQueue
+            telemetry_queue: ObservationQueue,
+            power_sources: %{
+              type: :array,
+              items: PowerSource,
+              maxItems: contract().max_power_sources,
+              description:
+                "Every power source the agent samples and whether it can read it. " <>
+                  "Omitted until the agent has sampled once; each report replaces the last."
+            }
           }
         },
         installation_key: %{

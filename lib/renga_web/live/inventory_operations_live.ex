@@ -459,6 +459,14 @@ defmodule RengaWeb.InventoryOperationsLive do
                 />
               </span>
             </:col>
+            <:col :let={{_id, source}} label="Power sources" class="w-36" hide_below="3xl">
+              <span id={"collector-power-#{source.id}"}>
+                <.collector_power_sources
+                  id={"collector-power-#{source.id}"}
+                  sources={Agent.power_sources(collector_agent(source))}
+                />
+              </span>
+            </:col>
             <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
                 <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
@@ -728,6 +736,59 @@ defmodule RengaWeb.InventoryOperationsLive do
       {:error, _unknown} -> "Unknown to Renga"
     end
   end
+
+  attr :id, :string, required: true
+  attr :sources, :list, required: true
+
+  # Whether the agent can read each power source on its host (RFD 10). A source
+  # it cannot read names what would enable it.
+  defp collector_power_sources(%{sources: nil} = assigns) do
+    ~H"""
+    <span class="text-xs text-fg-subtle">Not reported</span>
+    """
+  end
+
+  defp collector_power_sources(assigns) do
+    ~H"""
+    <span class="flex flex-wrap gap-x-2 gap-y-0.5">
+      <span
+        :for={{source, index} <- Enum.with_index(@sources)}
+        id={"#{@id}-#{index}"}
+        class="inline-flex items-center gap-1 text-xs"
+        title={power_source_hint(source)}
+      >
+        <span class={["size-1.5 rounded-full", power_source_dot(source.status)]} />
+        <span class="font-mono text-fg-muted">{source.source}</span>
+        <span class="text-fg">{power_source_status(source.status)}</span>
+      </span>
+    </span>
+    """
+  end
+
+  defp power_source_dot("available"), do: "bg-ok"
+  defp power_source_dot("unreachable"), do: "bg-crit"
+  defp power_source_dot(_status), do: "bg-unknown"
+
+  defp power_source_status("available"), do: "Available"
+  defp power_source_status("not_permitted"), do: "Not permitted"
+  defp power_source_status("not_present"), do: "Not present"
+  defp power_source_status("unreachable"), do: "Unreachable"
+
+  defp power_source_hint(%{source: "hwmon", status: "not_present"}),
+    do:
+      "No acpi_power_meter or supported power supply sensor. A host running " <>
+        "ipmi_exporter can be read by adding it under [[exporters]] in the agent configuration."
+
+  defp power_source_hint(%{source: "hwmon", status: "not_permitted"}),
+    do: "The agent cannot read /sys/class/hwmon. Check the service's sandbox settings."
+
+  defp power_source_hint(%{status: "unreachable"}),
+    do: "The agent cannot reach this source. Check its address and that it is running."
+
+  defp power_source_hint(%{status: "not_permitted"}),
+    do: "The agent is not allowed to read this source. Check its credentials or permissions."
+
+  defp power_source_hint(_source), do: nil
 
   attr :id, :string, required: true
   attr :queue, :map, required: true
