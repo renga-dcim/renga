@@ -55,8 +55,9 @@ defmodule Renga.Transfers.Schema do
   `organization_id` is left out of both sides: an archive holds one
   organization and does not name it, so a key that pairs it with a record's
   ID refers to that record alone. Keys to users are principal fields
-  (`Renga.Transfers.RecordTypes`), and keys to organizations name the
-  organization itself; neither is listed.
+  (`Renga.Transfers.RecordTypes`), keys to organizations name the
+  organization itself, and keys through fields the record type does not
+  export never reach an archive; none of them is listed.
   """
   def references(types) do
     included = Map.new(types, &{&1.name, &1})
@@ -90,11 +91,13 @@ defmodule Renga.Transfers.Schema do
             Enum.zip(fields, target_fields),
             &(&1 == {"organization_id", "organization_id"})
           ),
-        pairs != [] do
+        pairs != [],
+        exported = Enum.filter(pairs, &(elem(&1, 0) in included[table].fields)),
+        exported != [] do
       unless Map.has_key?(included, target),
         do: raise(ArgumentError, "#{table} refers to #{target}, which the archive does not hold")
 
-      unless Enum.all?(pairs, &(elem(&1, 0) in included[table].fields)),
+      unless exported == pairs,
         do:
           raise(ArgumentError, "#{table} refers to #{target} through a field it does not export")
 
