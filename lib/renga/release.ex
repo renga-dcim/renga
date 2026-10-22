@@ -22,7 +22,8 @@ defmodule Renga.Release do
   end
 
   @doc """
-  Reseals every stored secret under the current `ENCRYPTION_KEYS` key, so
+  Reseals every stored secret under the current `ENCRYPTION_KEYS` key,
+  authenticator secrets and identity provider client secrets alike, so
   the operator can then remove an older key. Run it as `bin/reencrypt-secrets`
   after putting a new key first.
   """
@@ -31,12 +32,20 @@ defmodule Renga.Release do
 
     {:ok, result, _} =
       Ecto.Migrator.with_repo(Renga.Repo, fn _repo ->
-        Renga.Accounts.MFA.reencrypt_totp_secrets()
+        with {:ok, totp} <- Renga.Accounts.MFA.reencrypt_totp_secrets(),
+             {:ok, providers} <-
+               Renga.Accounts.IdentityProviders.reencrypt_secrets(
+                 {:operator, "bin/reencrypt-secrets"}
+               ) do
+          {:ok, totp, providers}
+        end
       end)
 
     case result do
-      {:ok, count} ->
-        IO.puts("Resealed #{count} authenticator secrets.")
+      {:ok, totp, providers} ->
+        IO.puts(
+          "Resealed #{totp} authenticator secrets and #{providers} identity provider secrets."
+        )
 
       {:error, reason} ->
         IO.puts(:stderr, "Could not reseal secrets: #{inspect(reason)}")
