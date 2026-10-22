@@ -288,7 +288,7 @@ defmodule RengaWeb.UserLive.Settings do
               :for={event <- @security_events}
               class="flex items-baseline justify-between gap-3 py-1.5 text-sm"
             >
-              <span class="min-w-0 truncate text-fg">{Accounts.describe_security_event(event)}</span>
+              <span class="min-w-0 break-words text-fg">{Accounts.describe_security_event(event)}</span>
               <time
                 datetime={DateTime.to_iso8601(event.inserted_at)}
                 class="shrink-0 text-xs text-fg-muted tabular-nums"
