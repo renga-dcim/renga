@@ -152,6 +152,24 @@ defmodule RengaWeb.Scim.UserControllerTest do
     assert %{"scimType" => "invalidValue"} = body(get(conn, ~p"/scim/v2/Users?count=many"), 400)
   end
 
+  test "a filter's value decodes as a JSON string", %{conn: conn} do
+    body(create_user(conn, %{"userName" => "su0061m@example.com", "externalId" => "a"}), 201)
+    body(create_user(conn, %{"userName" => "sam@example.com", "externalId" => "b"}), 201)
+
+    found =
+      conn
+      |> get(~p"/scim/v2/Users?#{[filter: ~S(userName eq "s\u0061m@example.com")]}")
+      |> then(&body(&1, 200))
+
+    assert [%{"externalId" => "b"}] = found["Resources"]
+
+    assert %{"scimType" => "invalidFilter"} =
+             body(
+               get(conn, ~p"/scim/v2/Users?#{[filter: ~S(userName eq "\sam@example.com")]}"),
+               400
+             )
+  end
+
   test "malformed list parameters are SCIM errors, not crashes", %{conn: conn} do
     for query <- ["count[]=1", "startIndex[a]=1", "startIndex=9223372036854775808"] do
       assert %{"scimType" => "invalidValue"} = body(get(conn, "/scim/v2/Users?" <> query), 400)
