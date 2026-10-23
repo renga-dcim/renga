@@ -145,6 +145,12 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "team_member_removed", metadata: metadata, new_value: %{"name" => team}}),
     do: "Removed #{metadata["member"]} from #{team}"
 
+  def describe(%{kind: "capability_allowed", metadata: %{"title" => title}}),
+    do: "Enabled #{title}"
+
+  def describe(%{kind: "capability_disallowed", metadata: %{"title" => title}}),
+    do: "Disabled #{title}"
+
   def describe(%{kind: "role_created", new_value: %{"name" => name}}),
     do: "Defined the #{name} role"
 

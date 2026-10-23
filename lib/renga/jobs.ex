@@ -1382,6 +1382,52 @@ defmodule Renga.Jobs do
     end
   end
 
+  @doc """
+  Allows or stops allowing one capability, such as a query (RFD 12), without
+  touching the others; needs `organization.manage`. The list is read under
+  the organization's lock, so concurrent changes to different capabilities
+  both survive. Each change is recorded in Activity.
+  """
+  def allow_capability(%Scope{} = scope, key, allowed?)
+      when is_binary(key) and is_boolean(allowed?) do
+    with {:ok, _actor} <- requesting_user(scope),
+         {:ok, capability} <- Registry.fetch(key) do
+      Repo.transaction(fn -> change_allowed_capability!(scope, capability, key, allowed?) end)
+    end
+  end
+
+  defp change_allowed_capability!(%Scope{} = scope, capability, key, allowed?) do
+    organization = lock_active_organization!(scope.organization_id, :update)
+    authorize_member!(scope, "organization.manage")
+    current = Settings.allowed_capabilities(organization)
+
+    cond do
+      allowed? == key in current ->
+        get_settings(organization)
+
+      allowed? ->
+        settings = put_settings!(organization, %{allowed_capabilities: current ++ [key]})
+        record_capability_change!(scope, capability, "capability_allowed")
+        settings
+
+      true ->
+        settings = put_settings!(organization, %{allowed_capabilities: List.delete(current, key)})
+        record_capability_change!(scope, capability, "capability_disallowed")
+        settings
+    end
+  end
+
+  defp record_capability_change!(%Scope{} = scope, capability, kind) do
+    %ChangeEvent{organization_id: scope.organization_id, actor_user_id: scope.user.id}
+    |> ChangeEvent.changeset(%{
+      kind: kind,
+      field: Capability.key(capability),
+      metadata: %{"title" => capability.title()},
+      occurred_at: Renga.Time.utc_now_ms()
+    })
+    |> Repo.insert!()
+  end
+
   defp put_settings!(%Organization{} = organization, attrs) do
     with {:ok, settings} <-
            organization |> Settings.changeset(attrs) |> Changeset.apply_action(:update),

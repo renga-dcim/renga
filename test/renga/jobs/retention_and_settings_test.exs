@@ -92,6 +92,36 @@ defmodule Renga.Jobs.RetentionAndSettingsTest do
       assert %{allowed_capabilities: [_], retention_days: [_]} = errors_on(changeset)
     end
 
+    test "owners allow one capability at a time, each in Activity", %{
+      scope: scope,
+      organization: organization
+    } do
+      assert {:ok, %{allowed_capabilities: [@collect, "query.routes@1"]}} =
+               Jobs.allow_capability(scope, "query.routes@1", true)
+
+      # Allowing again changes nothing and records nothing.
+      assert {:ok, _settings} = Jobs.allow_capability(scope, "query.routes@1", true)
+
+      assert {:ok, %{allowed_capabilities: ["query.routes@1"]}} =
+               Jobs.allow_capability(scope, @collect, false)
+
+      assert {:error, :unknown_capability} = Jobs.allow_capability(scope, "shell.exec@1", true)
+
+      assert {:error, :forbidden} =
+               Jobs.allow_capability(
+                 member_scope(organization, "admin"),
+                 "query.routes@1",
+                 false
+               )
+
+      kinds = scope |> Renga.Inventory.list_activity() |> Enum.map(&{&1.kind, &1.field})
+
+      assert kinds == [
+               {"capability_disallowed", @collect},
+               {"capability_allowed", "query.routes@1"}
+             ]
+    end
+
     test "only owners change them", %{organization: organization} do
       assert {:error, :forbidden} =
                Jobs.update_settings(member_scope(organization, "admin"), %{retention_days: 30})
