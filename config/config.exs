@@ -92,6 +92,10 @@ config :logger, :default_formatter,
 # Keep native request-number decoding while preserving Decimal response numbers.
 config :phoenix, :json_library, RengaWeb.JSON
 
+# Phoenix filters "password" and "token" from logged parameters; "secret"
+# also covers an identity provider's client_secret (RFD 15).
+config :phoenix, :filter_parameters, ["password", "token", "secret"]
+
 # Preserve exact fractional values when JSONB crosses the PostgreSQL boundary.
 config :postgrex, :json_library, Renga.JSON
 

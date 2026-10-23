@@ -110,13 +110,23 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
           "display_name" => "Okta",
           "issuer" => "http://acme.okta.com",
           "client_id" => "renga",
-          "client_secret" => "s3cret"
+          "client_secret" => "sentinel-secret-1f2e"
         }
       })
       |> render_submit()
 
     assert html =~ "https"
     assert OrganizationProviders.list(scope) == []
+    # The refused form doesn't send the secret back.
+    refute html =~ "sentinel-secret-1f2e"
+    assert has_element?(view, ~s|#provider-form input[name="provider[client_secret]"][value=""]|)
+  end
+
+  test "the client secret is filtered from logged event parameters" do
+    filtered =
+      Phoenix.Logger.filter_values(%{"provider" => %{"client_secret" => "sentinel-secret-1f2e"}})
+
+    assert filtered == %{"provider" => %{"client_secret" => "[FILTERED]"}}
   end
 
   test "editing proposes new settings that wait for a test", %{conn: conn} do

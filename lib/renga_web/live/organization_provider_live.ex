@@ -132,6 +132,8 @@ defmodule RengaWeb.OrganizationProviderLive do
       for {field, {message, opts}} <- changeset.errors,
           do: {field, {message, opts}}
 
+    # The submitted secret is never sent back to the browser.
+    params = Map.delete(params, "client_secret")
     assign(socket, :form, to_form(params, as: "provider", errors: errors, action: :insert))
   end
 
@@ -373,6 +375,7 @@ defmodule RengaWeb.OrganizationProviderLive do
           />
           <.input
             field={@form[:client_secret]}
+            value=""
             type="password"
             label={
               if @editing,
