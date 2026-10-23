@@ -11,6 +11,7 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
   alias Renga.Accounts.SessionMFA
   alias Renga.FakeAuthenticator
   alias Renga.SecuritySettings
+  alias Renga.Teams
 
   setup do
     organization = organization_fixture(%{name: "Strict Ops"})
@@ -28,7 +29,7 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
     member = user_fixture()
     organization_membership_fixture(member, organization, %{role: "member"})
 
-    %{organization: organization, member: member}
+    %{organization: organization, owner: owner, member: member}
   end
 
   defp open(conn, user, organization, opts \\ []) do
@@ -70,6 +71,29 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
     organization_membership_fixture(member, relaxed, %{role: "member"})
 
     assert {:ok, _lv, _html} = live(open(conn, member, relaxed), ~p"/inbox")
+  end
+
+  test "an already-connected LiveView stops before its next organization mutation", %{
+    conn: conn,
+    owner: owner,
+    organization: organization
+  } do
+    owner = %{owner | session_mfa: SessionMFA.for_method(:passkey)}
+    scope = Accounts.scope_for_user(owner, organization.id)
+    {:ok, false} = SecuritySettings.put(scope, :require_mfa, false, "Prepare stale session")
+
+    other_owner = user_fixture()
+    organization_membership_fixture(other_owner, organization, %{role: "owner"})
+    conn = open(conn, other_owner, organization)
+    {:ok, view, _html} = live(conn, ~p"/settings/teams")
+
+    {:ok, true} = SecuritySettings.put(scope, :require_mfa, true, "Organization policy")
+
+    assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} =
+             render_submit(view, "save", %{"team" => %{"name" => "Bypass"}})
+
+    assert Teams.list_teams(scope) == []
+    assert Accounts.get_user_by_session_token(get_session(conn, :user_token))
   end
 
   test "selecting the organization leads to the confirmation", %{
@@ -208,25 +232,27 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
       %{provider: identity_provider_fixture(fake)}
     end
 
-    test "count while the provider is marked, and stop at the next request once unmarked", %{
+    test "stop an already-connected LiveView at the next request once unmarked", %{
       conn: conn,
-      member: member,
+      owner: owner,
       organization: organization,
       provider: provider
     } do
-      mfa = SessionMFA.for_provider(provider, %{})
-      conn = open(conn, member, organization, mfa: mfa)
-      assert {:error, {:redirect, _}} = live(conn, ~p"/inbox")
-
       {:ok, provider} =
         IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => true}, {:operator, "op"})
 
-      assert {:ok, _lv, _html} = live(conn, ~p"/inbox")
+      mfa = SessionMFA.for_provider(provider, %{})
+      conn = open(conn, owner, organization, mfa: mfa)
+      {:ok, view, _html} = live(conn, ~p"/settings/teams")
+      scope = Accounts.scope_for_user(%{owner | session_mfa: mfa}, organization.id)
 
       {:ok, _provider} =
         IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => false}, {:operator, "op"})
 
-      assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} = live(conn, ~p"/inbox")
+      assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} =
+               render_submit(view, "save", %{"team" => %{"name" => "Bypass"}})
+
+      assert Teams.list_teams(scope) == []
     end
   end
 end
