@@ -163,7 +163,8 @@ mod tests {
 
     #[test]
     fn queues_one_host_batch_per_sample_with_failures_as_unknown() {
-        // A fake /sys with two ACPI power meters, which have no hwmon `name`.
+        // A fake /sys with two ACPI power meters, whose name and sensors are on their ACPI
+        // devices.
         let sys = std::env::temp_dir().join(format!("renga-power-{}", Uuid::new_v4()));
         let root = sys.join("class/hwmon");
         for (index, value) in [(0, "245500000"), (1, "busy")] {
@@ -171,10 +172,11 @@ mod tests {
             let device = sys.join(format!("devices/LNXSYSTM:00/ACPI000D:0{index}"));
             fs::create_dir_all(&chip).unwrap();
             fs::create_dir_all(&device).unwrap();
-            fs::write(device.join("hid"), "ACPI000D\n").unwrap();
+            fs::write(device.join("name"), "power_meter\n").unwrap();
+            fs::write(device.join("path"), format!("\\_SB_.PMI{index}\n")).unwrap();
             std::os::unix::fs::symlink(&device, chip.join("device")).unwrap();
-            fs::write(chip.join("power1_average"), value).unwrap();
-            fs::write(chip.join("power1_average_interval"), "30000").unwrap();
+            fs::write(device.join("power1_average"), value).unwrap();
+            fs::write(device.join("power1_average_interval"), "30000").unwrap();
         }
         let (sink, batches) = capture();
         let sources = PowerSources::default();
@@ -196,7 +198,7 @@ mod tests {
         assert_eq!(
             batch["samples"][0],
             json!({
-                "sensor": "power_meter/acpi:LNXSYSTM:00/ACPI000D:00/power1",
+                "sensor": "power_meter/acpi:\\_SB_.PMI0/power1",
                 "boundary": "host_input",
                 "quantity": "real_power",
                 "unit": "W",

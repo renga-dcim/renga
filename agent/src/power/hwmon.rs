@@ -6,15 +6,17 @@
 //! their input and output power. A regulator or GPU also reports watts, but for one component
 //! rather than the host, so anything else is left unmapped rather than guessed at.
 //!
-//! Drivers are recognized by what sysfs shows, not by module name. The ACPI power meter
-//! registers without a `name` file, so it is known by its device's ACPI ID. A PMBus supply's
-//! `name` is its I2C client name: the `i2c_device_id`, or the devicetree compatible without its
-//! vendor prefix, with `-` turned into `_`.
+//! Drivers are recognized by what sysfs shows, not by module name. Most drivers put `name` and
+//! their sensor files on the hwmon device; the ACPI power meter (`power_meter`) puts them on its
+//! parent ACPI device instead, so both directories are looked at, as node_exporter and
+//! lm-sensors do. A PMBus supply's `name` is its I2C client name: the `i2c_device_id`, or the
+//! devicetree compatible without its vendor prefix, with `-` turned into `_`.
 //!
 //! A sensor's identity must survive reboots, so it is built from the device's firmware node
-//! (its devicetree node or ACPI path), never from the `hwmonN` index or an I2C bus number, which
-//! the kernel may assign differently on the next boot. A chip without a firmware node is not
-//! reported: a series that could silently swap supplies is worse than none.
+//! (its devicetree node path or ACPI namespace path, such as `\_SB_.PMI0`), never from the
+//! `hwmonN` index, an I2C bus number, or a sysfs name such as `ACPI000D:00`, which the kernel
+//! may number differently on the next boot. A chip without a firmware node is not reported: a
+//! series that could silently swap supplies is worse than none.
 
 use std::{
     fs, io,
@@ -29,11 +31,9 @@ pub const MAPPING_VERSION: u32 = 1;
 
 pub const ROOT: &str = "/sys/class/hwmon";
 
-/// The `name` the ACPI power meter's driver goes by where a name is shown, as in
-/// node_exporter's `chip_name`; its hwmon device itself has no `name` file.
+/// The ACPI power meter's `name`, which it shows on its ACPI device rather than its hwmon
+/// device.
 pub const POWER_METER: &str = "power_meter";
-/// The ACPI ID of a power meter device.
-const POWER_METER_HID: &str = "ACPI000D";
 
 /// The hwmon names of power supplies whose `pin`/`pout` labels are the supply's own input and
 /// output: `ibm-cffps` (`ibm_cffps1`, `ibm_cffps2`, or `cffps1`/`cffps2` from devicetree or
@@ -168,18 +168,18 @@ fn unreadable(error: &io::Error) -> Availability {
 /// The mapped readings of one chip. A permission error on anything needed to find or name its
 /// sensors is returned, so a sandbox that hides them reads as not permitted, not as absent.
 fn chip_readings(chip: &Path) -> io::Result<Vec<Reading>> {
-    let Some(name) = driver(chip)? else {
+    let Some((attributes, name)) = attributes(chip)? else {
         return Ok(Vec::new());
     };
     if name != POWER_METER && !SUPPLY_NAMES.contains(&name.as_str()) {
         return Ok(Vec::new());
     }
-    let Some(device) = firmware_node(chip) else {
+    let Some(device) = firmware_node(chip)? else {
         warn!(chip = %chip.display(), driver = %name, "power sensor has no firmware node; skipping it");
         return Ok(Vec::new());
     };
 
-    let mut channels: Vec<u32> = fs::read_dir(chip)?
+    let mut channels: Vec<u32> = fs::read_dir(&attributes)?
         .flatten()
         .filter_map(|item| channel(&item.file_name().to_string_lossy()))
         .collect();
@@ -189,7 +189,7 @@ fn chip_readings(chip: &Path) -> io::Result<Vec<Reading>> {
     let mut readings = Vec::new();
     for number in channels {
         let prefix = format!("power{number}");
-        let label = match read_trimmed(&chip.join(format!("{prefix}_label"))) {
+        let label = match read_trimmed(&attributes.join(format!("{prefix}_label"))) {
             Ok(label) => Some(label),
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Err(error),
             Err(_) => None,
@@ -202,51 +202,55 @@ fn chip_readings(chip: &Path) -> io::Result<Vec<Reading>> {
             warn!(%sensor, "power sensor name is too long to report; skipping it");
             continue;
         }
-        readings.push(reading(chip, &prefix, sensor, boundary));
+        readings.push(reading(&attributes, &prefix, sensor, boundary));
     }
     Ok(readings)
 }
 
-/// The chip's hwmon name, or the power meter's for an ACPI power meter, which has no `name`.
-fn driver(chip: &Path) -> io::Result<Option<String>> {
-    match read_trimmed(&chip.join("name")) {
-        Ok(name) => Ok(Some(name)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match read_trimmed(&chip.join("device").join("hid")) {
-                Ok(hid) if hid == POWER_METER_HID => Ok(Some(POWER_METER.into())),
-                Ok(_) => Ok(None),
-                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Err(error),
-                Err(_) => Ok(None),
-            }
+/// The directory holding the chip's `name` and sensor files, and that name: the hwmon device's
+/// own, or else its parent device's, where older drivers such as the ACPI power meter put them.
+fn attributes(chip: &Path) -> io::Result<Option<(PathBuf, String)>> {
+    for dir in [chip.to_path_buf(), chip.join("device")] {
+        if let Some(name) = optional(read_trimmed(&dir.join("name")))? {
+            return Ok(Some((dir, name)));
         }
-        Err(error) => Err(error),
     }
+    Ok(None)
 }
 
 /// Where firmware describes the chip's device, which stays the same across reboots: its
-/// devicetree node, or its ACPI path, whether the device is an ACPI device itself or an I2C
-/// device ACPI enumerated.
-fn firmware_node(chip: &Path) -> Option<String> {
+/// devicetree node, or its ACPI namespace path, whether the device is an ACPI device itself or
+/// one that ACPI enumerated. A permission error is returned rather than read as no node.
+fn firmware_node(chip: &Path) -> io::Result<Option<String>> {
     let device = chip.join("device");
-    let after = |path: PathBuf, marker: &str| -> Option<String> {
-        let path = fs::canonicalize(path).ok()?;
-        let path = path.to_string_lossy();
-        let (_, rest) = path.split_once(marker)?;
-        (!rest.is_empty()).then(|| rest.to_owned())
-    };
-    after(device.join("of_node"), "/devicetree/base/")
-        .map(|node| format!("dt:{node}"))
-        .or_else(|| {
-            after(device.join("firmware_node"), "/devices/").map(|node| format!("acpi:{node}"))
-        })
-        .or_else(|| {
-            device
-                .join("hid")
-                .exists()
-                .then(|| after(device.clone(), "/devices/"))
-                .flatten()
-                .map(|node| format!("acpi:{node}"))
-        })
+    if let Some(node) = optional(fs::canonicalize(device.join("of_node")))? {
+        let node = node.to_string_lossy();
+        if let Some((_, path)) = node.split_once("/devicetree/base/") {
+            if !path.is_empty() {
+                return Ok(Some(format!("dt:{path}")));
+            }
+        }
+    }
+    for file in [
+        device.join("firmware_node").join("path"),
+        device.join("path"),
+    ] {
+        if let Some(path) = optional(read_trimmed(&file))? {
+            if !path.is_empty() {
+                return Ok(Some(format!("acpi:{path}")));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// A missing file as `None`, keeping permission errors.
+fn optional<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Err(error),
+        Err(_) => Ok(None),
+    }
 }
 
 /// The channel number of a `powerN_input` or `powerN_average` file.
@@ -278,10 +282,10 @@ pub fn boundary(driver: &str, label: Option<String>) -> Option<Boundary> {
 
 /// Prefers the averaged value, which smooths a load's swings over the driver's interval. An
 /// average whose interval cannot be known is a failed reading, never an instantaneous one.
-fn reading(chip: &Path, prefix: &str, sensor: String, boundary: Boundary) -> Reading {
-    let average = chip.join(format!("{prefix}_average"));
+fn reading(attributes: &Path, prefix: &str, sensor: String, boundary: Boundary) -> Reading {
+    let average = attributes.join(format!("{prefix}_average"));
     let (file, window) = if average.exists() {
-        match interval(&chip.join(format!("{prefix}_average_interval"))) {
+        match interval(&attributes.join(format!("{prefix}_average_interval"))) {
             Ok(window) => (average, window),
             Err(error) => {
                 return Reading {
@@ -293,7 +297,7 @@ fn reading(chip: &Path, prefix: &str, sensor: String, boundary: Boundary) -> Rea
             }
         }
     } else {
-        (chip.join(format!("{prefix}_input")), Duration::ZERO)
+        (attributes.join(format!("{prefix}_input")), Duration::ZERO)
     };
     let watts = read_trimmed(&file)
         .map_err(|error| SensorError {
@@ -352,12 +356,16 @@ mod tests {
     struct Sys(PathBuf);
 
     enum Device<'a> {
-        /// An ACPI device, such as the power meter, under `devices/`.
-        Acpi { path: &'a str, hid: &'a str },
+        /// An ACPI device under `devices/`, with its ACPI namespace `path`.
+        Acpi { path: &'a str, namespace: &'a str },
         /// An I2C device described by a devicetree node, under `firmware/devicetree/base/`.
         Dt { path: &'a str, node: &'a str },
-        /// An I2C device ACPI enumerated.
-        AcpiI2c { path: &'a str, node: &'a str },
+        /// An I2C device ACPI enumerated: its `firmware_node` is an ACPI device at `node`.
+        AcpiI2c {
+            path: &'a str,
+            node: &'a str,
+            namespace: &'a str,
+        },
         /// An I2C device instantiated from user space, with no firmware node.
         Bare { path: &'a str },
     }
@@ -373,24 +381,34 @@ mod tests {
             self.0.join("class/hwmon")
         }
 
+        /// A chip whose `name` and sensor files are on its hwmon device.
         fn chip(&self, index: u32, name: Option<&str>, device: Device, files: &[(&str, &str)]) {
             let chip = self.root().join(format!("hwmon{index}"));
             fs::create_dir_all(&chip).unwrap();
-            if let Some(name) = name {
-                fs::write(chip.join("name"), format!("{name}\n")).unwrap();
-            }
-            for (file, value) in files {
-                fs::write(chip.join(file), format!("{value}\n")).unwrap();
-            }
+            write(&chip, name, files);
+            symlink(self.device(device), chip.join("device")).unwrap();
+        }
+
+        /// An ACPI power meter as Linux registers it: `name` and the sensor files are on the
+        /// ACPI device, and its hwmon device only links to it.
+        fn meter(&self, index: u32, path: &str, namespace: &str, files: &[(&str, &str)]) {
+            let chip = self.root().join(format!("hwmon{index}"));
+            fs::create_dir_all(&chip).unwrap();
+            let device = self.device(Device::Acpi { path, namespace });
+            write(&device, Some(POWER_METER), files);
+            symlink(device, chip.join("device")).unwrap();
+        }
+
+        fn device(&self, device: Device) -> PathBuf {
             let dir = |relative: &str| {
                 let path = self.0.join(relative);
                 fs::create_dir_all(&path).unwrap();
                 path
             };
-            let device = match device {
-                Device::Acpi { path, hid } => {
+            match device {
+                Device::Acpi { path, namespace } => {
                     let device = dir(&format!("devices/{path}"));
-                    fs::write(device.join("hid"), format!("{hid}\n")).unwrap();
+                    fs::write(device.join("path"), format!("{namespace}\n")).unwrap();
                     device
                 }
                 Device::Dt { path, node } => {
@@ -402,18 +420,28 @@ mod tests {
                     .unwrap();
                     device
                 }
-                Device::AcpiI2c { path, node } => {
+                Device::AcpiI2c {
+                    path,
+                    node,
+                    namespace,
+                } => {
                     let device = dir(&format!("devices/{path}"));
-                    symlink(
-                        dir(&format!("devices/{node}")),
-                        device.join("firmware_node"),
-                    )
-                    .unwrap();
+                    let node = dir(&format!("devices/{node}"));
+                    fs::write(node.join("path"), format!("{namespace}\n")).unwrap();
+                    symlink(node, device.join("firmware_node")).unwrap();
                     device
                 }
                 Device::Bare { path } => dir(&format!("devices/{path}")),
-            };
-            symlink(device, chip.join("device")).unwrap();
+            }
+        }
+    }
+
+    fn write(dir: &Path, name: Option<&str>, files: &[(&str, &str)]) {
+        if let Some(name) = name {
+            fs::write(dir.join("name"), format!("{name}\n")).unwrap();
+        }
+        for (file, value) in files {
+            fs::write(dir.join(file), format!("{value}\n")).unwrap();
         }
     }
 
@@ -423,10 +451,8 @@ mod tests {
         }
     }
 
-    const METER: Device<'static> = Device::Acpi {
-        path: "LNXSYSTM:00/LNXSYBUS:00/ACPI000D:00",
-        hid: "ACPI000D",
-    };
+    const METER_PATH: &str = "LNXSYSTM:00/LNXSYBUS:00/ACPI000D:00";
+    const METER_NAMESPACE: &str = "\\_SB_.PMI0";
 
     fn sensors(scan: &Scan) -> Vec<(&str, Boundary)> {
         scan.readings
@@ -436,12 +462,12 @@ mod tests {
     }
 
     #[test]
-    fn maps_the_acpi_power_meter_which_has_no_name_as_host_input() {
+    fn maps_the_acpi_power_meter_on_its_acpi_device_as_host_input() {
         let sys = Sys::new();
-        sys.chip(
+        sys.meter(
             3,
-            None,
-            METER,
+            METER_PATH,
+            METER_NAMESPACE,
             &[
                 ("power1_average", "245000000"),
                 ("power1_average_interval", "1000"),
@@ -454,7 +480,7 @@ mod tests {
         assert_eq!(
             scan.readings,
             [Reading {
-                sensor: "power_meter/acpi:LNXSYSTM:00/LNXSYBUS:00/ACPI000D:00/power1".into(),
+                sensor: "power_meter/acpi:\\_SB_.PMI0/power1".into(),
                 boundary: Boundary::HostInput,
                 watts: Ok(245.0),
                 window: Duration::from_secs(1),
@@ -619,16 +645,55 @@ mod tests {
             Some("pfe3000"),
             Device::AcpiI2c {
                 path: "pci0000:00/i2c-9/9-0010",
-                node: "LNXSYSTM:00/PSU0:00",
+                node: "LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/PSU0000:00",
+                namespace: "\\_SB_.PCI0.I2C9.PSU0",
             },
             &[("power1_input", "1000000"), ("power1_label", "pin")],
         );
         assert_eq!(
             sensors(&scan(&acpi.root())),
             [(
-                "pfe3000/acpi:LNXSYSTM:00/PSU0:00/power1",
+                "pfe3000/acpi:\\_SB_.PCI0.I2C9.PSU0/power1",
                 Boundary::SupplyInput
             )]
+        );
+    }
+
+    #[test]
+    fn acpi_identity_follows_the_namespace_not_sysfs_instance_numbers() {
+        let meters = |order: [(&str, &str); 2]| {
+            let sys = Sys::new();
+            for (index, (instance, namespace)) in order.into_iter().enumerate() {
+                let watts = if namespace.ends_with('0') {
+                    "100000000"
+                } else {
+                    "200000000"
+                };
+                sys.meter(
+                    index as u32,
+                    &format!("LNXSYSTM:00/LNXSYBUS:00/ACPI000D:{instance}"),
+                    namespace,
+                    &[("power1_input", watts)],
+                );
+            }
+            let mut readings: Vec<(String, f64)> = scan(&sys.root())
+                .readings
+                .into_iter()
+                .map(|reading| (reading.sensor, reading.watts.unwrap()))
+                .collect();
+            readings.sort_by(|a, b| a.0.cmp(&b.0));
+            readings
+        };
+        // The next boot numbers the two meters' ACPI devices the other way round.
+        let first = meters([("00", "\\_SB_.PMI0"), ("01", "\\_SB_.PMI1")]);
+        let second = meters([("01", "\\_SB_.PMI0"), ("00", "\\_SB_.PMI1")]);
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            [
+                ("power_meter/acpi:\\_SB_.PMI0/power1".to_owned(), 100.0),
+                ("power_meter/acpi:\\_SB_.PMI1/power1".to_owned(), 200.0),
+            ]
         );
     }
 
@@ -676,9 +741,20 @@ mod tests {
             None,
             Device::Acpi {
                 path: "LNXSYSTM:00/LNXTHERM:00",
-                hid: "LNXTHERM",
+                namespace: "\\_TZ_.THM0",
             },
             &[("power1_input", "1")],
+        );
+        // A power meter's files on its hwmon device rather than its ACPI device are not how
+        // Linux registers one, and that hwmon device has no name.
+        sys.chip(
+            3,
+            None,
+            Device::Acpi {
+                path: "LNXSYSTM:00/ACPI000D:00",
+                namespace: "\\_SB_.PMI0",
+            },
+            &[("power1_average", "1"), ("power1_average_interval", "1000")],
         );
 
         let scan = scan(&sys.root());
@@ -690,22 +766,19 @@ mod tests {
     #[test]
     fn a_sensor_that_cannot_be_read_is_a_failure_not_zero() {
         let sys = Sys::new();
-        sys.chip(
+        sys.meter(
             0,
-            None,
-            METER,
+            METER_PATH,
+            METER_NAMESPACE,
             &[
                 ("power1_average", "garbage"),
                 ("power1_average_interval", "1000"),
             ],
         );
-        sys.chip(
+        sys.meter(
             1,
-            None,
-            Device::Acpi {
-                path: "LNXSYSTM:00/ACPI000D:01",
-                hid: "ACPI000D",
-            },
+            "LNXSYSTM:00/ACPI000D:01",
+            "\\_SB_.PMI1",
             &[("power1_input", "")],
         );
 
@@ -733,7 +806,7 @@ mod tests {
             if let Some(interval) = interval {
                 files.push(("power1_average_interval", interval));
             }
-            sys.chip(0, None, METER, &files);
+            sys.meter(0, METER_PATH, METER_NAMESPACE, &files);
 
             let [reading] = scan(&sys.root()).readings.try_into().unwrap();
             match valid {
@@ -776,6 +849,22 @@ mod tests {
         fs::set_permissions(&chip, fs::Permissions::from_mode(0o111)).unwrap();
         let availability = scan(&sys.root()).availability;
         fs::set_permissions(&chip, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(availability, Availability::NotPermitted);
+
+        // The supply's device, which leads to its firmware node, cannot be entered.
+        let device = sys.0.join("devices/platform/i2c-3/3-0068");
+        fs::set_permissions(&device, fs::Permissions::from_mode(0o000)).unwrap();
+        let availability = scan(&sys.root()).availability;
+        fs::set_permissions(&device, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(availability, Availability::NotPermitted);
+
+        // The ACPI power meter's device, which holds its name, cannot be entered.
+        let sys = Sys::new();
+        sys.meter(0, METER_PATH, METER_NAMESPACE, &[("power1_input", "1")]);
+        let device = sys.0.join("devices").join(METER_PATH);
+        fs::set_permissions(&device, fs::Permissions::from_mode(0o000)).unwrap();
+        let availability = scan(&sys.root()).availability;
+        fs::set_permissions(&device, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(availability, Availability::NotPermitted);
     }
 

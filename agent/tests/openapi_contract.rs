@@ -310,7 +310,7 @@ fn host_power_batches_match_the_contract() {
     let batch = power::batch(
         &[
             reading(
-                "power_meter/acpi:LNXSYSTM:00/ACPI000D:00/power1",
+                "power_meter/acpi:\\_SB_.PMI0/power1",
                 hwmon::Boundary::HostInput,
                 Ok(245.5),
             ),
