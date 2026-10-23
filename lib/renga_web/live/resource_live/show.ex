@@ -41,8 +41,10 @@ defmodule RengaWeb.ResourceLive.Show do
   alias Renga.Jobs.Job
   alias Renga.Jobs.TargetBindings
   alias Renga.Requests
+  alias Renga.ResourceGroups
   alias Renga.Teams
   alias RengaWeb.Format
+  alias RengaWeb.GroupComponents
 
   @lifecycle_options [
     {"Active — in service", "active"},
@@ -96,6 +98,7 @@ defmodule RengaWeb.ResourceLive.Show do
      |> assign_provenance()
      |> assign_findings()
      |> assign_requests()
+     |> assign_groups()
      |> reset_request_forms()
      |> reset_override_forms()}
   end
@@ -187,6 +190,38 @@ defmodule RengaWeb.ResourceLive.Show do
       {:error, :forbidden} ->
         {:noreply, put_flash(socket, :error, "Overrides require the owner or admin role")}
     end
+  end
+
+  def handle_event("add_to_group", %{"group" => %{"id" => ""}}, socket), do: {:noreply, socket}
+
+  def handle_event("add_to_group", %{"group" => %{"id" => group_id}}, socket) do
+    %{current_scope: scope, resource: resource, resource_groups: memberships} = socket.assigns
+
+    result =
+      with %ResourceGroups.Group{} = group <- ResourceGroups.get_group(scope, group_id) do
+        # Choosing a sibling of a direct group in the same exclusive set
+        # moves the resource, so changing environment is one step.
+        sibling? =
+          group.group_set != nil and group.group_set.exclusive and
+            Enum.any?(memberships, &(&1.direct and &1.group.group_set_id == group.group_set_id))
+
+        if sibling?,
+          do: ResourceGroups.move_member(scope, resource.id, group),
+          else: ResourceGroups.add_members(scope, group, [resource.id])
+      end
+
+    groups_changed(result, socket, "Added to the group")
+  end
+
+  def handle_event("remove_from_group", %{"id" => group_id}, socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+
+    result =
+      with %ResourceGroups.Group{} = group <- ResourceGroups.get_group(scope, group_id) do
+        ResourceGroups.remove_members(scope, group, [resource.id])
+      end
+
+    groups_changed(result, socket, "Removed from the group")
   end
 
   def handle_event("set_owner", %{"owner" => %{"team" => team_id}}, socket) do
@@ -430,6 +465,11 @@ defmodule RengaWeb.ResourceLive.Show do
             request={@owner_request}
             request_form={@owner_request_form}
             current_user_id={@current_scope.user.id}
+          />
+          <.groups
+            memberships={@resource_groups}
+            candidates={@group_candidates}
+            can_change?={@can_change_groups?}
           />
           <.agent_summary :if={@collect.agent} agent={@collect.agent} collect={@collect} />
           <.properties id="resource-properties">
@@ -771,6 +811,68 @@ defmodule RengaWeb.ResourceLive.Show do
           </div>
         </.form>
       </details>
+    </section>
+    """
+  end
+
+  attr :memberships, :list, required: true
+  attr :candidates, :list, required: true
+  attr :can_change?, :boolean, required: true
+
+  # RFD 18: the groups the resource is in. Only direct memberships can be
+  # removed here; the others come through a container.
+  defp groups(assigns) do
+    ~H"""
+    <section
+      :if={@memberships != [] or (@can_change? and @candidates != [])}
+      id="resource-groups"
+      class="space-y-2"
+    >
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-fg-muted">Groups</h2>
+      <ul :if={@memberships != []} class="divide-y divide-line">
+        <li
+          :for={%{group: group, direct: direct} <- @memberships}
+          id={"resource-group-#{group.id}"}
+          class="flex items-center gap-2 py-1.5"
+        >
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-medium text-fg">{group.name}</span>
+            <span :if={group.group_set} class="block truncate text-xs text-fg-muted">
+              {group.group_set.name}
+            </span>
+          </span>
+          <button
+            :if={@can_change? and direct}
+            id={"resource-group-#{group.id}-remove"}
+            type="button"
+            phx-click={JS.push("remove_from_group", value: %{id: group.id})}
+            class="min-h-tap cursor-pointer text-xs text-crit hover:underline sm:min-h-0"
+          >
+            Remove
+          </button>
+        </li>
+      </ul>
+      <.form
+        :if={@can_change? and @candidates != []}
+        for={%{}}
+        as={:group}
+        id="resource-group-form"
+        phx-submit="add_to_group"
+        class="flex items-center gap-2"
+      >
+        <label for="resource-group-select" class="sr-only">Group</label>
+        <select
+          id="resource-group-select"
+          name="group[id]"
+          class="h-control min-h-tap min-w-0 flex-1 rounded-md border border-edge bg-surface px-2 text-sm text-fg focus:border-accent focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="">Add to a group…</option>
+          <option :for={group <- @candidates} value={group.id}>
+            {if group.group_set, do: "#{group.group_set.name} · #{group.name}", else: group.name}
+          </option>
+        </select>
+        <.button id="resource-group-add" size="sm">Add</.button>
+      </.form>
     </section>
     """
   end
@@ -1413,7 +1515,39 @@ defmodule RengaWeb.ResourceLive.Show do
     |> assign_provenance()
     |> assign_findings()
     |> assign_requests()
+    |> assign_groups()
     |> assign_signals()
+  end
+
+  defp groups_changed({:ok, _change}, socket, message),
+    do: {:noreply, socket |> put_flash(:info, message) |> assign_groups()}
+
+  defp groups_changed({:error, reason}, socket, _message) do
+    {:noreply,
+     socket |> put_flash(:error, GroupComponents.refusal_message(reason)) |> assign_groups()}
+  end
+
+  defp groups_changed(nil, socket, _message),
+    do: groups_changed({:error, :not_found}, socket, nil)
+
+  # The groups the resource is in, and the ones a person could add it to.
+  defp assign_groups(socket) do
+    %{current_scope: scope, resource: resource} = socket.assigns
+    memberships = ResourceGroups.list_resource_groups(scope, resource.id)
+    direct = for %{direct: true, group: group} <- memberships, into: MapSet.new(), do: group.id
+
+    can_change? = ResourceGroups.can_change_membership?(scope)
+
+    candidates =
+      if can_change?,
+        do: scope |> ResourceGroups.list_groups() |> Enum.reject(&MapSet.member?(direct, &1.id)),
+        else: []
+
+    assign(socket,
+      resource_groups: memberships,
+      group_candidates: candidates,
+      can_change_groups?: can_change?
+    )
   end
 
   # Members propose lifecycle and override changes instead of applying them;
