@@ -6,9 +6,15 @@
 //! filter is applied to its output and never passed to it. A host's package
 //! list is usually longer than one result holds, so `truncated` says when the
 //! list was cut and `name` narrows it.
+//!
+//! With osquery, its `deb_packages` and `rpm_packages` tables answer instead.
+//! osquery has no apk or pacman table, so a host whose packages neither
+//! table lists is read natively.
 
-use super::{clip, failed, parameters, run_program, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, jobs::JobFailure};
+use super::{
+    clip, failed, osquery_rows, osquery_text, parameters, run_program, Bounded, Query, Sensitivity,
+};
+use crate::{cancellation::Cancellation, jobs::JobFailure, osquery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -23,6 +29,9 @@ const MAX_PACKAGES: usize = 4096;
 const MAX_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
 const RPM_TIMEOUT: Duration = Duration::from_secs(45);
 const RPM_QUERY: &[&str] = &["-qa", "--qf", "%{NAME}\t%{EVR}\t%{ARCH}\n"];
+const OSQUERY_DEB_SQL: &str =
+    "SELECT name, version, arch FROM deb_packages WHERE status LIKE '% installed'";
+const OSQUERY_RPM_SQL: &str = "SELECT name, version, release, epoch, arch FROM rpm_packages";
 
 pub struct Packages;
 
@@ -54,19 +63,77 @@ impl Query for Packages {
     }
 
     fn answer(&self, raw: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure> {
-        let params: Parameters = parameters(raw)?;
-        if params
-            .name
-            .as_ref()
-            .is_some_and(|n| n.chars().count() > 128)
-        {
-            return Err(failed(
-                "invalid parameters: name must be at most 128 characters",
-            ));
-        }
+        let name = name(raw)?;
         let packages = read_packages(Path::new("/"), cancellation)?;
-        Ok(answer(packages, params.name.as_deref()))
+        Ok(answer(packages, name.as_deref()))
     }
+
+    fn uses_osquery(&self) -> bool {
+        true
+    }
+
+    fn answer_with_osquery(
+        &self,
+        osquery: &mut osquery::Client,
+        raw: &Value,
+    ) -> Result<Option<Value>, JobFailure> {
+        let name = name(raw)?;
+        // Either table failing leaves the list incomplete, so the native
+        // reading answers instead; an empty table is an answer.
+        let Some(deb) = osquery_rows(osquery, OSQUERY_DEB_SQL) else {
+            return Ok(None);
+        };
+        let Some(rpm) = osquery_rows(osquery, OSQUERY_RPM_SQL) else {
+            return Ok(None);
+        };
+        let packages: Vec<Package> = deb
+            .iter()
+            .filter_map(|row| {
+                Some(package(
+                    osquery_text(row, "name")?,
+                    osquery_text(row, "version")?,
+                    osquery_text(row, "arch"),
+                    "dpkg",
+                ))
+            })
+            .chain(rpm.iter().filter_map(rpm_package))
+            .collect();
+        if packages.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(answer(packages, name.as_deref())))
+    }
+}
+
+fn name(raw: &Value) -> Result<Option<String>, JobFailure> {
+    let params: Parameters = parameters(raw)?;
+    if params
+        .name
+        .as_ref()
+        .is_some_and(|n| n.chars().count() > 128)
+    {
+        return Err(failed(
+            "invalid parameters: name must be at most 128 characters",
+        ));
+    }
+    Ok(params.name)
+}
+
+/// An `rpm_packages` row, with its version as `rpm`'s `%{EVR}` prints it:
+/// any epoch the package carries, even 0, and none when it has none.
+fn rpm_package(row: &osquery::Row) -> Option<Package> {
+    let version = osquery_text(row, "version")?;
+    let evr = match (osquery_text(row, "epoch"), osquery_text(row, "release")) {
+        (Some(epoch), Some(release)) => format!("{epoch}:{version}-{release}"),
+        (_, Some(release)) => format!("{version}-{release}"),
+        (_, None) => version.to_owned(),
+    };
+    Some(package(
+        osquery_text(row, "name")?,
+        &evr,
+        osquery_text(row, "arch"),
+        "rpm",
+    ))
 }
 
 fn answer(mut packages: Vec<Package>, name: Option<&str>) -> Value {

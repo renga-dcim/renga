@@ -114,6 +114,21 @@ pub fn probe(_config: &OsqueryConfig) -> Option<BackendStatus> {
     None
 }
 
+/// osquery's extensions socket is a Unix socket; elsewhere nothing connects.
+#[cfg(not(unix))]
+pub struct Client;
+
+#[cfg(not(unix))]
+impl Client {
+    pub fn connect(_socket: &std::path::Path, _timeout: Duration) -> Result<Self, Error> {
+        Err(Error::Io(std::io::ErrorKind::Unsupported.into()))
+    }
+
+    pub fn query(&mut self, _sql: &str) -> Result<Vec<Row>, Error> {
+        Err(Error::Io(std::io::ErrorKind::Unsupported.into()))
+    }
+}
+
 #[cfg(unix)]
 mod client {
     use super::{thrift, thrift::Value, BackendStatus, Error, OsqueryConfig, Row, PROBE_TIMEOUT};

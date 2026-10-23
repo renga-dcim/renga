@@ -12,19 +12,36 @@
 //! vector is fixed here and never includes text from the request: a filter
 //! such as a package name is applied to the program's output, not passed to
 //! it. No query takes a command, a path, or a script.
+//!
+//! Where the host runs osquery and `[osquery]` is enabled, a query with SQL
+//! fixed in the agent answers from osquery's tables instead (RFD 12). The
+//! result has the same shape, request text never reaches the SQL, and any
+//! osquery failure falls back to the native reading.
 
 pub mod disk_usage;
 pub mod listening_sockets;
+#[cfg(all(test, unix))]
+mod osquery_tests;
 pub mod packages;
 pub mod routes;
 pub mod services;
 pub mod time_sync;
 
 use super::{Capability, JobFailure, RetryClass, RiskClass};
-use crate::cancellation::Cancellation;
+use crate::{
+    cancellation::Cancellation,
+    osquery::{self, OsqueryConfig},
+};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
+use tracing::warn;
+
+/// The share of a query's timeout osquery may take, from connecting through
+/// its last call, before the query reads natively. The rest is left for the
+/// native reading: services' two 10 s D-Bus calls within 30 s, and rpm's
+/// 45 s within packages' 60 s.
+const OSQUERY_SHARE: u32 = 5;
 
 /// How revealing a query's answer is. Matches the server's `sensitivity/0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,20 +62,55 @@ pub trait Query: Send + Sync {
         Duration::from_secs(30)
     }
     fn answer(&self, parameters: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure>;
+
+    /// Whether [`Query::answer_with_osquery`] has SQL to run.
+    fn uses_osquery(&self) -> bool {
+        false
+    }
+
+    /// Answers from osquery's tables with SQL fixed in the agent. `Ok(None)`
+    /// means osquery could not answer, and the native reading runs instead.
+    fn answer_with_osquery(
+        &self,
+        _osquery: &mut osquery::Client,
+        _parameters: &Value,
+    ) -> Result<Option<Value>, JobFailure> {
+        Ok(None)
+    }
 }
 
 /// Runs a [`Query`] as a job capability: version 1, `observe`, idempotent.
-pub struct QueryCapability(Box<dyn Query>);
+pub struct QueryCapability {
+    query: Box<dyn Query>,
+    osquery: OsqueryConfig,
+}
 
 impl QueryCapability {
-    pub fn new(query: impl Query + 'static) -> Self {
-        Self(Box::new(query))
+    pub fn new(query: impl Query + 'static, osquery: OsqueryConfig) -> Self {
+        Self {
+            query: Box::new(query),
+            osquery,
+        }
+    }
+
+    fn with_osquery(&self, parameters: &Value) -> Result<Option<Value>, JobFailure> {
+        if !self.osquery.enabled || !self.query.uses_osquery() {
+            return Ok(None);
+        }
+        let budget = self.query.timeout() / OSQUERY_SHARE;
+        match osquery::Client::connect(&self.osquery.socket, budget) {
+            Ok(mut client) => self.query.answer_with_osquery(&mut client, parameters),
+            Err(error) => {
+                warn!(%error, query = self.query.name(), "osquery is unreachable; reading natively");
+                Ok(None)
+            }
+        }
     }
 }
 
 impl Capability for QueryCapability {
     fn name(&self) -> &'static str {
-        self.0.name()
+        self.query.name()
     }
 
     fn version(&self) -> u32 {
@@ -74,36 +126,68 @@ impl Capability for QueryCapability {
     }
 
     fn timeout(&self) -> Duration {
-        self.0.timeout()
+        self.query.timeout()
     }
 
     fn enabled_by_default(&self) -> bool {
-        self.0.sensitivity() == Sensitivity::Inventory
+        self.query.sensitivity() == Sensitivity::Inventory
     }
 
     fn run(&self, parameters: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure> {
         if cancellation.cancelled() {
             return Err(JobFailure::Cancelled);
         }
-        self.0.answer(parameters, cancellation)
+        if let Some(answer) = self.with_osquery(parameters)? {
+            return Ok(answer);
+        }
+        // osquery's calls block, bounded by their budget; a job cancelled
+        // meanwhile stops here rather than read natively too.
+        if cancellation.cancelled() {
+            return Err(JobFailure::Cancelled);
+        }
+        self.query.answer(parameters, cancellation)
     }
 }
 
 /// The queries this platform answers. Each reads Linux interfaces, so other
-/// platforms offer none yet.
-pub fn catalog() -> Vec<Arc<dyn Capability>> {
-    if cfg!(target_os = "linux") {
-        vec![
-            Arc::new(QueryCapability::new(listening_sockets::ListeningSockets)),
-            Arc::new(QueryCapability::new(services::Services)),
-            Arc::new(QueryCapability::new(disk_usage::DiskUsage)),
-            Arc::new(QueryCapability::new(routes::Routes)),
-            Arc::new(QueryCapability::new(time_sync::TimeSync)),
-            Arc::new(QueryCapability::new(packages::Packages)),
-        ]
-    } else {
-        Vec::new()
+/// platforms offer none yet. Those with fixed SQL ask `osquery` first.
+pub fn catalog(osquery: &OsqueryConfig) -> Vec<Arc<dyn Capability>> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
     }
+    let osquery = || osquery.clone();
+    vec![
+        Arc::new(QueryCapability::new(
+            listening_sockets::ListeningSockets,
+            osquery(),
+        )),
+        Arc::new(QueryCapability::new(services::Services, osquery())),
+        Arc::new(QueryCapability::new(disk_usage::DiskUsage, osquery())),
+        Arc::new(QueryCapability::new(routes::Routes, osquery())),
+        Arc::new(QueryCapability::new(time_sync::TimeSync, osquery())),
+        Arc::new(QueryCapability::new(packages::Packages, osquery())),
+    ]
+}
+
+/// Runs fixed SQL, or returns `None` when osquery cannot answer it so the
+/// caller reads natively. The failure is logged, not reported.
+pub fn osquery_rows(osquery: &mut osquery::Client, sql: &str) -> Option<Vec<osquery::Row>> {
+    osquery
+        .query(sql)
+        .map_err(|error| warn!(%error, sql, "osquery could not answer; reading natively"))
+        .ok()
+}
+
+/// An osquery cell as an unsigned number; osquery renders NULL as "".
+pub fn osquery_u64(row: &osquery::Row, column: &str) -> Option<u64> {
+    row.get(column)?.parse().ok()
+}
+
+/// An osquery cell as text, with osquery's empty NULL as `None`.
+pub fn osquery_text<'a>(row: &'a osquery::Row, column: &str) -> Option<&'a str> {
+    row.get(column)
+        .map(String::as_str)
+        .filter(|text| !text.is_empty())
 }
 
 /// Parses a query's parameters. A missing or `null` object means no
@@ -258,13 +342,16 @@ mod tests {
     #[test]
     fn the_catalog_matches_renga_s_contract() {
         let contract = contract::all();
-        let mut keys: Vec<String> = catalog().iter().map(|c| c.key()).collect();
+        let mut keys: Vec<String> = catalog(&OsqueryConfig::default())
+            .iter()
+            .map(|c| c.key())
+            .collect();
         let mut expected: Vec<String> = contract.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         expected.sort();
         assert_eq!(keys, expected);
 
-        for capability in catalog() {
+        for capability in catalog(&OsqueryConfig::default()) {
             let entry = &contract[capability.key()];
             assert_eq!(
                 capability.enabled_by_default(),
@@ -323,7 +410,7 @@ mod tests {
 
     #[test]
     fn sensitive_queries_are_off_by_default() {
-        let names: Vec<(String, bool)> = catalog()
+        let names: Vec<(String, bool)> = catalog(&OsqueryConfig::default())
             .iter()
             .map(|c| (c.key(), c.enabled_by_default()))
             .collect();

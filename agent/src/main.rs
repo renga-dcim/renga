@@ -760,10 +760,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
 }
 
 /// The job capabilities compiled into this build, bound to the current
-/// client and labels so a reload reaches the next job.
+/// client, labels, and osquery socket so a reload reaches the next job.
 fn job_catalog(
     client: &HttpClient,
     labels: &BTreeMap<String, String>,
+    osquery: &OsqueryConfig,
     queue: &Arc<Mutex<DeliveryQueue>>,
 ) -> Catalog {
     let client = client.clone();
@@ -776,7 +777,7 @@ fn job_catalog(
     };
     let mut capabilities: Vec<Arc<dyn Capability>> =
         vec![Arc::new(InventoryCollect::new(Box::new(collect)))];
-    capabilities.extend(queries::catalog());
+    capabilities.extend(queries::catalog(osquery));
     Catalog::new(capabilities)
 }
 
@@ -787,7 +788,10 @@ fn advertised_capabilities(
     client: &HttpClient,
     queue: &Arc<Mutex<DeliveryQueue>>,
 ) -> Vec<String> {
-    job_capabilities(&job_catalog(client, &config.labels, queue), &config.jobs)
+    job_capabilities(
+        &job_catalog(client, &config.labels, &config.osquery, queue),
+        &config.jobs,
+    )
 }
 
 fn job_capabilities(catalog: &Catalog, policy: &JobPolicy) -> Vec<String> {
@@ -874,11 +878,13 @@ fn reload_changes_jobs(
         power: _,
         bmc: _,
         exporters: _,
-        // Read afresh by each pass's catalog and each check-in's probe; it never changes which
-        // keys a pass offers.
-        osquery: _,
+        // Bound into every query capability a pass starts, so a pass must not outlive a change.
+        osquery,
     } = new;
-    !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
+    !old_client.sends_like(new_client)
+        || old.labels != *labels
+        || old.jobs != *jobs
+        || old.osquery != *osquery
 }
 
 /// Opens the job notice socket when the policy enables a job capability, so
@@ -890,7 +896,7 @@ fn start_listener(
     notices: &Notices,
     stopped: &Cancellation,
 ) -> Option<Listener> {
-    let catalog = job_catalog(client, &config.labels, queue);
+    let catalog = job_catalog(client, &config.labels, &config.osquery, queue);
     if catalog.enabled_keys(&config.jobs).is_empty() {
         return None;
     }
@@ -925,7 +931,7 @@ fn spawn_job_pass(
     let client = client.clone();
     let stopped = stopped.clone();
     let policy = config.jobs.clone();
-    let catalog = job_catalog(&client, &config.labels, queue);
+    let catalog = job_catalog(&client, &config.labels, &config.osquery, queue);
     let state_directory = state_directory.to_path_buf();
     let expected_generation = policy_generation.current();
     let policy_generation = policy_generation.clone();
@@ -3351,7 +3357,7 @@ mod tests {
             assert!(!restarts(change), "{what} restarted jobs");
         }
 
-        let relevant: [(&str, &Change); 7] = [
+        let relevant: [(&str, &Change); 9] = [
             ("the home", &|_, home| {
                 *home = "http://other.test".parse().unwrap()
             }),
@@ -3371,6 +3377,12 @@ mod tests {
                 config.labels.insert("team".into(), "storage".into());
             }),
             ("jobs", &|config, _| config.jobs.enabled = Some(Vec::new())),
+            ("osquery.enabled", &|config, _| {
+                config.osquery.enabled = !config.osquery.enabled
+            }),
+            ("osquery.socket", &|config, _| {
+                config.osquery.socket = "/run/other/osquery.em".into()
+            }),
         ];
         for (what, change) in relevant {
             assert!(restarts(change), "{what} did not restart jobs");

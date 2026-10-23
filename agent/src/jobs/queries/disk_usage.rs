@@ -1,6 +1,7 @@
 //! `query.disk_usage@1`: capacity and use of each mounted filesystem, from
 //! PID 1's mount table and `statvfs`. Inventory sensitivity. Matches
-//! `Renga.Jobs.Queries.DiskUsage`.
+//! `Renga.Jobs.Queries.DiskUsage`. With osquery, its `mounts` table answers
+//! instead.
 //!
 //! `statvfs` on a network or FUSE mount whose server is gone can block for
 //! good, and a thread blocked in a system call cannot be stopped. Each call
@@ -10,8 +11,10 @@
 //! asked again until it returns, so a dead mount holds at most one thread
 //! and never holds the job worker.
 
-use super::{clip, parameters, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, jobs::JobFailure};
+use super::{
+    clip, osquery_rows, osquery_text, osquery_u64, parameters, Bounded, Query, Sensitivity,
+};
+use crate::{cancellation::Cancellation, jobs::JobFailure, osquery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -27,6 +30,8 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// Mount points whose last probe has not returned.
 static STALLED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+const OSQUERY_SQL: &str = "SELECT path, device, type, blocks_size, blocks, blocks_free, \
+     blocks_available, inodes, inodes_free FROM mounts";
 
 /// Kernel and virtual filesystems that hold no disk data, left out so the
 /// answer is about storage.
@@ -89,6 +94,43 @@ impl Query for DiskUsage {
         let Parameters {} = parameters(raw)?;
         let (filesystems, stalled) = read_filesystems(cancellation)?;
         Ok(answer(filesystems, stalled))
+    }
+
+    fn uses_osquery(&self) -> bool {
+        true
+    }
+
+    fn answer_with_osquery(
+        &self,
+        osquery: &mut osquery::Client,
+        raw: &Value,
+    ) -> Result<Option<Value>, JobFailure> {
+        let Parameters {} = parameters(raw)?;
+        let Some(rows) = osquery_rows(osquery, OSQUERY_SQL) else {
+            return Ok(None);
+        };
+        let filesystems = rows
+            .iter()
+            .filter_map(|row| {
+                let number = |column| osquery_u64(row, column).unwrap_or(0);
+                let usage = Usage {
+                    fragment_size: number("blocks_size"),
+                    blocks: number("blocks"),
+                    free: number("blocks_free"),
+                    available: number("blocks_available"),
+                    files: number("inodes"),
+                    files_free: number("inodes_free"),
+                };
+                Some(filesystem(
+                    osquery_text(row, "path")?,
+                    osquery_text(row, "device").unwrap_or(""),
+                    osquery_text(row, "type")?,
+                    usage,
+                ))
+            })
+            .collect();
+        // osquery's table answers from its own daemon; no statvfs here stalls.
+        Ok(Some(answer(filesystems, false)))
     }
 }
 
