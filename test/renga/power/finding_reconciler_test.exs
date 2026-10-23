@@ -178,6 +178,73 @@ defmodule Renga.Power.FindingReconcilerTest do
     assert open_findings(scope) == []
   end
 
+  test "a supply failing in several windows is one finding, and others still open", %{
+    scope: scope,
+    panel: panel,
+    organization: organization
+  } do
+    {server, _ports} = server!(scope, "db-2", ["PSU1", "PSU2"])
+    stream = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(stream, "bmc-db-2", server)
+
+    for window <- [0, 60] do
+      reading_fixture(stream,
+        target: "bmc-db-2",
+        sensor: "psu2-state-#{window}",
+        boundary: "supply_input",
+        quantity: "state",
+        unit: nil,
+        state: "failed",
+        component: {"power_port", "PSU2"},
+        window_seconds: window
+      )
+    end
+
+    # An unrelated finding in the same reconciliation.
+    {_single, [psu]} = server!(scope, "web-9", ["PSU1"])
+    {_other, [a, b]} = server!(scope, "db-3", ["PSU1", "PSU2"])
+    connect!(scope, a, feed!(scope, panel, "A1", "a"))
+    connect!(scope, b, feed!(scope, panel, "A2", "a"))
+    connect!(scope, psu, feed!(scope, panel, "B1", "b"))
+
+    assert %{opened: 2, kept: 0} = reconcile!(scope)
+    findings = open_findings(scope)
+    assert [{_, "supply_failed", "PSU2"}] = for({_, "supply_failed", _} = f <- findings, do: f)
+    assert Enum.any?(findings, &match?({_, "not_redundant", _}, &1))
+
+    assert %{opened: 0, kept: 2} = reconcile!(scope)
+  end
+
+  test "a supply failure needs no modeled power port", %{
+    scope: scope,
+    organization: organization
+  } do
+    {server, []} = server!(scope, "untyped-1", [])
+    stream = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(stream, "bmc-untyped-1", server)
+
+    state = fn state ->
+      reading_fixture(stream,
+        target: "bmc-untyped-1",
+        sensor: "psu1-state",
+        boundary: "supply_input",
+        quantity: "state",
+        unit: nil,
+        state: state,
+        component: {"power_port", "PSU1"},
+        event_at: Renga.Time.utc_now_ms()
+      )
+    end
+
+    state.("no_input")
+    reconcile!(scope)
+    assert [{server.id, "supply_failed", "PSU1"}] == open_findings(scope)
+
+    state.("ok")
+    reconcile!(scope)
+    assert open_findings(scope) == []
+  end
+
   test "an outlet drawing power with nothing connected is unexpected draw", %{
     scope: scope,
     organization: organization

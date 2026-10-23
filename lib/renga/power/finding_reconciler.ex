@@ -125,10 +125,9 @@ defmodule Renga.Power.FindingReconciler do
     outlets = current(Outlet, organization_id)
     paths = Paths.for_ports(scope, ports)
 
-    device_ids =
-      Enum.uniq(Enum.map(ports, & &1.resource_id) ++ Enum.map(outlets, & &1.resource_id))
-
-    readings = Readings.for_resources(scope, device_ids, now)
+    # Every resource some reading is about, modeled power endpoints or not:
+    # a supply's failure needs no port to be one.
+    readings = Readings.for_resources(scope, :all, now)
 
     capacity_conditions(scope, feeds, now) ++
       redundancy_conditions(paths) ++
@@ -243,12 +242,25 @@ defmodule Renga.Power.FindingReconciler do
   defp stop_phrase(:loop), do: "loops back on itself"
   defp stop_phrase(:too_deep), do: "is longer than any real power train"
 
+  # One finding per failed supply, however many of its eligible readings
+  # (other windows or sources) report the failure; the latest is its evidence.
   defp supply_conditions(readings) do
-    for {resource_id, entries} <- readings,
-        %{eligible?: true, reading: reading} <- entries,
-        reading.boundary == "supply_input" and reading.quantity == "state",
-        reading.state in @failed_supply_states do
-      supply = reading.component_name || reading.sensor
+    failing =
+      for {resource_id, entries} <- readings,
+          %{eligible?: true, reading: reading} <- entries,
+          reading.boundary == "supply_input" and reading.quantity == "state",
+          reading.state in @failed_supply_states,
+          do: {resource_id, reading}
+
+    for {{resource_id, supply}, readings} <-
+          Enum.group_by(
+            failing,
+            fn {resource_id, reading} ->
+              {resource_id, reading.component_name || reading.sensor}
+            end,
+            fn {_resource_id, reading} -> reading end
+          ) do
+      reading = Enum.max_by(readings, &{DateTime.to_unix(&1.event_at, :millisecond), &1.id})
 
       %{
         resource_id: resource_id,
