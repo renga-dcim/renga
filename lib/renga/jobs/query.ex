@@ -62,6 +62,12 @@ defmodule Renga.Jobs.Query do
       @impl Renga.Jobs.Capability
       def required_permissions, do: Renga.Jobs.Query.permissions(sensitivity())
 
+      # A query is a person's question, asked with their query permissions.
+      # The system holds none, so it never asks one on its own behalf.
+      @impl Renga.Jobs.Capability
+      def authorize(%Renga.Accounts.Scope{user: %{}}, _agent, _parameters), do: :ok
+      def authorize(_system_scope, _agent, _parameters), do: {:error, :forbidden}
+
       @impl Renga.Jobs.Capability
       def parameters_changeset(params),
         do: Renga.Jobs.Query.Schema.changeset(parameters_schema(), params)

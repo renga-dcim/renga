@@ -62,6 +62,18 @@ defmodule Renga.Jobs.QueryAccessTest do
     refute @packages in Jobs.get_settings(context.organization).allowed_capabilities
   end
 
+  test "the system never runs a query on its own behalf", context do
+    enable(context.owner, [@disk, @packages])
+
+    for key <- [@disk, @packages] do
+      assert {:error, :forbidden} =
+               Jobs.create_system_job(context.organization.id, context.agent.id, key, %{})
+    end
+
+    assert {:ok, _job} =
+             Jobs.create_system_job(context.organization.id, context.agent.id, @collect, %{})
+  end
+
   test "running a query needs queries.run, not a built-in role", context do
     enable(context.owner, [@disk])
 
