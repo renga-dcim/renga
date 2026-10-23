@@ -61,6 +61,25 @@ defmodule RengaWeb.AccessHookTest do
     assert flash["error"] =~ "no longer have access"
   end
 
+  # The page's scope is read before the hook subscribes; a revocation in
+  # between is announced to nobody, so mounting re-reads it.
+  test "a scope that went stale before subscribing is refreshed at mount", context do
+    stale = Renga.Accounts.scope_for_user(context.user, context.organization.id)
+
+    {:ok, _} =
+      Users.patch(context.client, context.entry.id, [
+        %{"op" => "replace", "path" => "active", "value" => false}
+      ])
+
+    socket = %Phoenix.LiveView.Socket{
+      transport_pid: self(),
+      assigns: %{__changed__: %{}, flash: %{}, current_scope: stale}
+    }
+
+    assert {:halt, %{redirected: {:redirect, %{to: "/organizations"}}}} =
+             RengaWeb.AccessHook.on_mount(:default, %{}, %{}, socket)
+  end
+
   test "a downgrade reloads the page with the new role", context do
     {:ok, group} =
       Groups.create(context.client, %{

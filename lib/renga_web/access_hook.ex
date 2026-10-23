@@ -20,12 +20,15 @@ defmodule RengaWeb.AccessHook do
     case socket.assigns[:current_scope] do
       %Scope{organization_id: organization_id, user: %{id: user_id}}
       when is_binary(organization_id) ->
-        if connected?(socket), do: Grants.subscribe(organization_id, user_id)
-
-        {:cont,
-         socket
-         |> attach_hook(:access_path, :handle_params, &remember_path/3)
-         |> attach_hook(:access_changed, :handle_info, &access_changed/2)}
+        if connected?(socket) do
+          Grants.subscribe(organization_id, user_id)
+          # A change that committed between reading the scope and
+          # subscribing was announced to nobody, so read it again now that
+          # later ones will arrive.
+          with_current_access(socket, organization_id, &{:cont, attach(&1)})
+        else
+          {:cont, attach(socket)}
+        end
 
       _no_organization ->
         {:cont, socket}
@@ -39,12 +42,29 @@ defmodule RengaWeb.AccessHook do
      Phoenix.Component.assign(socket, :access_path, if(query, do: "#{path}?#{query}", else: path))}
   end
 
+  defp attach(socket) do
+    socket
+    |> attach_hook(:access_path, :handle_params, &remember_path/3)
+    |> attach_hook(:access_changed, :handle_info, &access_changed/2)
+  end
+
   defp access_changed({:access_changed, organization_id}, socket) do
+    with_current_access(socket, organization_id, fn socket ->
+      {:halt, redirect(socket, to: socket.assigns[:access_path] || ~p"/organizations")}
+    end)
+  end
+
+  defp access_changed(_message, socket), do: {:cont, socket}
+
+  # Re-reads the person's access in the organization: `kept` gets the
+  # socket with it, and a person who lost the organization goes to
+  # organization selection.
+  defp with_current_access(socket, organization_id, kept) do
     %Scope{user: user} = socket.assigns.current_scope
 
     case Accounts.scope_for_user(user, organization_id) do
-      %Scope{organization_id: ^organization_id} ->
-        {:halt, redirect(socket, to: socket.assigns[:access_path] || ~p"/organizations")}
+      %Scope{organization_id: ^organization_id} = scope ->
+        socket |> Phoenix.Component.assign(:current_scope, scope) |> kept.()
 
       _lost ->
         {:halt,
@@ -53,6 +73,4 @@ defmodule RengaWeb.AccessHook do
          |> redirect(to: ~p"/organizations")}
     end
   end
-
-  defp access_changed(_message, socket), do: {:cont, socket}
 end
