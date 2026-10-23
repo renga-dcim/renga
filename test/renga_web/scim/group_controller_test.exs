@@ -151,6 +151,20 @@ defmodule RengaWeb.Scim.GroupControllerTest do
     assert patched["members"] == []
   end
 
+  test "a membership change moves lastModified; a repeat does not", %{conn: conn} do
+    sam = user!(conn, "sam")
+    group = group!(conn, %{})
+    add = [%{"op" => "add", "path" => "members", "value" => [%{"value" => sam["id"]}]}]
+    # Timestamps have millisecond resolution.
+    Process.sleep(2)
+
+    added = conn |> patch_ops(group["id"], add) |> body(200)
+    assert added["meta"]["lastModified"] > group["meta"]["lastModified"]
+
+    repeated = conn |> patch_ops(group["id"], add) |> body(200)
+    assert repeated["meta"]["lastModified"] == added["meta"]["lastModified"]
+  end
+
   test "members must be users of the same connection", %{conn: conn} = context do
     other_owner = member_scope(organization_fixture(), "owner")
     {_token, other} = scim_token_fixture(other_owner, scim_connection_fixture(other_owner))

@@ -123,7 +123,12 @@ defmodule Renga.Scim.Groups do
   defp change(client, group, attrs, members) do
     current = group |> current_member_ids() |> MapSet.new()
 
-    with {:ok, updated} <- group |> DirectoryGroup.changeset(attrs) |> Repo.update() |> invalid() do
+    # A members-only change leaves the group's own fields alone, but its
+    # meta.lastModified must still move.
+    force? = not MapSet.equal?(current, members)
+
+    with {:ok, updated} <-
+           group |> DirectoryGroup.changeset(attrs) |> Repo.update(force: force?) |> invalid() do
       {added, removed} = set_members!(updated, current, members)
       record!(client, "scim_group_updated", updated, added, removed)
       {:ok, reload(updated)}
