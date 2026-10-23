@@ -71,6 +71,9 @@
               },
               "observation_queue": {
                 "$ref": "#/components/schemas/ObservationQueue"
+              },
+              "telemetry_queue": {
+                "$ref": "#/components/schemas/ObservationQueue"
               }
             },
             "type": [
@@ -1433,14 +1436,26 @@
       },
       "ObservationQueue": {
         "title": "ObservationQueue",
-        "description": "Health of the agent's on-disk observation queue. Drop counts cover the agent's current run; the backlog itself survives restarts. Unknown fields are ignored.",
+        "description": "Health of one of the agent's on-disk queues. Drop counts cover the agent's current run; the backlog itself survives restarts. Unknown fields are ignored.",
         "properties": {
           "bytes": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
+          "dropped_earliest_age_seconds": {
+            "description": "How long ago the earliest entry dropped for space or age was queued. Omitted until one is dropped.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "dropped_for_space": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dropped_latest_age_seconds": {
+            "description": "How long ago the latest entry dropped for space or age was queued. Omitted until one is dropped.",
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
@@ -1456,7 +1471,7 @@
             "type": "integer"
           },
           "oldest_age_seconds": {
-            "description": "Age of the oldest queued observation, or null when nothing is queued.",
+            "description": "Age of the oldest queued entry, or null when nothing is queued.",
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": [

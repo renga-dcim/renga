@@ -23,6 +23,7 @@ defmodule Renga.Inventory.AgentPayload do
   @max_json_safe_integer 9_007_199_254_740_991
   # Mirrors `QueueReport` in agent/src/payload.rs.
   @observation_queue_counts ~w(entries bytes dropped_for_space expired rejected unreadable)
+  @queue_dropped_ages ~w(dropped_earliest_age_seconds dropped_latest_age_seconds)
   @accepted_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number mac_address provider_instance_id bmc_address)
   @matchable_identifier_kinds ~w(hostname fqdn machine_id dmi_uuid serial_number)
   @interface_kinds ~w(ethernet loopback bond bridge vlan virtual unknown)
@@ -89,6 +90,7 @@ defmodule Renga.Inventory.AgentPayload do
       max_json_safe_integer: @max_json_safe_integer,
       max_source_local_vlan_key_bytes: @max_source_local_vlan_key_bytes,
       observation_queue_counts: @observation_queue_counts,
+      queue_dropped_ages: @queue_dropped_ages,
       identifier_kinds: @accepted_identifier_kinds,
       matchable_identifier_kinds: @matchable_identifier_kinds,
       prohibited_resource_keys: @prohibited_resource_keys,
@@ -292,7 +294,8 @@ defmodule Renga.Inventory.AgentPayload do
         errors
         |> validate_agent_metadata_size(metadata)
         |> validate_agent_version(metadata)
-        |> validate_observation_queue(metadata)
+        |> validate_queue(metadata, "observation_queue")
+        |> validate_queue(metadata, "telemetry_queue")
 
       _invalid ->
         [error("metadata", "must be an object") | errors]
@@ -335,40 +338,44 @@ defmodule Renga.Inventory.AgentPayload do
     end
   end
 
-  # The agent's on-disk queue health, shown per collector. Fields this server does
-  # not know are ignored so a newer agent can add some without losing its lease.
-  defp validate_observation_queue(errors, metadata) do
-    case Map.fetch(metadata, "observation_queue") do
+  # The agent's on-disk queue health, shown per collector: observations, and
+  # telemetry in its own queue (RFD 10). Fields this server does not know are
+  # ignored so a newer agent can add some without losing its lease.
+  defp validate_queue(errors, metadata, name) do
+    case Map.fetch(metadata, name) do
       :error ->
         errors
 
       {:ok, queue} ->
-        observation_queue_errors(queue) ++ errors
+        queue_errors(queue, name) ++ errors
     end
   end
 
   @doc "Validates both incoming queue reports and metadata stored before this contract existed."
-  def observation_queue_errors(queue) when is_map(queue) do
+  def observation_queue_errors(queue), do: queue_errors(queue, "observation_queue")
+
+  @doc "Validates a telemetry queue report, which has the observation queue's shape."
+  def telemetry_queue_errors(queue), do: queue_errors(queue, "telemetry_queue")
+
+  defp queue_errors(queue, name) when is_map(queue) do
     []
-    |> validate_queue_counts(queue)
-    |> validate_queue_age(queue)
+    |> validate_queue_counts(queue, name)
+    |> validate_queue_age(queue, name)
+    |> validate_dropped_ages(queue, name)
   end
 
-  def observation_queue_errors(_invalid),
-    do: [error("metadata.observation_queue", "must be an object")]
+  defp queue_errors(_invalid, name), do: [error("metadata.#{name}", "must be an object")]
 
-  defp validate_queue_counts(errors, queue) do
+  defp validate_queue_counts(errors, queue, name) do
     Enum.reduce(@observation_queue_counts, errors, fn key, errors ->
       if queue_count?(Map.get(queue, key)),
         do: errors,
-        else: [
-          error("metadata.observation_queue.#{key}", "must be a non-negative integer") | errors
-        ]
+        else: [error("metadata.#{name}.#{key}", "must be a non-negative integer") | errors]
     end)
   end
 
-  defp validate_queue_age(errors, queue) do
-    path = "metadata.observation_queue.oldest_age_seconds"
+  defp validate_queue_age(errors, queue, name) do
+    path = "metadata.#{name}.oldest_age_seconds"
 
     case Map.fetch(queue, "oldest_age_seconds") do
       {:ok, nil} ->
@@ -381,6 +388,23 @@ defmodule Renga.Inventory.AgentPayload do
 
       :error ->
         [error(path, "is required") | errors]
+    end
+  end
+
+  # How long ago the earliest and latest entries dropped for space or age were
+  # queued. Both are absent until the agent drops one.
+  defp validate_dropped_ages(errors, queue, name) do
+    Enum.reduce(@queue_dropped_ages, errors, fn key, errors ->
+      if dropped_age?(queue, key),
+        do: errors,
+        else: [error("metadata.#{name}.#{key}", "must be a non-negative integer") | errors]
+    end)
+  end
+
+  defp dropped_age?(queue, key) do
+    case Map.fetch(queue, key) do
+      :error -> true
+      {:ok, age} -> queue_count?(age)
     end
   end
 

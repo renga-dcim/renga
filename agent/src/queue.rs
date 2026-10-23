@@ -1,14 +1,17 @@
-//! Bounded on-disk queue of encoded observations.
+//! Bounded on-disk queues of encoded observations and telemetry batches.
 //!
-//! An observation is written here before its first delivery attempt and removed only when the
-//! server accepts it or rejects the payload itself, so a network outage or an agent restart does
-//! not lose inventory (RFD 1, "Collection model"). Each entry is one file holding the exact
-//! request body, which lets the server recognize a replay by its observation ID; file names sort
-//! in queue order.
+//! An entry is written here before its first delivery attempt and removed only when the server
+//! accepts it or rejects the payload itself, so a network outage or an agent restart does not
+//! lose inventory (RFD 1, "Collection model") or readings. Each entry is one file holding the
+//! exact request body, which lets the server recognize a replay by its observation or replay ID;
+//! file names sort in queue order.
 //!
-//! Limits on entries, bytes, and age keep the directory bounded. When a new observation would
-//! exceed them the oldest entries go first, because a host agent's observation is a full snapshot
-//! and the newest one carries the most current state.
+//! Each [`QueueKind`] has its own directory and limits, and its directory fixes the entries'
+//! payload type and destination, so a telemetry backlog can never evict an observation (RFD 10,
+//! "Measured history"). Limits on entries, bytes, and age keep each directory bounded. When a new
+//! entry would exceed them the oldest entries go first: a host agent's observation is a full
+//! snapshot whose newest copy carries the most current state, and recent readings matter more
+//! than old ones.
 
 use crate::{
     cancellation::Cancellation,
@@ -24,11 +27,43 @@ use std::{
 use tracing::warn;
 use uuid::Uuid;
 
-const QUEUE_DIRECTORY: &str = "observations";
 const ENTRY_SUFFIX: &str = ".json";
 const TEMPORARY_PREFIX: &str = ".tmp-";
 /// A temporary file this old was left by an interrupted write rather than one in progress.
 const ABANDONED_TEMPORARY_AGE: Duration = Duration::from_secs(600);
+
+/// What a queue holds, which decides its directory under the state directory and the endpoint
+/// its entries go to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    /// Inventory observations for `POST /api/v1/observations`.
+    Observations,
+    /// Telemetry batches for `POST /api/v1/telemetry`.
+    Telemetry,
+}
+
+impl QueueKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Observations => "observation",
+            Self::Telemetry => "telemetry",
+        }
+    }
+
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Observations => "observations",
+            Self::Telemetry => "telemetry",
+        }
+    }
+
+    pub fn default_limits(self) -> QueueLimits {
+        match self {
+            Self::Observations => QueueLimits::default(),
+            Self::Telemetry => QueueLimits::telemetry(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueLimits {
@@ -49,6 +84,19 @@ impl Default for QueueLimits {
     }
 }
 
+impl QueueLimits {
+    /// A day of one-minute batches from a few sources. Readings older than that are history the
+    /// server no longer needs to judge current load, so an outage loses its oldest readings
+    /// rather than growing without bound.
+    pub fn telemetry() -> Self {
+        Self {
+            max_entries: 8_192,
+            max_bytes: 64 * 1024 * 1024,
+            max_age: Duration::from_secs(24 * 60 * 60),
+        }
+    }
+}
+
 /// Entries this process removed without delivering them, by reason.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCounters {
@@ -60,6 +108,18 @@ pub struct QueueCounters {
     pub rejected: u64,
     /// Entries that could not be read back.
     pub unreadable: u64,
+    /// When the earliest and latest entries dropped for space or age were queued. Entries are
+    /// queued as they are produced, so for telemetry this is the time range of lost readings.
+    pub dropped_range: Option<(SystemTime, SystemTime)>,
+}
+
+impl QueueCounters {
+    fn note_dropped(&mut self, queued_at: SystemTime) {
+        self.dropped_range = Some(match self.dropped_range {
+            Some((earliest, latest)) => (earliest.min(queued_at), latest.max(queued_at)),
+            None => (queued_at, queued_at),
+        });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +195,8 @@ impl Entry {
     }
 }
 
-pub struct ObservationQueue {
+pub struct DiskQueue {
+    kind: QueueKind,
     directory: PathBuf,
     limits: QueueLimits,
     next_sequence: u64,
@@ -143,21 +204,23 @@ pub struct ObservationQueue {
     monitor: QueueMonitor,
 }
 
-impl ObservationQueue {
-    /// Opens the queue under the agent's state directory, creating it on first use.
+impl DiskQueue {
+    /// Opens the queue of `kind` under the agent's state directory, creating it on first use.
     pub fn open(
         state_directory: &Path,
+        kind: QueueKind,
         limits: QueueLimits,
         monitor: QueueMonitor,
     ) -> Result<Self, QueueError> {
-        let directory = state_directory.join(QUEUE_DIRECTORY);
+        let directory = state_directory.join(kind.directory());
+        let name = kind.name();
         fs::create_dir_all(&directory)
-            .map_err(|error| io_error("create observation queue", &directory, error))?;
+            .map_err(|error| io_error(&format!("create {name} queue"), &directory, error))?;
         let metadata = fs::symlink_metadata(&directory)
-            .map_err(|error| io_error("inspect observation queue", &directory, error))?;
+            .map_err(|error| io_error(&format!("inspect {name} queue"), &directory, error))?;
         if !metadata.is_dir() {
             return Err(QueueError(format!(
-                "observation queue {} is not a directory",
+                "{name} queue {} is not a directory",
                 directory.display()
             )));
         }
@@ -166,6 +229,7 @@ impl ObservationQueue {
         sync_directory(state_directory)?;
 
         let mut queue = Self {
+            kind,
             directory,
             limits,
             next_sequence: 0,
@@ -181,21 +245,27 @@ impl ObservationQueue {
         Ok(queue)
     }
 
+    pub fn kind(&self) -> QueueKind {
+        self.kind
+    }
+
     pub fn monitor(&self) -> QueueMonitor {
         self.monitor.clone()
     }
 
-    /// Persists an encoded observation, durably, behind every entry already queued.
+    /// Persists an encoded payload, durably, behind every entry already queued. `entry_id` is
+    /// the payload's observation or replay ID.
     pub fn enqueue(
         &mut self,
-        observation_id: Uuid,
+        entry_id: Uuid,
         body: &[u8],
         now: SystemTime,
     ) -> Result<(), QueueError> {
         let size = body.len() as u64;
         if size > self.limits.max_bytes {
             return Err(QueueError(format!(
-                "observation of {size} bytes exceeds the {}-byte queue limit",
+                "{} entry of {size} bytes exceeds the {}-byte queue limit",
+                self.kind.name(),
                 self.limits.max_bytes
             )));
         }
@@ -211,20 +281,20 @@ impl ObservationQueue {
                 break;
             }
             warn!(
+                queue = self.kind.name(),
                 entry = %oldest.path.display(),
-                "observation queue full; dropping its oldest observation"
+                "queue full; dropping its oldest entry"
             );
             if remove(&oldest.path)? {
                 self.counters.dropped_for_space += 1;
+                self.counters.note_dropped(oldest.queued_at);
             }
             self.publish_health();
             remaining -= 1;
             bytes -= oldest.bytes;
         }
 
-        let path = self
-            .directory
-            .join(entry_name(sequence, now, observation_id));
+        let path = self.directory.join(entry_name(sequence, now, entry_id));
         let written = self.write_atomically(&path, body);
         if written.is_ok() {
             self.next_sequence = sequence + 1;
@@ -233,17 +303,30 @@ impl ObservationQueue {
         written
     }
 
-    /// Delivers queued observations oldest first. An accepted or rejected entry is removed and
-    /// the pass continues; any other failure stops it so the entry keeps its place in line.
+    /// Delivers queued entries oldest first. An accepted or rejected entry is removed and the
+    /// pass continues; any other failure stops it so the entry keeps its place in line.
     pub fn drain(
         &mut self,
         now: SystemTime,
         cancellation: &Cancellation,
+        deliver: impl FnMut(&[u8]) -> Result<(), TransportError>,
+    ) -> Result<Drained, QueueError> {
+        self.drain_at_most(now, usize::MAX, cancellation, deliver)
+    }
+
+    /// Like [`drain`](Self::drain), but offers at most `limit` entries, so one pass over a long
+    /// backlog cannot hold the delivery worker indefinitely.
+    pub fn drain_at_most(
+        &mut self,
+        now: SystemTime,
+        limit: usize,
+        cancellation: &Cancellation,
         mut deliver: impl FnMut(&[u8]) -> Result<(), TransportError>,
     ) -> Result<Drained, QueueError> {
         let mut drained = Drained::default();
+        let mut offered = 0;
         for entry in self.expire(self.entries()?, now)? {
-            if cancellation.cancelled() {
+            if cancellation.cancelled() || offered >= limit {
                 break;
             }
             let body = match fs::read(&entry.path) {
@@ -254,7 +337,7 @@ impl ObservationQueue {
                     continue;
                 }
                 Err(error) => {
-                    warn!(entry = %entry.path.display(), %error, "dropping unreadable queued observation");
+                    warn!(queue = self.kind.name(), entry = %entry.path.display(), %error, "dropping unreadable queued entry");
                     if remove(&entry.path)? {
                         self.counters.unreadable += 1;
                     }
@@ -262,6 +345,7 @@ impl ObservationQueue {
                     continue;
                 }
             };
+            offered += 1;
             match deliver(&body) {
                 Ok(()) => {
                     remove(&entry.path)?;
@@ -269,7 +353,7 @@ impl ObservationQueue {
                     self.publish_health();
                 }
                 Err(error) if error.kind() == FailureKind::PayloadRejected => {
-                    warn!(entry = %entry.path.display(), %error, "server rejected queued observation; dropping it");
+                    warn!(queue = self.kind.name(), entry = %entry.path.display(), %error, "server rejected queued entry; dropping it");
                     if remove(&entry.path)? {
                         self.counters.rejected += 1;
                         drained.rejected += 1;
@@ -305,12 +389,11 @@ impl ObservationQueue {
 
     /// Queued entries in delivery order. Files the queue did not name are left alone.
     fn entries(&self) -> Result<Vec<Entry>, QueueError> {
-        let listing = fs::read_dir(&self.directory)
-            .map_err(|error| io_error("list observation queue", &self.directory, error))?;
+        let list = |error| io_error("list queue", &self.directory, error);
+        let listing = fs::read_dir(&self.directory).map_err(list)?;
         let mut entries = Vec::new();
         for item in listing {
-            let item =
-                item.map_err(|error| io_error("list observation queue", &self.directory, error))?;
+            let item = item.map_err(list)?;
             let Some((sequence, queued_at)) = item.file_name().to_str().and_then(parse_entry_name)
             else {
                 continue;
@@ -336,9 +419,10 @@ impl ObservationQueue {
             .into_iter()
             .partition(|entry| entry.age(now) > self.limits.max_age);
         for entry in expired {
-            warn!(entry = %entry.path.display(), "dropping queued observation older than the queue's age limit");
+            warn!(queue = self.kind.name(), entry = %entry.path.display(), "dropping queued entry older than the queue's age limit");
             if remove(&entry.path)? {
                 self.counters.expired += 1;
+                self.counters.note_dropped(entry.queued_at);
             }
             self.publish_health();
         }
@@ -353,9 +437,9 @@ impl ObservationQueue {
             let mut file = create_private_file(&temporary)?;
             file.write_all(body)
                 .and_then(|()| file.sync_all())
-                .map_err(|error| io_error("write queued observation", &temporary, error))?;
+                .map_err(|error| io_error("write queued entry", &temporary, error))?;
             fs::rename(&temporary, path)
-                .map_err(|error| io_error("persist queued observation", path, error))?;
+                .map_err(|error| io_error("persist queued entry", path, error))?;
             sync_directory(&self.directory)
         })();
         if result.is_err() {
@@ -366,7 +450,7 @@ impl ObservationQueue {
 
     fn remove_abandoned_temporaries(&self, now: SystemTime) -> Result<(), QueueError> {
         let listing = fs::read_dir(&self.directory)
-            .map_err(|error| io_error("list observation queue", &self.directory, error))?;
+            .map_err(|error| io_error("list queue", &self.directory, error))?;
         for item in listing.flatten() {
             let abandoned = item
                 .file_name()
@@ -386,22 +470,22 @@ impl ObservationQueue {
     }
 }
 
-/// `<sequence>-<queued unix seconds>-<observation id>.json`, zero-padded so names sort in queue
-/// order. The observation ID keeps names unique even if two processes pick the same sequence.
-fn entry_name(sequence: u64, queued_at: SystemTime, observation_id: Uuid) -> String {
+/// `<sequence>-<queued unix seconds>-<entry id>.json`, zero-padded so names sort in queue order.
+/// The observation or replay ID keeps names unique even if two processes pick the same sequence.
+fn entry_name(sequence: u64, queued_at: SystemTime, entry_id: Uuid) -> String {
     let seconds = queued_at
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    format!("{sequence:020}-{seconds:012}-{observation_id}{ENTRY_SUFFIX}")
+    format!("{sequence:020}-{seconds:012}-{entry_id}{ENTRY_SUFFIX}")
 }
 
 fn parse_entry_name(name: &str) -> Option<(u64, SystemTime)> {
     let mut parts = name.strip_suffix(ENTRY_SUFFIX)?.splitn(3, '-');
     let sequence = parts.next()?;
     let seconds = parts.next()?;
-    let observation_id = parts.next()?;
-    if sequence.len() != 20 || seconds.len() != 12 || Uuid::parse_str(observation_id).is_err() {
+    let entry_id = parts.next()?;
+    if sequence.len() != 20 || seconds.len() != 12 || Uuid::parse_str(entry_id).is_err() {
         return None;
     }
     let queued_at = UNIX_EPOCH + Duration::from_secs(seconds.parse().ok()?);
@@ -413,7 +497,7 @@ fn remove(path: &Path) -> Result<bool, QueueError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(io_error("remove queued observation", path, error)),
+        Err(error) => Err(io_error("remove queued entry", path, error)),
     }
 }
 
@@ -427,14 +511,14 @@ fn create_private_file(path: &Path) -> Result<fs::File, QueueError> {
     }
     options
         .open(path)
-        .map_err(|error| io_error("create queued observation", path, error))
+        .map_err(|error| io_error("create queued entry", path, error))
 }
 
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), QueueError> {
     fs::File::open(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error("sync observation queue", path, error))
+        .map_err(|error| io_error("sync queue directory", path, error))
 }
 
 #[cfg(not(unix))]
@@ -446,7 +530,7 @@ fn sync_directory(_path: &Path) -> Result<(), QueueError> {
 fn set_mode(path: &Path, mode: u32) -> Result<(), QueueError> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .map_err(|error| io_error("protect observation queue", path, error))
+        .map_err(|error| io_error("protect queue directory", path, error))
 }
 
 #[cfg(not(unix))]
@@ -470,12 +554,16 @@ mod tests {
             }
         }
 
-        fn open(&self, limits: QueueLimits) -> ObservationQueue {
-            ObservationQueue::open(&self.state, limits, QueueMonitor::default()).unwrap()
+        fn open(&self, limits: QueueLimits) -> DiskQueue {
+            self.open_kind(QueueKind::Observations, limits)
+        }
+
+        fn open_kind(&self, kind: QueueKind, limits: QueueLimits) -> DiskQueue {
+            DiskQueue::open(&self.state, kind, limits, QueueMonitor::default()).unwrap()
         }
 
         fn directory(&self) -> PathBuf {
-            self.state.join(QUEUE_DIRECTORY)
+            self.state.join(QueueKind::Observations.directory())
         }
     }
 
@@ -497,13 +585,13 @@ mod tests {
         UNIX_EPOCH + Duration::from_secs(1_800_000_000 + seconds)
     }
 
-    fn enqueue(queue: &mut ObservationQueue, body: &str, now: SystemTime) {
+    fn enqueue(queue: &mut DiskQueue, body: &str, now: SystemTime) {
         queue.enqueue(Uuid::new_v4(), body.as_bytes(), now).unwrap();
     }
 
     /// Drains, recording each body offered, and answers with `outcome` per body.
     fn drain_with(
-        queue: &mut ObservationQueue,
+        queue: &mut DiskQueue,
         now: SystemTime,
         outcome: impl Fn(&str) -> Result<(), TransportError>,
     ) -> (Drained, Vec<String>) {
@@ -638,6 +726,71 @@ mod tests {
 
         assert_eq!(offered, ["fresh"]);
         assert_eq!(queue.health().unwrap().counters.expired, 1);
+    }
+
+    #[test]
+    fn dropped_entries_report_when_they_were_queued() {
+        let fixture = Fixture::new();
+        let mut queue = fixture.open(limits(2, 1_000, 60));
+        enqueue(&mut queue, "first", at(0));
+        enqueue(&mut queue, "second", at(10));
+        enqueue(&mut queue, "third", at(20));
+        assert_eq!(
+            queue.health().unwrap().counters.dropped_range,
+            Some((at(0), at(0)))
+        );
+
+        // Entries expired by age widen the same range.
+        drain_with(&mut queue, at(75), |_body| {
+            Err(failure(FailureKind::Transient))
+        });
+        let counters = queue.health().unwrap().counters;
+        assert_eq!((counters.dropped_for_space, counters.expired), (1, 1));
+        assert_eq!(counters.dropped_range, Some((at(0), at(10))));
+    }
+
+    #[test]
+    fn a_capped_pass_leaves_the_rest_in_line() {
+        let fixture = Fixture::new();
+        let mut queue = fixture.open(QueueLimits::default());
+        for body in ["first", "second", "third"] {
+            enqueue(&mut queue, body, at(0));
+        }
+
+        let offered = RefCell::new(Vec::new());
+        let drained = queue
+            .drain_at_most(at(1), 2, &Cancellation::default(), |body| {
+                offered
+                    .borrow_mut()
+                    .push(String::from_utf8(body.to_vec()).unwrap());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(drained.delivered, 2);
+        assert_eq!(offered.into_inner(), ["first", "second"]);
+        assert_eq!(drain_with(&mut queue, at(2), accept).1, ["third"]);
+    }
+
+    #[test]
+    fn kinds_keep_separate_directories_and_limits() {
+        let fixture = Fixture::new();
+        let mut observations = fixture.open(limits(1, 1_000, 3_600));
+        let mut telemetry = fixture.open_kind(QueueKind::Telemetry, limits(1, 1_000, 3_600));
+        enqueue(&mut observations, "inventory", at(0));
+        enqueue(&mut telemetry, "reading 1", at(1));
+        enqueue(&mut telemetry, "reading 2", at(2));
+
+        // A full telemetry queue drops its own oldest batch, never an observation.
+        assert_eq!(
+            drain_with(&mut observations, at(3), accept).1,
+            ["inventory"]
+        );
+        assert_eq!(drain_with(&mut telemetry, at(3), accept).1, ["reading 2"]);
+        assert_eq!(observations.health().unwrap().counters.dropped_for_space, 0);
+        assert_eq!(telemetry.health().unwrap().counters.dropped_for_space, 1);
+        assert!(fixture.state.join("telemetry").is_dir());
+        assert_eq!(telemetry.kind(), QueueKind::Telemetry);
     }
 
     #[test]

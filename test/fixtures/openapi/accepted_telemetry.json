@@ -1,0 +1,83 @@
+[
+  {
+    "version": 1,
+    "replay_id": "contract-host-1",
+    "collector": null,
+    "samples": [
+      {
+        "target": null,
+        "sensor": "hwmon0/power1",
+        "boundary": "host_input",
+        "quantity": "real_power",
+        "unit": "W",
+        "component": null,
+        "leg": null,
+        "coverage": null,
+        "status": "valid",
+        "origin": "native",
+        "value": 245.5,
+        "state": null,
+        "window": {"start": "2026-10-22T11:59:59.250Z", "end": "2026-10-22T12:00:00Z"},
+        "event_at": "2026-10-22T12:00:00Z",
+        "mapping": {"name": "hwmon", "version": 1},
+        "fresh_for_seconds": 180
+      },
+      {
+        "sensor": "hwmon1/power1",
+        "boundary": "host_input",
+        "quantity": "real_power",
+        "status": "failed",
+        "window": {"start": "2026-10-22T12:00:00Z", "end": "2026-10-22T12:00:00Z"},
+        "event_at": "2026-10-22T12:00:00Z",
+        "mapping": {"name": "hwmon", "version": 1},
+        "fresh_for_seconds": 180
+      }
+    ]
+  },
+  {
+    "version": 1,
+    "replay_id": "contract-collector-1",
+    "collector": {"id": "rack-pdus", "kind": "power_poller"},
+    "samples": [
+      {
+        "target": "10.0.0.5",
+        "sensor": "outlet/3",
+        "boundary": "outlet",
+        "quantity": "apparent_power",
+        "unit": "VA",
+        "component": {"kind": "power_outlet", "name": "3"},
+        "coverage": "complete",
+        "value": 120,
+        "window": {"start": "2026-10-22T12:00:00Z", "end": "2026-10-22T12:00:00Z"},
+        "event_at": "2026-10-22T12:00:00Z",
+        "mapping": {"name": "raritan-pdu2", "version": 1},
+        "fresh_for_seconds": 180
+      },
+      {
+        "target": "10.0.0.5",
+        "sensor": "leg/L1",
+        "boundary": "leg",
+        "leg": "a",
+        "quantity": "current",
+        "unit": "A",
+        "value": 7.25,
+        "window": {"start": "2026-10-22T12:00:00Z", "end": "2026-10-22T12:00:00Z"},
+        "event_at": "2026-10-22T12:00:00Z",
+        "mapping": {"name": "raritan-pdu2", "version": 1},
+        "fresh_for_seconds": 180
+      },
+      {
+        "target": "10.0.0.5",
+        "sensor": "inlet/state",
+        "boundary": "feed",
+        "quantity": "state",
+        "unit": null,
+        "state": "ok",
+        "window": {"start": "2026-10-22T12:00:00Z", "end": "2026-10-22T12:00:00Z"},
+        "event_at": "2026-10-22T12:00:00Z",
+        "mapping": {"name": "raritan-pdu2", "version": 1},
+        "fresh_for_seconds": 180
+      }
+    ]
+  }
+]

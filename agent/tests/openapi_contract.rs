@@ -260,7 +260,7 @@ fn this_hosts_observation_matches_the_contract() {
 
 #[test]
 fn check_ins_match_the_contract() {
-    let queue = |oldest_age_seconds| QueueReport {
+    let queue = |oldest_age_seconds, dropped: Option<(u64, u64)>| QueueReport {
         entries: 3,
         bytes: 12_000,
         oldest_age_seconds,
@@ -268,6 +268,8 @@ fn check_ins_match_the_contract() {
         expired: 2,
         rejected: 3,
         unreadable: 4,
+        dropped_earliest_age_seconds: dropped.map(|(earliest, _latest)| earliest),
+        dropped_latest_age_seconds: dropped.map(|(_earliest, latest)| latest),
     };
 
     // What the agent advertises: inventory it reports plus job capabilities its policy enables.
@@ -277,8 +279,16 @@ fn check_ins_match_the_contract() {
         .chain(["inventory.collect@1".to_owned()])
         .collect();
     assert_conforms("CheckIn", &CheckIn::new(capabilities, None));
-    assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(Some(90)))));
-    assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(None))));
+    assert_conforms(
+        "CheckIn",
+        &CheckIn::new(vec![], Some(queue(Some(90), None))),
+    );
+    assert_conforms("CheckIn", &CheckIn::new(vec![], Some(queue(None, None))));
+    assert_conforms(
+        "CheckIn",
+        &CheckIn::new(vec![], Some(queue(None, Some((600, 360)))))
+            .with_telemetry_queue(Some(queue(Some(30), Some((86_400, 3_600))))),
+    );
 
     let state = std::env::temp_dir().join(format!("renga-contract-{}", uuid::Uuid::new_v4()));
     let key = InstallationKey::load_or_create(&state).unwrap();
@@ -301,6 +311,10 @@ fn the_contract_accepts_edge_cases_the_server_accepts() {
         (
             "Observation",
             include_str!("../../test/fixtures/openapi/accepted_observations.json"),
+        ),
+        (
+            "TelemetryBatch",
+            include_str!("../../test/fixtures/openapi/accepted_telemetry.json"),
         ),
     ];
 

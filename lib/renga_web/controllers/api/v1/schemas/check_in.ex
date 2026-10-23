@@ -25,7 +25,9 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
               "#{contract().max_agent_metadata_bytes} bytes of JSON.",
           properties: %{
             agent_version: nullable(string()),
-            observation_queue: ObservationQueue
+            observation_queue: ObservationQueue,
+            # The agent's separate telemetry queue (RFD 10), in the same shape.
+            telemetry_queue: ObservationQueue
           }
         },
         installation_key: %{

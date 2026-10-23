@@ -463,6 +463,10 @@ defmodule RengaWeb.InventoryOperationsLive do
               <span id={"collector-queue-#{source.id}"}>
                 <.collector_queue queue={Agent.observation_queue(collector_agent(source))} />
               </span>
+              <.collector_telemetry_queue
+                id={"collector-telemetry-queue-#{source.id}"}
+                queue={Agent.telemetry_queue(collector_agent(source))}
+              />
             </:col>
             <:empty>No discovered collectors match this view.</:empty>
           </.table>
@@ -725,11 +729,30 @@ defmodule RengaWeb.InventoryOperationsLive do
     end
   end
 
+  attr :id, :string, required: true
   attr :queue, :map, required: true
+
+  # Agents without telemetry producers report no telemetry queue, so nothing
+  # shows. The queue follows the observation queue on the same line, so the
+  # row stays single-line and clips rather than wraps.
+  defp collector_telemetry_queue(%{queue: nil} = assigns), do: ~H""
+
+  defp collector_telemetry_queue(assigns) do
+    ~H"""
+    <span id={@id} class="ml-1.5">
+      <span class="text-xs text-fg-subtle">· Telemetry</span>
+      <.collector_queue queue={@queue} kind={:telemetry} />
+    </span>
+    """
+  end
+
+  attr :queue, :map, required: true
+  attr :kind, :atom, default: :observations
 
   # Observations the agent holds on disk because Renga has not accepted them yet,
   # as of its latest check-in. A backlog means inventory here is older than the
-  # host's; drops mean some observations will never arrive.
+  # host's; drops mean some observations will never arrive. Telemetry has its
+  # own queue (RFD 10), whose drops are readings lost from history.
   defp collector_queue(assigns) do
     ~H"""
     <%= cond do %>
@@ -743,12 +766,11 @@ defmodule RengaWeb.InventoryOperationsLive do
           oldest {format_age(@queue.oldest_age_seconds)} · {format_bytes(@queue.bytes)}
         </span>
     <% end %>
-    <span
-      :if={@queue && @queue.dropped > 0}
-      class="ml-1.5 text-xs font-medium text-crit"
-      title={dropped_breakdown(@queue)}
-    >
-      {@queue.dropped} dropped since restart
+    <%!-- The breakdown is inline text, not a title, so the cell's clip reveal
+    shows it when the column is too narrow. --%>
+    <span :if={@queue && @queue.dropped > 0} class="ml-1.5 text-xs">
+      <span class="font-medium text-crit">{@queue.dropped} dropped since restart</span>
+      <span class="text-fg-muted">({dropped_breakdown(@queue, @kind)})</span>
     </span>
     """
   end
@@ -881,16 +903,23 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp format_bytes(bytes) when bytes < 1_000_000, do: "#{Float.round(bytes / 1_000, 1)} kB"
   defp format_bytes(bytes), do: "#{Float.round(bytes / 1_000_000, 1)} MB"
 
-  defp dropped_breakdown(queue) do
+  defp dropped_breakdown(queue, kind) do
     [
       {queue.dropped_for_space, "to make room"},
-      {queue.expired, "after seven days"},
+      {queue.expired, if(kind == :telemetry, do: "after a day", else: "after seven days")},
       {queue.rejected, "rejected by Renga"},
       {queue.unreadable, "unreadable"}
     ]
     |> Enum.reject(fn {count, _reason} -> count == 0 end)
     |> Enum.map_join(", ", fn {count, reason} -> "#{count} #{reason}" end)
+    |> Kernel.<>(dropped_range(queue))
   end
+
+  # Ages as of the agent's last check-in.
+  defp dropped_range(%{dropped_ages: {earliest, latest}}),
+    do: "; queued #{format_age(earliest)} to #{format_age(latest)} before the last check-in"
+
+  defp dropped_range(_queue), do: ""
 
   defp format_time(nil), do: "Never"
   defp format_time(datetime), do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")

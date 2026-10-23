@@ -354,6 +354,19 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
       assert [%Reading{sensor: ^longest}] = Readings.list_source_readings(scope, agent.source_id)
     end
 
+    test "accepts the batches the agent's contract test checks", %{token: token} do
+      check_in!(token)
+
+      assert [_ | _] =
+               bodies =
+               "test/fixtures/openapi/accepted_telemetry.json" |> File.read!() |> Jason.decode!()
+
+      for body <- bodies do
+        assert %{"duplicate" => false, "samples" => %{"rejected" => 0}} =
+                 valid_api_response(post_batch(token, body), 202)
+      end
+    end
+
     test "a disabled agent's telemetry is refused", %{scope: scope, token: token} do
       check_in!(token)
       [agent] = Inventory.list_agents(scope)

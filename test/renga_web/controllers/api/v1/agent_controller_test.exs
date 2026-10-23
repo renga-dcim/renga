@@ -256,6 +256,58 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
       end
     end
 
+    test "stores the telemetry queue beside the observation queue", %{conn: conn} do
+      %{scope: scope, token: token} = source_fixture()
+
+      queue = %{
+        "entries" => 2,
+        "bytes" => 900,
+        "oldest_age_seconds" => 120,
+        "dropped_for_space" => 0,
+        "expired" => 0,
+        "rejected" => 0,
+        "unreadable" => 0
+      }
+
+      telemetry = %{
+        queue
+        | "expired" => 5
+      }
+
+      telemetry =
+        Map.merge(telemetry, %{
+          "dropped_earliest_age_seconds" => 90_000,
+          "dropped_latest_age_seconds" => 86_500
+        })
+
+      conn =
+        check_in_json(conn, token, %{
+          "observation_queue" => queue,
+          "telemetry_queue" => telemetry
+        })
+
+      %{"agent" => %{"id" => agent_id}} = valid_api_response(conn, 202)
+      agent = Inventory.get_agent!(scope, agent_id)
+
+      assert %{entries: 2, dropped: 0, dropped_ages: nil} =
+               Renga.Inventory.Agent.observation_queue(agent)
+
+      assert %{entries: 2, expired: 5, dropped: 5, dropped_ages: {90_000, 86_500}} =
+               Renga.Inventory.Agent.telemetry_queue(agent)
+
+      for {key, value, path} <- [
+            {"expired", -1, "metadata.telemetry_queue.expired"},
+            {"dropped_latest_age_seconds", "1",
+             "metadata.telemetry_queue.dropped_latest_age_seconds"}
+          ] do
+        conn =
+          check_in_json(build_conn(), token, %{"telemetry_queue" => %{telemetry | key => value}})
+
+        assert %{"errors" => [%{"path" => ^path, "message" => "must be a non-negative integer"}]} =
+                 valid_api_response(conn, 422)
+      end
+    end
+
     test "rejects metadata larger than the encoded storage limit", %{conn: conn} do
       %{token: token} = source_fixture()
 

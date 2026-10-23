@@ -32,6 +32,7 @@ use tracing::warn;
 const MAX_ERROR_BODY: usize = 512;
 const CHECKIN_PATH: &str = "/api/v1/agent/checkins";
 const OBSERVATION_PATH: &str = "/api/v1/observations";
+const TELEMETRY_PATH: &str = "/api/v1/telemetry";
 const JOB_LEASE_PATH: &str = "/api/v1/agent/jobs/lease";
 const HOME_PATH: &str = "/api/v1/agent/home";
 const INSTALLATION_ID_HEADER: &str = "x-renga-installation-id";
@@ -59,6 +60,9 @@ pub struct TransportError {
     kind: FailureKind,
     status: Option<StatusCode>,
     moved: bool,
+    /// A `409` naming `collector.kind`: the payload's collector kind differs from the stream
+    /// the server already has under that collector ID.
+    collector_kind_conflict: bool,
 }
 
 impl TransportError {
@@ -68,6 +72,7 @@ impl TransportError {
             kind,
             status: None,
             moved: false,
+            collector_kind_conflict: false,
         }
     }
 
@@ -166,6 +171,7 @@ pub struct HttpClient {
     client: Client,
     checkin_url: Url,
     observation_url: Url,
+    telemetry_url: Url,
     lease_url: Url,
     authorization: HeaderValue,
     installation_id: HeaderValue,
@@ -202,6 +208,7 @@ impl HttpClient {
     ) -> Result<Self, TransportError> {
         let checkin_url = endpoint_url(&settings.home, CHECKIN_PATH)?;
         let observation_url = endpoint_url(&settings.home, OBSERVATION_PATH)?;
+        let telemetry_url = endpoint_url(&settings.home, TELEMETRY_PATH)?;
         let lease_url = endpoint_url(&settings.home, JOB_LEASE_PATH)?;
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {}", settings.intake_api_key)).map_err(
@@ -226,6 +233,7 @@ impl HttpClient {
             settings,
             checkin_url,
             observation_url,
+            telemetry_url,
             lease_url,
             authorization,
             installation_id,
@@ -247,6 +255,7 @@ impl HttpClient {
             client: _,
             checkin_url: _,
             observation_url: _,
+            telemetry_url: _,
             lease_url: _,
             authorization: _,
             installation_id: _,
@@ -397,13 +406,41 @@ impl HttpClient {
         body: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
+        self.post_encoded_while(&self.observation_url, body, cancelled)
+    }
+
+    /// Posts a telemetry batch exactly as encoded, so a queued batch replays byte for byte and
+    /// the server recognizes a repeat by its replay ID (RFD 10, "Measured history").
+    pub fn post_encoded_telemetry(&self, body: &[u8]) -> Result<(), TransportError> {
+        self.post_encoded_while(&self.telemetry_url, body, || self.cancellation.cancelled())
+            .map_err(|error| {
+                // A batch's collector kind is fixed when it is encoded and a stream's kind never
+                // changes, so no retry can deliver it; unlike an observation, a telemetry batch
+                // is disposable, so it is dropped instead of holding back the batches after it.
+                if error.collector_kind_conflict {
+                    TransportError {
+                        kind: FailureKind::PayloadRejected,
+                        ..error
+                    }
+                } else {
+                    error
+                }
+            })
+    }
+
+    fn post_encoded_while(
+        &self,
+        url: &Url,
+        body: &[u8],
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), TransportError> {
         self.noting_moved(retry(
             self.settings.max_retry_attempts,
             self.settings.request_timeout,
             || {
                 let response = self
                     .client
-                    .post(self.observation_url.clone())
+                    .post(url.clone())
                     .header(AUTHORIZATION, self.authorization.clone())
                     .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -655,6 +692,8 @@ fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
     let excerpt = bounded_error_excerpt(response);
     TransportError {
         moved: moved(status, &excerpt),
+        collector_kind_conflict: status == StatusCode::CONFLICT
+            && rejects_path(&excerpt, "collector.kind"),
         ..TransportError::new(
             format!("server returned {status}; response excerpt: {excerpt:?}"),
             failure_kind(status, &excerpt),
@@ -680,9 +719,12 @@ fn failure_kind(status: StatusCode, excerpt: &str) -> FailureKind {
         StatusCode::BAD_REQUEST
         | StatusCode::PAYLOAD_TOO_LARGE
         | StatusCode::UNPROCESSABLE_ENTITY => FailureKind::PayloadRejected,
-        // A conflict is about the payload only when its observation ID was reused; an
-        // enrollment conflict belongs to the installation and leaves the payload deliverable.
-        StatusCode::CONFLICT if rejects_path(excerpt, "observation_id") => {
+        // A conflict is about the payload only when its observation or replay ID was reused;
+        // an enrollment or collector conflict belongs to the installation and leaves the
+        // payload deliverable.
+        StatusCode::CONFLICT
+            if rejects_path(excerpt, "observation_id") || rejects_path(excerpt, "replay_id") =>
+        {
             FailureKind::PayloadRejected
         }
         _ => FailureKind::Permanent,
@@ -809,6 +851,10 @@ mod tests {
     fn classifies_failures_by_who_can_fix_them() {
         let reused_id = r#"{"status":"rejected","errors":[{"path":"observation_id","message":"has already been used for a different payload"}]}"#;
         let enrolled = r#"{"status":"rejected","errors":[{"path":"installation_id","message":"collector credential is already enrolled by another installation"}]}"#;
+        let reused_replay = r#"{"status":"rejected","errors":[{"path":"replay_id","message":"has already been used for a different batch"}]}"#;
+        let disabled =
+            r#"{"status":"rejected","errors":[{"path":"collector.id","message":"is disabled"}]}"#;
+        let wrong_kind = r#"{"status":"rejected","errors":[{"path":"collector.kind","message":"does not match the collector's kind"}]}"#;
 
         for (status, excerpt, kind) in [
             (StatusCode::SERVICE_UNAVAILABLE, "", FailureKind::Transient),
@@ -830,7 +876,15 @@ mod tests {
                 reused_id,
                 FailureKind::PayloadRejected,
             ),
+            (
+                StatusCode::CONFLICT,
+                reused_replay,
+                FailureKind::PayloadRejected,
+            ),
             (StatusCode::CONFLICT, enrolled, FailureKind::Permanent),
+            (StatusCode::CONFLICT, disabled, FailureKind::Permanent),
+            // Shared by observations, which keep it queued; only telemetry drops it.
+            (StatusCode::CONFLICT, wrong_kind, FailureKind::Permanent),
             (StatusCode::CONFLICT, "not json", FailureKind::Permanent),
             (StatusCode::UNAUTHORIZED, "", FailureKind::Permanent),
             (StatusCode::FORBIDDEN, "", FailureKind::Permanent),
@@ -870,6 +924,7 @@ mod tests {
     fn uses_the_server_api_routes() {
         assert_eq!(CHECKIN_PATH, "/api/v1/agent/checkins");
         assert_eq!(OBSERVATION_PATH, "/api/v1/observations");
+        assert_eq!(TELEMETRY_PATH, "/api/v1/telemetry");
         assert_eq!(JOB_LEASE_PATH, "/api/v1/agent/jobs/lease");
     }
 
@@ -1130,6 +1185,10 @@ mod tests {
             assert_eq!(
                 client.observation_url.as_str(),
                 "https://renga.test/api/v1/observations"
+            );
+            assert_eq!(
+                client.telemetry_url.as_str(),
+                "https://renga.test/api/v1/telemetry"
             );
             assert_eq!(client.authorization.to_str().unwrap(), "Bearer valid-token");
             assert_eq!(

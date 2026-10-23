@@ -21,6 +21,13 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
   @fits "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
   @buttons "[...document.querySelectorAll('main button, main input[type=submit]')].filter(b => b.offsetParent !== null).map(b => b.getBoundingClientRect().height)"
 
+  @clip_tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 600))
+  """
+
   defp tappable(heights), do: Enum.all?(heights, &(round(&1) >= 44))
 
   test "sign-in and registration fit a phone", %{conn: conn} do
@@ -355,6 +362,58 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       })()
       """,
       &assert(&1 == %{"open" => true, "white_space" => "normal", "fits" => true})
+    )
+  end
+
+  @tag browser_context_opts: [
+         has_touch: false,
+         is_mobile: false,
+         viewport: %{width: 1600, height: 900}
+       ]
+  test "the telemetry queue shares the delivery queue's line", %{conn: conn} do
+    %{agent: agent, conn: conn} = collector_context(conn)
+
+    queue = %{
+      "entries" => 3,
+      "bytes" => 4_000,
+      "oldest_age_seconds" => 180,
+      "dropped_for_space" => 4,
+      "expired" => 1,
+      "rejected" => 0,
+      "unreadable" => 0,
+      "dropped_earliest_age_seconds" => 2 * 86_400,
+      "dropped_latest_age_seconds" => 3 * 3_600
+    }
+
+    agent
+    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "telemetry_queue", queue))
+    |> Renga.Repo.update!()
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const telemetry = document.getElementById('collector-telemetry-queue-#{agent.source_id}')
+        const queue = document.getElementById('collector-queue-#{agent.source_id}')
+        const row = telemetry.closest('tr').getBoundingClientRect()
+        const height = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--rg-row-h'))
+        return {
+          one_line: row.height <= height + 1,
+          same_line: Math.abs(telemetry.getBoundingClientRect().top - queue.getBoundingClientRect().top) < 2
+        }
+      })()
+      """,
+      &assert(&1 == %{"one_line" => true, "same_line" => true})
+    )
+    # The clipped cell still reveals why readings were lost, and when.
+    |> evaluate(
+      "document.getElementById('collector-telemetry-queue-#{agent.source_id}').closest('[data-clip]').focus()"
+    )
+    |> evaluate(
+      @clip_tooltip,
+      &assert(&1 =~ "5 dropped since restart (4 to make room, 1 after a day; queued 2d to 3h")
     )
   end
 
