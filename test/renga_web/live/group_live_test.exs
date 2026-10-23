@@ -191,6 +191,31 @@ defmodule RengaWeb.GroupLiveTest do
       refute has_element?(view, "#resource-group-#{context.staging.id}")
     end
 
+    test "a group passed down by a rack names the rack and its trust", context do
+      {:ok, site} =
+        Renga.DCIM.create_site(context.admin, %{name: "DC-A"}, %{slug: "dc-a", status: "active"})
+
+      {:ok, rack} =
+        Renga.DCIM.create_rack(context.admin, %{name: "R12"}, %{
+          site_id: site.id,
+          height_units: 42,
+          status: "active"
+        })
+
+      {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [rack.resource_id])
+
+      {:ok, _placement} =
+        Renga.DCIM.put_current_placement(context.admin, context.web.id, %{rack_id: rack.id})
+
+      {:ok, view, _html} = live(context.admin_conn, ~p"/inventory/#{context.web.id}")
+      via = "#resource-group-#{context.staging.id}-via-#{rack.resource_id}"
+
+      assert has_element?(view, via, "Through rack")
+      assert has_element?(view, "#{via} a[href='/inventory/#{rack.resource_id}']", "R12")
+      assert has_element?(view, via, "placement not confirmed")
+      refute has_element?(view, "#resource-group-#{context.staging.id}-remove")
+    end
+
     test "members see the groups but cannot change them", context do
       {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [context.web.id])
       {:ok, view, _html} = live(context.member_conn, ~p"/inventory/#{context.web.id}")

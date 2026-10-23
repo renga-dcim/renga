@@ -414,6 +414,9 @@ defmodule RengaWeb.InboxLive do
   defp triage_error(socket, :already_placed),
     do: socket |> put_flash(:info, "Already placed elsewhere; nothing changed") |> after_triage()
 
+  defp triage_error(socket, {:exclusive_conflict, _conflicts} = reason),
+    do: put_flash(socket, :error, RengaWeb.GroupComponents.refusal_message(reason))
+
   defp triage_error(socket, %Ecto.Changeset{} = changeset) do
     message =
       changeset

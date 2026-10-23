@@ -571,9 +571,13 @@ defmodule Renga.TriageRules do
 
   defp managed(%Scope{} = scope, mutation), do: transaction(scope, mutation)
 
+  # Rules may place resources, which can change their inherited resource
+  # groups (RFD 18), so they take the group-projection lock right after the
+  # organization lock, like every placement writer.
   defp transaction(%Scope{organization_id: organization_id} = scope, mutation) do
     Repo.transaction(fn ->
       authorize!(scope)
+      Renga.ResourceGroups.lock_projection!(organization_id)
 
       case mutation.() do
         {:ok, result} -> result

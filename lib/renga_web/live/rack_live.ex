@@ -217,6 +217,9 @@ defmodule RengaWeb.RackLive do
   defp place_error(socket, :forbidden),
     do: put_flash(socket, :error, "Placing devices requires the owner or admin role")
 
+  defp place_error(socket, {:exclusive_conflict, _conflicts} = reason),
+    do: put_flash(socket, :error, RengaWeb.GroupComponents.refusal_message(reason))
+
   defp place_error(socket, _reason),
     do:
       socket

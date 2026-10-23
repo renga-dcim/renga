@@ -509,6 +509,46 @@ defmodule Renga.DCIMTest do
            )
   end
 
+  test "agreeing evidence leaves a confirmed placement confirmed", %{scope: scope} do
+    site = site_fixture(scope, "agreeing-site")
+    {:ok, rack} = rack_fixture(scope, site, "AGREE-R01", 42)
+    resource = resource_fixture(scope, "agreeing-server")
+    {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "agreeing-import"})
+
+    {:ok, confirmed} =
+      DCIM.put_current_placement(scope, resource.id, %{
+        rack_id: rack.id,
+        position: 8,
+        height_units: 1,
+        face: "front",
+        confirmed: true,
+        provenance: %{"confirmed_by" => "operator"}
+      })
+
+    {:ok, observation} =
+      Inventory.create_observation(scope, source.id, %{
+        observation_id: "agreeing-placement-1",
+        observed_at: ~U[2026-08-25 13:00:00.000000Z],
+        payload: %{"rack" => "AGREE-R01"}
+      })
+
+    {:ok, _evidence} =
+      DCIM.create_placement_evidence(scope, source.id, observation.id, resource.id, %{
+        site_identifier: site.slug,
+        rack_identifier: rack.resource.name,
+        position: 8,
+        height_units: 1,
+        face: "front",
+        confidence: 90,
+        observed_at: observation.observed_at
+      })
+
+    assert {:ok, placement} = DCIM.reconcile_placement_evidence(scope, resource.id)
+    assert placement.id == confirmed.id
+    assert placement.confirmed
+    assert placement.provenance == %{"confirmed_by" => "operator"}
+  end
+
   test "reports simultaneous placement assertions without inventing a current placement", %{
     scope: scope
   } do

@@ -9,6 +9,7 @@ defmodule RengaWeb.RackLiveTest do
   alias Renga.Accounts
   alias Renga.DCIM
   alias Renga.Inventory
+  alias Renga.ResourceGroups
 
   setup do
     organization = organization_fixture()
@@ -127,6 +128,25 @@ defmodule RengaWeb.RackLiveTest do
 
     assert render(view) =~ "web-01 placed at U5"
     assert [%{position: 5}] = DCIM.rack_elevation(admin, rack.id).rear
+  end
+
+  test "placing a device where a rack's group conflicts with its own says why", context do
+    %{admin: admin, rack: rack} = context
+    web = server_fixture(admin, "web-01")
+
+    {:ok, set} = ResourceGroups.create_group_set(admin, %{name: "Environment", exclusive: true})
+    {:ok, prod} = ResourceGroups.create_group(admin, %{name: "Production", group_set_id: set.id})
+    {:ok, lab} = ResourceGroups.create_group(admin, %{name: "Lab", group_set_id: set.id})
+    {:ok, 1} = ResourceGroups.add_members(admin, prod, [web.id])
+    {:ok, 1} = ResourceGroups.add_members(admin, lab, [rack.resource_id])
+
+    {:ok, view, _html} = live(context.admin_conn, ~p"/places/racks/#{rack}")
+    render_hook(view, "drop_place", %{"resource_id" => web.id, "position" => 5, "face" => "rear"})
+
+    assert render(view) =~
+             "web-01 would be in both Lab and Production, but Environment is exclusive"
+
+    assert DCIM.rack_elevation(admin, rack.id).rear == []
   end
 
   test "a device seen here but recorded elsewhere is dashed and placed in one step", context do
