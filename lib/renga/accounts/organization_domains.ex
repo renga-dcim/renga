@@ -14,7 +14,8 @@ defmodule Renga.Accounts.OrganizationDomains do
   was.
 
   Changes need `organization.manage`, checked in the transaction that makes
-  them, and appear in the organization's Activity.
+  them, and appear in the organization's Activity, which open pages learn
+  of through `Renga.Inventory.Changes` once the change commits.
   """
 
   import Ecto.Query
@@ -24,6 +25,7 @@ defmodule Renga.Accounts.OrganizationDomains do
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Repo
 
   @permission "organization.manage"
@@ -55,6 +57,7 @@ defmodule Renga.Accounts.OrganizationDomains do
         {:ok, claim}
       end
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -65,8 +68,12 @@ defmodule Renga.Accounts.OrganizationDomains do
   """
   def verify(%Scope{} = scope, %OrganizationDomain{id: id}) do
     with {:ok, claim} <- fetch(scope, id),
-         {:ok, :found} <- check(claim) do
-      authorized(scope, fn -> claim_verified(scope, id) end)
+         {:ok, :found} <- check(claim),
+         {:ok, {claim, displaced_organization_id}} <-
+           authorized(scope, fn -> claim_verified(scope, id) end) do
+      # An organization that lost the domain to this one sees that too.
+      Changes.broadcast({:ok, claim}, displaced_organization_id)
+      Changes.broadcast({:ok, claim}, scope.organization_id)
     else
       {:ok, :missing} -> {:error, :record_not_found}
       {:ok, :unavailable} -> {:error, :dns_unavailable}
@@ -77,13 +84,14 @@ defmodule Renga.Accounts.OrganizationDomains do
   defp claim_verified(scope, id) do
     case lock_claim(scope, id) do
       nil -> {:error, :not_found}
-      %OrganizationDomain{verified_at: %DateTime{}} = claim -> {:ok, claim}
+      %OrganizationDomain{verified_at: %DateTime{}} = claim -> {:ok, {claim, nil}}
       claim -> take_over(scope, claim)
     end
   end
 
   # The domain is this organization's unless another still holds it and
   # still proves control; a holder whose record is gone loses it here.
+  # Returns the claim with the organization it was taken from, if any.
   defp take_over(scope, claim) do
     holder =
       OrganizationDomain
@@ -93,11 +101,13 @@ defmodule Renga.Accounts.OrganizationDomains do
 
     case holder && check(holder) do
       nil ->
-        mark_verified(scope, claim)
+        with {:ok, claim} <- mark_verified(scope, claim), do: {:ok, {claim, nil}}
 
       {:ok, :missing} ->
         unverify!(holder)
-        mark_verified(scope, claim)
+
+        with {:ok, claim} <- mark_verified(scope, claim),
+             do: {:ok, {claim, holder.organization_id}}
 
       {:ok, _found_or_unavailable} ->
         {:error, :verified_elsewhere}
@@ -136,6 +146,7 @@ defmodule Renga.Accounts.OrganizationDomains do
           {:ok, claim}
       end
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -160,7 +171,9 @@ defmodule Renga.Accounts.OrganizationDomains do
         Repo.update_all(same_verification(claim), set: [checked_at: Renga.Time.utc_now_ms()])
 
       {:ok, :missing} ->
-        Repo.transaction(fn -> unverify_if_unchanged(claim) end)
+        fn -> unverify_if_unchanged(claim) end
+        |> Repo.transaction()
+        |> Changes.broadcast(claim.organization_id)
 
       {:ok, :unavailable} ->
         :ok

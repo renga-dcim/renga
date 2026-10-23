@@ -10,6 +10,7 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
   alias Renga.Accounts.Scope
   alias Renga.FakeTxtResolver
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias RengaWeb.ChangeDescription
 
   defp scope(organization, role) do
@@ -156,9 +157,16 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
         OrganizationDomains.record_value(claim)
       ])
 
+      Changes.subscribe(owner)
+      Changes.subscribe(other)
+
       assert {:ok, claim} = OrganizationDomains.verify(other, claim)
       assert claim.verified_at
       refute Repo.reload!(held).verified_at
+
+      # Both organizations' open Activity pages hear of it.
+      assert_received {:inventory_changed, id} when id == organization.id
+      assert_received {:inventory_changed, id} when id == other_organization.id
 
       assert ["added", "verified", "unverified"] ==
                Enum.map(changes(organization), & &1.metadata["change"])
