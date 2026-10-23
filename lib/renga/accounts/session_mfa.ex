@@ -59,7 +59,6 @@ defmodule Renga.Accounts.SessionMFA do
     if Enum.all?(amr, &is_binary/1), do: amr, else: []
   end
 
-  defp amr(%{"amr" => nil}), do: nil
   defp amr(%{"amr" => _malformed}), do: []
   defp amr(_claims), do: nil
 

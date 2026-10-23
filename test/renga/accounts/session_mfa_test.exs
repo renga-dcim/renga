@@ -33,15 +33,14 @@ defmodule Renga.Accounts.SessionMFATest do
       assert organization_id == owned.organization_id
     end
 
-    test "a token without amr leaves it absent" do
+    test "only a token without amr leaves it absent" do
       assert %SessionMFA{provider_amr: nil} = SessionMFA.for_provider(@provider, %{})
-      assert %SessionMFA{provider_amr: nil} = SessionMFA.for_provider(@provider, %{"amr" => nil})
     end
 
     # A malformed claim is present, so it must not fall back to the mark
     # alone deciding; an empty list proves no factor.
     test "a malformed amr proves nothing rather than being ignored" do
-      for amr <- ["mfa", [1, 2], %{"mfa" => true}, ["mfa", 1]] do
+      for amr <- [nil, "mfa", [1, 2], %{"mfa" => true}, ["mfa", 1]] do
         assert %SessionMFA{provider_amr: []} =
                  SessionMFA.for_provider(@provider, %{"amr" => amr})
       end
