@@ -109,6 +109,26 @@ defmodule RengaWeb.ScimLiveTest do
     refute has_element?(view, "#scim-connect-form")
   end
 
+  test "an owner demoted or disabled by hand stops seeing the connection at once", context do
+    connection = scim_connection_fixture(context.owner)
+    {_token, _value} = scim_token_fixture(context.owner, connection)
+    other_owner = member_scope(context.organization, "owner")
+
+    {:ok, view, _html} = live(context.conn, ~p"/settings/scim")
+    view |> element("#scim-new-token") |> render_click()
+    view |> form("#scim-token-form", token: %{"name" => "Entra"}) |> render_submit()
+    assert has_element?(view, "#issued-scim-token")
+
+    {:ok, _} = Renga.Members.change_role(other_owner, context.owner.membership_id, "viewer")
+
+    assert has_element?(view, "#scim-owners-only")
+    refute has_element?(view, "#scim-connection")
+    refute has_element?(view, "#issued-scim-token")
+
+    {:ok, _} = Renga.Members.disable_member(other_owner, context.owner.membership_id)
+    assert_redirect(view, "/organizations")
+  end
+
   test "admins see that only owners manage SCIM", %{conn: conn} = context do
     scim_connection_fixture(context.owner)
     admin = member_scope(context.organization, "admin")

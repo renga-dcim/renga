@@ -11,6 +11,7 @@ defmodule RengaWeb.ScimLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts
   alias Renga.Inventory.Changes
   alias Renga.Scim
   alias Renga.Scim.Connection
@@ -25,7 +26,6 @@ defmodule RengaWeb.ScimLive do
     {:ok,
      socket
      |> assign(:page_title, "SCIM")
-     |> assign(:can_manage?, Scim.can_manage?(scope))
      |> assign(:issued_token, nil)
      |> assign(:token_form, token_form())
      |> assign(:connect_form, connect_form())
@@ -150,19 +150,35 @@ defmodule RengaWeb.ScimLive do
   defp mapped_message(group),
     do: "Members of #{group.display_name} now get #{group.role}"
 
-  defp load_connections(%{assigns: %{can_manage?: false}} = socket),
-    do:
-      assign(socket,
-        connection: nil,
-        default_role_form: nil,
-        history: [],
-        groups: [],
-        providers: []
-      )
-
+  # Every reload reads the person's access again, as the member list does:
+  # an owner demoted or disabled by hand meanwhile gets no announcement, and
+  # must stop seeing the connection, its tokens, and a token just issued.
   defp load_connections(socket) do
-    scope = socket.assigns.current_scope
+    previous = socket.assigns.current_scope
+    scope = Accounts.scope_for_user(previous.user, previous.organization_id)
 
+    cond do
+      scope.organization_id != previous.organization_id ->
+        push_navigate(socket, to: ~p"/organizations")
+
+      Scim.can_manage?(scope) ->
+        socket |> assign(current_scope: scope, can_manage?: true) |> load_managed(scope)
+
+      true ->
+        assign(socket,
+          current_scope: scope,
+          can_manage?: false,
+          issued_token: nil,
+          connection: nil,
+          default_role_form: nil,
+          history: [],
+          groups: [],
+          providers: []
+        )
+    end
+  end
+
+  defp load_managed(socket, scope) do
     {enabled, history} =
       scope |> Scim.list_connections() |> Enum.split_with(&Connection.enabled?/1)
 
