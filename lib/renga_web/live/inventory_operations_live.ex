@@ -486,15 +486,15 @@ defmodule RengaWeb.InventoryOperationsLive do
             overflow="clip"
             class="rounded-lg border border-edge bg-surface"
           >
-            <:col :let={row} label="Target">
+            <:col :let={row} label="Target" class="w-2/3 sm:w-auto">
               <span class="font-mono text-xs text-fg">{row.display_key}</span>
             </:col>
-            <:col :let={row} label="State" class="w-64">
+            <:col :let={row} label="State" class="w-1/3 sm:w-64">
               <span id={"poller-target-state-#{row.target.id}"}>
                 <.target_state_pill target={row.target} />
                 <span
                   :if={row.target.status == "unreachable" && row.target.error}
-                  class="ml-1.5 text-xs text-fg-muted"
+                  class="ml-1.5 hidden text-xs text-fg-muted sm:inline"
                 >
                   Connection failed
                 </span>
