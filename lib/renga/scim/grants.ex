@@ -16,8 +16,9 @@ defmodule Renga.Scim.Grants do
   history come back with the person; the account itself is never touched.
 
   Every function here runs inside a transaction that holds the
-  organization lock, and returns the memberships whose access changed so
-  the caller can tell connected sessions after the commit.
+  organization lock. Changed memberships are announced to the person's
+  open pages only after that transaction commits: wrap it in
+  `announcing/1`.
   """
 
   import Ecto.Query, warn: false
@@ -34,6 +35,62 @@ defmodule Renga.Scim.Grants do
   alias Renga.Scim.GroupMember
 
   @role_order ~w(owner admin member viewer)
+  @pending {__MODULE__, :pending}
+
+  @doc """
+  Runs `fun`, usually a `Repo.transaction/1`, and once it returns
+  `{:ok, _}` tells every person whose grant changed inside it, on
+  `subscribe/2`'s topic. A failed `fun` announces nothing. Nested calls
+  leave the announcement to the outermost, which owns the commit.
+  """
+  def announcing(fun) do
+    case Process.get(@pending) do
+      nil ->
+        Process.put(@pending, [])
+
+        try do
+          result = fun.()
+          if match?({:ok, _}, result), do: announce(Process.get(@pending))
+          result
+        after
+          Process.delete(@pending)
+        end
+
+      _outer ->
+        fun.()
+    end
+  end
+
+  @doc """
+  Subscribes the caller to changes of `user_id`'s access in the
+  organization. The message is `{:access_changed, organization_id}`; it
+  says only that access changed, so the subscriber re-reads it.
+  """
+  def subscribe(organization_id, user_id),
+    do: Phoenix.PubSub.subscribe(Renga.PubSub, topic(organization_id, user_id))
+
+  defp announce(memberships) do
+    memberships
+    |> Enum.uniq_by(&{&1.organization_id, &1.user_id})
+    |> Enum.each(fn membership ->
+      Phoenix.PubSub.broadcast(
+        Renga.PubSub,
+        topic(membership.organization_id, membership.user_id),
+        {:access_changed, membership.organization_id}
+      )
+    end)
+  end
+
+  defp topic(organization_id, user_id), do: "access:#{organization_id}:#{user_id}"
+
+  defp pending!(changed) do
+    case Process.get(@pending) do
+      nil -> :ok
+      pending -> Process.put(@pending, changed ++ pending)
+    end
+
+    changed
+  end
 
   @doc """
   The account ids `entry_ids` reach through their identity bindings. Call it
@@ -94,6 +151,7 @@ defmodule Renga.Scim.Grants do
     |> Enum.uniq()
     |> Enum.sort()
     |> Enum.flat_map(&reconcile_user!(organization_id, connection, &1, cause))
+    |> pending!()
   end
 
   @doc """

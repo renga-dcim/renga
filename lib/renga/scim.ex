@@ -423,6 +423,11 @@ defmodule Renga.Scim do
   # sign-in does, so a provider being disabled or removed meanwhile either
   # waits and then reconciles the connection, or is seen as ineligible.
   defp managed(%Scope{} = scope, provider_id \\ nil, mutation) do
+    Grants.announcing(fn -> transact(scope, provider_id, mutation) end)
+    |> Changes.broadcast(scope.organization_id)
+  end
+
+  defp transact(scope, provider_id, mutation) do
     Repo.transaction(fn ->
       if is_binary(provider_id), do: lock_provider(provider_id)
       Authorization.authorize!(scope, "scim.manage")
@@ -432,7 +437,6 @@ defmodule Renga.Scim do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
-    |> Changes.broadcast(scope.organization_id)
   end
 
   defp with_connection(scope, provider_id \\ nil, connection_id, mutation) do

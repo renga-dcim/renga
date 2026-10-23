@@ -244,6 +244,10 @@ defmodule Renga.Accounts.IdentityProviders do
   def disable(%IdentityProvider{id: id}, actor), do: set_enabled(id, false, actor)
 
   defp set_enabled(id, enabled, actor) do
+    Renga.Scim.Grants.announcing(fn -> set_enabled!(id, enabled, actor) end)
+  end
+
+  defp set_enabled!(id, enabled, actor) do
     change_provider(id, fn
       %IdentityProvider{enabled: ^enabled} = provider ->
         {:ok, provider}
@@ -262,6 +266,10 @@ defmodule Renga.Accounts.IdentityProviders do
   last way to sign in.
   """
   def remove(%IdentityProvider{id: id}, actor) do
+    Renga.Scim.Grants.announcing(fn -> remove!(id, actor) end)
+  end
+
+  defp remove!(id, actor) do
     change_provider(id, fn provider ->
       Repo.update_all(where(Revision, provider_id: ^id),
         set: [client_secret_ciphertext: nil, client_secret_key_id: nil]

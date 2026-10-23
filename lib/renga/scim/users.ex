@@ -124,6 +124,10 @@ defmodule Renga.Scim.Users do
   defp groups_query, do: order_by(Renga.Scim.DirectoryGroup, [group], asc: group.display_name)
 
   defp write(%Client{connection: connection}, mutation) do
+    Grants.announcing(fn -> transact(connection, mutation) end)
+  end
+
+  defp transact(connection, mutation) do
     Repo.transaction(fn ->
       Authorization.lock_active_organization!(connection.organization_id)
 
