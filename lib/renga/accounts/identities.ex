@@ -46,14 +46,12 @@ defmodule Renga.Accounts.Identities do
   end
 
   @doc """
-  The deployment providers `user` could link from settings: usable, shown on
-  the sign-in page, and OpenID Connect, the only kind that can sign in yet.
+  The deployment providers `user` could link from settings: usable and
+  shown on the sign-in page.
   """
   def linkable_providers(%User{} = user) do
     linked = user |> list() |> MapSet.new(& &1.provider_id)
-
-    IdentityProviders.sign_in_options()
-    |> Enum.filter(&(&1.kind == "oidc" and not MapSet.member?(linked, &1.id)))
+    Enum.reject(IdentityProviders.sign_in_options(), &MapSet.member?(linked, &1.id))
   end
 
   @doc """

@@ -7,6 +7,8 @@ defmodule Renga.Release.Providers do
       bin/providers list
       bin/providers add --actor NAME --id ID --issuer URL --name NAME --client-id ID
                         [--scopes a,b] [--email-domains a.com,b.com] [--allow-sign-up] [--hidden]
+      bin/providers add --actor NAME --id ID --kind github --name NAME --client-id ID
+                        [--email-domains a.com,b.com] [--hidden]
       bin/providers update ID --actor NAME [--client-id ID] [--scopes ...] [--email-domains ...]
                         [--allow-sign-up | --no-allow-sign-up] [--name NAME] [--hidden | --no-hidden]
       bin/providers test ID --actor NAME
@@ -20,6 +22,9 @@ defmodule Renga.Release.Providers do
   `RENGA_CLIENT_SECRET` environment variable when it is set. `add` and
   `update` leave the new settings pending; `test` prints a single-use link
   that tests them in a browser and activates them.
+
+  A `github` provider has no issuer and never creates accounts: people
+  link it to an account they already have, then sign in with it.
   """
 
   alias Renga.Accounts.IdentityProviders
@@ -28,6 +33,7 @@ defmodule Renga.Release.Providers do
   @switches [
     actor: :string,
     id: :string,
+    kind: :string,
     issuer: :string,
     name: :string,
     client_id: :string,
@@ -77,7 +83,7 @@ defmodule Renga.Release.Providers do
       attrs =
         %{
           "id" => opts[:id],
-          "kind" => "oidc",
+          "kind" => opts[:kind] || "oidc",
           "issuer" => opts[:issuer],
           "display_name" => opts[:name],
           "hidden" => opts[:hidden] || false

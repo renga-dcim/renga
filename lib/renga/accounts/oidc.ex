@@ -10,6 +10,9 @@ defmodule Renga.Accounts.OIDC do
   `finish/3` accepts a callback only for that attempt, at most once, and
   only while the provider still uses the revision the attempt started with.
 
+  A `github` provider has the same attempts, run by `Renga.Accounts.GitHub`
+  in place of `oidcc`: `authorize/4` and `exchange/5` hand it over.
+
   An attempt has a purpose. A sign-in names nobody; linking the provider to
   an account is bound to the user and the session that started it, and only
   a callback finishing it for that same session can complete it.
@@ -17,6 +20,7 @@ defmodule Renga.Accounts.OIDC do
 
   import Ecto.Query
 
+  alias Renga.Accounts.GitHub
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.IdentityProviderAttempt
   alias Renga.Accounts.IdentityProviderRevision, as: Revision
@@ -50,8 +54,9 @@ defmodule Renga.Accounts.OIDC do
   the callback. A re-check asks the provider to authenticate the person
   again now, with `prompt=login` and `max_age`.
   """
-  def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri, purpose \\ :sign_in) do
-    with %Revision{} = revision <-
+  def start(%IdentityProvider{} = provider, redirect_uri, purpose \\ :sign_in) do
+    with :ok <- check_purpose(provider, purpose),
+         %Revision{} = revision <-
            IdentityProviders.active_revision(provider) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
          {:ok, url, attempt} <-
@@ -79,6 +84,15 @@ defmodule Renga.Accounts.OIDC do
 
   defp purpose_name(purpose), do: attempt_binding(purpose)[:purpose]
 
+  # GitHub cannot show a fresh authentication, so it never re-checks.
+  defp check_purpose(%IdentityProvider{kind: "github"}, {:recheck, _user_id, _session_id}),
+    do: {:error, :unsupported}
+
+  defp check_purpose(%IdentityProvider{kind: kind}, _purpose) when kind in ["oidc", "github"],
+    do: :ok
+
+  defp check_purpose(_provider, _purpose), do: {:error, :unsupported}
+
   defp url_extension({:recheck, _user_id, _session_token_id}),
     do: [{"prompt", "login"}, {"max_age", Integer.to_string(@recheck_max_age)}]
 
@@ -105,12 +119,12 @@ defmodule Renga.Accounts.OIDC do
   attempt on its own record. `extension` adds query parameters, such as a
   re-check's `prompt`.
   """
-  def authorize(
-        %IdentityProvider{} = provider,
-        %Revision{} = revision,
-        redirect_uri,
-        extension \\ []
-      ) do
+  def authorize(provider, revision, redirect_uri, extension \\ [])
+
+  def authorize(%IdentityProvider{kind: "github"} = provider, %Revision{} = revision, uri, []),
+    do: GitHub.authorize(provider, revision, uri)
+
+  def authorize(%IdentityProvider{} = provider, %Revision{} = revision, redirect_uri, extension) do
     with {:ok, context} <- client_context(provider, revision) do
       attempt = %{
         "provider" => provider.id,
@@ -164,6 +178,15 @@ defmodule Renga.Accounts.OIDC do
   the ID token against the attempt's nonce and PKCE verifier. The caller has
   already matched the callback's state to the attempt, and spent it.
   """
+  def exchange(
+        %IdentityProvider{kind: "github"} = provider,
+        %Revision{} = revision,
+        attempt,
+        params,
+        redirect_uri
+      ),
+      do: GitHub.exchange(provider, revision, attempt, params, redirect_uri)
+
   def exchange(
         %IdentityProvider{} = provider,
         %Revision{} = revision,
@@ -239,6 +262,10 @@ defmodule Renga.Accounts.OIDC do
 
       not is_binary(params["code"]) ->
         {:error, :invalid_response}
+
+      # GitHub has no issuer to compare.
+      provider.kind == "github" ->
+        :ok
 
       Map.has_key?(params, "iss") and params["iss"] != provider.issuer ->
         {:error, :issuer_mismatch}

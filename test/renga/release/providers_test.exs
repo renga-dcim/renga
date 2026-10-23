@@ -35,6 +35,25 @@ defmodule Renga.Release.ProvidersTest do
     assert [%{actor: "operator: jane"}] = IdentityProviders.list_events(provider)
   end
 
+  test "adds a GitHub provider, which has no issuer and never signs people up" do
+    assert {:ok, _output} =
+             Providers.run(
+               ~w(add --actor jane --id github --kind github --name GitHub --client-id gh)
+             )
+
+    provider = IdentityProviders.get("github")
+    assert provider.kind == "github"
+    assert provider.issuer == nil
+    refute IdentityProviders.pending_revision(provider).allow_sign_up
+
+    assert {:error, message} =
+             Providers.run(
+               ~w(add --actor jane --id gh2 --kind github --name GitHub --client-id gh --allow-sign-up)
+             )
+
+    assert message =~ "not available for GitHub"
+  end
+
   test "test prints a single-use link for the pending revision" do
     {:ok, _} = add("sso")
     assert {:ok, output} = Providers.run(~w(test sso --actor jane))
