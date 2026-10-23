@@ -248,6 +248,41 @@ Pollers run on their own threads, so a slow switch never delays host inventory
 or job check-ins. Reports go through the same on-disk queue as host
 observations, split by target to stay within the observation size limit.
 
+## Switch polling over gNMI
+
+For switches whose SNMP agents are incomplete, a `[[collectors.gnmi]]` table
+polls them read-only over gNMI with OpenConfig models instead. It reports the
+same switch resource as the SNMP poller, so Renga treats both alike, and a
+switch reached by both is still one resource.
+
+```toml
+[[collectors.gnmi]]
+id = "spines"
+targets = ["10.0.0.1", "spine2.example:6030"]   # port 9339 by default
+username = "renga"                              # optional, with password_file
+password_file = "/etc/renga/gnmi-password"
+tls_ca_file = "/etc/renga/gnmi-ca.pem"          # default: the public web roots
+tls_server_name = "spine.example"               # optional; the name the certificates carry
+tls_client_cert_file = "/etc/renga/gnmi.crt"    # optional mutual TLS, with
+tls_client_key_file = "/etc/renga/gnmi.key"     # tls_client_cert_file
+interval_seconds = 900                          # default 15 minutes, at least 60
+timeout_seconds = 10                            # per request
+max_concurrent_targets = 4
+```
+
+Connections use TLS. Plaintext needs `allow_plaintext = true`, for lab gear
+only, since the password would cross the network in clear text. The password
+and certificates are read from their files on every poll.
+
+Each poll asks every switch for `system/state`, `components/component/state`,
+`interfaces/interface`, the VLAN table under `network-instances`, and
+`lldp/interfaces/interface`, each in a separate `Get` with the `openconfig`
+origin, so a switch that lacks one model still reports the rest. Only the
+platform model is required: it holds the chassis serial that identifies the
+switch. Trunk ports' allowed VLANs are read against the switch's VLAN table,
+as with SNMP. Neighbors and VLANs count as complete only when every reached
+switch answered for them.
+
 ## Virtual machines over libvirt
 
 On a KVM hypervisor, the agent can also report the virtual machines libvirt

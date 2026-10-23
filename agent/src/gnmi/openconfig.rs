@@ -503,9 +503,9 @@ pub(crate) mod tests {
     };
     use serde_json::json;
 
-    /// A recorded leaf switch's answers, split the ways real targets split them: whole
-    /// subtrees, one update per list entry, and single leaves.
-    pub(crate) fn answers() -> Answers {
+    /// A recorded leaf switch's answer to each of `PATHS`, split the ways real targets split
+    /// them: whole subtrees, one update per list entry, and single leaves.
+    pub(crate) fn recorded() -> Vec<(&'static str, Notification)> {
         let notifications = [
             Notification {
                 update: vec![update(
@@ -667,11 +667,15 @@ pub(crate) mod tests {
                 ..Default::default()
             },
         ];
-        let mut answers = Answers {
-            answered: PATHS.iter().copied().collect(),
-            ..Default::default()
-        };
-        tree::merge(&mut answers.tree, &notifications).unwrap();
+        PATHS.iter().copied().zip(notifications).collect()
+    }
+
+    pub(crate) fn answers() -> Answers {
+        let mut answers = Answers::default();
+        for (path, notification) in recorded() {
+            tree::merge(&mut answers.tree, &[notification]).unwrap();
+            answers.answered.insert(path);
+        }
         answers
     }
 

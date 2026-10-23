@@ -1,24 +1,16 @@
 //! Runs each SNMP module on its own thread and interval (RFD 11, "Scheduling and limits"), so a
 //! slow switch never holds up host inventory or lease check-ins.
 
+pub use crate::switch_report::Sink;
+
 use super::{
     client::{PollError, Session, WireSession},
     config::{SnmpCollector, Target},
-    poll, reports,
+    poll,
 };
-use crate::cancellation::Cancellation;
-use std::{
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
-use tracing::{info, warn};
-use uuid::Uuid;
-
-const WAIT_SLICE: Duration = Duration::from_millis(250);
-
-/// Where finished reports go: the agent's on-disk queue, which delivers them oldest first.
-pub type Sink = Arc<dyn Fn(Uuid, &[u8]) + Send + Sync>;
+use crate::{cancellation::Cancellation, switch_report};
+use std::{sync::Arc, thread};
+use tracing::warn;
 
 /// The running modules of one configuration.
 #[derive(Default)]
@@ -102,44 +94,24 @@ fn spawn_wire(collector: SnmpCollector, stop: Cancellation, sink: Sink) {
 type Opener<'a> = &'a (dyn Fn(&Target) -> Result<Box<dyn Session>, PollError> + Sync);
 
 fn run(collector: &SnmpCollector, stop: &Cancellation, sink: &Sink, open: Opener<'_>) {
-    while !stop.cancelled() {
-        let started = Instant::now();
-        let outcomes = poll(collector, stop, open);
-        if stop.cancelled() {
-            break;
-        }
-        let unreachable = outcomes
-            .iter()
-            .filter(|outcome| outcome.result.is_err())
-            .count();
-        for outcome in &outcomes {
-            if let Err(error) = &outcome.result {
-                warn!(collector = %collector.id, target = %outcome.address, %error, "SNMP target not read");
-            }
-        }
-        let reports = reports(&collector.id, outcomes);
-        for (observation_id, body) in &reports {
-            sink(*observation_id, body);
-        }
-        info!(
-            collector = %collector.id,
-            targets = collector.targets.len(),
-            unreachable,
-            reports = reports.len(),
-            "SNMP poll finished"
-        );
-        let next = started + collector.interval;
-        while !stop.cancelled() && Instant::now() < next {
-            thread::sleep(WAIT_SLICE.min(next.saturating_duration_since(Instant::now())));
-        }
-    }
+    switch_report::run(
+        &collector.id,
+        "SNMP",
+        collector.interval,
+        stop,
+        sink,
+        &|| poll(collector, stop, open),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::snmp::{client::tests::Recorded, config::Credentials, mibs};
-    use std::sync::{mpsc, Mutex};
+    use std::{
+        sync::{mpsc, Mutex},
+        time::Duration,
+    };
 
     #[test]
     fn reload_restarts_only_the_modules_that_changed() {

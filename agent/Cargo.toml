@@ -31,6 +31,10 @@ uuid = { version = "1", features = ["serde", "v4"] }
 webpki-roots = "1"
 roxmltree = "0.21.1"
 prost = "0.14"
+http = "1"
+tokio = { version = "1", features = ["rt", "net", "time"] }
+tonic = { version = "0.14", default-features = false, features = ["channel", "tls-ring", "tls-webpki-roots"] }
+tonic-prost = "0.14"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { version = "0.18.0", default-features = false }
@@ -39,5 +43,9 @@ procfs = { version = "0.18.0", default-features = false }
 libc = "0.2"
 
 [dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 jsonschema = { version = "0.58", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tonic = { version = "0.14", default-features = false, features = ["server", "router", "tls-ring"] }

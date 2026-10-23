@@ -1,6 +1,7 @@
 //! Configuration loading without transport-specific policy.
 
 use crate::{
+    gnmi::config::{self as gnmi_config, GnmiCollector, RawGnmiCollector},
     identity,
     jobs::{JobPolicy, Selector},
     libvirt::config::{self as libvirt_config, LibvirtCollector, RawLibvirtCollector},
@@ -52,6 +53,8 @@ pub struct Config {
     pub jobs: JobPolicy,
     /// SNMP switch poller modules (RFD 11), each its own collector stream.
     pub snmp: Vec<SnmpCollector>,
+    /// gNMI/OpenConfig switch poller modules, reporting like the SNMP ones.
+    pub gnmi: Vec<GnmiCollector>,
     pub libvirt: Option<LibvirtCollector>,
 }
 
@@ -71,6 +74,7 @@ impl fmt::Debug for Config {
             .field("labels", &self.labels)
             .field("jobs", &self.jobs)
             .field("snmp", &self.snmp)
+            .field("gnmi", &self.gnmi)
             .field("libvirt", &self.libvirt)
             .finish()
     }
@@ -107,6 +111,7 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawCollectors {
     snmp: Option<Vec<RawSnmpCollector>>,
+    gnmi: Option<Vec<RawGnmiCollector>>,
     libvirt: Option<RawLibvirtCollector>,
 }
 
@@ -253,12 +258,30 @@ impl Config {
         let collectors = raw.collectors.unwrap_or_default();
         let snmp =
             snmp_config::from_raw(collectors.snmp.unwrap_or_default()).map_err(ConfigError)?;
+        let gnmi =
+            gnmi_config::from_raw(collectors.gnmi.unwrap_or_default()).map_err(ConfigError)?;
+        // Each module is its own stream, so two modules cannot share an ID.
+        if let Some(collector) = gnmi
+            .iter()
+            .find(|collector| snmp.iter().any(|snmp| snmp.id == collector.id))
+        {
+            return Err(ConfigError(format!(
+                "collectors.gnmi: id {:?} is already used by an SNMP module",
+                collector.id
+            )));
+        }
         let libvirt = libvirt_config::from_raw(collectors.libvirt).map_err(ConfigError)?;
         if let Some(libvirt) = &libvirt {
             // A stream's kind never changes, so one ID cannot name both a poller and a hypervisor.
             if snmp.iter().any(|collector| collector.id == libvirt.id) {
                 return Err(ConfigError(format!(
                     "collectors.libvirt: id {:?} is already used by an SNMP module",
+                    libvirt.id
+                )));
+            }
+            if gnmi.iter().any(|collector| collector.id == libvirt.id) {
+                return Err(ConfigError(format!(
+                    "collectors.libvirt: id {:?} is already used by a gNMI module",
                     libvirt.id
                 )));
             }
@@ -285,6 +308,7 @@ impl Config {
             labels,
             jobs,
             snmp,
+            gnmi,
             libvirt,
         })
     }
@@ -546,6 +570,40 @@ mod tests {
         let error = Config::load(&path, &state).unwrap_err().to_string();
         fs::remove_file(path).unwrap();
         assert!(error.contains("already used by an SNMP module"), "{error}");
+    }
+
+    #[test]
+    fn reads_gnmi_collector_modules_and_keeps_stream_ids_distinct() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        let base = "renga_url='https://renga.test'\nintake_api_key='file-key'\n";
+        let gnmi = "[[collectors.gnmi]]\nid='spines'\ntargets=['10.0.0.1']\n\
+                    username='renga'\npassword_file='/etc/renga/gnmi-password'\n";
+        fs::write(&path, format!("{base}{gnmi}")).unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.gnmi.len(), 1);
+        assert_eq!(config.gnmi[0].targets[0].port, 9339);
+
+        fs::write(
+            &path,
+            format!(
+                "{base}{gnmi}[[collectors.snmp]]\nid='spines'\ntargets=['10.0.0.1']\n\
+                 username='renga'\nauth_password_file='/a'\nprivacy_password_file='/p'\n"
+            ),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        assert!(error.contains("already used by an SNMP module"), "{error}");
+
+        fs::write(
+            &path,
+            format!("{base}{gnmi}[collectors.libvirt]\nid='spines'\n"),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        fs::remove_file(path).unwrap();
+        assert!(error.contains("already used by a gNMI module"), "{error}");
     }
 
     #[test]

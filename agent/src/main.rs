@@ -3,6 +3,7 @@ use renga_agent::{
     cancellation::Cancellation,
     collectors,
     config::Config,
+    gnmi::worker::Modules as GnmiModules,
     home::{self, Home},
     installation_key::InstallationKey,
     jobs::{
@@ -351,6 +352,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let mut delivery_worker = None;
     spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
     let mut snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
+    let mut gnmi = GnmiModules::start(config.gnmi.clone(), queue_sink(&queue, &stopped));
     let mut libvirt = LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
@@ -378,6 +380,10 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             }
             // Modules keep polling through a reload unless their own settings changed.
             snmp.reload(config.snmp.clone(), &queue_sink(&queue, &stopped));
+            if gnmi.collectors() != config.gnmi.as_slice() {
+                gnmi.stop();
+                gnmi = GnmiModules::start(config.gnmi.clone(), queue_sink(&queue, &stopped));
+            }
             if libvirt.collector() != config.libvirt.as_ref() {
                 libvirt.restart(config.libvirt.clone(), queue_sink(&queue, &stopped));
             }
@@ -741,6 +747,7 @@ fn reload_changes_jobs(
         checkin_interval: _,
         config_refresh_interval: _,
         snmp: _,
+        gnmi: _,
         libvirt: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
@@ -2919,6 +2926,7 @@ mod tests {
             labels: BTreeMap::new(),
             jobs: Default::default(),
             snmp: Vec::new(),
+            gnmi: Vec::new(),
             libvirt: None,
         }
     }
