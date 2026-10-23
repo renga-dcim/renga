@@ -4,6 +4,7 @@ defmodule Renga.Accounts.SessionConfirmationTest do
   import Renga.AccountsFixtures
 
   alias Renga.Accounts
+  alias Renga.Accounts.SecurityEvent
   alias Renga.Accounts.UserToken
 
   test "an audit failure rolls back session MFA confirmation" do
@@ -26,5 +27,25 @@ defmodule Renga.Accounts.SessionConfirmationTest do
     end
 
     assert Repo.get_by!(UserToken, token: token).second_factor_at == nil
+  end
+
+  test "confirmation cannot elevate another user's session" do
+    user = user_fixture()
+    {secret, _recovery_codes} = totp_fixture(user)
+    other_session = Accounts.generate_user_session_token(user_fixture())
+
+    assert {:error, :no_session} =
+             Accounts.confirm_session_second_factor(
+               user,
+               other_session,
+               NimbleTOTP.verification_code(secret)
+             )
+
+    assert Repo.get_by!(UserToken, token: other_session).second_factor_at == nil
+
+    refute Repo.exists?(
+             from event in SecurityEvent,
+               where: event.user_id == ^user.id and event.kind == "second_factor_confirmed"
+           )
   end
 end
