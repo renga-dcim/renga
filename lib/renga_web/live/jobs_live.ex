@@ -339,6 +339,13 @@ defmodule RengaWeb.JobsLive do
 
         <.job_status job={@job} />
 
+        <p :if={@job.payload_hidden} id="job-payload-hidden" class="text-sm text-fg-muted">
+          Its parameters, results, and reports need
+          <span class="font-mono text-xs text-fg">
+            {Enum.join(Jobs.payload_permissions(@job), " and ")}
+          </span>
+        </p>
+
         <.form
           :if={@job.state == "uncertain" and @can_manage?}
           for={@resolve_form}
