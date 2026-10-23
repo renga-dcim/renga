@@ -41,6 +41,9 @@ defmodule Renga.Telemetry.Store.Postgres do
       )
       |> Enum.group_by(&{&1.series, Store.floor_to(&1.at, @bucket_seconds)})
       |> Enum.map(fn {{series, start}, samples} -> fold(series, start, samples) end)
+      # Concurrent writes lock shared buckets in this order, so it must be the
+      # same for every write, or two overlapping writes can deadlock.
+      |> Enum.sort_by(&{&1.series, DateTime.to_unix(&1.start)})
 
     if rows != [], do: upsert!(organization_id, rows)
     :ok

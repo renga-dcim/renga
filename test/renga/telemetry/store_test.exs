@@ -128,6 +128,14 @@ defmodule Renga.Telemetry.StoreTest do
 
     assert Store.range(scope, ["s"], at(hour, -30 * 86_400), hour, 300) ==
              {:error, :too_many_buckets}
+
+    # The whole result is bounded too, even for series that hold nothing.
+    week = at(hour, -7 * 86_400)
+    ten = for n <- 1..10, do: "s#{n}"
+    assert {:ok, result} = Store.range(scope, ten ++ ten, week, hour, 300)
+    assert map_size(result) == 10
+
+    assert Store.range(scope, ["s11" | ten], week, hour, 300) == {:error, :too_many_points}
   end
 
   defmodule RemoteWriteOnly do

@@ -75,6 +75,8 @@ defmodule Renga.Telemetry.Store do
 
   @series_max 255
   @max_buckets 2_016
+  # Every series gets every bucket, so this bounds a read's whole result.
+  @max_points 20_160
 
   @doc """
   The configured adapter. Raises unless it provides both writes and range
@@ -144,20 +146,29 @@ defmodule Renga.Telemetry.Store do
   range, oldest first, with empty ones as gaps.
 
   Returns `{:error, :invalid_bucket}` for a bucket width the adapter cannot
-  serve, and `{:error, :too_many_buckets}` past #{@max_buckets} buckets.
+  serve, `{:error, :too_many_buckets}` past #{@max_buckets} buckets, and
+  `{:error, :too_many_points}` when the distinct series times the buckets
+  pass #{@max_points}, before anything is read or allocated.
   """
   def range(%Scope{organization_id: organization_id}, series, from, to, bucket_seconds)
       when is_list(series) and is_integer(bucket_seconds) do
     adapter = adapter!()
+    series = Enum.uniq(series)
 
     with :ok <- check_width(adapter, bucket_seconds),
          {from, to} = align(from, to, bucket_seconds),
          :ok <- check_count(from, to, bucket_seconds),
-         {:ok, found} <-
-           read(adapter, organization_id, Enum.uniq(series), from, to, bucket_seconds) do
+         :ok <- check_points(series, from, to, bucket_seconds),
+         {:ok, found} <- read(adapter, organization_id, series, from, to, bucket_seconds) do
       starts = starts(from, to, bucket_seconds)
-      {:ok, Map.new(Enum.uniq(series), &{&1, fill(starts, Map.get(found, &1, []))})}
+      {:ok, Map.new(series, &{&1, fill(starts, Map.get(found, &1, []))})}
     end
+  end
+
+  defp check_points(series, from, to, bucket_seconds) do
+    if length(series) * div(DateTime.diff(to, from), bucket_seconds) <= @max_points,
+      do: :ok,
+      else: {:error, :too_many_points}
   end
 
   defp check_width(adapter, bucket_seconds) do
