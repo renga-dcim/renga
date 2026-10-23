@@ -229,7 +229,7 @@ defmodule Renga.Power.CorrelationTest do
         "outlet",
         "outlet/3",
         %{kind: "power_outlet", name: "3"},
-        ~w(on on off),
+        List.duplicate("on", 40) ++ ["off"],
         start,
         5
       )
@@ -242,7 +242,7 @@ defmodule Renga.Power.CorrelationTest do
         "supply_input",
         "PSU1/input",
         %{kind: "power_port", name: "PSU1"},
-        ~w(ok ok no_input),
+        List.duplicate("ok", 40) ++ ["no_input"],
         start,
         40
       )
@@ -271,6 +271,95 @@ defmodule Renga.Power.CorrelationTest do
       Cables.connect(scope, %{power_port_id: web.psu.id, power_outlet_id: outlets["3"].id})
 
     {:ok, %{resolved: 1}} = FindingReconciler.reconcile(scope)
+    assert suggestions(scope) == []
+  end
+
+  test "a state change needs the same coverage as a load match", context do
+    %{scope: scope, pdus: pdus, start: start} = context
+    web = server!(context, "web-1", "bmc-web-1")
+    outlet = %{kind: "power_outlet", name: "3"}
+    supply = %{kind: "power_port", name: "PSU1"}
+
+    record_states = fn outlet_states, supply_states ->
+      Repo.delete_all(CorrelationSample)
+
+      record!(
+        pdus,
+        state_samples("10.0.0.5", "outlet", "outlet/3", outlet, outlet_states, start, 5)
+      )
+
+      record!(
+        web.stream,
+        state_samples(web.target, "supply_input", "PSU1/input", supply, supply_states, start, 40)
+      )
+
+      {:ok, _counts} = FindingReconciler.reconcile(scope)
+      suggestions(scope)
+    end
+
+    # Ten minutes together is too short.
+    assert record_states.(
+             List.duplicate("on", 10) ++ ["off"],
+             List.duplicate("ok", 10) ++ ["no_input"]
+           ) ==
+             []
+
+    # Forty minutes with most of the supply's samples missing is too sparse.
+    sparse = for minute <- 0..40, do: if(rem(minute, 3) == 0, do: "ok", else: nil)
+
+    sparse =
+      sparse
+      |> List.replace_at(39, "ok")
+      |> List.replace_at(40, "no_input")
+
+    sparse_samples =
+      web.target
+      |> state_samples("supply_input", "PSU1/input", supply, sparse, start, 40)
+      |> Enum.reject(&is_nil(&1.state))
+
+    Repo.delete_all(CorrelationSample)
+
+    record!(
+      pdus,
+      state_samples(
+        "10.0.0.5",
+        "outlet",
+        "outlet/3",
+        outlet,
+        List.duplicate("on", 40) ++ ["off"],
+        start,
+        5
+      )
+    )
+
+    record!(web.stream, sparse_samples)
+    {:ok, _counts} = FindingReconciler.reconcile(scope)
+    assert suggestions(scope) == []
+  end
+
+  test "connected neighbours moving with a free pair make it common-mode", context do
+    %{scope: scope, pdus: pdus, outlets: outlets, start: start} = context
+    web = server!(context, "web-1", "bmc-web-1")
+    db = server!(context, "db-1", "bmc-db-1")
+    app = server!(context, "app-1", "bmc-app-1")
+    load = steps(200, 320, 10)
+
+    # Only outlet 2 and web's supply are free; the rest of the rack is
+    # connected and steps with them, as on a feed-wide event.
+    {:ok, _} =
+      Cables.connect(scope, %{power_port_id: db.psu.id, power_outlet_id: outlets["3"].id})
+
+    {:ok, _} =
+      Cables.connect(scope, %{power_port_id: app.psu.id, power_outlet_id: outlets["4"].id})
+
+    record!(pdus, outlet_samples("10.0.0.5", "2", load, start))
+    record!(web.stream, supply_samples(web, load, start))
+    record!(pdus, outlet_samples("10.0.0.5", "3", Enum.map(load, &(&1 * 2)), start))
+    record!(pdus, outlet_samples("10.0.0.5", "4", Enum.map(load, &(&1 * 3)), start))
+    record!(db.stream, supply_samples(db, Enum.map(load, &(&1 * 2)), start))
+    record!(app.stream, supply_samples(app, Enum.map(load, &(&1 * 3)), start))
+
+    {:ok, _counts} = FindingReconciler.reconcile(scope)
     assert suggestions(scope) == []
   end
 

@@ -17,10 +17,14 @@ defmodule Renga.Power.Correlation do
       direction, at three or more distinct steps, and their step-to-step
       changes must correlate. A step at which other series in the rack move
       the same way is common-mode, such as a feed-wide event, and does not
-      count.
+      count. Connected outlets and supplies count among those other series:
+      only unconnected ends are suggested, but every end in the rack shows
+      what the rack as a whole did.
     * By state. The outlet turns off or loses its draw within one interval
-      of the supply losing input, and no other candidate in the rack changes
-      at that time.
+      of the supply losing input, and no other outlet or supply in the rack,
+      connected or not, changes at that time. The two series need the same
+      coverage as a load match; the state change replaces only the three
+      transitions.
 
   A suggestion is ambiguous, and nothing opens, when another candidate
   scores within the confidence margin or when an outlet or supply would be
@@ -169,7 +173,7 @@ defmodule Renga.Power.Correlation do
 
     opened =
       scope
-      |> suggestions(ports, free_ports, free_outlets, now)
+      |> suggestions(ports, outlets, free_port_ids, free_outlet_ids, now)
       |> Enum.reject(
         &(MapSet.member?(claimed, &1.port.id) or MapSet.member?(claimed, &1.outlet.id))
       )
@@ -204,22 +208,26 @@ defmodule Renga.Power.Correlation do
   end
 
   @doc """
-  The connections the window suggests at `now` between `free_ports` and
-  `free_outlets`, unconnected ends sharing a rack. `ports` are all current
-  ports, to tell a device's sole port. Each is `%{port, outlet, basis,
-  score, steps}`.
+  The connections the window suggests at `now` between the ports and
+  outlets whose IDs are in `free_port_ids` and `free_outlet_ids`, unconnected
+  ends sharing a rack. `ports` and `outlets` are all current ones: a device's
+  sole port is told from them, and every end in a rack is compared against
+  for common-mode changes. Each is `%{port, outlet, basis, score, steps}`.
   """
-  def suggestions(%Scope{} = scope, ports, free_ports, free_outlets, now) do
-    racks = racks(scope, Enum.map(free_ports ++ free_outlets, & &1.resource_id))
+  def suggestions(%Scope{} = scope, ports, outlets, free_port_ids, free_outlet_ids, now) do
+    racks = racks(scope, Enum.map(ports ++ outlets, & &1.resource_id))
 
     groups =
-      (Enum.map(free_ports, &{:port, &1}) ++ Enum.map(free_outlets, &{:outlet, &1}))
+      (Enum.map(ports, &{:port, &1}) ++ Enum.map(outlets, &{:outlet, &1}))
       |> Enum.filter(fn {_end, endpoint} -> Map.has_key?(racks, endpoint.resource_id) end)
       |> Enum.group_by(fn {_end, endpoint} -> Map.fetch!(racks, endpoint.resource_id) end)
       |> Enum.map(fn {_rack, ends} ->
         {for({:port, port} <- ends, do: port), for({:outlet, outlet} <- ends, do: outlet)}
       end)
-      |> Enum.filter(fn {rack_ports, rack_outlets} -> rack_ports != [] and rack_outlets != [] end)
+      |> Enum.filter(fn {rack_ports, rack_outlets} ->
+        Enum.any?(rack_ports, &MapSet.member?(free_port_ids, &1.id)) and
+          Enum.any?(rack_outlets, &MapSet.member?(free_outlet_ids, &1.id))
+      end)
 
     case groups do
       [] ->
@@ -228,7 +236,8 @@ defmodule Renga.Power.Correlation do
       groups ->
         series = load_series(scope, groups, now)
         sole_ports = sole_ports(ports)
-        Enum.flat_map(groups, &rack_suggestions(&1, series, sole_ports))
+        free = MapSet.union(free_port_ids, free_outlet_ids)
+        Enum.flat_map(groups, &rack_suggestions(&1, series, sole_ports, free))
     end
   end
 
@@ -308,13 +317,16 @@ defmodule Renga.Power.Correlation do
     }
   end
 
-  defp rack_suggestions({ports, outlets}, series, sole_ports) do
+  # Every end in the rack is compared against; only free ends are paired.
+  defp rack_suggestions({ports, outlets}, series, sole_ports, free) do
     ports = Enum.map(ports, &port_series(&1, series, sole_ports))
     outlets = Enum.map(outlets, &outlet_series(&1, series))
 
-    (by_load(ports, outlets) ++ by_state(ports, outlets))
+    (by_load(ports, outlets, free) ++ by_state(ports, outlets, free))
     |> unambiguous()
   end
+
+  defp free?(%{endpoint: endpoint}, free), do: MapSet.member?(free, endpoint.id)
 
   # A supply's readings name its port, or name none on a sole-port device.
   defp port_series(port, series, sole_ports) do
@@ -350,7 +362,7 @@ defmodule Renga.Power.Correlation do
 
   ## By load
 
-  defp by_load(ports, outlets) do
+  defp by_load(ports, outlets, free) do
     ports = Enum.filter(ports, & &1.load)
     outlets = Enum.filter(outlets, & &1.load)
     port_moves = Map.new(ports, &{&1.endpoint.id, moves(&1.load)})
@@ -358,7 +370,9 @@ defmodule Renga.Power.Correlation do
 
     scored =
       for outlet <- outlets,
+          free?(outlet, free),
           port <- ports,
+          free?(port, free),
           port.endpoint.resource_id != outlet.endpoint.resource_id,
           result <- [score(outlet, port, others(outlet_moves, outlet), others(port_moves, port))],
           result != nil,
@@ -551,16 +565,23 @@ defmodule Renga.Power.Correlation do
 
   ## By state
 
-  defp by_state(ports, outlets) do
+  defp by_state(ports, outlets, free) do
     outlet_events = Enum.flat_map(outlets, &outlet_events/1)
     port_events = Enum.flat_map(ports, &port_events/1)
 
     for outlet_event <- outlet_events,
+        free?(outlet_event, free),
         port_event <- port_events,
+        free?(port_event, free),
         port_event.endpoint.resource_id != outlet_event.endpoint.resource_id,
         near?(outlet_event, port_event),
         alone?(outlet_event, outlet_events),
-        alone?(port_event, port_events) do
+        alone?(port_event, port_events),
+        covered?(
+          outlet_event.series,
+          port_event.series,
+          pair(outlet_event.series, port_event.series)
+        ) do
       %{
         basis: "state",
         port: port_event.endpoint,
@@ -576,14 +597,19 @@ defmodule Renga.Power.Correlation do
     off =
       for [before, later] <- adjacent(side.state),
           before.state == "on" and later.state == "off",
-          do: %{endpoint: outlet, at: later.at, points: [before, later]}
+          do: %{
+            endpoint: outlet,
+            at: later.at,
+            points: [before, later],
+            series: side.state.points
+          }
 
     lost =
       for [before, later] <- adjacent(side.load),
           floor <- [Map.fetch!(@draw_floor, side.load.quantity)],
           before.value >= floor and later.value < floor,
           not Enum.any?(off, &(abs(&1.at - later.at) <= 2 * @interval_seconds)),
-          do: %{endpoint: outlet, at: later.at, points: [before, later]}
+          do: %{endpoint: outlet, at: later.at, points: [before, later], series: side.load.points}
 
     off ++ lost
   end
@@ -591,7 +617,7 @@ defmodule Renga.Power.Correlation do
   defp port_events(%{endpoint: port} = side) do
     for [before, later] <- adjacent(side.state),
         before.state != "no_input" and later.state == "no_input",
-        do: %{endpoint: port, at: later.at, points: [before, later]}
+        do: %{endpoint: port, at: later.at, points: [before, later], series: side.state.points}
   end
 
   defp adjacent(nil), do: []

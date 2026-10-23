@@ -84,15 +84,23 @@ defmodule Renga.Power.Cables do
   @doc """
   Records that a port is plugged into an outlet or feed, as the scope's
   user. The port's and the outlet's earlier cables are replaced.
+
+  With `free_only: true`, as when accepting a suggested connection, nothing
+  is replaced: if either end has a cable by the time the change is made, it
+  fails with `:power_connection_occupied`. A suggestion never displaces a
+  recorded connection (RFD 10, "Suggested connections").
   """
-  def connect(%Scope{} = scope, attrs) do
+  def connect(%Scope{} = scope, attrs, opts \\ []) do
     attrs = normalize_attrs(attrs)
 
     transaction(scope, fn ->
       endpoints = endpoints!(scope, attrs, live?: true)
+      current = current_cables_at(scope.organization_id, endpoints)
 
-      scope.organization_id
-      |> current_cables_at(endpoints)
+      if Keyword.get(opts, :free_only, false) and current != [],
+        do: Repo.rollback(:power_connection_occupied)
+
+      current
       |> Enum.each(fn cable ->
         cable
         |> Map.take(@endpoint_keys)
@@ -105,6 +113,12 @@ defmodule Renga.Power.Cables do
         {:ok, assertion}
       end
     end)
+  end
+
+  @doc "Whether neither the port nor the outlet has a current power cable."
+  def free?(%Scope{organization_id: organization_id}, port_id, outlet_id) do
+    current_cables_at(organization_id, %{power_port_id: port_id, power_outlet_id: outlet_id}) ==
+      []
   end
 
   @doc "Records that the port is no longer plugged into that outlet or feed."

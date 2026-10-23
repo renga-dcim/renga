@@ -207,6 +207,40 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     assert has_element?(view, "#connect-panel[data-initial-show='false']")
   end
 
+  test "a suggested connection never replaces a recorded one", %{conn: conn, scope: scope} do
+    server = server!(scope)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-1", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "7", attributes: %{"inlet" => "Inlet"}},
+        %{kind: "power_outlet", name: "8", attributes: %{"inlet" => "Inlet"}}
+      ])
+
+    %{outlets: outlets} = Power.list_device_endpoints(scope, pdu.id)
+    [seven, eight] = Enum.sort_by(outlets, & &1.name)
+    [psu1, psu2 | _] = Power.list_device_endpoints(scope, server.id).ports
+    suggestion = ~p"/inventory/#{server}/power?#{[connect: psu1.id, outlet: seven.id]}"
+
+    # The outlet was connected while the operator had the panel open.
+    {:ok, view, _html} = live(conn, suggestion)
+    assert has_element?(view, "#connect-panel[data-initial-show='true']")
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu2.id, power_outlet_id: seven.id})
+    view |> form("#connect-form") |> render_submit()
+    assert has_element?(view, "#connect-form", "has been connected since this was suggested")
+
+    assert [%{power_port_id: port_id}] =
+             Cables.list_cables(scope, resource_ids: [pdu.id])
+             |> Enum.filter(&(&1.power_outlet_id == seven.id))
+
+    assert port_id == psu2.id
+
+    # An old link whose port is now connected opens nothing.
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu1.id, power_outlet_id: eight.id})
+    {:ok, view, _html} = live(conn, suggestion)
+    assert has_element?(view, "#connect-panel[data-initial-show='false']")
+  end
+
   test "a stale unplug event leaves the replacement connection in place", %{
     conn: conn,
     scope: scope
