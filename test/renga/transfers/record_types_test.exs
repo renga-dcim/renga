@@ -115,7 +115,14 @@ defmodule Renga.Transfers.RecordTypesTest do
     parts = Map.new(RecordTypes.all(), &{&1.name, &1.part})
     excluded = Map.keys(RecordTypes.excluded_tables())
 
-    for {from, to, field} <- context.foreign_keys, Map.has_key?(parts, from) do
+    # A reference through an excluded field never reaches an archive.
+    exported_reference? = fn from, field ->
+      not Map.has_key?(Map.get(RecordTypes.excluded_fields(), from, %{}), field)
+    end
+
+    for {from, to, field} <- context.foreign_keys,
+        Map.has_key?(parts, from),
+        exported_reference?.(from, field) do
       refute to in excluded, "#{from}.#{field} refers to excluded #{to}"
 
       if parts[from] == :current and Map.has_key?(parts, to),

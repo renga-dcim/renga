@@ -309,6 +309,10 @@ defmodule Renga.Transfers.RecordTypes do
       "report_token_hash" => "credential: job report",
       "offer_token_hash" => "credential: signed-lease offer",
       "offer_nonce" => "credential: signed-lease offer"
+    },
+    "organization_memberships" => %{
+      "scim_connection_id" =>
+        "names a SCIM connection, which is not exported; the destination's provider grants again"
     }
   }
 
@@ -321,7 +325,12 @@ defmodule Renga.Transfers.RecordTypes do
     "identity_providers" => "deployment configuration, set up at the destination",
     "organization_invitations" =>
       "pending invitations carry secrets; access returns through new invitations",
-    "organization_limits" => "operator policy of the source deployment"
+    "organization_limits" => "operator policy of the source deployment",
+    "scim_connections" =>
+      "provisioning through one of the deployment's identity providers, set up at the destination",
+    "scim_tokens" => "credentials for the source deployment's SCIM endpoint",
+    "scim_users" => "the identity provider's directory, pushed again to the destination",
+    "scim_groups" => "the identity provider's directory, pushed again to the destination"
   }
 
   @organization_fields ~w(name slug settings default_accent default_power_factor
