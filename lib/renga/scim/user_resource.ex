@@ -24,6 +24,7 @@ defmodule Renga.Scim.UserResource do
   alias Renga.Scim.Path
 
   @core "urn:ietf:params:scim:schemas:core:2.0:User"
+  @value_filter ~r/^\s*value\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$/i
 
   @doc "Attributes for a new entry from a POST body."
   def create(resource) when is_map(resource) do
@@ -224,8 +225,19 @@ defmodule Renga.Scim.UserResource do
     end
   end
 
-  defp apply_path("remove", %{attribute: "emails"}, _value, attrs),
-    do: {:ok, %{attrs | email: nil}}
+  # Removing the address, or the one a filter names, clears it. Renga keeps
+  # no email type, so a type filter names the address it keeps; a value
+  # filter naming another address leaves it alone.
+  defp apply_path("remove", %{attribute: "emails", filter: filter, sub: sub}, _value, attrs)
+       when sub in [nil, "value"] do
+    if names_other_address?(filter, attrs.email),
+      do: {:ok, attrs},
+      else: {:ok, %{attrs | email: nil}}
+  end
+
+  # Removing a sub-attribute Renga does not keep, such as type, leaves the
+  # address.
+  defp apply_path("remove", %{attribute: "emails"}, _value, attrs), do: {:ok, attrs}
 
   # emails[type eq "work"].value, as Entra sends it, sets the one address
   # Renga keeps. Other sub-attributes, such as type, are not kept.
@@ -315,6 +327,17 @@ defmodule Renga.Scim.UserResource do
   end
 
   defp email(_emails), do: {:error, {:invalid_value, "emails must be a list"}}
+
+  defp names_other_address?(filter, email) when is_binary(filter) and is_binary(email) do
+    case Regex.run(@value_filter, filter) do
+      [_match, value] -> String.downcase(unescape(value)) != String.downcase(email)
+      nil -> false
+    end
+  end
+
+  defp names_other_address?(_filter, _email), do: false
+
+  defp unescape(value), do: Regex.replace(~r/\\(.)/, value, "\\1")
 
   defp password_change,
     do: {:error, {:invalid_value, "Renga accounts' passwords cannot be changed through SCIM"}}

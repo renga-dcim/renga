@@ -159,6 +159,16 @@ defmodule Renga.Scim.UserResourceTest do
 
       assert {:ok, %{email: nil}} = UserResource.patch([op("remove", "emails")], @current)
 
+      # Only the address a filter names is removed, and only its value.
+      for path <- [~s(emails[value eq "SAM@example.com"]), ~s(emails[type eq "work"].value)] do
+        assert {:ok, %{email: nil}} = UserResource.patch([op("remove", path)], @current)
+      end
+
+      for path <- [~s(emails[value eq "other@example.com"]), ~s(emails[type eq "work"].type)] do
+        assert {:ok, %{email: "sam@example.com"}} =
+                 UserResource.patch([op("remove", path)], @current)
+      end
+
       assert {:ok, %{formatted_name: nil, given_name: nil}} =
                UserResource.patch([op("remove", "name")], @current)
     end
