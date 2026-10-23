@@ -4,8 +4,8 @@ defmodule Renga.Accounts.OrganizationProviders do
   "Organization providers").
 
   Each function checks, in the transaction that makes the change, that the
-  person may change organization settings (`organization.manage`, which
-  owners hold), then makes the change through `IdentityProviders`, so an
+  person is one of the organization's owners, then makes the change through
+  `IdentityProviders`, so an
   organization's providers follow the same revision, test sign-in, and
   history rules as the deployment's. The provider is always looked up again
   within the scope's organization, so one organization can never name
@@ -25,7 +25,8 @@ defmodule Renga.Accounts.OrganizationProviders do
   @permission "organization.manage"
 
   @doc "Whether the scope may manage the organization's providers, for the UI."
-  def manage?(%Scope{} = scope), do: Authorization.allowed?(scope, @permission)
+  def manage?(%Scope{} = scope),
+    do: Authorization.allowed?(scope, @permission) and "owner" in scope.roles
 
   @doc "The organization's providers."
   def list(%Scope{organization_id: organization_id}) when is_binary(organization_id),
@@ -103,6 +104,7 @@ defmodule Renga.Accounts.OrganizationProviders do
        when is_binary(organization_id) do
     Repo.transaction(fn ->
       Authorization.authorize!(scope, @permission, lock: :share)
+      owner!(scope)
 
       case fun.() do
         {:ok, result} -> result
@@ -112,6 +114,13 @@ defmodule Renga.Accounts.OrganizationProviders do
   end
 
   defp authorized(_scope, _fun), do: {:error, :forbidden}
+
+  # `organization.manage` can also come from a custom role, but it does not
+  # cover identity providers (RFD 17); only the built-in owner role does,
+  # held as the base role or a current assignment.
+  defp owner!(scope) do
+    if "owner" not in Authorization.current_roles!(scope), do: Repo.rollback(:forbidden)
+  end
 
   defp actor(%Scope{user: user}), do: {:user, user}
 end

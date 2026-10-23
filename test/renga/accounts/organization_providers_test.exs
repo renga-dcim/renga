@@ -211,9 +211,39 @@ defmodule Renga.Accounts.OrganizationProvidersTest do
     end
   end
 
-  test "manage?/1 follows organization.manage", %{organization: organization, owner: owner} do
+  test "only owners manage providers", %{organization: organization, owner: owner} do
     assert OrganizationProviders.manage?(owner)
     refute OrganizationProviders.manage?(scope(organization, "admin"))
+
+    # A custom role may carry organization.manage, which doesn't cover
+    # identity providers (RFD 17).
+    {:ok, role} =
+      Renga.Roles.create_role(owner, %{
+        "name" => "Settings",
+        "permissions" => ["organization.manage"]
+      })
+
+    settings = scope(organization, "viewer")
+
+    {:ok, _assignment} =
+      Renga.Assignments.assign(owner, settings.membership_id, %{"role" => role.id})
+
+    settings = Renga.Accounts.scope_for_user(settings.user, organization.id)
+
+    assert Renga.Authorization.allowed?(settings, "organization.manage")
+    refute OrganizationProviders.manage?(settings)
+    assert {:error, :forbidden} = OrganizationProviders.create(settings, attrs())
+
+    # The built-in owner role counts as an assignment too.
+    assigned = scope(organization, "viewer")
+
+    {:ok, _assignment} =
+      Renga.Assignments.assign(owner, assigned.membership_id, %{"role" => "owner"})
+
+    assigned = Renga.Accounts.scope_for_user(assigned.user, organization.id)
+
+    assert OrganizationProviders.manage?(assigned)
+    assert {:ok, _created} = OrganizationProviders.create(assigned, attrs())
   end
 
   test "new_id/0 is fresh and fits a provider ID" do
