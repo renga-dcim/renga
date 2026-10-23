@@ -685,7 +685,9 @@ defmodule RengaUI.CoreComponents do
         <% end %>
       </td>
       <td :if={@action != []} class="w-0 px-cell font-medium">
-        <div class="flex gap-4">
+        <%!-- The column is as narrow as its actions, so each stays on one line
+              rather than wrapping word by word. --%>
+        <div class="flex gap-4 whitespace-nowrap">
           <%= for action <- @action do %>
             {render_slot(action, @row_item.(@row))}
           <% end %>
