@@ -389,16 +389,20 @@ defmodule RengaWeb.OrganizationSignInTest do
       assert Repo.get!(Accounts.User, user.id).email == nil
     end
 
-    test "another account's address is refused", %{view: view} do
+    test "another account's address is refused once its code is entered", %{
+      user: user,
+      view: view
+    } do
       other = user_fixture()
+      code = send_code(view, other.email)
 
       html =
         view
-        |> form("#email_initialization_form", email_initialization: %{email: other.email})
+        |> form("#email_initialization_code_form", email_initialization: %{code: code})
         |> render_submit()
 
-      assert html =~ "has already been taken"
-      refute_received {:email, %{subject: "Your Renga confirmation code"}}
+      assert html =~ "belongs to another account"
+      assert Repo.get!(Accounts.User, user.id).email == nil
     end
 
     test "the address can be changed before confirming", %{view: view} do

@@ -137,18 +137,22 @@ defmodule Renga.Accounts.EmailInitializationTest do
              Recheck.verify_email_initialization_code(user, token, second)
   end
 
-  test "refuses an address that belongs to another account", %{user: user, token: token} do
-    other = user_fixture()
-
-    assert {:error, %Ecto.Changeset{} = changeset} =
-             Recheck.deliver_email_initialization_code(user, token, other.email)
-
-    assert %{email: ["has already been taken"]} = errors_on(changeset)
-
+  test "refuses another account's address only after its code proves the mailbox", %{
+    user: user,
+    token: token
+  } do
     assert {:error, %Ecto.Changeset{}} =
              Recheck.deliver_email_initialization_code(user, token, "not an address")
 
     refute_received {:email, %{subject: "Your Renga confirmation code"}}
+
+    # Asking for a code looks the same for a taken address as for a free one.
+    other = user_fixture()
+    code = code(user, token, String.upcase(other.email))
+
+    assert {:error, :email_in_use} = Recheck.verify_email_initialization_code(user, token, code)
+    assert Repo.get!(User, user.id).email == nil
+    refute Recheck.authorized?(user, token, :set_password)
   end
 
   test "refuses an address someone registered after the code went out", %{

@@ -348,8 +348,12 @@ defmodule Renga.Accounts.Recheck do
   Emails a code to `email` so an account with no email and nothing to
   re-check with, such as one an organization's provider created, can make
   it the account's login email. Replaces any code this session asked for
-  earlier. Returns `{:error, changeset}` for an address that is malformed
-  or belongs to another account.
+  earlier. Returns `{:error, changeset}` for a malformed address.
+
+  An address that belongs to another account gets a code like any other,
+  and is refused only once that code proves the mailbox
+  (`verify_email_initialization_code/3`): refusing it here would let anyone
+  holding such an account learn which addresses have Renga accounts.
   """
   def deliver_email_initialization_code(%User{} = user, session_token, email)
       when is_binary(email) do
@@ -358,7 +362,7 @@ defmodule Renga.Accounts.Recheck do
          [] <- methods(current),
          {:ok, %User{email: email}} <-
            current
-           |> User.email_changeset(%{email: email})
+           |> User.email_changeset(%{email: email}, validate_unique: false)
            |> Ecto.Changeset.apply_action(:insert) do
       code = generate_code()
 
