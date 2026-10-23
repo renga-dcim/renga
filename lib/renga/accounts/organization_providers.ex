@@ -21,6 +21,7 @@ defmodule Renga.Accounts.OrganizationProviders do
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Repo
+  alias Renga.Scim.Grants
 
   @permission "organization.manage"
 
@@ -55,7 +56,7 @@ defmodule Renga.Accounts.OrganizationProviders do
   def create(%Scope{} = scope, attrs) do
     attrs = Map.put(attrs, "kind", "oidc")
 
-    authorized(scope, fn ->
+    authorized(scope, nil, fn ->
       IdentityProviders.create(attrs, actor(scope), organization_id: scope.organization_id)
     end)
   end
@@ -92,7 +93,9 @@ defmodule Renga.Accounts.OrganizationProviders do
     do: change(scope, provider, &IdentityProviders.remove(&1, actor(scope)))
 
   defp change(scope, %IdentityProvider{id: id}, fun) do
-    authorized(scope, fn ->
+    scoped = %IdentityProvider{id: id, organization_id: scope.organization_id}
+
+    authorized(scope, scoped, fn ->
       case get(scope, id) do
         %IdentityProvider{} = provider -> fun.(provider)
         nil -> {:error, :not_found}
@@ -100,19 +103,21 @@ defmodule Renga.Accounts.OrganizationProviders do
     end)
   end
 
-  defp authorized(%Scope{organization_id: organization_id} = scope, fun)
+  # The provider locks come before the organization's, as in every other
+  # provider change and in SCIM's connection changes (RFD 16), and the SCIM
+  # access changes a disable or removal makes are announced only once this,
+  # the outermost transaction, commits.
+  defp authorized(%Scope{organization_id: organization_id} = scope, provider, fun)
        when is_binary(organization_id) do
-    Repo.transaction(fn ->
-      authorize_owner!(scope)
-
-      case fun.() do
-        {:ok, result} -> result
-        {:error, reason} -> Repo.rollback(reason)
-      end
+    Grants.announcing(fn ->
+      IdentityProviders.locked(provider, fn ->
+        authorize_owner!(scope)
+        fun.()
+      end)
     end)
   end
 
-  defp authorized(_scope, _fun), do: {:error, :forbidden}
+  defp authorized(_scope, _provider, _fun), do: {:error, :forbidden}
 
   @doc """
   Within a transaction, rolls it back with `:forbidden` unless `scope` is a

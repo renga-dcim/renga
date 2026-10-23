@@ -431,6 +431,22 @@ defmodule Renga.Accounts.IdentityProviders do
     |> where([provider], provider.enabled and not is_nil(provider.active_revision))
   end
 
+  @doc """
+  Runs `fun` in a provider-change transaction, holding the lock every
+  provider change takes first and, when `provider` is given, its row lock
+  in its own scope. For a caller that authorizes the change inside the
+  same transaction: its organization locks then come after the
+  provider's, in the order SCIM takes them (RFD 16), so neither waits on
+  the other. `fun` returns `{:ok, result}` or `{:error, reason}`.
+  """
+  def locked(nil, fun), do: serialized(fun)
+
+  def locked(%IdentityProvider{} = provider, fun) do
+    serialized(fn ->
+      with {:ok, _provider} <- lock(provider), do: fun.()
+    end)
+  end
+
   # Runs a change under the provider lock, then refuses it if it took away
   # the deployment's last way to sign in. A deployment that has none yet,
   # such as one bootstrapping its first provider with local sign-in off,
