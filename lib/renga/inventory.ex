@@ -920,6 +920,7 @@ defmodule Renga.Inventory do
     |> maybe_filter_resource_condition(organization_id, Keyword.get(options, :condition))
     |> maybe_filter_resource_source(organization_id, Keyword.get(options, :source_id))
     |> maybe_filter_resource_owner(Keyword.get(options, :owner))
+    |> maybe_filter_resource_group(organization_id, Keyword.get(options, :resource_group))
   end
 
   defp maybe_filter_resource_owner(query, nil), do: query
@@ -929,6 +930,21 @@ defmodule Renga.Inventory do
 
   defp maybe_filter_resource_owner(query, team_id),
     do: where(query, [resource], resource.owner_team_id == ^team_id)
+
+  # RFD 18: resources effectively in the group in the trusted view, the one
+  # `inventory.read` uses, so observed placement never lists a resource.
+  defp maybe_filter_resource_group(query, _organization_id, nil), do: query
+
+  defp maybe_filter_resource_group(query, organization_id, group_id) do
+    members =
+      from membership in Renga.ResourceGroups.Membership,
+        where:
+          membership.organization_id == ^organization_id and membership.group_id == ^group_id and
+            membership.view == "trusted",
+        select: membership.resource_id
+
+    where(query, [resource], resource.id in subquery(members))
+  end
 
   @doc """
   Lists the resource kinds present in the organization, for kind filters.
