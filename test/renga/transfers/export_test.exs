@@ -151,6 +151,51 @@ defmodule Renga.Transfers.ExportTest do
     assert principals[job["requested_by_user_id"]] == context.owner.user.email
   end
 
+  test "names an account without a global email by its organization's provider", context do
+    # An organization provider's sign-up leaves the global email unset (RFD 15).
+    user = Repo.insert!(%Accounts.User{})
+    other = Renga.InventoryFixtures.organization_fixture()
+    own_provider = organization_provider!(context.organization)
+    other_provider = organization_provider!(other)
+    now = Renga.Time.utc_now_ms()
+
+    identity! = fn provider, email, verified, signed_in_at ->
+      Repo.insert!(%Accounts.UserIdentity{
+        user_id: user.id,
+        provider_id: provider.id,
+        subject: "sub-#{System.unique_integer([:positive])}",
+        email: email,
+        email_verified: verified,
+        last_signed_in_at: signed_in_at
+      })
+    end
+
+    identity!.(own_provider, "sam@acme.example", true, DateTime.add(now, -60))
+    identity!.(own_provider, "unverified@acme.example", false, now)
+    identity!.(other_provider, "sam@elsewhere.example", true, now)
+
+    {:ok, _membership} =
+      Accounts.create_organization_membership(context.organization, %{
+        user_id: user.id,
+        role: "member"
+      })
+
+    {archive, _summary} = export(context, parts: [])
+
+    principals = Map.new(records(archive, "principals"), &{&1["id"], &1["email"]})
+    assert principals[user.id] == "sam@acme.example"
+  end
+
+  defp organization_provider!(organization) do
+    Repo.insert!(%Accounts.IdentityProvider{
+      id: "org-#{System.unique_integer([:positive])}",
+      kind: "oidc",
+      issuer: "https://sso.example/#{organization.id}",
+      display_name: "SSO",
+      organization_id: organization.id
+    })
+  end
+
   test "includes history when asked, without job credentials", context do
     {archive, _summary} = export(context, parts: ["history"])
 

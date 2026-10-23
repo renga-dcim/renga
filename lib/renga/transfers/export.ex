@@ -214,8 +214,20 @@ defmodule Renga.Transfers.Export do
           if(condition, do: " AND (#{condition})", else: "")
       end
 
+    # An account an organization provider created has no global email
+    # (RFD 15); the organization names it by the address its own provider
+    # verified, which is what invites the person back after an import.
+    # Other organizations' providers never reach the archive.
     """
-    SELECT jsonb_build_object('id', p.id, 'email', u.email)::text
+    SELECT jsonb_build_object('id', p.id, 'email', COALESCE(u.email, (
+      SELECT i.email
+      FROM user_identities AS i
+      JOIN identity_providers AS ip ON ip.id = i.provider_id
+      WHERE i.user_id = p.id AND i.email IS NOT NULL AND i.email_verified
+        AND ip.organization_id = $1 AND ip.removed_at IS NULL
+      ORDER BY i.last_signed_in_at DESC NULLS LAST, i.id
+      LIMIT 1
+    )))::text
     FROM (#{Enum.join(references, "\nUNION ")}) AS p
     LEFT JOIN users AS u ON u.id = p.id
     ORDER BY p.id

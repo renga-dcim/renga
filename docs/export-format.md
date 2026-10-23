@@ -85,7 +85,10 @@ Two record types are special:
 - `organization` holds one record: the organization's name, slug, and
   portable settings. Its status and ID are the destination's.
 - `principals` holds one record per person the other records name, with
-  `id` and `email` (`null` once the account was deleted). Fields that name a
+  `id` and `email`. An account without a global email (RFD 15) is named by
+  the address one of the organization's own identity providers verified;
+  `email` is `null` once the account was deleted or when there is no such
+  address. Fields that name a
   person, such as `organization_memberships.user_id` or
   `change_events.actor_user_id`, hold a principal ID. A principal ID is the
   source deployment's user ID and means nothing in another deployment: an
