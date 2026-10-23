@@ -59,10 +59,20 @@ defmodule Renga.SecuritySettingsTest do
 
   test "setting the value already in place records nothing", %{owner: owner} do
     assert {:ok, false} = SecuritySettings.put(owner, :require_mfa, false)
-    {:ok, true} = SecuritySettings.put(owner, :require_mfa, true)
+    {:ok, true} = SecuritySettings.put(owner, :require_mfa, true, "Policy requirement")
     {:ok, true} = SecuritySettings.put(owner, :require_mfa, true)
 
     assert Repo.aggregate(where(ChangeEvent, kind: "security_setting_changed"), :count) == 1
+  end
+
+  test "a changed value needs a non-blank reason", %{organization: organization, owner: owner} do
+    for reason <- [nil, "", " \n\t "] do
+      assert {:error, :reason_required} =
+               SecuritySettings.put(owner, :require_mfa, true, reason)
+    end
+
+    refute SecuritySettings.require_mfa?(organization.id)
+    assert Repo.aggregate(where(ChangeEvent, kind: "security_setting_changed"), :count) == 0
   end
 
   test "needs organization.manage", %{organization: organization} do
@@ -83,7 +93,7 @@ defmodule Renga.SecuritySettingsTest do
 
   test "each organization has its own settings", %{organization: organization, owner: owner} do
     other = organization_fixture()
-    {:ok, true} = SecuritySettings.put(owner, :require_mfa, true)
+    {:ok, true} = SecuritySettings.put(owner, :require_mfa, true, "Organization policy")
 
     assert SecuritySettings.require_mfa?(organization.id)
     refute SecuritySettings.require_mfa?(other.id)

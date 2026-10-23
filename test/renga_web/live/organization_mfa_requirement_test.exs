@@ -21,7 +21,8 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
       SecuritySettings.put(
         Accounts.scope_for_user(owner, organization.id),
         :require_mfa,
-        true
+        true,
+        "Organization policy"
       )
 
     member = user_fixture()

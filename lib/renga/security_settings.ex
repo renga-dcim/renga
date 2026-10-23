@@ -87,10 +87,11 @@ defmodule Renga.SecuritySettings do
 
   @doc """
   Sets `name` to `value` for the scope's organization, recording the change
-  in Activity with `reason` (optional). Setting the value already in place
-  records nothing. Returns `{:ok, value}`, `{:error, :forbidden}` without
-  `organization.manage`, or `{:error, :invalid}` for a value of the wrong
-  type.
+  in Activity with a non-blank `reason`. Setting the value already in place
+  records nothing and needs no reason. Returns `{:ok, value}`,
+  `{:error, :forbidden}` without `organization.manage`,
+  `{:error, :reason_required}` when a change has no reason, or
+  `{:error, :invalid}` for a value of the wrong type.
   """
   def put(scope, name, value, reason \\ nil)
 
@@ -112,9 +113,18 @@ defmodule Renga.SecuritySettings do
     # Locks the organization too, so changes to its settings serialize.
     Authorization.authorize!(scope, "organization.manage")
     old = get(scope.organization_id, name)
-    if old != value, do: record_change!(scope, user, name, old, value, reason)
+    if old != value, do: record_change!(scope, user, name, old, value, required_reason!(reason))
     value
   end
+
+  defp required_reason!(reason) when is_binary(reason) do
+    case String.trim(reason) do
+      "" -> Repo.rollback(:reason_required)
+      reason -> String.slice(reason, 0, 500)
+    end
+  end
+
+  defp required_reason!(_reason), do: Repo.rollback(:reason_required)
 
   defp record_change!(scope, user, name, old, value, reason) do
     now = Renga.Time.utc_now_ms()
@@ -143,7 +153,7 @@ defmodule Renga.SecuritySettings do
         field: Atom.to_string(name),
         old_value: %{"value" => old},
         new_value: %{"value" => value},
-        metadata: reason_metadata(reason)
+        metadata: %{"reason" => reason}
       })
   end
 
@@ -155,13 +165,4 @@ defmodule Renga.SecuritySettings do
 
   defp unwrap(%{"value" => value}, _name), do: value
   defp unwrap(nil, name), do: @definitions[name].default
-
-  defp reason_metadata(reason) when is_binary(reason) do
-    case String.trim(reason) do
-      "" -> %{}
-      reason -> %{"reason" => String.slice(reason, 0, 500)}
-    end
-  end
-
-  defp reason_metadata(_reason), do: %{}
 end
