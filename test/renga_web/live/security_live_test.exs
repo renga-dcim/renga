@@ -6,6 +6,7 @@ defmodule RengaWeb.SecurityLiveTest do
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
+  alias Renga.Accounts
   alias Renga.Accounts.SessionMFA
   alias Renga.Inventory.ChangeEvent
   alias Renga.Repo
@@ -89,6 +90,26 @@ defmodule RengaWeb.SecurityLiveTest do
                setting: %{value: "true", reason: "Organization policy"}
              )
              |> render_submit()
+  end
+
+  test "an already-open page cannot disable a requirement without satisfying it", %{conn: conn} do
+    {conn, _stale_owner, organization} = member_conn(conn, "owner")
+    {:ok, view, _html} = live(conn, ~p"/settings/security")
+
+    other_owner = user_fixture()
+    organization_membership_fixture(other_owner, organization, %{role: "owner"})
+    scope = Accounts.scope_for_user(other_owner, organization.id)
+    {:ok, true} = SecuritySettings.put(scope, :require_mfa, true, "Organization policy")
+
+    assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} =
+             view
+             |> form("#setting-require_mfa-form",
+               setting: %{value: "false", reason: "Bypass"}
+             )
+             |> render_submit()
+
+    assert SecuritySettings.require_mfa?(organization.id)
+    assert Repo.aggregate(where(ChangeEvent, kind: "security_setting_changed"), :count) == 1
   end
 
   test "warns an owner with no factor of their own", %{conn: conn} do
