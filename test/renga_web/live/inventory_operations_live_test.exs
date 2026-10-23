@@ -168,11 +168,8 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert has_element?(view, queue_cell, "14 undelivered")
     assert has_element?(view, queue_cell, "oldest 3h · 1.3 MB")
 
-    assert has_element?(
-             view,
-             "#{queue_cell} [title='2 to make room, 1 rejected by Renga']",
-             "3 dropped since restart"
-           )
+    assert has_element?(view, queue_cell, "3 dropped since restart")
+    assert has_element?(view, queue_cell, "(2 to make room, 1 rejected by Renga)")
   end
 
   test "shows the telemetry queue only for agents that report one", %{
@@ -198,11 +195,12 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert has_element?(view, telemetry_cell, "3 undelivered")
     assert has_element?(view, "#collector-queue-#{source.id}", "Not reported")
 
+    assert has_element?(view, telemetry_cell, "5 dropped since restart")
+
     assert has_element?(
              view,
-             "#{telemetry_cell} [title='4 to make room, 1 after a day; " <>
-               "queued 2d to 3h before the last check-in']",
-             "5 dropped since restart"
+             telemetry_cell,
+             "(4 to make room, 1 after a day; queued 2d to 3h before the last check-in)"
            )
   end
 

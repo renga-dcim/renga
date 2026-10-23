@@ -766,12 +766,11 @@ defmodule RengaWeb.InventoryOperationsLive do
           oldest {format_age(@queue.oldest_age_seconds)} · {format_bytes(@queue.bytes)}
         </span>
     <% end %>
-    <span
-      :if={@queue && @queue.dropped > 0}
-      class="ml-1.5 text-xs font-medium text-crit"
-      title={dropped_breakdown(@queue, @kind)}
-    >
-      {@queue.dropped} dropped since restart
+    <%!-- The breakdown is inline text, not a title, so the cell's clip reveal
+    shows it when the column is too narrow. --%>
+    <span :if={@queue && @queue.dropped > 0} class="ml-1.5 text-xs">
+      <span class="font-medium text-crit">{@queue.dropped} dropped since restart</span>
+      <span class="text-fg-muted">({dropped_breakdown(@queue, @kind)})</span>
     </span>
     """
   end
