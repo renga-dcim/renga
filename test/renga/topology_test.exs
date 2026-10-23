@@ -361,6 +361,113 @@ defmodule Renga.TopologyTest do
            )
   end
 
+  describe "neighbor mismatch (RFD 11)" do
+    setup %{scope: scope} do
+      switch = resource_fixture(scope, "mismatch-switch")
+      server = resource_fixture(scope, "mismatch-server")
+      guest = resource_fixture(scope, "mismatch-guest")
+      {:ok, swp1} = Inventory.create_interface(scope, switch.id, %{name: "swp1"})
+      {:ok, swp2} = Inventory.create_interface(scope, switch.id, %{name: "swp2"})
+      {:ok, eth0} = Inventory.create_interface(scope, server.id, %{name: "eth0"})
+      {:ok, guest_eth0} = Inventory.create_interface(scope, guest.id, %{name: "eth0"})
+
+      {:ok, poller} =
+        Inventory.create_source(scope, %{kind: "switch_poller", name: "mismatch-poller"})
+
+      {:ok, agent} = Inventory.create_source(scope, %{kind: "host_agent", name: "mismatch-agent"})
+
+      %{
+        switch: switch,
+        server: server,
+        guest: guest,
+        swp1: swp1,
+        swp2: swp2,
+        eth0: eth0,
+        guest_eth0: guest_eth0,
+        poller: poller,
+        agent: agent
+      }
+    end
+
+    test "the switch's LLDP disagreeing with the host's report opens one on each side", ctx do
+      # The switch sees the server on swp1; the server sees swp2.
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [{ctx.server, "eth0"}])
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp2"}])
+
+      assert [on_host] = mismatches(ctx.scope, ctx.eth0)
+      assert on_host.resolution_key == "#{ctx.swp1.id}:#{ctx.eth0.id}"
+
+      assert on_host.message ==
+               "Switch port mismatch-switch swp1 reports this interface as its neighbor, " <>
+                 "but the host reports mismatch-switch swp2"
+
+      assert on_host.details["reported_by_other_end"] == [ctx.swp2.id]
+
+      # The conflict on eth0 is the mismatch, so it is not filed twice.
+      refute Enum.any?(
+               Topology.list_topology_findings(ctx.scope, ctx.eth0.id),
+               &(&1.kind == "conflicting_neighbors")
+             )
+
+      # swp2 has no LLDP of its own from the switch, so nothing disagrees there.
+      assert mismatches(ctx.scope, ctx.swp2) == []
+
+      # Once the switch also reports swp2, it disagrees with the host as well.
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp2", [{ctx.guest, "eth0"}])
+      assert [on_port] = mismatches(ctx.scope, ctx.swp2)
+
+      assert on_port.message ==
+               "mismatch-server eth0 reports this port as its neighbor, " <>
+                 "but the switch reports mismatch-guest eth0"
+
+      assert Renga.Findings.group("topology", "neighbor_mismatch") == "health"
+    end
+
+    test "a switch port seeing the host among several neighbors agrees", ctx do
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [
+        {ctx.server, "eth0"},
+        {ctx.guest, "eth0"}
+      ])
+
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp1"}])
+
+      for interface <- [ctx.swp1, ctx.eth0, ctx.guest_eth0],
+          do: assert(mismatches(ctx.scope, interface) == [])
+    end
+
+    test "an independent manual conflict remains visible beside a mismatch", ctx do
+      {:ok, manual} =
+        Inventory.create_source(ctx.scope, %{kind: "manual", name: "mismatch-manual"})
+
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [{ctx.server, "eth0"}])
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp2"}])
+      report_neighbors!(ctx.scope, manual, ctx.server, "eth0", [{ctx.guest, "eth0"}])
+
+      assert [_mismatch] = mismatches(ctx.scope, ctx.eth0)
+
+      assert Enum.any?(
+               Topology.list_topology_findings(ctx.scope, ctx.eth0.id),
+               &(&1.kind == "conflicting_neighbors")
+             )
+    end
+
+    test "it resolves when the host's report agrees", ctx do
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [{ctx.server, "eth0"}])
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp2"}])
+      assert [_open] = mismatches(ctx.scope, ctx.eth0)
+
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp1"}],
+        at: ~U[2099-09-10 14:05:00Z]
+      )
+
+      assert mismatches(ctx.scope, ctx.eth0) == []
+    end
+
+    test "registers neighbor mismatch as a topology finding kind" do
+      assert "neighbor_mismatch" in Topology.topology_finding_kinds()
+    end
+  end
+
   test "surfaces contention when multiple local interfaces report the same remote endpoint", %{
     scope: scope
   } do
@@ -5852,6 +5959,33 @@ defmodule Renga.TopologyTest do
       })
 
     observation
+  end
+
+  defp report_neighbors!(scope, source, resource, interface_name, remotes, opts \\ []) do
+    tag = "#{source.name}-#{System.unique_integer([:positive])}"
+    at = Keyword.get(opts, :at, ~U[2099-09-10 14:00:00Z])
+    observation = observation_fixture(scope, source, tag, at, %{})
+
+    {:ok, _evidence} =
+      Topology.reconcile_interface_neighbors(
+        scope,
+        source,
+        observation,
+        resource.id,
+        [
+          %{
+            "name" => interface_name,
+            "neighbors" => Enum.map(remotes, fn {remote, port} -> neighbor(remote.name, port) end)
+          }
+        ],
+        true
+      )
+  end
+
+  defp mismatches(scope, interface) do
+    scope
+    |> Topology.list_topology_findings(interface.id)
+    |> Enum.filter(&(&1.kind == "neighbor_mismatch" and &1.status == "open"))
   end
 
   defp neighbor(chassis_id, port_id, attrs \\ %{}) do

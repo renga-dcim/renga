@@ -45,7 +45,7 @@ defmodule Renga.Topology do
   alias Renga.Topology.VlanUsage
 
   @vlan_finding_kinds ~w(ambiguous_scope conflicting_interface_mode conflicting_tagging_mode conflicting_untagged_vlan missing_vlan out_of_range_vid unexpected_vlan unknown_vlan)
-  @neighbor_finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency)
+  @neighbor_finding_kinds ~w(ambiguous_remote_identity asymmetric_neighbor conflicting_neighbors expired_adjacency neighbor_mismatch)
   @cable_action_attributes ~w(cable_type status label color length_value length_unit description metadata)a
 
   def list_vlan_groups(%Scope{organization_id: organization_id}) do
