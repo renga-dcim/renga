@@ -12,6 +12,9 @@ defmodule Renga.Inventory.CollectorFinding do
       stream polls has not answered for longer than its freshness window.
       Kept apart per `target`, since one stream can reach a switch through
       several addresses.
+    * `vm_active_on_two_hypervisors` (RFD 11): competing fresh libvirt
+      evidence leaves a VM's placement ambiguous. It is about the VM, so it
+      names no agent.
   """
 
   use Ecto.Schema
@@ -19,7 +22,7 @@ defmodule Renga.Inventory.CollectorFinding do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
-  @kinds ~w(installation_key_changed possible_same_machine target_unreachable)
+  @kinds ~w(installation_key_changed possible_same_machine target_unreachable vm_active_on_two_hypervisors)
 
   schema "collector_findings" do
     field :kind, :string

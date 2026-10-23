@@ -500,6 +500,92 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
     end
   end
 
+  # Each report also refreshes the findings by the real clock, so these
+  # scenarios end about now: minute 6 is the present.
+  describe "VM active on two hypervisors finding" do
+    setup do
+      %{base: DateTime.add(Renga.Time.utc_now_ms(), -6 * 60)}
+    end
+
+    test "competing fresh active claims open one finding on the VM", %{
+      scope: scope,
+      token: token,
+      base: base
+    } do
+      t = &DateTime.add(base, &1 * 60)
+      vm_id = report!(token, "hv-a", "running", at: t.(0))
+      report!(token, "hv-b", "paused", at: t.(2))
+      report!(token, "hv-a", "running", at: t.(5))
+
+      refresh!(scope, t.(6))
+
+      assert [finding] = placement_findings(vm_id)
+      assert finding.status == "open"
+      assert is_nil(finding.agent_id)
+      assert finding.last_observed_at == t.(5)
+      assert finding.details["domain"] == "web-1"
+
+      assert [a, b] = finding.details["hypervisors"]
+      assert a =~ "qemu+ssh://hv-a/system" and b =~ "qemu+ssh://hv-b/system"
+      assert finding.message =~ "active on 2 hypervisors at once"
+
+      assert {[listed], 1} = Renga.Findings.list_findings(scope, domain: "collector")
+      assert listed.kind == "vm_active_on_two_hypervisors" and listed.group == "health"
+      assert listed.resolution_key == ""
+
+      assert RengaWeb.FindingComponents.kind_label(listed.kind) ==
+               "VM active on two hypervisors"
+
+      # Refreshing again updates the one finding.
+      report!(token, "hv-b", "paused", at: t.(7))
+      refresh!(scope, t.(8))
+      assert [%{status: "open", last_observed_at: last}] = placement_findings(vm_id)
+      assert last == t.(7)
+    end
+
+    test "a migration or an inactive definition is not a finding", %{
+      scope: scope,
+      token: token,
+      base: base
+    } do
+      t = &DateTime.add(base, &1 * 60)
+      migrated = report!(token, "hv-a", "running", at: t.(0))
+      report!(token, "hv-b", "running", at: t.(2))
+      refresh!(scope, t.(3))
+      assert placement_findings(migrated) == []
+
+      report!(token, "hv-a", "shutoff", at: t.(5))
+      refresh!(scope, t.(6))
+      assert placement_findings(migrated) == []
+    end
+
+    test "it resolves once one claim goes stale", %{scope: scope, token: token, base: base} do
+      t = &DateTime.add(base, &1 * 60)
+      vm_id = report!(token, "hv-a", "running", at: t.(0))
+      report!(token, "hv-b", "paused", at: t.(2))
+      report!(token, "hv-a", "running", at: t.(5))
+      assert [%{status: "open"}] = placement_findings(vm_id)
+
+      # hv-b last reported at minute 2, so past minute 17 only hv-a stands.
+      refresh!(scope, t.(17))
+      assert [%{status: "open"}] = placement_findings(vm_id)
+
+      refresh!(scope, t.(18))
+      assert [%{status: "resolved", resolved_at: resolved_at}] = placement_findings(vm_id)
+      assert resolved_at == t.(18)
+    end
+  end
+
+  defp refresh!(scope, now), do: {:ok, _} = Renga.Inventory.CollectorFindings.refresh!(scope, now)
+
+  defp placement_findings(resource_id) do
+    Repo.all(
+      from finding in CollectorFinding,
+        where: finding.resource_id == ^resource_id,
+        where: finding.kind == "vm_active_on_two_hypervisors"
+    )
+  end
+
   defp guest!(token, macs, opts) do
     identifiers =
       %{"machine_id" => opts[:machine_id] || "guest-#{System.unique_integer([:positive])}"}
