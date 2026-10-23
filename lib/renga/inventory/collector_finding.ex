@@ -15,6 +15,8 @@ defmodule Renga.Inventory.CollectorFinding do
     * `vm_active_on_two_hypervisors` (RFD 11): competing fresh libvirt
       evidence leaves a VM's placement ambiguous. It is about the VM, so it
       names no agent.
+    * `guest_without_vm` (RFD 11, opt-in per organization): a KVM guest
+      whose SMBIOS UUID matches no domain on any reporting hypervisor.
   """
 
   use Ecto.Schema
@@ -22,7 +24,7 @@ defmodule Renga.Inventory.CollectorFinding do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
-  @kinds ~w(installation_key_changed possible_same_machine target_unreachable vm_active_on_two_hypervisors)
+  @kinds ~w(installation_key_changed possible_same_machine target_unreachable vm_active_on_two_hypervisors guest_without_vm)
 
   schema "collector_findings" do
     field :kind, :string

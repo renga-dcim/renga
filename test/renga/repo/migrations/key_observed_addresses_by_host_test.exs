@@ -152,6 +152,12 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
         ADD COLUMN resource_index integer
       """)
 
+    {:ok, _} =
+      query(repo, """
+      ALTER TABLE organizations
+        ADD COLUMN guest_without_vm_findings boolean NOT NULL DEFAULT false
+      """)
+
     Renga.Repo.put_dynamic_repo(repo)
 
     try do

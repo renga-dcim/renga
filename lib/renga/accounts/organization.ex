@@ -33,6 +33,9 @@ defmodule Renga.Accounts.Organization do
     field :settings, :map, default: %{}
     field :default_accent, :string, default: "copper"
     field :default_power_factor, :decimal
+    # RFD 11: opt in to the guest-without-VM collector finding once every
+    # hypervisor reports.
+    field :guest_without_vm_findings, :boolean, default: false
 
     has_many :memberships, OrganizationMembership
     has_many :addresses, Address

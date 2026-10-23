@@ -2327,17 +2327,15 @@ defmodule Renga.Inventory do
 
   defp reconcile_same_machine(result, _scope, _observation), do: result
 
-  # RFD 11: a collector report can open or resolve the collector findings
-  # that time also changes, so they are refreshed as it commits rather than
-  # only at the next sweep. A failure is logged, never fatal.
+  # RFD 11: a report can open or resolve the collector findings that time
+  # also changes, so they are refreshed as it commits rather than only at
+  # the next sweep. A failure is logged, never fatal.
   defp reconcile_collector_findings(
          {:ok, _resource_or_resources, _discovered?} = result,
          scope,
-         %Observation{payload: payload}
+         observation
        ) do
-    if AgentPayload.scoped_report?(payload),
-      do: {:ok, _} = Renga.Inventory.CollectorFindings.refresh!(scope)
-
+    {:ok, _} = Renga.Inventory.CollectorFindings.refresh_after!(scope, observation, result)
     result
   rescue
     exception ->
