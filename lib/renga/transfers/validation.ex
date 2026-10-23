@@ -294,16 +294,29 @@ defmodule Renga.Transfers.Validation do
 
   defp value_message(value, column) do
     cond do
-      not valid?(value, column) -> "must be #{describe(column.type)}"
-      too_long?(value, column) -> "is longer than #{column.max_length} characters"
-      message = storage_problem(value, column) -> message
-      true -> nil
+      not valid?(value, column) ->
+        "must be #{describe(column.type)}"
+
+      too_long?(value, column) and is_list(value) ->
+        "has an item longer than #{column.max_length} characters"
+
+      too_long?(value, column) ->
+        "is longer than #{column.max_length} characters"
+
+      message = storage_problem(value, column) ->
+        message
+
+      true ->
+        nil
     end
   end
 
   # PostgreSQL counts code points, not the graphemes String.length/1 counts.
   defp too_long?(value, %{max_length: max}) when is_integer(max) and is_binary(value),
     do: length(String.codepoints(value)) > max
+
+  defp too_long?(values, %{max_length: max} = column) when is_integer(max) and is_list(values),
+    do: Enum.any?(values, &too_long?(&1, column))
 
   defp too_long?(_value, _column), do: false
 
@@ -406,8 +419,13 @@ defmodule Renga.Transfers.Validation do
 
   defp in_range?(value, {min, max}), do: is_integer(value) and value >= min and value <= max
 
-  defp timestamp?(value) when is_binary(value),
-    do: match?({:ok, _at, _offset}, DateTime.from_iso8601(value))
+  # As exports write them: UTC, with a year PostgreSQL accepts. Elixir also
+  # parses year zero, negative years, and offsets PostgreSQL refuses.
+  defp timestamp?(value) when is_binary(value) do
+    Regex.match?(~r/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\z/, value) and
+      not String.starts_with?(value, "0000-") and
+      match?({:ok, _at, 0}, DateTime.from_iso8601(value))
+  end
 
   defp timestamp?(_value), do: false
 

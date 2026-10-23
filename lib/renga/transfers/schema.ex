@@ -13,13 +13,21 @@ defmodule Renga.Transfers.Schema do
   Every column of the current schema, as
   `%{table => %{column => %{type: udt_name, nullable?: boolean, max_length: integer | nil,
   precision: integer | nil, scale: integer | nil}}}`, where precision and scale are a
-  `numeric` column's, if it declares them. Array types are named as PostgreSQL names
+  `numeric` column's, if it declares them, and max_length is each item's for a
+  varchar array. Array types are named as PostgreSQL names
   them, with a leading `_`.
   """
   def columns do
     %{rows: rows} =
       Repo.query!("""
-      SELECT table_name, column_name, udt_name, is_nullable = 'YES', character_maximum_length,
+      SELECT table_name, column_name, udt_name, is_nullable = 'YES',
+             -- information_schema leaves out a varchar array's element length.
+             COALESCE(character_maximum_length, (
+               SELECT NULLIF(attribute.atttypmod, -1) - 4
+               FROM pg_attribute AS attribute
+               WHERE attribute.attrelid = format('%I.%I', table_schema, table_name)::regclass
+                 AND attribute.attname = column_name AND udt_name = '_varchar'
+             )),
              CASE WHEN udt_name = 'numeric' THEN numeric_precision END,
              CASE WHEN udt_name = 'numeric' THEN numeric_scale END
       FROM information_schema.columns

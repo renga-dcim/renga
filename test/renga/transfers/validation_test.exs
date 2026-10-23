@@ -212,6 +212,8 @@ defmodule Renga.Transfers.ValidationTest do
             resource
             | "name" => String.duplicate("e\u0301", 255),
               "display_name" => "a\u0000b",
+              "inserted_at" => "0000-01-01T00:00:00Z",
+              "updated_at" => "2026-01-01T00:00:00+16:00",
               "labels" => %{"x\u0000" => "y"},
               "annotations" => %{
                 "n" => %Decimal{coef: 1, exp: 131_072},
@@ -220,6 +222,12 @@ defmodule Renga.Transfers.ValidationTest do
           }
 
           [resource | rest]
+
+        "agents", [agent | rest] ->
+          [
+            %{agent | "capabilities" => [String.duplicate("a", 255), String.duplicate("b", 256)]}
+            | rest
+          ]
 
         "organization", [organization] ->
           # numeric(4,3): 9.9995 rounds to 10.000, which needs two digits.
@@ -238,6 +246,8 @@ defmodule Renga.Transfers.ValidationTest do
       |> Enum.sort()
 
     assert type_messages == [
+             {"agents.ndjson", 1,
+              ~s(field "capabilities" has an item longer than 255 characters)},
              {"organization.ndjson", 1,
               ~s(field "default_power_factor" does not fit numeric\(4,3\))},
              {"prefixes.ndjson", 1, ~s(field "prefix" must be an IP network)},
@@ -254,9 +264,11 @@ defmodule Renga.Transfers.ValidationTest do
               ~s(field "annotations" holds a NUL character or a number PostgreSQL cannot store)},
              {"resources.ndjson", 1,
               ~s(field "display_name" contains a NUL character, which PostgreSQL cannot store)},
+             {"resources.ndjson", 1, ~s(field "inserted_at" must be an ISO 8601 timestamp)},
              {"resources.ndjson", 1,
               ~s(field "labels" holds a NUL character or a number PostgreSQL cannot store)},
-             {"resources.ndjson", 1, ~s(field "name" is longer than 255 characters)}
+             {"resources.ndjson", 1, ~s(field "name" is longer than 255 characters)},
+             {"resources.ndjson", 1, ~s(field "updated_at" must be an ISO 8601 timestamp)}
            ]
   end
 
