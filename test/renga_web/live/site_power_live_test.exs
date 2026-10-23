@@ -5,6 +5,7 @@ defmodule RengaWeb.SitePowerLiveTest do
   import Renga.AccountsFixtures
   import Renga.CatalogFixtures
   import Renga.InventoryFixtures
+  import Renga.PowerReadingFixtures
 
   alias Renga.Accounts
   alias Renga.DCIM
@@ -222,6 +223,64 @@ defmodule RengaWeb.SitePowerLiveTest do
     view |> element("#feed-#{b1.id}-load") |> render_click()
     assert has_element?(view, "#load-status", "Unknown")
     assert has_element?(view, "#load-incomplete", "1 load has no power factor")
+  end
+
+  test "shows measured load beside allocated load, and why it is unknown",
+       %{conn: conn, site: site, scope: scope, organization: organization} do
+    {:ok, panel} = Power.create_panel(scope, %{site_id: site.id, name: "PDP-1"})
+    a1 = feed!(scope, panel, "A1")
+    b1 = feed!(scope, panel, "B1")
+    stream = power_stream_fixture(organization)
+
+    for {feed, key} <- [{a1, "10.0.0.5"}, {b1, "10.0.0.6"}] do
+      {pdu, _expected} =
+        assigned_server_fixture(scope, "pdu-#{key}", [
+          %{kind: "power_port", name: "Inlet"},
+          %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}},
+          %{kind: "power_outlet", name: "2", attributes: %{"inlet" => "Inlet"}}
+        ])
+
+      %{ports: [inlet]} = Power.list_device_endpoints(scope, pdu.id)
+      {:ok, _cable} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: feed.id})
+      target_resource_fixture(stream, key, pdu)
+    end
+
+    reading_fixture(stream,
+      target: "10.0.0.5",
+      boundary: "feed",
+      quantity: "apparent_power",
+      coverage: "complete",
+      value: 1500
+    )
+
+    reading_fixture(stream,
+      target: "10.0.0.6",
+      boundary: "outlet",
+      quantity: "apparent_power",
+      component: {"power_outlet", "1"},
+      value: 300
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/places/sites/#{site.id}/power")
+
+    # 1,500 VA of 2,944 VA usable.
+    assert has_element?(view, "#feed-#{a1.id}-measured[data-status=ok]", "1,500 VA")
+    assert has_element?(view, "#feed-#{a1.id}-measured", "51%")
+    assert has_element?(view, "#feed-#{a1.id}-measured", "PDU inlet meter")
+    assert has_element?(view, "#feed-#{b1.id}-measured[data-status=unknown]", "300 VA or more")
+    assert has_element?(view, "#feed-#{b1.id}-measured", "1 outlet unmeasured")
+
+    view |> element("#feed-#{a1.id}-measured") |> render_click()
+    assert has_element?(view, "#measured-status", "Within capacity")
+    assert has_element?(view, "#measured-headroom", "1,444 VA")
+    assert has_element?(view, "#measured-basis", "PDU inlet meter")
+    assert has_element?(view, "#measured-as-of")
+
+    view |> element("#feed-#{b1.id}-measured") |> render_click()
+    assert has_element?(view, "#measured-status", "Unknown")
+    refute has_element?(view, "#measured-headroom")
+
+    assert has_element?(view, "#measured-gaps", "only a lower bound")
   end
 
   test "labels load that rests on the organization's default power factor",
