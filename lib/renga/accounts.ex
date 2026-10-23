@@ -652,11 +652,9 @@ defmodule Renga.Accounts do
   """
   def confirm_session_second_factor(%User{} = user, session_token, credential)
       when is_binary(session_token) do
-    with {:ok, method} <- verify_session_factor(user, credential) do
-      case Repo.transaction(fn -> confirm_session(user, session_token, method) end) do
-        {:ok, :ok} -> :ok
-        {:error, :no_session} -> {:error, :no_session}
-      end
+    with {:ok, method} <- verify_session_factor(user, credential),
+         {:ok, :ok} <- Repo.transaction(fn -> confirm_session(user, session_token, method) end) do
+      :ok
     end
   end
 
