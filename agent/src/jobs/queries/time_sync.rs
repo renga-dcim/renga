@@ -156,9 +156,12 @@ pub fn parse_chrony_tracking(output: &str) -> Option<Daemon> {
     if fields.len() < 5 {
         return None;
     }
-    let synchronized = fields
-        .get(13)
-        .map(|leap| !leap.eq_ignore_ascii_case("not synchronised"));
+    // Any other leap status, such as "Invalid", says nothing either way.
+    let synchronized = match fields.get(13).map(|leap| leap.trim()) {
+        Some("Normal" | "Insert second" | "Delete second") => Some(true),
+        Some("Not synchronised") => Some(false),
+        _ => None,
+    };
     let seconds: f64 = fields[4].parse().ok()?;
     let source = Some(fields[1]).filter(|s| !s.is_empty()).map(str::to_owned);
     Some(Daemon {
@@ -226,6 +229,8 @@ mod tests {
             parse_chrony_tracking(unsynchronized).unwrap().synchronized,
             Some(false)
         );
+        let invalid = "7F7F0101,,10,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,Invalid";
+        assert_eq!(parse_chrony_tracking(invalid).unwrap().synchronized, None);
         assert_eq!(parse_chrony_tracking("506 Cannot talk to daemon"), None);
     }
 
