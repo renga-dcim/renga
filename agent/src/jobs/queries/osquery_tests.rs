@@ -315,6 +315,108 @@ fn a_matching_filter_with_no_hits_still_answers_from_osquery() {
     server.join().unwrap();
 }
 
+/// A query that asks osquery and counts its native readings.
+struct Counting {
+    timeout: std::time::Duration,
+    native: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Query for Counting {
+    fn name(&self) -> &'static str {
+        "query.counting"
+    }
+    fn sensitivity(&self) -> Sensitivity {
+        Sensitivity::Inventory
+    }
+    fn timeout(&self) -> std::time::Duration {
+        self.timeout
+    }
+    fn answer(
+        &self,
+        _: &serde_json::Value,
+        _: &Cancellation,
+    ) -> Result<serde_json::Value, JobFailure> {
+        self.native
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(json!({"native": true}))
+    }
+    fn uses_osquery(&self) -> bool {
+        true
+    }
+    fn answer_with_osquery(
+        &self,
+        osquery: &mut osquery::Client,
+        _: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, JobFailure> {
+        Ok(osquery_rows(osquery, "SELECT 1").map(|_| json!({"native": false})))
+    }
+}
+
+#[test]
+fn a_stalled_daemon_leaves_the_native_reading_its_time() {
+    let dir = std::env::temp_dir().join(format!("renga-osquery-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("osquery.em");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Accepts and never answers.
+    let _hold = std::thread::spawn(move || {
+        let held = listener.accept();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        drop(held)
+    });
+    let native = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let capability = QueryCapability::new(
+        Counting {
+            timeout: std::time::Duration::from_millis(1000),
+            native: native.clone(),
+        },
+        OsqueryConfig {
+            enabled: true,
+            socket,
+        },
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(run(&capability, json!({})), json!({"native": true}));
+    // osquery had a fifth of the query's second, not the whole of it.
+    assert!(started.elapsed() < std::time::Duration::from_millis(600));
+    assert_eq!(native.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_job_cancelled_during_osquery_does_not_read_natively_too() {
+    let dir = std::env::temp_dir().join(format!("renga-osquery-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("osquery.em");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let _hold = std::thread::spawn(move || {
+        let held = listener.accept();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        drop(held)
+    });
+    let native = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let capability = QueryCapability::new(
+        Counting {
+            timeout: std::time::Duration::from_millis(1000),
+            native: native.clone(),
+        },
+        OsqueryConfig {
+            enabled: true,
+            socket,
+        },
+    );
+    let stopped = Cancellation::default();
+    let trigger = stopped.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        trigger.cancel();
+    });
+    assert!(matches!(
+        capability.run(&json!({}), &stopped),
+        Err(JobFailure::Cancelled)
+    ));
+    assert_eq!(native.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn no_systemd_units_from_osquery_reads_natively() {

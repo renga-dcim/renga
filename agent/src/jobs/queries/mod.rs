@@ -37,8 +37,11 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
 
-/// How long a query waits on each osquery call before reading natively.
-const OSQUERY_TIMEOUT: Duration = Duration::from_secs(20);
+/// The share of a query's timeout osquery may take, from connecting through
+/// its last call, before the query reads natively. The rest is left for the
+/// native reading: services' two 10 s D-Bus calls within 30 s, and rpm's
+/// 45 s within packages' 60 s.
+const OSQUERY_SHARE: u32 = 5;
 
 /// How revealing a query's answer is. Matches the server's `sensitivity/0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +97,13 @@ impl QueryCapability {
         if !self.osquery.enabled || !self.query.uses_osquery() {
             return Ok(None);
         }
-        match osquery::Client::connect(&self.osquery.socket, OSQUERY_TIMEOUT) {
+        let budget = self.query.timeout() / OSQUERY_SHARE;
+        match osquery::Client::connect(&self.osquery.socket, budget) {
             Ok(mut client) => self.query.answer_with_osquery(&mut client, parameters),
-            Err(_absent) => Ok(None),
+            Err(error) => {
+                warn!(%error, query = self.query.name(), "osquery is unreachable; reading natively");
+                Ok(None)
+            }
         }
     }
 }
@@ -132,6 +139,11 @@ impl Capability for QueryCapability {
         }
         if let Some(answer) = self.with_osquery(parameters)? {
             return Ok(answer);
+        }
+        // osquery's calls block, bounded by their budget; a job cancelled
+        // meanwhile stops here rather than read natively too.
+        if cancellation.cancelled() {
+            return Err(JobFailure::Cancelled);
         }
         self.query.answer(parameters, cancellation)
     }
