@@ -21,6 +21,7 @@ defmodule Renga.Operators.Organizations do
 
   import Ecto.Query
 
+  alias Renga.Accounts
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationInvitation
   alias Renga.Accounts.OrganizationMembership
@@ -56,7 +57,9 @@ defmodule Renga.Operators.Organizations do
 
   @doc """
   Gets an organization with its active members' addresses and roles, or
-  `nil`.
+  `nil`. A member without a global email (RFD 15) is listed by the address
+  the organization's own provider asserts for them, or nil when it asserts
+  none.
   """
   def get(id) do
     with {:ok, id} <- Ecto.UUID.cast(id),
@@ -66,14 +69,24 @@ defmodule Renga.Operators.Organizations do
         |> join(:inner, [membership], user in assoc(membership, :user))
         |> where([membership], membership.organization_id == ^organization.id)
         |> where([membership], membership.status == "active")
-        |> order_by([_membership, user], asc: user.email)
-        |> select([membership, user], %{email: user.email, role: membership.role})
+        |> select([membership, user], {user, membership.role})
         |> Repo.all()
+        |> member_addresses(organization.id)
 
       %{organization: organization, members: members}
     else
       _missing -> nil
     end
+  end
+
+  defp member_addresses(rows, organization_id) do
+    users = rows |> Enum.map(&elem(&1, 0)) |> Accounts.put_organization_emails(organization_id)
+
+    rows
+    |> Enum.zip_with(users, fn {_user, role}, user ->
+      %{email: user.email || user.organization_email, role: role}
+    end)
+    |> Enum.sort_by(&{is_nil(&1.email), &1.email})
   end
 
   @doc """

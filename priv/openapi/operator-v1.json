@@ -93,7 +93,11 @@
               "additionalProperties": false,
               "properties": {
                 "email": {
-                  "type": "string"
+                  "description": "The member's address: their global email or, for an account created by the organization's own identity provider, the address that provider asserts. Null when there is neither.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "role": {
                   "enum": [
