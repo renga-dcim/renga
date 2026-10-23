@@ -1,7 +1,10 @@
 defmodule Renga.Accounts.OrganizationDomains.Worker do
   @moduledoc """
   Checks every verified organization domain's DNS record again once a day,
-  so a domain whose record was removed stops routing sign-in (RFD 15).
+  so a domain whose record was removed stops routing sign-in (RFD 15). The
+  first check runs as soon as the worker starts: a timer that restarts with
+  every deploy would otherwise never fire on a deployment that restarts
+  more often than daily.
   Follows the periodic-worker pattern of `Renga.Assignments.ExpiryWorker`.
   """
 
@@ -28,7 +31,7 @@ defmodule Renga.Accounts.OrganizationDomains.Worker do
       )
 
     sweep = Keyword.get(options, :sweep, &sweep/0)
-    schedule(interval)
+    send(self(), :sweep)
     {:ok, %{interval: interval, sweep: sweep}}
   end
 

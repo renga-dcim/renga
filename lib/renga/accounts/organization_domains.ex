@@ -233,7 +233,9 @@ defmodule Renga.Accounts.OrganizationDomains do
 
   @doc false
   def lookup_txt(name) do
-    case :inet_res.resolve(String.to_charlist(name), :in, :txt, timeout: 5_000) do
+    # The option bounds each try; the fifth argument bounds the whole lookup,
+    # which otherwise retries every nameserver with no overall deadline.
+    case :inet_res.resolve(String.to_charlist(name), :in, :txt, [timeout: 2_000], 5_000) do
       {:ok, message} ->
         values =
           for record <- :inet_dns.msg(message, :anlist),

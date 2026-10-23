@@ -233,6 +233,17 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
     assert_receive :swept, 100
   end
 
+  test "the worker checks as soon as it starts, not a whole interval later" do
+    parent = self()
+
+    start_supervised!(
+      {OrganizationDomains.Worker,
+       name: nil, interval: :timer.hours(24), sweep: fn -> send(parent, :swept) end}
+    )
+
+    assert_receive :swept, 1_000
+  end
+
   describe "organization_slug_for_email/1" do
     test "routes an address at a verified domain to an organization with a provider", %{
       organization: organization,
