@@ -208,7 +208,22 @@ defmodule Renga.Transfers.ValidationTest do
 
         "resources", [resource | rest] ->
           # 255 characters as people read them, 510 as PostgreSQL counts.
-          [%{resource | "name" => String.duplicate("e\u0301", 255)} | rest]
+          resource = %{
+            resource
+            | "name" => String.duplicate("e\u0301", 255),
+              "display_name" => "a\u0000b",
+              "labels" => %{"x\u0000" => "y"},
+              "annotations" => %{
+                "n" => %Decimal{coef: 1, exp: 131_072},
+                "ok" => %Decimal{coef: 1, exp: 131_071}
+              }
+          }
+
+          [resource | rest]
+
+        "organization", [organization] ->
+          # numeric(4,3): 9.9995 rounds to 10.000, which needs two digits.
+          [%{organization | "default_power_factor" => Decimal.new("9.9995")}]
 
         _type, records ->
           records
@@ -217,10 +232,14 @@ defmodule Renga.Transfers.ValidationTest do
     type_messages =
       archive
       |> messages()
-      |> Enum.filter(fn {_file, _line, message} -> message =~ ~r/must be|longer than/ end)
+      |> Enum.filter(fn {_file, _line, message} ->
+        message =~ ~r/must be|longer than|cannot store|does not fit/
+      end)
       |> Enum.sort()
 
     assert type_messages == [
+             {"organization.ndjson", 1,
+              ~s(field "default_power_factor" does not fit numeric\(4,3\))},
              {"prefixes.ndjson", 1, ~s(field "prefix" must be an IP network)},
              {"prefixes.ndjson", 2, ~s(field "prefix" must be an IP network)},
              {"prefixes.ndjson", 3, ~s(field "prefix" must be an IP network)},
@@ -231,6 +250,12 @@ defmodule Renga.Transfers.ValidationTest do
              {"rack_occupancies.ndjson", 3, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 4, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 5, ~s(field "units" must be an integer range)},
+             {"resources.ndjson", 1,
+              ~s(field "annotations" holds a NUL character or a number PostgreSQL cannot store)},
+             {"resources.ndjson", 1,
+              ~s(field "display_name" contains a NUL character, which PostgreSQL cannot store)},
+             {"resources.ndjson", 1,
+              ~s(field "labels" holds a NUL character or a number PostgreSQL cannot store)},
              {"resources.ndjson", 1, ~s(field "name" is longer than 255 characters)}
            ]
   end

@@ -38,6 +38,7 @@ defmodule Renga.Transfers.Validation do
   @mac_address ~r/\A[0-9a-f]{2}(:[0-9a-f]{2}){5}\z/i
   @int4range ~r/\A([\[(])(-?\d+)?,(-?\d+)?([\])])\z/
   @int4 {-2_147_483_648, 2_147_483_647}
+  @nul_message "contains a NUL character, which PostgreSQL cannot store"
   @int8 {-9_223_372_036_854_775_808, 9_223_372_036_854_775_807}
 
   @doc """
@@ -295,6 +296,7 @@ defmodule Renga.Transfers.Validation do
     cond do
       not valid?(value, column) -> "must be #{describe(column.type)}"
       too_long?(value, column) -> "is longer than #{column.max_length} characters"
+      message = storage_problem(value, column) -> message
       true -> nil
     end
   end
@@ -304,6 +306,78 @@ defmodule Renga.Transfers.Validation do
     do: length(String.codepoints(value)) > max
 
   defp too_long?(_value, _column), do: false
+
+  # A value of the right type PostgreSQL still cannot store. The import
+  # passes every row through jsonb, so jsonb's limits apply to every value:
+  # no NUL character in a string or key, and numbers within numeric's
+  # range. A numeric column may also declare a precision and scale.
+  defp storage_problem(value, %{type: type}) when type in ~w(text varchar citext),
+    do: if(nul?(value), do: @nul_message)
+
+  defp storage_problem(values, %{type: "_" <> type}) when type in ~w(text varchar citext),
+    do: if(Enum.any?(values, &nul?/1), do: @nul_message)
+
+  defp storage_problem(value, %{type: "numeric"} = column) do
+    cond do
+      not numeric_in_range?(value) -> "is outside PostgreSQL's numeric range"
+      not fits_typmod?(value, column[:precision], column[:scale]) -> typmod_message(column)
+      true -> nil
+    end
+  end
+
+  defp storage_problem(value, %{type: type}) when type in ~w(jsonb json) do
+    unless storable_json?(value),
+      do: "holds a NUL character or a number PostgreSQL cannot store"
+  end
+
+  defp storage_problem(_value, _column), do: nil
+
+  defp nul?(value), do: String.contains?(value, <<0>>)
+
+  defp typmod_message(column), do: "does not fit numeric(#{column.precision},#{column.scale})"
+
+  defp storable_json?(value) when is_binary(value), do: not nul?(value)
+  defp storable_json?(value) when is_integer(value), do: numeric_in_range?(value)
+  defp storable_json?(%Decimal{} = value), do: numeric_in_range?(value)
+  defp storable_json?(value) when is_list(value), do: Enum.all?(value, &storable_json?/1)
+
+  defp storable_json?(value) when is_map(value),
+    do: Enum.all?(value, fn {key, item} -> not nul?(key) and storable_json?(item) end)
+
+  defp storable_json?(_value), do: true
+
+  @numeric_integer_digits 131_072
+  @numeric_fraction_digits 16_383
+
+  defp numeric_in_range?(value) do
+    %Decimal{coef: coef, exp: exp} = decimal = to_decimal(value)
+
+    -exp <= @numeric_fraction_digits and
+      (coef == 0 or integer_digits(decimal) <= @numeric_integer_digits)
+  end
+
+  # PostgreSQL rounds to the scale, half away from zero, then requires at
+  # most precision - scale integer digits. A value far below the scale
+  # rounds to zero, and one far above it cannot fit, without rounding it.
+  defp fits_typmod?(_value, nil, _scale), do: true
+
+  defp fits_typmod?(value, precision, scale) do
+    decimal = to_decimal(value)
+    digits = integer_digits(decimal)
+
+    cond do
+      decimal.coef == 0 or digits < -scale -> true
+      digits > precision - scale + 1 -> false
+      true -> decimal |> Decimal.round(scale, :half_up) |> integer_digits() <= precision - scale
+    end
+  end
+
+  defp to_decimal(%Decimal{} = value), do: value
+  defp to_decimal(value) when is_integer(value), do: Decimal.new(value)
+
+  # Digits before the decimal point; negative when the value is below 0.1.
+  defp integer_digits(%Decimal{coef: 0}), do: 0
+  defp integer_digits(%Decimal{coef: coef, exp: exp}), do: length(Integer.digits(coef)) + exp
 
   # Whether a JSON value can be stored in a column of this type. Types
   # the archive does not use are left to the database.

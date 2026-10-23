@@ -11,19 +11,31 @@ defmodule Renga.Transfers.Schema do
 
   @doc """
   Every column of the current schema, as
-  `%{table => %{column => %{type: udt_name, nullable?: boolean, max_length: integer | nil}}}`.
-  Array types are named as PostgreSQL names them, with a leading `_`.
+  `%{table => %{column => %{type: udt_name, nullable?: boolean, max_length: integer | nil,
+  precision: integer | nil, scale: integer | nil}}}`, where precision and scale are a
+  `numeric` column's, if it declares them. Array types are named as PostgreSQL names
+  them, with a leading `_`.
   """
   def columns do
     %{rows: rows} =
       Repo.query!("""
-      SELECT table_name, column_name, udt_name, is_nullable = 'YES', character_maximum_length
+      SELECT table_name, column_name, udt_name, is_nullable = 'YES', character_maximum_length,
+             CASE WHEN udt_name = 'numeric' THEN numeric_precision END,
+             CASE WHEN udt_name = 'numeric' THEN numeric_scale END
       FROM information_schema.columns
       WHERE table_schema = current_schema()
       """)
 
-    Enum.reduce(rows, %{}, fn [table, column, type, nullable?, max_length], acc ->
-      info = %{type: type, nullable?: nullable?, max_length: max_length}
+    Enum.reduce(rows, %{}, fn [table, column, type, nullable?, max_length, precision, scale],
+                              acc ->
+      info = %{
+        type: type,
+        nullable?: nullable?,
+        max_length: max_length,
+        precision: precision,
+        scale: scale
+      }
+
       Map.update(acc, table, %{column => info}, &Map.put(&1, column, info))
     end)
   end
