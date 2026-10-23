@@ -6,6 +6,7 @@
 //! configuration. Renga cannot widen that set remotely.
 
 pub mod inventory_collect;
+pub mod queries;
 pub mod record;
 pub mod worker;
 
@@ -58,6 +59,13 @@ pub trait Capability: Send + Sync {
     /// Runs the job and returns the `result` object Renga checks against
     /// the capability's result schema.
     fn run(&self, parameters: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure>;
+
+    /// Whether a policy without an explicit `enabled` list enables it. Every
+    /// `observe` capability is, except sensitive queries (RFD 12), which reveal
+    /// more than an observation and need an explicit `[jobs]` entry.
+    fn enabled_by_default(&self) -> bool {
+        self.risk_class() == RiskClass::Observe
+    }
 
     fn key(&self) -> String {
         format!("{}@{}", self.name(), self.version())
@@ -136,7 +144,8 @@ impl Selector {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JobPolicy {
     /// `None` when the operator has not chosen: every compiled-in `observe`
-    /// capability is enabled, so on-demand collection works out of the box.
+    /// capability except sensitive queries is enabled, so on-demand
+    /// collection and inventory queries work out of the box.
     /// An explicit list, even an empty one, enables exactly what it names.
     pub enabled: Option<Vec<Selector>>,
 }
@@ -144,7 +153,7 @@ pub struct JobPolicy {
 impl JobPolicy {
     pub fn allows(&self, capability: &dyn Capability) -> bool {
         match &self.enabled {
-            None => capability.risk_class() == RiskClass::Observe,
+            None => capability.enabled_by_default(),
             Some(selectors) => selectors.iter().any(|s| s.matches(capability)),
         }
     }

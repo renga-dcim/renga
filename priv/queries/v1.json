@@ -1,0 +1,551 @@
+{
+  "query.disk_usage@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "filesystems": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "available_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "device": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "fs_type": {
+                "maxLength": 32,
+                "type": "string"
+              },
+              "inodes_total": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "inodes_used": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mount_point": {
+                "maxLength": 512,
+                "type": "string"
+              },
+              "size_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "used_bytes": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "mount_point",
+              "device",
+              "fs_type",
+              "size_bytes",
+              "used_bytes",
+              "available_bytes",
+              "inodes_total",
+              "inodes_used"
+            ],
+            "type": "object"
+          },
+          "maxItems": 512,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "filesystems",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "inventory",
+    "timeout_ms": 30000
+  },
+  "query.listening_sockets@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "sockets": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "maxLength": 64,
+                "type": "string"
+              },
+              "pid": {
+                "anyOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "port": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "process": {
+                "anyOf": [
+                  {
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "protocol": {
+                "enum": [
+                  "tcp",
+                  "udp"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "protocol",
+              "address",
+              "port",
+              "process",
+              "pid"
+            ],
+            "type": "object"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sockets",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "sensitive",
+    "timeout_ms": 30000
+  },
+  "query.packages@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "architecture": {
+                "anyOf": [
+                  {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "manager": {
+                "enum": [
+                  "dpkg",
+                  "rpm",
+                  "apk",
+                  "pacman"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "version": {
+                "maxLength": 256,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version",
+              "architecture",
+              "manager"
+            ],
+            "type": "object"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "packages",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "sensitive",
+    "timeout_ms": 60000
+  },
+  "query.routes@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "enum": [
+            "ipv4",
+            "ipv6"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "routes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "maxLength": 64,
+                "type": "string"
+              },
+              "family": {
+                "enum": [
+                  "ipv4",
+                  "ipv6"
+                ],
+                "type": "string"
+              },
+              "gateway": {
+                "anyOf": [
+                  {
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "interface": {
+                "anyOf": [
+                  {
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "metric": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "protocol": {
+                "anyOf": [
+                  {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "table": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "vrf": {
+                "anyOf": [
+                  {
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "table",
+              "vrf",
+              "family",
+              "destination",
+              "gateway",
+              "interface",
+              "metric",
+              "protocol"
+            ],
+            "type": "object"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "routes",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "inventory",
+    "timeout_ms": 30000
+  },
+  "query.services@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "failed_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "truncated": {
+          "type": "boolean"
+        },
+        "units": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "active_state": {
+                "maxLength": 32,
+                "type": "string"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "enabled_state": {
+                "anyOf": [
+                  {
+                    "maxLength": 32,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "load_state": {
+                "maxLength": 32,
+                "type": "string"
+              },
+              "name": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "sub_state": {
+                "maxLength": 32,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "load_state",
+              "active_state",
+              "sub_state",
+              "enabled_state"
+            ],
+            "type": "object"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "units",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "sensitive",
+    "timeout_ms": 30000
+  },
+  "query.time_sync@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "daemon": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "estimated_error_us": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_error_us": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offset_us": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stratum": {
+          "anyOf": [
+            {
+              "maximum": 16,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "synchronized": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "synchronized",
+        "daemon",
+        "source",
+        "stratum",
+        "offset_us",
+        "max_error_us",
+        "estimated_error_us"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "inventory",
+    "timeout_ms": 30000
+  }
+}

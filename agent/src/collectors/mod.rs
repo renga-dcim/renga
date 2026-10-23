@@ -4,7 +4,7 @@ use crate::{cancellation::Cancellation, payload::ServerResource};
 use std::fmt;
 
 #[cfg(target_os = "linux")]
-mod filesystem_facts;
+pub(crate) mod filesystem_facts;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

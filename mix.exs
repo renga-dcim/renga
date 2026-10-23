@@ -99,6 +99,8 @@ defmodule Renga.MixProject do
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       # Regenerates the committed OpenAPI document; a test fails when it is stale.
       "api.spec": &api_spec/1,
+      # Regenerates the query contract the agent's tests read (RFD 12).
+      "queries.contract": &queries_contract/1,
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",
@@ -112,6 +114,12 @@ defmodule Renga.MixProject do
       ],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
     ]
+  end
+
+  defp queries_contract(_args) do
+    Mix.Task.run("compile")
+    File.mkdir_p!("priv/queries")
+    File.write!(Renga.Jobs.Query.contract_path(), Renga.Jobs.Query.contract_json())
   end
 
   # The machine API and the operator API (RFD 22) each have a document.

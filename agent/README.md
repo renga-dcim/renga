@@ -400,23 +400,48 @@ definition: `observe` capabilities read the host and change nothing,
 capabilities open a session a person drives.
 
 The optional `[jobs]` table is local policy for which capabilities Renga may
-request. Without it, every compiled-in `observe` capability is enabled, so
-on-demand collection works without a configuration change. An explicit
-`enabled` list, even an empty one, enables exactly what it names: a capability
-name enables every version, and a `name@version` key enables one. `operate` and
-`interactive` capabilities are never enabled by default. Names this agent does
-not know are accepted and enable nothing, so one file can serve several agent
-versions.
+request. Without it, every compiled-in `observe` capability is enabled except
+sensitive queries, so on-demand collection and inventory queries work without a
+configuration change. An explicit `enabled` list, even an empty one, enables
+exactly what it names: a capability name enables every version, and a
+`name@version` key enables one. `operate` and `interactive` capabilities are
+never enabled by default. Names this agent does not know are accepted and
+enable nothing, so one file can serve several agent versions.
 
 ```toml
 [jobs]
-enabled = ["inventory.collect"]
+enabled = ["inventory.collect", "query.disk_usage", "query.packages"]
 ```
 
-This build has one capability:
+This build has these capabilities:
 
 * `inventory.collect@1` (`observe`): runs the normal inventory collection now,
   delivers it through the observation queue, and reports the observation ID.
+* Operational queries (RFD 12), each `observe` and read-only, on Linux. They
+  read procfs, system calls, and package databases directly. Where one must
+  run a program, the program's arguments are fixed in the agent and never
+  include text from the request. No query takes a command, a path, or a
+  script. List answers stop at about 48 KiB and say `truncated`.
+  * `query.disk_usage@1`: filesystem capacity, use, and inodes, from PID 1's
+    mount table and `statvfs`.
+  * `query.routes@1`: every routing table, with VRF names, from
+    `ip -j route show table all`. `family` picks IPv4 or IPv6.
+  * `query.time_sync@1`: clock synchronization from `adjtimex(2)`, with the
+    source from `chronyc -c -n tracking` or systemd-timesyncd over D-Bus.
+  * `query.listening_sockets@1` (sensitive): listening TCP and unconnected UDP
+    sockets from procfs, with owning processes where the agent may read them.
+    `port` narrows it.
+  * `query.services@1` (sensitive): systemd service units with their load,
+    active, sub, and enabled states, read over D-Bus with `busctl`.
+    `failed_only` narrows it.
+  * `query.packages@1` (sensitive): installed packages from dpkg, apk, or
+    pacman databases, or `rpm -qa`. `name` narrows it to names containing the
+    text, and the filter is applied by the agent, never passed to a program.
+
+  Sensitive queries reveal what a host runs and which versions it has, so they
+  run only when `[jobs]` names them. Renga also requires the organization to
+  enable each query and the person to hold the `queries.run` permission, plus
+  `queries.run_sensitive` for a sensitive query.
 
 Check-ins advertise the enabled capabilities next to `host.inventory`, read from
 the current policy, so a reload withdraws a capability at once. The agent
