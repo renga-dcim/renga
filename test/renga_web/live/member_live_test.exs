@@ -9,6 +9,7 @@ defmodule RengaWeb.MemberLiveTest do
   alias Renga.Assignments
   alias Renga.Inventory
   alias Renga.Members
+  alias Renga.Repo
   alias Renga.Roles
 
   setup do
@@ -256,6 +257,32 @@ defmodule RengaWeb.MemberLiveTest do
       view |> element("#invitation-#{invitation.id}-revoke") |> render_click()
       refute has_element?(view, "#invitation-#{invitation.id}")
       assert Members.list_invitations(context.admin) == []
+    end
+
+    test "names the deployment token on an operator invitation", context do
+      organization = Repo.get!(Accounts.Organization, context.owner.organization_id)
+
+      {:ok, {token, _plaintext}} =
+        Renga.Operators.create_token(
+          %{name: "cloud", scopes: ["organizations:write"]},
+          Renga.DeploymentAudit.operator("test")
+        )
+
+      {:ok, invitation} =
+        Renga.Operators.Organizations.invite_owner(
+          organization.id,
+          "operator-invited@example.com",
+          Renga.DeploymentAudit.token(token, Ecto.UUID.generate()),
+          &"/invitations/#{&1}"
+        )
+
+      {:ok, view, _html} = live(context.owner_conn, ~p"/settings/members")
+
+      assert has_element?(
+               view,
+               "#invitation-#{invitation.id}",
+               "Invited by the deployment (token: cloud)"
+             )
     end
 
     test "the invited person accepts and can open the organization", context do

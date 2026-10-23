@@ -404,6 +404,12 @@ defmodule RengaWeb.MemberLive do
               <span :if={invitation.invited_by_user} class="block truncate text-xs text-fg-muted">
                 Invited by {invitation.invited_by_user.email}
               </span>
+              <span
+                :if={invitation.invited_by_operator}
+                class="block truncate text-xs text-fg-muted"
+              >
+                Invited by the deployment ({invitation.invited_by_operator})
+              </span>
             </:col>
             <:col :let={invitation} label="Role" class="w-28">
               <span class="capitalize text-fg">{invitation.role}</span>

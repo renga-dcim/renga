@@ -49,6 +49,161 @@
           "error"
         ],
         "type": "object"
+      },
+      "OperatorValidationError": {
+        "title": "OperatorValidationError",
+        "additionalProperties": false,
+        "description": "A request Renga refused because of what it asked for.",
+        "properties": {
+          "error": {
+            "enum": [
+              "invalid"
+            ],
+            "type": "string"
+          },
+          "errors": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Messages by field.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "error",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "Organization": {
+        "title": "Organization",
+        "additionalProperties": false,
+        "description": "An organization as the operator sees it: its identity, status, and members, never its inventory.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "members": {
+            "description": "Active members, by address.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "email": {
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "owner",
+                    "admin",
+                    "member",
+                    "viewer"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "role"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "status",
+          "members"
+        ],
+        "type": "object"
+      },
+      "OrganizationCreate": {
+        "title": "OrganizationCreate",
+        "description": "A new organization, which starts with no members.",
+        "properties": {
+          "name": {
+            "description": "The display name, at most 255 characters.",
+            "type": "string"
+          },
+          "slug": {
+            "description": "Lowercase letters, numbers, and dashes, starting with a letter or number; unique in the deployment and at most 255 characters.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "OwnerInvitation": {
+        "title": "OwnerInvitation",
+        "additionalProperties": false,
+        "description": "An invitation to own an organization. Renga durably queues its link for email delivery to the address; the secret is never returned.",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "owner"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "email",
+          "role",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "OwnerInvitationCreate": {
+        "title": "OwnerInvitationCreate",
+        "description": "Who to invite as an owner.",
+        "properties": {
+          "email": {
+            "description": "An email address of at most 160 characters.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -141,6 +296,308 @@
         },
         "operationId": "getOperatorOpenApi",
         "summary": "This API's OpenAPI document"
+      }
+    },
+    "/operator/v1/organizations": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Organization"
+                }
+              }
+            },
+            "description": "The new organization.",
+            "headers": {
+              "idempotency-key-expires-at": {
+                "description": "The time through which this response can be replayed.",
+                "required": true,
+                "schema": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The `Idempotency-Key` header is missing or malformed, or the body is not a JSON object."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The token lacks the scope this operation needs."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The `Idempotency-Key` was already used for a different request."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorValidationError"
+                }
+              }
+            },
+            "description": "The name or slug is invalid or taken."
+          }
+        },
+        "description": "Creates an organization with no members; invite its owner next. Needs `organizations:write`.",
+        "operationId": "createOrganization",
+        "parameters": [
+          {
+            "description": "Names this write so a retry returns its result instead of acting again. Keys are per token, method, and route, and are kept for 24 hours. Reusing a key for a different request is refused with `409`.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Create an organization"
+      }
+    },
+    "/operator/v1/organizations/{id}": {
+      "get": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Organization"
+                }
+              }
+            },
+            "description": "The organization."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The token lacks `organizations:read`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "No organization has this ID."
+          }
+        },
+        "description": "Reads an organization's status and its active members' addresses and roles, so automation can confirm an owner joined. Needs `organizations:read`.",
+        "operationId": "getOrganization",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Read an organization"
+      }
+    },
+    "/operator/v1/organizations/{id}/owner-invitations": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerInvitation"
+                }
+              }
+            },
+            "description": "The invitation, durably queued for email delivery.",
+            "headers": {
+              "idempotency-key-expires-at": {
+                "description": "The time through which this response can be replayed.",
+                "required": true,
+                "schema": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The `Idempotency-Key` header is missing or malformed, or the body is not a JSON object."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The token lacks the scope this operation needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "No active organization has this ID."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The `Idempotency-Key` was already used for a different request."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorValidationError"
+                }
+              }
+            },
+            "description": "The address is invalid or already belongs to a member."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Renga cannot securely queue the invitation email because secret storage is unavailable."
+          }
+        },
+        "description": "Durably queues an email inviting `email` to own the organization, replacing any open invitation for the address. Delivery retries reuse the same invitation and may duplicate its email after an ambiguous provider failure. Accepting it requires signing in or registering with that confirmed address under the deployment's sign-in rules. The response never carries the invitation's link, and the invitation stops working if this token is revoked. Needs `organizations:write`.",
+        "operationId": "inviteOrganizationOwner",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Names this write so a retry returns its result instead of acting again. Keys are per token, method, and route, and are kept for 24 hours. Reusing a key for a different request is refused with `409`.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerInvitationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Invite an owner"
       }
     },
     "/operator/v1/tokens/self": {

@@ -55,6 +55,8 @@ defmodule Renga.Accounts.Organization do
     organization
     |> cast(attrs, [:name, :slug, :status, :settings])
     |> validate_required([:name, :slug, :status])
+    |> validate_length(:name, max: 255)
+    |> validate_length(:slug, max: 255)
     |> validate_format(:slug, ~r/^[a-z0-9][a-z0-9-]*$/,
       message:
         "must start with a lowercase letter or number and contain only lowercase letters, numbers, and dashes"

@@ -195,10 +195,12 @@ if config_env() == :prod do
   config :renga, :webauthn, origin: "https://#{host}"
 
   # Keys for secrets Renga stores and reads back, such as authenticator app
-  # secrets: a comma-separated list of id:base64-key pairs, the first of
-  # which encrypts. Generate a key with `openssl rand -base64 32`. To rotate,
-  # put a new key first, run bin/reencrypt-secrets, then drop the old key.
-  # Without a key, Renga runs but nobody can add an authenticator app.
+  # secrets and queued operator invitation links: a comma-separated list of
+  # id:base64-key pairs, the first of which encrypts. Generate a key with
+  # `openssl rand -base64 32`. To rotate, keep old keys until pending
+  # invitation emails are delivered, run bin/reencrypt-secrets, then drop the
+  # old key. Without a key, Renga runs but cannot add an authenticator app or
+  # queue an operator invitation email.
   config :renga, Renga.Vault, keys: System.get_env("ENCRYPTION_KEYS")
 
   # The operator API listens on its own port, only when one is configured,

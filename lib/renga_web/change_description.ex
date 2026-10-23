@@ -167,6 +167,8 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "role_expired", metadata: metadata, old_value: %{"value" => role}}),
     do: "The #{role} role expired for #{metadata["member"]}"
 
+  def describe(%{kind: "organization_created"}), do: "Created this organization"
+
   def describe(%{kind: "limit_set", field: field}),
     do: "Changed the #{String.replace(field, "_", " ")} limit"
 

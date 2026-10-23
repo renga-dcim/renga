@@ -26,10 +26,11 @@ defmodule Renga.Release do
   end
 
   @doc """
-  Reseals every stored secret under the current `ENCRYPTION_KEYS` key,
-  authenticator secrets and identity provider client secrets alike, so
-  the operator can then remove an older key. Run it as `bin/reencrypt-secrets`
-  after putting a new key first.
+  Reseals authenticator secrets and identity provider client secrets under
+  the current `ENCRYPTION_KEYS` key. Run it as `bin/reencrypt-secrets` after
+  putting a new key first. Pending operator invitation links are short-lived
+  and are not resealed, so keep their old keys configured until those emails
+  have been delivered before removing an older key.
   """
   def reencrypt_secrets do
     load_app()

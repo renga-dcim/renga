@@ -29,6 +29,7 @@ defmodule Renga.Members do
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
+  alias Renga.Operators.OperatorToken
   alias Renga.Repo
 
   @doc "UI hint for `members.manage`."
@@ -354,6 +355,29 @@ defmodule Renga.Members do
 
   defp confirmed_recipient(%User{email: email}, %OrganizationInvitation{email: invited}) do
     if String.downcase(email) == String.downcase(invited), do: :ok, else: {:error, :wrong_email}
+  end
+
+  # An operator's owner invitation (RFD 22) stays valid while the token that
+  # made it is unrevoked; one made by a release command has no token.
+  defp inviter_may_grant(%OrganizationInvitation{
+         invited_by_user_id: nil,
+         invited_by_operator: operator,
+         invited_by_operator_token_id: token_id
+       })
+       when is_binary(operator) do
+    cond do
+      is_nil(token_id) ->
+        :ok
+
+      OperatorToken
+      |> where([token], token.id == ^token_id and is_nil(token.revoked_at))
+      |> lock("FOR SHARE")
+      |> Repo.exists?() ->
+        :ok
+
+      true ->
+        {:error, :forbidden}
+    end
   end
 
   defp inviter_may_grant(%OrganizationInvitation{invited_by_user_id: nil}),
