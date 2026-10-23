@@ -502,8 +502,8 @@ status, which the Collectors page shows:
 * `not_present`: nothing answers at the socket.
 
 `enabled = false` stops the probing, and no status is reported. The agent
-speaks only to the extension manager's `ping`, `query`, and `options`
-methods, and bounds every reply at 16 MiB.
+speaks only to the extension manager's `ping`, `query`, `getQueryColumns`,
+and `options` methods, and bounds every reply at 16 MiB.
 
 When osquery is available, the named queries answer from its tables with
 fixed SQL: `listening_ports` and `processes` for listening sockets,
@@ -522,8 +522,8 @@ and it answers only when all of these hold:
 
 * osquery is enabled and reachable. Without it the query fails.
 * The daemon runs with `--disable_tables` covering `augeas`, `carves`, `curl`,
-  `curl_certificate`, `file`, and `yara`, which read files, reach the network,
-  or copy files off the host. The agent reads the daemon's flags before every
+  `curl_certificate`, `file`, `ycloud_instance_metadata`, and `yara`, which
+  read files, reach an address the query names, or copy files off the host. The agent reads the daemon's flags before every
   run and refuses otherwise. It does not look for table names in the SQL.
 * The daemon runs with `--carver_disable_function` (osquery's default), since
   `carve()` copies files off the host even with the `carves` table disabled.
@@ -537,10 +537,13 @@ and it answers only when all of these hold:
 * The statement only reads. osquery's own SQLite database accepts `CREATE`,
   `INSERT`, and `DROP`, so the agent has SQLite `EXPLAIN` the statement first
   and refuses a program that opens a write transaction or writes a virtual
-  table.
+  table, or that calls `sleep()`, which would hold the daemon after the agent
+  stops waiting.
+* osquery extensions add tables the agent does not know. Only load extensions
+  you trust with any SQL a holder of both query permissions may write.
 
 ```sh
-osqueryd --disable_tables=augeas,carves,curl,curl_certificate,file,yara \
+osqueryd --disable_tables=augeas,carves,curl,curl_certificate,file,ycloud_instance_metadata,yara \
   --carver_disable_function=true ...
 ```
 

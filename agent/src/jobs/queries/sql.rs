@@ -23,7 +23,9 @@
 //!   else, such as a `PRAGMA` (which can change the connection while it is
 //!   merely prepared), before osquery sees it;
 //! * it asks SQLite to `EXPLAIN` that statement and refuses a program that
-//!   opens a write transaction or writes a virtual table;
+//!   opens a write transaction, writes a virtual table, or calls osquery's
+//!   `sleep()`, which would hold the daemon long after the agent stops
+//!   waiting;
 //! * it requires `carver_disable_function`, since osquery's `carve()` copies
 //!   files off the host even with the `carves` table disabled.
 //!
@@ -41,13 +43,16 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// Tables that read files (`file`, `yara`, `augeas`), make network requests
-/// (`curl`, `curl_certificate`), or copy files off the host (`carves`).
-pub const DENIED_TABLES: [&str; 6] = [
+/// to an address the query names (`curl`, `curl_certificate`, and
+/// `ycloud_instance_metadata`, whose `metadata_endpoint` constraint becomes
+/// the URL it fetches), or copy files off the host (`carves`).
+pub const DENIED_TABLES: [&str; 7] = [
     "augeas",
     "carves",
     "curl",
     "curl_certificate",
     "file",
+    "ycloud_instance_metadata",
     "yara",
 ];
 
@@ -100,7 +105,7 @@ impl Query for Sql {
         let program = osquery
             .query(&format!("EXPLAIN {sql}"))
             .map_err(osquery_failure)?;
-        refuse_writes(&program)?;
+        refuse_unsafe_program(&program)?;
         let columns = osquery.query_columns(&sql).map_err(osquery_failure)?;
         let rows = osquery.query(&sql).map_err(osquery_failure)?;
         Ok(Some(table(columns, rows)))
@@ -196,8 +201,10 @@ fn closing(bytes: &[u8], from: usize, terminator: &[u8]) -> usize {
 
 /// Refuses a compiled program that writes: SQLite opens a write transaction
 /// (`Transaction` with a non-zero P2) for every change to a table, view,
-/// index, or trigger, and writes virtual tables with `VUpdate`.
-fn refuse_writes(program: &[osquery::Row]) -> Result<(), JobFailure> {
+/// index, or trigger, and writes virtual tables with `VUpdate`. Also refuses
+/// one that calls `sleep()`: the daemon runs a query to the end whether or
+/// not anyone waits, and its watchdog limits CPU and memory, not time.
+fn refuse_unsafe_program(program: &[osquery::Row]) -> Result<(), JobFailure> {
     let writes = program.iter().any(|op| {
         let opcode = op.get("opcode").map_or("", String::as_str);
         let p2 = op.get("p2").map_or("0", String::as_str);
@@ -209,7 +216,25 @@ fn refuse_writes(program: &[osquery::Row]) -> Result<(), JobFailure> {
             "refused by the agent's policy: sql must only read",
         ));
     }
+    if program.iter().any(|op| calls(op, "sleep")) {
+        return Err(super::failed(
+            "refused by the agent's policy: sql must not call sleep()",
+        ));
+    }
     Ok(())
+}
+
+/// Whether an `EXPLAIN` row calls the SQL function `name`. Function and
+/// aggregate opcodes show it in P4 as `name(arguments)`; a string literal
+/// that merely reads like a call is another opcode.
+fn calls(op: &osquery::Row, name: &str) -> bool {
+    let opcode = op.get("opcode").map_or("", String::as_str);
+    let p4 = op.get("p4").map_or("", String::as_str);
+    (opcode.contains("Func") || opcode.starts_with("Agg"))
+        && p4
+            .split('(')
+            .next()
+            .is_some_and(|called| called.trim().eq_ignore_ascii_case(name))
 }
 
 /// The bytes osquery trims from each `disable_tables` entry: its Boost trim
@@ -386,7 +411,9 @@ mod tests {
         match refuse_unless_denied_tables_disabled(&row(&[("disable_tables", "curl,file")])) {
             Err(JobFailure::Failed(reason)) => {
                 assert!(
-                    reason.contains("augeas, carves, curl_certificate, yara"),
+                    reason.contains(
+                        "augeas, carves, curl_certificate, ycloud_instance_metadata, yara"
+                    ),
                     "{reason}"
                 )
             }
@@ -445,16 +472,32 @@ mod tests {
     #[test]
     fn refuses_programs_that_write() {
         let read = [op("Init", "7"), op("OpenRead", "3"), op("Transaction", "0")];
-        assert!(refuse_writes(&read).is_ok());
-        assert!(refuse_writes(&[op("Init", "4"), op("ResultRow", "1")]).is_ok());
+        assert!(refuse_unsafe_program(&read).is_ok());
+        assert!(refuse_unsafe_program(&[op("Init", "4"), op("ResultRow", "1")]).is_ok());
 
         let insert = [
             op("OpenWrite", "3"),
             op("Insert", "3"),
             op("Transaction", "1"),
         ];
-        assert!(refuse_writes(&insert).is_err());
-        assert!(refuse_writes(&[op("VUpdate", "0")]).is_err());
+        assert!(refuse_unsafe_program(&insert).is_err());
+        assert!(refuse_unsafe_program(&[op("VUpdate", "0")]).is_err());
+    }
+
+    #[test]
+    fn refuses_programs_that_call_sleep() {
+        let call = |opcode: &str, p4: &str| row(&[("opcode", opcode), ("p2", "0"), ("p4", p4)]);
+        for op in [
+            call("Function", "sleep(1)"),
+            call("PureFunc", "SLEEP(1)"),
+            call("Function0", "sleep(1)"),
+        ] {
+            assert!(refuse_unsafe_program(&[op]).is_err());
+        }
+        // A string that reads like the call, and other functions, are fine.
+        assert!(refuse_unsafe_program(&[call("String8", "sleep(1)")]).is_ok());
+        assert!(refuse_unsafe_program(&[call("Function", "sleeper(1)")]).is_ok());
+        assert!(refuse_unsafe_program(&[call("Function", "lower(1)")]).is_ok());
     }
 
     #[test]

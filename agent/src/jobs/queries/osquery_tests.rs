@@ -474,6 +474,15 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
             ("getQueryColumns", "SELECT pid, name FROM processes") => {
                 fake::response(0, "OK", &[&[("pid", "BIGINT")], &[("name", "TEXT")]])
             }
+            ("query", "EXPLAIN SELECT sleep(1000000)") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("opcode", "Init"), ("p2", "4"), ("p4", "")],
+                    &[("opcode", "Function"), ("p2", "1"), ("p4", "sleep(1)")],
+                    &[("opcode", "ResultRow"), ("p2", "1"), ("p4", "")],
+                ],
+            ),
             ("query", "EXPLAIN SELECT pid, name FROM processes") => fake::response(
                 0,
                 "OK",
@@ -510,7 +519,7 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
     (QueryCapability::new(sql::Sql, osquery), server)
 }
 
-const ALL_DENIED: &str = "curl,curl_certificate,carves,yara,file,augeas";
+const ALL_DENIED: &str = "curl,curl_certificate,carves,yara,file,augeas,ycloud_instance_metadata";
 
 #[test]
 fn ad_hoc_sql_answers_a_table_in_column_order() {
@@ -551,7 +560,7 @@ fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
                 "{reason}"
             );
             assert!(
-                reason.contains("augeas, curl_certificate, file, yara"),
+                reason.contains("augeas, curl_certificate, file, ycloud_instance_metadata, yara"),
                 "{reason}"
             );
         }
@@ -653,6 +662,26 @@ fn ad_hoc_sql_refuses_parameters_that_would_hide_a_statement() {
         drop(capability);
         assert!(server.join().unwrap().is_empty(), "{sql}");
     }
+}
+
+#[test]
+fn ad_hoc_sql_must_not_sleep() {
+    let (capability, server) = sql_daemon(ALL_DENIED);
+    let reason = refusal(&capability, "SELECT sleep(1000000)");
+    assert!(reason.contains("sleep()"), "{reason}");
+    drop(capability);
+    // Explained, never run.
+    assert_eq!(server.join().unwrap(), ["options", "query"]);
+}
+
+#[test]
+fn ad_hoc_sql_needs_ycloud_metadata_disabled() {
+    // ycloud_instance_metadata fetches the endpoint the query names.
+    let (capability, server) = sql_daemon("curl,curl_certificate,carves,yara,file,augeas");
+    let reason = refusal(&capability, "SELECT pid, name FROM processes");
+    assert!(reason.contains("ycloud_instance_metadata"), "{reason}");
+    drop(capability);
+    assert_eq!(server.join().unwrap(), ["options"]);
 }
 
 #[test]
