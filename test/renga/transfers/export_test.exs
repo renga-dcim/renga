@@ -205,6 +205,22 @@ defmodule Renga.Transfers.ExportTest do
     end
   end
 
+  test "names the organization in its manifest as the snapshot found it", context do
+    # The caller loaded the organization before it was renamed.
+    context.organization
+    |> Ecto.Changeset.change(
+      name: "Renamed",
+      slug: "renamed-#{System.unique_integer([:positive])}"
+    )
+    |> Repo.update!()
+
+    {archive, _summary} = export(context)
+    [organization] = records(archive, "organization")
+
+    assert archive.manifest["organization"]["name"] == "Renamed"
+    assert archive.manifest["organization"]["slug"] == organization["slug"]
+  end
+
   test "refuses unknown parts", context do
     assert_raise ArgumentError, fn ->
       Export.write(context.organization, Path.join(context.tmp_dir, "x"), parts: ["everything"])

@@ -48,7 +48,8 @@ defmodule Renga.Transfers.Export do
     writer = Writer.new(Keyword.take(opts, [:tmp_dir]))
 
     try do
-      {writer, snapshot_at} = snapshot(fn -> write_records(writer, organization, parts, opts) end)
+      {writer, snapshot_at, organization} =
+        snapshot(fn -> write_records(writer, organization, parts, opts) end)
 
       :ok =
         Writer.finish(
@@ -66,8 +67,11 @@ defmodule Renga.Transfers.Export do
     end
   end
 
+  # The manifest names the organization as the snapshot found it, which
+  # the organization record must match.
   defp write_records(writer, organization, parts, opts) do
     snapshot_at = snapshot_time()
+    organization = Repo.get!(Organization, organization.id)
     columns = column_types()
     types = RecordTypes.included(parts)
     after_type = Keyword.get(opts, :after_record_type, fn _type -> :ok end)
@@ -90,7 +94,7 @@ defmodule Renga.Transfers.Export do
       end)
 
     writer = Writer.add_json(writer, "principals", rows(principals_sql(types), params))
-    {writer, snapshot_at}
+    {writer, snapshot_at, organization}
   end
 
   # The snapshot must be the transaction's first statement, so the export
